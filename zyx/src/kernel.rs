@@ -10,7 +10,18 @@ use std::{
 };
 
 use crate::{
-    backend::Device, dtype::Constant, graph::Graph, ir::Scope, node::{BOp, ROp, UOp}, optimizer::Optimizer, runtime::Pool, shape::{Axis, Dimension}, slab::Id, tensor::TensorId, view::View, DType, DebugMask, ZyxError
+    backend::Device,
+    dtype::Constant,
+    graph::Graph,
+    ir::Scope,
+    node::{BOp, ROp, UOp},
+    optimizer::Optimizer,
+    runtime::Pool,
+    shape::{Axis, Dimension},
+    slab::Id,
+    tensor::TensorId,
+    view::View,
+    DType, DebugMask, ZyxError,
 };
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -602,10 +613,13 @@ impl Kernel {
                         *buffer_id
                     } else {
                         // Allocate bytes for outputs
-                        let (buffer_id, event) = pool.pool.allocate(
-                            graph.shape(tensor_id).iter().product::<usize>()
-                                * graph.dtype(tensor_id).byte_size(),
-                        ).unwrap();
+                        let (buffer_id, event) = pool
+                            .pool
+                            .allocate(
+                                graph.shape(tensor_id).iter().product::<usize>()
+                                    * graph.dtype(tensor_id).byte_size(),
+                            )
+                            .unwrap();
                         pool.buffer_map.insert(tensor_id, buffer_id);
                         event_wait_list.push(event);
                         outputs.insert(tensor_id);
@@ -614,7 +628,16 @@ impl Kernel {
                 })
                 .collect();
 
-            optimizer.launch(self, device, pool, &args, outputs, event_wait_list, search_iters, debug)?;
+            optimizer.launch(
+                self,
+                device,
+                pool,
+                &args,
+                outputs,
+                event_wait_list,
+                search_iters,
+                debug,
+            )?;
 
             // add load kernels for all outputs of this kernel
             return Ok(Some(

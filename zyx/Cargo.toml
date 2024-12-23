@@ -36,8 +36,8 @@ half = { version = "2.4.1" } # MIT or Apache 2.0
 #"small_rng",
 #] } # MIT or Apache 2.0
 
-# Progress bar for loading tensors and such
-#indicatif = { version = "0.17.9" }
+# Progress bar for loading tensors, compilation ...
+#indicatif = { version = "0.17.9", default-features = false }
 
 # Optional dependencies
 # For caching of searched kernels
@@ -71,7 +71,7 @@ crate-type = ["lib"] #, "cdylib"]
 [features]
 default = [
     #"disk_cache",
-    #"wgsl",
+    #"wgpu",
     #"complex",
     #"gguf",
     #"py",
@@ -80,8 +80,8 @@ default = [
 # Enables caching of optimized kernels to disk
 disk_cache = ["dep:bitcode"]
 
-# Enables wgsl backend
-wgsl = ["dep:wgpu", "dep:pollster", "dep:futures"]
+# Enables wgpu backend
+wgpu = ["dep:wgpu", "dep:pollster", "dep:futures"]
 
 # Enables vulkan backend, dependency will be later removed
 vulkan = ["dep:vulkano"]

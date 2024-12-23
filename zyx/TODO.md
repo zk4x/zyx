@@ -38,6 +38,7 @@
   - [x] opencl
   - [ ] vulkan
   - [ ] wgpu
+  - [ ] dummy
 - [ ] use stable-vec instead of index_map? But what about node reuse order?
 - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
 - [ ] register tiling of all variables
@@ -47,5 +48,3 @@
 - [ ] flash attention
 - [x] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes
 - [x] replace serde with nanoserde
-- [ ] write custom progress bar
-- [x] remove indicatiff

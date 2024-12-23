@@ -1,5 +1,12 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event, MemoryPool}, ir::{IRKernel, Scope}, kernel::{Kernel, Op}, runtime::Pool, shape::Dimension, slab::Id, view::View, DebugMask
+    backend::{BackendError, Device, DeviceInfo, Event, MemoryPool},
+    ir::{IRKernel, Scope},
+    kernel::{Kernel, Op},
+    runtime::Pool,
+    shape::Dimension,
+    slab::Id,
+    view::View,
+    DebugMask,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -61,6 +68,7 @@ impl Optimizer {
         search_iters: usize,
         debug: DebugMask,
     ) -> Result<(), BackendError> {
+        //let t = crate::Timer::new("optimizer");
         // TODO if optimizer is not initialized yet, then first load from disk.
 
         let dev_info_id = self.device_infos.last_key_value().map(|(_, x)| x + 1).unwrap_or(0);
@@ -70,7 +78,8 @@ impl Optimizer {
             // if kernel was already optimized
             if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
                 // if it was compiled for the given device
-                let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
+                let event =
+                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
                 pool.events.insert(outputs, event);
             } else if let Some(progress) = self.progress.get_mut(&(kernel_id, dev_info_id)) {
                 // if it was optimized for similar device, but not compiled for the given device,
@@ -81,7 +90,13 @@ impl Optimizer {
                         let optimized_kernel = kernel.optimize(optimization);
                         let ir_kernel = IRKernel::new(&optimized_kernel.ops, debug.ir());
                         let program_id = device.compile(&ir_kernel, debug.asm())?;
-                        let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
+                        let event = device.launch(
+                            program_id,
+                            pool.pool.as_mut(),
+                            args,
+                            event_wait_list,
+                            false,
+                        )?;
                         pool.events.insert(outputs, event);
                     }
                     OptimizerProgress::Optimizing { best, done } => {

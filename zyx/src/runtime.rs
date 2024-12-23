@@ -1,9 +1,5 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
 use crate::backend::{BackendError, Device, DeviceConfig, Event, MemoryPool};
-#[cfg(feature = "vulkan")]
-use crate::backend::{VulkanConfig, VulkanError};
-#[cfg(feature = "wgsl")]
-use crate::backend::{WGSLConfig, WGSLError};
 use crate::dtype::{Constant, DType};
 use crate::graph::Graph;
 use crate::node::{BOp, Node, ROp, UOp};
@@ -216,9 +212,9 @@ impl Runtime {
             mp.pool.deinitialize()?;
         }
         // Timer
-        for (name, time) in crate::ET.lock().iter() {
+        /*for (name, time) in crate::ET.lock().iter() {
             println!("Timer {name} took {time} us");
-        }
+        }*/
         Ok(())
     }
 
@@ -282,7 +278,11 @@ impl Runtime {
         let mpid = memory_pool_id as usize;
         let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
         self.temp_data.push(data);
-        let event = self.pools[mpid].pool.host_to_pool(self.temp_data.last().unwrap().read(), buffer_id, vec![event])?;
+        let event = self.pools[mpid].pool.host_to_pool(
+            self.temp_data.last().unwrap().read(),
+            buffer_id,
+            vec![event],
+        )?;
         let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, dtype);
         self.pools[mpid].buffer_map.insert(id, buffer_id);
         self.pools[mpid].events.insert(BTreeSet::from([buffer_id]), event);
@@ -382,7 +382,9 @@ impl Runtime {
         let cd = dtype.byte_size() / self.dtype(x).byte_size();
         if let Some(d) = shape.last_mut() {
             if *d % cd != 0 {
-                return Err(ZyxError::DTypeError("Can't bitcast due to tensor's last dimension not being correct multiple of dtype.".into()));
+                return Err(ZyxError::DTypeError(
+                    "Can't bitcast due to tensor's last dimension not being correct multiple of dtype.".into(),
+                ));
             }
             *d /= cd;
         }
@@ -484,7 +486,6 @@ impl Runtime {
             let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
             pool.buffer_map.insert(id, bid);
             return id;
-
         }
         if shape.len() > sh.len() {
             let sh: Vec<usize> = std::iter::repeat(1)

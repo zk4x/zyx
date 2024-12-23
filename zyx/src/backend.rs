@@ -10,16 +10,39 @@
 use std::fmt::Display;
 
 use nanoserde::DeJson;
-#[cfg(feature = "wgsl")]
-use wgsl::{WGSLBuffer, WGSLDevice, WGSLMemoryPool, WGSLProgram, WGSLQueue};
 
-mod opencl;
 mod cuda;
+mod dummy;
+mod opencl;
 /*mod hip;
 #[cfg(feature = "vulkan")]
-mod vulkan;
-#[cfg(feature = "wgsl")]
-mod wgsl;*/
+mod vulkan;*/
+#[cfg(feature = "wgpu")]
+mod wgpu;
+
+pub fn initialize_backends(
+    device_config: &DeviceConfig,
+    memory_pools: &mut Vec<Pool>,
+    devices: &mut Vec<Box<dyn Device>>,
+    debug_dev: bool,
+) -> Result<(), BackendError> {
+    let _ = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_dev);
+    let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_dev);
+    //let _ = hip::initialize_device(&device_config.hip, memory_pools, devices, debug_dev);
+    let _ = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_dev);
+    #[cfg(feature = "vulkan")]
+    let _ = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_dev);
+    #[cfg(feature = "wgpu")]
+    let _ = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_dev);
+
+    if devices.is_empty() || memory_pools.is_empty() {
+        return Err(BackendError {
+            status: ErrorStatus::Initialization,
+            context: "All backends failed to initialize or were configured out.".into(),
+        });
+    }
+    Ok(())
+}
 
 use crate::{ir::IRKernel, runtime::Pool, slab::Id, ZyxError};
 
@@ -61,6 +84,8 @@ pub struct BackendError {
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(DeJson, Debug, Default)]
 pub struct DeviceConfig {
+    /// Configuration of dummy device for testing
+    pub dummy: dummy::DummyConfig,
     /// CUDA configuration
     pub cuda: cuda::CUDAConfig,
     /// HIP configuration
@@ -71,8 +96,8 @@ pub struct DeviceConfig {
     #[cfg(feature = "vulkan")]
     pub vulkan: vulkan::VulkanConfig,
     /// WGSL configuration
-    #[cfg(feature = "wgsl")]
-    pub wgsl: wgsl::WGSLConfig,
+    #[cfg(feature = "wgpu")]
+    pub wgpu: wgpu::WGPUConfig,
 }
 
 /// Hardware information needed for applying optimizations
@@ -85,6 +110,7 @@ pub struct DeviceInfo {
     pub max_global_work_dims: [usize; 3],
     /// Maximum local work size threads
     pub max_local_threads: usize,
+    /// Maximum local work size dimensions
     pub max_local_work_dims: [usize; 3],
     /// Preferred vector size in bytes
     pub preferred_vector_size: usize,
@@ -101,10 +127,24 @@ pub trait MemoryPool: Send {
     fn free_bytes(&self) -> usize;
     fn get_buffer(&mut self, buffer: Id) -> BufferMut;
     fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError>;
-    fn deallocate(&mut self, buffer_id: Id, event_wait_list: Vec<Event>) -> Result<(), BackendError>;
-    fn host_to_pool(&mut self, src: &[u8], dst: Id, event_wait_list: Vec<Event>) -> Result<Event, BackendError>;
+    fn deallocate(
+        &mut self,
+        buffer_id: Id,
+        event_wait_list: Vec<Event>,
+    ) -> Result<(), BackendError>;
+    fn host_to_pool(
+        &mut self,
+        src: &[u8],
+        dst: Id,
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError>;
     /// Pool to host is blocking operation
-    fn pool_to_host(&mut self, src: Id, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError>;
+    fn pool_to_host(
+        &mut self,
+        src: Id,
+        dst: &mut [u8],
+        event_wait_list: Vec<Event>,
+    ) -> Result<(), BackendError>;
 }
 
 pub trait Device: Send {
@@ -128,6 +168,7 @@ pub trait Device: Send {
 
 #[allow(private_interfaces)]
 pub enum BufferMut<'a> {
+    Dummy,
     OpenCL(&'a mut opencl::OpenCLBuffer),
     CUDA(&'a mut cuda::CUDABuffer),
 }
@@ -136,29 +177,6 @@ pub enum BufferMut<'a> {
 pub enum Event {
     OpenCL(opencl::OpenCLEvent),
     CUDA(cuda::CUDAEvent),
-}
-
-pub fn initialize_backends(
-    device_config: &DeviceConfig,
-    memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Box<dyn Device>>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
-    let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_dev);
-    //let _ = hip::initialize_device(&device_config.hip, memory_pools, devices, debug_dev);
-    let _ = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_dev);
-    #[cfg(feature = "vulkan")]
-    let _ = vulkan::initialize_devices(&device_config.opencl, memory_pools, devices, debug_dev);
-    #[cfg(feature = "wgsl")]
-    let _ = wgsl::initialize_devices(&device_config.opencl, memory_pools, devices, debug_dev);
-
-    if devices.is_empty() || memory_pools.is_empty() {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: "All backends failed to initialize or were configured out.".into(),
-        });
-    }
-    Ok(())
 }
 
 impl From<BackendError> for ZyxError {
