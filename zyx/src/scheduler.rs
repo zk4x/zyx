@@ -90,7 +90,7 @@ pub(super) fn realize_graph(
                 let (mut xt, mut kid) = get_kernel_min(x, &kernels);
                 debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                 let shape = graph.shape(nid);
-                if kernels[kid].is_expandable() {
+                if kernels[kid].is_expandable(graph.shape(x)) {
                     // If it's gonna be used elsewhere, we need to copy this kernel,
                     // because expand invalidates outputs.
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
@@ -401,35 +401,41 @@ fn sto(
     rcs: &BTreeMap<u32, u32>,
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
-    Ok(
-        if let Some(tensors) =
-            kernels[*kid].store(x, graph, devices, mps, optimizer, searches, debug)?
-        {
-            kernels.remove(*kid).unwrap();
-            for kernel in kernels.values_mut() {
-                for tid in &tensors {
-                    kernel.outputs.remove(tid);
+    if let Some(tensors) =
+        kernels[*kid].store(x, graph, devices, mps, optimizer, searches, debug)?
+    {
+        kernels.remove(*kid).unwrap();
+        for kernel in kernels.values_mut() {
+            for tid in &tensors {
+                kernel.outputs.remove(tid);
+            }
+        }
+        let mut kid_ = 0u32;
+        while kid_ < kernels.len() as u32 {
+            if let Some(kernel) = kernels.get(kid_) {
+                if kernel.outputs.is_empty() {
+                    kernels.remove(kid_).unwrap();
                 }
             }
-            for tid in tensors {
-                if rcs.contains_key(&tid) {
-                    let tkid = kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
-                    if tid == x {
-                        *kid = tkid;
-                    }
+            kid_ += 1;
+        }
+
+        /*println!("After cleanup of stored {x}");
+        for kernel in kernels.values() {
+            kernel.debug();
+            println!();
+        }*/
+
+        for tid in tensors {
+            if rcs.contains_key(&tid) {
+                let tkid = kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
+                if tid == x {
+                    *kid = tkid;
                 }
             }
-            let mut kid_ = 0u32;
-            while kid_ < kernels.len() as u32 {
-                if let Some(kernel) = kernels.get(kid_) {
-                    if kernel.outputs.is_empty() {
-                        kernels.remove(kid_).unwrap();
-                    }
-                }
-                kid_ += 1;
-            }
-        },
-    )
+        }
+    }
+    Ok(())
 }
 
 // Choose kernel with most outputs (binary, unary)

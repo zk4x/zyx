@@ -1,5 +1,37 @@
-- [ ] tests for fusion in generate kernels, test will create it's own graph and check how the fused kernel looks
+- [ ] backends
+  - [ ] cuda
+    - [ ] fix async memcopy
+    - [ ] tensor cores
+  - [ ] hip
+  - [x] opencl
+  - [ ] vulkan
+  - [ ] wgpu
+  - [ ] dummy
+- [ ] dtype
+  - [ ] quantized dtypes
+- [x] runtime
+  - [x] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes
+- [x] scheduler
+  - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
+  - [ ] fix reshape node
+    - [x] merges, splits, reshapes of non reduce axes
+    - [ ] inserting new loops to the end of the kernel
+  - [ ] pad should also work even with kernels that store stuff, just pad the store view
+  - [x] expand reduce bug
+  - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
     - [ ] softmax fusion test (eventually should be single kernel)
+    - [ ] just asserts that various graphs fuse into single kernel
+  - [ ] scheduling to multiple devices
+  - [ ] automatic sharding across devices
+- [x] kernel
+  - [x] ops remove unary view
+  - [x] ops remove binary views
+- [ ] optimizer
+  - [ ] default optimizations
+  - [ ] register tiling of all variables
+  - [ ] local tiling of all variables
+  - [ ] better picking of next optimization, or even optimization search
+  - [ ] flash attention
 - [x] view
   - [x] split on padded view
   - [x] view padding to ir
@@ -8,7 +40,7 @@
   - [x] reshaped view to ir
   - [x] axis merging
   - [x] axes reshape
-- [ ] ir rewrite
+- [ ] IR
   - [x] add dtype to load vop, so that we don't need to pass graph to ir
   - [x] do not pass graph to ir
   - [x] change ir register id to u16
@@ -22,29 +54,10 @@
   - [ ] loop unrolling
   - [ ] vector dtypes
   - [ ] constant evaluation
-- [x] vops remove unary view
-- [x] vops remove binary views
-- [x] manual for adding new backends
-- [ ] scheduler upgrades
-  - [ ] fix reshape node
-    - [x] merges, splits, reshapes of non reduce axes
-    - [ ] inserting new loops to the end of the kernel
-  - [ ] pad should also work even with kernels that store stuff, just pad the store view
-  - [ ] expand reduce bug
-- [ ] backends
-  - [ ] cuda
-    - [ ] fix async memcopy
-  - [ ] hip
-  - [x] opencl
-  - [ ] vulkan
-  - [ ] wgpu
-  - [ ] dummy
-- [ ] use stable-vec instead of index_map? But what about node reuse order?
-- [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
-- [ ] register tiling of all variables
-- [ ] local tiling of all variables
-- [ ] get phi working
-- [ ] tensor cores support
-- [ ] flash attention
-- [x] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes
-- [x] replace serde with nanoserde
+
+- [x] docs
+  - [x] manual for adding new backends
+- [ ] dependencies
+  - [ ] use stable-vec instead of index_map? But what about node reuse order?
+  - [ ] get phi working
+  - [x] replace serde with nanoserde

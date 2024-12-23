@@ -340,8 +340,14 @@ impl Kernel {
         println!();
     }
 
-    pub(super) fn is_expandable(&self) -> bool {
-        self.ops.iter().all(|op| !matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
+    /// Kernel is expandable if it does not contain store and if the result is not too
+    /// large when applied on reduce kernel.
+    pub(super) fn is_expandable(&self, shape: &[usize]) -> bool {
+        !self.ops.iter().any(|op| {
+            matches!(op, Op::Store { .. })
+                || (matches!(op, Op::Accumulator { .. })
+                    && shape.iter().product::<usize>() > 1024 * 1024 * 1024)
+        })
     }
 
     pub(super) fn expand(&mut self, shape: &[usize]) {
@@ -680,8 +686,8 @@ impl std::fmt::Display for Op {
             Op::Store { z, zview, zscope, zdtype, xscope, xview: _ } => f.write_fmt(format_args!(
                 "{C_RED}Store{C_RESET}        {z}[{zscope:?}] <- {xscope:?}, {zview}, {zdtype}"
             )),
-            Op::Loop { axis, len: dimension } => f.write_fmt(format_args!(
-                "{C_GREEN}Loop{C_RESET}        axis: {axis}, dimension: {dimension}"
+            Op::Loop { axis, len } => f.write_fmt(format_args!(
+                "{C_GREEN}Loop{C_RESET}        axis: {axis}, len: {len}"
             )),
             Op::Accumulator { z, rop, view, dtype } => f.write_fmt(format_args!(
                 "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, shape: {:?}, {dtype}",

@@ -71,6 +71,8 @@ impl Optimizer {
         //let t = crate::Timer::new("optimizer");
         // TODO if optimizer is not initialized yet, then first load from disk.
 
+        // TODO perhaps we really should allocate separate inputs if search_iterations are mroe than 1
+
         let dev_info_id = self.device_infos.last_key_value().map(|(_, x)| x + 1).unwrap_or(0);
         let dev_info_id =
             *self.device_infos.entry(device.info().clone()).or_insert_with(|| dev_info_id);

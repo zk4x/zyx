@@ -106,10 +106,10 @@ impl Rng {
             DType::U16 => self.next_u16().cast(),
             DType::U32 => self.next_u32().cast(),
             DType::U64 => self.next_u64().cast(),
-            DType::I8 => self.next_u8().cast(),
-            DType::I16 => self.next_u16().cast(),
-            DType::I32 => self.next_u32().cast(),
-            DType::I64 => self.next_u64().cast(),
+            DType::I8 => unsafe { std::mem::transmute::<_, i8>(self.next_u8()) }.cast(),
+            DType::I16 => unsafe { std::mem::transmute::<_, i16>(self.next_u16()) }.cast(),
+            DType::I32 => unsafe { std::mem::transmute::<_, i32>(self.next_u32()) }.cast(),
+            DType::I64 => unsafe { std::mem::transmute::<_, i64>(self.next_u64()) }.cast(),
             DType::Bool => self.next_u8().cast(),
         }
     }
