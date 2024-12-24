@@ -10,7 +10,7 @@ use crate::{
     DType,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::{Display, Write},
 };
 
@@ -559,7 +559,7 @@ impl IRCompiler {
                     }
                 }
                 IROp::EndLoop { id, len } => {
-                    reg_rcs[id as usize] -= 1;
+                    reg_rcs[id as usize] = reg_rcs[id as usize] - 1;
                     ops.push(IROp::EndLoop { id, len });
                 }
                 IROp::Barrier { scope } => ops.push(IROp::Barrier { scope }),
@@ -569,6 +569,7 @@ impl IRCompiler {
     }
 
     // i.e. peephole optimization
+    // TODO this should only ever fuse ops within single loop body
     fn fuse_ops(&mut self) {
         for i in 0..self.ops.len() - 1 {
             if let IROp::Binary { bop, z: z0, x: a, y: b, .. } = self.ops[i] {
@@ -613,10 +614,110 @@ impl IRCompiler {
 
     // Loop invariant code motion and dependence analysis
     fn loop_invariant_code_motion(&mut self) {
-        let _ = self;
-        // TODO Optimize by deduplicating ops (namely indices) and moving them before loops
-        // loop invariant code motion
-        // This will require automatic dependency resolution
+        // Go from innermost loop to outermost loop. If there are multiple innermost loops,
+        // they can be processed in parallel.
+        for op_id in (6..self.ops.len()).rev() {
+            if let IROp::Loop { id, .. } = self.ops[op_id] {
+                let mut loop_id = op_id;
+                // which variables can't be eliminated
+                let mut dependents: BTreeSet<u16> = BTreeSet::from([id]);
+                let mut inner_loop_counter = 0;
+                let mut op_id = loop_id + 1;
+                'a: loop {
+                    // if operands are not in dependents, move operation before loop
+                    let move_possible: bool = match self.ops[op_id] {
+                        IROp::Load { z, offset, .. } => {
+                            if let Reg::Var(offset) = offset {
+                                if dependents.contains(&offset) {
+                                    dependents.insert(z);
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            }
+                        }
+                        IROp::Store { offset, x, .. } => {
+                            let a = if let Reg::Var(offset) = offset {
+                                if dependents.contains(&offset) {
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            };
+                            let b = if let Reg::Var(x) = x {
+                                if dependents.contains(&x) {
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            };
+                            a && b
+                        }
+                        IROp::Unary { z, x, .. } => {
+                            if dependents.contains(&x) {
+                                dependents.insert(z);
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                        IROp::Binary { z, x, y, .. } => {
+                            let a = if let Reg::Var(x) = x {
+                                if dependents.contains(&x) {
+                                    dependents.insert(z);
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            };
+                            let b = if let Reg::Var(y) = y {
+                                if dependents.contains(&y) {
+                                    dependents.insert(z);
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            };
+                            a && b
+                        }
+                        IROp::MAdd { .. } => todo!(),
+                        IROp::Loop { .. } => {
+                            inner_loop_counter += 1;
+                            // This is a bit more complicated. We have to check all values
+                            // in this loop block and move the loop as a whole.
+                            // This is however rarely needed due to way we construct loops,
+                            // so we do not need to hurry implementing this.
+                            false
+                        }
+                        IROp::EndLoop { .. } => {
+                            if inner_loop_counter == 0 {
+                                break 'a;
+                            } else {
+                                inner_loop_counter -= 1;
+                                false
+                            }
+                        }
+                        IROp::Barrier { .. } => false,
+                    };
+                    if move_possible && inner_loop_counter == 0 {
+                        let op = self.ops.remove(op_id);
+                        self.ops.insert(loop_id, op);
+                        loop_id += 1;
+                    }
+                    op_id += 1;
+                }
+            }
+        }
     }
 
     fn vectorization(&mut self) {
@@ -751,15 +852,20 @@ impl IRKernel {
 
         // Optimizations
         // TODO perhaps it is benefitial to do this multiple times???
-        compiler.loop_invariant_code_motion();
         compiler.loop_unrolling();
-        compiler.vectorization();
+        if false {
+            compiler.loop_invariant_code_motion();
+        }
         compiler.loop_splitting();
+        compiler.vectorization();
         compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
         compiler.dead_store_elimination();
 
         compiler.fuse_ops();
+        /*for op in &compiler.ops {
+            println!("{op:?}");
+        }*/
 
         // TODO perhaps we can do even more optimizations with instruction scheduling
         // and register allocation? But that's a big perhaps...
