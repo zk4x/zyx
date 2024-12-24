@@ -47,13 +47,14 @@
   - [x] remove ref counting from ir
   - [x] merge all mul + add into mad instructions
   - [x] add new reference counting that accounts for all variables, including indexing variables
-  - [ ] deduplicate all calculations
-  - [ ] expression folding, optimizations for ops, merges
   - [ ] loop invariant code motion
-  - [ ] dead code elimination
   - [ ] loop unrolling
-  - [ ] vector dtypes
-  - [ ] constant evaluation
+  - [ ] loop splitting
+  - [ ] constant folding and propagation
+  - [ ] common subexpression elimination
+  - [ ] dead store elimination
+  - [ ] vectorization, vector dtypes
+  - [ ] ops fusion, merges
 
 - [x] docs
   - [x] manual for adding new backends
