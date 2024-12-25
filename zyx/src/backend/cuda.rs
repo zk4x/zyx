@@ -434,24 +434,9 @@ impl MemoryPool for CUDAMemoryPool {
         Ok(())
     }
 
-    fn get_buffer(&mut self, buffer: crate::slab::Id) -> super::BufferMut {
-        BufferMut::CUDA(&mut self.buffers[buffer])
+    fn get_buffer(&self, buffer: crate::slab::Id) -> super::BufferMut {
+        BufferMut::CUDA(&self.buffers[buffer])
     }
-
-    /*fn event_wait_list(&mut self, buffers: &BTreeSet<Id>) -> Vec<Event> {
-        let mut to_remove = Vec::new();
-        for key in self.events.keys() {
-            if !key.is_disjoint(buffers) {
-                to_remove.push(key.clone());
-            }
-        }
-        to_remove.into_iter().map(|key| Event::CUDA(CUDAEvent { event: self.events.remove(&key).unwrap() })).collect()
-    }
-
-    fn bind_event(&mut self, event: super::Event, buffers: std::collections::BTreeSet<crate::slab::Id>) {
-        let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
-        self.events.insert(buffers, event);
-    }*/
 }
 
 impl Device for CUDADevice {
@@ -518,7 +503,8 @@ impl Device for CUDADevice {
             let arg = memory_pool.get_buffer(arg);
             let BufferMut::CUDA(arg) = arg else { unreachable!() };
             //let ptr = &mut arg.mem;
-            let ptr: *mut _ = &mut arg.ptr;
+            let ptr: *const u64 = &arg.ptr;
+            let ptr: *mut u64 = ptr.cast_mut();
             kernel_params.push(ptr.cast());
         }
 

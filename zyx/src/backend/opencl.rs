@@ -579,8 +579,8 @@ impl MemoryPool for OpenCLMemoryPool {
         Ok(())
     }*/
 
-    fn get_buffer(&mut self, buffer: Id) -> BufferMut {
-        BufferMut::OpenCL(&mut self.buffers[buffer])
+    fn get_buffer(&self, buffer: Id) -> BufferMut {
+        BufferMut::OpenCL(&self.buffers[buffer])
     }
 }
 

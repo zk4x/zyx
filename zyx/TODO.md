@@ -2,11 +2,13 @@
   - [ ] cuda
     - [ ] fix async memcopy
     - [ ] tensor cores
+    - [ ] fix load calculation, probably using Atomic usize
   - [ ] hip
   - [x] opencl
+      - [ ] fix load calculation, probably using Atomic usize
   - [ ] vulkan
-  - [ ] wgpu
-  - [ ] dummy
+  - [x] wgpu
+  - [x] dummy
 - [ ] dtype
   - [ ] quantized dtypes
 - [x] runtime
@@ -47,10 +49,10 @@
   - [x] remove ref counting from ir
   - [x] merge all mul + add into mad instructions
   - [x] add new reference counting that accounts for all variables, including indexing variables
-  - [ ] loop invariant code motion
-  - [ ] loop unrolling
+  - [ ] loop invariant code motion!
+  - [ ] loop unrolling!
   - [ ] loop splitting
-  - [ ] constant folding and propagation
+  - [ ] constant folding and propagation!
   - [ ] common subexpression elimination
   - [ ] dead store elimination
   - [ ] vectorization, vector dtypes
@@ -59,6 +61,7 @@
 - [x] docs
   - [x] manual for adding new backends
 - [ ] dependencies
-  - [ ] use stable-vec instead of index_map? But what about node reuse order?
-  - [ ] get phi working
   - [x] replace serde with nanoserde
+
+- examples
+  - [ ] get phi working

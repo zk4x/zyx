@@ -70,7 +70,7 @@ impl MemoryPool for DummyMemoryPool {
         self.free_bytes
     }
 
-    fn get_buffer(&mut self, buffer: crate::slab::Id) -> BufferMut {
+    fn get_buffer(&self, buffer: crate::slab::Id) -> BufferMut {
         let _ = buffer;
         BufferMut::Dummy
     }

@@ -125,7 +125,7 @@ pub struct DeviceInfo {
 pub trait MemoryPool: Send {
     fn deinitialize(&mut self) -> Result<(), BackendError>;
     fn free_bytes(&self) -> usize;
-    fn get_buffer(&mut self, buffer: Id) -> BufferMut;
+    fn get_buffer(&self, buffer: Id) -> BufferMut;
     fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError>;
     fn deallocate(
         &mut self,
@@ -169,14 +169,18 @@ pub trait Device: Send {
 #[allow(private_interfaces)]
 pub enum BufferMut<'a> {
     Dummy,
-    OpenCL(&'a mut opencl::OpenCLBuffer),
-    CUDA(&'a mut cuda::CUDABuffer),
+    OpenCL(&'a opencl::OpenCLBuffer),
+    CUDA(&'a cuda::CUDABuffer),
+    #[cfg(feature = "wgpu")]
+    WGPU(&'a wgpu::WGPUBuffer),
 }
 
 #[derive(Debug)]
 pub enum Event {
     OpenCL(opencl::OpenCLEvent),
     CUDA(cuda::CUDAEvent),
+    #[cfg(feature = "wgpu")]
+    WGPU(wgpu::WGPUEvent),
 }
 
 impl From<BackendError> for ZyxError {
