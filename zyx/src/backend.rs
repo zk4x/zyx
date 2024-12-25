@@ -60,6 +60,8 @@ pub enum ErrorStatus {
     DeviceQuery,
     /// Failed to allocate memory
     MemoryAllocation,
+    /// Failed to deallocate memory
+    MemoryDeallocation,
     /// Failed to copy memory to pool
     MemoryCopyH2P,
     /// Failed to copy memory to host

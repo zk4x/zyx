@@ -2,6 +2,13 @@ use std::collections::HashMap;
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
+fn memory() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
+    assert_eq!(x, [[2, 4, 3], [1, 5, 1]]);
+    Ok(())
+}
+
+#[test]
 fn matmul_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     let y = Tensor::from([[2, 4], [3, 1], [5, 1]]);

@@ -32,15 +32,18 @@ pub(super) struct CUDAMemoryPool {
     buffers: Slab<CUDABuffer>,
     stream: CUstream,
     cuMemAllocAsync: unsafe extern "C" fn(*mut CUdeviceptr, usize, CUstream) -> CUDAStatus,
+    cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
     cuMemcpyHtoDAsync: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize, CUstream) -> CUDAStatus,
+    cuMemcpyHtoD: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize) -> CUDAStatus,
     cuMemcpyDtoHAsync: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize, CUstream) -> CUDAStatus,
     cuMemFreeAsync: unsafe extern "C" fn(CUdeviceptr, CUstream) -> CUDAStatus,
+    cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus,
     cuEventCreate: unsafe extern "C" fn(*mut CUevent, c_uint) -> CUDAStatus,
     cuEventRecord: unsafe extern "C" fn(CUevent, CUstream) -> CUDAStatus,
     cuStreamWaitEvent: unsafe extern "C" fn(CUstream, CUevent, c_uint) -> CUDAStatus,
     cuEventSynchronize: unsafe extern "C" fn(CUevent) -> CUDAStatus,
     cuEventDestroy: unsafe extern "C" fn(CUevent) -> CUDAStatus,
-    //cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
+    cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
     //cuMemcpyPeer: unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
     //cuCtxSetCurrent: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
     //cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
@@ -162,8 +165,11 @@ pub(super) fn initialize_device(
     let cuCtxCreate: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuCtxCreate\0") }.unwrap();
     let cuMemAllocAsync = *unsafe { cuda.get(b"cuMemAllocAsync\0") }.unwrap();
+    let cuMemAlloc = *unsafe { cuda.get(b"cuMemAlloc\0") }.unwrap();
     let cuMemFreeAsync = *unsafe { cuda.get(b"cuMemFreeAsync\0") }.unwrap();
+    let cuMemFree = *unsafe { cuda.get(b"cuMemFree\0") }.unwrap();
     let cuMemcpyHtoDAsync = *unsafe { cuda.get(b"cuMemcpyHtoDAsync\0") }.unwrap();
+    let cuMemcpyHtoD = *unsafe { cuda.get(b"cuMemcpyHtoD\0") }.unwrap();
     let cuMemcpyDtoHAsync = *unsafe { cuda.get(b"cuMemcpyDtoHAsync\0") }.unwrap();
     //let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
     //let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") }.unwrap();
@@ -260,14 +266,17 @@ pub(super) fn initialize_device(
             stream,
             cuEventCreate,
             cuMemAllocAsync,
+            cuMemAlloc,
             cuMemcpyHtoDAsync,
+            cuMemcpyHtoD,
             cuMemFreeAsync,
+            cuMemFree,
             cuMemcpyDtoHAsync,
             cuEventRecord,
             cuStreamWaitEvent,
             cuEventSynchronize,
             cuEventDestroy,
-            //cuStreamSynchronize,
+            cuStreamSynchronize,
             //cuMemcpyPeer,
             //cuCtxSetCurrent,
             //cuCtxDestroy,
@@ -293,7 +302,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major > 7,
             },
-            streams: Vec::new(),
+            streams,
             programs: Slab::new(),
             memory_pool_id: u32::try_from(memory_pools.len()).unwrap() - 1,
             cuModuleLoadDataEx,
@@ -382,7 +391,11 @@ impl MemoryPool for CUDAMemoryPool {
         //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
         let mut event = ptr::null_mut();
         unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryAllocation)?;
-        unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
+        if self.stream.is_null() {
+            panic!();
+        }
+        //unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
+        unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check(ErrorStatus::MemoryAllocation)?;
         unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
         Ok((self.buffers.push(CUDABuffer { ptr, bytes }), Event::CUDA(CUDAEvent { event })))
@@ -392,10 +405,11 @@ impl MemoryPool for CUDAMemoryPool {
         if let Some(buffer) = self.buffers.remove(buffer_id) {
             while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
                 if !event.is_null() {
-                    unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }.check(ErrorStatus::Deinitialization)?;
+                    unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }.check(ErrorStatus::MemoryDeallocation)?;
                 }
             }
-            unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::Deinitialization)?;
+            //unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation).unwrap();
+            unsafe { (self.cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation).unwrap();
             self.free_bytes += buffer.bytes;
         }
         Ok(())
@@ -405,32 +419,37 @@ impl MemoryPool for CUDAMemoryPool {
         let dst = &self.buffers[dst];
         while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
-                unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }.check(ErrorStatus::Deinitialization)?;
+                unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }.check(ErrorStatus::MemoryCopyH2P)?;
             }
         }
         let mut event = ptr::null_mut();
-        unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryAllocation)?;
+        unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryCopyH2P)?;
+        if self.stream.is_null() {
+            panic!();
+        }
+        unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
         unsafe { (self.cuMemcpyHtoDAsync)(dst.ptr, src.as_ptr().cast(), src.len(), self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
-        unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
+        //unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check(ErrorStatus::MemoryCopyH2P)?;
+        unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
         Ok(Event::CUDA(CUDAEvent { event }))
     }
 
     fn pool_to_host(&mut self, src: Id, dst: &mut [u8], mut event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
-                unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }.check(ErrorStatus::Deinitialization)?;
+                unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }.check(ErrorStatus::MemoryCopyP2H)?;
                 // Should we destroy the event here?
             }
         }
         let src = &self.buffers[src];
         let mut event = ptr::null_mut();
-        unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryAllocation)?;
+        unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H)?;
         unsafe { (self.cuMemcpyDtoHAsync)(dst.as_mut_ptr().cast(), src.ptr, dst.len(), self.stream) }
             .check(ErrorStatus::MemoryCopyP2H)?;
-        unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
+        unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
         //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
-        unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::Deinitialization)?;
-        unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization)?;
+        unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::MemoryCopyP2H)?;
+        unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H)?;
         Ok(())
     }
 
@@ -510,11 +529,13 @@ impl Device for CUDADevice {
 
         while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
-                unsafe { (self.cuStreamWaitEvent)(self.streams[stream_id].stream, event, 0) }.check(ErrorStatus::Deinitialization)?;
+                unsafe { (self.cuStreamWaitEvent)(self.streams[stream_id].stream, event, 0) }.check(ErrorStatus::KernelLaunch)?;
             }
         }
 
-        let mut event = ptr::null_mut(); 
+        unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
+
+        let mut event = ptr::null_mut();
         unsafe { (self.cuEventCreate)(&mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
         unsafe {
             (self.cuLaunchKernel)(
@@ -533,6 +554,9 @@ impl Device for CUDADevice {
         }
         .check(ErrorStatus::KernelLaunch)?;
         unsafe { (self.cuEventRecord)(event, self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch)?;
+
+        unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
+
         if sync {
             //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch)?;
             unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::KernelLaunch)?;
@@ -545,16 +569,16 @@ impl Device for CUDADevice {
 
     fn release(&mut self, program_id: crate::slab::Id) -> Result<(), BackendError> {
         if let Some(program) = self.programs.remove(program_id) {
-            unsafe { (self.cuModuleUnload)(program.module) }.check(ErrorStatus::Deinitialization)?;
+            unsafe { (self.cuModuleUnload)(program.module) }.check(ErrorStatus::Deinitialization).unwrap();
         }
         Ok(())
     }
-    
+
     fn sync(&mut self, mut event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
-                unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::Deinitialization)?;
-                unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::KernelLaunch)?;
+                unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync)?;
+                unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::KernelSync)?;
             }
         }
         Ok(())
@@ -1241,6 +1265,20 @@ impl CUDAStatus {
         if self == Self::CUDA_SUCCESS {
             Ok(())
         } else {
+
+            /*let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
+            let cuda = cuda_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
+            let Some(cuda) = cuda else {
+                return Err(BackendError {
+                    status: ErrorStatus::DyLibNotFound,
+                    context: "CUDA runtime not found.".into(),
+                }
+                .into());
+            };
+
+            let cudaPeek: unsafe extern "C" fn(c_uint) -> CUDAStatus =
+            *unsafe { cuda.get(b"cudaPeekAtLastError\0") }.unwrap();*/
+
             Err(BackendError { status, context: format!("{self:?}") })
         }
     }
