@@ -21,7 +21,7 @@
     - [ ] inserting new loops to the end of the kernel
   - [ ] pad should also work even with kernels that store stuff, just pad the store view
   - [x] expand reduce bug
-  - [ ] fix is expandable conditions
+  - [x] fix is expandable conditions
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
     - [ ] softmax fusion test (eventually should be single kernel)
     - [ ] just asserts that various graphs fuse into single kernel

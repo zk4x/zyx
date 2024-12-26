@@ -342,10 +342,29 @@ impl Kernel {
     /// Kernel is expandable if it does not contain store and if the result is not too
     /// large when applied on reduce kernel.
     pub(super) fn is_expandable(&self, shape: &[usize]) -> bool {
-        !self.ops.iter().any(|op| {
+        //!self.ops.iter().any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
+        /*!self.ops.iter().any(|op| {
             matches!(op, Op::Store { .. })
                 || (matches!(op, Op::Accumulator { .. })
                     && shape.iter().product::<usize>() > 1024 * 1024 * 1024)
+        })*/
+        !self.ops.iter().any(|op| {
+            let is_store = matches!(op, Op::Store { .. });
+            let is_reduce = matches!(op, Op::Accumulator { .. });
+            let is_large_ws = shape.iter().product::<usize>() > 1024 * 1024 * 1024;
+            let is_large_reduce = self
+                .ops
+                .iter()
+                .filter_map(|op| {
+                    if let Op::Loop { len, .. } = op {
+                        Some(len)
+                    } else {
+                        None
+                    }
+                })
+                .product::<usize>()
+                > 1024 * 128;
+            is_store || (is_reduce && (is_large_ws || is_large_reduce))
         })
     }
 
