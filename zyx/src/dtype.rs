@@ -92,7 +92,7 @@ impl DType {
     }
 
     #[must_use]
-    pub(super) fn zero_constant(self) -> Constant {
+    pub(super) const fn zero_constant(self) -> Constant {
         match self {
             Self::BF16 => Constant::BF16(bf16::ZERO.to_bits()),
             Self::F8 => Constant::F8(float8::F8E4M3::ZERO.to_bits()),
@@ -112,7 +112,7 @@ impl DType {
     }
 
     #[must_use]
-    pub(super) fn min_constant(self) -> Constant {
+    pub(super) const fn min_constant(self) -> Constant {
         match self {
             Self::BF16 => Constant::BF16(bf16::MIN.to_bits()),
             Self::F8 => Constant::F8(255),

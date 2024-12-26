@@ -5,11 +5,10 @@
 //! Events are used to achieve maximum asynchronous execution.
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
-//#![allow(private_interfaces)]
 
 use std::fmt::Display;
-
 use nanoserde::DeJson;
+use crate::{ir::IRKernel, runtime::Pool, slab::Id, ZyxError};
 
 mod cuda;
 mod dummy;
@@ -44,7 +43,44 @@ pub fn initialize_backends(
     Ok(())
 }
 
-use crate::{ir::IRKernel, runtime::Pool, slab::Id, ZyxError};
+#[allow(private_interfaces)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum BufferMut<'a> {
+    Dummy,
+    OpenCL(&'a opencl::OpenCLBuffer),
+    CUDA(&'a cuda::CUDABuffer),
+    #[cfg(feature = "wgpu")]
+    WGPU(&'a wgpu::WGPUBuffer),
+}
+
+#[derive(Debug)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum Event {
+    OpenCL(opencl::OpenCLEvent),
+    CUDA(cuda::CUDAEvent),
+    #[cfg(feature = "wgpu")]
+    WGPU(wgpu::WGPUEvent),
+}
+
+/// Device configuration
+#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[derive(DeJson, Debug, Default)]
+pub struct DeviceConfig {
+    /// Configuration of dummy device for testing
+    pub dummy: dummy::DummyConfig,
+    /// CUDA configuration
+    pub cuda: cuda::CUDAConfig,
+    /// HIP configuration
+    //pub hip: hip::HIPConfig,
+    /// `OpenCL` configuration
+    pub opencl: opencl::OpenCLConfig,
+    /// Vulkan configuration
+    #[cfg(feature = "vulkan")]
+    pub vulkan: vulkan::VulkanConfig,
+    /// WGSL configuration
+    #[cfg(feature = "wgpu")]
+    pub wgpu: wgpu::WGPUConfig,
+}
 
 #[derive(Debug)]
 pub enum ErrorStatus {
@@ -80,26 +116,6 @@ pub enum ErrorStatus {
 pub struct BackendError {
     status: ErrorStatus,
     context: String,
-}
-
-/// Device configuration
-#[cfg_attr(feature = "py", pyo3::pyclass)]
-#[derive(DeJson, Debug, Default)]
-pub struct DeviceConfig {
-    /// Configuration of dummy device for testing
-    pub dummy: dummy::DummyConfig,
-    /// CUDA configuration
-    pub cuda: cuda::CUDAConfig,
-    /// HIP configuration
-    //pub hip: hip::HIPConfig,
-    /// `OpenCL` configuration
-    pub opencl: opencl::OpenCLConfig,
-    /// Vulkan configuration
-    #[cfg(feature = "vulkan")]
-    pub vulkan: vulkan::VulkanConfig,
-    /// WGSL configuration
-    #[cfg(feature = "wgpu")]
-    pub wgpu: wgpu::WGPUConfig,
 }
 
 /// Hardware information needed for applying optimizations
@@ -166,23 +182,6 @@ pub trait Device: Send {
         sync: bool,
     ) -> Result<Event, BackendError>;
     fn sync(&mut self, event_wait_list: Vec<Event>) -> Result<(), BackendError>;
-}
-
-#[allow(private_interfaces)]
-pub enum BufferMut<'a> {
-    Dummy,
-    OpenCL(&'a opencl::OpenCLBuffer),
-    CUDA(&'a cuda::CUDABuffer),
-    #[cfg(feature = "wgpu")]
-    WGPU(&'a wgpu::WGPUBuffer),
-}
-
-#[derive(Debug)]
-pub enum Event {
-    OpenCL(opencl::OpenCLEvent),
-    CUDA(cuda::CUDAEvent),
-    #[cfg(feature = "wgpu")]
-    WGPU(wgpu::WGPUEvent),
 }
 
 impl From<BackendError> for ZyxError {

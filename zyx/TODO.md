@@ -3,6 +3,7 @@
     - [ ] fix async memcopy
     - [ ] tensor cores
     - [ ] fix load calculation, probably using Atomic usize
+    - [ ] fix event memory leaks, all events must be properly destroyed
   - [ ] hip
   - [x] opencl
       - [ ] fix load calculation, probably using Atomic usize

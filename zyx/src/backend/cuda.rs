@@ -31,19 +31,19 @@ pub(super) struct CUDAMemoryPool {
     free_bytes: usize,
     buffers: Slab<CUDABuffer>,
     stream: CUstream,
-    cuMemAllocAsync: unsafe extern "C" fn(*mut CUdeviceptr, usize, CUstream) -> CUDAStatus,
+    //cuMemAllocAsync: unsafe extern "C" fn(*mut CUdeviceptr, usize, CUstream) -> CUDAStatus,
     cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
     cuMemcpyHtoDAsync: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize, CUstream) -> CUDAStatus,
-    cuMemcpyHtoD: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize) -> CUDAStatus,
     cuMemcpyDtoHAsync: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize, CUstream) -> CUDAStatus,
-    cuMemFreeAsync: unsafe extern "C" fn(CUdeviceptr, CUstream) -> CUDAStatus,
+    //cuMemFreeAsync: unsafe extern "C" fn(CUdeviceptr, CUstream) -> CUDAStatus,
     cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus,
     cuEventCreate: unsafe extern "C" fn(*mut CUevent, c_uint) -> CUDAStatus,
     cuEventRecord: unsafe extern "C" fn(CUevent, CUstream) -> CUDAStatus,
     cuStreamWaitEvent: unsafe extern "C" fn(CUstream, CUevent, c_uint) -> CUDAStatus,
     cuEventSynchronize: unsafe extern "C" fn(CUevent) -> CUDAStatus,
     cuEventDestroy: unsafe extern "C" fn(CUevent) -> CUDAStatus,
-    cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
+    //cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus,
+    //cuMemcpyHtoD: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize) -> CUDAStatus,
     //cuMemcpyPeer: unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
     //cuCtxSetCurrent: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
     //cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
@@ -136,8 +136,7 @@ pub(super) fn initialize_device(
         return Err(BackendError {
             status: ErrorStatus::DyLibNotFound,
             context: "CUDA runtime not found.".into(),
-        }
-        .into());
+        });
     };
 
     let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus =
@@ -164,12 +163,12 @@ pub(super) fn initialize_device(
     ) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceGetAttribute\0") }.unwrap();
     let cuCtxCreate: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuCtxCreate\0") }.unwrap();
-    let cuMemAllocAsync = *unsafe { cuda.get(b"cuMemAllocAsync\0") }.unwrap();
+    //let cuMemAllocAsync = *unsafe { cuda.get(b"cuMemAllocAsync\0") }.unwrap();
     let cuMemAlloc = *unsafe { cuda.get(b"cuMemAlloc\0") }.unwrap();
-    let cuMemFreeAsync = *unsafe { cuda.get(b"cuMemFreeAsync\0") }.unwrap();
+    //let cuMemFreeAsync = *unsafe { cuda.get(b"cuMemFreeAsync\0") }.unwrap();
     let cuMemFree = *unsafe { cuda.get(b"cuMemFree\0") }.unwrap();
     let cuMemcpyHtoDAsync = *unsafe { cuda.get(b"cuMemcpyHtoDAsync\0") }.unwrap();
-    let cuMemcpyHtoD = *unsafe { cuda.get(b"cuMemcpyHtoD\0") }.unwrap();
+    //let cuMemcpyHtoD = *unsafe { cuda.get(b"cuMemcpyHtoD\0") }.unwrap();
     let cuMemcpyDtoHAsync = *unsafe { cuda.get(b"cuMemcpyDtoHAsync\0") }.unwrap();
     //let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
     //let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") }.unwrap();
@@ -199,8 +198,7 @@ pub(super) fn initialize_device(
         return Err(BackendError {
             status: ErrorStatus::DeviceEnumeration,
             context: "No available cuda device.".into(),
-        }
-        .into());
+        });
     }
     let device_ids: Vec<i32> = (0..num_devices)
         .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
@@ -265,18 +263,18 @@ pub(super) fn initialize_device(
             buffers: Slab::new(),
             stream,
             cuEventCreate,
-            cuMemAllocAsync,
+            //cuMemAllocAsync,
             cuMemAlloc,
             cuMemcpyHtoDAsync,
-            cuMemcpyHtoD,
-            cuMemFreeAsync,
+            //cuMemFreeAsync,
             cuMemFree,
             cuMemcpyDtoHAsync,
             cuEventRecord,
             cuStreamWaitEvent,
             cuEventSynchronize,
             cuEventDestroy,
-            cuStreamSynchronize,
+            //cuStreamSynchronize,
+            //cuMemcpyHtoD,
             //cuMemcpyPeer,
             //cuCtxSetCurrent,
             //cuCtxDestroy,
@@ -384,16 +382,14 @@ impl MemoryPool for CUDAMemoryPool {
 
     fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure.".into() });
         }
         //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
         let mut ptr = u64::try_from(self.device).unwrap();
         //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
         let mut event = ptr::null_mut();
         unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryAllocation)?;
-        if self.stream.is_null() {
-            panic!();
-        }
+        debug_assert!(!self.stream.is_null());
         //unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check(ErrorStatus::MemoryAllocation)?;
         unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
@@ -424,10 +420,8 @@ impl MemoryPool for CUDAMemoryPool {
         }
         let mut event = ptr::null_mut();
         unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryCopyH2P)?;
-        if self.stream.is_null() {
-            panic!();
-        }
-        unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
+        debug_assert!(!self.stream.is_null());
+        //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
         unsafe { (self.cuMemcpyHtoDAsync)(dst.ptr, src.as_ptr().cast(), src.len(), self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
         //unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check(ErrorStatus::MemoryCopyH2P)?;
         unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
@@ -533,7 +527,7 @@ impl Device for CUDADevice {
             }
         }
 
-        unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
+        //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
 
         let mut event = ptr::null_mut();
         unsafe { (self.cuEventCreate)(&mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
@@ -555,7 +549,7 @@ impl Device for CUDADevice {
         .check(ErrorStatus::KernelLaunch)?;
         unsafe { (self.cuEventRecord)(event, self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch)?;
 
-        unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
+        //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
 
         if sync {
             //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch)?;
@@ -611,6 +605,7 @@ impl CUDADevice {
         Ok(v)
     }
 
+    #[allow(clippy::type_complexity)]
     fn compile_cuda(
         &mut self,
         kernel: &IRKernel,
@@ -869,7 +864,7 @@ impl CUDADevice {
         );
         let opts = [
             df.as_ptr().cast(),
-            "-I/usr/local/cuda-12.6/targets/x86_64-linux/include\0".as_ptr().cast(),
+            c"-I/usr/local/cuda-12.6/targets/x86_64-linux/include".as_ptr().cast(),
         ];
         if let Err(e) =
             unsafe { nvrtcCompileProgram(program, 2, opts.as_ptr()) }.check(ErrorStatus::KernelCompilation)

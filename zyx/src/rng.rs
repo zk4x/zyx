@@ -10,36 +10,39 @@ pub(super) struct Rng {
 
 impl Rng {
     pub(super) const fn seed_from_u64(mut state: u64) -> Self {
-        const PHI: u64 = 0x9e3779b97f4a7c15;
+        const PHI: u64 = 0x9e37_79b9_7f4a_7c15;
         let mut s = [0; 4];
 
         // Once rust supports for loops in const functions, this can be written as for loop
 
+        const A: u64 = 0xbf58_476d_1ce4_e5b9;
+        const B: u64 = 0x94d0_49bb_1331_11eb;
+
         state = state.wrapping_add(PHI);
         let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z = (z ^ (z >> 30)).wrapping_mul(A);
+        z = (z ^ (z >> 27)).wrapping_mul(B);
         z = z ^ (z >> 31);
         s[0] = z;
 
         state = state.wrapping_add(PHI);
         let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z = (z ^ (z >> 30)).wrapping_mul(A);
+        z = (z ^ (z >> 27)).wrapping_mul(B);
         z = z ^ (z >> 31);
         s[1] = z;
 
         state = state.wrapping_add(PHI);
         let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z = (z ^ (z >> 30)).wrapping_mul(A);
+        z = (z ^ (z >> 27)).wrapping_mul(B);
         z = z ^ (z >> 31);
         s[2] = z;
 
         state = state.wrapping_add(PHI);
         let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z = (z ^ (z >> 30)).wrapping_mul(A);
+        z = (z ^ (z >> 27)).wrapping_mul(B);
         z = z ^ (z >> 31);
         s[3] = z;
 
@@ -84,8 +87,8 @@ impl Rng {
     const fn next_f32(&mut self) -> f32 {
         let seed = self.next_u32();
 
-        const A: u32 = 1664525;
-        const C: u32 = 1013904223;
+        const A: u32 = 1_664_525;
+        const C: u32 = 1_013_904_223;
         const M: u32 = u32::MAX;
 
         // Generate the next random number using the seed and LCG formula

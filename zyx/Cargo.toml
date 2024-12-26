@@ -37,7 +37,7 @@ half = { version = "2.4.1" } # MIT or Apache 2.0
 #] } # MIT or Apache 2.0
 
 # Progress bar for loading tensors, compilation ...
-#indicatif = { version = "0.17.9", default-features = false }
+indicatif = { version = "0.17.9", default-features = false }
 
 # Optional dependencies
 # For caching of searched kernels

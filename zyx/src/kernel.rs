@@ -1,7 +1,6 @@
 //! Kernel represents hardware programs.
 
-// TODO loosen requirements for is_expandable
-// and posdsibly remove requirements for is_paddable
+// Posdsibly remove requirements for is_paddable
 // is_reshapable more or less cannot be loosened.
 
 use std::{
@@ -26,7 +25,7 @@ use crate::{
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct Kernel {
+pub struct Kernel {
     pub(super) ops: Vec<Op>,
     // Mapind from tensors ids to load and store ids
     pub(super) tensors: BTreeMap<TId, TensorId>,
@@ -661,9 +660,8 @@ impl Kernel {
                     })
                     .collect(),
             ));
-        } else {
-            return Ok(None);
         }
+        return Ok(None);
     }
 }
 

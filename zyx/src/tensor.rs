@@ -131,65 +131,65 @@ impl Tensor {
     pub fn detach(self) -> Result<Tensor, ZyxError> {
         // TODO remove realization from here
         let shape = self.shape();
-        match self.dtype() {
+        let id = match self.dtype() {
             DType::BF16 => {
                 let data: Vec<bf16> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::F8 => {
                 let data: Vec<f8> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::F16 => {
                 let data: Vec<f16> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::F32 => {
                 let data: Vec<f32> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::F64 => {
                 let data: Vec<f64> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::U8 => {
                 let data: Vec<u8> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::U16 => {
                 let data: Vec<u16> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::U32 => {
                 let data: Vec<u32> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::U64 => {
                 let data: Vec<u64> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::I8 => {
                 let data: Vec<i8> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::I16 => {
                 let data: Vec<i16> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::I32 => {
                 let data: Vec<i32> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::I64 => {
                 let data: Vec<i64> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
             DType::Bool => {
                 let data: Vec<bool> = self.try_into()?;
-                Tensor::from(data)
+                RT.lock().variable(shape, Box::new(data))
             }
-        }
-        .reshape(shape)
+        }?;
+        Ok(Tensor { id })
     }
 
     /// Create debug guard at the beginning of the block to debug that block.
@@ -2622,7 +2622,7 @@ impl Tensor {
         let mut shape = vec![1];
         let mut label = String::new();
         let mut metadata = true;
-        /*let progress_bar = if RT.lock().debug.dev() {
+        let progress_bar = if RT.lock().debug.dev() {
             println!("Loading tensors from safetensors file");
             let bar = indicatif::ProgressBar::new(
                 header.chars().filter(|&c| c == '[').count() as u64 / 2,
@@ -2636,7 +2636,7 @@ impl Tensor {
             Some(bar)
         } else {
             None
-        };*/
+        };
         let mmap = Arc::new(unsafe { memmap2::Mmap::map(&f)? });
         let mut mptr = mmap.as_ptr();
         mptr = mptr.wrapping_add(8 + header.len());
@@ -2691,10 +2691,10 @@ impl Tensor {
                                 "Safetensors shapes and offsets are incorrect.".into(),
                             ));
                         }
-                        /*if let Some(bar) = &progress_bar {
+                        if let Some(bar) = &progress_bar {
                             bar.inc(1);
                             bar.set_message(format!("{label}, {shape:?}, {dtype:?}"));
-                        }*/
+                        }
                         tensors.insert(
                             label.clone(),
                             match dtype {

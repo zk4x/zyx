@@ -559,7 +559,7 @@ impl IRCompiler {
                     }
                 }
                 IROp::EndLoop { id, len } => {
-                    reg_rcs[id as usize] = reg_rcs[id as usize] - 1;
+                    reg_rcs[id as usize] -= 1;
                     ops.push(IROp::EndLoop { id, len });
                 }
                 IROp::Barrier { scope } => ops.push(IROp::Barrier { scope }),
@@ -625,6 +625,7 @@ impl IRCompiler {
                 let mut op_id = loop_id + 1;
                 'a: loop {
                     // if operands are not in dependents, move operation before loop
+                    #[allow(clippy::match_on_vec_items)]
                     let move_possible: bool = match self.ops[op_id] {
                         IROp::Load { z, offset, .. } => {
                             if let Reg::Var(offset) = offset {
@@ -640,20 +641,12 @@ impl IRCompiler {
                         }
                         IROp::Store { offset, x, .. } => {
                             let a = if let Reg::Var(offset) = offset {
-                                if dependents.contains(&offset) {
-                                    false
-                                } else {
-                                    true
-                                }
+                                !dependents.contains(&offset)
                             } else {
                                 true
                             };
                             let b = if let Reg::Var(x) = x {
-                                if dependents.contains(&x) {
-                                    false
-                                } else {
-                                    true
-                                }
+                                !dependents.contains(&x)
                             } else {
                                 true
                             };
@@ -702,10 +695,9 @@ impl IRCompiler {
                         IROp::EndLoop { .. } => {
                             if inner_loop_counter == 0 {
                                 break 'a;
-                            } else {
-                                inner_loop_counter -= 1;
-                                false
                             }
+                            inner_loop_counter -= 1;
+                            false
                         }
                         IROp::Barrier { .. } => false,
                     };

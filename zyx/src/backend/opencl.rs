@@ -423,7 +423,7 @@ impl MemoryPool for OpenCLMemoryPool {
 
     fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure".into() });
         }
         //println!("Allocating bytes {bytes}");
         let mut status = OpenCLStatus::CL_SUCCESS;
@@ -468,7 +468,7 @@ impl MemoryPool for OpenCLMemoryPool {
             };
             if !event_wait_list.is_empty() {
                 unsafe {
-                    (self.clWaitForEvents)(event_wait_list.len() as u32, event_wait_list_ptr)
+                    (self.clWaitForEvents)(event_wait_list.len().try_into().unwrap(), event_wait_list_ptr)
                 }
                 .check(ErrorStatus::Deinitialization)?;
             }
@@ -509,7 +509,7 @@ impl MemoryPool for OpenCLMemoryPool {
                 0,
                 src.len(),
                 src.as_ptr().cast(),
-                event_wait_list.len() as u32,
+                event_wait_list.len().try_into().unwrap(),
                 event_wait_list_ptr,
                 &mut event,
             )
@@ -553,7 +553,7 @@ impl MemoryPool for OpenCLMemoryPool {
                 0,
                 dst.len(),
                 dst.as_mut_ptr().cast(),
-                event_wait_list.len() as u32,
+                event_wait_list.len().try_into().unwrap(),
                 event_wait_list_ptr,
                 &mut event,
             )
@@ -597,6 +597,7 @@ impl Device for OpenCLDevice {
         self.memory_pool_id
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn compile(
         &mut self,
         kernel: &crate::ir::IRKernel,
@@ -911,7 +912,7 @@ impl Device for OpenCLDevice {
                 ptr::null(),
                 program.global_work_size.as_ptr(),
                 program.local_work_size.as_ptr(),
-                event_wait_list.len() as u32,
+                event_wait_list.len().try_into().unwrap(),
                 event_wait_list_ptr,
                 &mut event,
             )
@@ -956,7 +957,7 @@ impl Device for OpenCLDevice {
             event_wait_list.as_ptr()
         };
         if !event_wait_list.is_empty() {
-            unsafe { (self.clWaitForEvents)(event_wait_list.len() as u32, event_wait_list_ptr) }
+            unsafe { (self.clWaitForEvents)(event_wait_list.len().try_into().unwrap(), event_wait_list_ptr) }
                 .check(ErrorStatus::KernelSync)?;
         }
         Ok(())
@@ -1124,22 +1125,22 @@ impl OpenCLDevice {
 }
 
 impl DType {
-    fn ocl(self) -> String {
+    fn ocl(self) -> &'static str {
         match self {
             Self::BF16 => todo!("bf16 should be casted to f16 or f32"),
-            Self::F8 => format!("f8"),
-            Self::F16 => format!("half"),
-            Self::F32 => format!("float"),
-            Self::F64 => format!("double"),
-            Self::U8 => format!("unsigned char"),
-            Self::U16 => format!("unsigned short"),
-            Self::I8 => format!("char"),
-            Self::I16 => format!("short"),
-            Self::I32 => format!("int"),
-            Self::I64 => format!("long"),
-            Self::Bool => "bool".into(),
-            Self::U32 => format!("unsigned int"),
-            Self::U64 => format!("unsigned long"),
+            Self::F8 => "f8",
+            Self::F16 => "half",
+            Self::F32 => "float",
+            Self::F64 => "double",
+            Self::U8 => "unsigned char",
+            Self::U16 => "unsigned short",
+            Self::I8 => "char",
+            Self::I16 => "short",
+            Self::I32 => "int",
+            Self::I64 => "long",
+            Self::Bool => "bool",
+            Self::U32 => "unsigned int",
+            Self::U64 => "unsigned long",
         }
     }
 }
