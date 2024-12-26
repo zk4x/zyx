@@ -759,6 +759,7 @@ impl IRCompiler {
 
     /// This includes elimination of useless ops, i.e. y = x*1
     #[allow(clippy::match_on_vec_items)]
+    #[allow(clippy::single_match)]
     fn constant_folding_and_propagation(&mut self) {
         for i in 0..self.ops.len() {
             match self.ops[i] {

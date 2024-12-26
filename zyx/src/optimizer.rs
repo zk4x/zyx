@@ -14,7 +14,7 @@ use std::{
 };
 
 #[derive(Debug)]
-pub(super) struct Optimizer {
+pub struct Optimizer {
     device_infos: BTreeMap<DeviceInfo, u32>,
     kernels: BTreeMap<Vec<Op>, u32>,
     // kernel id, device info id => optimization progress
@@ -37,7 +37,7 @@ enum OptimizerProgress {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) struct Optimization {
+pub struct Optimization {
     splits: Vec<(usize, Vec<Dimension>)>,
     local_tiles: bool,
 }
@@ -57,6 +57,7 @@ impl Optimizer {
     // searches over search_iters iterations, compiling and running each optimization
     // and saves the best optimization. The kernel is run at most search_iter.min(1) times.
     // Kernel is optimized on original data, so all buffers must be read only or write only.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn launch(
         &mut self,
         kernel: &Kernel,
@@ -73,7 +74,7 @@ impl Optimizer {
 
         // TODO perhaps we really should allocate separate inputs if search_iterations are mroe than 1
 
-        let dev_info_id = self.device_infos.last_key_value().map(|(_, x)| x + 1).unwrap_or(0);
+        let dev_info_id = self.device_infos.last_key_value().map_or(0, |(_, x)| x + 1);
         let dev_info_id =
             *self.device_infos.entry(device.info().clone()).or_insert_with(|| dev_info_id);
         if let Some(&kernel_id) = self.kernels.get(&kernel.ops) {
@@ -126,7 +127,7 @@ impl Optimizer {
             }
         } else {
             // if kernel was not optimized yet
-            let kernel_id = self.kernels.last_key_value().map(|(_, x)| x + 1).unwrap_or(0);
+            let kernel_id = self.kernels.last_key_value().map_or(0, |(_, x)| x + 1);
             self.kernels.insert(kernel.ops.clone(), kernel_id);
             let progress = if search_iters == 0 {
                 // if optimizations are not requested, use default optimizations
@@ -198,7 +199,7 @@ fn optimize_kernel(
             };
             // Launch kernel and measure it's performance
             let begin = std::time::Instant::now();
-            let Ok(_) = device.launch(program_id, memory_pool, &args, Vec::new(), true) else {
+            let Ok(_) = device.launch(program_id, memory_pool, args, Vec::new(), true) else {
                 done.insert(optimization, Duration::MAX);
                 continue;
             };
@@ -349,6 +350,7 @@ impl Kernel {
 
     #[allow(clippy::similar_names)]
     #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::iter_on_single_items)]
     pub(super) fn optimize(&self, optimization: &Optimization) -> Kernel {
         let mut kernel = self.clone();
         let sh = kernel.shape();

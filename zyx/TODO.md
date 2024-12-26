@@ -1,12 +1,12 @@
 - [ ] backends
   - [ ] cuda
-    - [ ] fix async memcopy
+    - [x] fix async memcopy
     - [ ] tensor cores
     - [ ] fix load calculation, probably using Atomic usize
     - [ ] fix event memory leaks, all events must be properly destroyed
   - [ ] hip
   - [x] opencl
-      - [ ] fix load calculation, probably using Atomic usize
+    - [ ] fix load calculation, probably using Atomic usize
   - [ ] vulkan
   - [x] wgpu
   - [x] dummy
@@ -21,6 +21,7 @@
     - [ ] inserting new loops to the end of the kernel
   - [ ] pad should also work even with kernels that store stuff, just pad the store view
   - [x] expand reduce bug
+  - [ ] fix is expandable conditions
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
     - [ ] softmax fusion test (eventually should be single kernel)
     - [ ] just asserts that various graphs fuse into single kernel
@@ -50,7 +51,8 @@
   - [x] remove ref counting from ir
   - [x] merge all mul + add into mad instructions
   - [x] add new reference counting that accounts for all variables, including indexing variables
-  - [ ] loop invariant code motion!
+  - [x] loop invariant code motion
+  - [ ] fix destructuring back from SSA
   - [ ] loop unrolling!
   - [ ] loop splitting
   - [ ] constant folding and propagation!
@@ -61,7 +63,7 @@
 
 - [x] docs
   - [x] manual for adding new backends
-- [ ] dependencies
+- [x] dependencies
   - [x] replace serde with nanoserde
 
 - examples

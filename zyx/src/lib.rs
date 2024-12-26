@@ -29,7 +29,6 @@
 #![deny(clippy::as_ptr_cast_mut)]
 #![deny(clippy::missing_const_for_fn)]
 #![deny(clippy::nursery)]
-//#![deny(clippy::cargo)]
 #![allow(clippy::use_self)]
 #![allow(clippy::single_call_fn)]
 #![allow(clippy::similar_names)]
@@ -44,6 +43,7 @@
 #![deny(clippy::separated_literal_suffix)]
 // Deny later
 #![allow(clippy::single_char_lifetime_names)]
+//#![deny(clippy::cargo)]
 
 use crate::runtime::Runtime;
 use std::{fs::File, path::Path};
@@ -87,26 +87,31 @@ pub struct DebugMask(u32);
 
 impl DebugMask {
     /// Is device debugging enabled?
+    #[must_use]
     pub const fn dev(&self) -> bool {
         self.0 % 2 == 1
     }
 
     /// Is performance debugging enabled?
+    #[must_use]
     pub const fn perf(&self) -> bool {
         (self.0 >> 1) % 2 == 1
     }
 
     /// Is scheduler debugging enabled?
+    #[must_use]
     pub const fn sched(&self) -> bool {
         (self.0 >> 2) % 2 == 1
     }
 
     /// Is debugging of IR enabled?
+    #[must_use]
     pub const fn ir(&self) -> bool {
         (self.0 >> 3) % 2 == 1
     }
 
     /// Is assembly debugging enabled?
+    #[must_use]
     pub const fn asm(&self) -> bool {
         (self.0 >> 4) % 2 == 1
     }

@@ -17,10 +17,10 @@ impl Scalar for f32 {
     }
 
     fn from_u16(t: u16) -> Self {
-        let _ = t;
-        todo!()
+        t.into()
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn from_u64(t: u64) -> Self {
         t as f32
     }

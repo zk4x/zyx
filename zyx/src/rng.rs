@@ -4,19 +4,20 @@
 use crate::{DType, Scalar};
 
 //
-pub(super) struct Rng {
+pub struct Rng {
     s: [u64; 4],
 }
 
 impl Rng {
     pub(super) const fn seed_from_u64(mut state: u64) -> Self {
         const PHI: u64 = 0x9e37_79b9_7f4a_7c15;
-        let mut s = [0; 4];
-
-        // Once rust supports for loops in const functions, this can be written as for loop
 
         const A: u64 = 0xbf58_476d_1ce4_e5b9;
         const B: u64 = 0x94d0_49bb_1331_11eb;
+
+        let mut s = [0; 4];
+
+        // Once rust supports for loops in const functions, this can be written as for loop
 
         state = state.wrapping_add(PHI);
         let mut z = state;
@@ -84,12 +85,13 @@ impl Rng {
         u8::from_ne_bytes([x[0]])
     }
 
+    #[allow(clippy::cast_precision_loss)]
     const fn next_f32(&mut self) -> f32 {
-        let seed = self.next_u32();
-
         const A: u32 = 1_664_525;
         const C: u32 = 1_013_904_223;
         const M: u32 = u32::MAX;
+
+        let seed = self.next_u32();
 
         // Generate the next random number using the seed and LCG formula
         let next_seed = (A.wrapping_mul(seed).wrapping_add(C)) % M;
@@ -100,20 +102,15 @@ impl Rng {
 
     pub(super) fn rand<T: Scalar>(&mut self) -> T {
         match T::dtype() {
-            DType::BF16 => self.next_f32().cast(),
-            DType::F8 => self.next_f32().cast(),
-            DType::F16 => self.next_f32().cast(),
-            DType::F32 => self.next_f32().cast(),
-            DType::F64 => self.next_f32().cast(),
-            DType::U8 => self.next_u8().cast(),
+            DType::BF16 | DType::F8 | DType::F16 | DType::F32 | DType::F64 => self.next_f32().cast(),
+            DType::U8 | DType::Bool => self.next_u8().cast(),
             DType::U16 => self.next_u16().cast(),
             DType::U32 => self.next_u32().cast(),
             DType::U64 => self.next_u64().cast(),
-            DType::I8 => unsafe { std::mem::transmute::<_, i8>(self.next_u8()) }.cast(),
-            DType::I16 => unsafe { std::mem::transmute::<_, i16>(self.next_u16()) }.cast(),
-            DType::I32 => unsafe { std::mem::transmute::<_, i32>(self.next_u32()) }.cast(),
-            DType::I64 => unsafe { std::mem::transmute::<_, i64>(self.next_u64()) }.cast(),
-            DType::Bool => self.next_u8().cast(),
+            DType::I8 => unsafe { std::mem::transmute::<u8, i8>(self.next_u8()) }.cast(),
+            DType::I16 => unsafe { std::mem::transmute::<u16, i16>(self.next_u16()) }.cast(),
+            DType::I32 => unsafe { std::mem::transmute::<u32, i32>(self.next_u32()) }.cast(),
+            DType::I64 => unsafe { std::mem::transmute::<u64, i64>(self.next_u64()) }.cast(),
         }
     }
 }

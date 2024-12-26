@@ -2,6 +2,7 @@
 
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
+#![allow(clippy::question_mark)]
 
 use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
 use crate::{

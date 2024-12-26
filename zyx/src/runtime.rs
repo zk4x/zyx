@@ -50,7 +50,8 @@ pub trait TempData: Send {
     fn dtype(&self) -> DType;
 }
 
-pub(super) struct Pool {
+pub struct Pool {
+    #[allow(clippy::struct_field_names)]
     pub pool: Box<dyn MemoryPool>,
     pub events: BTreeMap<BTreeSet<Id>, Event>,
     pub buffer_map: BTreeMap<TensorId, Id>,
@@ -649,7 +650,7 @@ impl Runtime {
         }
 
         let byte_slice: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(data.as_ptr() as *mut u8, data.len() * T::byte_size())
+            std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size())
         };
 
         let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x);

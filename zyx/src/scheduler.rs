@@ -31,11 +31,13 @@ type KernelId = Id;
 /// that require invalidation of kernel outputs, such as reduce ops and those that have no effect,
 /// i. e. unary ops.
 ///
-/// In the end check if tensor is in to_eval requiring immediate evaluation, if yes, then evaluate immediatelly.
+/// In the end check if tensor is in `to_eval` requiring immediate evaluation, if yes, then evaluate immediatelly.
 ///
 /// If tensor is used elsewhere (rc > 1), then create rc - 1 copies of the kernel.
 /// Potentially if this is expensive kernel or it requires many ops, then we might evaluate it immediatelly.
-pub(super) fn realize_graph(
+#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::too_many_arguments)]
+pub fn realize_graph(
     graph: &Graph,
     order: &[TensorId],
     to_eval: &BTreeSet<TensorId>,
@@ -60,7 +62,7 @@ pub(super) fn realize_graph(
     let mut kernels: Slab<Kernel> = Slab::with_capacity(30);
 
     if debug.sched() {
-        println!("To eval: {:?}", to_eval);
+        println!("To eval: {to_eval:?}");
     }
 
     for nid in order.iter().copied() {
@@ -130,7 +132,7 @@ pub(super) fn realize_graph(
                 let (mut xt, mut kid) = get_kernel_min(x, &kernels);
                 debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                 let shape = graph.shape(nid);
-                if kernels[kid].is_reshapable(&shape) {
+                if kernels[kid].is_reshapable(shape) {
                     // If it's gonna be used elsewhere, we need to copy this kernel,
                     // because expand invalidates outputs.
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
@@ -266,6 +268,7 @@ pub(super) fn realize_graph(
                 debug_assert_eq!(kernels[kidx].shape(), graph.shape(x));
                 debug_assert_eq!(kernels[kidy].shape(), graph.shape(y));
 
+                #[allow(clippy::branches_sharing_code)]
                 let kid = if kidx == kidy {
                     kernels[kidx].max_id += 1;
                     let z = kernels[kidx].max_id;
@@ -282,7 +285,7 @@ pub(super) fn realize_graph(
                                 Op::Loop { axis, len } => Op::Loop { axis, len },
                                 Op::EndLoop => Op::EndLoop,
                                 Op::Const { z, value, ref view } => {
-                                    Op::Const { z: z + n, value: value.clone(), view: view.clone() }
+                                    Op::Const { z: z + n, value, view: view.clone() }
                                 }
                                 Op::Load { z, zscope, ref zview, xscope, ref xview, xdtype } => {
                                     Op::Load {
@@ -313,7 +316,7 @@ pub(super) fn realize_graph(
                                     Op::Binary { z: z + n, x: x + n, y: y + n, bop }
                                 }
                                 Op::Barrier { scope } => Op::Barrier { scope },
-                            })
+                            });
                         }
                     }
                     kernels[kidx].max_id += max_id + 2;
@@ -389,6 +392,7 @@ pub(super) fn realize_graph(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sto(
     kernels: &mut Slab<Kernel>,
     kid: &mut u32,
@@ -411,7 +415,7 @@ fn sto(
             }
         }
         let mut kid_ = 0u32;
-        while kid_ < kernels.len() as u32 {
+        while kid_ < kernels.len().try_into().unwrap() {
             if let Some(kernel) = kernels.get(kid_) {
                 if kernel.outputs.is_empty() {
                     kernels.remove(kid_).unwrap();
@@ -445,16 +449,18 @@ fn get_kernel_max(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {
         .iter()
         .filter(|(_, kernel)| kernel.outputs.contains_key(&x))
         .max_by_key(|(_, kernel)| kernel.outputs.len())
-        .map(|(kid, kernel)| (*kernel.outputs.get(&x).unwrap(), kid))
-        .unwrap_or_else(|| {
-            println!("Current kernels:");
-            for kernel in kernels.values() {
+        .map_or_else(
+            || {
+                println!("Current kernels:");
+                for kernel in kernels.values() {
+                    println!();
+                    kernel.debug();
+                }
                 println!();
-                kernel.debug();
-            }
-            println!();
-            panic!();
-        })
+                panic!();
+            },
+            |(kid, kernel)| (*kernel.outputs.get(&x).unwrap(), kid),
+        )
 }
 
 // Choose kernel with fewest outputs (expand, reshape, pad, permute, reduce)
@@ -463,13 +469,12 @@ fn get_kernel_min(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {
         .iter()
         .filter(|(_, kernel)| kernel.outputs.contains_key(&x))
         .min_by_key(|(_, kernel)| kernel.outputs.len())
-        .map(|(kid, kernel)| (*kernel.outputs.get(&x).unwrap(), kid))
-        .unwrap_or_else(|| {
+        .map_or_else(|| {
             println!("Current kernels:");
             for kernel in kernels.values() {
                 kernel.debug();
             }
             println!();
             panic!();
-        })
+        }, |(kid, kernel)| (*kernel.outputs.get(&x).unwrap(), kid))
 }

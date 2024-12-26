@@ -35,12 +35,12 @@ pub struct Kernel {
 }
 
 // Tensor id in a kernel
-pub(super) type TId = u16;
+pub type TId = u16;
 
 // TODO this needs to be smaller, since it's stored on the disk
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) enum Op {
+pub enum Op {
     Loop { axis: Axis, len: Dimension },
     // End the latest loop
     EndLoop,
@@ -84,7 +84,7 @@ impl Kernel {
             zscope: Scope::Register,
             zview: View::none(),
             xscope: Scope::Global,
-            xview: View::contiguous(&shape),
+            xview: View::contiguous(shape),
             xdtype: dtype,
         });
         Kernel {
@@ -556,6 +556,7 @@ impl Kernel {
 
     /// Store is the only function that evaluates kernels, it just checks if outputs
     /// are empty after store. Returns ids of evaluated tensors.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn store(
         &mut self,
         nid: TensorId,
@@ -595,6 +596,9 @@ impl Kernel {
             // Pick a device to run program
             // Find in which memory pool are most of input tensors stored
             let memory_pool_id = 0;
+            /*for pool in memory_pools {
+                if pool.buffer_map.get() {}
+            }*/
             let pool = &mut memory_pools[memory_pool_id];
 
             // Move all other tensors to that memory pool
@@ -661,7 +665,7 @@ impl Kernel {
                     .collect(),
             ));
         }
-        return Ok(None);
+        Ok(None)
     }
 }
 

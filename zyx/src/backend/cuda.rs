@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
+#![allow(clippy::question_mark)]
 
 // TODO properly deallocate events
 
@@ -12,7 +13,6 @@ use nanoserde::DeJson;
 use crate::{dtype::Constant, ir::{IRKernel, IROp, Reg, Scope}, node::{BOp, UOp}, slab::{Id, Slab}, DType};
 
 use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
-
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -607,7 +607,7 @@ impl CUDADevice {
 
     #[allow(clippy::type_complexity)]
     fn compile_cuda(
-        &mut self,
+        &self,
         kernel: &IRKernel,
         debug_asm: bool,
     ) -> Result<([usize; 3], [usize; 3], String, Vec<u8>), BackendError> {
