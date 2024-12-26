@@ -27,6 +27,7 @@
     - [ ] just asserts that various graphs fuse into single kernel
   - [ ] scheduling to multiple devices
   - [ ] automatic sharding across devices
+  - [ ] fix bug when running phi3, panic on min_kernel function
 - [x] kernel
   - [x] ops remove unary view
   - [x] ops remove binary views

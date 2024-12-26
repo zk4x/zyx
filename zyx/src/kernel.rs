@@ -614,17 +614,52 @@ impl Kernel {
 
             // Pick a device to run program
             // Find in which memory pool are most of input tensors stored
-            let memory_pool_id = 0;
-            /*for pool in memory_pools {
-                if pool.buffer_map.get() {}
-            }*/
+            let tensors: BTreeSet<TensorId> = self.tensors.values().copied().collect();
+            // memory pool id => set(buffer_id), total_memory_used
+            let mut used_pools: BTreeMap<usize, (BTreeSet<u32>, usize)> = BTreeMap::new();
+            for (memory_pool_id, pool) in memory_pools.iter().enumerate() {
+                for tensor in &tensors {
+                    if let Some(&buffer_id) = pool.buffer_map.get(tensor) {
+                        used_pools
+                            .entry(memory_pool_id)
+                            .and_modify(|(buffers, memory_size)| {
+                                buffers.insert(buffer_id);
+                                *memory_size += graph.shape(*tensor).iter().product::<usize>();
+                            })
+                            .or_insert_with(|| {
+                                (
+                                    BTreeSet::from([buffer_id]),
+                                    graph.shape(*tensor).iter().product::<usize>(),
+                                )
+                            });
+                    }
+                }
+            }
+            let memory_pool_id = *used_pools.iter().max_by_key(|x| x.1 .1).unwrap().0;
+
+            // TODO Move all other tensors to this memory pool
+            // and finish events with this kernel's inputs
+            for (pool_id, (buffers, _)) in used_pools {
+                if pool_id != memory_pool_id {
+                    for buffer in buffers {
+                        memory_pools[memory_pool_id].pool.allocate(bytes);
+
+                        memory_pools[pool_id].pool.pool_to_host(src, dst, event_wait_list);
+
+                        let event = memory_pools[pool_id].pool.host_to_pool(src, dst, event_wait_list);
+                    }
+                }
+            }
+
             let pool = &mut memory_pools[memory_pool_id];
 
-            // Move all other tensors to that memory pool
-            // and finish queues with this kernel's inputs
-
-            // Get device which is associated with that memory pool
-            let device = devices[0].as_mut();
+            // Get fastest device which is associated with that memory pool
+            let device = devices
+                .iter_mut()
+                .filter(|device| device.memory_pool_id() == memory_pool_id as u32)
+                .max_by_key(|device| device.compute())
+                .unwrap()
+                .as_mut();
 
             // TODO deduplicate buffer ids, so that single tensor is not passed as multiple pointers
             let mut outputs = BTreeSet::new();
