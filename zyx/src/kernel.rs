@@ -616,20 +616,20 @@ impl Kernel {
             // Find in which memory pool are most of input tensors stored
             let tensors: BTreeSet<TensorId> = self.tensors.values().copied().collect();
             // memory pool id => set(buffer_id), total_memory_used
-            let mut used_pools: BTreeMap<usize, (BTreeSet<u32>, usize)> = BTreeMap::new();
+            let mut used_pools: BTreeMap<usize, (BTreeSet<TensorId>, usize)> = BTreeMap::new();
             for (memory_pool_id, pool) in memory_pools.iter().enumerate() {
-                for tensor in &tensors {
-                    if let Some(&buffer_id) = pool.buffer_map.get(tensor) {
+                for &tensor_id in &tensors {
+                    if let Some(_) = pool.buffer_map.get(&tensor_id) {
                         used_pools
                             .entry(memory_pool_id)
                             .and_modify(|(buffers, memory_size)| {
-                                buffers.insert(buffer_id);
-                                *memory_size += graph.shape(*tensor).iter().product::<usize>();
+                                buffers.insert(tensor_id);
+                                *memory_size += graph.shape(tensor_id).iter().product::<usize>();
                             })
                             .or_insert_with(|| {
                                 (
-                                    BTreeSet::from([buffer_id]),
-                                    graph.shape(*tensor).iter().product::<usize>(),
+                                    BTreeSet::from([tensor_id]),
+                                    graph.shape(tensor_id).iter().product::<usize>(),
                                 )
                             });
                     }
@@ -638,19 +638,32 @@ impl Kernel {
             let memory_pool_id =
                 used_pools.iter().max_by_key(|x| x.1 .1).map(|x| *x.0).unwrap_or_else(|| 0);
 
-            // TODO Move all other tensors to this memory pool
+            // Move all other tensors to this memory pool
             // and finish events with this kernel's inputs
-            /*for (pool_id, (buffers, _)) in used_pools {
+            for (pool_id, (tensors, _)) in used_pools {
                 if pool_id != memory_pool_id {
-                    for buffer in buffers {
-                        memory_pools[memory_pool_id].pool.allocate(bytes);
+                    for tensor_id in tensors {
+                        let bytes = graph.shape(tensor_id).iter().product::<usize>() * graph.dtype(tensor_id).byte_size();
 
-                        memory_pools[pool_id].pool.pool_to_host(src, dst, event_wait_list);
+                        // No need to initialize here, other than rust is bad.
+                        let mut byte_slice = vec![0; bytes];
 
-                        let event = memory_pools[pool_id].pool.host_to_pool(src, dst, event_wait_list);
+                        let src = memory_pools[pool_id].buffer_map[&tensor_id];
+                        for buffers in memory_pools[pool_id].events.keys() {
+                            if buffers.contains(&tensor_id) {
+                                let event = memory_pools[pool_id].events.remove(&buffers.clone()).unwrap();
+                                memory_pools[pool_id].pool.pool_to_host(src, &mut byte_slice, vec![event])?;
+                                break;
+                            }
+                        }
+
+                        let (dst, event) = memory_pools[memory_pool_id].pool.allocate(bytes)?;
+
+                        let event = memory_pools[memory_pool_id].pool.host_to_pool(&byte_slice, dst, vec![event])?;
+                        memory_pools[memory_pool_id].events.insert(BTreeSet::from([dst]), event);
                     }
                 }
-            }*/
+            }
 
             let pool = &mut memory_pools[memory_pool_id];
 

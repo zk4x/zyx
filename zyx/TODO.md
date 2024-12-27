@@ -9,6 +9,7 @@
     - [ ] fix load calculation, probably using Atomic usize
   - [ ] vulkan
   - [x] wgpu
+    - [ ] fix load calculation, probably using Atomic usize
   - [x] dummy
 - [ ] dtype
   - [ ] quantized dtypes
@@ -25,7 +26,7 @@
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
     - [ ] softmax fusion test (eventually should be single kernel)
     - [ ] just asserts that various graphs fuse into single kernel
-  - [ ] scheduling to multiple devices
+  - [x] scheduling to multiple devices
   - [ ] automatic sharding across devices
   - [ ] fix bug when running phi3, panic on min_kernel function
 - [x] kernel
