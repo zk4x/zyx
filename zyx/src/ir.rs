@@ -559,7 +559,7 @@ impl IRCompiler {
                     }
                 }
                 IROp::EndLoop { id, len } => {
-                    reg_rcs[id as usize] -= 1;
+                    //reg_rcs[id as usize] -= 1;
                     ops.push(IROp::EndLoop { id, len });
                 }
                 IROp::Barrier { scope } => ops.push(IROp::Barrier { scope }),
@@ -585,6 +585,9 @@ impl IRCompiler {
                                 }
                             };
                         }
+                        if matches!(self.ops[j], IROp::Loop { .. } | IROp::EndLoop { .. }) {
+                            break;
+                        }
                     }
                 }
             }
@@ -592,9 +595,34 @@ impl IRCompiler {
     }
 
     fn loop_unrolling(&mut self) {
-        let _ = self;
-        // TODO
-        // simply duplicate code in required loops replacing every axis variable with constant
+        let mut op_i = self.ops.len();
+        let mut last_end_loop = Vec::new();
+        while op_i > 5 {
+            op_i -= 1;
+            if let IROp::EndLoop { .. } = self.ops[op_i] {
+                last_end_loop.push(op_i);
+            }
+            if let IROp::Loop { id, len } = self.ops[op_i] {
+                if len < 2 {
+                    let end = last_end_loop.pop().unwrap();
+                    let ops: Vec<IROp> = self.ops[op_i + 1..end].into();
+                    self.ops.remove(end);
+                    self.ops.remove(op_i);
+                    self.replace(id, Reg::Const(Constant::U64(len as u64)));
+                    for i in (0..len - 1).rev() {
+                        let mut ops = ops.clone();
+                        while let Some(op) = ops.pop() {
+                            self.ops.insert(op_i, op);
+                        }
+                        self.replace(id, Reg::Const(Constant::U64(i as u64)));
+                    }
+                    let x = ops.len() as isize * (len as isize - 1) - 2;
+                    for end in &mut last_end_loop {
+                        *end = (*end as isize + x) as usize;
+                    }
+                }
+            }
+        }
     }
 
     fn loop_splitting(&mut self) {
@@ -846,16 +874,17 @@ impl IRKernel {
         // Optimizations
         // TODO perhaps it is benefitial to do this multiple times???
         compiler.loop_unrolling();
-        if false {
-            compiler.loop_invariant_code_motion();
-        }
+        /*for op in &compiler.ops {
+            println!("{op:?}");
+        }*/
+        compiler.loop_invariant_code_motion();
         compiler.loop_splitting();
         compiler.vectorization();
         compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
         compiler.dead_store_elimination();
 
-        compiler.fuse_ops();
+        //compiler.fuse_ops();
         /*for op in &compiler.ops {
             println!("{op:?}");
         }*/
