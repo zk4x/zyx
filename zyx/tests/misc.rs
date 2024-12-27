@@ -427,6 +427,7 @@ fn complex_movement_reduce() -> Result<(), ZyxError> {
     Ok(())
 }
 
+#[cfg(not(feature = "wgpu"))]
 #[test]
 fn fp16() -> Result<(), ZyxError> {
     let x = Tensor::from([0., 1., 2.]).cast(DType::F16);

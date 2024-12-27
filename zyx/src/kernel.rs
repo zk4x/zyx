@@ -635,11 +635,12 @@ impl Kernel {
                     }
                 }
             }
-            let memory_pool_id = *used_pools.iter().max_by_key(|x| x.1 .1).unwrap().0;
+            let memory_pool_id =
+                used_pools.iter().max_by_key(|x| x.1 .1).map(|x| *x.0).unwrap_or_else(|| 0);
 
             // TODO Move all other tensors to this memory pool
             // and finish events with this kernel's inputs
-            for (pool_id, (buffers, _)) in used_pools {
+            /*for (pool_id, (buffers, _)) in used_pools {
                 if pool_id != memory_pool_id {
                     for buffer in buffers {
                         memory_pools[memory_pool_id].pool.allocate(bytes);
@@ -649,7 +650,7 @@ impl Kernel {
                         let event = memory_pools[pool_id].pool.host_to_pool(src, dst, event_wait_list);
                     }
                 }
-            }
+            }*/
 
             let pool = &mut memory_pools[memory_pool_id];
 

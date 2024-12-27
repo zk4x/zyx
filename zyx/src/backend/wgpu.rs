@@ -2,9 +2,19 @@ use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 use nanoserde::DeJson;
 use pollster::FutureExt;
-use wgpu::{util::DownloadBuffer, BufferDescriptor, BufferUsages, Maintain, ShaderModule, ShaderModuleDescriptor, ShaderSource};
+use wgpu::{
+    util::DownloadBuffer, BufferDescriptor, BufferUsages, Maintain, ShaderModule,
+    ShaderModuleDescriptor, ShaderSource,
+};
 
-use crate::{dtype::Constant, ir::{IRKernel, IROp, Reg, Scope}, node::{BOp, UOp}, runtime::Pool, slab::{Id, Slab}, DType};
+use crate::{
+    dtype::Constant,
+    ir::{IRKernel, IROp, Reg, Scope},
+    node::{BOp, UOp},
+    runtime::Pool,
+    slab::{Id, Slab},
+    DType,
+};
 
 use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
 
@@ -149,15 +159,15 @@ impl MemoryPool for WGPUMemoryPool {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
         let buffer = self.device.create_buffer(&BufferDescriptor {
-                label: None,
-                size: bytes as u64,
-                usage: BufferUsages::from_bits_truncate(
-                    BufferUsages::STORAGE.bits()
-                        | BufferUsages::COPY_SRC.bits()
-                        | BufferUsages::COPY_DST.bits(),
-                ),
-                mapped_at_creation: false,
-            });
+            label: None,
+            size: bytes as u64,
+            usage: BufferUsages::from_bits_truncate(
+                BufferUsages::STORAGE.bits()
+                    | BufferUsages::COPY_SRC.bits()
+                    | BufferUsages::COPY_DST.bits(),
+            ),
+            mapped_at_creation: false,
+        });
         let id = self.buffers.push(buffer);
         let event = Event::WGPU(WGPUEvent {});
         Ok((id, event))
@@ -184,11 +194,9 @@ impl MemoryPool for WGPUMemoryPool {
         let _ = event_wait_list;
         let dst = &self.buffers[dst];
         self.queue.write_buffer(&dst, 0, src);
-        let encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("GpuBuffer::write"),
-            });
+        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("GpuBuffer::write"),
+        });
         self.queue.submit(Some(encoder.finish()));
         Ok(Event::WGPU(WGPUEvent {}))
     }
@@ -203,15 +211,9 @@ impl MemoryPool for WGPUMemoryPool {
         let src = &self.buffers[src];
         async {
             let (tx, rx) = futures::channel::oneshot::channel();
-            DownloadBuffer::read_buffer(
-                &self.device,
-                &self.queue,
-                &src.slice(..),
-                move |result| {
-                    tx.send(result)
-                        .unwrap_or_else(|_| panic!("Failed to download buffer."));
-                },
-            );
+            DownloadBuffer::read_buffer(&self.device, &self.queue, &src.slice(..), move |result| {
+                tx.send(result).unwrap_or_else(|_| panic!("Failed to download buffer."));
+            });
             self.device.poll(Maintain::Wait);
             let download = rx.await.unwrap().unwrap();
             dst.copy_from_slice(&download);
@@ -489,12 +491,10 @@ impl Device for WGPUDevice {
         let mut layouts = Vec::new();
         let mut sets = Vec::new();
         // Unwraping of descriptors from program
-        let set_layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &set_layout,
-            });
+        let set_layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &set_layout,
+        });
         let set = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &set_layout,
@@ -504,28 +504,22 @@ impl Device for WGPUDevice {
         sets.push(set);
         // Compute pipeline bindings
         let group_layouts = layouts.iter().collect::<Vec<_>>();
-        let pipeline_layout = self
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &group_layouts,
-                push_constant_ranges: &[],
-            });
-        let pipeline = self
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                module: &program.shader,
-                entry_point: Some(&program.name),
-                layout: Some(&pipeline_layout),
-                cache: None,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            });
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Kernel::enqueue"),
-            });
+        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &group_layouts,
+            push_constant_ranges: &[],
+        });
+        let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            module: &program.shader,
+            entry_point: Some(&program.name),
+            layout: Some(&pipeline_layout),
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Kernel::enqueue"),
+        });
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Kernel::enqueue"),
@@ -581,14 +575,14 @@ impl Constant {
             &Constant::BF16(x) => format!("bf16({})", half::bf16::from_bits(x)),
             &Constant::F32(x) => format!("f32({:.16})", f32::from_bits(x)),
             &Constant::F64(x) => format!("f64({:.16})", f64::from_bits(x)),
-            Constant::U8(x) => format!("{x}"),
-            Constant::I8(x) => format!("{x}"),
-            Constant::I16(x) => format!("{x}"),
+            Constant::I8(x) => format!("i8({x})"),
+            Constant::I16(x) => format!("i16({x})"),
+            Constant::I32(x) => format!("i32({x})"),
+            Constant::I64(x) => format!("i64({x})"),
+            Constant::U8(x) => format!("u8({x})"),
             Constant::U16(x) => format!("u16({x})"),
             Constant::U32(x) => format!("u32({x})"),
             Constant::U64(x) => format!("u64({x})"),
-            Constant::I32(x) => format!("{x}"),
-            Constant::I64(x) => format!("{x}"),
             Constant::Bool(x) => format!("{x}"),
         }
     }

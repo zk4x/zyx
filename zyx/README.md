@@ -45,7 +45,7 @@ for detailed info how to tell Zyx which hardware it should utilize.
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md)
 
-With env var `ZYX_DEBUG`=16 zyx prints generated kernel source code.
+With [env var](https://github.com/zk4x/zyx/blob/main/zyx/ENV_VARS.md) `ZYX_DEBUG`=16 zyx prints generated kernel source code.
 
 ## Simple neural network
 

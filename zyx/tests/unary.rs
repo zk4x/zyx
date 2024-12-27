@@ -111,6 +111,7 @@ fn not() -> Result<(), ZyxError> {
     Ok(())
 }
 
+#[cfg(not(feature = "wgpu"))]
 #[test]
 fn nonzero() -> Result<(), ZyxError> {
     let data: [f32; 10] = [

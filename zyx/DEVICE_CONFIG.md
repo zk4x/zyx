@@ -19,7 +19,7 @@ Copy this into your device_config.json:
     "platform_ids": []
   },
   "wgsl": {
-    "use_wgsl": true
+    "enabled": true
   },
   "vulkan": {
   }

@@ -9,8 +9,14 @@ and simply uses enum as an op.
 
 ## Performance
 
-Zyx creates graph of nodes at runtime. Kernel are generated from the graph and immediatelly asynchronously launched
-during realization. Optionally these kernels can be optimized before launching.
+Zyx creates graph of nodes at runtime. No calculations are performend until explicit realization. This ensures
+zero unnecessary allocations and is particularly important for backpropagation with implicit tracing of all
+tensors. Graph realization consits of these steps:
+1. Kernel generation
+2. Scheduling kernel to devices
+3. Kernel optimization
+4. Kernel compilation
+5. Search for better kernel, continue with step 3
 
 ## Error handling
 
@@ -21,3 +27,4 @@ be broken. Breaking any of these invariants puts zyx into irrecoverable state, t
 is to immediately stop execution. One other option when panic happens is in case of hardware failure.
 Zyx already detects hardware devices at runtime and disallows explicit programming for cpu or gpu only.
 However zyx currently assumes that hardware configuration stays constant as long as at least one tensor exists.
+
