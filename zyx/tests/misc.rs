@@ -34,6 +34,13 @@ fn sum1() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn sum2() -> Result<(), ZyxError> {
+    let x = Tensor::from([2, 4]);
+    assert_eq!(x.sum([])?, 6);
+    Ok(())
+}
+
+#[test]
 fn pad_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;

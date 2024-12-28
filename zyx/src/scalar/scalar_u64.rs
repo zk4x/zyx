@@ -183,4 +183,13 @@ impl Scalar for u64 {
     fn bitand(self, rhs: Self) -> Self {
         self & rhs
     }
+    
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        self << rhs
+    }
+    
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
 }

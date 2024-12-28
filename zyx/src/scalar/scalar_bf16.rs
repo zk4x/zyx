@@ -182,6 +182,16 @@ impl Scalar for bf16 {
         //self & rhs
         todo!()
     }
+    
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+    
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
 }
 
 impl Float for bf16 {

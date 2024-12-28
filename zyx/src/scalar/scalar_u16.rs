@@ -181,4 +181,14 @@ impl Scalar for u16 {
     fn from_u16(t: u16) -> Self {
         t
     }
+    
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+    
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
 }

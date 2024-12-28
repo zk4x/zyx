@@ -193,6 +193,16 @@ impl Scalar for F8E4M3 {
         //self & rhs
         todo!()
     }
+    
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+    
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
 }
 
 impl Float for F8E4M3 {

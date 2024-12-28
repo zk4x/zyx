@@ -182,4 +182,14 @@ impl Scalar for i64 {
     fn bitand(self, rhs: Self) -> Self {
         self & rhs
     }
+    
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+    
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
 }

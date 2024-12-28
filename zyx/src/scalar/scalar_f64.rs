@@ -192,6 +192,16 @@ impl Scalar for f64 {
         //self & rhs
         todo!()
     }
+    
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+    
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
 }
 
 impl Float for f64 {

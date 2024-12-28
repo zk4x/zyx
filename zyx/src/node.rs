@@ -258,8 +258,8 @@ impl Constant {
                 BOp::BitXor => Constant::new(x.bitxor(y)),
                 BOp::BitOr => Constant::new(x.bitor(y)),
                 BOp::BitAnd => Constant::new(x.bitand(y)),
-                BOp::BitShiftLeft => todo!(),
-                BOp::BitShiftRight => todo!(),
+                BOp::BitShiftLeft => Constant::new(x.bitshiftleft(y)),
+                BOp::BitShiftRight => Constant::new(x.bitshiftright(y)),
             }
         }
         assert_eq!(x.dtype(), y.dtype());

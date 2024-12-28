@@ -132,6 +132,12 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// Bitand
     #[must_use]
     fn bitand(self, rhs: Self) -> Self;
+    /// Bit shift left
+    #[must_use]
+    fn bitshiftleft(self, rhs: Self) -> Self;
+    /// Bit shift rigt
+    #[must_use]
+    fn bitshiftright(self, rhs: Self) -> Self;
     /// And
     #[must_use]
     fn and(self, rhs: Self) -> bool;
