@@ -834,7 +834,7 @@ impl IRCompiler {
                                 | BOp::Cmpgt
                                 | BOp::Cmplt
                                 | BOp::BitShiftLeft
-                                | BOp::BitShiftRight => todo!(),
+                                | BOp::BitShiftRight => {}
                             }
                         } else if yv.is_one() {
                             match bop {
@@ -885,11 +885,20 @@ impl IRCompiler {
                                         x: Reg::Var(xv),
                                         y: Reg::Var(xv),
                                         bop: BOp::Mul,
+                                    };
+                                }
+                                BOp::Mod => {
+                                    if yv.dtype().is_shiftable() {
+                                        self.ops[i] = IROp::Binary {
+                                            z,
+                                            x: Reg::Var(xv),
+                                            y: Reg::Const(yv.dtype().one_constant()),
+                                            bop: BOp::BitAnd,
+                                        };
                                     }
                                 }
-                                BOp::Mod => todo!(),
-                                BOp::Cmplt => todo!(),
-                                BOp::Cmpgt => todo!(),
+                                BOp::Cmplt => {}
+                                BOp::Cmpgt => {}
                                 BOp::Max => todo!(),
                                 BOp::Or => todo!(),
                                 BOp::And => todo!(),
@@ -923,7 +932,7 @@ impl IRCompiler {
                             }
                         } else if xv.is_one() {
                             match bop {
-                                BOp::Add => todo!(),
+                                BOp::Add => {}
                                 BOp::Sub => todo!(),
                                 BOp::Mul => self.replace(z, Reg::Var(yv)),
                                 BOp::Div => todo!(),
@@ -1016,7 +1025,7 @@ impl IRKernel {
         //compiler.loop_invariant_code_motion();
         compiler.loop_splitting();
         compiler.vectorization();
-        //compiler.constant_folding_and_propagation();
+        compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
         compiler.dead_store_elimination();
 
