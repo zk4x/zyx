@@ -1013,7 +1013,7 @@ impl IRKernel {
         // TODO perhaps it is benefitial to do this multiple times???
         compiler.global_loop_unrolling();
         //compiler.loop_unrolling();
-        compiler.loop_invariant_code_motion();
+        //compiler.loop_invariant_code_motion();
         compiler.loop_splitting();
         compiler.vectorization();
         //compiler.constant_folding_and_propagation();
