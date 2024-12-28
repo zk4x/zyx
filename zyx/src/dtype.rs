@@ -80,6 +80,23 @@ impl DType {
         }
     }
 
+    #[must_use]
+    pub(super) const fn is_shiftable(&self) -> bool {
+        match self {
+            Self::BF16
+            | Self::F8
+            | Self::F16
+            | Self::F32
+            | Self::F64
+            | DType::Bool
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64 => false,
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 => true,
+        }
+    }
+
     /// Get the size of this dtype in bytes
     #[must_use]
     pub const fn byte_size(&self) -> usize {
@@ -108,6 +125,26 @@ impl DType {
             Self::I64 => Constant::I64(0),
             Self::U64 => Constant::U64(0),
             Self::Bool => Constant::Bool(false),
+        }
+    }
+
+    #[must_use]
+    pub(super) const fn one_constant(self) -> Constant {
+        match self {
+            Self::BF16 => Constant::BF16(bf16::ONE.to_bits()),
+            Self::F8 => Constant::F8(float8::F8E4M3::ONE.to_bits()),
+            Self::F16 => Constant::F16(f16::ONE.to_bits()),
+            Self::F32 => Constant::F32(1f32.to_bits()),
+            Self::F64 => Constant::F64(1f64.to_bits()),
+            Self::U8 => Constant::U8(1),
+            Self::U16 => Constant::U16(1),
+            Self::U32 => Constant::U32(1),
+            Self::I8 => Constant::I8(1),
+            Self::I16 => Constant::I16(1),
+            Self::I32 => Constant::I32(1),
+            Self::I64 => Constant::I64(1),
+            Self::U64 => Constant::U64(1),
+            Self::Bool => Constant::Bool(true),
         }
     }
 
@@ -270,6 +307,26 @@ impl Constant {
             Constant::I32(x) => x == 1,
             Constant::I64(x) => x == 1,
             Constant::Bool(x) => x,
+        }
+    }
+
+    #[allow(clippy::float_cmp)]
+    pub(crate) fn is_two(&self) -> bool {
+        match *self {
+            Constant::BF16(x) => bf16::from_bits(x) == bf16::ONE + bf16::ONE,
+            Constant::F8(x) => f8::from_bits(x) == f8::ONE + f8::ONE,
+            Constant::F16(x) => f16::from_bits(x) == f16::ONE + f16::ONE,
+            Constant::F32(x) => f32::from_bits(x) == 2f32,
+            Constant::F64(x) => f64::from_bits(x) == 2f64,
+            Constant::U8(x) => x == 2,
+            Constant::U16(x) => x == 2,
+            Constant::U32(x) => x == 2,
+            Constant::U64(x) => x == 2,
+            Constant::I8(x) => x == 2,
+            Constant::I16(x) => x == 2,
+            Constant::I32(x) => x == 2,
+            Constant::I64(x) => x == 2,
+            Constant::Bool(_) => false,
         }
     }
 }

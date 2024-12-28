@@ -424,7 +424,10 @@ impl MemoryPool for OpenCLMemoryPool {
 
     fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure".into() });
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "Allocation failure".into(),
+            });
         }
         //println!("Allocating bytes {bytes}");
         let mut status = OpenCLStatus::CL_SUCCESS;
@@ -469,7 +472,10 @@ impl MemoryPool for OpenCLMemoryPool {
             };
             if !event_wait_list.is_empty() {
                 unsafe {
-                    (self.clWaitForEvents)(event_wait_list.len().try_into().unwrap(), event_wait_list_ptr)
+                    (self.clWaitForEvents)(
+                        event_wait_list.len().try_into().unwrap(),
+                        event_wait_list_ptr,
+                    )
                 }
                 .check(ErrorStatus::Deinitialization)?;
             }
@@ -749,6 +755,8 @@ impl Device for OpenCLDevice {
                             BOp::BitOr => format!("{} | {}", x.ocl(), y.ocl()),
                             BOp::BitAnd => format!("{} & {}", x.ocl(), y.ocl()),
                             BOp::BitXor => format!("{} ^ {}", x.ocl(), y.ocl()),
+                            BOp::BitShiftLeft => format!("{} << {}", x.ocl(), y.ocl()),
+                            BOp::BitShiftRight => format!("{} >> {}", x.ocl(), y.ocl()),
                         }
                     );
                     //if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
@@ -958,8 +966,13 @@ impl Device for OpenCLDevice {
             event_wait_list.as_ptr()
         };
         if !event_wait_list.is_empty() {
-            unsafe { (self.clWaitForEvents)(event_wait_list.len().try_into().unwrap(), event_wait_list_ptr) }
-                .check(ErrorStatus::KernelSync)?;
+            unsafe {
+                (self.clWaitForEvents)(
+                    event_wait_list.len().try_into().unwrap(),
+                    event_wait_list_ptr,
+                )
+            }
+            .check(ErrorStatus::KernelSync)?;
         }
         Ok(())
     }

@@ -24,6 +24,8 @@ pub enum BOp {
     BitXor,
     BitOr,
     BitAnd,
+    BitShiftLeft,
+    BitShiftRight,
     NotEq,
 }
 
@@ -112,26 +114,20 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         match self {
-            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
-                parameters: [0, 0],
-                idx: 0,
-                len: 0,
-            },
+            Node::Const { .. } | Node::Leaf { .. } => {
+                NodeParametersIterator { parameters: [0, 0], idx: 0, len: 0 }
+            }
             Node::Unary { x, .. }
             | Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Permute { x, .. }
             | Node::Pad { x, .. }
-            | Node::Reduce { x, .. } => NodeParametersIterator {
-                parameters: [*x, 0],
-                idx: 0,
-                len: 1,
-            },
-            Node::Binary { x, y, .. } => NodeParametersIterator {
-                parameters: [*x, *y],
-                idx: 0,
-                len: 2,
-            },
+            | Node::Reduce { x, .. } => {
+                NodeParametersIterator { parameters: [*x, 0], idx: 0, len: 1 }
+            }
+            Node::Binary { x, y, .. } => {
+                NodeParametersIterator { parameters: [*x, *y], idx: 0, len: 2 }
+            }
         }
     }
 
@@ -262,6 +258,8 @@ impl Constant {
                 BOp::BitXor => Constant::new(x.bitxor(y)),
                 BOp::BitOr => Constant::new(x.bitor(y)),
                 BOp::BitAnd => Constant::new(x.bitand(y)),
+                BOp::BitShiftLeft => todo!(),
+                BOp::BitShiftRight => todo!(),
             }
         }
         assert_eq!(x.dtype(), y.dtype());

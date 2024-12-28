@@ -559,7 +559,7 @@ impl IRCompiler {
                     }
                 }
                 IROp::EndLoop { id, len } => {
-                    //reg_rcs[id as usize] -= 1;
+                    reg_rcs[cmp[&id] as usize] -= 1;
                     ops.push(IROp::EndLoop { id, len });
                 }
                 IROp::Barrier { scope } => ops.push(IROp::Barrier { scope }),
@@ -597,13 +597,13 @@ impl IRCompiler {
     fn loop_unrolling(&mut self) {
         let mut op_i = self.ops.len();
         let mut last_end_loop = Vec::new();
-        while op_i > 5 {
+        while op_i > 6 {
             op_i -= 1;
             if let IROp::EndLoop { .. } = self.ops[op_i] {
                 last_end_loop.push(op_i);
             }
             if let IROp::Loop { id, len } = self.ops[op_i] {
-                if len < 2 {
+                if len < 32 {
                     let end = last_end_loop.pop().unwrap();
                     let ops: Vec<IROp> = self.ops[op_i + 1..end].into();
                     self.ops.remove(end);
@@ -620,6 +620,18 @@ impl IRCompiler {
                     for end in &mut last_end_loop {
                         *end = (*end as isize + x) as usize;
                     }
+                }
+            }
+        }
+    }
+
+    fn global_loop_unrolling(&mut self) {
+        let mut op_i = 6;
+        while op_i > 0 {
+            op_i -= 1;
+            if let IROp::Loop { id, len } = self.ops[op_i] {
+                if len == 1 {
+                    self.replace(id, Reg::Const(Constant::U64(0)));
                 }
             }
         }
@@ -766,7 +778,17 @@ impl IRCompiler {
                         *y = replace_with;
                     }
                 }
-                IROp::MAdd { .. } => todo!(),
+                IROp::MAdd { ref mut a, ref mut b, ref mut c, .. } => {
+                    if *a == Reg::Var(to_replace) {
+                        *a = replace_with;
+                    }
+                    if *b == Reg::Var(to_replace) {
+                        *b = replace_with;
+                    }
+                    if *c == Reg::Var(to_replace) {
+                        *c = replace_with;
+                    }
+                }
                 IROp::Load { ref mut offset, .. } => {
                     if *offset == Reg::Var(to_replace) {
                         *offset = replace_with;
@@ -786,6 +808,7 @@ impl IRCompiler {
     }
 
     /// This includes elimination of useless ops, i.e. y = x*1
+    /// and includes peephole optimizations
     #[allow(clippy::match_on_vec_items)]
     #[allow(clippy::single_match)]
     fn constant_folding_and_propagation(&mut self) {
@@ -796,16 +819,86 @@ impl IRCompiler {
                     (Reg::Var(xv), Reg::Const(yv)) => {
                         if yv.is_zero() {
                             match bop {
-                                BOp::Mul => self.replace(z, Reg::Const(yv)),
-                                BOp::Add => self.replace(z, Reg::Var(xv)),
-                                BOp::Div => panic!("Division by zero constant"),
-                                _ => {}
+                                BOp::Mul | BOp::And | BOp::BitAnd => {
+                                    self.replace(z, Reg::Const(yv))
+                                }
+                                BOp::Div | BOp::Mod => panic!("Division by zero constant"),
+                                BOp::Pow | BOp::Or => {
+                                    self.replace(z, Reg::Const(yv.dtype().one_constant()))
+                                }
+                                BOp::Add | BOp::Sub | BOp::BitXor | BOp::BitOr => {
+                                    self.replace(z, Reg::Var(xv))
+                                }
+                                BOp::Max => self.ops[i] = IROp::Unary { z, x: xv, uop: UOp::ReLU },
+                                BOp::NotEq
+                                | BOp::Cmpgt
+                                | BOp::Cmplt
+                                | BOp::BitShiftLeft
+                                | BOp::BitShiftRight => todo!(),
                             }
-                        }
-                        if yv.is_one() {
+                        } else if yv.is_one() {
                             match bop {
-                                BOp::Mul => self.replace(z, Reg::Var(xv)),
-                                _ => {}
+                                BOp::Mul | BOp::Div | BOp::Pow | BOp::BitAnd => {
+                                    self.replace(z, Reg::Var(xv))
+                                }
+                                BOp::Mod => self.replace(z, Reg::Const(yv.dtype().zero_constant())),
+                                BOp::BitOr => self.replace(z, Reg::Const(yv)),
+                                BOp::BitXor
+                                | BOp::Cmplt
+                                | BOp::And
+                                | BOp::Or
+                                | BOp::Cmpgt
+                                | BOp::Max
+                                | BOp::Add
+                                | BOp::Sub
+                                | BOp::NotEq
+                                | BOp::BitShiftLeft
+                                | BOp::BitShiftRight => {}
+                            }
+                        } else if yv.is_two() {
+                            match bop {
+                                BOp::Add => {}
+                                BOp::Sub => {}
+                                BOp::Mul => {
+                                    if yv.dtype().is_shiftable() {
+                                        self.ops[i] = IROp::Binary {
+                                            z,
+                                            x: Reg::Var(xv),
+                                            y: Reg::Const(yv.dtype().one_constant()),
+                                            bop: BOp::BitShiftLeft,
+                                        };
+                                    }
+                                }
+                                BOp::Div => {
+                                    if yv.dtype().is_shiftable() {
+                                        self.ops[i] = IROp::Binary {
+                                            z,
+                                            x: Reg::Var(xv),
+                                            y: Reg::Const(yv.dtype().one_constant()),
+                                            bop: BOp::BitShiftRight,
+                                        };
+                                    }
+                                }
+                                BOp::Pow => {
+                                    self.ops[i] = IROp::Binary {
+                                        z,
+                                        x: Reg::Var(xv),
+                                        y: Reg::Var(xv),
+                                        bop: BOp::Mul,
+                                    }
+                                }
+                                BOp::Mod => todo!(),
+                                BOp::Cmplt => todo!(),
+                                BOp::Cmpgt => todo!(),
+                                BOp::Max => todo!(),
+                                BOp::Or => todo!(),
+                                BOp::And => todo!(),
+                                BOp::BitXor => todo!(),
+                                BOp::BitOr => todo!(),
+                                BOp::BitAnd => todo!(),
+                                BOp::NotEq => todo!(),
+                                BOp::BitShiftLeft => {}
+                                BOp::BitShiftRight => {}
                             }
                         }
                     }
@@ -813,15 +906,60 @@ impl IRCompiler {
                         if xv.is_zero() {
                             match bop {
                                 BOp::Add => self.replace(z, Reg::Var(yv)),
-                                BOp::Mul => self.replace(z, Reg::Const(xv)),
-                                BOp::Div => panic!("Division by zero constant"),
-                                _ => {}
+                                BOp::Sub => self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::Neg },
+                                BOp::Mul | BOp::Div | BOp::Pow | BOp::Mod | BOp::And => {
+                                    self.replace(z, Reg::Const(xv))
+                                }
+                                BOp::Cmplt => {}
+                                BOp::Cmpgt => {}
+                                BOp::Max => self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::ReLU },
+                                BOp::Or => self.replace(z, Reg::Var(yv)),
+                                BOp::BitXor => todo!(),
+                                BOp::BitOr => todo!(),
+                                BOp::BitAnd => todo!(),
+                                BOp::NotEq => todo!(),
+                                BOp::BitShiftLeft => todo!(),
+                                BOp::BitShiftRight => todo!(),
                             }
-                        }
-                        if xv.is_one() {
+                        } else if xv.is_one() {
                             match bop {
+                                BOp::Add => todo!(),
+                                BOp::Sub => todo!(),
                                 BOp::Mul => self.replace(z, Reg::Var(yv)),
-                                _ => {}
+                                BOp::Div => todo!(),
+                                BOp::Pow => todo!(),
+                                BOp::Mod => todo!(),
+                                BOp::Cmplt => todo!(),
+                                BOp::Cmpgt => todo!(),
+                                BOp::Max => todo!(),
+                                BOp::Or => todo!(),
+                                BOp::And => todo!(),
+                                BOp::BitXor => todo!(),
+                                BOp::BitOr => todo!(),
+                                BOp::BitAnd => todo!(),
+                                BOp::NotEq => todo!(),
+                                BOp::BitShiftLeft => todo!(),
+                                BOp::BitShiftRight => todo!(),
+                            }
+                        } else if xv.is_two() {
+                            match bop {
+                                BOp::Add => todo!(),
+                                BOp::Sub => todo!(),
+                                BOp::Mul => todo!(),
+                                BOp::Div => todo!(),
+                                BOp::Pow => todo!(),
+                                BOp::Mod => todo!(),
+                                BOp::Cmplt => todo!(),
+                                BOp::Cmpgt => todo!(),
+                                BOp::Max => todo!(),
+                                BOp::Or => todo!(),
+                                BOp::And => todo!(),
+                                BOp::BitXor => todo!(),
+                                BOp::BitOr => todo!(),
+                                BOp::BitAnd => todo!(),
+                                BOp::BitShiftLeft => todo!(),
+                                BOp::BitShiftRight => todo!(),
+                                BOp::NotEq => todo!(),
                             }
                         }
                     }
@@ -873,21 +1011,21 @@ impl IRKernel {
 
         // Optimizations
         // TODO perhaps it is benefitial to do this multiple times???
-        compiler.loop_unrolling();
-        /*for op in &compiler.ops {
-            println!("{op:?}");
-        }*/
+        compiler.global_loop_unrolling();
+        //compiler.loop_unrolling();
         compiler.loop_invariant_code_motion();
         compiler.loop_splitting();
         compiler.vectorization();
-        compiler.constant_folding_and_propagation();
+        //compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
         compiler.dead_store_elimination();
 
-        //compiler.fuse_ops();
-        /*for op in &compiler.ops {
-            println!("{op:?}");
-        }*/
+        compiler.fuse_ops();
+        if debug_ir {
+            for op in &compiler.ops {
+                println!("{op:?}");
+            }
+        }
 
         // TODO perhaps we can do even more optimizations with instruction scheduling
         // and register allocation? But that's a big perhaps...
@@ -900,11 +1038,11 @@ impl IRKernel {
         //for op in &ops { println!("{op:?}"); }
         //panic!();
 
-        if debug_ir {
+        /*if debug_ir {
             for op in &ops {
                 println!("{op:?}");
             }
-        }
+        }*/
 
         IRKernel { addressables, registers, ops }
     }

@@ -391,6 +391,8 @@ impl Device for WGPUDevice {
                             BOp::NotEq => format!("{} != {}", x.wgsl(), y.wgsl()),
                             BOp::Or => format!("{} || {}", x.wgsl(), y.wgsl()),
                             BOp::And => format!("{} && {}", x.wgsl(), y.wgsl()),
+                            BOp::BitShiftLeft => format!("{} << {}", x.wgsl(), y.wgsl()),
+                            BOp::BitShiftRight => format!("{} >> {}", x.wgsl(), y.wgsl()),
                         }
                     );
                 }

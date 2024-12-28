@@ -971,6 +971,12 @@ impl Runtime {
                     BOp::BitXor => {
                         todo!("BitXor backward.");
                     }
+                    BOp::BitShiftLeft => {
+                        todo!("BitXor backward.");
+                    }
+                    BOp::BitShiftRight => {
+                        todo!("BitXor backward.");
+                    }
                 },
                 Node::Unary { x, uop } => match uop {
                     UOp::Inv => {
