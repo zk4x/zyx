@@ -597,6 +597,7 @@ impl IRCompiler {
     fn loop_unrolling(&mut self) {
         let mut op_i = self.ops.len();
         let mut last_end_loop = Vec::new();
+        let mut iters = 0;
         while op_i > 6 {
             op_i -= 1;
             if let IROp::EndLoop { .. } = self.ops[op_i] {
@@ -608,7 +609,7 @@ impl IRCompiler {
                     let ops: Vec<IROp> = self.ops[op_i + 1..end].into();
                     self.ops.remove(end);
                     self.ops.remove(op_i);
-                    self.replace(id, Reg::Const(Constant::U64(len as u64)));
+                    self.replace(id, Reg::Const(Constant::U64(len as u64 - 1)));
                     for i in (0..len - 1).rev() {
                         let mut ops = ops.clone();
                         while let Some(op) = ops.pop() {
@@ -620,9 +621,25 @@ impl IRCompiler {
                     for end in &mut last_end_loop {
                         *end = (*end as isize + x) as usize;
                     }
+                    iters += 1;
+                    if iters > 2 {
+                        return;
+                    }
                 }
             }
         }
+        /*
+        for (unsigned int r23 = 0; r23 < 1; r23 += 1) {
+           for (unsigned int r24 = 0; r24 < 1; r24 += 1) {
+             for (unsigned int r25 = 0; r25 < 1; r25 += 1) {
+               r26 = r24 + r25;
+               r27 = r23 + r26;
+               r22 = p2[r27];
+               p1[0] = r22;
+             }
+           }
+         }
+        */
     }
 
     fn global_loop_unrolling(&mut self) {

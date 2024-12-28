@@ -8,7 +8,7 @@
 - [x] padded view permute
 - [x] fix mean
 - [x] fix var
-- [ ] deduplication of nodes in graph before graph compilation
+- [x] deduplication of nodes in graph before graph compilation
 - [ ] look at generated kernels, find small kernels, figure why are they small and how to make them bigger
 - [x] scheduler cross device movement
 - [ ] disk memory pool implemented as backend without devices
@@ -40,7 +40,7 @@
 - [x] uniform function
 - [x] compiled graph execution performance metrics
 - [x] reorder unary and movement ops
-- [ ] constant folding
+- [x] constant folding
 - [x] fix search for device with const nodes in graph
 - [x] get function
 - [x] pad
@@ -57,7 +57,7 @@
 - [x] wgsl program launch
 - [x] tensor split op
 - [x] simplify vops
-- [ ] tensor id agnostic optimizations for vkernel (rewrite vkernel just before optimizing it)
+- [x] tensor id agnostic optimizations for vkernel (rewrite vkernel just before optimizing it)
 - [x] local memory tiling
 - [ ] register tiling
 - [x] tensor arange initialization
@@ -110,7 +110,7 @@
 - [x] documentation for IntoShape
 - [x] std::error::Error for ZyxError
 - [x] fix softmax
-- [ ] IR needs to handle single tensor id in multiple loop levels
+- [x] IR needs to handle single tensor id in multiple loop levels
 
 ### Tests
 
@@ -125,7 +125,7 @@
 - [ ] combination of unary and binary
 - [ ] combination of movement and unary
 - [ ] combination of movent, unary and binary
-- [ ] combination of all ops
+- [x] combination of all ops
 - [x] fuzzy tester with simple cpu tensor, mostly takes care of all combination testing. The longer it runs, the more certain we can be there are no bugs.
 - [ ] we need tests for big modules like transformer. If transformer gives correct outputs, it's likely everything else is correct too.
 
