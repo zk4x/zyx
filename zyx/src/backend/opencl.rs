@@ -652,17 +652,6 @@ impl Device for OpenCLDevice {
             }
         }
 
-        // Declare register accumulators
-        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::RegTile {
-                source += &format!(
-                    "{indent}{}{} p{id}[{len}];\n",
-                    if *read_only { "const " } else { "" },
-                    dtype.ocl(),
-                );
-            }
-        }
-
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
             source += &format!("{indent}{} r{id};\n", dtype.ocl(),);
@@ -708,6 +697,9 @@ impl Device for OpenCLDevice {
                 }
                 IROp::Store { address, offset, x } => {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
+                }
+                IROp::Set { z, value } => {
+                    source.push_str(&format!("{indent}r{z} = {};\n", value.ocl()));
                 }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
@@ -781,7 +773,7 @@ impl Device for OpenCLDevice {
                         match scope {
                             Scope::Global => "GLOB",
                             Scope::Local => "LOC",
-                            Scope::Register | Scope::RegTile => unreachable!(),
+                            Scope::Register => unreachable!(),
                         }
                     );
                 }

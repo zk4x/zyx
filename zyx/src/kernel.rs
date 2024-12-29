@@ -47,7 +47,7 @@ pub enum Op {
     Const { z: TId, value: Constant, view: View },
     Load { z: TId, zscope: Scope, zview: View, xscope: Scope, xview: View, xdtype: DType },
     Store { z: TId, zscope: Scope, zview: View, zdtype: DType, xscope: Scope, xview: View },
-    Accumulator { z: TId, rop: ROp, view: View, dtype: DType },
+    Accumulator { z: TId, rop: ROp, dtype: DType },
     // Move is noop, just a marker for easy debugging
     // and to keep track of tensor ids
     Move { z: TId, x: TId, mop: MOp },
@@ -213,13 +213,13 @@ impl Kernel {
                 match op {
                     Op::Const { view, .. }
                     | Op::Load { xview: view, .. }
-                    | Op::Store { zview: view, .. }
-                    | Op::Accumulator { view, .. } => {
+                    | Op::Store { zview: view, .. } => {
                         for (org_sh, sh) in reshapes.iter().rev() {
                             view.reshape(org_sh.clone(), &shape[sh.clone()]);
                         }
                     }
-                    Op::Loop { .. }
+                    Op::Accumulator { .. }
+                    | Op::Loop { .. }
                     | Op::EndLoop
                     | Op::Move { .. }
                     | Op::Unary { .. }
@@ -295,8 +295,7 @@ impl Kernel {
                 // Then change all load and store operations in this loop in the same way.
                 Op::Load { xview: view, .. }
                 | Op::Store { zview: view, .. }
-                | Op::Const { view, .. }
-                | Op::Accumulator { view, .. } => {
+                | Op::Const { view, .. } => {
                     #[allow(clippy::range_plus_one)]
                     {
                         view.reshape(axis..axis + 1, dimensions);
@@ -483,8 +482,7 @@ impl Kernel {
                 }
                 Op::Const { view, .. }
                 | Op::Load { xview: view, .. }
-                | Op::Store { zview: view, .. }
-                | Op::Accumulator { view, .. } => {
+                | Op::Store { zview: view, .. } => {
                     for (&axis, &(lp, rp)) in &padded_axes {
                         view.pad(axis, lp, rp);
                     }
@@ -531,7 +529,7 @@ impl Kernel {
         self.max_id += 1;
         self.ops.insert(
             acc_id,
-            Op::Accumulator { z: self.max_id, rop, view: View::none(), dtype },
+            Op::Accumulator { z: self.max_id, rop, dtype },
         );
         self.ops.push(Op::Binary {
             z: self.max_id,
@@ -560,8 +558,7 @@ impl Kernel {
             match op {
                 Op::Const { view, .. }
                 | Op::Store { zview: view, .. }
-                | Op::Load { xview: view, .. }
-                | Op::Accumulator { view, .. } => view.insert_loop(naxis),
+                | Op::Load { xview: view, .. } => view.insert_loop(naxis),
                 Op::Loop { axis, .. } => {
                     if *axis >= naxis {
                         *axis += 1;
@@ -759,9 +756,8 @@ impl std::fmt::Display for Op {
             Op::Loop { axis, len } => f.write_fmt(format_args!(
                 "{C_GREEN}Loop{C_RESET}        axis: {axis}, len: {len}"
             )),
-            Op::Accumulator { z, rop, view, dtype } => f.write_fmt(format_args!(
-                "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, shape: {:?}, {dtype}",
-                view.shape()
+            Op::Accumulator { z, rop, dtype } => f.write_fmt(format_args!(
+                "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, {dtype}",
             )),
             Op::EndLoop => f.write_fmt(format_args!("{C_BLUE}EndLoop{C_RESET} ")),
             Op::Move { z, x, mop } => {

@@ -707,17 +707,6 @@ impl CUDADevice {
             }
         }
 
-        // Declare accumulators
-        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::RegTile {
-                source.push_str(&format!(
-                    "{indent}{}{} p{id}[{len}];\n",
-                    if *read_only { "const " } else { "" },
-                    dtype.cu(),
-                ));
-            }
-        }
-
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
             source.push_str(&format!("{indent}{} r{id};\n", dtype.cu()));
@@ -760,6 +749,9 @@ impl CUDADevice {
                         offset.cu(),
                         x.cu()
                     ));
+                }
+                IROp::Set { z, value } => {
+                    source.push_str(&format!("{indent}r{z} = {};\n", value.cu()));
                 }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
@@ -834,7 +826,7 @@ impl CUDADevice {
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
-                            Scope::Register | Scope::RegTile => unreachable!(),
+                            Scope::Register => unreachable!(),
                         }
                     ));
                 }

@@ -8,6 +8,7 @@ use crate::{
     kernel::TId,
     node::{BOp, UOp},
     DType,
+    optimizer::Optimization,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -26,7 +27,6 @@ pub enum Reg {
 pub enum Scope {
     Global,
     Local,
-    RegTile,
     Register,
 }
 
@@ -47,6 +47,10 @@ pub enum IROp {
         // Offset is u32 var that needs to be added to address
         offset: Reg,
         x: Reg,
+    },
+    Set {
+        z: u16,
+        value: Constant,
     },
     Unary {
         z: u16,
@@ -136,7 +140,6 @@ impl std::fmt::Display for Scope {
         f.write_str(match self {
             Self::Global => "g",
             Self::Local => "l",
-            Self::RegTile => "t",
             Self::Register => "r",
         })
     }
@@ -159,6 +162,13 @@ impl IRCompiler {
         let z = self.max_id;
         self.ops.push(IROp::Load { z, address, offset });
         z
+    }
+
+    fn set(&mut self, value: Constant) -> Reg {
+        self.max_id += 1;
+        let z = self.max_id;
+        self.ops.push(IROp::Set { z, value });
+        Reg::Var(z)
     }
 
     fn unary_op(&mut self, x: Reg, uop: UOp) -> Reg {
@@ -293,18 +303,7 @@ impl IRCompiler {
         }
 
         // Declare accumulators and get max axis id
-        let mut max_axis = 0;
-        for op in kernel_ops {
-            match *op {
-                Op::Accumulator { z, ref view, dtype, .. } => {
-                    addressables.push((Scope::RegTile, dtype, view.original_numel(), false));
-                    let id = u16::try_from(addressables.len() - 1).unwrap();
-                    pointers_map.insert((z, Scope::RegTile), id);
-                }
-                Op::Loop { axis, .. } => max_axis = max_axis.max(u16::try_from(axis).unwrap()),
-                _ => {}
-            }
-        }
+        let max_axis: u16 = kernel_ops.iter().filter_map(|op| if let Op::Loop { axis, .. } = op { Some(*axis as u16) } else { None }).max().unwrap_or(0);
 
         // Transpiling from Kernel to IRKernel, Op -> IROp
         let mut loops = Vec::new();
@@ -335,7 +334,7 @@ impl IRCompiler {
                             let zaddress = pointers_map[&(z, zscope)];
                             zview.ir_for_indexed_store(&mut c, zaddress, zreg);
                         }
-                        (Scope::Register, Scope::RegTile | Scope::Local | Scope::Global) => {}
+                        (Scope::Register, Scope::Local | Scope::Global) => {}
                         scopes => panic!("Invalid load scopes {scopes:?}. Internal bug."),
                     }
                 }
@@ -344,31 +343,21 @@ impl IRCompiler {
                         (Scope::Local, Scope::Register) => {
                             todo!()
                         }
-                        (Scope::RegTile, Scope::Register) => {
+                        (Scope::Global, Scope::Register) => {
                             let zaddress = pointers_map[&(z, zscope)];
                             let zreg = register_map[&z];
-                            zview.ir_for_indexed_store(&mut c, zaddress, zreg);
-                        }
-                        (Scope::Global, Scope::Register | Scope::RegTile) => {
-                            let zaddress = pointers_map[&(z, zscope)];
-                            let zreg =
-                                if let Some(&zaddress) = pointers_map.get(&(z, Scope::RegTile)) {
-                                    xview.ir_for_indexed_load(&mut c, zaddress, zdtype)
-                                } else {
-                                    register_map[&z]
-                                };
                             zview.ir_for_indexed_store(&mut c, zaddress, zreg);
                         }
                         scopes => panic!("Invalid store scopes {scopes:?}"),
                     }
                 }
-                &Op::Accumulator { z, rop, ref view, dtype } => {
-                    let address = pointers_map[&(z, Scope::RegTile)];
-                    let acc_init = Reg::Const(match rop {
+                &Op::Accumulator { z, rop, dtype } => {
+                    let acc_init = match rop {
                         ROp::Sum => dtype.zero_constant(),
                         ROp::Max => dtype.min_constant(),
-                    });
-                    view.ir_for_indexed_store(&mut c, address, acc_init);
+                    };
+                    let zreg = c.set(acc_init);
+                    register_map.insert(z, zreg);
                 }
                 &Op::Move { z, x, .. } => {
                     register_map.insert(z, register_map[&x]);
@@ -395,6 +384,7 @@ impl IRCompiler {
         c
     }
 
+    /// Converts from SSA form to using as few registers as possible + dead store elimination
     fn deduplicate_ssa(self) -> (Vec<DType>, Vec<IROp>) {
         let mut ref_counts: BTreeMap<u16, u32> = BTreeMap::new();
         // Get reference counts
@@ -436,7 +426,10 @@ impl IRCompiler {
                 &IROp::EndLoop { id, .. } => {
                     ref_counts.entry(id).and_modify(|rc| *rc += 1).or_insert(1);
                 }
-                _ => {}
+                IROp::Set { .. }
+                | IROp::Loop { .. }
+                | IROp::Load { offset: Reg::Const(_), .. }
+                | IROp::Barrier { .. } => {}
             }
         }
         //println!("Ref counts {ref_counts:?}");
@@ -479,6 +472,14 @@ impl IRCompiler {
                         offset
                     };
                     ops.push(IROp::Store { address, offset, x: xr });
+                }
+                IROp::Set { z, value } => {
+                    if let Some(&zrc) = ref_counts.get(&z) {
+                        dtypes.insert(z, value.dtype());
+                        let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                        ops.push(IROp::Set { z: zr, value });
+                        cmp.insert(z, zr);
+                    }
                 }
                 IROp::Unary { z, x, uop } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
@@ -581,8 +582,7 @@ impl IRCompiler {
         (registers, ops)
     }
 
-    // i.e. peephole optimization
-    // TODO this should only ever fuse ops within single loop body
+    // i.e. peephole optimization, algebraic optimization, ops merging, ...
     fn fuse_ops(&mut self) {
         for i in 0..self.ops.len() - 1 {
             if let IROp::Binary { bop, z: z0, x: a, y: b, .. } = self.ops[i] {
@@ -628,7 +628,7 @@ impl IRCompiler {
                     }
                     println!();*/
                     if let Some(tc) = self.ops[op_i..].iter().find_map(|op| match op {
-                        IROp::Unary { z, .. } | IROp::Binary { z, .. } | IROp::MAdd { z, .. } => {
+                        IROp::Set { z, .. } | IROp::Unary { z, .. } | IROp::Binary { z, .. } | IROp::MAdd { z, .. } => {
                             Some(z - 1)
                         }
                         IROp::Loop { .. }
@@ -662,6 +662,11 @@ impl IRCompiler {
                                             if *x > tc {
                                                 *x += ta;
                                             }
+                                        }
+                                    }
+                                    IROp::Set { ref mut z, .. } => {
+                                        if *z > tc {
+                                            *z += ta;
                                         }
                                     }
                                     IROp::Unary { ref mut z, ref mut x, .. } => {
@@ -799,6 +804,9 @@ impl IRCompiler {
                             };
                             a && b
                         }
+                        IROp::Set { .. } => {
+                            false
+                        }
                         IROp::Unary { z, x, .. } => {
                             if dependents.contains(&x) {
                                 dependents.insert(z);
@@ -870,6 +878,7 @@ impl IRCompiler {
         // TODO make this non recursive
         for i in 0..self.ops.len() {
             match self.ops[i] {
+                IROp::Set { .. } => {}
                 IROp::Unary { z, ref mut x, uop } => {
                     if *x == to_replace {
                         match replace_with {
@@ -1119,8 +1128,9 @@ impl IRCompiler {
                         self.replace(z, Reg::Const(Constant::binary(x, y, bop)));
                     }
                 },
-                IROp::MAdd { .. } => todo!(),
-                IROp::Unary { .. }
+                IROp::MAdd { .. } => unreachable!(),
+                IROp::Set { .. }
+                | IROp::Unary { .. }
                 | IROp::Loop { .. }
                 | IROp::EndLoop { .. }
                 | IROp::Load { .. }
@@ -1153,7 +1163,7 @@ fn new_var(
 // Returns IRKernel and order in which tensors are passed to it as arguments
 // Axes have the same id in registers.
 impl IRKernel {
-    pub(super) fn new(kernel_ops: &[Op], debug_ir: bool) -> IRKernel {
+    pub(super) fn new(kernel_ops: &[Op], optimization: &Optimization, debug_ir: bool) -> IRKernel {
         // What we need to calculate (outputs of this function)
         // IRKernel
         let mut addressables: Vec<(Scope, DType, usize, bool)> = Vec::new();

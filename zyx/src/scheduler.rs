@@ -307,8 +307,8 @@ pub fn realize_graph(
                                         xview: xview.clone(),
                                     }
                                 }
-                                Op::Accumulator { z, rop, ref view, dtype } => {
-                                    Op::Accumulator { z: z + n, rop, view: view.clone(), dtype }
+                                Op::Accumulator { z, rop, dtype } => {
+                                    Op::Accumulator { z: z + n, rop, dtype }
                                 }
                                 Op::Move { z, x, mop } => Op::Move { z: z + n, x: x + n, mop },
                                 Op::Unary { z, x, uop } => Op::Unary { z: z + n, x: x + n, uop },
