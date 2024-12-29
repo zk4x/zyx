@@ -6,14 +6,11 @@ use crate::{
     slab::Id,
     DebugMask,
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Duration,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Optimization {
-    local_work_size: [usize; 3],
+    pub local_work_size: [usize; 3],
 }
 
 #[derive(Debug)]
@@ -74,18 +71,14 @@ impl Optimizer {
                 let event =
                     device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
                 pool.events.insert(outputs, event);
-            } else if let Some(optimization) = self.optimizations.get_mut(&(kernel_id, dev_info_id)) {
+            } else if let Some(optimization) = self.optimizations.get_mut(&(kernel_id, dev_info_id))
+            {
                 // if it was optimized for similar device, but not compiled for the given device,
                 // or if it was in disk cache.
-                let ir_kernel = IRKernel::new(&kernel.ops, optimization, debug.ir());
+                let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug.ir());
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
-                let event = device.launch(
-                    program_id,
-                    pool.pool.as_mut(),
-                    args,
-                    event_wait_list,
-                    false,
-                )?;
+                let event =
+                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
                 pool.events.insert(outputs, event);
                 self.programs.insert((kernel_id, dev_info_id), program_id);
             } else {
@@ -100,15 +93,10 @@ impl Optimizer {
             if search_iters == 0 {
                 // if optimizations are not requested, use default optimizations
                 let optimization = Optimizer::default_optimizations(kernel, device.info());
-                let ir_kernel = IRKernel::new(&kernel.ops, &optimization, debug.ir());
+                let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug.ir());
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
-                let event = device.launch(
-                    program_id,
-                    pool.pool.as_mut(),
-                    args,
-                    event_wait_list,
-                    false,
-                )?;
+                let event =
+                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
                 pool.events.insert(outputs, event);
                 self.programs.insert((kernel_id, dev_info_id), program_id);
             } else {
@@ -134,14 +122,12 @@ impl Optimizer {
         let mlws = dev_info.max_local_threads;
         let mlwd = dev_info.max_local_work_dims;
 
-        let mut reshapes = Vec::new();
+        //let mut reshapes = Vec::new();
         let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
         assert_ne!(num_loops, 0);
         let mut gws = [1; 3];
         if num_loops < 3 {
-            let dims: Vec<usize> =
-                core::iter::repeat(1).take(3 - num_loops).chain([kernel.shape()[0]]).collect();
-            reshapes.push((0, dims));
+            //reshapes.push((0, dims));
             let mut gws_i = 3 - num_loops;
             for d in &kernel.shape() {
                 gws[gws_i] = *d;
@@ -158,13 +144,18 @@ impl Optimizer {
         //let mrws = dev_info.num_registers;
         //let max_reg_split = 32;
 
-        let lz = (1..=mlws.min(mlwd[0])).rev().filter(|lz| gws[0] % lz == 0).max().unwrap_or(1);
-        let ly = (1..=(mlws/lz).min(mlwd[0])).rev().filter(|ly| gws[1] % ly == 0).max().unwrap_or(1);
-        let lx = (1..=(mlws/(lz*ly)).min(mlwd[0])).rev().filter(|lx| gws[2] % lx == 0).max().unwrap_or(1);
+        let lz = (1..=mlws.min(mlwd[2])).rev().filter(|lz| gws[2] % lz == 0).max().unwrap_or(1);
+        let ly =
+            (1..=(mlws / lz).min(mlwd[1])).rev().filter(|ly| gws[1] % ly == 0).max().unwrap_or(1);
+        let lx = (1..=(mlws / (lz * ly)).min(mlwd[0]))
+            .rev()
+            .filter(|lx| gws[0] % lx == 0)
+            .max()
+            .unwrap_or(1);
 
-        Optimization {
-            local_work_size: [lx, ly, lz],
-        }
+        println!("gws = {gws:?}, lws = [{lx}, {ly}, {lz}]");
+
+        Optimization { local_work_size: [lx, ly, lz] }
     }
 }
 
@@ -177,7 +168,6 @@ fn optimize_kernel(
     search_iters: usize,
     debug: DebugMask,
 ) -> (Optimization, u32) {
-
     // First ensure exactly 3 global work dimensions
     //let mgwd = dev_info.max_global_work_dims;
     let dev_info = device.info();

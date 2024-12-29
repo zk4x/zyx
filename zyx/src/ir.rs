@@ -302,9 +302,6 @@ impl IRCompiler {
             }
         }
 
-        // Declare accumulators and get max axis id
-        let max_axis: u16 = kernel_ops.iter().filter_map(|op| if let Op::Loop { axis, .. } = op { Some(*axis as u16) } else { None }).max().unwrap_or(0);
-
         // Transpiling from Kernel to IRKernel, Op -> IROp
         let mut loops = Vec::new();
         for op in kernel_ops {
@@ -338,7 +335,7 @@ impl IRCompiler {
                         scopes => panic!("Invalid load scopes {scopes:?}. Internal bug."),
                     }
                 }
-                &Op::Store { z, zscope, ref zview, zdtype, xscope, ref xview } => {
+                &Op::Store { z, zscope, ref zview, xscope, .. } => {
                     match (zscope, xscope) {
                         (Scope::Local, Scope::Register) => {
                             todo!()
@@ -1163,22 +1160,34 @@ fn new_var(
 // Returns IRKernel and order in which tensors are passed to it as arguments
 // Axes have the same id in registers.
 impl IRKernel {
-    pub(super) fn new(kernel_ops: &[Op], optimization: &Optimization, debug_ir: bool) -> IRKernel {
-        // What we need to calculate (outputs of this function)
-        // IRKernel
+    pub(super) fn new(mut kernel: crate::kernel::Kernel, optimization: &Optimization, debug_ir: bool) -> IRKernel {
+        // Reshape kernel so that it has 3 global and 3 local dimensions
+        let [lx, ly, lz] = optimization.local_work_size;
+        let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
+        debug_assert_ne!(num_loops, 0);
+        let shape = kernel.shape();
+        match num_loops {
+            0 => unreachable!(),
+            1 => kernel.reshape(&[1, 1, 1, 1, shape[0]/lz, lz]),
+            2 => kernel.reshape(&[1, 1, shape[0]/ly, ly, shape[1]/lz, lz]),
+            3 => kernel.reshape(&[shape[0]/lx, lx, shape[1]/ly, ly, shape[2]/lz, lz]),
+            _ => kernel.reshape(&[shape[0..num_loops-2].iter().product::<usize>()/lx, lx, shape[num_loops-2]/ly, ly, shape[num_loops-1]/lz, lz]),
+        }
+        debug_assert_eq!(kernel.shape().len(), 6);
+
+        // Returned IRKernel
         let mut addressables: Vec<(Scope, DType, usize, bool)> = Vec::new();
         // Returned tensors
         let mut args = Vec::new();
 
-        let mut compiler = IRCompiler::vops_to_ssa_ir(kernel_ops, &mut args, &mut addressables);
+        let mut compiler = IRCompiler::vops_to_ssa_ir(&kernel.ops, &mut args, &mut addressables);
 
         // Optimizations
         // TODO rewrite accumulator using standard registers instead of arrays.
         // This is possible, thanks to unrolling of all loops that iterate over accumulator.
 
-        // TODO perhaps it is benefitial to do this multiple times???
         compiler.global_loop_unrolling();
-        compiler.loop_unrolling();
+        //compiler.loop_unrolling();
         //compiler.loop_invariant_code_motion();
         compiler.loop_splitting();
         compiler.vectorization();
