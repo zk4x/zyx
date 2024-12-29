@@ -132,7 +132,7 @@ impl Optimizer {
 
     fn default_optimizations(kernel: &Kernel, dev_info: &DeviceInfo) -> Optimization {
         let mlws = dev_info.max_local_threads;
-        let mut mlwd = dev_info.max_local_work_dims;
+        let mlwd = dev_info.max_local_work_dims;
 
         let mut reshapes = Vec::new();
         let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
@@ -155,10 +155,15 @@ impl Optimizer {
             gws[0] = sh[..sh.len() - 2].iter().product();
         }
 
-        let mrws = dev_info.num_registers;
-        let max_reg_split = 32;
+        //let mrws = dev_info.num_registers;
+        //let max_reg_split = 32;
+
+        let lz = (1..=mlws.min(mlwd[0])).rev().filter(|lz| gws[0] % lz == 0).max().unwrap_or(1);
+        let ly = (1..=(mlws/lz).min(mlwd[0])).rev().filter(|ly| gws[1] % ly == 0).max().unwrap_or(1);
+        let lx = (1..=(mlws/(lz*ly)).min(mlwd[0])).rev().filter(|lx| gws[2] % lx == 0).max().unwrap_or(1);
+
         Optimization {
-            local_work_size,
+            local_work_size: [lx, ly, lz],
         }
     }
 }
