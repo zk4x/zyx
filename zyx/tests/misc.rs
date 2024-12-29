@@ -333,7 +333,7 @@ fn softmax() -> Result<(), ZyxError> {
     //println!("{y:.20}");
     //assert_eq!(y, [0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]);
     let y = x.softmax([])?;
-    //println!("{y}");
+    println!("{y}");
     let y_data: Vec<f32> = y.try_into()?;
     for (x, y) in y_data.into_iter().zip([
         0.09003056585788726807,
