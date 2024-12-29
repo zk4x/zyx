@@ -77,7 +77,7 @@ impl Runtime {
             config_dir: None,
             optimizer: Optimizer::new(),
             training: false,
-            search_iterations: 1,
+            search_iterations: 0,
             debug: DebugMask(0),
             temp_data: Vec::new(),
         }

@@ -13,7 +13,6 @@ use std::{
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Optimization {
-    global_work_size: [usize; 3],
     local_work_size: [usize; 3],
 }
 
@@ -131,10 +130,36 @@ impl Optimizer {
         Ok(())
     }
 
-    fn default_optimizations(kernel: &Kernel, device_info: &DeviceInfo) -> Optimization {
-        let _ = kernel;
-        let _ = device_info;
-        todo!()
+    fn default_optimizations(kernel: &Kernel, dev_info: &DeviceInfo) -> Optimization {
+        let mlws = dev_info.max_local_threads;
+        let mut mlwd = dev_info.max_local_work_dims;
+
+        let mut reshapes = Vec::new();
+        let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
+        assert_ne!(num_loops, 0);
+        let mut gws = [1; 3];
+        if num_loops < 3 {
+            let dims: Vec<usize> =
+                core::iter::repeat(1).take(3 - num_loops).chain([kernel.shape()[0]]).collect();
+            reshapes.push((0, dims));
+            let mut gws_i = 3 - num_loops;
+            for d in &kernel.shape() {
+                gws[gws_i] = *d;
+                gws_i += 1;
+            }
+        } else {
+            let sh = kernel.shape();
+            for (gws_d, d) in gws.iter_mut().zip(sh[sh.len() - 3..].iter()) {
+                *gws_d = *d;
+            }
+            gws[0] = sh[..sh.len() - 2].iter().product();
+        }
+
+        let mrws = dev_info.num_registers;
+        let max_reg_split = 32;
+        Optimization {
+            local_work_size,
+        }
     }
 }
 
