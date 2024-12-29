@@ -53,15 +53,15 @@
   - [x] remove ref counting from ir
   - [x] merge all mul + add into mad instructions
   - [x] add new reference counting that accounts for all variables, including indexing variables
-  - [x] loop invariant code motion
-  - [ ] fix destructuring back from SSA
-  - [ ] loop unrolling!
+  - [ ] loop invariant code motion!
+  - [x] fix destructuring back from SSA
+  - [x] loop unrolling
   - [ ] loop splitting
-  - [ ] constant folding and propagation!
+  - [x] constant folding and propagation
   - [ ] common subexpression elimination
-  - [ ] dead store elimination
-  - [ ] vectorization, vector dtypes
-  - [ ] ops fusion, merges
+  - [x] dead store elimination
+  - [ ] vectorization, vector dtypes!
+  - [ ] ops fusion, merges1
 
 - [x] docs
   - [x] manual for adding new backends

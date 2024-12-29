@@ -2,7 +2,7 @@
 
 use float8::F8E4M3 as f8;
 use half::{bf16, f16};
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 use crate::{Scalar, ZyxError};
 
@@ -213,7 +213,7 @@ impl DType {
 }
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Constant {
     BF16(u16),
     F8(u8),
@@ -352,5 +352,11 @@ impl Display for Constant {
             Self::I64(value) => f.write_fmt(format_args!("{value}")),
             Self::Bool(value) => f.write_fmt(format_args!("{value}")),
         }
+    }
+}
+
+impl Debug for Constant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{self}"))
     }
 }

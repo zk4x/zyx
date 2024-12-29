@@ -154,9 +154,9 @@ pub struct IRCompiler {
 
 impl IRCompiler {
     pub(super) fn load(&mut self, address: u16, offset: Reg, dtype: DType) -> u16 {
-        let z = self.max_id;
         self.load_dtypes.insert(address, dtype);
         self.max_id += 1;
+        let z = self.max_id;
         self.ops.push(IROp::Load { z, address, offset });
         z
     }
@@ -164,8 +164,8 @@ impl IRCompiler {
     fn unary_op(&mut self, x: Reg, uop: UOp) -> Reg {
         match x {
             Reg::Var(x) => {
-                let z = self.max_id;
                 self.max_id += 1;
+                let z = self.max_id;
                 self.ops.push(IROp::Unary { z, x, uop });
                 Reg::Var(z)
             }
@@ -174,8 +174,8 @@ impl IRCompiler {
     }
 
     fn binary_op(&mut self, x: Reg, y: Reg, bop: BOp) -> Reg {
-        let z = self.max_id;
         self.max_id += 1;
+        let z = self.max_id;
         self.ops.push(IROp::Binary { z, x, y, bop });
         Reg::Var(z)
     }
@@ -226,11 +226,18 @@ impl IRCompiler {
         args: &mut Vec<TId>,
         addressables: &mut Vec<(Scope, DType, usize, bool)>,
     ) -> IRCompiler {
-        let mut c = IRCompiler {
-            ops: Vec::new(),
-            load_dtypes: BTreeMap::new(),
-            max_id: 6,
-        };
+        let max_id = kernel_ops
+            .iter()
+            .map(|op| {
+                if let Op::Loop { axis, .. } = op {
+                    *axis as u16
+                } else {
+                    0
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        let mut c = IRCompiler { ops: Vec::new(), load_dtypes: BTreeMap::new(), max_id };
         let mut register_map = BTreeMap::new();
         let mut pointers_map = BTreeMap::new();
 
@@ -432,7 +439,7 @@ impl IRCompiler {
                 _ => {}
             }
         }
-        println!("Ref counts {ref_counts:?}");
+        //println!("Ref counts {ref_counts:?}");
         // Create new registers and ops but mutable, so that we don't have so many variables
         let mut registers = Vec::new();
         let mut reg_rcs = Vec::new();
@@ -442,17 +449,19 @@ impl IRCompiler {
         for op in self.ops {
             match op {
                 IROp::Load { z, address, offset } => {
-                    dtypes.insert(z, self.load_dtypes[&address]);
-                    let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], ref_counts[&z]);
-                    let offset = if let Reg::Var(offset) = offset {
-                        let offset = cmp[&offset];
-                        reg_rcs[offset as usize] -= 1;
-                        Reg::Var(offset)
-                    } else {
-                        offset
-                    };
-                    ops.push(IROp::Load { z: zr, address, offset });
-                    cmp.insert(z, zr);
+                    if let Some(&zrc) = ref_counts.get(&z) {
+                        dtypes.insert(z, self.load_dtypes[&address]);
+                        let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                        let offset = if let Reg::Var(offset) = offset {
+                            let offset = cmp[&offset];
+                            reg_rcs[offset as usize] -= 1;
+                            Reg::Var(offset)
+                        } else {
+                            offset
+                        };
+                        ops.push(IROp::Load { z: zr, address, offset });
+                        cmp.insert(z, zr);
+                    }
                 }
                 IROp::Store { address, offset, x } => {
                     let xr = if let Reg::Var(x) = x {
@@ -601,7 +610,6 @@ impl IRCompiler {
     fn loop_unrolling(&mut self) {
         let mut op_i = self.ops.len();
         let mut last_end_loop = Vec::new();
-        let mut iters = 0;
         while op_i > 6 {
             op_i -= 1;
             if let IROp::EndLoop { .. } = self.ops[op_i] {
@@ -723,10 +731,6 @@ impl IRCompiler {
                     let x = ops2.len() as isize * (len as isize - 1) - 2;
                     for end in &mut last_end_loop {
                         *end = (*end as isize + x) as usize;
-                    }
-                    iters += 1;
-                    if iters > 60 {
-                        return;
                     }
                 }
             }
@@ -866,10 +870,13 @@ impl IRCompiler {
         // TODO make this non recursive
         for i in 0..self.ops.len() {
             match self.ops[i] {
-                IROp::Unary { z, x, uop } => {
-                    if x == to_replace {
-                        if let Reg::Const(replace_with) = replace_with {
-                            self.replace(z, Reg::Const(replace_with.unary(uop)));
+                IROp::Unary { z, ref mut x, uop } => {
+                    if *x == to_replace {
+                        match replace_with {
+                            Reg::Var(replace_with) => *x = replace_with,
+                            Reg::Const(replace_with) => {
+                                self.replace(z, Reg::Const(replace_with.unary(uop)))
+                            }
                         }
                     }
                 }
@@ -925,15 +932,18 @@ impl IRCompiler {
                             match bop {
                                 BOp::Mul | BOp::And | BOp::BitAnd => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Const(yv))
                                 }
                                 BOp::Div | BOp::Mod => panic!("Division by zero constant"),
                                 BOp::Pow | BOp::Or => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Const(yv.dtype().one_constant()))
                                 }
                                 BOp::Add | BOp::Sub | BOp::BitXor | BOp::BitOr => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Var(xv))
                                 }
                                 BOp::Max => self.ops[i] = IROp::Unary { z, x: xv, uop: UOp::ReLU },
@@ -947,14 +957,17 @@ impl IRCompiler {
                             match bop {
                                 BOp::Mul | BOp::Div | BOp::Pow | BOp::BitAnd => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Var(xv))
                                 }
                                 BOp::Mod => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Const(yv.dtype().zero_constant()));
                                 }
                                 BOp::BitOr => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Const(yv));
                                 }
                                 BOp::BitXor
@@ -1030,11 +1043,13 @@ impl IRCompiler {
                             match bop {
                                 BOp::Add => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Var(yv));
                                 }
                                 BOp::Sub => self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::Neg },
                                 BOp::Mul | BOp::Div | BOp::Pow | BOp::Mod | BOp::And => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Const(xv))
                                 }
                                 BOp::Cmplt => {}
@@ -1042,6 +1057,7 @@ impl IRCompiler {
                                 BOp::Max => self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::ReLU },
                                 BOp::Or => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Var(yv));
                                 }
                                 BOp::BitXor => todo!(),
@@ -1057,6 +1073,7 @@ impl IRCompiler {
                                 BOp::Sub => todo!(),
                                 BOp::Mul => {
                                     self.ops.remove(i);
+                                    i -= 1;
                                     self.replace(z, Reg::Var(yv));
                                 }
                                 BOp::Div => todo!(),
@@ -1098,6 +1115,7 @@ impl IRCompiler {
                     }
                     (Reg::Const(x), Reg::Const(y)) => {
                         self.ops.remove(i);
+                        i -= 1;
                         self.replace(z, Reg::Const(Constant::binary(x, y, bop)));
                     }
                 },
@@ -1154,9 +1172,7 @@ impl IRKernel {
         //compiler.loop_invariant_code_motion();
         compiler.loop_splitting();
         compiler.vectorization();
-        for _ in 0..20 {
-            compiler.constant_folding_and_propagation();
-        }
+        compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
 
         compiler.fuse_ops();
@@ -1164,6 +1180,7 @@ impl IRKernel {
             for op in &compiler.ops {
                 println!("{op:?}");
             }
+            println!();
         }
 
         // TODO perhaps we can do even more optimizations with instruction scheduling
