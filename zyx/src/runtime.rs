@@ -212,10 +212,18 @@ impl Runtime {
             //for (_, event) in mp.events { event.sync()?; }
             mp.pool.deinitialize()?;
         }
+        self.optimizer = Optimizer::new();
         // Timer
         /*for (name, time) in crate::ET.lock().iter() {
             println!("Timer {name} took {time} us");
         }*/
+        self.config_dir = None;
+        self.temp_data = Vec::new();
+        // These variables are persistent:
+        /*self.rng
+        self.training
+        self.search_iterations
+        self.debug*/
         Ok(())
     }
 

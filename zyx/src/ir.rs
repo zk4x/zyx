@@ -4,11 +4,7 @@
 
 use super::{kernel::Op, node::ROp};
 use crate::{
-    dtype::Constant,
-    kernel::TId,
-    node::{BOp, UOp},
-    DType,
-    optimizer::Optimization,
+    dtype::Constant, kernel::TId, node::{BOp, UOp}, optimizer::Optimization, DType, DebugMask
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -184,6 +180,11 @@ impl IRCompiler {
     }
 
     fn binary_op(&mut self, x: Reg, y: Reg, bop: BOp) -> Reg {
+        if let Reg::Const(x) = x {
+            if let Reg::Const(y) = y {
+                return Reg::Const(Constant::binary(x, y, bop));
+            }
+        }
         self.max_id += 1;
         let z = self.max_id;
         self.ops.push(IROp::Binary { z, x, y, bop });
@@ -1174,7 +1175,10 @@ fn new_var(
 // Returns IRKernel and order in which tensors are passed to it as arguments
 // Axes have the same id in registers.
 impl IRKernel {
-    pub(super) fn new(mut kernel: crate::kernel::Kernel, optimization: &Optimization, debug_ir: bool) -> IRKernel {
+    pub(super) fn new(mut kernel: crate::kernel::Kernel, optimization: &Optimization, debug: DebugMask) -> IRKernel {
+        if debug.sched() {
+            kernel.debug();
+        }
         // Reshape kernel so that it has 3 global and 3 local dimensions
         let [lx, ly, lz] = optimization.local_work_size;
         let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
@@ -1189,17 +1193,15 @@ impl IRKernel {
         }
         debug_assert_eq!(kernel.shape().len(), 6);
 
+        //kernel.debug();
+
         // Returned IRKernel
         let mut addressables: Vec<(Scope, DType, usize, bool)> = Vec::new();
         // Returned tensors
         let mut args = Vec::new();
 
         let mut compiler = IRCompiler::vops_to_ssa_ir(&kernel.ops, &mut args, &mut addressables);
-
         // Optimizations
-        // TODO rewrite accumulator using standard registers instead of arrays.
-        // This is possible, thanks to unrolling of all loops that iterate over accumulator.
-
         compiler.global_loop_unrolling();
         //compiler.loop_unrolling();
         //compiler.loop_invariant_code_motion();
@@ -1207,14 +1209,14 @@ impl IRKernel {
         compiler.vectorization();
         compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
-
-        compiler.fuse_ops();
-        if debug_ir {
+        if debug.ir() {
             for op in &compiler.ops {
                 println!("{op:?}");
             }
             println!();
         }
+
+        //compiler.fuse_ops();
 
         // TODO perhaps we can do even more optimizations with instruction scheduling
         // and register allocation? But that's a big perhaps...

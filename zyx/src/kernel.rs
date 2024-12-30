@@ -132,42 +132,7 @@ impl Kernel {
         // If this is just a reshape of kernel with only unary ops and contiguous loads
         // and stores, we can remove old loops and replace them with new loops.
         //println!("Reshape");
-        // TODO this first case can be removed
-        if self.ops.iter().all(|op| match op {
-            Op::Loop { .. }
-            | Op::Unary { .. }
-            | Op::Binary { .. }
-            | Op::Barrier { .. }
-            | Op::Move { .. } => true,
-            Op::Load { xview: view, .. }
-            | Op::Store { zview: view, .. }
-            | Op::Const { view, .. } => view.is_contiguous(),
-            Op::Accumulator { .. } | Op::EndLoop => false, // | Op::Reduce { .. }
-        }) {
-            //println!("Before reshape continuous.");
-            //kernel.debug();
-            // Remove old loops
-            for _ in 0..self.shape().len() {
-                self.ops.remove(0);
-            }
-            // Put in new loops
-            for op in shape_to_loops(shape).into_iter().rev() {
-                self.ops.insert(0, op);
-            }
-            // Change Reshape loads and stores
-            for op in &mut self.ops {
-                match op {
-                    Op::Load { xview: view, .. }
-                    | Op::Const { view, .. }
-                    | Op::Store { zview: view, .. } => {
-                        *view = View::contiguous(shape);
-                    }
-                    _ => {}
-                }
-            }
-            //println!("Reshaping continuous.");
-            //kernel.debug();
-        } else if let Some((new_loops, reshapes)) = self.get_reshape_pattern(shape) {
+        if let Some((new_loops, reshapes)) = self.get_reshape_pattern(shape) {
             let _ = new_loops; // TODO get new_loops working
                                //println!("Reshapes: {reshapes:?}");
             for (org_sh, sh) in reshapes.iter().rev() {
@@ -235,6 +200,8 @@ impl Kernel {
                 shape,
                 "Shape after reshape split is incorrect."
             );
+        } else {
+            unreachable!()
         }
     }
 
@@ -605,10 +572,6 @@ impl Kernel {
 
         // Delete kernel and dispatch it to device
         if self.outputs.is_empty() {
-            if debug.sched() {
-                self.debug();
-            }
-
             // Pick a device to run program
             // Find in which memory pool are most of input tensors stored
             let tensors: BTreeSet<TensorId> = self.tensors.values().copied().collect();

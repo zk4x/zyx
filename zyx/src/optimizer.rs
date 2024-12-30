@@ -75,20 +75,48 @@ impl Optimizer {
                 let event =
                     device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
                 pool.events.insert(outputs, event);
-            } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id))
-            {
+            } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
                 // if it was optimized for similar device, but not compiled for the given device,
                 // or if it was in disk cache.
-                let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug.ir());
+                let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let event =
                     device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
                 pool.events.insert(outputs, event);
                 self.programs.insert((kernel_id, dev_info_id), program_id);
             } else {
-                // kernel cannot exist in self.kernels unless there have been some optimizations applied
-                // already, or it was compiled with default optimizations
-                unreachable!();
+                // if kernel was not optimized yet
+                let kernel_id = self.kernels.last_key_value().map_or(0, |(_, x)| x + 1);
+                self.kernels.insert(kernel.ops.clone(), kernel_id);
+                if search_iters == 0 {
+                    // if optimizations are not requested, use default optimizations
+                    let optimization = Optimizer::default_optimizations(kernel, device.info());
+                    let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
+                    let program_id = device.compile(&ir_kernel, debug.asm())?;
+                    let event = device.launch(
+                        program_id,
+                        pool.pool.as_mut(),
+                        args,
+                        event_wait_list,
+                        false,
+                    )?;
+                    pool.events.insert(outputs, event);
+                    self.programs.insert((kernel_id, dev_info_id), program_id);
+                } else {
+                    // TODO perhaps we really should allocate separate inputs for applying
+                    // optimizations
+                    device.sync(event_wait_list).unwrap();
+                    let (optimization, program_id) = optimize_kernel(
+                        kernel,
+                        device,
+                        pool.pool.as_mut(),
+                        args,
+                        search_iters,
+                        debug,
+                    );
+                    self.programs.insert((kernel_id, dev_info_id), program_id);
+                    self.optimizations.insert((kernel_id, dev_info_id), optimization);
+                }
             }
         } else {
             // if kernel was not optimized yet
@@ -97,7 +125,7 @@ impl Optimizer {
             if search_iters == 0 {
                 // if optimizations are not requested, use default optimizations
                 let optimization = Optimizer::default_optimizations(kernel, device.info());
-                let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug.ir());
+                let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let event =
                     device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
@@ -117,7 +145,7 @@ impl Optimizer {
                 );
                 self.programs.insert((kernel_id, dev_info_id), program_id);
                 self.optimizations.insert((kernel_id, dev_info_id), optimization);
-            };
+            }
         }
         Ok(())
     }
@@ -157,7 +185,7 @@ impl Optimizer {
             .max()
             .unwrap_or(1);
 
-        println!("gws = {gws:?}, lws = [{lx}, {ly}, {lz}]");
+        //println!("gws = {gws:?}, lws = [{lx}, {ly}, {lz}]");
 
         Optimization { local_work_size: [lx, ly, lz] }
     }
