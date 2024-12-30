@@ -273,7 +273,6 @@ impl Device for WGPUDevice {
             }
             read_only_args.push(*read_only);
         }
-        source += "\n";
         // Declare local variables
         for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Local {
@@ -283,7 +282,7 @@ impl Device for WGPUDevice {
 
         // Function declaration and name
         source += &format!(
-            "\n@compute @workgroup_size({}, {}, {})\n",
+            "@compute @workgroup_size({}, {}, {})\n",
             local_work_size[0], local_work_size[1], local_work_size[2]
         );
         let name = format!(
@@ -296,17 +295,6 @@ impl Device for WGPUDevice {
             local_work_size[2],
         );
         source += &format!("fn {name}(\n{indent}@builtin(workgroup_id) gid: vec3<u32>,\n{indent}@builtin(local_invocation_id) lid: vec3<u32>\n) {{\n");
-
-        // Declare acuumulators
-        for (id, (scope, dtype, len, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::RegTile {
-                source += &format!(
-                    "{indent}{} p{id}: array<{}, {len}>;\n",
-                    if *read_only { "let" } else { "var" },
-                    dtype.wgsl(),
-                );
-            }
-        }
 
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
@@ -346,6 +334,9 @@ impl Device for WGPUDevice {
                 }
                 IROp::Store { address, x, offset } => {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.wgsl(), x.wgsl());
+                }
+                IROp::Set { z, value } => {
+                    source += &format!("{indent}r{z} = {};\n", value.wgsl());
                 }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
@@ -391,8 +382,26 @@ impl Device for WGPUDevice {
                             BOp::NotEq => format!("{} != {}", x.wgsl(), y.wgsl()),
                             BOp::Or => format!("{} || {}", x.wgsl(), y.wgsl()),
                             BOp::And => format!("{} && {}", x.wgsl(), y.wgsl()),
-                            BOp::BitShiftLeft => format!("{} << {}", x.wgsl(), y.wgsl()),
-                            BOp::BitShiftRight => format!("{} >> {}", x.wgsl(), y.wgsl()),
+                            BOp::BitShiftLeft => format!(
+                                "{} << {}",
+                                x.wgsl(),
+                                if let Reg::Const(y) = y {
+                                    Reg::Const(y.unary(UOp::Cast(DType::U32)))
+                                } else {
+                                    y
+                                }
+                                .wgsl()
+                            ),
+                            BOp::BitShiftRight => format!(
+                                "{} >> {}",
+                                x.wgsl(),
+                                if let Reg::Const(y) = y {
+                                    Reg::Const(y.unary(UOp::Cast(DType::U32)))
+                                } else {
+                                    y
+                                }
+                                .wgsl()
+                            ),
                         }
                     );
                 }
@@ -418,7 +427,7 @@ impl Device for WGPUDevice {
                 IROp::Barrier { scope } => match scope {
                     Scope::Global => source += &format!("{indent}storageBarrier();\n"),
                     Scope::Local => source += &format!("{indent}workgroupBarrier();\n"),
-                    Scope::Register | Scope::RegTile => unreachable!(),
+                    Scope::Register => unreachable!(),
                 },
             }
         }

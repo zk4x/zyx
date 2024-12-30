@@ -226,7 +226,7 @@ impl Kernel {
         get_reshape_pattern(&self.shape(), nshape, &unmergeable_axes)
     }
 
-    /*pub(super) fn split_axis(&mut self, op_id: usize, dimensions: &[usize]) {
+    /*pub(super) fn split_loop(&mut self, op_id: usize, dimensions: &[usize]) {
         //self.debug();
         //println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id

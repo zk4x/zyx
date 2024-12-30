@@ -622,6 +622,7 @@ impl IRCompiler {
     fn loop_unrolling(&mut self) {
         let mut op_i = self.ops.len();
         let mut last_end_loop = Vec::new();
+        let mut num_unrolls = 0;
         while op_i > 6 {
             op_i -= 1;
             if let IROp::EndLoop { .. } = self.ops[op_i] {
@@ -748,6 +749,10 @@ impl IRCompiler {
                     let x = ops2.len() as isize * (len as isize - 1) - 2;
                     for end in &mut last_end_loop {
                         *end = (*end as isize + x) as usize;
+                    }
+                    num_unrolls += 1;
+                    if num_unrolls > 0 {
+                        return;
                     }
                 }
             }
@@ -1203,20 +1208,22 @@ impl IRKernel {
         let mut compiler = IRCompiler::vops_to_ssa_ir(&kernel.ops, &mut args, &mut addressables);
         // Optimizations
         compiler.global_loop_unrolling();
-        //compiler.loop_unrolling();
+        compiler.loop_unrolling();
+        // TODO automatic reordering of additions such that we minimize dependencies
+        // for loop invariant code motion
         //compiler.loop_invariant_code_motion();
         compiler.loop_splitting();
         compiler.vectorization();
         compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
+
+        compiler.fuse_ops();
         if debug.ir() {
             for op in &compiler.ops {
                 println!("{op:?}");
             }
             println!();
         }
-
-        //compiler.fuse_ops();
 
         // TODO perhaps we can do even more optimizations with instruction scheduling
         // and register allocation? But that's a big perhaps...
