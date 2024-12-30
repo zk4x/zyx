@@ -54,6 +54,7 @@ pub enum Op {
     Unary { z: TId, x: TId, uop: UOp },
     Binary { z: TId, x: TId, y: TId, bop: BOp },
     // Synchronization for local and global memory
+    #[allow(unused)]
     Barrier { scope: Scope },
 }
 

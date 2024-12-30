@@ -367,8 +367,14 @@ impl IRCompiler {
                 &Op::Binary { z, x, y, bop } => {
                     let xreg = register_map[&x];
                     let yreg = register_map[&y];
-                    let zreg = c.binary_op(xreg, yreg, bop);
-                    register_map.insert(z, zreg);
+                    if let Some(&z) = register_map.get(&z) {
+                        if let Reg::Var(z) = z {
+                            c.ops.push(IROp::Binary { z, x: xreg, y: yreg, bop });
+                        }
+                    } else {
+                        let zreg = c.binary_op(xreg, yreg, bop);
+                        register_map.insert(z, zreg);
+                    }
                 }
                 &Op::Barrier { scope } => {
                     c.ops.push(IROp::Barrier { scope });
@@ -521,9 +527,13 @@ impl IRCompiler {
                         } else {
                             y
                         };
-                        let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
-                        ops.push(IROp::Binary { z: zr, x, y, bop });
-                        cmp.insert(z, zr);
+                        if let Some(&zr) = cmp.get(&z) {
+                            ops.push(IROp::Binary { z: zr, x, y, bop });
+                        } else {
+                            let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                            cmp.insert(z, zr);
+                            ops.push(IROp::Binary { z: zr, x, y, bop });
+                        }
                     }
                 }
                 IROp::MAdd { z, a, b, c } => {
@@ -556,9 +566,13 @@ impl IRCompiler {
                         } else {
                             c
                         };
-                        let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
-                        ops.push(IROp::MAdd { z: zr, a, b, c });
-                        cmp.insert(z, zr);
+                        if let Some(&zr) = cmp.get(&z) {
+                            ops.push(IROp::MAdd { z: zr, a, b, c });
+                        } else {
+                            let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                            cmp.insert(z, zr);
+                            ops.push(IROp::MAdd { z: zr, a, b, c });
+                        }
                     }
                 }
                 IROp::Loop { id, len } => {

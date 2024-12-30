@@ -61,9 +61,13 @@ impl Optimizer {
         //let t = crate::Timer::new("optimizer");
         // TODO if optimizer is not initialized yet, then first load from disk.
 
-        let dev_info_id = self.device_infos.last_key_value().map_or(0, |(_, x)| x + 1);
-        let dev_info_id =
-            *self.device_infos.entry(device.info().clone()).or_insert_with(|| dev_info_id);
+        let dev_info_id = if let Some(&dev_info_id) = self.device_infos.get(device.info()) {
+            dev_info_id
+        } else {
+            let dev_info_id = self.device_infos.last_key_value().map_or(0, |(_, x)| x + 1);
+            debug_assert!(self.device_infos.insert(device.info().clone(), dev_info_id).is_none());
+            dev_info_id
+        };
         if let Some(&kernel_id) = self.kernels.get(&kernel.ops) {
             // if kernel was already optimized
             if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
@@ -71,7 +75,7 @@ impl Optimizer {
                 let event =
                     device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
                 pool.events.insert(outputs, event);
-            } else if let Some(optimization) = self.optimizations.get_mut(&(kernel_id, dev_info_id))
+            } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id))
             {
                 // if it was optimized for similar device, but not compiled for the given device,
                 // or if it was in disk cache.
