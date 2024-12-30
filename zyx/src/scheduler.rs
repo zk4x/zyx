@@ -58,6 +58,8 @@ pub fn realize_graph(
         }
     }
 
+    let mut num_kernels = 0;
+
     // Unfinished kernels represented by ops
     let mut kernels: Slab<Kernel> = Slab::with_capacity(30);
 
@@ -116,6 +118,7 @@ pub fn realize_graph(
                         searches,
                         &rcs,
                         debug,
+                        &mut num_kernels,
                     )?;
                     kernels[kid].expand(shape);
                     xt = 0;
@@ -131,6 +134,9 @@ pub fn realize_graph(
             Node::Reshape { x } => {
                 let (mut xt, mut kid) = get_kernel_min(x, &kernels);
                 debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
+                debug_assert!(kernels[kid].outputs.contains_key(&x));
+                //println!("Reshaping x = {x} to {nid}");
+                //kernels[kid].debug();
                 let shape = graph.shape(nid);
                 if kernels[kid].is_reshapable(shape) {
                     // If it's gonna be used elsewhere, we need to copy this kernel,
@@ -156,6 +162,7 @@ pub fn realize_graph(
                         searches,
                         &rcs,
                         debug,
+                        &mut num_kernels,
                     )?;
                     kernels[kid].reshape(shape);
                     xt = 0;
@@ -184,7 +191,7 @@ pub fn realize_graph(
                     }
                     kernels[kid].pad(padding);
                 } else {
-                    // if it is not expandable, we need to store it and create new kernel
+                    // if it is not paddable, we need to store it and create new kernel
                     sto(
                         &mut kernels,
                         &mut kid,
@@ -196,7 +203,11 @@ pub fn realize_graph(
                         searches,
                         &rcs,
                         debug,
+                        &mut num_kernels,
                     )?;
+                    if rcs[&x] > 1 {
+                        kernels.push(kernels[kid].clone());
+                    }
                     kernels[kid].pad(padding);
                     xt = 0;
                 }
@@ -376,6 +387,7 @@ pub fn realize_graph(
                 searches,
                 &rcs,
                 debug,
+                &mut num_kernels,
             )?;
         }
     }
@@ -404,9 +416,10 @@ fn sto(
     searches: usize,
     rcs: &BTreeMap<u32, u32>,
     debug: DebugMask,
+    num_kernels: &mut usize,
 ) -> Result<(), ZyxError> {
     if let Some(tensors) =
-        kernels[*kid].store(x, graph, devices, mps, optimizer, searches, debug)?
+        kernels[*kid].store(x, graph, devices, mps, optimizer, searches, debug, num_kernels)?
     {
         kernels.remove(*kid).unwrap();
         for kernel in kernels.values_mut() {
@@ -430,6 +443,8 @@ fn sto(
             println!();
         }*/
 
+        //println!("RCS: {rcs:?}");
+        //println!("tensors: {tensors:?}");
         for tid in tensors {
             if rcs.contains_key(&tid) {
                 let tkid = kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
@@ -438,6 +453,9 @@ fn sto(
                 }
             }
         }
+        /*for kernel in kernels.values() {
+            kernel.debug();
+        }*/
     }
     Ok(())
 }

@@ -203,6 +203,8 @@ impl Runtime {
         //println!("Deinitialize");
         // drop graph
         self.graph = Graph::new();
+        // Drop programs
+        self.optimizer.deinitialize(&mut self.devices);
         // drop devices
         while let Some(mut dev) = self.devices.pop() {
             dev.deinitialize()?;
@@ -212,7 +214,6 @@ impl Runtime {
             //for (_, event) in mp.events { event.sync()?; }
             mp.pool.deinitialize()?;
         }
-        self.optimizer.deinitialize(&mut self.devices);
         // Timer
         /*for (name, time) in crate::ET.lock().iter() {
             println!("Timer {name} took {time} us");

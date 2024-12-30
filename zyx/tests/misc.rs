@@ -410,13 +410,26 @@ fn get() {
 }
 
 #[test]
-fn split() {
+fn split1() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
     let tensors = x.split([2, 1], 1).unwrap();
     //Tensor::realize(&tensors).unwrap();
     assert_eq!(tensors[0], [[2, 3], [2, 1]]);
     assert_eq!(tensors[1], [[1], [4]]);
     //for t in tensors { println!("{t}"); }
+}
+
+#[test]
+fn split2() -> Result<(), ZyxError> {
+    let a = Tensor::arange(0, 10, 1)?.reshape([5, 2])?;
+    let x = a.split([2, 2, 1], 0)?;
+    assert_eq!(x[0], [[0, 1], [2, 3]]);
+    assert_eq!(x[1], [[4, 5], [6, 7]]);
+    assert_eq!(x[2], [[8, 9]]);
+    let x = a.split([1, 4], 0)?;
+    assert_eq!(x[0], [[0, 1]]);
+    assert_eq!(x[1], [[2, 3], [4, 5], [6, 7], [8, 9]]);
+    Ok(())
 }
 
 #[test]

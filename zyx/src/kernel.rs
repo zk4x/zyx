@@ -355,6 +355,8 @@ impl Kernel {
                 || (matches!(op, Op::Accumulator { .. })
                     && shape.iter().product::<usize>() > 1024 * 1024 * 1024)
         })*/
+
+        // Small loops with like 32 iterations can be run in big reduce loop and they can also be unrolled.
         !self.ops.iter().any(|op| {
             let is_store = matches!(op, Op::Store { .. });
             let is_reduce = matches!(op, Op::Accumulator { .. });
@@ -362,6 +364,7 @@ impl Kernel {
             let is_large_reduce = self
                 .ops
                 .iter()
+                .skip(6)
                 .filter_map(|op| {
                     if let Op::Loop { len, .. } = op {
                         Some(len)
@@ -370,7 +373,7 @@ impl Kernel {
                     }
                 })
                 .product::<usize>()
-                > 1024 * 128;
+                > 32;
             is_store || (is_reduce && (is_large_ws || is_large_reduce))
         })
     }
@@ -587,6 +590,7 @@ impl Kernel {
         optimizer: &mut Optimizer,
         search_iters: usize,
         debug: DebugMask,
+        num_kernels: &mut usize,
     ) -> Result<Option<Vec<TensorId>>, ZyxError> {
         let zview = View::contiguous(graph.shape(nid));
         let zdtype = graph.dtype(nid);
@@ -610,6 +614,10 @@ impl Kernel {
 
         // Delete kernel and dispatch it to device
         if self.outputs.is_empty() {
+            *num_kernels += 1;
+            if debug.sched() {
+                println!("Launching kernel {num_kernels}");
+            }
             // Pick a device to run program
             // Find in which memory pool are most of input tensors stored
             let tensors: BTreeSet<TensorId> = self.tensors.values().copied().collect();

@@ -406,3 +406,96 @@ fn t6() {
     println!("{x}");
     handle.join().unwrap();
 }*/
+
+#[test]
+fn causal_self_attention() -> Result<(), ZyxError> {
+    let dtype = DType::F32;
+    let n_embd = 4;
+    let n_head = 4;
+    let c_attn_weight = Tensor::from([
+        [3, 1, 2, 3, 1, 2, 5, 4, 2, 3, 1, 3],
+        [1, 1, 2, 3, 1, 2, 5, 4, 2, 3, 1, 3],
+        [3, 1, 5, 3, 1, 2, 5, 4, 2, 3, 1, 3],
+        [3, 1, 2, 3, 1, 2, 5, 8, 2, 3, 1, 3],
+    ])
+    .t()
+    .cast(dtype);
+    let c_proj_weight =
+        Tensor::from([[5, 4, 2, 1], [9, 1, 5, 2], [7, 5, 6, 2], [6, 2, 7, 1]]).cast(dtype);
+
+    let x = Tensor::from([[[1, 0, 4, 2], [2, 5, 0, 1], [0, 8, 1, 0], [5, 1, 0, 0]]]).cast(dtype);
+
+    let [b, t, c] = x.shape()[..] else {
+        return Err(ZyxError::ShapeError(
+            "x must have exactly 3 dims, b, t, c".into(),
+        ));
+    };
+    let mut splits = x.dot(c_attn_weight.t())?.split([n_embd, n_embd, n_embd], 2)?;
+    let mut v = splits.pop().unwrap();
+    let mut k = splits.pop().unwrap();
+    let mut q = splits.pop().unwrap();
+
+    k = k.reshape([b, t, n_head, c / n_head])?.transpose(1, 2)?;
+    q = q.reshape([b, t, n_head, c / n_head])?.transpose(1, 2)?;
+    v = v.reshape([b, t, n_head, c / n_head])?.transpose(1, 2)?;
+
+    let mut att = q.dot(k.t())? * ((1f64 / (*k.shape().last().unwrap() as f64).sqrt()) as f32);
+
+    assert_eq!(
+        att,
+        [[
+            [
+                [147f32, 168., 189., 126.],
+                [98., 112., 126., 84.],
+                [77., 88., 99., 66.],
+                [112., 128., 144., 96.]
+            ],
+            [
+                [98., 112., 126., 84.],
+                [112., 128., 144., 96.],
+                [126., 144., 162., 108.],
+                [84., 96., 108., 72.]
+            ],
+            [
+                [910., 1040., 1170., 780.],
+                [560., 640., 720., 480.],
+                [735., 840., 945., 630.],
+                [420., 480., 540., 360.]
+            ],
+            [
+                [756., 756., 756., 504.],
+                [864., 864., 864., 576.],
+                [972., 972., 972., 648.],
+                [648., 648., 648., 432.]
+            ]
+        ]]
+    );
+
+    att = att.softmax([1])?;
+    let mut y = att.dot(v)?;
+
+    assert_eq!(
+        y,
+        [[
+            [[18f32], [18.], [18.], [18.]],
+            [[27.], [27.], [27.], [27.]],
+            [[9.], [9.], [9.], [9.]],
+            [[24.], [24.], [24.], [24.]]
+        ]]
+    );
+
+    y = y.transpose(1, 2)?.reshape([b, t, c])?;
+    y = y.dot(c_proj_weight.t())?;
+
+    assert_eq!(
+        y,
+        [[
+            [18f32, 27., 9., 24.],
+            [18., 27., 9., 24.],
+            [18., 27., 9., 24.],
+            [18., 27., 9., 24.]
+        ]]
+    );
+
+    Ok(())
+}
