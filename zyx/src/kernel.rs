@@ -41,21 +41,61 @@ pub type TId = u16;
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
-    Loop { axis: Axis, len: Dimension },
+    Loop {
+        axis: Axis,
+        len: Dimension,
+    },
     // End the latest loop
     EndLoop,
-    Const { z: TId, value: Constant, view: View },
-    Load { z: TId, zscope: Scope, zview: View, xscope: Scope, xview: View, xdtype: DType },
-    Store { z: TId, zscope: Scope, zview: View, zdtype: DType, xscope: Scope, xview: View },
-    Accumulator { z: TId, rop: ROp, dtype: DType },
+    Const {
+        z: TId,
+        value: Constant,
+        view: View,
+    },
+    Load {
+        z: TId,
+        zscope: Scope,
+        zview: View,
+        xscope: Scope,
+        xview: View,
+        xdtype: DType,
+    },
+    Store {
+        z: TId,
+        zscope: Scope,
+        zview: View,
+        zdtype: DType,
+        xscope: Scope,
+        xview: View,
+    },
+    Accumulator {
+        z: TId,
+        rop: ROp,
+        dtype: DType,
+    },
     // Move is noop, just a marker for easy debugging
     // and to keep track of tensor ids
-    Move { z: TId, x: TId, mop: MOp },
-    Unary { z: TId, x: TId, uop: UOp },
-    Binary { z: TId, x: TId, y: TId, bop: BOp },
+    Move {
+        z: TId,
+        x: TId,
+        mop: MOp,
+    },
+    Unary {
+        z: TId,
+        x: TId,
+        uop: UOp,
+    },
+    Binary {
+        z: TId,
+        x: TId,
+        y: TId,
+        bop: BOp,
+    },
     // Synchronization for local and global memory
     #[allow(unused)]
-    Barrier { scope: Scope },
+    Barrier {
+        scope: Scope,
+    },
 }
 
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -307,6 +347,7 @@ impl Kernel {
 
     /// Kernel is expandable if it does not contain store and if the result is not too
     /// large when applied on reduce kernel.
+    #[allow(clippy::doc_markdown)]
     pub(super) fn is_expandable(&self, shape: &[usize]) -> bool {
         //!self.ops.iter().any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
         /*!self.ops.iter().any(|op| {
@@ -494,10 +535,7 @@ impl Kernel {
             - 1;
         //println!("Acc id: {acc_id}");
         self.max_id += 1;
-        self.ops.insert(
-            acc_id,
-            Op::Accumulator { z: self.max_id, rop, dtype },
-        );
+        self.ops.insert(acc_id, Op::Accumulator { z: self.max_id, rop, dtype });
         self.ops.push(Op::Binary {
             z: self.max_id,
             x: xt,
@@ -579,7 +617,7 @@ impl Kernel {
             let mut used_pools: BTreeMap<usize, (BTreeSet<TensorId>, usize)> = BTreeMap::new();
             for (memory_pool_id, pool) in memory_pools.iter().enumerate() {
                 for &tensor_id in &tensors {
-                    if let Some(_) = pool.buffer_map.get(&tensor_id) {
+                    if pool.buffer_map.contains_key(&tensor_id) {
                         used_pools
                             .entry(memory_pool_id)
                             .and_modify(|(buffers, memory_size)| {
@@ -595,15 +633,15 @@ impl Kernel {
                     }
                 }
             }
-            let memory_pool_id =
-                used_pools.iter().max_by_key(|x| x.1 .1).map(|x| *x.0).unwrap_or_else(|| 0);
+            let memory_pool_id = used_pools.iter().max_by_key(|x| x.1 .1).map_or(0, |x| *x.0);
 
             // Move all other tensors to this memory pool
             // and finish events with this kernel's inputs
             for (pool_id, (tensors, _)) in used_pools {
                 if pool_id != memory_pool_id {
                     for tensor_id in tensors {
-                        let bytes = graph.shape(tensor_id).iter().product::<usize>() * graph.dtype(tensor_id).byte_size();
+                        let bytes = graph.shape(tensor_id).iter().product::<usize>()
+                            * graph.dtype(tensor_id).byte_size();
 
                         // No need to initialize here, other than rust is bad.
                         let mut byte_slice = vec![0; bytes];
@@ -611,15 +649,24 @@ impl Kernel {
                         let src = memory_pools[pool_id].buffer_map[&tensor_id];
                         for buffers in memory_pools[pool_id].events.keys() {
                             if buffers.contains(&tensor_id) {
-                                let event = memory_pools[pool_id].events.remove(&buffers.clone()).unwrap();
-                                memory_pools[pool_id].pool.pool_to_host(src, &mut byte_slice, vec![event])?;
+                                let event =
+                                    memory_pools[pool_id].events.remove(&buffers.clone()).unwrap();
+                                memory_pools[pool_id].pool.pool_to_host(
+                                    src,
+                                    &mut byte_slice,
+                                    vec![event],
+                                )?;
                                 break;
                             }
                         }
 
                         let (dst, event) = memory_pools[memory_pool_id].pool.allocate(bytes)?;
 
-                        let event = memory_pools[memory_pool_id].pool.host_to_pool(&byte_slice, dst, vec![event])?;
+                        let event = memory_pools[memory_pool_id].pool.host_to_pool(
+                            &byte_slice,
+                            dst,
+                            vec![event],
+                        )?;
                         memory_pools[memory_pool_id].events.insert(BTreeSet::from([dst]), event);
                     }
                 }
@@ -630,7 +677,7 @@ impl Kernel {
             // Get fastest device which is associated with that memory pool
             let device = devices
                 .iter_mut()
-                .filter(|device| device.memory_pool_id() == memory_pool_id as u32)
+                .filter(|device| device.memory_pool_id() == u32::try_from(memory_pool_id).unwrap())
                 .max_by_key(|device| device.compute())
                 .unwrap()
                 .as_mut();
@@ -823,13 +870,13 @@ fn get_reshape_pattern(
     Some((0, reshapes))
 }
 
-fn shape_to_loops(shape: &[usize]) -> Vec<Op> {
+/*fn shape_to_loops(shape: &[usize]) -> Vec<Op> {
     let mut res = Vec::with_capacity(20);
     for (axis, dimension) in shape.iter().copied().enumerate() {
         res.push(Op::Loop { axis, len: dimension });
     }
     res
-}
+}*/
 
 #[test]
 fn reshape_pattern() {

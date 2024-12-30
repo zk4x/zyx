@@ -38,7 +38,7 @@ impl View {
         View(vec![res])
     }
 
-    pub(crate) fn binded(shape: &[usize], axes: &[usize], rank: usize) -> View {
+    /*pub(crate) fn binded(shape: &[usize], axes: &[usize], rank: usize) -> View {
         let mut stride = 1;
         assert!(axes.iter().all(|&a| a < rank));
         let mut a: usize = rank;
@@ -56,7 +56,7 @@ impl View {
         }
         res.reverse();
         View(vec![res])
-    }
+    }*/
 
     pub(crate) fn rank(&self) -> usize {
         self.0.last().map_or(1, Vec::len)
@@ -92,11 +92,11 @@ impl View {
         })
     }
 
-    pub(crate) fn used_axes(&self) -> Vec<usize> {
+    /*pub(crate) fn used_axes(&self) -> Vec<usize> {
         self.0.last().map_or_else(Vec::new, |inner| {
             (0..inner.len()).filter(|&a| inner[a].st != 0).collect()
         })
-    }
+    }*/
 
     /// Inserts new loop, shifts all axes greater than axis up by one
     pub(crate) fn insert_loop(&mut self, axis: usize) {
@@ -224,7 +224,7 @@ impl View {
             dim.d =
                 usize::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
             if dim.lp < 0 && left_pad > 0 {
-                dim.d = (dim.d as isize - left_pad) as usize;
+                dim.d = usize::try_from(isize::try_from(dim.d).unwrap() - left_pad).unwrap();
                 let mut stride = 1;
                 let mut res: Vec<RDim> = old_shape
                     .iter()
@@ -236,7 +236,7 @@ impl View {
                         RDim {
                             st,
                             d: if a == axis {
-                                (d as isize + left_pad) as usize
+                                usize::try_from(isize::try_from(d).unwrap() + left_pad).unwrap()
                             } else {
                                 d
                             },
@@ -252,7 +252,7 @@ impl View {
                 dim.lp += left_pad;
             }
             if dim.rp < 0 && right_pad > 0 {
-                dim.d = (dim.d as isize - right_pad) as usize;
+                dim.d = usize::try_from(isize::try_from(dim.d).unwrap() - right_pad).unwrap();
                 let old_shape = self.shape();
                 let mut stride = 1;
                 let mut res: Vec<RDim> = old_shape
@@ -265,7 +265,7 @@ impl View {
                         RDim {
                             st,
                             d: if a == axis {
-                                (d as isize + right_pad) as usize
+                                usize::try_from(isize::try_from(d).unwrap() + right_pad).unwrap()
                             } else {
                                 d
                             },
@@ -280,7 +280,7 @@ impl View {
                 dim.rp += right_pad;
             }
         }
-        old_shape[axis] = (old_shape[axis] as isize + left_pad + right_pad) as usize;
+        old_shape[axis] = usize::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad).unwrap();
         assert_eq!(self.shape(), old_shape);
     }
 
@@ -469,14 +469,14 @@ fn view_split() {
     assert_eq!(view.shape(), [1, 3, 1, 1, 2, 2, 1, 2]);
 }
 
-#[test]
+/*#[test]
 fn view_binded() {
     let view = View::binded(&[4, 2, 3], &[5, 1, 2], 6);
     println!("{view}");
     assert_eq!(view.rank(), 6);
     assert_eq!(view.used_axes(), [1, 2, 5]);
     assert_eq!(view.shape(), [1, 2, 3, 1, 1, 4]);
-}
+}*/
 
 #[test]
 fn view_reshape() {
@@ -497,10 +497,10 @@ fn view_reshape() {
 
 #[test]
 fn view_reshape2() {
-    let mut view = View::binded(&[4, 2, 3], &[5, 1, 2], 6);
+    /*let mut view = View::binded(&[4, 2, 3], &[5, 1, 2], 6);
     view.reshape(0..1, &[1, 1, 1]);
     assert_eq!(view.shape(), [1, 1, 1, 2, 3, 1, 1, 4]);
-    assert_eq!(view.0.len(), 1);
+    assert_eq!(view.0.len(), 1);*/
     let mut view = View::contiguous(&[3, 1, 5]);
     view.reshape(0..1, &[1, 3]);
     assert_eq!(view.shape(), [1, 3, 1, 5]);

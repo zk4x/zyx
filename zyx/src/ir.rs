@@ -241,7 +241,7 @@ impl IRCompiler {
             .iter()
             .map(|op| {
                 if let Op::Loop { axis, .. } = op {
-                    *axis as u16
+                    (*axis).try_into().unwrap()
                 } else {
                     0
                 }
@@ -389,6 +389,7 @@ impl IRCompiler {
     }
 
     /// Converts from SSA form to using as few registers as possible + dead store elimination
+    #[allow(clippy::cognitive_complexity)]
     fn deduplicate_ssa(self) -> (Vec<DType>, Vec<IROp>) {
         let mut ref_counts: BTreeMap<u16, u32> = BTreeMap::new();
         // Get reference counts
@@ -619,6 +620,7 @@ impl IRCompiler {
         }
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn loop_unrolling(&mut self) {
         let mut op_i = self.ops.len();
         let mut last_end_loop = Vec::new();
@@ -650,10 +652,11 @@ impl IRCompiler {
                         | IROp::Store { .. }
                         | IROp::Load { .. } => None,
                     }) {
-                        let ta = ops2.len() as u16;
+                        let ta: u16 = ops2.len().try_into().unwrap();
                         for i in (0..len - 1).rev() {
                             // First we need to increase ids of all variables past this
                             for i in op_i..self.ops.len() - 6 {
+                                #[allow(clippy::match_on_vec_items)]
                                 match self.ops[i] {
                                     IROp::Load { ref mut z, ref mut offset, .. } => {
                                         if let Reg::Var(offset) = offset {
@@ -725,12 +728,7 @@ impl IRCompiler {
                                             *z += ta;
                                         }
                                     }
-                                    IROp::Loop { ref mut id, .. } => {
-                                        if *id > tc {
-                                            *id += ta;
-                                        }
-                                    }
-                                    IROp::EndLoop { ref mut id, .. } => {
+                                    IROp::Loop { ref mut id, .. } | IROp::EndLoop { ref mut id, .. } => {
                                         if *id > tc {
                                             *id += ta;
                                         }
@@ -746,9 +744,9 @@ impl IRCompiler {
                             self.replace(id, Reg::Const(Constant::U64(i as u64)));
                         }
                     }
-                    let x = ops2.len() as isize * (len as isize - 1) - 2;
+                    let x = isize::try_from(ops2.len()).unwrap() * (isize::try_from(len).unwrap() - 1) - 2;
                     for end in &mut last_end_loop {
-                        *end = (*end as isize + x) as usize;
+                        *end = usize::try_from(isize::try_from(*end).unwrap() + x).unwrap();
                     }
                     num_unrolls += 1;
                     if num_unrolls > 0 {
@@ -771,12 +769,12 @@ impl IRCompiler {
         }
     }
 
-    fn loop_splitting(&mut self) {
+    const fn loop_splitting(&self) {
         let _ = self;
         // TODO
     }
 
-    fn common_subexpression_elimination(&mut self) {
+    const fn common_subexpression_elimination(&self) {
         let _ = self;
         // TODO
     }
@@ -821,9 +819,7 @@ impl IRCompiler {
                             };
                             a && b
                         }
-                        IROp::Set { .. } => {
-                            false
-                        }
+                        IROp::Set { .. } | IROp::Barrier { .. } => false,
                         IROp::Unary { z, x, .. } => {
                             if dependents.contains(&x) {
                                 dependents.insert(z);
@@ -871,7 +867,6 @@ impl IRCompiler {
                             inner_loop_counter -= 1;
                             false
                         }
-                        IROp::Barrier { .. } => false,
                     };
                     if move_possible && inner_loop_counter == 0 {
                         let op = self.ops.remove(op_id);
@@ -884,7 +879,7 @@ impl IRCompiler {
         }
     }
 
-    fn vectorization(&mut self) {
+    const fn vectorization(&self) {
         let _ = self;
         // TODO
     }
@@ -895,13 +890,12 @@ impl IRCompiler {
         // TODO make this non recursive
         for i in 0..self.ops.len() {
             match self.ops[i] {
-                IROp::Set { .. } => {}
                 IROp::Unary { z, ref mut x, uop } => {
                     if *x == to_replace {
                         match replace_with {
                             Reg::Var(replace_with) => *x = replace_with,
                             Reg::Const(replace_with) => {
-                                self.replace(z, Reg::Const(replace_with.unary(uop)))
+                                self.replace(z, Reg::Const(replace_with.unary(uop)));
                             }
                         }
                     }
@@ -938,7 +932,7 @@ impl IRCompiler {
                         *x = replace_with;
                     }
                 }
-                IROp::Loop { .. } | IROp::EndLoop { .. } | IROp::Barrier { .. } => {}
+                IROp::Set { .. } | IROp::Loop { .. } | IROp::EndLoop { .. } | IROp::Barrier { .. } => {}
             }
         }
     }
@@ -950,6 +944,7 @@ impl IRCompiler {
     fn constant_folding_and_propagation(&mut self) {
         let mut i = 0;
         while i < self.ops.len() {
+            #[allow(clippy::match_same_arms)]
             match self.ops[i] {
                 IROp::Binary { z, x, y, bop } => match (x, y) {
                     (Reg::Var(_), Reg::Var(_)) => {}
@@ -959,18 +954,18 @@ impl IRCompiler {
                                 BOp::Mul | BOp::And | BOp::BitAnd => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Const(yv))
+                                    self.replace(z, Reg::Const(yv));
                                 }
                                 BOp::Div | BOp::Mod => panic!("Division by zero constant"),
                                 BOp::Pow | BOp::Or => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Const(yv.dtype().one_constant()))
+                                    self.replace(z, Reg::Const(yv.dtype().one_constant()));
                                 }
                                 BOp::Add | BOp::Sub | BOp::BitXor | BOp::BitOr => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Var(xv))
+                                    self.replace(z, Reg::Var(xv));
                                 }
                                 BOp::Max => self.ops[i] = IROp::Unary { z, x: xv, uop: UOp::ReLU },
                                 BOp::NotEq
@@ -984,7 +979,7 @@ impl IRCompiler {
                                 BOp::Mul | BOp::Div | BOp::Pow | BOp::BitAnd => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Var(xv))
+                                    self.replace(z, Reg::Var(xv));
                                 }
                                 BOp::Mod => {
                                     self.ops.remove(i);
@@ -1010,8 +1005,6 @@ impl IRCompiler {
                             }
                         } else if yv.is_two() {
                             match bop {
-                                BOp::Add => {}
-                                BOp::Sub => {}
                                 BOp::Mul => {
                                     if yv.dtype().is_shiftable() {
                                         self.ops[i] = IROp::Binary {
@@ -1050,6 +1043,8 @@ impl IRCompiler {
                                         };
                                     }
                                 }
+                                BOp::Add => {}
+                                BOp::Sub => {}
                                 BOp::Cmplt => {}
                                 BOp::Cmpgt => {}
                                 BOp::Max => todo!(),
@@ -1076,7 +1071,7 @@ impl IRCompiler {
                                 BOp::Mul | BOp::Div | BOp::Pow | BOp::Mod | BOp::And => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Const(xv))
+                                    self.replace(z, Reg::Const(xv));
                                 }
                                 BOp::Cmplt => {}
                                 BOp::Cmpgt => {}
@@ -1211,7 +1206,9 @@ impl IRKernel {
         compiler.loop_unrolling();
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
-        //compiler.loop_invariant_code_motion();
+        if false {
+            compiler.loop_invariant_code_motion();
+        }
         compiler.loop_splitting();
         compiler.vectorization();
         compiler.constant_folding_and_propagation();

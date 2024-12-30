@@ -41,6 +41,15 @@ impl Optimizer {
         }
     }
 
+    pub(super) fn deinitialize(&mut self, devices: &mut [Box<dyn Device>]) {
+        while let Some(((_, device_id), program_id)) = self.programs.pop_last() {
+            let _ = devices[device_id as usize].release(program_id);
+        }
+        self.device_infos = BTreeMap::new();
+        self.kernels = BTreeMap::new();
+        self.optimizations = BTreeMap::new();
+    }
+
     // If the kernel is cached, then launches kernel, otherwise if search_iters is zero,
     // compiles kernel with default optimizations and launches it, otherwise
     // searches over search_iters iterations, compiling and running each optimization
@@ -194,15 +203,24 @@ impl Optimizer {
 // Optimize kernel further, search_iters times
 fn optimize_kernel(
     kernel: &Kernel,
-    device: &mut dyn Device,
-    memory_pool: &mut dyn MemoryPool,
+    device: &dyn Device,
+    memory_pool: &dyn MemoryPool,
     args: &[Id],
     search_iters: usize,
     debug: DebugMask,
 ) -> (Optimization, u32) {
+
+    let _ = kernel;
+    let _ = device;
+    let _ = device;
+    let _ = memory_pool;
+    let _ = args;
+    let _ = search_iters;
+    let _ = debug;
+
     // First ensure exactly 3 global work dimensions
     //let mgwd = dev_info.max_global_work_dims;
-    let dev_info = device.info();
+    /*let dev_info = device.info();
     let mlws = dev_info.max_local_threads;
     let mut mlwd = dev_info.max_local_work_dims;
 
@@ -268,7 +286,7 @@ fn optimize_kernel(
     (
         done.iter().min_by_key(|x| x.1).unwrap().0.clone(),
         opts.is_empty(),
-    )*/
+    )*/*/
     todo!()
 }
 

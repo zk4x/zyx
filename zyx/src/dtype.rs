@@ -65,7 +65,7 @@ impl Display for DType {
 impl DType {
     /// Is this dtype floating point?
     #[must_use]
-    pub const fn is_float(&self) -> bool {
+    pub const fn is_float(self) -> bool {
         match self {
             Self::BF16 | Self::F8 | Self::F16 | Self::F32 | Self::F64 => true,
             Self::U8
@@ -81,7 +81,7 @@ impl DType {
     }
 
     #[must_use]
-    pub(super) const fn is_shiftable(&self) -> bool {
+    pub(super) const fn is_shiftable(self) -> bool {
         match self {
             Self::BF16
             | Self::F8

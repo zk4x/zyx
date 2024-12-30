@@ -212,7 +212,7 @@ impl Runtime {
             //for (_, event) in mp.events { event.sync()?; }
             mp.pool.deinitialize()?;
         }
-        self.optimizer = Optimizer::new();
+        self.optimizer.deinitialize(&mut self.devices);
         // Timer
         /*for (name, time) in crate::ET.lock().iter() {
             println!("Timer {name} took {time} us");
