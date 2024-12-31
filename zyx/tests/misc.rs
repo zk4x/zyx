@@ -318,7 +318,7 @@ fn save() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn softmax() -> Result<(), ZyxError> {
+fn softmax1() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 4., 3.]);
     //let y = x.softmax([]);
     //println!("{y:?}");
@@ -333,7 +333,7 @@ fn softmax() -> Result<(), ZyxError> {
     //println!("{y:.20}");
     //assert_eq!(y, [0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]);
     let y = x.softmax([])?;
-    println!("{y}");
+    //println!("{y}");
     let y_data: Vec<f32> = y.try_into()?;
     for (x, y) in y_data.into_iter().zip([
         0.09003056585788726807,
@@ -344,6 +344,36 @@ fn softmax() -> Result<(), ZyxError> {
         assert!(x.is_equal(y));
     }
     //Tensor::plot_graph([], "graph").unwrap();
+    Ok(())
+}
+
+#[test]
+fn softmax2() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2f32, 4., 3.], [4., 2., 3.]]);
+    let y = x.softmax([])?;
+    assert_eq!(
+        y,
+        [
+            [0.0450152867f32, 0.3326204717, 0.1223642379],
+            [0.3326204717, 0.0450152867, 0.1223642379]
+        ]
+    );
+    let y = x.softmax([0])?;
+    assert_eq!(
+        y,
+        [
+            [0.1192029193f32, 0.8807970285, 0.5],
+            [0.8807970285, 0.1192029193, 0.5]
+        ]
+    );
+    let y = x.softmax([1])?;
+    assert_eq!(
+        y,
+        [
+            [0.0900305659f32, 0.6652408838, 0.2447284609],
+            [0.6652408838, 0.0900305659, 0.2447284609]
+        ]
+    );
     Ok(())
 }
 
