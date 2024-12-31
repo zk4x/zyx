@@ -441,7 +441,7 @@ impl MemoryPool for OpenCLMemoryPool {
             )
         };
         status.check(ErrorStatus::MemoryAllocation)?;
-        println!("Allocated buffer {ptr:?}, bytes {bytes}");
+        //println!("Allocated buffer {ptr:?}, bytes {bytes}");
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
         Ok((
             self.buffers.push(OpenCLBuffer { ptr, bytes }),
@@ -454,7 +454,7 @@ impl MemoryPool for OpenCLMemoryPool {
         buffer_id: Id,
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
-        println!("Deallocate {:?}", self.buffers[buffer_id].ptr);
+        //println!("Deallocate {:?}", self.buffers[buffer_id].ptr);
         if let Some(buffer) = self.buffers.remove(buffer_id) {
             debug_assert!(!buffer.ptr.is_null(), "Deallocating null buffer is invalid");
             let event_wait_list: Vec<*mut c_void> = event_wait_list
@@ -492,7 +492,7 @@ impl MemoryPool for OpenCLMemoryPool {
         dst: Id,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        println!("Storing {src:?} to {dst:?}");
+        //println!("Storing {src:?} to {dst:?}");
         let dst = &self.buffers[dst];
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
@@ -532,7 +532,7 @@ impl MemoryPool for OpenCLMemoryPool {
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
-        println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
+        //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
         let src = &self.buffers[src];
         debug_assert!(
             !src.ptr.is_null(),
@@ -863,21 +863,21 @@ impl Device for OpenCLDevice {
         sync: bool,
     ) -> Result<Event, BackendError> {
         let queue_id = self.next_queue()?;
-        println!(
+        /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
             self.programs[program_id].kernel,
             self.programs[program_id].program,
             self.queues[queue_id].queue,
             self.programs[program_id].global_work_size,
             self.programs[program_id].local_work_size
-        );
+        );*/
         let program = &self.programs[program_id];
         let mut i = 0;
         #[allow(clippy::explicit_counter_loop)]
         for &arg in args {
             let arg = memory_pool.get_buffer(arg);
             let BufferMut::OpenCL(arg) = arg else { unreachable!() };
-            println!("Kernel arg: {arg:?} at index {i}");
+            //println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &arg.ptr;
             unsafe {
                 (self.clSetKernelArg)(

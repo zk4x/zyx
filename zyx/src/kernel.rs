@@ -32,6 +32,8 @@ pub struct Kernel {
     // Outputs of the kernel that are unused (not stored yet)
     pub(super) outputs: BTreeMap<TensorId, TId>,
     pub(super) max_id: TId,
+    // Which tensors this kernel stores
+    pub(super) stores: BTreeSet<TensorId>,
 }
 
 // Tensor id in a kernel
@@ -112,7 +114,7 @@ impl Kernel {
         let mut ops = Vec::with_capacity(50);
         ops.push(Op::Loop { axis: 0, len: 1 });
         ops.push(Op::Const { z: 0, value, view: View::contiguous(&[1]) });
-        Kernel { max_id: 0, ops, tensors: BTreeMap::new(), outputs: BTreeMap::from([(nid, 0)]) }
+        Kernel { max_id: 0, ops, tensors: BTreeMap::new(), outputs: BTreeMap::from([(nid, 0)]), stores: BTreeSet::new() }
     }
 
     pub(super) fn leaf(nid: TensorId, shape: &[usize], dtype: DType) -> Kernel {
@@ -133,6 +135,7 @@ impl Kernel {
             ops,
             outputs: BTreeMap::from([(nid, 0)]),
             tensors: BTreeMap::from([(0, nid)]),
+            stores: BTreeSet::new(),
         }
     }
 
@@ -610,10 +613,13 @@ impl Kernel {
             xview: View::none(),
         };
         self.ops.push(store_op);
+        self.stores.insert(nid);
         self.tensors.insert(self.outputs.remove(&nid).unwrap(), nid);
 
         // Delete kernel and dispatch it to device
         if self.outputs.is_empty() {
+            // Before we launch kernel, we have to check if loads of these kernel are stores of some other kernel.
+            // In that case we have to run that kernel first. This is recursive.
             *num_kernels += 1;
             if debug.sched() {
                 println!("Launching kernel {num_kernels}");

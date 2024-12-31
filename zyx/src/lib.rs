@@ -409,7 +409,7 @@ fn t6() {
 
 #[test]
 fn causal_self_attention() -> Result<(), ZyxError> {
-    let dtype = DType::F32;
+    let dtype = DType::F64;
     let n_embd = 4;
     let n_head = 4;
     let c_attn_weight = Tensor::from([
@@ -438,7 +438,7 @@ fn causal_self_attention() -> Result<(), ZyxError> {
     q = q.reshape([b, t, n_head, c / n_head])?.transpose(1, 2)?;
     v = v.reshape([b, t, n_head, c / n_head])?.transpose(1, 2)?;
 
-    let mut att = q.dot(k.t())? * ((1f64 / (*k.shape().last().unwrap() as f64).sqrt()) as f32);
+    let mut att = q.dot(k.t())? * (1f64 / (*k.shape().last().unwrap() as f64).sqrt());
 
     /*assert_eq!(
         att,
@@ -489,10 +489,10 @@ fn causal_self_attention() -> Result<(), ZyxError> {
     assert_eq!(
         y,
         [[
-            [18.00000000f32, 26.99999809, 9.00000000, 24.00000000],
-            [17.99999809, 27.00000000, 9.00000000, 24.00000000],
-            [17.99996758, 27.00000000, 9.00000000, 24.00000000],
-            [18.00000000, 26.99998093, 9.00000000, 24.00000000]
+            [18f64, 27., 9., 24.],
+            [18., 27., 9., 24.],
+            [18., 27., 9., 24.],
+            [18., 27., 9., 24.]
         ]]
     );
 

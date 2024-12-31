@@ -49,7 +49,7 @@ impl VarMap for HashMap<String, Tensor> {
         } else {
             let mut keys: Vec<String> = self.keys().cloned().collect();
             keys.sort();
-            println!("{:?}", keys);
+            //println!("{:?}", keys);
             panic!("The above keys did not contain {t}");
         }
     }

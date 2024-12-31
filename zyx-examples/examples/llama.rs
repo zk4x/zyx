@@ -219,7 +219,7 @@ impl Cache {
             let mask: Vec<_> = (0..t)
                 .flat_map(|i| (0..t).map(move |j| u8::from(j > i)))
                 .collect();
-            let mask = Tensor::from(&mask).reshape([t, t])?;
+            let mask = Tensor::from(mask).reshape([t, t])?;
             self.masks.insert(t, mask.clone());
             Ok(mask)
         }

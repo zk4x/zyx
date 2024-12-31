@@ -3775,7 +3775,17 @@ impl<T: Scalar, const D0: usize, const D1: usize> PartialEq<[[T; D1]; D0]> for T
         if self.shape() != [D0, D1] {
             return false;
         }
-        self.clone().try_into().map_or(false, |data: [[T; D1]; D0]| &data == other)
+        if let Ok(data) = self.clone().try_into() {
+            let data: [[T; D1]; D0] = data;
+            for (x, y) in data.into_iter().flatten().zip(other.iter().flatten()) {
+                if !Scalar::is_equal(x, *y) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -3786,7 +3796,17 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[
         if self.shape() != [D0, D1, D2] {
             return false;
         }
-        self.clone().try_into().map_or(false, |data: [[[T; D2]; D1]; D0]| &data == other)
+        if let Ok(data) = self.clone().try_into() {
+            let data: [[[T; D2]; D1]; D0] = data;
+            for (x, y) in data.into_iter().flatten().flatten().zip(other.iter().flatten().flatten()) {
+                if !Scalar::is_equal(x, *y) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -3797,7 +3817,17 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         if self.shape() != [D0, D1, D2, D3] {
             return false;
         }
-        self.clone().try_into().map_or(false, |data: [[[[T; D3]; D2]; D1]; D0]| &data == other)
+        if let Ok(data) = self.clone().try_into() {
+            let data: [[[[T; D3]; D2]; D1]; D0] = data;
+            for (x, y) in data.into_iter().flatten().flatten().flatten().zip(other.iter().flatten().flatten().flatten()) {
+                if !Scalar::is_equal(x, *y) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -3814,9 +3844,17 @@ impl<
         if self.shape() != [D0, D1, D2, D3, D4] {
             return false;
         }
-        self.clone().try_into().map_or(false, |data: [[[[[T; D4]; D3]; D2]; D1]; D0]| {
-            &data == other
-        })
+        if let Ok(data) = self.clone().try_into() {
+            let data: [[[[[T; D4]; D3]; D2]; D1]; D0] = data;
+            for (x, y) in data.into_iter().flatten().flatten().flatten().flatten().zip(other.iter().flatten().flatten().flatten().flatten()) {
+                if !Scalar::is_equal(x, *y) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 }
 

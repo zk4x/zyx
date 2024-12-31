@@ -64,9 +64,9 @@ pub fn realize_graph(
     // Unfinished kernels represented by ops
     let mut kernels: Slab<Kernel> = Slab::with_capacity(30);
 
-    if debug.sched() {
+    /*if debug.sched() {
         println!("To eval: {to_eval:?}");
-    }
+    }*/
 
     for nid in order.iter().copied() {
         if debug.sched() {
@@ -290,7 +290,7 @@ pub fn realize_graph(
                     } else {
                         // we delete kidy (could by also kidx) and put everything in kidx
                         let n = kernels[kidx].max_id + 1;
-                        let Kernel { ops, tensors, outputs, max_id } =
+                        let Kernel { ops, tensors, outputs, max_id, stores } =
                             kernels.remove(kidy).unwrap();
                         for (i, op) in ops.into_iter().enumerate() {
                             if !(matches!(op, Op::Loop { .. }) && op == kernels[kidx].ops[i]) {
@@ -351,6 +351,7 @@ pub fn realize_graph(
                             .tensors
                             .extend(tensors.into_iter().map(|(tid, t)| (tid + n, t)));
                         kernels[kidx].outputs.extend(outputs.iter().map(|(t, tid)| (*t, tid + n)));
+                        kernels[kidx].stores.extend(stores);
                         kernels[kidx].outputs.insert(nid, z);
                         kidx
                     };
@@ -401,10 +402,10 @@ pub fn realize_graph(
 
     #[cfg(debug_assertions)]
     if kernels.len() != 0 {
-        for kernel in kernels.values() {
+        /*for kernel in kernels.values() {
             kernel.debug();
             println!();
-        }
+        }*/
         panic!("Kernels in scheduler are not empty.");
     }
 
