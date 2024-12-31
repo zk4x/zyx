@@ -8,8 +8,13 @@
   - [x] opencl
     - [ ] fix load calculation, probably using Atomic usize
   - [ ] vulkan
+    - [ ] initialization
+    - [ ] memory management
+    - [ ] spirv compiler
+    - [ ] kernel launch
   - [x] wgpu
     - [ ] fix load calculation, probably using Atomic usize
+    - [ ] spirv compiler
   - [x] dummy
 - [ ] dtype
   - [ ] quantized dtypes
@@ -33,7 +38,7 @@
   - [x] ops remove unary view
   - [x] ops remove binary views
 - [ ] optimizer
-  - [ ] default optimizations
+  - [x] default optimizations
   - [ ] register tiling of all variables
   - [ ] local tiling of all variables
   - [ ] better picking of next optimization, or even optimization search
@@ -67,6 +72,8 @@
   - [x] manual for adding new backends
 - [x] dependencies
   - [x] replace serde with nanoserde
+  - [ ] implement custom progress bar
+  - [ ] remove indicatiff
 
 - examples
   - [ ] get phi working

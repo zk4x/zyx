@@ -54,6 +54,7 @@ pub struct Pool {
     #[allow(clippy::struct_field_names)]
     pub pool: Box<dyn MemoryPool>,
     pub events: BTreeMap<BTreeSet<Id>, Event>,
+    // tensor id => buffer id
     pub buffer_map: BTreeMap<TensorId, Id>,
 }
 
@@ -675,6 +676,7 @@ impl Runtime {
     }
 
     pub(super) fn realize(&mut self, mut to_eval: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+        // TODO this is too complicated, simplify it!!!
         //let timer = backend::Timer::new();
         // Runs in O(4n) where n = self.graph.len(),
         // first pass for visited nodes, second pass for outisde_rcs, third pass for order,
@@ -692,7 +694,7 @@ impl Runtime {
         //let t = crate::Timer::new("realize create graph");
         // Outside nodes are nodes that exist in realization graph, but also are needed by other parts of the graph or by user.
         // That is outside nodes have reference counts greater than their reference counts in realization graph.
-        let (outside_nodes, order) = {
+        let (outside_nodes, mut order) = {
             let this = &self.graph;
             let to_eval: &BTreeSet<TensorId> = &to_eval;
             // Following loops visit all children nodes up to leafs,
@@ -770,6 +772,23 @@ impl Runtime {
                 }
             }
         }
+
+        // delete from order all nodes that don't need to be evaluated, since order is now too huge,
+        // because it calculates to_delete and new_leafs.
+        let realized_nodes: BTreeSet<TensorId> = self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut visited: BTreeSet<TensorId> = BTreeSet::new();
+        while let Some(nid) = params.pop() {
+            if visited.insert(nid) {
+                if !realized_nodes.contains(&nid) {
+                    params.extend(self.graph.nodes[nid].1.parameters());
+                }
+            }
+        }
+        // Drop unnecessary nodes in order
+        order.retain(|nid| visited.contains(nid));
+        drop(visited);
+
         //println!("New leafs: {new_leafs:?}");
         //println!("Realizing {:?}", to_eval);
 
@@ -781,6 +800,7 @@ impl Runtime {
             &mut self.pools,
             &mut self.optimizer,
             self.search_iterations,
+            &realized_nodes,
             self.debug,
         )?;
 

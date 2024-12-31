@@ -349,7 +349,6 @@ impl Kernel {
     /// large when applied on reduce kernel.
     #[allow(clippy::doc_markdown)]
     pub(super) fn is_expandable(&self, shape: &[usize]) -> bool {
-        //!self.ops.iter().any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
         /*!self.ops.iter().any(|op| {
             matches!(op, Op::Store { .. })
                 || (matches!(op, Op::Accumulator { .. })
@@ -357,14 +356,14 @@ impl Kernel {
         })*/
 
         // Small loops with like 32 iterations can be run in big reduce loop and they can also be unrolled.
-        !self.ops.iter().any(|op| {
+        /*!self.ops.iter().any(|op| {
             let is_store = matches!(op, Op::Store { .. });
             let is_reduce = matches!(op, Op::Accumulator { .. });
             let is_large_ws = shape.iter().product::<usize>() > 1024 * 1024 * 1024;
             let is_large_reduce = self
                 .ops
                 .iter()
-                .skip(6)
+                .skip_while(|op| matches!(op, Op::Loop { .. }))
                 .filter_map(|op| {
                     if let Op::Loop { len, .. } = op {
                         Some(len)
@@ -375,7 +374,8 @@ impl Kernel {
                 .product::<usize>()
                 > 32;
             is_store || (is_reduce && (is_large_ws || is_large_reduce))
-        })
+        })*/
+        !self.ops.iter().any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
     }
 
     pub(super) fn expand(&mut self, shape: &[usize]) {
