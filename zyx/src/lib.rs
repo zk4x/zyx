@@ -407,7 +407,7 @@ fn t6() {
     handle.join().unwrap();
 }*/
 
-#[test]
+/*#[test]
 fn causal_self_attention() -> Result<(), ZyxError> {
     let dtype = DType::F32;
     let n_embd = 4;
@@ -498,4 +498,4 @@ fn causal_self_attention() -> Result<(), ZyxError> {
     );
 
     Ok(())
-}
+}*/

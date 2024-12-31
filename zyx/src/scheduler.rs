@@ -104,7 +104,6 @@ pub fn realize_graph(
                         }
                         kernels.push(new_kernel);
                     }
-                    kernels[kid].expand(shape);
                 } else {
                     // if it is not expandable, we need to store it and create new kernel
                     sto(
@@ -120,9 +119,12 @@ pub fn realize_graph(
                         debug,
                         &mut num_kernels,
                     )?;
-                    kernels[kid].expand(shape);
+                    if rcs[&x] > 1 {
+                        kernels.push(kernels[kid].clone());
+                    }
                     xt = 0;
                 }
+                kernels[kid].expand(shape);
                 debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
                 kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
@@ -148,7 +150,6 @@ pub fn realize_graph(
                         }
                         kernels.push(new_kernel);
                     }
-                    kernels[kid].reshape(shape);
                 } else {
                     // if it is not expandable, we need to store it and create new kernel
                     sto(
@@ -164,9 +165,12 @@ pub fn realize_graph(
                         debug,
                         &mut num_kernels,
                     )?;
-                    kernels[kid].reshape(shape);
+                    if rcs[&x] > 1 {
+                        kernels.push(kernels[kid].clone());
+                    }
                     xt = 0;
                 }
+                kernels[kid].reshape(shape);
                 debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
                 kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
@@ -189,7 +193,6 @@ pub fn realize_graph(
                         }
                         kernels.push(new_kernel);
                     }
-                    kernels[kid].pad(padding);
                 } else {
                     // if it is not paddable, we need to store it and create new kernel
                     sto(
@@ -208,9 +211,9 @@ pub fn realize_graph(
                     if rcs[&x] > 1 {
                         kernels.push(kernels[kid].clone());
                     }
-                    kernels[kid].pad(padding);
                     xt = 0;
                 }
+                kernels[kid].pad(padding);
                 kernels[kid].max_id += 1;
                 let z = kernels[kid].max_id;
                 kernels[kid].ops.push(Op::Move { z, x: xt, mop: MOp::Padd });
@@ -270,12 +273,6 @@ pub fn realize_graph(
                 let (xt, kidx) = get_kernel_max(x, &kernels);
                 let (yt, kidy) = get_kernel_max(y, &kernels);
 
-                /*if kernels[kidx].shape() != graph.shape(x) {
-                    for kernel in kernels.values() {
-                        kernel.debug();
-                        println!();
-                    }
-                }*/
                 debug_assert_eq!(kernels[kidx].shape(), graph.shape(x));
                 debug_assert_eq!(kernels[kidy].shape(), graph.shape(y));
 
@@ -366,16 +363,6 @@ pub fn realize_graph(
         debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
 
         if to_eval.contains(&nid) {
-            /*if let Some(tensors) = kernels[kid].store(nid, graph, devs, mps, opt, searches, debug)? {
-                kernels.remove(kid).unwrap();
-                for tid in tensors {
-                    if rcs.contains_key(&tid) {
-                        kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
-                    }
-                }
-            } else {
-                unreachable!();
-            }*/
             sto(
                 &mut kernels,
                 &mut kid,
