@@ -355,8 +355,9 @@ impl Kernel {
                     && shape.iter().product::<usize>() > 1024 * 1024 * 1024)
         })*/
 
+        //!self.ops.iter().any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
         // Small loops with like 32 iterations can be run in big reduce loop and they can also be unrolled.
-        /*!self.ops.iter().any(|op| {
+        !self.ops.iter().any(|op| {
             let is_store = matches!(op, Op::Store { .. });
             let is_reduce = matches!(op, Op::Accumulator { .. });
             let is_large_ws = shape.iter().product::<usize>() > 1024 * 1024 * 1024;
@@ -374,8 +375,7 @@ impl Kernel {
                 .product::<usize>()
                 > 32;
             is_store || (is_reduce && (is_large_ws || is_large_reduce))
-        })*/
-        !self.ops.iter().any(|op| matches!(op, Op::Store { .. } | Op::Accumulator { .. }))
+        })
     }
 
     pub(super) fn expand(&mut self, shape: &[usize]) {
