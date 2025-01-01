@@ -663,6 +663,7 @@ impl Kernel {
                         let src = memory_pools[pool_id].buffer_map[&tensor_id];
                         for buffers in memory_pools[pool_id].events.keys() {
                             if buffers.contains(&tensor_id) {
+                                // Pool to host blocks on event, so we can remove that event.
                                 let event =
                                     memory_pools[pool_id].events.remove(&buffers.clone()).unwrap();
                                 memory_pools[pool_id].pool.pool_to_host(
@@ -704,9 +705,8 @@ impl Kernel {
                 .values()
                 .map(|&tensor_id| {
                     if let Some(buffer_id) = pool.buffer_map.get(&tensor_id) {
-                        if let Some(key) = pool.events.keys().find(|key| key.contains(buffer_id)) {
-                            let event = pool.events.remove(&key.clone()).unwrap();
-                            event_wait_list.push(event);
+                        if let Some((_, event)) = pool.events.iter().find(|(key, _)| key.contains(buffer_id)) {
+                            event_wait_list.push(event.clone());
                         }
                         *buffer_id
                     } else {

@@ -124,6 +124,16 @@ impl MemoryPool for DummyMemoryPool {
         let _ = event_wait_list;
         Ok(())
     }
+
+    fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        let _ = events;
+        Ok(())
+    }
+
+    fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        let _ = events;
+        Ok(())
+    }
 }
 
 impl Device for DummyDevice {
@@ -164,18 +174,11 @@ impl Device for DummyDevice {
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
         event_wait_list: Vec<Event>,
-        sync: bool,
     ) -> Result<Event, BackendError> {
         let _ = program_id;
         let _ = memory_pool;
         let _ = args;
         let _ = event_wait_list;
-        let _ = sync;
         Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
-    }
-
-    fn sync(&mut self, event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        let _ = event_wait_list;
-        Ok(())
     }
 }

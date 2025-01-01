@@ -82,7 +82,7 @@ impl Optimizer {
             if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
                 // if it was compiled for the given device
                 let event =
-                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
+                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                 pool.events.insert(outputs, event);
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
                 // if it was optimized for similar device, but not compiled for the given device,
@@ -90,7 +90,7 @@ impl Optimizer {
                 let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let event =
-                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
+                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                 pool.events.insert(outputs, event);
                 self.programs.insert((kernel_id, dev_info_id), program_id);
             } else {
@@ -107,14 +107,13 @@ impl Optimizer {
                         pool.pool.as_mut(),
                         args,
                         event_wait_list,
-                        false,
                     )?;
                     pool.events.insert(outputs, event);
                     self.programs.insert((kernel_id, dev_info_id), program_id);
                 } else {
                     // TODO perhaps we really should allocate separate inputs for applying
                     // optimizations
-                    device.sync(event_wait_list).unwrap();
+                    pool.pool.sync_events(event_wait_list).unwrap();
                     let (optimization, program_id) = optimize_kernel(
                         kernel,
                         device,
@@ -137,13 +136,13 @@ impl Optimizer {
                 let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let event =
-                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list, false)?;
+                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                 pool.events.insert(outputs, event);
                 self.programs.insert((kernel_id, dev_info_id), program_id);
             } else {
                 // TODO perhaps we really should allocate separate inputs for applying
                 // optimizations
-                device.sync(event_wait_list).unwrap();
+                pool.pool.sync_events(event_wait_list).unwrap();
                 let (optimization, program_id) = optimize_kernel(
                     kernel,
                     device,

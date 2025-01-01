@@ -44,7 +44,7 @@ pub(super) struct WGPUDevice {
 
 pub(super) type WGPUBuffer = wgpu::Buffer;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WGPUEvent {}
 
 #[derive(Debug)]
@@ -219,6 +219,16 @@ impl MemoryPool for WGPUMemoryPool {
             dst.copy_from_slice(&download);
         }
         .block_on();
+        Ok(())
+    }
+
+    fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        let _ = events;
+        Ok(())
+    }
+
+    fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        let _ = events;
         Ok(())
     }
 }
@@ -549,11 +559,6 @@ impl Device for WGPUDevice {
         }
         self.queue.submit(Some(encoder.finish()));
         Ok(Event::WGPU(WGPUEvent {}))
-    }
-
-    fn sync(&mut self, event_wait_list: Vec<super::Event>) -> Result<(), BackendError> {
-        let _ = event_wait_list;
-        Ok(())
     }
 }
 

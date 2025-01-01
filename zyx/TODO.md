@@ -67,6 +67,8 @@
   - [x] dead store elimination
   - [ ] vectorization, vector dtypes!
   - [ ] ops fusion, merges1
+- [ ] runtime
+  - [ ] fix event handling
 
 - [x] docs
   - [x] manual for adding new backends

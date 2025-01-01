@@ -104,8 +104,6 @@ pub(super) struct CUDADevice {
     ) -> CUDAStatus,
     cuEventRecord: unsafe extern "C" fn(CUevent, CUstream) -> CUDAStatus,
     cuStreamWaitEvent: unsafe extern "C" fn(CUstream, CUevent, c_uint) -> CUDAStatus,
-    cuEventSynchronize: unsafe extern "C" fn(CUevent) -> CUDAStatus,
-    cuEventDestroy: unsafe extern "C" fn(CUevent) -> CUDAStatus,
 }
 
 #[derive(Debug)]
@@ -123,7 +121,7 @@ pub(super) struct CUDAStream {
     load: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CUDAEvent {
     event: CUevent,
 }
@@ -326,9 +324,7 @@ pub(super) fn initialize_device(
             cuStreamSynchronize,
             cuEventCreate,
             cuEventRecord,
-            cuEventSynchronize,
             cuStreamWaitEvent,
-            cuEventDestroy,
             //cuStreamDestroy,
         };
         dev.dev_info = DeviceInfo {
@@ -491,6 +487,24 @@ impl MemoryPool for CUDAMemoryPool {
     fn get_buffer(&self, buffer: crate::slab::Id) -> super::BufferMut {
         BufferMut::CUDA(&self.buffers[buffer])
     }
+
+    fn sync_events(&mut self, mut event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+        while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
+            if !event.is_null() {
+                unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync)?;
+                unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::KernelSync)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        for event in events {
+            let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
+            unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization)?;
+        }
+        Ok(())
+    }
 }
 
 impl Device for CUDADevice {
@@ -552,7 +566,6 @@ impl Device for CUDADevice {
         args: &[crate::slab::Id],
         // If sync is empty, kernel will be immediatelly synchronized
         mut event_wait_list: Vec<Event>,
-        sync: bool,
     ) -> Result<Event, BackendError> {
         let stream_id = self.next_stream()?;
         let program = &self.programs[program_id];
@@ -598,13 +611,7 @@ impl Device for CUDADevice {
 
         //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
 
-        if sync {
-            //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch)?;
-            unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::KernelLaunch)?;
-            unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::KernelLaunch)?;
-        } else {
-            self.streams[stream_id].load += 1;
-        }
+        self.streams[stream_id].load += 1;
         Ok(Event::CUDA(CUDAEvent { event }))
     }
 
@@ -613,16 +620,6 @@ impl Device for CUDADevice {
             unsafe { (self.cuModuleUnload)(program.module) }
                 .check(ErrorStatus::Deinitialization)
                 .unwrap();
-        }
-        Ok(())
-    }
-
-    fn sync(&mut self, mut event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
-            if !event.is_null() {
-                unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync)?;
-                unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::KernelSync)?;
-            }
         }
         Ok(())
     }

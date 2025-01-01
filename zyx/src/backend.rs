@@ -6,9 +6,9 @@
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
-use std::fmt::Display;
-use nanoserde::DeJson;
 use crate::{ir::IRKernel, runtime::Pool, slab::Id, ZyxError};
+use nanoserde::DeJson;
+use std::fmt::Display;
 
 mod cuda;
 mod dummy;
@@ -53,7 +53,7 @@ pub enum BufferMut<'a> {
     WGPU(&'a wgpu::WGPUBuffer),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum Event {
     OpenCL(opencl::OpenCLEvent),
@@ -140,11 +140,19 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
 }
 
+// Passing events in event wait lists does not destroy those events.
+// Events are destroyed only on pool to host, which is blocking and on device sync, which is also blocking.
+// All other operations keep events alive.
+// For example passing event wait list into kernel launch does not guarantee that the events are executed,
+// only that kernel won't be launched until they are finished. We have no way of knowing when those events
+// and kernel launch actually happen. It's all async.
+
 pub trait MemoryPool: Send {
     fn deinitialize(&mut self) -> Result<(), BackendError>;
     fn free_bytes(&self) -> usize;
     fn get_buffer(&self, buffer: Id) -> BufferMut;
     fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError>;
+    // Deallocate drops events without synchronization
     fn deallocate(
         &mut self,
         buffer_id: Id,
@@ -163,6 +171,10 @@ pub trait MemoryPool: Send {
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError>;
+    // Synchronize events, blocking
+    fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError>;
+    // Drop events without synchronization, non-blocking
+    fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError>;
 }
 
 pub trait Device: Send {
@@ -178,10 +190,7 @@ pub trait Device: Send {
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
         event_wait_list: Vec<Event>,
-        // Immediatelly synchronize?
-        sync: bool,
     ) -> Result<Event, BackendError>;
-    fn sync(&mut self, event_wait_list: Vec<Event>) -> Result<(), BackendError>;
 }
 
 impl From<BackendError> for ZyxError {

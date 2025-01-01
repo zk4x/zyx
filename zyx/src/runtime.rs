@@ -211,9 +211,10 @@ impl Runtime {
             dev.deinitialize()?;
         }
         // drop memory pools
-        while let Some(mut mp) = self.pools.pop() {
-            //for (_, event) in mp.events { event.sync()?; }
-            mp.pool.deinitialize()?;
+        while let Some(mp) = self.pools.pop() {
+            let Pool { mut pool, events, .. } = mp;
+            pool.release_events(events.into_iter().map(|(_, v)| v).collect())?;
+            pool.deinitialize()?;
         }
         // Timer
         /*for (name, time) in crate::ET.lock().iter() {
