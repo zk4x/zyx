@@ -424,6 +424,7 @@ impl MemoryPool for CUDAMemoryPool {
                 if !event.is_null() {
                     unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }
                         .check(ErrorStatus::MemoryDeallocation)?;
+                    unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H)?;
                 }
             }
             //unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation).unwrap();

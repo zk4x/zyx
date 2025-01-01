@@ -47,7 +47,7 @@ pub(super) struct OpenCLMemoryPool {
     clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     clReleaseContext: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     clReleaseMemObject: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-    clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
+    //clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     clEnqueueReadBuffer: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
@@ -213,7 +213,7 @@ pub(super) fn initialize_device(
     let clBuildProgram = *unsafe { opencl.get(b"clBuildProgram\0") }.unwrap();
     let clReleaseProgram = *unsafe { opencl.get(b"clReleaseProgram\0") }.unwrap();
     let clReleaseContext = *unsafe { opencl.get(b"clReleaseContext\0") }.unwrap();
-    let clReleaseEvent = *unsafe { opencl.get(b"clReleaseContext\0") }.unwrap();
+    //let clReleaseEvent = *unsafe { opencl.get(b"clReleaseContext\0") }.unwrap();
     let clSetKernelArg = *unsafe { opencl.get(b"clSetKernelArg\0") }.unwrap();
     let clCreateKernel = *unsafe { opencl.get(b"clCreateKernel\0") }.unwrap();
     let clReleaseMemObject = *unsafe { opencl.get(b"clReleaseMemObject\0") }.unwrap();
@@ -398,7 +398,7 @@ pub(super) fn initialize_device(
             clReleaseCommandQueue,
             clReleaseContext,
             clReleaseMemObject,
-            clReleaseEvent,
+            //clReleaseEvent,
             clEnqueueReadBuffer,
             clEnqueueWriteBuffer,
             clCreateBuffer,
@@ -477,9 +477,10 @@ impl MemoryPool for OpenCLMemoryPool {
                 }
                 .check(ErrorStatus::Deinitialization)?;
             }
-            for event in event_wait_list {
+            // This segfaults... AFAIK it shouldn't...
+            /*for event in event_wait_list {
                 unsafe { (self.clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization)?;
-            }
+            }*/
             unsafe { (self.clReleaseMemObject)(buffer.ptr) }
                 .check(ErrorStatus::Deinitialization)?;
             self.free_bytes += buffer.bytes;
@@ -533,8 +534,8 @@ impl MemoryPool for OpenCLMemoryPool {
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
-        //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
         let src = &self.buffers[src];
+        //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
         debug_assert!(
             !src.ptr.is_null(),
             "Trying to read null memory. Internal bug."
@@ -570,9 +571,11 @@ impl MemoryPool for OpenCLMemoryPool {
         let events = [event];
         unsafe { (self.clWaitForEvents)(1, events.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H)?;
         event_wait_list.push(event);
-        for event in event_wait_list {
+        // This segfaults... AFAIK it shouldn't...
+        /*for event in event_wait_list {
             unsafe { (self.clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization)?;
-        }
+        }*/
+        //println!("Opencl to host");
         Ok(())
     }
 
@@ -612,10 +615,7 @@ impl MemoryPool for OpenCLMemoryPool {
         };
         if !events.is_empty() {
             unsafe {
-                (self.clWaitForEvents)(
-                    events.len().try_into().unwrap(),
-                    event_wait_list_ptr,
-                )
+                (self.clWaitForEvents)(events.len().try_into().unwrap(), event_wait_list_ptr)
             }
             .check(ErrorStatus::KernelSync)?;
         }
@@ -623,10 +623,12 @@ impl MemoryPool for OpenCLMemoryPool {
     }
 
     fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
-        for event in events {
+        let _ = events;
+        // For whatever reason this segfaults... Buggy opencl implementation?
+        /*for event in events {
             let Event::OpenCL(OpenCLEvent { event }) = event else { unreachable!() };
             unsafe { (self.clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization)?;
-        }
+        }*/
         Ok(())
     }
 }
