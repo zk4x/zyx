@@ -255,7 +255,7 @@ impl IRCompiler {
         // Declare global arguments
         for op in kernel_ops {
             match *op {
-                Op::Load { z, xscope, ref xview, xdtype, .. } => {
+                Op::Load { z, xscope, ref xview, xdtype, zscope: _, zview: _ } => {
                     if xscope == Scope::Global && !pointers_map.contains_key(&(z, xscope)) {
                         args.push(z);
                         let dtype = xdtype;
@@ -264,12 +264,12 @@ impl IRCompiler {
                         pointers_map.insert((z, xscope), id);
                     }
                 }
-                Op::Store { z, zscope, ref zview, zdtype, xscope, .. } => {
+                Op::Store { z, zscope, ref zview, zdtype, x: _, xscope, xview: _ } => {
                     if zscope == Scope::Global {
                         pointers_map
                             .entry((z, zscope))
                             .and_modify(|&mut id| {
-                                assert_eq!(xscope, Scope::Register);
+                                debug_assert_eq!(xscope, Scope::Register);
                                 // set it to read-write
                                 addressables[id as usize].3 = false;
                             })

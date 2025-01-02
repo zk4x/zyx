@@ -67,6 +67,7 @@ impl Optimizer {
         search_iters: usize,
         debug: DebugMask,
     ) -> Result<(), BackendError> {
+        //println!("Launch kernel with args {args:?}");
         //let t = crate::Timer::new("optimizer");
         // TODO if optimizer is not initialized yet, then first load from disk.
 

@@ -598,6 +598,7 @@ impl Kernel {
         search_iters: usize,
         debug: DebugMask,
     ) -> Result<(), ZyxError> {
+
         // Pick a device to run program
         // Find in which memory pool are most of input tensors stored
         let tensors: BTreeSet<TensorId> = self.tensors.values().copied().collect();

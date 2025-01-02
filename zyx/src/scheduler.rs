@@ -498,6 +498,9 @@ pub fn realize_graph(
         if evaluated.is_empty() {
             break;
         }
+        for kid in &evaluated {
+            kernels.remove(*kid);
+        }
         for kernel in kernels.values_mut() {
             kernel.depends_on.retain(|x| !evaluated.contains(x));
         }
