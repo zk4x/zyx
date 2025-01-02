@@ -33,7 +33,7 @@ pub struct Kernel {
     pub(super) outputs: BTreeMap<TensorId, TId>,
     pub(super) max_id: TId,
     // Which kernels must be evaluated before this kernel (only direct predecessors)
-    pub(super) depends_on: BTreeSet<usize>,
+    pub(super) depends_on: BTreeSet<u32>,
 }
 
 // Tensor id in a kernel
