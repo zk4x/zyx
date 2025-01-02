@@ -67,6 +67,7 @@ pub enum Op {
         zscope: Scope,
         zview: View,
         zdtype: DType,
+        x: TId,
         xscope: Scope,
         xview: View,
     },
@@ -76,12 +77,11 @@ pub enum Op {
         dtype: DType,
     },
     // Move is noop, just a marker for easy debugging
-    // and to keep track of tensor ids
-    Move {
+    /*Move {
         z: TId,
         x: TId,
         mop: MOp,
-    },
+    },*/
     Unary {
         z: TId,
         x: TId,
@@ -100,14 +100,14 @@ pub enum Op {
     },
 }
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
+/*#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MOp {
     Expa,
     Perm,
     Resh,
     Padd,
-}
+}*/
 
 impl Kernel {
     pub(super) fn constant(nid: TensorId, value: Constant) -> Kernel {
@@ -168,8 +168,8 @@ impl Kernel {
             Op::Loop { .. }
             | Op::Unary { .. }
             | Op::Binary { .. }
-            | Op::Barrier { .. }
-            | Op::Move { .. } => true,
+            | Op::Barrier { .. } => true,
+            //| Op::Move { .. } => true,
             Op::Load { xview: view, .. }
             | Op::Store { zview: view, .. }
             | Op::Const { view, .. } => view.is_contiguous(),
@@ -236,7 +236,7 @@ impl Kernel {
                     Op::Accumulator { .. }
                     | Op::Loop { .. }
                     | Op::EndLoop
-                    | Op::Move { .. }
+                    //| Op::Move { .. }
                     | Op::Unary { .. }
                     | Op::Binary { .. }
                     | Op::Barrier { .. } => {}
@@ -749,8 +749,8 @@ impl std::fmt::Display for Op {
             Op::Load { z, zscope, zview: _, xscope, xview, xdtype } => f.write_fmt(format_args!(
                 "{C_YELLOW}Load{C_RESET}        {z}[{zscope:?}] <- [{xscope:?}, {xdtype}], {xview}"
             )),
-            Op::Store { z, zview, zscope, zdtype, xscope, xview: _ } => f.write_fmt(format_args!(
-                "{C_RED}Store{C_RESET}        {z}[{zscope:?}] <- {xscope:?}, {zview}, {zdtype}"
+            Op::Store { z, zview, zscope, zdtype, x, xscope, xview: _ } => f.write_fmt(format_args!(
+                "{C_RED}Store{C_RESET}        {z}[{zscope:?}] <- {x}[{xscope:?}], {zview}, {zdtype}"
             )),
             Op::Loop { axis, len } => f.write_fmt(format_args!(
                 "{C_GREEN}Loop{C_RESET}        axis: {axis}, len: {len}"
@@ -759,9 +759,9 @@ impl std::fmt::Display for Op {
                 "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, {dtype}",
             )),
             Op::EndLoop => f.write_fmt(format_args!("{C_BLUE}EndLoop{C_RESET} ")),
-            Op::Move { z, x, mop } => {
+            /*Op::Move { z, x, mop } => {
                 f.write_fmt(format_args!("{C_WHITE}Move{C_RESET}.{mop:?}   {z} <- {x}"))
-            }
+            }*/
             Op::Unary { z, x, uop } => {
                 let mut len = format!("{uop:?}").len();
                 if len > 5 {

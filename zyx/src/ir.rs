@@ -336,15 +336,15 @@ impl IRCompiler {
                         scopes => panic!("Invalid load scopes {scopes:?}. Internal bug."),
                     }
                 }
-                &Op::Store { z, zscope, ref zview, xscope, .. } => {
+                &Op::Store { z, zscope, ref zview, x, xscope, .. } => {
                     match (zscope, xscope) {
                         (Scope::Local, Scope::Register) => {
                             todo!()
                         }
                         (Scope::Global, Scope::Register) => {
                             let zaddress = pointers_map[&(z, zscope)];
-                            let zreg = register_map[&z];
-                            zview.ir_for_indexed_store(&mut c, zaddress, zreg);
+                            let xreg = register_map[&x];
+                            zview.ir_for_indexed_store(&mut c, zaddress, xreg);
                         }
                         scopes => panic!("Invalid store scopes {scopes:?}"),
                     }
@@ -357,9 +357,9 @@ impl IRCompiler {
                     let zreg = c.set(acc_init);
                     register_map.insert(z, zreg);
                 }
-                &Op::Move { z, x, .. } => {
+                /*&Op::Move { z, x, .. } => {
                     register_map.insert(z, register_map[&x]);
-                }
+                }*/
                 &Op::Unary { z, x, uop } => {
                     let xreg = register_map[&x];
                     let zreg = c.unary_op(xreg, uop);

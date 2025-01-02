@@ -69,6 +69,7 @@
   - [ ] ops fusion, merges1
 - [ ] runtime
   - [ ] fix event handling
+  - [ ] graph recording - unfortunatelly seems necessary for some high performance stuff, basically start record at the beginning of the loop and stop recording at the end of the loop. Then there needs to be a detector which tensors are inputs to this graph, which are model's parameters.
 
 - [x] docs
   - [x] manual for adding new backends

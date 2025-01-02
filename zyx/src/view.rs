@@ -81,9 +81,9 @@ impl View {
         })
     }
 
-    pub(crate) fn numel(&self) -> usize {
+    /*pub(crate) fn numel(&self) -> usize {
         self.0.last().map_or(1, |inner| inner.iter().map(|dim| dim.d).product())
-    }
+    }*/
 
     pub(crate) fn is_contiguous(&self) -> bool {
         self.0.last().map_or(true, |inner| {
