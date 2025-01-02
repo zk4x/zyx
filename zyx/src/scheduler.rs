@@ -3,17 +3,18 @@
 use crate::{
     backend::Device,
     graph::Graph,
+    ir::Scope,
     kernel::{Kernel, MOp, Op, TId},
     node::Node,
     optimizer::Optimizer,
     runtime::Pool,
-    slab::{Id, Slab},
     tensor::TensorId,
+    view::View,
     DebugMask, ZyxError,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-type KernelId = Id;
+type KernelId = usize;
 
 /// Convert graph into kernels and schedule them to devices.
 /// This function needs to be optimized a lot, because it always needs to run faster than async launched kernels.
@@ -41,10 +42,10 @@ pub fn realize_graph(
     graph: &Graph,
     order: &[TensorId],
     to_eval: &BTreeSet<TensorId>,
-    devs: &mut [Box<dyn Device>],
-    mps: &mut [Pool],
-    opt: &mut Optimizer,
-    searches: usize,
+    devices: &mut [Box<dyn Device>],
+    memory_pools: &mut [Pool],
+    optimizer: &mut Optimizer,
+    search_iters: usize,
     realized_nodes: &BTreeSet<TensorId>,
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
@@ -59,10 +60,8 @@ pub fn realize_graph(
         }
     }
 
-    let mut num_kernels = 0;
-
     // Unfinished kernels represented by ops
-    let mut kernels: Slab<Kernel> = Slab::with_capacity(30);
+    let mut kernels: Vec<Kernel> = Vec::with_capacity(100);
 
     /*if debug.sched() {
         println!("To eval: {to_eval:?}");
@@ -81,8 +80,9 @@ pub fn realize_graph(
 
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1
-        let mut kid = if realized_nodes.contains(&nid) {
-            kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid)))
+        let mut kid: KernelId = if realized_nodes.contains(&nid) {
+            kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid)));
+            kernels.len() - 1
         } else {
             match graph[nid] {
                 // All ops are merged except
@@ -90,7 +90,10 @@ pub fn realize_graph(
                 // Reshape is not merged if reshaping reduce loops
                 // Expand is not merged if expanding reduce kernel or kernel contains store
                 // These rules can be later loosened using some heuristic.
-                Node::Const { value } => kernels.push(Kernel::constant(nid, value)),
+                Node::Const { value } => {
+                    kernels.push(Kernel::constant(nid, value));
+                    kernels.len() - 1
+                }
                 Node::Leaf => unreachable!(),
                 // Expand, reshape and pad are not always mergeable and thus can finish kernels.
                 // All other ops are always mergeable.
@@ -110,19 +113,7 @@ pub fn realize_graph(
                         }
                     } else {
                         // if it is not expandable, we need to store it and create new kernel
-                        sto(
-                            &mut kernels,
-                            &mut kid,
-                            x,
-                            graph,
-                            devs,
-                            mps,
-                            opt,
-                            searches,
-                            &rcs,
-                            debug,
-                            &mut num_kernels,
-                        )?;
+                        store(&mut kernels, &mut kid, x, graph, &rcs);
                         if rcs[&x] > 1 {
                             kernels.push(kernels[kid].clone());
                         }
@@ -146,7 +137,7 @@ pub fn realize_graph(
                     let shape = graph.shape(nid);
                     if kernels[kid].is_reshapable(shape) {
                         // If it's gonna be used elsewhere, we need to copy this kernel,
-                        // because expand invalidates outputs.
+                        // because reshape invalidates outputs.
                         if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
                             let mut new_kernel = kernels[kid].clone();
                             if rcs[&x] < 2 {
@@ -156,19 +147,7 @@ pub fn realize_graph(
                         }
                     } else {
                         // if it is not expandable, we need to store it and create new kernel
-                        sto(
-                            &mut kernels,
-                            &mut kid,
-                            x,
-                            graph,
-                            devs,
-                            mps,
-                            opt,
-                            searches,
-                            &rcs,
-                            debug,
-                            &mut num_kernels,
-                        )?;
+                        store(&mut kernels, &mut kid, x, graph, &rcs);
                         if rcs[&x] > 1 {
                             kernels.push(kernels[kid].clone());
                         }
@@ -189,8 +168,10 @@ pub fn realize_graph(
                     let padding = graph.padding(nid);
                     if kernels[kid].is_paddable() {
                         // If it's gonna be used elsewhere, we need to copy this kernel,
-                        // because expand invalidates outputs.
+                        // because padding invalidates outputs.
                         if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
+                            // TODO we may want to evaluate this kernel instead of cloning
+                            // if this kernels[kid] is too large.
                             let mut new_kernel = kernels[kid].clone();
                             if rcs[&x] < 2 {
                                 new_kernel.outputs.remove(&x);
@@ -199,19 +180,7 @@ pub fn realize_graph(
                         }
                     } else {
                         // if it is not paddable, we need to store it and create new kernel
-                        sto(
-                            &mut kernels,
-                            &mut kid,
-                            x,
-                            graph,
-                            devs,
-                            mps,
-                            opt,
-                            searches,
-                            &rcs,
-                            debug,
-                            &mut num_kernels,
-                        )?;
+                        store(&mut kernels, &mut kid, x, graph, &rcs);
                         if rcs[&x] > 1 {
                             kernels.push(kernels[kid].clone());
                         }
@@ -274,11 +243,22 @@ pub fn realize_graph(
                 }
                 Node::Binary { x, y, bop } => {
                     // x goes first, delete y
-                    let (xt, kidx) = get_kernel_max(x, &kernels);
-                    let (yt, kidy) = get_kernel_max(y, &kernels);
+                    let (xt, mut kidx) = get_kernel_max(x, &kernels);
+                    let (yt, mut kidy) = get_kernel_max(y, &kernels);
 
                     debug_assert_eq!(kernels[kidx].shape(), graph.shape(x));
                     debug_assert_eq!(kernels[kidy].shape(), graph.shape(y));
+
+                    debug_assert!(!(kernels[kidx].depends_on.contains(&kidy) && kernels[kidy].depends_on.contains(&kidx)));
+
+                    /*if kernels[kidx].depends_on.contains(&kidy) {
+                        store(&mut kernels, &mut kidy, y, &graph, &rcs);
+                    } else if kernels[kidy].depends_on.contains(&kidx) {
+                        store(&mut kernels, &mut kidx, x, &graph, &rcs);
+                    }*/
+
+                    // TODO test for cyclical dependency between kidx and kidy
+                    // and realize the kernel with more ops in order to break that dependency cycle.
 
                     #[allow(clippy::branches_sharing_code)]
                     let kid = if kidx == kidy {
@@ -290,8 +270,11 @@ pub fn realize_graph(
                     } else {
                         // we delete kidy (could by also kidx) and put everything in kidx
                         let n = kernels[kidx].max_id + 1;
-                        let Kernel { ops, tensors, outputs, max_id, stores } =
-                            kernels.remove(kidy).unwrap();
+                        let Kernel { ops, tensors, outputs, max_id, depends_on } =
+                            kernels.remove(kidy);
+
+                        // After removing kidy, we have to decrease all depends_on
+
                         for (i, op) in ops.into_iter().enumerate() {
                             if !(matches!(op, Op::Loop { .. }) && op == kernels[kidx].ops[i]) {
                                 kernels[kidx].ops.push(match op {
@@ -345,13 +328,13 @@ pub fn realize_graph(
                             }
                         }
                         kernels[kidx].max_id += max_id + 2;
-                        let z = kernels[kidx].max_id;
-                        kernels[kidx].ops.push(Op::Binary { z, x: xt, y: yt + n, bop });
                         kernels[kidx]
                             .tensors
                             .extend(tensors.into_iter().map(|(tid, t)| (tid + n, t)));
                         kernels[kidx].outputs.extend(outputs.iter().map(|(t, tid)| (*t, tid + n)));
-                        kernels[kidx].stores.extend(stores);
+                        kernels[kidx].depends_on.extend(depends_on);
+                        let z = kernels[kidx].max_id;
+                        kernels[kidx].ops.push(Op::Binary { z, x: xt, y: yt + n, bop });
                         kernels[kidx].outputs.insert(nid, z);
                         kidx
                     };
@@ -384,108 +367,108 @@ pub fn realize_graph(
         debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
 
         if to_eval.contains(&nid) {
-            sto(
-                &mut kernels,
-                &mut kid,
-                nid,
-                graph,
-                devs,
-                mps,
-                opt,
-                searches,
-                &rcs,
-                debug,
-                &mut num_kernels,
-            )?;
+            store(&mut kernels, &mut kid, nid, graph, &rcs);
         }
     }
 
-    #[cfg(debug_assertions)]
+    // Launch all kernels
+    for _ in 0..kernels.len() {
+        let mut evaluated = BTreeSet::new();
+        for (kid, kernel) in kernels.iter().enumerate() {
+            if kernel.depends_on.is_empty() {
+                kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
+                evaluated.insert(kid);
+            }
+        }
+        if evaluated.is_empty() {
+            break;
+        }
+        for kernel in &mut kernels {
+            kernel.depends_on.retain(|x| !evaluated.contains(x));
+        }
+    }
+
+    /*#[cfg(debug_assertions)]
     if kernels.len() != 0 {
         /*for kernel in kernels.values() {
             kernel.debug();
             println!();
         }*/
         panic!("Kernels in scheduler are not empty.");
-    }
+    }*/
 
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn sto(
-    kernels: &mut Slab<Kernel>,
-    kid: &mut u32,
-    x: u32,
+fn store(
+    kernels: &mut Vec<Kernel>,
+    kid: &mut KernelId,
+    nid: TensorId,
     graph: &Graph,
-    devices: &mut [Box<dyn Device>],
-    mps: &mut [Pool],
-    optimizer: &mut Optimizer,
-    searches: usize,
-    rcs: &BTreeMap<u32, u32>,
-    debug: DebugMask,
-    num_kernels: &mut usize,
-) -> Result<(), ZyxError> {
-    if let Some(tensors) = kernels[*kid].store(
-        x,
-        graph,
-        devices,
-        mps,
-        optimizer,
-        searches,
-        debug,
-        num_kernels,
-    )? {
-        kernels.remove(*kid).unwrap();
-        for kernel in kernels.values_mut() {
-            for tid in &tensors {
-                kernel.outputs.remove(tid);
-            }
+    rcs: &BTreeMap<TensorId, u32>,
+) {
+    // Add store op to kernel
+    let zview = View::contiguous(graph.shape(nid));
+    let zdtype = graph.dtype(nid);
+    let z = kernels[*kid].outputs[&nid];
+    if let Some(&Op::Store { z: nz, zview: ref nzview, .. }) = kernels[*kid].ops.last() {
+        if z == nz && &zview == nzview {
+            unreachable!();
         }
-        let mut kid_ = 0u32;
-        while kid_ < kernels.len().try_into().unwrap() {
-            if let Some(kernel) = kernels.get(kid_) {
-                if kernel.outputs.is_empty() {
-                    kernels.remove(kid_).unwrap();
-                }
-            }
-            kid_ += 1;
-        }
-
-        /*println!("After cleanup of stored {x}");
-        for kernel in kernels.values() {
-            kernel.debug();
-            println!();
-        }*/
-
-        //println!("RCS: {rcs:?}");
-        //println!("tensors: {tensors:?}");
-        for tid in tensors {
-            if rcs.contains_key(&tid) {
-                let tkid = kernels.push(Kernel::leaf(tid, graph.shape(tid), graph.dtype(tid)));
-                if tid == x {
-                    *kid = tkid;
-                }
-            }
-        }
-        /*for kernel in kernels.values() {
-            kernel.debug();
-        }*/
     }
-    Ok(())
+    debug_assert!(zview.numel() < 1024 * 1024 * 1024, "Too big store.");
+    let store_op = Op::Store {
+        z,
+        zview,
+        zscope: Scope::Global,
+        zdtype,
+        xscope: Scope::Register,
+        xview: View::none(),
+    };
+    kernels[*kid].ops.push(store_op);
+    let tid = kernels[*kid].outputs.remove(&nid).unwrap();
+    kernels[*kid].tensors.insert(tid, nid);
+
+    // Remove this output from all other kernels that produce it. It will be used as a load kernel from now on.
+    for kernel in kernels.iter_mut() {
+        kernel.outputs.remove(&nid);
+    }
+
+    // If this is non user defined realization (not in to_eval), then it will be needed by at least one other kernel
+    if rcs.contains_key(&nid) {
+        kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid)));
+        let nkid = kernels.len() - 1;
+        kernels[nkid].depends_on.insert(*kid);
+        *kid = nkid;
+    }
+
+    /*println!("After cleanup of stored {x}");
+    for kernel in kernels.values() {
+        kernel.debug();
+        println!();
+    }*/
+
+    //println!("RCS: {rcs:?}");
+    //println!("tensors: {tensors:?}");
+
+    /*for kernel in kernels.values() {
+        kernel.debug();
+    }*/
 }
 
 // Choose kernel with most outputs (binary, unary)
-fn get_kernel_max(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {
+fn get_kernel_max(x: TensorId, kernels: &[Kernel]) -> (TId, KernelId) {
     // TODO perhaps we can optimize this more?
     kernels
         .iter()
+        .enumerate()
         .filter(|(_, kernel)| kernel.outputs.contains_key(&x))
         .max_by_key(|(_, kernel)| kernel.outputs.len())
         .map_or_else(
             || {
                 println!("Current kernels:");
-                for kernel in kernels.values() {
+                for kernel in kernels {
                     println!();
                     kernel.debug();
                 }
@@ -497,15 +480,16 @@ fn get_kernel_max(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {
 }
 
 // Choose kernel with fewest outputs (expand, reshape, pad, permute, reduce)
-fn get_kernel_min(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {
+fn get_kernel_min(x: TensorId, kernels: &[Kernel]) -> (TId, KernelId) {
     kernels
         .iter()
+        .enumerate()
         .filter(|(_, kernel)| kernel.outputs.contains_key(&x))
         .min_by_key(|(_, kernel)| kernel.outputs.len())
         .map_or_else(
             || {
                 println!("Current kernels:");
-                for kernel in kernels.values() {
+                for kernel in kernels {
                     kernel.debug();
                 }
                 println!();

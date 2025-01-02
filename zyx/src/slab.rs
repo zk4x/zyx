@@ -118,9 +118,9 @@ impl<T> Slab<T> {
         Self { values: Vec::new(), empty: BTreeSet::new() }
     }
 
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
+    /*pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self { values: Vec::with_capacity(capacity), empty: BTreeSet::new() }
-    }
+    }*/
 
     pub(crate) fn push(&mut self, value: T) -> Id {
         if let Some(id) = self.empty.pop_first() {
@@ -144,13 +144,13 @@ impl<T> Slab<T> {
         }
     }
 
-    pub(crate) fn get(&self, id: Id) -> Option<&T> {
+    /*pub(crate) fn get(&self, id: Id) -> Option<&T> {
         if Id::try_from(self.values.len()).unwrap() > id && !self.empty.contains(&id) {
             Some(unsafe { self.values[id as usize].assume_init_ref() })
         } else {
             None
         }
-    }
+    }*/
 
     /*pub(crate) fn swap(&mut self, x: Id, y: Id) {
         self.values.swap(x as usize, y as usize);
@@ -168,13 +168,13 @@ impl<T> Slab<T> {
             .map(|(_, x)| unsafe { x.assume_init_ref() })
     }
 
-    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+    /*pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.values
             .iter_mut()
             .enumerate()
             .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
             .map(|(_, x)| unsafe { x.assume_init_mut() })
-    }
+    }*/
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (Id, &T)> {
         self.values
