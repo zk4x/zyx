@@ -274,6 +274,18 @@ pub fn realize_graph(
                             kernels.remove(kidy);
 
                         // After removing kidy, we have to decrease all depends_on
+                        if kidx > kidy {
+                            kidx -= 1;
+                        }
+                        for kernel in &mut kernels {
+                            let depends_on = kernel.depends_on.clone();
+                            for kid in depends_on {
+                                if kid > kidy {
+                                    kernel.depends_on.insert(kid-1);
+                                    kernel.depends_on.remove(&kid);
+                                }
+                            }
+                        }
 
                         for (i, op) in ops.into_iter().enumerate() {
                             if !(matches!(op, Op::Loop { .. }) && op == kernels[kidx].ops[i]) {
