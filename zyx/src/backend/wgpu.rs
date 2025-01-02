@@ -476,11 +476,8 @@ impl Device for WGPUDevice {
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
         event_wait_list: Vec<Event>,
-        // Immediatelly synchronize?
-        sync: bool,
     ) -> Result<Event, BackendError> {
         let _ = event_wait_list;
-        let _ = sync;
         let program = &self.programs[program_id];
         let mut set_layout: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
         let mut binds: Vec<wgpu::BindGroupEntry> = Vec::new();

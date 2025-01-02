@@ -1,16 +1,7 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::Device,
-    graph::Graph,
-    ir::Scope,
-    kernel::{Kernel, MOp, Op, TId},
-    node::Node,
-    optimizer::Optimizer,
-    runtime::Pool,
-    tensor::TensorId,
-    view::View,
-    DebugMask, ZyxError,
+    backend::Device, graph::Graph, ir::Scope, kernel::{Kernel, MOp, Op, TId}, node::Node, optimizer::Optimizer, runtime::Pool, tensor::TensorId, view::View, DebugMask, Timer, ZyxError
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,6 +41,7 @@ pub fn realize_graph(
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
     //let t = crate::Timer::new("realize_graph");
+    let begin = std::time::Instant::now();
 
     // Unary and binary ops do not require duplication of kernels
     // TODO merge this with rcs in realize function
@@ -91,6 +83,7 @@ pub fn realize_graph(
                 // Expand is not merged if expanding reduce kernel or kernel contains store
                 // These rules can be later loosened using some heuristic.
                 Node::Const { value } => {
+                    let _timer = Timer::new("const");
                     kernels.push(Kernel::constant(nid, value));
                     kernels.len() - 1
                 }
@@ -98,6 +91,7 @@ pub fn realize_graph(
                 // Expand, reshape and pad are not always mergeable and thus can finish kernels.
                 // All other ops are always mergeable.
                 Node::Expand { x } => {
+                    let _timer = Timer::new("expand");
                     let (mut xt, mut kid) = get_kernel_min(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     let shape = graph.shape(nid);
@@ -129,6 +123,7 @@ pub fn realize_graph(
                     kid
                 }
                 Node::Reshape { x } => {
+                    let _timer = Timer::new("reshape");
                     let (mut xt, mut kid) = get_kernel_min(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     debug_assert!(kernels[kid].outputs.contains_key(&x));
@@ -163,6 +158,7 @@ pub fn realize_graph(
                     kid
                 }
                 Node::Pad { x } => {
+                    let _timer = Timer::new("pad");
                     let (mut xt, mut kid) = get_kernel_min(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     let padding = graph.padding(nid);
@@ -195,6 +191,7 @@ pub fn realize_graph(
                     kid
                 }
                 Node::Permute { x } => {
+                    let _timer = Timer::new("permute");
                     let (xt, kid) = get_kernel_min(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
@@ -214,6 +211,7 @@ pub fn realize_graph(
                     kid
                 }
                 Node::Reduce { x, rop } => {
+                    let _timer = Timer::new("reduce");
                     let (xt, kid) = get_kernel_min(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
@@ -230,6 +228,7 @@ pub fn realize_graph(
                     kid
                 }
                 Node::Unary { x, uop } => {
+                    let _timer = Timer::new("unary");
                     let (xt, kid) = get_kernel_max(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     kernels[kid].max_id += 1;
@@ -242,9 +241,10 @@ pub fn realize_graph(
                     kid
                 }
                 Node::Binary { x, y, bop } => {
+                    let _timer = Timer::new("binary");
                     // x goes first, delete y
                     let (xt, mut kidx) = get_kernel_max(x, &kernels);
-                    let (yt, mut kidy) = get_kernel_max(y, &kernels);
+                    let (yt, kidy) = get_kernel_max(y, &kernels);
 
                     debug_assert_eq!(kernels[kidx].shape(), graph.shape(x));
                     debug_assert_eq!(kernels[kidy].shape(), graph.shape(y));
@@ -382,6 +382,11 @@ pub fn realize_graph(
             store(&mut kernels, &mut kid, nid, graph, &rcs);
         }
     }
+
+    //if debug.sched() {
+    let taken  = begin.elapsed().as_micros();
+    println!("Scheduled {} kernels, scheduling took {taken}us", kernels.len());
+    //}
 
     // Launch all kernels
     for _ in 0..kernels.len() {

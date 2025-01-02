@@ -217,9 +217,9 @@ impl Runtime {
             pool.deinitialize()?;
         }
         // Timer
-        /*for (name, time) in crate::ET.lock().iter() {
+        for (name, time) in crate::ET.lock().iter() {
             println!("Timer {name} took {time} us");
-        }*/
+        }
         self.config_dir = None;
         self.temp_data = Vec::new();
         // These variables are persistent:

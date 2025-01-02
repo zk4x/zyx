@@ -370,7 +370,7 @@ impl Kernel {
             let is_store = matches!(op, Op::Store { .. });
             let is_reduce = matches!(op, Op::Accumulator { .. });
             let is_large_ws = shape.iter().product::<usize>() > 1024 * 1024 * 1024;
-            let is_large_reduce = self
+            let is_large_inner_loop = self
                 .ops
                 .iter()
                 .skip_while(|op| matches!(op, Op::Loop { .. }))
@@ -383,7 +383,7 @@ impl Kernel {
                 })
                 .product::<usize>()
                 > 32;
-            is_store || (is_reduce && (is_large_ws || is_large_reduce))
+            is_store || is_large_ws || (is_reduce && is_large_inner_loop)
         })
     }
 
