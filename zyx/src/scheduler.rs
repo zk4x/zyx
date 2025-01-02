@@ -58,9 +58,9 @@ pub fn realize_graph(
     // Unfinished kernels represented by ops
     let mut kernels: Slab<Kernel> = Slab::with_capacity(500);
 
-    /*if debug.sched() {
+    if debug.sched() {
         println!("To eval: {to_eval:?}");
-    }*/
+    }
 
     /*let mut expa_u = 0;
     let mut resh_u = 0;
@@ -454,7 +454,13 @@ pub fn realize_graph(
         debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
 
         if to_eval.contains(&nid) {
-            store(&mut kernels, kid, nid, graph.shape(nid), graph.dtype(nid));
+            let nid_shape = graph.shape(nid);
+            let nid_dtype = graph.dtype(nid);
+            store(&mut kernels, kid, nid, nid_shape, nid_dtype);
+            if rcs.contains_key(&nid) {
+                let nkid = kernels.push(Kernel::leaf(nid, nid_shape, nid_dtype));
+                kernels[nkid].depends_on.insert(kid);
+            }
         }
     }
 
