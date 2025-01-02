@@ -254,6 +254,7 @@ impl Kernel {
         }
     }
 
+    // TODO we can speed this up in scheduler, since it is always reshapable without unmergeable axes.
     #[allow(clippy::type_complexity)]
     pub(super) fn get_reshape_pattern(
         &self,
@@ -514,6 +515,7 @@ impl Kernel {
 
     pub(super) fn reduce(
         &mut self,
+        nid: TensorId,
         xt: TId,
         shape: &[usize],
         axes: &[usize],
@@ -563,6 +565,8 @@ impl Kernel {
         if !matches!(self.ops[0], Op::Loop { .. }) {
             self.insert_loop(0, 0);
         }
+        self.outputs.clear();
+        self.outputs.insert(nid, self.max_id);
     }
 
     /// Inserts loop at `op_id`, giving it axis id and dimension 1.
@@ -731,6 +735,43 @@ impl Kernel {
                 .collect(),
         ));*/
         Ok(())
+    }
+
+    pub(super) fn flop_mem_rw(&self) -> (u128, u128, u128) {
+        let mut shape = Vec::new();
+        let mut flop = 0;
+        let mut mem_read = 0;
+        let mut mem_write = 0;
+        for op in &self.ops {
+            match op {
+                &Op::Loop { len, .. } => {
+                    shape.push(len);
+                }
+                &Op::Load { xscope, .. } => {
+                    // Note that this calculates actual read speed, even if the load accesses the same
+                    // value multiple times. This is usefull so that we can see whether the kernel
+                    // is compute bound or memory bound.
+                    if xscope == Scope::Global {
+                        mem_read += shape.iter().product::<usize>() as u128;
+                    }
+                }
+                &Op::Store { zscope, .. } => {
+                    if zscope == Scope::Global {
+                        mem_write += shape.iter().product::<usize>() as u128;
+                    }
+                }
+                Op::EndLoop => {
+                    shape.pop();
+                }
+                Op::Unary { .. } | Op::Binary { .. } => {
+                    flop += shape.iter().product::<usize>() as u128;
+                }
+                Op::Accumulator { .. }
+                | Op::Const { .. }
+                | Op::Barrier { .. } => {}
+            }
+        }
+        (flop, mem_read, mem_write)
     }
 }
 

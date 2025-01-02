@@ -171,8 +171,13 @@ pub fn realize_graph(
                         }
                         xt = 0;
                     }*/
+
+                    #[cfg(debug_assertions)]
+                    if !kernels[kid].is_reshapable(shape) {
+                        panic!()
+                    }
                     
-                    if !kernels[kid].is_reshapable(shape) || kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
+                    if  kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
                         let x_shape = graph.shape(x);
                         let x_dtype = graph.dtype(x);
                         store(&mut kernels, kid, x, x_shape, x_dtype);
@@ -290,11 +295,7 @@ pub fn realize_graph(
                         }*/
                     }
 
-
-                    kernels[kid].reduce(xt, graph.shape(x), graph.axes(nid), graph.dtype(x), rop);
-                    let z = kernels[kid].max_id;
-                    kernels[kid].outputs.clear();
-                    kernels[kid].outputs.insert(nid, z);
+                    kernels[kid].reduce(nid, xt, graph.shape(x), graph.axes(nid), graph.dtype(x), rop);
                     kid
                 }
                 Node::Unary { x, uop } => {
@@ -477,11 +478,17 @@ pub fn realize_graph(
         }
         avg_ops += n;
     }
-    println!("Scheduled {} kernels, scheduling took {taken}us, ops per kernel: min: {min_ops}, mzx: {max_ops}, avg: {}", kernels.len(), avg_ops/kernels.len());
+    let kernels_len = kernels.len();
+    println!("Scheduled {kernels_len} kernels, scheduling took {taken}us, ops per kernel: min: {min_ops}, max: {max_ops}, avg: {}", avg_ops/kernels_len);
     //println!("Expand clones: {expa_u}, reshape clones: {resh_u}, pad clones: {pad_u}, permute clones: {perm_u}, reduce clones: {red_u}");
     // Timer
     for (name, time) in crate::ET.lock().iter() {
         println!("Timer {name} took {time} us");
+    }
+
+    for kernel in kernels.values().take(10) {
+        kernel.debug();
+        println!();
     }
 
     /*for kernel in kernels.values() {
@@ -490,13 +497,13 @@ pub fn realize_graph(
         }
     }*/
 
-    //panic!();
-
     // Launch all kernels
+    let mut num_evaluated = 0;
     for _ in 0..kernels.len() {
         let mut evaluated = BTreeSet::new();
         for (kid, kernel) in kernels.iter() {
             if kernel.depends_on.is_empty() {
+                num_evaluated += 1;
                 kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
                 evaluated.insert(kid);
             }
@@ -510,6 +517,12 @@ pub fn realize_graph(
         for kernel in kernels.values_mut() {
             kernel.depends_on.retain(|x| !evaluated.contains(x));
         }
+    }
+
+    println!("Evaluated {num_evaluated} kernels");
+
+    if num_evaluated != kernels_len {
+        panic!();
     }
 
     /*#[cfg(debug_assertions)]

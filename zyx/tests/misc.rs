@@ -577,3 +577,24 @@ fn causal_self_attention() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn binary_cross_dependency1() -> Result<(), ZyxError> {
+
+    let x = Tensor::from([4, 5, 1]);
+
+    let y = Tensor::from([4, 1, 2]);
+
+    let x1 = x.sum([])?;
+    let x2 = x1.expand([3, 3])?;
+
+    let y1 = y + &x1;
+    let y2 = y1.sum([])?;
+    let y3 = y2.expand([3, 3])?;
+
+    let x3 = x2 + &y2;
+
+    Tensor::realize([&x1, &y2, &y3, &x3])?;
+
+    Ok(())
+}

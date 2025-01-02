@@ -82,16 +82,14 @@ impl Optimizer {
             // if kernel was already optimized
             if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
                 // if it was compiled for the given device
-                let event =
-                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
+                let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                 pool.events.insert(outputs, event);
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
                 // if it was optimized for similar device, but not compiled for the given device,
                 // or if it was in disk cache.
                 let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
-                let event =
-                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
+                let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                 pool.events.insert(outputs, event);
                 self.programs.insert((kernel_id, dev_info_id), program_id);
             } else {
@@ -103,12 +101,8 @@ impl Optimizer {
                     let optimization = Optimizer::default_optimizations(kernel, device.info());
                     let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                     let program_id = device.compile(&ir_kernel, debug.asm())?;
-                    let event = device.launch(
-                        program_id,
-                        pool.pool.as_mut(),
-                        args,
-                        event_wait_list,
-                    )?;
+                    let event =
+                        device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                     pool.events.insert(outputs, event);
                     self.programs.insert((kernel_id, dev_info_id), program_id);
                 } else {
@@ -134,11 +128,16 @@ impl Optimizer {
             if search_iters == 0 {
                 // if optimizations are not requested, use default optimizations
                 let optimization = Optimizer::default_optimizations(kernel, device.info());
+                let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
-                let event =
-                    device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
-                pool.events.insert(outputs, event);
+                let nanos = std::time::Instant::now();
+                let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
+                pool.pool.sync_events(vec![event])?;
+                let nanos = nanos.elapsed();
+                let nanos = nanos.as_nanos();
+                print_perf(flop, mem_read, mem_write, nanos);
+                //pool.events.insert(outputs, event);
                 self.programs.insert((kernel_id, dev_info_id), program_id);
             } else {
                 // TODO perhaps we really should allocate separate inputs for applying
@@ -209,7 +208,6 @@ fn optimize_kernel(
     search_iters: usize,
     debug: DebugMask,
 ) -> (Optimization, u32) {
-
     let _ = kernel;
     let _ = device;
     let _ = device;
@@ -732,3 +730,44 @@ fn optimize_kernel(
         kernel
     }
 }*/
+
+#[allow(clippy::similar_names)]
+fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
+    const fn value_unit(x: u128) -> (u128, &'static str) {
+        match x {
+            0..1000 => (x / 100, ""),
+            1_000..1_000_000 => (x / 10, "k"),
+            1_000_000..1_000_000_000 => (x / 10_000, "M"),
+            1_000_000_000..1_000_000_000_000 => (x / 10_000_000, "G"),
+            1_000_000_000_000..1_000_000_000_000_000 => (x / 10_000_000_000, "T"),
+            1_000_000_000_000_000..1_000_000_000_000_000_000 => (x / 10_000_000_000_000, "P"),
+            1_000_000_000_000_000_000.. => (x / 10_000_000_000_000_000, "E"),
+        }
+    }
+
+    let (f, f_u) = value_unit(flop);
+    let (br, br_u) = value_unit(bytes_read);
+    let (bw, bw_u) = value_unit(bytes_written);
+    let (t_d, t_u) = match nanos {
+        0..1_000 => (1 / 10, "ns"),
+        1_000..1_000_000 => (100, "μs"),
+        1_000_000..1_000_000_000 => (100_000, "ms"),
+        1_000_000_000..1_000_000_000_000 => (100_000_000, "s"),
+        1_000_000_000_000.. => (6_000_000_000, "min"),
+    };
+
+    let (fs, f_us) = value_unit(flop * 1_000_000_000 / nanos);
+    let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
+    let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
+
+    println!("        {}.{} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s read, {}.{} {bw_us}B/s write, {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write",
+        nanos/(t_d*10),
+        (nanos/t_d)%10,
+        fs/100,
+        fs%100,
+        brs/100,
+        brs%100,
+        bws/100,
+        bws%100,
+    );
+}
