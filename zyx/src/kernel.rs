@@ -162,7 +162,13 @@ impl Kernel {
             .collect()
     }
 
-    #[cfg(debug_assertions)]
+    // Returns true if it is cheaper to evaluate this kernel twice as embedded into bigger kernel
+    // instead of launching this kernel.
+    pub(super) fn is_small(&self) -> bool {
+        self.ops.len() < 10
+    }
+
+    /*#[cfg(debug_assertions)]
     pub(super) fn is_reshapable(&self, shape: &[usize]) -> bool {
         // TODO remove the first case
         self.ops.iter().all(|op| match op {
@@ -173,7 +179,7 @@ impl Kernel {
             | Op::Const { view, .. } => view.is_contiguous(),
             Op::Accumulator { .. } | Op::EndLoop => false,
         }) | self.get_reshape_pattern(shape).is_some()
-    }
+    }*/
 
     pub(super) fn reshape(&mut self, shape: &[usize]) {
         // If this is just a reshape of kernel with only unary ops and contiguous loads

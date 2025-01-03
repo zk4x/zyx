@@ -400,7 +400,10 @@ impl DecoderLayer {
     fn forward(&mut self, xs: &Tensor, mask: Option<&Tensor>) -> Tensor {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs).unwrap();
+        //println!("{xs}");
         let attn_outputs = self.self_attn.forward(&xs, mask);
+        //println!("{attn_outputs}");
+        //panic!();
         let feed_forward_hidden_states = self.mlp.forward(&xs).unwrap();
         attn_outputs + feed_forward_hidden_states + residual
     }

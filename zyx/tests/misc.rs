@@ -614,3 +614,45 @@ fn t_15() {
     //println!("{x}");
     assert_eq!(x, [[2048, 3072, 1024], [2048, 4096, 1024]]);
 }
+
+#[test]
+fn layer_norm() -> Result<(), ZyxError> {
+    let weight = Some(Tensor::from([4, 5, 1, 2]));
+    let d_dims = weight.as_ref().unwrap().rank();
+    let bias: Option<Tensor> = None;
+    let eps = 0.00001;
+
+    let x = Tensor::from([[3, 5, 2, 1], [6, 1, 4, 2]]).cast(DType::F32);
+
+    let axes = -(d_dims as isize)..=-1;
+    let eps = Tensor::constant(eps).cast(x.dtype());
+    let a = &x - x.mean_kd(axes.clone())?;
+    //println!("{a}");
+    let b = (x.var_kd(axes, 1)? + eps).sqrt();
+    let mut x = a / b;
+    if let Some(w) = &weight {
+        x = x * w;
+    }
+    if let Some(b) = &bias {
+        x = x + b;
+    }
+    assert_eq!(
+        x,
+        [
+            [0.585539f32, 6.587314, -0.439154, -2.049387],
+            [4.960858, -5.073606, 0.338240, -1.127468]
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn multiple_stores() -> Result<(), ZyxError> {
+    let x = Tensor::from([[3, 4, 2], [5, 4, 1]]);
+    let y = x.exp();
+    let z = y.tanh();
+    Tensor::realize([&y, &z])?;
+    println!("{z:.6}");
+    assert_eq!(z, [[1f32, 1., 0.999329], [1., 1., 0.964028]]);
+    Ok(())
+}

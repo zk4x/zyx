@@ -85,13 +85,13 @@ impl View {
         self.0.last().map_or(1, |inner| inner.iter().map(|dim| dim.d).product())
     }*/
 
-    #[cfg(debug_assertions)]
+    /*#[cfg(debug_assertions)]
     pub(crate) fn is_contiguous(&self) -> bool {
         self.0.last().map_or(true, |inner| {
             let stride = 1;
             inner.iter().all(|dim| dim.lp == 0 && dim.rp == 0 && dim.st == stride)
         })
-    }
+    }*/
 
     /*pub(crate) fn used_axes(&self) -> Vec<usize> {
         self.0.last().map_or_else(Vec::new, |inner| {

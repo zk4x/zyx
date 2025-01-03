@@ -30,8 +30,8 @@ impl LayerNorm {
         let x = x.into();
         let axes = -(self.d_dims as isize)..=-1;
         let eps = Tensor::constant(self.eps).cast(x.dtype());
-        let a = &x - x.mean(axes.clone()).unwrap();
-        let b = (x.var(axes, 1).unwrap() + eps).sqrt();
+        let a = &x - x.mean_kd(axes.clone()).unwrap();
+        let b = (x.var_kd(axes, 1).unwrap() + eps).sqrt();
         let mut x = a/b;
         if let Some(w) = &self.weight {
             x = x * w;

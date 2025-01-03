@@ -1,7 +1,17 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::Device, graph::Graph, ir::Scope, kernel::{Kernel, Op, TId}, node::Node, optimizer::Optimizer, runtime::Pool, slab::{Id, Slab}, tensor::TensorId, view::View, DType, DebugMask, Timer, ZyxError
+    backend::Device,
+    graph::Graph,
+    ir::Scope,
+    kernel::{Kernel, Op, TId},
+    node::Node,
+    optimizer::Optimizer,
+    runtime::Pool,
+    slab::{Id, Slab},
+    tensor::TensorId,
+    view::View,
+    DType, DebugMask, ZyxError,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -82,7 +92,7 @@ pub fn realize_graph(
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1
         let kid: KernelId = if realized_nodes.contains(&nid) {
-            let _timer = Timer::new("leaf");
+            //let _timer = Timer::new("leaf");
             //kernels.len() - 1
             kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid)))
         } else {
@@ -92,7 +102,7 @@ pub fn realize_graph(
                 // Expand is not merged if expanding reduce kernel or kernel contains store
                 // These rules can be later loosened using some heuristic.
                 Node::Const { value } => {
-                    let _timer = Timer::new("const");
+                    //let _timer = Timer::new("const");
                     //kernels.len() - 1
                     kernels.push(Kernel::constant(nid, value))
                 }
@@ -100,93 +110,107 @@ pub fn realize_graph(
                 // Expand and pad are not always mergeable and thus can finish kernels.
                 // All other ops are always mergeable.
                 Node::Expand { x } => {
-                    let _timer = Timer::new("expand");
+                    //let _timer = Timer::new("expand");
                     let (mut xt, mut kid) = get_kernel_min(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
-                    let shape = graph.shape(nid);
-
-                    /*if kernels[kid].is_expandable(graph.shape(x)) {
-                        // If it's gonna be used elsewhere, we need to copy this kernel,
-                        // because expand invalidates outputs.
-                        if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                            expa_u += 1;
-                            let mut new_kernel = kernels[kid].clone();
-                            if rcs[&x] < 2 {
-                                new_kernel.outputs.remove(&x);
-                            }
-                            kernels.push(new_kernel);
-                        }
-                    } else {
-                        // if it is not expandable, we need to store it and create new kernel
-                        store(&mut kernels, &mut kid, x, graph, &rcs);
-                        if rcs[&x] > 1 {
-                            kernels.push(kernels[kid].clone());
-                        }
-                        xt = 0;
-                    }*/
-
                     let x_shape = graph.shape(x);
-                    let x_dtype = graph.dtype(x);
-                    if !kernels[kid].is_expandable(x_shape) || kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                        store(&mut kernels, kid, x, x_shape, x_dtype);
-                        xt = 0;
-                        let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
-                        kernels[nkid].depends_on.insert(kid);
-                        kid = nkid;
-                        if rcs[&x] > 1 {
-                            kernels.push(kernels[kid].clone());
-                        }
-                    }
-                    
-                    kernels[kid].expand(shape);
-                    debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
-                    kernels[kid].outputs.clear();
-                    kernels[kid].outputs.insert(nid, xt);
-                    kid
-                }
-                Node::Reshape { x } => {
-                    let _timer = Timer::new("reshape");
-                    let (mut xt, mut kid) = get_kernel_min(x, &kernels);
-                    debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
-                    debug_assert!(kernels[kid].outputs.contains_key(&x));
-                    //println!("Reshaping x = {x} to {nid}");
-                    //kernels[kid].debug();
-                    let shape = graph.shape(nid);
-                    /*if kernels[kid].is_reshapable(shape) {
-                        // If it's gonna be used elsewhere, we need to copy this kernel,
-                        // because reshape invalidates outputs.
+                    if kernels[kid].is_expandable(x_shape) {
                         if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                            resh_u += 1;
-                            let mut new_kernel = kernels[kid].clone();
-                            if rcs[&x] < 2 {
-                                new_kernel.outputs.remove(&x);
+                            if kernels[kid].is_small() {
+                                let mut new_kernel = kernels[kid].clone();
+                                if rcs[&x] < 2 {
+                                    new_kernel.outputs.remove(&x);
+                                }
+                                kernels.push(new_kernel);
+                            } else {
+                                let x_dtype = graph.dtype(x);
+                                store(&mut kernels, kid, x, x_shape, x_dtype);
+                                xt = 0;
+                                let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
+                                kernels[nkid].depends_on.insert(kid);
+                                kid = nkid;
                             }
-                            kernels.push(new_kernel);
                         }
                     } else {
-                        // if it is not expandable, we have to store it and create new kernel
-                        store(&mut kernels, &mut kid, x, graph, &rcs);
-                        if rcs[&x] > 1 {
-                            kernels.push(kernels[kid].clone());
-                        }
-                        xt = 0;
-                    }*/
-
-                    #[cfg(debug_assertions)]
-                    if !kernels[kid].is_reshapable(shape) {
-                        panic!()
-                    }
-                    
-                    if  kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                        let x_shape = graph.shape(x);
                         let x_dtype = graph.dtype(x);
                         store(&mut kernels, kid, x, x_shape, x_dtype);
                         xt = 0;
                         let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
                         kernels[nkid].depends_on.insert(kid);
                         kid = nkid;
-                        if rcs[&x] > 1 {
-                            kernels.push(kernels[kid].clone());
+                    }
+
+                    let shape = graph.shape(nid);
+                    kernels[kid].expand(shape);
+                    debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
+                    kernels[kid].outputs.clear();
+                    kernels[kid].outputs.insert(nid, xt);
+                    kid
+                }
+                Node::Pad { x } => {
+                    //let _timer = Timer::new("pad");
+                    let (mut xt, mut kid) = get_kernel_min(x, &kernels);
+                    debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
+                    let padding = graph.padding(nid);
+
+                    // TODO make kernel always paddable by padding store view, thus removing the else branch
+                    if kernels[kid].is_paddable() {
+                        if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
+                            if kernels[kid].is_small() {
+                                let mut new_kernel = kernels[kid].clone();
+                                if rcs[&x] < 2 {
+                                    new_kernel.outputs.remove(&x);
+                                }
+                                kernels.push(new_kernel);
+                            } else {
+                                let x_dtype = graph.dtype(x);
+                                let x_shape = graph.shape(x);
+                                store(&mut kernels, kid, x, x_shape, x_dtype);
+                                xt = 0;
+                                let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
+                                kernels[nkid].depends_on.insert(kid);
+                                kid = nkid;
+                            }
+                        }
+                    } else {
+                        let x_dtype = graph.dtype(x);
+                        let x_shape = graph.shape(x);
+                        store(&mut kernels, kid, x, x_shape, x_dtype);
+                        xt = 0;
+                        let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
+                        kernels[nkid].depends_on.insert(kid);
+                        kid = nkid;
+                    }
+
+                    kernels[kid].pad(padding);
+                    kernels[kid].outputs.clear();
+                    kernels[kid].outputs.insert(nid, xt);
+                    kid
+                }
+                Node::Reshape { x } => {
+                    //let _timer = Timer::new("reshape");
+                    let (mut xt, mut kid) = get_kernel_min(x, &kernels);
+                    debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
+                    debug_assert!(kernels[kid].outputs.contains_key(&x));
+                    //println!("Reshaping x = {x} to {nid}");
+                    //kernels[kid].debug();
+                    let shape = graph.shape(nid);
+
+                    if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
+                        if kernels[kid].is_small() {
+                            let mut new_kernel = kernels[kid].clone();
+                            if rcs[&x] < 2 {
+                                new_kernel.outputs.remove(&x);
+                            }
+                            kernels.push(new_kernel);
+                        } else {
+                            let x_shape = graph.shape(x);
+                            let x_dtype = graph.dtype(x);
+                            store(&mut kernels, kid, x, x_shape, x_dtype);
+                            xt = 0;
+                            let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
+                            kernels[nkid].depends_on.insert(kid);
+                            kid = nkid;
                         }
                     }
 
@@ -196,71 +220,26 @@ pub fn realize_graph(
                     kernels[kid].outputs.insert(nid, xt);
                     kid
                 }
-                Node::Pad { x } => {
-                    let _timer = Timer::new("pad");
+                Node::Permute { x } => {
+                    //let _timer = Timer::new("permute");
                     let (mut xt, mut kid) = get_kernel_min(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
-                    let padding = graph.padding(nid);
-                    /*if kernels[kid].is_paddable() {
-                        // If it's gonna be used elsewhere, we need to copy this kernel,
-                        // because padding invalidates outputs.
-                        if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                            pad_u += 1;
-                            let mut new_kernel = kernels[kid].clone();
+                    if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
+                        if kernels[kid].is_small() {
+                        let mut new_kernel = kernels[kid].clone();
                             if rcs[&x] < 2 {
                                 new_kernel.outputs.remove(&x);
                             }
                             kernels.push(new_kernel);
-                        }
-                    } else {
-                        // if it is not paddable, we need to store it and create new kernel
-                        store(&mut kernels, &mut kid, x, graph, &rcs);
-                        if rcs[&x] > 1 {
-                            kernels.push(kernels[kid].clone());
-                        }
-                        xt = 0;
-                    }*/
-
-                    if !kernels[kid].is_paddable() || kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                        let x_dtype = graph.dtype(x);
-                        let x_shape = graph.shape(x);
-                        store(&mut kernels, kid, x, x_shape, x_dtype);
-                        xt = 0;
-                        let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
-                        kernels[nkid].depends_on.insert(kid);
-                        kid = nkid;
-                        if rcs[&x] > 1 {
-                            kernels.push(kernels[kid].clone());
-                        }
-                    }
-
-                    kernels[kid].pad(padding);
-                    kernels[kid].outputs.clear();
-                    kernels[kid].outputs.insert(nid, xt);
-                    kid
-                }
-                Node::Permute { x } => {
-                    let _timer = Timer::new("permute");
-                    let (xt, kid) = get_kernel_min(x, &kernels);
-                    debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
-                    if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                        //if kernels[kid].is_small() {
-                        let mut new_kernel = kernels[kid].clone();
-                        if rcs[&x] < 2 {
-                            new_kernel.outputs.remove(&x);
-                        }
-                        kernels.push(new_kernel);
-                        /*} else {
-                            // If it is too complex, we need to launch it
-                            store(&mut kernels, kid, x, graph);
+                        } else {
+                            let x_shape = graph.shape(x);
+                            let x_dtype = graph.dtype(x);
+                            store(&mut kernels, kid, x, x_shape, x_dtype);
                             xt = 0;
-                            let nkid = kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid)));
+                            let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
                             kernels[nkid].depends_on.insert(kid);
                             kid = nkid;
-                            if rcs[&x] > 1 {
-                                kernels.push(kernels[kid].clone());
-                            }
-                        }*/
+                        }
                     }
 
                     let axes = graph.axes(nid);
@@ -270,36 +249,31 @@ pub fn realize_graph(
                     kid
                 }
                 Node::Reduce { x, rop } => {
-                    let _timer = Timer::new("reduce");
+                    //let _timer = Timer::new("reduce");
                     let (xt, kid) = get_kernel_min(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
 
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
                         // If the kernel is not too complex, we can just clone it
-                        //if kernels[kid].is_small() {
                         let mut new_kernel = kernels[kid].clone();
                         if rcs[&x] < 2 {
                             new_kernel.outputs.remove(&x);
                         }
                         kernels.push(new_kernel);
-                        /*} else {
-                            // If it is too complex, we need to launch it
-                            store(&mut kernels, kid, x, graph);
-                            xt = 0;
-                            let nkid = kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid)));
-                            kernels[nkid].depends_on.insert(kid);
-                            kid = nkid;
-                            if rcs[&x] > 1 {
-                                kernels.push(kernels[kid].clone());
-                            }
-                        }*/
                     }
 
-                    kernels[kid].reduce(nid, xt, graph.shape(x), graph.axes(nid), graph.dtype(x), rop);
+                    kernels[kid].reduce(
+                        nid,
+                        xt,
+                        graph.shape(x),
+                        graph.axes(nid),
+                        graph.dtype(x),
+                        rop,
+                    );
                     kid
                 }
                 Node::Unary { x, uop } => {
-                    let _timer = Timer::new("unary");
+                    //let _timer = Timer::new("unary");
                     let (xt, kid) = get_kernel_max(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     kernels[kid].max_id += 1;
@@ -312,7 +286,7 @@ pub fn realize_graph(
                     kid
                 }
                 Node::Binary { x, y, bop } => {
-                    let _timer = Timer::new("binary");
+                    //let _timer = Timer::new("binary");
                     // x goes first, delete y
                     let (xt, kidx) = get_kernel_max(x, &kernels);
                     let (yt, kidy) = get_kernel_max(y, &kernels);
@@ -458,10 +432,10 @@ pub fn realize_graph(
             let nid_shape = graph.shape(nid);
             let nid_dtype = graph.dtype(nid);
             store(&mut kernels, kid, nid, nid_shape, nid_dtype);
-            if rcs.contains_key(&nid) {
+            /*if rcs.contains_key(&nid) {
                 let nkid = kernels.push(Kernel::leaf(nid, nid_shape, nid_dtype));
                 kernels[nkid].depends_on.insert(kid);
-            }
+            }*/
         }
     }
 
@@ -473,7 +447,8 @@ pub fn realize_graph(
         let n = kernel.ops.len();
         if n > max_ops {
             max_ops = n;
-        } else if n < min_ops {
+        }
+        if n < min_ops {
             min_ops = n;
         }
         avg_ops += n;
@@ -482,9 +457,12 @@ pub fn realize_graph(
     println!("Scheduled {kernels_len} kernels, scheduling took {taken}us, ops per kernel: min: {min_ops}, max: {max_ops}, avg: {}", avg_ops/kernels_len);
     //println!("Expand clones: {expa_u}, reshape clones: {resh_u}, pad clones: {pad_u}, permute clones: {perm_u}, reduce clones: {red_u}");
     // Timer
-    for (name, (time, iters)) in crate::ET.lock().iter() {
-        println!("Timer {name} took {time}us for {iters} iterations, {}us/iter", time/iters);
-    }
+    /*for (name, (time, iters)) in crate::ET.lock().iter() {
+        println!(
+            "Timer {name} took {time}us for {iters} iterations, {}us/iter",
+            time / iters
+        );
+    }*/
 
     /*for kernel in kernels.values().take(10) {
         kernel.debug();
@@ -546,7 +524,7 @@ fn store(
     nid_shape: &[usize],
     nid_dtype: DType,
 ) {
-    let _timer = Timer::new("scheduler store");
+    //let _timer = Timer::new("scheduler store");
     // Add store op to kernel
     let x = kernels[kid].outputs[&nid];
     let zview = View::contiguous(nid_shape);
@@ -570,13 +548,13 @@ fn store(
         xview: View::none(),
     };
     kernels[kid].ops.push(store_op);
-    kernels[kid].outputs.remove(&nid).unwrap();
     kernels[kid].tensors.insert(z, nid);
 
     // Remove this output from all other kernels that produce it. It will be used as a load kernel from now on.
-    for kernel in kernels.values_mut() {
+    //kernels[kid].outputs.remove(&nid).unwrap();
+    /*for kernel in kernels.values_mut() {
         kernel.outputs.remove(&nid);
-    }
+    }*/
 
     /*println!("After cleanup of stored {x}");
     for kernel in kernels.values() {
