@@ -466,7 +466,7 @@ impl Runtime {
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
         //println!("reshaping to {shape:?}, {:?}", self.shape(x));
         let sh = self.shape(x);
-        assert_eq!(
+        debug_assert_eq!(
             shape.iter().product::<usize>(),
             sh.iter().product::<usize>()
         );
@@ -506,13 +506,13 @@ impl Runtime {
                 .take(shape.len() - sh.len())
                 .chain(sh.iter().copied())
                 .collect();
-            assert_eq!(shape.len(), sh.len());
+            debug_assert_eq!(shape.len(), sh.len());
             let y = self.reshape(x, sh);
             let x = self.graph.push_wshape(Node::Expand { x: y }, shape);
             self.release(y).unwrap();
             return x;
         }
-        assert_eq!(shape.len(), sh.len());
+        debug_assert_eq!(shape.len(), sh.len());
         self.graph.push_wshape(Node::Expand { x }, shape)
     }
 
@@ -656,7 +656,7 @@ impl Runtime {
                 T::dtype()
             )));
         }
-        assert!(data.len() <= n, "Return buffer is bigger than tensor");
+        debug_assert!(data.len() <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
             self.realize(BTreeSet::from([x]))?;

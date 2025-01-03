@@ -200,14 +200,14 @@ impl<T> Slab<T> {
 impl<T> Index<Id> for Slab<T> {
     type Output = T;
     fn index(&self, index: Id) -> &Self::Output {
-        assert!(!self.empty.contains(&index));
+        debug_assert!(!self.empty.contains(&index));
         unsafe { self.values[index as usize].assume_init_ref() }
     }
 }
 
 impl<T> IndexMut<Id> for Slab<T> {
     fn index_mut(&mut self, index: Id) -> &mut Self::Output {
-        assert!(!self.empty.contains(&index));
+        debug_assert!(!self.empty.contains(&index));
         unsafe { self.values[index as usize].assume_init_mut() }
     }
 }

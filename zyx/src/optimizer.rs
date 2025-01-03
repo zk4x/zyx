@@ -164,7 +164,7 @@ impl Optimizer {
 
         //let mut reshapes = Vec::new();
         let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
-        assert_ne!(num_loops, 0);
+        debug_assert_ne!(num_loops, 0);
         let mut gws = [1; 3];
         if num_loops < 3 {
             //reshapes.push((0, dims));
@@ -224,7 +224,7 @@ fn optimize_kernel(
 
     let mut reshapes = Vec::new();
     let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
-    assert_ne!(num_loops, 0);
+    debug_assert_ne!(num_loops, 0);
     let mut gws = [1; 3];
     if num_loops < 3 {
         let dims: Vec<usize> =
@@ -255,7 +255,7 @@ fn optimize_kernel(
     //OptimizerProgress::Optimizing { best: Optimization { splits: Vec::new() }, done: BTreeMap::new(), }
     // list untried optimizations
     /*let mut opts = kernel.available_optimizations(device.info());
-    assert!(!opts.is_empty());
+    debug_assert!(!opts.is_empty());
     let mut best_exec_time = Duration::MAX;
     // pick an optimization
     for _ in 0..search_iters.min(opts.len()) {
@@ -309,7 +309,7 @@ fn optimize_kernel(
 
         let mut reshapes = Vec::new();
         let num_loops = self.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
-        assert_ne!(num_loops, 0);
+        debug_assert_ne!(num_loops, 0);
         let mut gws = [1; 3];
         if num_loops < 3 {
             let dims: Vec<usize> =

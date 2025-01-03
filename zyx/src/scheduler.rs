@@ -486,10 +486,10 @@ pub fn realize_graph(
         println!("Timer {name} took {time}us for {iters} iterations, {}us/iter", time/iters);
     }
 
-    for kernel in kernels.values().take(10) {
+    /*for kernel in kernels.values().take(10) {
         kernel.debug();
         println!();
-    }
+    }*/
 
     /*for kernel in kernels.values() {
         if kernel.ops.len() < 20 {

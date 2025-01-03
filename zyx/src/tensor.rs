@@ -371,11 +371,11 @@ impl Tensor {
     pub fn multinomial(&self, num_samples: usize, replacement: bool) -> Result<Tensor, ZyxError> {
         let sh = self.shape();
         let rank = sh.len();
-        assert!(
+        debug_assert!(
             (1..=2).contains(&rank) && num_samples > 0,
             "rank={rank} must be 1 or 2"
         );
-        assert!(
+        debug_assert!(
             replacement || num_samples == 1,
             "no replacement only supports num_samples = 1"
         );

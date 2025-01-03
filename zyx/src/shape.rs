@@ -131,7 +131,7 @@ pub fn into_axes(
 }
 
 pub fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
-    assert_eq!(shape.len(), axes.len());
+    debug_assert_eq!(shape.len(), axes.len());
     axes.iter().map(|a| shape[*a]).collect()
 }
 

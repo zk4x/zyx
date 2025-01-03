@@ -40,7 +40,7 @@ impl View {
 
     /*pub(crate) fn binded(shape: &[usize], axes: &[usize], rank: usize) -> View {
         let mut stride = 1;
-        assert!(axes.iter().all(|&a| a < rank));
+        debug_assert!(axes.iter().all(|&a| a < rank));
         let mut a: usize = rank;
         let mut res = Vec::with_capacity(a);
         while a > 0 {
@@ -103,7 +103,7 @@ impl View {
     pub(crate) fn insert_loop(&mut self, axis: usize) {
         //println!("Inserting loop at axis {axis}");
         if let Some(inner) = self.0.last_mut() {
-            assert!(axis < inner.len());
+            debug_assert!(axis < inner.len());
             let st = inner[axis].st;
             inner.insert(axis, RDim { d: 1, st, lp: 0, rp: 0 });
         }
@@ -117,8 +117,8 @@ impl View {
             return;
         }
         //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
-        assert!(axes.end <= self.0.last().map_or(1, Vec::len));
-        assert_eq!(
+        debug_assert!(axes.end <= self.0.last().map_or(1, Vec::len));
+        debug_assert_eq!(
             self.0.last().unwrap()[axes.clone()].iter().map(|dim| dim.d).product::<usize>(),
             shape.iter().product::<usize>()
         );
@@ -163,8 +163,8 @@ impl View {
                 //println!("Reshape contiguous");
                 for a in axes.clone().rev() {
                     let dim = inner.remove(a);
-                    assert_eq!(dim.lp, 0);
-                    assert_eq!(dim.rp, 0);
+                    debug_assert_eq!(dim.lp, 0);
+                    debug_assert_eq!(dim.rp, 0);
                 }
                 for &d in shape.iter().rev() {
                     let st = if expanded_reshape { 0 } else { ost };
@@ -195,7 +195,7 @@ impl View {
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
         let inner = self.0.last_mut().unwrap();
-        assert_eq!(inner.len(), axes.len());
+        debug_assert_eq!(inner.len(), axes.len());
         let mut new = Vec::with_capacity(axes.len());
         for &a in axes {
             let dim = inner[a].clone();
@@ -208,9 +208,9 @@ impl View {
         //println!("View expand {self} axis = {axis} to ndim {ndim}");
         if let Some(inner) = self.0.last_mut() {
             if let Some(dim) = inner.get_mut(axis) {
-                assert!(dim.d == ndim || dim.d == 1);
-                assert_eq!(dim.lp, 0);
-                assert_eq!(dim.rp, 0);
+                debug_assert!(dim.d == ndim || dim.d == 1);
+                debug_assert_eq!(dim.lp, 0);
+                debug_assert_eq!(dim.rp, 0);
                 dim.d = ndim;
                 dim.st = 0;
             } else {
@@ -283,7 +283,7 @@ impl View {
             }
         }
         old_shape[axis] = usize::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad).unwrap();
-        assert_eq!(self.shape(), old_shape);
+        debug_assert_eq!(self.shape(), old_shape);
     }
 
     /// Load constant into variable or directly return it if view isn't padded

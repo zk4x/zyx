@@ -502,11 +502,11 @@ impl Kernel {
     pub(super) fn expand(&mut self, shape: &[usize]) {
         //println!("Expanding");
         //kernel.debug();
-        assert_eq!(shape.len(), self.shape().len());
+        debug_assert_eq!(shape.len(), self.shape().len());
         let mut expand_axes = BTreeSet::new();
         for (a, d) in self.shape().into_iter().enumerate() {
             if d != shape[a] {
-                assert_eq!(d, 1);
+                debug_assert_eq!(d, 1);
                 expand_axes.insert(a);
             }
         }
@@ -517,7 +517,7 @@ impl Kernel {
             match op {
                 Op::Loop { axis, len: dimension } => {
                     if expand_axes.contains(axis) && done_expanding.insert(*axis) {
-                        assert_eq!(*dimension, 1);
+                        debug_assert_eq!(*dimension, 1);
                         *dimension = shape[*axis];
                     }
                 }
@@ -1024,7 +1024,7 @@ fn reshape_pattern() {
     let shape = [2, 4, 1, 3, 1, 4, 5, 2];
     let nshape = [8, 3, 1, 2, 2, 2, 5];
     let r = get_reshape_pattern(&shape, &nshape, &[]);
-    assert_eq!(
+    debug_assert_eq!(
         r,
         Some((
             0,
@@ -1034,9 +1034,9 @@ fn reshape_pattern() {
     let shape = [2, 2, 1, 2, 2];
     let nshape = [2, 2, 1, 2, 2, 1];
     let r = get_reshape_pattern(&shape, &nshape, &[]);
-    assert_eq!(r, Some((0, vec![(4..5, 4..6)])));
+    debug_assert_eq!(r, Some((0, vec![(4..5, 4..6)])));
     let shape = [1, 3, 4, 5];
     let nshape = [3, 20];
     let r = get_reshape_pattern(&shape, &nshape, &[]);
-    assert_eq!(r, Some((0, vec![(0..2, 0..1), (2..4, 1..2)])));
+    debug_assert_eq!(r, Some((0, vec![(0..2, 0..1), (2..4, 1..2)])));
 }

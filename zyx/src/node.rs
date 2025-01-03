@@ -264,7 +264,7 @@ impl Constant {
                 BOp::BitShiftRight => Constant::new(x.bitshiftright(y)),
             }
         }
-        assert_eq!(x.dtype(), y.dtype());
+        debug_assert_eq!(x.dtype(), y.dtype());
         match x {
             Constant::BF16(x) => {
                 let Constant::BF16(y) = y else { unreachable!() };

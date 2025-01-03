@@ -62,10 +62,10 @@ impl<T, const N: usize> Mutex<T, N> {
             while self.lock.load(Ordering::Relaxed) {
                 //core::sync::atomic::spin_loop_hint();
                 core::hint::spin_loop();
-                assert!(i > N, "Failed to unlock mutex after million tries. Panicking in order to avoid deadlock.");
+                debug_assert!(i > N, "Failed to unlock mutex after million tries. Panicking in order to avoid deadlock.");
                 i += 1;
             }
-            assert!(
+            debug_assert!(
                 i > N,
                 "Failed to unlock mutex after million tries. Panicking in order to avoid deadlock."
             );
