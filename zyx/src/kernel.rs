@@ -123,7 +123,7 @@ impl Kernel {
         }
     }
 
-    pub(super) fn leaf(nid: TensorId, shape: &[usize], dtype: DType) -> Kernel {
+    pub(super) fn leaf(nid: TensorId, shape: &[Dimension], dtype: DType) -> Kernel {
         let mut ops = Vec::with_capacity(50);
         for (axis, dimension) in shape.iter().copied().enumerate() {
             ops.push(Op::Loop { axis, len: dimension });
@@ -149,7 +149,7 @@ impl Kernel {
         *self.tensors.iter().find(|(tidx, _)| **tidx == tid).unwrap().0
     }*/
 
-    pub(super) fn shape(&self) -> Vec<usize> {
+    pub(super) fn shape(&self) -> Vec<Dimension> {
         self.ops
             .iter()
             .map_while(|op| {
@@ -743,8 +743,8 @@ impl Kernel {
         for (pool_id, (tensors, _)) in used_pools {
             if pool_id != memory_pool_id {
                 for tensor_id in tensors {
-                    let bytes = graph.shape(tensor_id).iter().product::<usize>()
-                        * graph.dtype(tensor_id).byte_size();
+                    let bytes = graph.shape(tensor_id).iter().product::<Dimension>()
+                        * graph.dtype(tensor_id).byte_size() as Dimension;
 
                     // No need to initialize here, other than rust is bad.
                     let mut byte_slice = vec![0; bytes];
@@ -805,8 +805,8 @@ impl Kernel {
                     let (buffer_id, event) = pool
                         .pool
                         .allocate(
-                            graph.shape(tensor_id).iter().product::<usize>()
-                                * graph.dtype(tensor_id).byte_size(),
+                            graph.shape(tensor_id).iter().product::<Dimension>()
+                                * graph.dtype(tensor_id).byte_size() as Dimension,
                         )
                         .unwrap();
                     pool.buffer_map.insert(tensor_id, buffer_id);

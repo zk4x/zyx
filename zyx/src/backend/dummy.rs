@@ -3,8 +3,7 @@ use std::{collections::BTreeMap, ptr};
 use nanoserde::DeJson;
 
 use crate::{
-    runtime::Pool,
-    slab::{Id, Slab},
+    runtime::Pool, shape::Dimension, slab::{Id, Slab}
 };
 
 use super::{
@@ -18,8 +17,8 @@ pub struct DummyConfig {
 }
 
 struct DummyMemoryPool {
-    free_bytes: usize,
-    buffers: Slab<usize>,
+    free_bytes: Dimension,
+    buffers: Slab<Dimension>,
 }
 
 struct DummyDevice {
@@ -49,7 +48,7 @@ pub(super) fn initialize_device(
     devices.push(Box::new(DummyDevice {
         device_info: DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: [u32::MAX as usize, u32::MAX as usize, u32::MAX as usize],
+            max_global_work_dims: [u32::MAX as Dimension, u32::MAX as Dimension, u32::MAX as Dimension],
             max_local_threads: 256 * 256,
             max_local_work_dims: [1, 256, 256],
             preferred_vector_size: 8,
@@ -66,7 +65,7 @@ impl MemoryPool for DummyMemoryPool {
         Ok(())
     }
 
-    fn free_bytes(&self) -> usize {
+    fn free_bytes(&self) -> Dimension {
         self.free_bytes
     }
 
@@ -75,7 +74,7 @@ impl MemoryPool for DummyMemoryPool {
         BufferMut::Dummy
     }
 
-    fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
+    fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
         let _ = bytes;
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;

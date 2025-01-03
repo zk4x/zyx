@@ -1,8 +1,16 @@
 use std::collections::HashMap;
+
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
-fn memory() -> Result<(), ZyxError> {
+fn memory1() {
+    let x = Tensor::from([[2, 3], [4, 5]]);
+    //println!("{x}");
+    assert_eq!(x, [[2, 3], [4, 5]]);
+}
+
+#[test]
+fn memory2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     assert_eq!(x, [[2, 4, 3], [1, 5, 1]]);
     Ok(())
@@ -579,22 +587,17 @@ fn causal_self_attention() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn binary_cross_dependency1() -> Result<(), ZyxError> {
-
-    let x = Tensor::from([4, 5, 1]);
-
-    let y = Tensor::from([4, 1, 2]);
-
-    let x1 = x.sum([])?;
-    let x2 = x1.expand([3, 3])?;
-
-    let y1 = y + &x1;
-    let y2 = y1.sum([])?;
-    //let y3 = y2.expand([3, 3])?;
-
-    let x3 = x2 + &y2;
-
-    Tensor::realize([&x1, &y2, &x3])?;
-
+fn dot_pad() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    let y = Tensor::from([[2, 3], [1, 2], [4, 1]]);
+    x = x.dot(y)?.pad_zeros([(2, 1)])?;
+    assert_eq!(x, [[0, 0, 11, 13, 0], [0, 0, 12, 15, 0]]);
     Ok(())
+}
+
+#[test]
+#[should_panic]
+fn t3() {
+    let x = Tensor::randn([1024, 1024], DType::F32).unwrap().expand([1024, 1024, 1024]).unwrap();
+    Tensor::realize([&x]).unwrap();
 }

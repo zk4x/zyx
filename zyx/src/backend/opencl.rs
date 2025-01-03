@@ -9,6 +9,7 @@ use crate::{
     dtype::Constant,
     ir::{IROp, Reg, Scope},
     node::{BOp, UOp},
+    shape::Dimension,
     slab::{Id, Slab},
     DType,
 };
@@ -37,8 +38,8 @@ pub(super) struct OpenCLMemoryPool {
     #[allow(unused)]
     library: Arc<Library>,
     #[allow(unused)]
-    total_bytes: usize,
-    free_bytes: usize,
+    total_bytes: Dimension,
+    free_bytes: Dimension,
     context: *mut c_void,
     queue: *mut c_void,
     buffers: Slab<OpenCLBuffer>,
@@ -82,7 +83,7 @@ pub(super) struct OpenCLMemoryPool {
 #[derive(Debug)]
 pub(super) struct OpenCLBuffer {
     ptr: *mut c_void,
-    bytes: usize,
+    bytes: Dimension,
 }
 
 #[derive(Debug)]
@@ -143,8 +144,8 @@ pub(super) struct OpenCLDevice {
 pub(super) struct OpenCLProgram {
     program: *mut c_void,
     kernel: *mut c_void,
-    global_work_size: [usize; 3],
-    local_work_size: [usize; 3],
+    global_work_size: [Dimension; 3],
+    local_work_size: [Dimension; 3],
 }
 
 #[derive(Debug)]
@@ -379,8 +380,7 @@ pub(super) fn initialize_device(
                 continue;
             };
             if let Ok(bytes) = device.get_device_data(CL_DEVICE_GLOBAL_MEM_SIZE) {
-                total_bytes +=
-                    usize::try_from(u64::from_ne_bytes(bytes.try_into().unwrap())).unwrap();
+                total_bytes += Dimension::from_ne_bytes(bytes.try_into().unwrap());
                 devices.push(Box::new(device));
             }
         }
@@ -420,11 +420,11 @@ impl MemoryPool for OpenCLMemoryPool {
         Ok(())
     }
 
-    fn free_bytes(&self) -> usize {
+    fn free_bytes(&self) -> Dimension {
         self.free_bytes
     }
 
-    fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
+    fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError {
                 status: ErrorStatus::MemoryAllocation,
@@ -951,8 +951,8 @@ impl Device for OpenCLDevice {
                 program.kernel,
                 u32::try_from(program.global_work_size.len()).unwrap(),
                 ptr::null(),
-                program.global_work_size.as_ptr(),
-                program.local_work_size.as_ptr(),
+                program.global_work_size.as_ptr().cast(),
+                program.local_work_size.as_ptr().cast(),
                 event_wait_list.len().try_into().unwrap(),
                 event_wait_list_ptr,
                 &mut event,
@@ -999,7 +999,7 @@ impl OpenCLDevice {
         let mut max_work_item_dims =
             u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
         let mwis = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
-        let mut max_global_work_dims = [0; 3];
+        let mut max_global_work_dims: [Dimension; 3] = [0; 3];
         if max_work_item_dims > 3 {
             println!(
                 "Found device with more than 3 work dimesions, WOW. Please report this. Using only 3 dims for now."
@@ -1031,12 +1031,11 @@ impl OpenCLDevice {
             max_local_work_dims: [mlt, mlt, mlt],
             preferred_vector_size: u32::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
-            ) as usize
+            ) as u8
                 * 4,
-            local_mem_size: usize::try_from(u64::from_ne_bytes(
+            local_mem_size: Dimension::try_from(u64::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
-            ))
-            .unwrap(),
+            )).unwrap(),
             num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
             tensor_cores: false,
         };

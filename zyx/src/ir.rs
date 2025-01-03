@@ -4,7 +4,7 @@
 
 use super::{kernel::Op, node::ROp};
 use crate::{
-    dtype::Constant, kernel::TId, node::{BOp, UOp}, optimizer::Optimization, DType, DebugMask
+    dtype::Constant, kernel::TId, node::{BOp, UOp}, optimizer::Optimization, shape::Dimension, DType, DebugMask
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -69,11 +69,11 @@ pub enum IROp {
     // while id < len
     Loop {
         id: u16,
-        len: usize,
+        len: Dimension,
     },
     EndLoop {
         id: u16,
-        len: usize,
+        len: Dimension,
     },
     // TODO
     Barrier {

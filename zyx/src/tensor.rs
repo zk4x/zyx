@@ -7,9 +7,8 @@
 use crate::dtype::DType;
 use crate::runtime::{apply_padding, TempData, ZyxError};
 use crate::scalar::{Float, Scalar};
-use crate::shape::{into_axes, into_axis, IntoShape};
+use crate::shape::{into_axes, into_axis, Axis, Dimension, IntoShape};
 use core::cmp::Ordering;
-use std::sync::Arc;
 use float8::F8E4M3 as f8;
 use half::{bf16, f16};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +19,7 @@ use std::ops::{
     RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub,
 };
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::{DebugMask, RT};
 
@@ -52,13 +52,13 @@ impl Drop for Tensor {
 impl Tensor {
     /// Shape of tensor
     #[must_use]
-    pub fn shape(&self) -> Vec<usize> {
+    pub fn shape(&self) -> Vec<Dimension> {
         RT.lock().shape(self.id).to_vec()
     }
 
     /// Number of scalar elements stored in self
     #[must_use]
-    pub fn numel(&self) -> usize {
+    pub fn numel(&self) -> Dimension {
         self.shape().iter().product()
     }
 
@@ -89,7 +89,7 @@ impl Tensor {
     /// to the device, but it will not block (await). This is for performance reasons. Actual
     /// blocking only happens when you access a tensor by printing it, converting it to vector,
     /// or some other operation that requires host to have access to data stored in the tensor.
-    /// 
+    ///
     /// # Errors
     /// Returns device error if the device fails to realize one or more tensors.
     pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
@@ -242,7 +242,7 @@ impl Tensor {
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc, reason = "all panics are checked ahead")]
     pub fn rand(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
-        let shape: Vec<usize> = shape.into_shape().collect();
+        let shape: Vec<Dimension> = shape.into_shape().collect();
         let n = shape.iter().product();
         if dtype.is_float() {
             // TODO later use threefry
@@ -351,7 +351,7 @@ impl Tensor {
     /// Retuns device error if device fails to allocate memory for given tensor.
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
-        let shape: Vec<usize> = once(2).chain(shape.into_shape()).collect();
+        let shape: Vec<Dimension> = once(2).chain(shape.into_shape()).collect();
         let src = Tensor::rand(shape, dtype)?;
         let mut x = src.get(0)?;
         x = x.mul(Tensor::constant(2f32 * std::f32::consts::PI));
@@ -368,7 +368,11 @@ impl Tensor {
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc, reason = "TODO disallow panicking")]
-    pub fn multinomial(&self, num_samples: usize, replacement: bool) -> Result<Tensor, ZyxError> {
+    pub fn multinomial(
+        &self,
+        num_samples: Dimension,
+        replacement: bool,
+    ) -> Result<Tensor, ZyxError> {
         let sh = self.shape();
         let rank = sh.len();
         debug_assert!(
@@ -427,8 +431,9 @@ impl Tensor {
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
     pub fn kaiming_uniform<T: Float>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
-        let n =
-            T::from_i64(shape.clone().into_shape().skip(1).product::<usize>().try_into().unwrap());
+        let n = T::from_i64(
+            shape.clone().into_shape().skip(1).product::<Dimension>().try_into().unwrap(),
+        );
         let one = T::one();
         let x = Scalar::add(one, Scalar::mul(a, a));
         let two = Scalar::add(one, one);
@@ -443,8 +448,8 @@ impl Tensor {
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::cast_precision_loss)]
     pub fn glorot_uniform(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
-        let shape: Vec<usize> = shape.into_shape().collect();
-        let c = 6. / (shape[0] + shape.iter().skip(1).product::<usize>()) as f32;
+        let shape: Vec<_> = shape.into_shape().collect();
+        let c = 6. / (shape[0] + shape.iter().skip(1).product::<Dimension>()) as f32;
         let mut x = Tensor::uniform(shape, -1f32..1f32)?;
         x = x * c.pow(0.5);
         Ok(x.cast(dtype))
@@ -473,7 +478,7 @@ impl Tensor {
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
-    pub fn eye(n: usize, dtype: DType) -> Tensor {
+    pub fn eye(n: Dimension, dtype: DType) -> Tensor {
         Tensor::ones(vec![n, 1], dtype)
             .pad_zeros([(0, isize::try_from(n).unwrap())])
             .unwrap()
@@ -493,7 +498,7 @@ impl Tensor {
         //println!("Arange {start:?}, {stop:?}, {step:?}");
         let n: i64 = stop.sub(start).div(step).cast();
         //println!("Shape {n}");
-        let x = Tensor::full(usize::try_from(n).unwrap(), step)?;
+        let x = Tensor::full(Dimension::try_from(n).unwrap(), step)?;
         //println!("{x}");
         let x = x.cumsum(0)?;
         Ok(x + Tensor::constant(start) - Tensor::constant(step))
@@ -936,7 +941,7 @@ impl Tensor {
     /// Returns error if self cannot be expanded into shape.
     pub fn expand(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         let sh = self.shape();
-        let shape: Vec<usize> = shape.into_shape().collect();
+        let shape: Vec<Dimension> = shape.into_shape().collect();
         //println!("Expand to {shape:?}");
         if shape.len() < sh.len() {
             return Err(ZyxError::ShapeError(format!(
@@ -1011,7 +1016,7 @@ impl Tensor {
             if r < 0 {
                 total -= r;
             }
-            if usize::try_from(total).unwrap() >= shape[rank - i - 1] {
+            if Dimension::try_from(total).unwrap() >= shape[rank - i - 1] {
                 return Err(ZyxError::ShapeError(format!(
                     "Invalid padding {padding:?} on shape {shape:?}"
                 )));
@@ -1069,7 +1074,7 @@ impl Tensor {
                 value.dtype()
             )));
         }
-        if !padding.len() <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { usize::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { usize::try_from(-rp).unwrap() <= d } else { true }) {
+        if !padding.len() <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dimension::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dimension::try_from(-rp).unwrap() <= d } else { true }) {
             return Err(ZyxError::ShapeError(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}")));
         }
         let t0 = self.pad_zeros(padding.clone());
@@ -1121,8 +1126,8 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be reshaped to shape.
     pub fn reshape(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        let shape: Vec<usize> = shape.into_shape().collect();
-        if shape.iter().product::<usize>() != self.numel() {
+        let shape: Vec<_> = shape.into_shape().collect();
+        if shape.iter().product::<Dimension>() != self.numel() {
             return Err(ZyxError::ShapeError(format!(
                 "Invalid reshape {:?} into {:?}",
                 self.shape(),
@@ -2056,7 +2061,7 @@ impl Tensor {
         let mut offset2 =
             tensors.iter().fold(0, |acc, t| acc + isize::try_from(t.shape()[dim]).unwrap());
         let mut shape = tensors[0].shape();
-        shape[dim] = usize::try_from(offset2).unwrap();
+        shape[dim] = Dimension::try_from(offset2).unwrap();
         let mut res = None;
         for tensor in tensors {
             let d = isize::try_from(tensor.shape()[dim]).unwrap();
@@ -2571,16 +2576,16 @@ impl Tensor {
             // TODO later switch to mmapped memory
             let dtype = T::dtype();
             let n: usize = shape.iter().product();
-            let n_bytes = n * dtype.byte_size();
+            let n_bytes = n * dtype.byte_size() as Dimension;
             let x = if cfg!(target_endian = "big") {
                 let buf: &[u8] =
-                    unsafe { std::slice::from_raw_parts(*mptr, n * dtype.byte_size()) };
+                    unsafe { std::slice::from_raw_parts(*mptr, n * dtype.byte_size() as Dimension) };
                 //let mut buf = Vec::with_capacity(n_bytes);
                 //unsafe { buf.set_len(n_bytes) }
                 //let mut buf: Vec<u8> = vec![u8::zero(); n_bytes];
                 //f.read_exact(&mut buf)?;
                 let vec: Vec<T> =
-                    buf.chunks_exact(dtype.byte_size()).map(Scalar::from_le_bytes).collect();
+                    buf.chunks_exact(dtype.byte_size() as Dimension).map(Scalar::from_le_bytes).collect();
                 Tensor::from(vec).reshape(shape)
             } else {
                 //let mut buf: Vec<T> = Vec::with_capacity(n);
@@ -2591,7 +2596,8 @@ impl Tensor {
                 //let buf: &[T] = unsafe { std::slice::from_raw_parts((*mptr).cast(), n) };
                 //Tensor::from(buf).reshape(shape)
 
-                let data = MmappedTensorData { mmap, ptr: *mptr, bytes: n_bytes, dtype: T::dtype() };
+                let data =
+                    MmappedTensorData { mmap, ptr: *mptr, bytes: n_bytes, dtype: T::dtype() };
                 let id = RT.lock().variable(shape.into(), Box::new(data))?;
                 Ok(Tensor { id })
             };
@@ -2683,9 +2689,9 @@ impl Tensor {
                                     ))
                                 })
                             })
-                            .collect::<Result<Vec<usize>, ZyxError>>()?;
+                            .collect::<Result<Vec<_>, ZyxError>>()?;
                         //println!("Offsets: {offsets:?}");
-                        let bytes = shape.iter().product::<usize>() * dtype.byte_size();
+                        let bytes = shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension;
                         if offsets[1] - offsets[0] != bytes {
                             return Err(ZyxError::ParseError(
                                 "Safetensors shapes and offsets are incorrect.".into(),
@@ -2698,20 +2704,48 @@ impl Tensor {
                         tensors.insert(
                             label.clone(),
                             match dtype {
-                                DType::F8 => read_into_tensor::<f8>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::BF16 => read_into_tensor::<bf16>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::F16 => read_into_tensor::<f16>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::F32 => read_into_tensor::<f32>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::F64 => read_into_tensor::<f64>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::U8 => read_into_tensor::<u8>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::I8 => read_into_tensor::<i8>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::I16 => read_into_tensor::<i16>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::I32 => read_into_tensor::<i32>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::U16 => read_into_tensor::<u16>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::U32 => read_into_tensor::<u32>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::U64 => read_into_tensor::<u64>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::I64 => read_into_tensor::<i64>(mmap.clone(), &mut mptr, &shape)?,
-                                DType::Bool => read_into_tensor::<bool>(mmap.clone(), &mut mptr, &shape)?,
+                                DType::F8 => {
+                                    read_into_tensor::<f8>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::BF16 => {
+                                    read_into_tensor::<bf16>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::F16 => {
+                                    read_into_tensor::<f16>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::F32 => {
+                                    read_into_tensor::<f32>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::F64 => {
+                                    read_into_tensor::<f64>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::U8 => {
+                                    read_into_tensor::<u8>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::I8 => {
+                                    read_into_tensor::<i8>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::I16 => {
+                                    read_into_tensor::<i16>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::I32 => {
+                                    read_into_tensor::<i32>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::U16 => {
+                                    read_into_tensor::<u16>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::U32 => {
+                                    read_into_tensor::<u32>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::U64 => {
+                                    read_into_tensor::<u64>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::I64 => {
+                                    read_into_tensor::<i64>(mmap.clone(), &mut mptr, &shape)?
+                                }
+                                DType::Bool => {
+                                    read_into_tensor::<bool>(mmap.clone(), &mut mptr, &shape)?
+                                }
                             },
                         );
                     }
@@ -3003,7 +3037,7 @@ impl Tensor {
     }
 
     // Calculate shape for reduce which keeps reduced dims set to 1
-    fn reduce_kd_shape(&self, axes: impl IntoIterator<Item = isize>) -> Vec<usize> {
+    fn reduce_kd_shape(&self, axes: impl IntoIterator<Item = isize>) -> Vec<Axis> {
         let mut shape = self.shape();
         for a in into_axes(axes, shape.len()).unwrap() {
             shape[a] = 1;
@@ -3693,7 +3727,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
     }
 }
 
-impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData for [[[T; D2]; D1]; D0] {
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData
+    for [[[T; D2]; D1]; D0]
+{
     fn bytes(&self) -> usize {
         D0 * D1 * D2 * T::byte_size()
     }
@@ -3718,7 +3754,9 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     }
 }
 
-impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> TempData for [[[[T; D3]; D2]; D1]; D0] {
+impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> TempData
+    for [[[[T; D3]; D2]; D1]; D0]
+{
     fn bytes(&self) -> usize {
         D0 * D1 * D2 * D3 * T::byte_size()
     }
@@ -3798,7 +3836,8 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[
         }
         if let Ok(data) = self.clone().try_into() {
             let data: [[[T; D2]; D1]; D0] = data;
-            for (x, y) in data.into_iter().flatten().flatten().zip(other.iter().flatten().flatten()) {
+            for (x, y) in data.into_iter().flatten().flatten().zip(other.iter().flatten().flatten())
+            {
                 if !Scalar::is_equal(x, *y) {
                     return false;
                 }
@@ -3819,7 +3858,13 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         }
         if let Ok(data) = self.clone().try_into() {
             let data: [[[[T; D3]; D2]; D1]; D0] = data;
-            for (x, y) in data.into_iter().flatten().flatten().flatten().zip(other.iter().flatten().flatten().flatten()) {
+            for (x, y) in data
+                .into_iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .zip(other.iter().flatten().flatten().flatten())
+            {
                 if !Scalar::is_equal(x, *y) {
                     return false;
                 }
@@ -3846,7 +3891,14 @@ impl<
         }
         if let Ok(data) = self.clone().try_into() {
             let data: [[[[[T; D4]; D3]; D2]; D1]; D0] = data;
-            for (x, y) in data.into_iter().flatten().flatten().flatten().flatten().zip(other.iter().flatten().flatten().flatten().flatten()) {
+            for (x, y) in data
+                .into_iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .flatten()
+                .zip(other.iter().flatten().flatten().flatten().flatten())
+            {
                 if !Scalar::is_equal(x, *y) {
                     return false;
                 }

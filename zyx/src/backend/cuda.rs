@@ -16,11 +16,7 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    dtype::Constant,
-    ir::{IRKernel, IROp, Reg, Scope},
-    node::{BOp, UOp},
-    slab::{Id, Slab},
-    DType,
+    dtype::Constant, ir::{IRKernel, IROp, Reg, Scope}, node::{BOp, UOp}, shape::Dimension, slab::{Id, Slab}, DType
 };
 
 use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
@@ -39,7 +35,7 @@ pub(super) struct CUDAMemoryPool {
     #[allow(unused)]
     context: CUcontext,
     device: CUdevice,
-    free_bytes: usize,
+    free_bytes: Dimension,
     buffers: Slab<CUDABuffer>,
     stream: CUstream,
     //cuMemAllocAsync: unsafe extern "C" fn(*mut CUdeviceptr, usize, CUstream) -> CUDAStatus,
@@ -65,7 +61,7 @@ pub(super) struct CUDAMemoryPool {
 #[derive(Debug)]
 pub(super) struct CUDABuffer {
     ptr: u64,
-    bytes: usize,
+    bytes: Dimension,
 }
 
 #[derive(Debug)]
@@ -111,8 +107,8 @@ pub(super) struct CUDAProgram {
     //name: String,
     module: CUmodule,
     function: CUfunction,
-    global_work_size: [usize; 3],
-    local_work_size: [usize; 3],
+    global_work_size: [Dimension; 3],
+    local_work_size: [Dimension; 3],
 }
 
 #[derive(Debug)]
@@ -330,45 +326,45 @@ pub(super) fn initialize_device(
         dev.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: [
-                usize::try_from(dev.get(
+                Dimension::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
-                usize::try_from(dev.get(
+                Dimension::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
-                usize::try_from(dev.get(
+                Dimension::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
             ],
-            max_local_threads: usize::try_from(dev.get(
+            max_local_threads: Dimension::try_from(dev.get(
                 CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
                 cuDeviceGetAttribute,
             )?)
             .unwrap(),
             max_local_work_dims: [
-                usize::try_from(dev.get(
+                Dimension::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
-                usize::try_from(dev.get(
+                Dimension::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
-                usize::try_from(dev.get(
+                Dimension::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
             ],
-            local_mem_size: usize::try_from(dev.get(
+            local_mem_size: Dimension::try_from(dev.get(
                 CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK,
                 cuDeviceGetAttribute,
             )?)
@@ -387,11 +383,11 @@ impl MemoryPool for CUDAMemoryPool {
         Ok(())
     }
 
-    fn free_bytes(&self) -> usize {
+    fn free_bytes(&self) -> Dimension {
         self.free_bytes
     }
 
-    fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
+    fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError {
                 status: ErrorStatus::MemoryAllocation,
@@ -658,7 +654,7 @@ impl CUDADevice {
         &self,
         kernel: &IRKernel,
         debug_asm: bool,
-    ) -> Result<([usize; 3], [usize; 3], String, Vec<u8>), BackendError> {
+    ) -> Result<([Dimension; 3], [Dimension; 3], String, Vec<u8>), BackendError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 

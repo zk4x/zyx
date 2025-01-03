@@ -140,7 +140,7 @@ impl Graph {
         &self.axes[&tensor_id]
     }
 
-    pub(super) fn shape(&self, tensor_id: TensorId) -> &[usize] {
+    pub(super) fn shape(&self, tensor_id: TensorId) -> &[Dimension] {
         let mut tensor_id = tensor_id;
         for _ in 0..1000 {
             if let Some(shape) = self.shapes.get(&tensor_id) {

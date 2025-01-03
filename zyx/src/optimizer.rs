@@ -1,16 +1,11 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event, MemoryPool},
-    ir::IRKernel,
-    kernel::{Kernel, Op},
-    runtime::Pool,
-    slab::Id,
-    DebugMask,
+    backend::{BackendError, Device, DeviceInfo, Event, MemoryPool}, ir::IRKernel, kernel::{Kernel, Op}, runtime::Pool, shape::Dimension, slab::Id, DebugMask
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Optimization {
-    pub local_work_size: [usize; 3],
+    pub local_work_size: [Dimension; 3],
 }
 
 #[derive(Debug)]

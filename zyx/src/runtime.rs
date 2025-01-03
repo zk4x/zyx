@@ -6,7 +6,7 @@ use crate::node::{BOp, Node, ROp, UOp};
 use crate::optimizer::Optimizer;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
-use crate::shape::{permute, reduce, Dimension};
+use crate::shape::{permute, reduce, Axis, Dimension};
 use crate::slab::Id;
 use crate::tensor::TensorId;
 use crate::DebugMask;
@@ -46,7 +46,7 @@ pub struct Runtime {
 
 pub trait TempData: Send {
     fn read(&self) -> &[u8];
-    fn bytes(&self) -> usize;
+    fn bytes(&self) -> Dimension;
     fn dtype(&self) -> DType;
 }
 
@@ -242,7 +242,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn shape(&self, x: TensorId) -> &[usize] {
+    pub(super) fn shape(&self, x: TensorId) -> &[Dimension] {
         self.graph.shape(x)
     }
 
@@ -258,7 +258,7 @@ impl Runtime {
     ) -> Result<TensorId, ZyxError> {
         let bytes = data.bytes();
         let dtype = data.dtype();
-        debug_assert_eq!(shape.iter().product::<usize>() * dtype.byte_size(), bytes);
+        debug_assert_eq!(shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension, bytes);
         self.initialize_devices()?;
         // TODO rewrite this such that we try to allocate memory pools in fastest device
         // order and we use first one that does not fail.
@@ -309,7 +309,7 @@ impl Runtime {
     // Initialization
     pub(super) fn full(
         &mut self,
-        shape: Vec<usize>,
+        shape: Vec<Dimension>,
         value: impl Scalar,
     ) -> Result<TensorId, ZyxError> {
         let x = self.constant(value);
@@ -319,7 +319,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn ones(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
+    pub(super) fn ones(&mut self, shape: Vec<Dimension>, dtype: DType) -> TensorId {
         let x = match dtype {
             DType::BF16 => self.constant(bf16::ONE),
             DType::F8 => todo!(),
@@ -342,7 +342,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn zeros(&mut self, shape: Vec<usize>, dtype: DType) -> TensorId {
+    pub(super) fn zeros(&mut self, shape: Vec<Dimension>, dtype: DType) -> TensorId {
         let x = match dtype {
             DType::BF16 => self.constant(bf16::ZERO),
             DType::F8 => todo!(),
@@ -392,7 +392,7 @@ impl Runtime {
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
         //self.tensor_buffer_map.find();
-        let cd = dtype.byte_size() / self.dtype(x).byte_size();
+        let cd = dtype.byte_size() as Dimension / self.dtype(x).byte_size() as Dimension;
         if let Some(d) = shape.last_mut() {
             if *d % cd != 0 {
                 return Err(ZyxError::DTypeError(
@@ -463,12 +463,12 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+    pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<Dimension>) -> TensorId {
         //println!("reshaping to {shape:?}, {:?}", self.shape(x));
         let sh = self.shape(x);
         debug_assert_eq!(
-            shape.iter().product::<usize>(),
-            sh.iter().product::<usize>()
+            shape.iter().product::<Dimension>(),
+            sh.iter().product::<Dimension>()
         );
         if shape == sh {
             self.retain(x);
@@ -485,7 +485,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn expand(&mut self, x: TensorId, shape: Vec<usize>) -> TensorId {
+    pub(super) fn expand(&mut self, x: TensorId, shape: Vec<Dimension>) -> TensorId {
         let sh = self.shape(x);
         //println!("Expanding {x} from {sh:?} to {shape:?}");
         if shape == sh {
@@ -493,7 +493,7 @@ impl Runtime {
             return x;
         }
         // Expand with only inserting first dimensions is noop
-        if sh.iter().product::<usize>() == shape.iter().product::<usize>() {
+        if sh.iter().product::<Dimension>() == shape.iter().product::<Dimension>() {
             if let Node::Leaf { dtype } = self.graph[x] {
                 let (pool, bid) = get_mut_buffer(&mut self.pools, x);
                 let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
@@ -502,7 +502,7 @@ impl Runtime {
             }
         }
         if shape.len() > sh.len() {
-            let sh: Vec<usize> = std::iter::repeat(1)
+            let sh: Vec<_> = std::iter::repeat(1)
                 .take(shape.len() - sh.len())
                 .chain(sh.iter().copied())
                 .collect();
@@ -517,7 +517,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn permute(&mut self, x: TensorId, axes: &[usize]) -> TensorId {
+    pub(super) fn permute(&mut self, x: TensorId, axes: &[Axis]) -> TensorId {
         if axes.len() < 2 || axes == (0..axes.len()).collect::<Vec<usize>>() {
             self.retain(x);
             return x;
@@ -530,7 +530,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
-        let mut shape: Vec<usize> = self.shape(x).into();
+        let mut shape: Vec<Dimension> = self.shape(x).into();
         //println!("Self shape: {shape:?}, padding: {padding:?}");
         apply_padding(&mut shape, &padding);
         let id = self.graph.push_wshape(Node::Pad { x }, shape);
@@ -633,10 +633,10 @@ impl Runtime {
     }
 }
 
-pub fn apply_padding(shape: &mut [usize], padding: &[(isize, isize)]) {
+pub fn apply_padding(shape: &mut [Dimension], padding: &[(isize, isize)]) {
     let mut i = 0;
     for d in shape.iter_mut().rev() {
-        *d = usize::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
+        *d = Dimension::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
         i += 1;
         if i >= padding.len() {
             break;
@@ -648,7 +648,7 @@ impl Runtime {
     /// Loads data with beginning elements of the tensor x.
     /// If `data.len()` == `x.numel()`, then it loads the whole tensor.
     pub(super) fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
-        let n: usize = self.shape(x).iter().product();
+        let n: Dimension = self.shape(x).iter().product();
         let dt = self.dtype(x);
         if dt != T::dtype() {
             return Err(ZyxError::DTypeError(format!(
@@ -1133,7 +1133,7 @@ impl Runtime {
                     }
                     ROp::Max => {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
-                        let x_shape: Vec<usize> = self.shape(x).into();
+                        let x_shape: Vec<Dimension> = self.shape(x).into();
                         let z_temp = self.expand(nid, x_shape.clone());
                         let cmp_t = self.cmplt(x, z_temp);
                         self.release(z_temp).unwrap();

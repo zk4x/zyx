@@ -6,7 +6,7 @@
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
-use crate::{ir::IRKernel, runtime::Pool, slab::Id, ZyxError};
+use crate::{ir::IRKernel, runtime::Pool, shape::Dimension, slab::Id, ZyxError};
 use nanoserde::DeJson;
 use std::fmt::Display;
 
@@ -125,17 +125,17 @@ pub struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
     /// Biggest kernel dimensions
-    pub max_global_work_dims: [usize; 3],
+    pub max_global_work_dims: [Dimension; 3],
     /// Maximum local work size threads
-    pub max_local_threads: usize,
+    pub max_local_threads: Dimension,
     /// Maximum local work size dimensions
-    pub max_local_work_dims: [usize; 3],
+    pub max_local_work_dims: [Dimension; 3],
     /// Preferred vector size in bytes
-    pub preferred_vector_size: usize,
+    pub preferred_vector_size: u8,
     /// Local memory size in bytes
-    pub local_mem_size: usize,
+    pub local_mem_size: Dimension,
     /// Number of registers per thread
-    pub num_registers: usize,
+    pub num_registers: u16,
     /// Does this hardware have tensor cores?
     pub tensor_cores: bool,
 }
@@ -149,9 +149,9 @@ pub struct DeviceInfo {
 
 pub trait MemoryPool: Send {
     fn deinitialize(&mut self) -> Result<(), BackendError>;
-    fn free_bytes(&self) -> usize;
+    fn free_bytes(&self) -> Dimension;
     fn get_buffer(&self, buffer: Id) -> BufferMut;
-    fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError>;
+    fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError>;
     // Deallocate drops events without synchronization
     fn deallocate(
         &mut self,

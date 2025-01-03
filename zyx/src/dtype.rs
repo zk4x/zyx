@@ -99,7 +99,7 @@ impl DType {
 
     /// Get the size of this dtype in bytes
     #[must_use]
-    pub const fn byte_size(&self) -> usize {
+    pub const fn byte_size(&self) -> u8 {
         match self {
             Self::F8 | Self::U8 | Self::I8 | Self::Bool => 1,
             Self::BF16 | Self::F16 | Self::I16 | Self::U16 => 2,

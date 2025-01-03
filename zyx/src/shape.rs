@@ -11,7 +11,7 @@ pub trait IntoShape: Clone + Debug {
     /// Convert value into shape (iterator over dimensions)
     fn into_shape(self) -> impl Iterator<Item = Dimension>;
     /// Get the rank of the shape
-    fn rank(&self) -> usize;
+    fn rank(&self) -> Axis;
 }
 
 impl IntoShape for Dimension {
@@ -19,7 +19,7 @@ impl IntoShape for Dimension {
         [self].into_iter()
     }
 
-    fn rank(&self) -> usize {
+    fn rank(&self) -> Axis {
         1
     }
 }
@@ -29,7 +29,7 @@ impl IntoShape for (Dimension, Dimension) {
         [self.0, self.1].into_iter()
     }
 
-    fn rank(&self) -> usize {
+    fn rank(&self) -> Axis {
         2
     }
 }
@@ -39,7 +39,7 @@ impl IntoShape for (Dimension, Dimension, Dimension) {
         [self.0, self.1, self.2].into_iter()
     }
 
-    fn rank(&self) -> usize {
+    fn rank(&self) -> Axis {
         3
     }
 }
@@ -49,7 +49,7 @@ impl<const N: usize> IntoShape for [Dimension; N] {
         self.into_iter()
     }
 
-    fn rank(&self) -> usize {
+    fn rank(&self) -> Axis {
         N
     }
 }
@@ -59,7 +59,7 @@ impl IntoShape for &[Dimension] {
         self.iter().copied()
     }
 
-    fn rank(&self) -> usize {
+    fn rank(&self) -> Axis {
         self.len()
     }
 }
@@ -69,7 +69,7 @@ impl IntoShape for Vec<Dimension> {
         self.into_iter()
     }
 
-    fn rank(&self) -> usize {
+    fn rank(&self) -> Axis {
         self.len()
     }
 }
@@ -79,12 +79,12 @@ impl IntoShape for &Vec<Dimension> {
         self.iter().copied()
     }
 
-    fn rank(&self) -> usize {
+    fn rank(&self) -> Axis {
         self.len()
     }
 }
 
-pub fn into_axis(axis: isize, rank: usize) -> Result<usize, ZyxError> {
+pub fn into_axis(axis: isize, rank: Axis) -> Result<Axis, ZyxError> {
     TryInto::<isize>::try_into(rank).map_or_else(
         |_| {
             Err(ZyxError::ShapeError(format!(
@@ -92,7 +92,7 @@ pub fn into_axis(axis: isize, rank: usize) -> Result<usize, ZyxError> {
             )))
         },
         |rank2| {
-            TryInto::<usize>::try_into(axis + rank2).map_or_else(
+            TryInto::<Axis>::try_into(axis + rank2).map_or_else(
                 |_| {
                     Err(ZyxError::ShapeError(format!(
                         "Axis {axis} is out of range of rank {rank}"
@@ -114,8 +114,8 @@ pub fn into_axis(axis: isize, rank: usize) -> Result<usize, ZyxError> {
 
 pub fn into_axes(
     axes: impl IntoIterator<Item = isize>,
-    rank: usize,
-) -> Result<Vec<usize>, ZyxError> {
+    rank: Axis,
+) -> Result<Vec<Dimension>, ZyxError> {
     let mut res = Vec::new();
     let mut visited = std::collections::BTreeSet::new();
     for axis in axes {
@@ -130,13 +130,13 @@ pub fn into_axes(
     Ok(res)
 }
 
-pub fn permute(shape: &[usize], axes: &[usize]) -> Vec<usize> {
+pub fn permute(shape: &[Dimension], axes: &[Axis]) -> Vec<Dimension> {
     debug_assert_eq!(shape.len(), axes.len());
     axes.iter().map(|a| shape[*a]).collect()
 }
 
-pub fn reduce(shape: &[usize], axes: &[usize]) -> Vec<usize> {
-    let res: Vec<usize> = shape
+pub fn reduce(shape: &[Dimension], axes: &[Axis]) -> Vec<Dimension> {
+    let res: Vec<_> = shape
         .iter()
         .copied()
         .enumerate()

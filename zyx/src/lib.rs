@@ -74,6 +74,7 @@ mod view;
 pub use dtype::DType;
 pub use runtime::ZyxError;
 pub use scalar::{Float, Scalar};
+use shape::Dimension;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 
@@ -146,7 +147,7 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
             let mut st_shape = format!("{:?}", tensor.shape());
             st_shape.retain(|c| !c.is_whitespace());
             write!(header, "\"shape\":{st_shape},").unwrap();
-            let size = tensor.numel() * dtype.byte_size();
+            let size = tensor.numel() * dtype.byte_size() as Dimension;
             write!(header, "\"data_offsets\":[{},{}]", begin, begin + size).unwrap();
             begin += size;
             write!(header, "}},").unwrap();
@@ -190,29 +191,7 @@ impl Drop for Timer {
     }
 }
 
-/*#[test]
-fn t0() {
-    let x = Tensor::from([[2, 3], [4, 5]]);
-    println!("{x}");
-    //assert_eq!(x, [[2, 3], [4, 5]]);
-}
-
-// Unary test
-#[test]
-fn t1() {
-    let x = Tensor::from([[2f32, 3.], [4., 5.]]).exp();
-    println!("{x}");
-    //assert_eq!(x, [[2, 3], [4, 5]]);
-}
-
-#[cfg(feature = "rand")]
-#[test]
-#[should_panic]
-fn t3() {
-    let x = Tensor::randn([1024, 1024], DType::F32).expand([1024, 1024, 1024]);
-    Tensor::realize([&x]).unwrap();
-}
-
+/*
 #[cfg(feature = "rand")]
 #[test]
 fn t4() {
@@ -324,14 +303,6 @@ fn t_17() {
     x = x.sum([]);
     println!("{x}");
 }
-
-#[test]
-fn t_18() {
-    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    let y = Tensor::from([[2, 3], [1, 2], [4, 1]]);
-    x = x.dot(y).pad_zeros([(2, 1)]);
-    println!("{x}");
-}
 */
 
 /*#[test]
@@ -409,3 +380,24 @@ fn t6() {
     println!("{x}");
     handle.join().unwrap();
 }*/
+
+#[test]
+fn binary_cross_dependency1() -> Result<(), ZyxError> {
+
+    let x = Tensor::from([4, 5, 1]);
+
+    let y = Tensor::from([4, 1, 2]);
+
+    let x1 = x.sum([])?;
+    let x2 = x1.expand([3, 3])?;
+
+    let y1 = y + &x1;
+    let y2 = y1.sum([])?;
+    //let y3 = y2.expand([3, 3])?;
+
+    let x3 = x2 + &y2;
+
+    Tensor::realize([&x1, &y2, &x3])?;
+
+    Ok(())
+}
