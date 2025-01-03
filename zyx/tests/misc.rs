@@ -601,3 +601,16 @@ fn t3() {
     let x = Tensor::randn([1024, 1024], DType::F32).unwrap().expand([1024, 1024, 1024]).unwrap();
     Tensor::realize([&x]).unwrap();
 }
+
+#[test]
+fn t_15() {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    for _ in 0..10 {
+        x = &x + &x;
+        //println!("{x}");
+        //Tensor::plot_graph([], &format!("graph{i}"));
+        //Tensor::realize([&x]).unwrap();
+    }
+    //println!("{x}");
+    assert_eq!(x, [[2048, 3072, 1024], [2048, 4096, 1024]]);
+}

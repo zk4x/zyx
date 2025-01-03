@@ -305,18 +305,7 @@ fn t_17() {
 }
 */
 
-/*#[test]
-fn t_15() {
-    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    for _ in 0..10 {
-        x = &x + &x;
-        //println!("{x}");
-        //Tensor::plot_graph([], &format!("graph{i}"));
-        Tensor::realize([&x]).unwrap();
-    }
-    println!("{x}");
-}
-
+/*
 #[test]
 fn t_12() {
     let mut x = Tensor::from([2, 3, 1]);
