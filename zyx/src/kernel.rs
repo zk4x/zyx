@@ -162,13 +162,11 @@ impl Kernel {
             .collect()
     }
 
+    #[cfg(debug_assertions)]
     pub(super) fn is_reshapable(&self, shape: &[usize]) -> bool {
         // TODO remove the first case
         self.ops.iter().all(|op| match op {
-            Op::Loop { .. }
-            | Op::Unary { .. }
-            | Op::Binary { .. }
-            | Op::Barrier { .. } => true,
+            Op::Loop { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Barrier { .. } => true,
             //| Op::Move { .. } => true,
             Op::Load { xview: view, .. }
             | Op::Store { zview: view, .. }
@@ -244,7 +242,7 @@ impl Kernel {
             }
             //self.debug();
             // TODO deal with loop inserts
-            assert_eq!(
+            debug_assert_eq!(
                 self.shape(),
                 shape,
                 "Shape after reshape split is incorrect."
@@ -274,6 +272,118 @@ impl Kernel {
             }
         }
         get_reshape_pattern(&self.shape(), nshape, &unmergeable_axes)
+    }
+
+    pub(super) fn reshape_unchecked(&mut self, nshape: &[usize]) {
+        let shape: &[usize] = &self.shape();
+        // reshape
+        // 2, 4, 1, 3, 1,    4, 5, 2
+        //       8, 3, 1, 2, 2, 2, 5
+        let mut reshapes = Vec::new();
+
+        let mut split_axes = 0..1;
+        let mut merge_axes = 0..1;
+        'a: while merge_axes.end <= shape.len() && split_axes.end <= nshape.len() {
+            match shape[merge_axes.clone()]
+                .iter()
+                .product::<usize>()
+                .cmp(&nshape[split_axes.clone()].iter().product())
+            {
+                std::cmp::Ordering::Less => {
+                    merge_axes.end += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    split_axes.end += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if let Some(d) = shape.get(merge_axes.end) {
+                        if *d == 1 && split_axes.end == nshape.len() {
+                            merge_axes.end += 1;
+                            continue 'a;
+                        }
+                    }
+                    if let Some(d) = nshape.get(split_axes.end) {
+                        if *d == 1 && merge_axes.end == shape.len() {
+                            split_axes.end += 1;
+                            continue 'a;
+                        }
+                    }
+                    if (merge_axes.len(), split_axes.len()) != (1, 1) {
+                        // reshape
+                        // If merge range contains unmergeable axes, return None
+                        // Axes are not mergeable if there is some ops between those axes
+                        reshapes.push((merge_axes.clone(), split_axes.clone()));
+                    }
+                    #[allow(clippy::range_plus_one)]
+                    {
+                        merge_axes = merge_axes.end..merge_axes.end + 1;
+                        split_axes = split_axes.end..split_axes.end + 1;
+                    }
+                }
+            }
+        }
+        for (org_sh, sh) in reshapes.iter().rev() {
+            let mut op_i = self.ops.len();
+            'a: loop {
+                op_i -= 1;
+                if let Op::Loop { axis, .. } = &mut self.ops[op_i] {
+                    //println!("{org_sh:?} -> {sh:?}");
+                    match (*axis).cmp(&(org_sh.end - 1)) {
+                        std::cmp::Ordering::Less => {}
+                        std::cmp::Ordering::Equal => {
+                            // remove org_sh.end - org_sh.start ops from kernel. They should all be loops.
+                            // insert respective loops from new shape
+                            let n = org_sh.end - org_sh.start;
+                            let i = (op_i + 1) - n;
+                            //println!("Removing {i}");
+                            for _ in 0..n {
+                                self.ops.remove(i);
+                            }
+                            //self.debug();
+                            for a in sh.clone().rev() {
+                                //println!("Axis {a}, nshape {nshape:?}");
+                                self.ops.insert(
+                                    i,
+                                    Op::Loop { axis: a + org_sh.start - sh.start, len: nshape[a] },
+                                );
+                            }
+                            //self.debug();
+                            break 'a;
+                        }
+                        std::cmp::Ordering::Greater => {
+                            *axis += sh.end - sh.start;
+                            *axis -= org_sh.end - org_sh.start;
+                        }
+                    }
+                }
+            }
+            //self.debug();
+        }
+        for op in &mut self.ops {
+            match op {
+                    Op::Const { view, .. }
+                    | Op::Load { xview: view, .. }
+                    | Op::Store { zview: view, .. } => {
+                        for (org_sh, sh) in reshapes.iter().rev() {
+                            view.reshape(org_sh.clone(), &nshape[sh.clone()]);
+                        }
+                    }
+                    Op::Accumulator { .. }
+                    | Op::Loop { .. }
+                    | Op::EndLoop
+                    //| Op::Move { .. }
+                    | Op::Unary { .. }
+                    | Op::Binary { .. }
+                    | Op::Barrier { .. } => {}
+                }
+        }
+        //self.debug();
+        // TODO deal with loop inserts
+        debug_assert_eq!(
+            self.shape(),
+            nshape,
+            "Shape after reshape split is incorrect."
+        );
     }
 
     /*pub(super) fn split_loop(&mut self, op_id: usize, dimensions: &[usize]) {
@@ -326,10 +436,11 @@ impl Kernel {
 
     pub(super) fn debug(&self) {
         println!(
-            "Kernel shape: {:?}, outputs: {:?}, tensors: {:?}",
+            "Kernel shape: {:?}, outputs: {:?}, tensors: {:?}, depends on: {:?}",
             self.shape(),
             self.outputs,
-            self.tensors
+            self.tensors,
+            self.depends_on,
         );
         let mut first_loops = true;
         let mut indent = String::new();
@@ -602,7 +713,6 @@ impl Kernel {
         search_iters: usize,
         debug: DebugMask,
     ) -> Result<(), ZyxError> {
-
         // Pick a device to run program
         // Find in which memory pool are most of input tensors stored
         let tensors: BTreeSet<TensorId> = self.tensors.values().copied().collect();
@@ -766,9 +876,7 @@ impl Kernel {
                 Op::Unary { .. } | Op::Binary { .. } => {
                     flop += shape.iter().product::<usize>() as u128;
                 }
-                Op::Accumulator { .. }
-                | Op::Const { .. }
-                | Op::Barrier { .. } => {}
+                Op::Accumulator { .. } | Op::Const { .. } | Op::Barrier { .. } => {}
             }
         }
         (flop, mem_read, mem_write)
@@ -791,9 +899,11 @@ impl std::fmt::Display for Op {
             Op::Load { z, zscope, zview: _, xscope, xview, xdtype } => f.write_fmt(format_args!(
                 "{C_YELLOW}Load{C_RESET}        {z}[{zscope:?}] <- [{xscope:?}, {xdtype}], {xview}"
             )),
-            Op::Store { z, zview, zscope, zdtype, x, xscope, xview: _ } => f.write_fmt(format_args!(
+            Op::Store { z, zview, zscope, zdtype, x, xscope, xview: _ } => {
+                f.write_fmt(format_args!(
                 "{C_RED}Store{C_RESET}        {z}[{zscope:?}] <- {x}[{xscope:?}], {zview}, {zdtype}"
-            )),
+            ))
+            }
             Op::Loop { axis, len } => f.write_fmt(format_args!(
                 "{C_GREEN}Loop{C_RESET}        axis: {axis}, len: {len}"
             )),

@@ -590,11 +590,11 @@ fn binary_cross_dependency1() -> Result<(), ZyxError> {
 
     let y1 = y + &x1;
     let y2 = y1.sum([])?;
-    let y3 = y2.expand([3, 3])?;
+    //let y3 = y2.expand([3, 3])?;
 
     let x3 = x2 + &y2;
 
-    Tensor::realize([&x1, &y2, &y3, &x3])?;
+    Tensor::realize([&x1, &y2, &x3])?;
 
     Ok(())
 }

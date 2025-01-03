@@ -217,8 +217,8 @@ impl Runtime {
             pool.deinitialize()?;
         }
         // Timer
-        for (name, time) in crate::ET.lock().iter() {
-            println!("Timer {name} took {time} us");
+        for (name, (iters, time)) in crate::ET.lock().iter() {
+            println!("Timer {name} took {time}us for {iters} iterations, {}us/iter", time/iters);
         }
         self.config_dir = None;
         self.temp_data = Vec::new();
@@ -295,7 +295,7 @@ impl Runtime {
             buffer_id,
             vec![event],
         )?;
-        let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, dtype);
+        let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.pools[mpid].buffer_map.insert(id, buffer_id);
         self.pools[mpid].events.insert(BTreeSet::from([buffer_id]), event);
         Ok(id)
@@ -371,7 +371,8 @@ impl Runtime {
             self.retain(x);
             return x;
         }
-        self.graph.push_wdtype(Node::Unary { x, uop: UOp::Cast(dtype) }, dtype)
+        //self.graph.push_wdtype(Node::Unary { x, uop: UOp::Cast(dtype) }, dtype)
+        self.graph.push(Node::Unary { x, uop: UOp::Cast(dtype) })
     }
 
     /// Bitcast self to other type, currently immediatelly realizes the tensor.
@@ -400,7 +401,8 @@ impl Runtime {
             }
             *d /= cd;
         }
-        let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
+        //let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
+        let id = self.graph.push_wshape(Node::Leaf { dtype }, shape.clone());
         if let Some(pool) = self.pools.iter_mut().find(|pool| pool.buffer_map.contains_key(&x)) {
             //println!("Bitcast {x}, res {id}, new shape {shape:?} buffer id {bid:?}");
             let x = *pool.buffer_map.get(&x).unwrap();
@@ -473,9 +475,9 @@ impl Runtime {
             return x;
         }
         // Reshape on leaf is NOOP, tensor_buffer_map traces ownership
-        if self.graph[x] == Node::Leaf {
+        if let Node::Leaf { dtype } = self.graph[x] {
             let (pool, bid) = get_mut_buffer(&mut self.pools, x);
-            let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
+            let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
             pool.buffer_map.insert(id, bid);
             return id;
         }
@@ -491,13 +493,13 @@ impl Runtime {
             return x;
         }
         // Expand with only inserting first dimensions is noop
-        if self.graph[x] == Node::Leaf
-            && sh.iter().product::<usize>() == shape.iter().product::<usize>()
-        {
-            let (pool, bid) = get_mut_buffer(&mut self.pools, x);
-            let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape, self.graph.dtype(x));
-            pool.buffer_map.insert(id, bid);
-            return id;
+        if sh.iter().product::<usize>() == shape.iter().product::<usize>() {
+            if let Node::Leaf { dtype } = self.graph[x] {
+                let (pool, bid) = get_mut_buffer(&mut self.pools, x);
+                let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
+                pool.buffer_map.insert(id, bid);
+                return id;
+            }
         }
         if shape.len() > sh.len() {
             let sh: Vec<usize> = std::iter::repeat(1)
@@ -753,7 +755,7 @@ impl Runtime {
         // Calculates which tensors are not needed and which tensors need to be evaluated
         // in order to drop those unneeded tensors. This is basically constant folding.
         for tensor in &order {
-            if matches!(self.graph[*tensor], Node::Leaf | Node::Const { .. }) {
+            if matches!(self.graph[*tensor], Node::Leaf { .. } | Node::Const { .. }) {
                 if !outside_nodes.contains(tensor) {
                     to_delete.insert(*tensor);
                     continue;
@@ -809,8 +811,8 @@ impl Runtime {
         self.deallocate_tensors(&to_delete)?;
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {
-            self.graph.add_shape_dtype(tensor);
-            self.graph[tensor] = Node::Leaf;
+            self.graph.add_shape(tensor);
+            self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
             to_delete.remove(&tensor);
         }
         //println!("To delete: {to_delete:?}");

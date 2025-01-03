@@ -58,10 +58,12 @@ pub enum Node {
         value: Constant,
     },
     // Tensor stored on device
-    Leaf,
+    Leaf {
+        dtype: DType,
+    },
     Expand {
         x: TensorId,
-        //shape: Box<Vec<usize>>,
+        //shape: u32,
     },
     Permute {
         x: TensorId,

@@ -82,13 +82,13 @@ pub fn realize_graph(
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1
         let kid: KernelId = if realized_nodes.contains(&nid) {
+            let _timer = Timer::new("leaf");
             //kernels.len() - 1
             kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid)))
         } else {
             match graph[nid] {
                 // All ops are merged except
-                // Pad is not merged of kernel contains store
-                // Reshape is not merged if reshaping reduce loops
+                // Pad is not merged of kernel contains store (could be merged eventually)
                 // Expand is not merged if expanding reduce kernel or kernel contains store
                 // These rules can be later loosened using some heuristic.
                 Node::Const { value } => {
@@ -96,8 +96,8 @@ pub fn realize_graph(
                     //kernels.len() - 1
                     kernels.push(Kernel::constant(nid, value))
                 }
-                Node::Leaf => unreachable!(),
-                // Expand, reshape and pad are not always mergeable and thus can finish kernels.
+                Node::Leaf { .. } => unreachable!(),
+                // Expand and pad are not always mergeable and thus can finish kernels.
                 // All other ops are always mergeable.
                 Node::Expand { x } => {
                     let _timer = Timer::new("expand");
@@ -190,7 +190,7 @@ pub fn realize_graph(
                         }
                     }
 
-                    kernels[kid].reshape(shape);
+                    kernels[kid].reshape_unchecked(shape);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
                     kernels[kid].outputs.clear();
                     kernels[kid].outputs.insert(nid, xt);
@@ -482,8 +482,8 @@ pub fn realize_graph(
     println!("Scheduled {kernels_len} kernels, scheduling took {taken}us, ops per kernel: min: {min_ops}, max: {max_ops}, avg: {}", avg_ops/kernels_len);
     //println!("Expand clones: {expa_u}, reshape clones: {resh_u}, pad clones: {pad_u}, permute clones: {perm_u}, reduce clones: {red_u}");
     // Timer
-    for (name, time) in crate::ET.lock().iter() {
-        println!("Timer {name} took {time} us");
+    for (name, (time, iters)) in crate::ET.lock().iter() {
+        println!("Timer {name} took {time}us for {iters} iterations, {}us/iter", time/iters);
     }
 
     for kernel in kernels.values().take(10) {
@@ -546,6 +546,7 @@ fn store(
     nid_shape: &[usize],
     nid_dtype: DType,
 ) {
+    let _timer = Timer::new("scheduler store");
     // Add store op to kernel
     let x = kernels[kid].outputs[&nid];
     let zview = View::contiguous(nid_shape);

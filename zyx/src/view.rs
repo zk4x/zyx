@@ -85,6 +85,7 @@ impl View {
         self.0.last().map_or(1, |inner| inner.iter().map(|dim| dim.d).product())
     }*/
 
+    #[cfg(debug_assertions)]
     pub(crate) fn is_contiguous(&self) -> bool {
         self.0.last().map_or(true, |inner| {
             let stride = 1;
@@ -111,6 +112,7 @@ impl View {
 
     // This is used for reshape, merge and split
     pub(crate) fn reshape(&mut self, axes: Range<usize>, shape: &[usize]) {
+        let _timer = crate::Timer::new("view reshape");
         if self.0.is_empty() {
             return;
         }

@@ -1,6 +1,6 @@
 //! Graph of tensor operations.
 
-use crate::node::{BOp, Node};
+use crate::node::{BOp, Node, UOp};
 use crate::tensor::TensorId;
 use crate::{
     shape::{Axis, Dimension},
@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Graph {
     // First value is reference count, second is node
     pub(super) nodes: Slab<(u32, Node)>,
-    dtypes: BTreeMap<TensorId, DType>,
+    //dtypes: BTreeMap<TensorId, DType>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
     paddings: BTreeMap<TensorId, Vec<(isize, isize)>>,
@@ -27,7 +27,7 @@ impl Graph {
             shapes: BTreeMap::new(),
             paddings: BTreeMap::new(),
             axes: BTreeMap::new(),
-            dtypes: BTreeMap::new(),
+            //dtypes: BTreeMap::new(),
         }
     }
 
@@ -53,7 +53,7 @@ impl Graph {
                 to_remove.insert(x);
                 self.nodes.remove(x);
                 self.shapes.remove(&x);
-                self.dtypes.remove(&x);
+                //self.dtypes.remove(&x);
                 self.axes.remove(&x);
                 self.paddings.remove(&x);
             }
@@ -63,8 +63,7 @@ impl Graph {
 
     pub(super) fn push(&mut self, node: Node) -> TensorId {
         //println!("Pushing {node:?}");
-        // checks, remove in release builds, aren't really necessary,
-        // needed just for debugging
+        #[cfg(debug_assertions)]
         {
             let mut shape = None;
             for nid in node.parameters() {
@@ -96,28 +95,6 @@ impl Graph {
         id
     }
 
-    pub(super) fn push_wdtype(&mut self, node: Node, dtype: DType) -> TensorId {
-        let id = self.push(node);
-        self.dtypes.insert(id, dtype);
-        id
-    }
-
-    pub(super) fn push_wshape_and_dtype(
-        &mut self,
-        node: Node,
-        shape: Vec<Dimension>,
-        dtype: DType,
-    ) -> TensorId {
-        //println!("Pushing {node:?}");
-        for nid in node.parameters() {
-            self.nodes[nid].0 += 1;
-        }
-        let id = self.nodes.push((1, node));
-        self.shapes.insert(id, shape);
-        self.dtypes.insert(id, dtype);
-        id
-    }
-
     pub(super) fn push_padding(&mut self, id: TensorId, padding: Vec<(isize, isize)>) {
         self.paddings.insert(id, padding);
     }
@@ -126,20 +103,22 @@ impl Graph {
         self.axes.insert(id, axes);
     }
 
-    pub(super) fn add_shape_dtype(&mut self, id: TensorId) {
+    pub(super) fn add_shape(&mut self, id: TensorId) {
         let shape = self.shape(id).into();
         self.shapes.insert(id, shape);
-        let dtype = self.dtype(id);
-        self.dtypes.insert(id, dtype);
     }
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
         for _ in 0..1000 {
-            if let Some(&dtype) = self.dtypes.get(&tensor_id) {
+            if let Node::Leaf { dtype } = self.nodes[tensor_id].1 {
                 return dtype;
             } else if let Node::Const { value } = self.nodes[tensor_id].1 {
                 return value.dtype();
+            } else if let Node::Unary { uop , .. } = self.nodes[tensor_id].1 {
+                if let UOp::Cast(dtype) = uop {
+                    return dtype;
+                }
             } else if let Node::Binary { bop, .. } = self.nodes[tensor_id].1 {
                 if matches!(
                     bop,
@@ -182,7 +161,6 @@ impl Graph {
         for &tensor in tensors {
             self.nodes.remove(tensor);
             self.shapes.remove(&tensor);
-            self.dtypes.remove(&tensor);
         }
     }
 
@@ -306,9 +284,9 @@ impl Graph {
             let node = &self.nodes[id].1;
             match node {
                 Node::Const { value } => add_node(id, &f!("Const({value:?})"), "box"),
-                Node::Leaf => add_node(
+                Node::Leaf { dtype } => add_node(
                     id,
-                    &f!("Leaf({:?}, {})", self.shape(id), self.dtype(id)),
+                    &f!("Leaf({:?}, {})", self.shape(id), dtype),
                     "box",
                 ),
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),
