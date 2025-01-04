@@ -1163,7 +1163,7 @@ impl Constant {
         match self {
             &Self::BF16(x) => format!("{:.16}f", half::bf16::from_bits(x)),
             &Self::F8(x) => format!("{:.8}f", float8::F8E4M3::from_bits(x)),
-            &Self::F16(x) => format!("{:.16}f", half::f16::from_bits(x)),
+            &Self::F16(x) => format!("(half){:.16}", half::f16::from_bits(x)),
             &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
             &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),
             Self::U8(x) => format!("{x}"),

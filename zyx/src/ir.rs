@@ -4,7 +4,7 @@
 
 use super::{kernel::Op, node::ROp};
 use crate::{
-    dtype::Constant, kernel::TId, node::{BOp, UOp}, optimizer::Optimization, shape::Dimension, DType, DebugMask
+    dtype::Constant, kernel::{Kernel, TId}, node::{BOp, UOp}, optimizer::Optimization, shape::Dimension, DType, DebugMask
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -315,9 +315,8 @@ impl IRCompiler {
                     loops.push((id, len));
                 }
                 Op::EndLoop => {
-                    if let Some((id, len)) = loops.pop() {
-                        c.ops.push(IROp::EndLoop { id, len });
-                    }
+                    let (id, len) = loops.pop().unwrap();
+                    c.ops.push(IROp::EndLoop { id, len });
                 }
                 &Op::Const { z, value, ref view } => {
                     let zreg = view.ir_for_constant_load(&mut c, value);
@@ -578,12 +577,11 @@ impl IRCompiler {
                     }
                 }
                 IROp::Loop { id, len } => {
-                    if let Some(&zrc) = ref_counts.get(&id) {
-                        dtypes.insert(id, DType::U64);
-                        let zr = new_var(&mut registers, &mut reg_rcs, DType::U64, zrc);
-                        ops.push(IROp::Loop { id: zr, len });
-                        cmp.insert(id, zr);
-                    }
+                    let &zrc = ref_counts.get(&id).unwrap();
+                    dtypes.insert(id, DType::U64);
+                    let zr = new_var(&mut registers, &mut reg_rcs, DType::U64, zrc);
+                    ops.push(IROp::Loop { id: zr, len });
+                    cmp.insert(id, zr);
                 }
                 IROp::EndLoop { id, len } => {
                     reg_rcs[cmp[&id] as usize] -= 1;
@@ -621,6 +619,7 @@ impl IRCompiler {
     }
 
     #[allow(clippy::cognitive_complexity)]
+    #[allow(unused)]
     fn loop_unrolling(&mut self) {
         let mut op_i = self.ops.len();
         let mut last_end_loop = Vec::new();
@@ -1175,7 +1174,7 @@ fn new_var(
 // Returns IRKernel and order in which tensors are passed to it as arguments
 // Axes have the same id in registers.
 impl IRKernel {
-    pub(super) fn new(mut kernel: crate::kernel::Kernel, optimization: &Optimization, debug: DebugMask) -> IRKernel {
+    pub(super) fn new(mut kernel: Kernel, optimization: &Optimization, debug: DebugMask) -> IRKernel {
         if debug.sched() {
             kernel.debug();
         }
@@ -1203,7 +1202,7 @@ impl IRKernel {
         let mut compiler = IRCompiler::vops_to_ssa_ir(&kernel.ops, &mut args, &mut addressables);
         // Optimizations
         compiler.global_loop_unrolling();
-        compiler.loop_unrolling();
+        //compiler.loop_unrolling();
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
         if false {

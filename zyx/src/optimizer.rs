@@ -730,7 +730,7 @@ fn optimize_kernel(
 fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     const fn value_unit(x: u128) -> (u128, &'static str) {
         match x {
-            0..1000 => (x / 100, ""),
+            0..1000 => (x * 100, ""),
             1_000..1_000_000 => (x / 10, "k"),
             1_000_000..1_000_000_000 => (x / 10_000, "M"),
             1_000_000_000..1_000_000_000_000 => (x / 10_000_000, "G"),
@@ -743,26 +743,32 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     let (f, f_u) = value_unit(flop);
     let (br, br_u) = value_unit(bytes_read);
     let (bw, bw_u) = value_unit(bytes_written);
-    let (t_d, t_u) = match nanos {
-        0..1_000 => (1 / 10, "ns"),
-        1_000..1_000_000 => (100, "μs"),
-        1_000_000..1_000_000_000 => (100_000, "ms"),
-        1_000_000_000..1_000_000_000_000 => (100_000_000, "s"),
-        1_000_000_000_000.. => (6_000_000_000, "min"),
+    let (t, t_u) = match nanos {
+        0..1_000 => (nanos*10, "ns"),
+        1_000..1_000_000 => (nanos/100, "μs"),
+        1_000_000..1_000_000_000 => (nanos/100_000, "ms"),
+        1_000_000_000..1_000_000_000_000 => (nanos/100_000_000, "s"),
+        1_000_000_000_000.. => (nanos/6_000_000_000, "min"),
     };
 
     let (fs, f_us) = value_unit(flop * 1_000_000_000 / nanos);
     let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
     let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
 
-    println!("        {}.{} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s read, {}.{} {bw_us}B/s write, {f} {f_u}FLOP, {br} {br_u}B read, {bw} {bw_u}B write",
-        nanos/(t_d*10),
-        (nanos/t_d)%10,
+    println!("        {}.{} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s read, {}.{} {bw_us}B/s write, {}.{} {f_u}FLOP, {}.{} {br_u}B read, {}.{} {bw_u}B write",
+        t/10,
+        t%10,
         fs/100,
         fs%100,
         brs/100,
         brs%100,
         bws/100,
         bws%100,
+        f/100,
+        f%100,
+        br/100,
+        br%100,
+        bw/100,
+        bw%100,
     );
 }

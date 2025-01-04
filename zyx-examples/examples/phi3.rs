@@ -7,7 +7,7 @@ use tokenizers::Tokenizer;
 use zyx::{DType, Tensor, ZyxError};
 use zyx_nn::{Embedding, LayerNorm, Linear};
 
-fn repeat_kv(x: Tensor, n_rep: usize) -> Result<Tensor, ZyxError> {
+/*fn repeat_kv(x: Tensor, n_rep: usize) -> Result<Tensor, ZyxError> {
     let [bs, seqlen, n_kv_heads, head_dim] = x.shape()[..] else {
         panic!()
     };
@@ -18,6 +18,18 @@ fn repeat_kv(x: Tensor, n_rep: usize) -> Result<Tensor, ZyxError> {
         .repeat([1, 1, 1, n_rep])
         .unwrap()
         .reshape([bs, seqlen, n_kv_heads * n_rep, head_dim]);
+}*/
+
+fn repeat_kv(xs: Tensor, n_rep: usize) -> Tensor {
+    if n_rep == 1 {
+        xs
+    } else {
+        let [b_sz, n_kv_head, seq_len, head_dim] = xs.shape()[..] else { panic!() };
+        // Using cat is faster than a broadcast as it avoids going through a potentially
+        // strided copy.
+        // https://github.com/huggingface/candle/pull/2043
+        Tensor::cat(vec![&xs; n_rep], 2).unwrap().reshape([b_sz, n_kv_head * n_rep, seq_len, head_dim]).unwrap()
+    }
 }
 
 trait VarMap {
@@ -188,7 +200,7 @@ struct Attention {
     q_proj: Linear,
     k_proj: Linear,
     v_proj: Linear,
-    dense: Linear,
+    o_proj: Linear,
     kv_cache: Option<(Tensor, Tensor)>,
     q_layernorm: Option<LayerNorm>,
     k_layernorm: Option<LayerNorm>,
@@ -206,9 +218,9 @@ fn get_mask(size: usize) -> Result<Tensor, ZyxError> {
     Tensor::from(mask).reshape([size, size])
 }
 
-fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: f32) -> Result<Tensor, ZyxError> {
+/*fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: f32) -> Result<Tensor, ZyxError> {
     mask.where_(on_true, on_false)
-}
+}*/
 
 impl Attention {
     fn new(cfg: &Config, vb: &mut HashMap<String, Tensor>) -> Result<Self, ZyxError> {
@@ -261,7 +273,7 @@ impl Attention {
             q_proj,
             k_proj,
             v_proj,
-            dense,
+            o_proj: dense,
             kv_cache: None,
             q_layernorm,
             k_layernorm,
@@ -273,11 +285,11 @@ impl Attention {
         })
     }
 
-    fn repeat_kv(&self, xs: Tensor) -> Result<Tensor, ZyxError> {
+    /*fn repeat_kv(&self, xs: Tensor) -> Result<Tensor, ZyxError> {
         repeat_kv(xs, self.num_heads / self.num_kv_heads)
-    }
+    }*/
 
-    fn forward(&mut self, xs: &Tensor, mask: Option<&Tensor>) -> Tensor {
+    fn forward(&mut self, xs: &Tensor, attention_mask: Option<&Tensor>) -> Tensor {
         let [b_size, seq_len, _n_embd] = xs.shape()[..] else {
             panic!()
         };
@@ -336,7 +348,7 @@ impl Attention {
         self.kv_cache = Some((key_states.clone(), value_states.clone()));
 
         // Repeat kv.
-        let key_states = self.repeat_kv(key_states).unwrap();
+        /*let key_states = self.repeat_kv(key_states).unwrap();
         let value_states = self.repeat_kv(value_states).unwrap();
 
         let attn_weights = query_states
@@ -353,14 +365,37 @@ impl Attention {
             }
         };
         let attn_weights = attn_weights
-            .softmax([-1])
+            .softmax([-3])
             .unwrap()
             .cast(value_states.dtype());
+        Tensor::realize([&attn_weights, &value_states]).unwrap();
         let attn_output = attn_weights.matmul(&value_states).unwrap();
         let attn_output = attn_output.transpose(1, 2).unwrap();
         let d: usize = attn_output.shape()[2..].iter().product();
         let attn_output = attn_output.reshape([b_size, seq_len, d]).unwrap();
-        self.dense.forward(attn_output).unwrap()
+        let attn_output = self.dense.forward(attn_output).unwrap();
+        attn_output*/
+
+        let num_kv_groups = self.num_heads/self.num_kv_heads;
+        let key_states = repeat_kv(key_states, num_kv_groups);
+        let value_states = repeat_kv(value_states, num_kv_groups);
+
+        let attn_output = {
+            let scale = half::f16::from_f64(1f64 / f64::sqrt(self.head_dim as f64));
+            let attn_weights = query_states.matmul(key_states.transpose(2, 3).unwrap()).unwrap() * scale;
+
+            let attn_weights = match attention_mask {
+                None => attn_weights,
+                Some(mask) => attn_weights + mask,
+            };
+            let attn_weights = attn_weights.softmax([-1]).unwrap();
+            attn_weights.matmul(&value_states).unwrap()
+        };
+        println!("{attn_output}");
+        let attn_output = attn_output.transpose(1, 2).unwrap();
+        let d: usize = attn_output.shape()[2..].iter().product();
+        let attn_output = attn_output.reshape([b_size, seq_len, d]).unwrap();
+        self.o_proj.forward(attn_output).unwrap()
     }
 
     fn clear_kv_cache(&mut self) {
@@ -400,11 +435,10 @@ impl DecoderLayer {
     fn forward(&mut self, xs: &Tensor, mask: Option<&Tensor>) -> Tensor {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs).unwrap();
-        //println!("{xs}");
         let attn_outputs = self.self_attn.forward(&xs, mask);
-        //println!("{attn_outputs}");
-        //panic!();
+        println!("{attn_outputs}");
         let feed_forward_hidden_states = self.mlp.forward(&xs).unwrap();
+        println!("{feed_forward_hidden_states}");
         attn_outputs + feed_forward_hidden_states + residual
     }
 
@@ -469,6 +503,8 @@ impl Model {
         for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, mask.as_ref());
         }
+        println!("{xs}");
+        panic!();
         //Tensor::plot_graph([], "graph").unwrap();
         let xs = self
             .final_layernorm
