@@ -391,7 +391,6 @@ impl Attention {
             let attn_weights = attn_weights.softmax([-1]).unwrap();
             attn_weights.matmul(&value_states).unwrap()
         };
-        println!("{attn_output}");
         let attn_output = attn_output.transpose(1, 2).unwrap();
         let d: usize = attn_output.shape()[2..].iter().product();
         let attn_output = attn_output.reshape([b_size, seq_len, d]).unwrap();
@@ -436,10 +435,10 @@ impl DecoderLayer {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs).unwrap();
         let attn_outputs = self.self_attn.forward(&xs, mask);
-        println!("{attn_outputs}");
+        //println!("{attn_outputs}");
         let feed_forward_hidden_states = self.mlp.forward(&xs).unwrap();
-        println!("{feed_forward_hidden_states}");
-        attn_outputs + feed_forward_hidden_states + residual
+        let res = attn_outputs + feed_forward_hidden_states + residual;
+        res
     }
 
     fn clear_kv_cache(&mut self) {
@@ -502,6 +501,7 @@ impl Model {
         };
         for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, mask.as_ref());
+            println!("{xs}");
         }
         println!("{xs}");
         panic!();

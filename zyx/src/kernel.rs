@@ -123,7 +123,7 @@ impl Kernel {
         }
     }
 
-    pub(super) fn leaf(nid: TensorId, shape: &[Dimension], dtype: DType) -> Kernel {
+    pub(super) fn leaf(nid: TensorId, shape: &[Dimension], dtype: DType, depends_on: BTreeSet<Id>) -> Kernel {
         let mut ops = Vec::with_capacity(50);
         for (axis, dimension) in shape.iter().copied().enumerate() {
             ops.push(Op::Loop { axis, len: dimension });
@@ -141,7 +141,7 @@ impl Kernel {
             ops,
             outputs: BTreeMap::from([(nid, 0)]),
             tensors: BTreeMap::from([(0, nid)]),
-            depends_on: BTreeSet::new(),
+            depends_on,
         }
     }
 

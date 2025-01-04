@@ -94,7 +94,12 @@ pub fn realize_graph(
         let kid: KernelId = if realized_nodes.contains(&nid) {
             //let _timer = Timer::new("leaf");
             //kernels.len() - 1
-            kernels.push(Kernel::leaf(nid, graph.shape(nid), graph.dtype(nid)))
+            kernels.push(Kernel::leaf(
+                nid,
+                graph.shape(nid),
+                graph.dtype(nid),
+                BTreeSet::new(),
+            ))
         } else {
             match graph[nid] {
                 // All ops are merged except
@@ -125,18 +130,22 @@ pub fn realize_graph(
                             } else {
                                 let x_dtype = graph.dtype(x);
                                 store(&mut kernels, kid, x, x_shape, x_dtype);
+                                let nkid = kernels.push(Kernel::leaf(
+                                    x,
+                                    x_shape,
+                                    x_dtype,
+                                    BTreeSet::from([kid]),
+                                ));
                                 xt = 0;
-                                let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
-                                kernels[nkid].depends_on.insert(kid);
                                 kid = nkid;
                             }
                         }
                     } else {
                         let x_dtype = graph.dtype(x);
                         store(&mut kernels, kid, x, x_shape, x_dtype);
+                        let nkid =
+                            kernels.push(Kernel::leaf(x, x_shape, x_dtype, BTreeSet::from([kid])));
                         xt = 0;
-                        let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
-                        kernels[nkid].depends_on.insert(kid);
                         kid = nkid;
                     }
 
@@ -166,9 +175,13 @@ pub fn realize_graph(
                                 let x_dtype = graph.dtype(x);
                                 let x_shape = graph.shape(x);
                                 store(&mut kernels, kid, x, x_shape, x_dtype);
+                                let nkid = kernels.push(Kernel::leaf(
+                                    x,
+                                    x_shape,
+                                    x_dtype,
+                                    BTreeSet::from([kid]),
+                                ));
                                 xt = 0;
-                                let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
-                                kernels[nkid].depends_on.insert(kid);
                                 kid = nkid;
                             }
                         }
@@ -176,9 +189,9 @@ pub fn realize_graph(
                         let x_dtype = graph.dtype(x);
                         let x_shape = graph.shape(x);
                         store(&mut kernels, kid, x, x_shape, x_dtype);
+                        let nkid =
+                            kernels.push(Kernel::leaf(x, x_shape, x_dtype, BTreeSet::from([kid])));
                         xt = 0;
-                        let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
-                        kernels[nkid].depends_on.insert(kid);
                         kid = nkid;
                     }
 
@@ -207,9 +220,13 @@ pub fn realize_graph(
                             let x_shape = graph.shape(x);
                             let x_dtype = graph.dtype(x);
                             store(&mut kernels, kid, x, x_shape, x_dtype);
+                            let nkid = kernels.push(Kernel::leaf(
+                                x,
+                                x_shape,
+                                x_dtype,
+                                BTreeSet::from([kid]),
+                            ));
                             xt = 0;
-                            let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
-                            kernels[nkid].depends_on.insert(kid);
                             kid = nkid;
                         }
                     }
@@ -226,7 +243,7 @@ pub fn realize_graph(
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
                         if kernels[kid].is_small() {
-                        let mut new_kernel = kernels[kid].clone();
+                            let mut new_kernel = kernels[kid].clone();
                             if rcs[&x] < 2 {
                                 new_kernel.outputs.remove(&x);
                             }
@@ -235,9 +252,13 @@ pub fn realize_graph(
                             let x_shape = graph.shape(x);
                             let x_dtype = graph.dtype(x);
                             store(&mut kernels, kid, x, x_shape, x_dtype);
+                            let nkid = kernels.push(Kernel::leaf(
+                                x,
+                                x_shape,
+                                x_dtype,
+                                BTreeSet::from([kid]),
+                            ));
                             xt = 0;
-                            let nkid = kernels.push(Kernel::leaf(x, x_shape, x_dtype));
-                            kernels[nkid].depends_on.insert(kid);
                             kid = nkid;
                         }
                     }
@@ -289,24 +310,10 @@ pub fn realize_graph(
                     //let _timer = Timer::new("binary");
                     // x goes first, delete y
                     let (xt, kidx) = get_kernel_max(x, &kernels);
-                    let (yt, kidy) = get_kernel_max(y, &kernels);
+                    let (mut yt, mut kidy) = get_kernel_max(y, &kernels);
 
                     debug_assert_eq!(kernels[kidx].shape(), graph.shape(x));
                     debug_assert_eq!(kernels[kidy].shape(), graph.shape(y));
-
-                    debug_assert!(
-                        !(kernels[kidx].depends_on.contains(&kidy)
-                            && kernels[kidy].depends_on.contains(&kidx))
-                    );
-
-                    /*if kernels[kidx].depends_on.contains(&kidy) {
-                        store(&mut kernels, &mut kidy, y, &graph, &rcs);
-                    } else if kernels[kidy].depends_on.contains(&kidx) {
-                        store(&mut kernels, &mut kidx, x, &graph, &rcs);
-                    }*/
-
-                    // TODO test for cyclical dependency between kidx and kidy
-                    // and realize the kernel with more ops in order to break that dependency cycle.
 
                     #[allow(clippy::branches_sharing_code)]
                     let kid = if kidx == kidy {
@@ -318,22 +325,88 @@ pub fn realize_graph(
                     } else {
                         // we delete kidy (could by also kidx) and put everything in kidx
                         let n = kernels[kidx].max_id + 1;
+
+                        // To check if kidx depends on kidy, we just make a list of loads,
+                        // then iterate through all kernels that store these loads,
+                        // then replace these loads with loads from those kernels
+                        // and keep repeating until we encounter kidy or there are no more loads.
+
+                        // can't remove kidy if any kernel depends on kidy
+                        // store y and all outputs that are not stored yet in kidy
+                        // clear kidy's outputs
+                        // write a load kernel for y
+                        // mark kidy as new kernel
+                        if depends_on(&kernels, kidx, kidy) {
+                            //println!("kidx depends on kidy");
+                            let outputs = kernels[kidy].outputs.clone();
+                            for (nid, inner_x) in outputs {
+                                if rcs.contains_key(&nid) {
+                                    if kernels[kidy].tensors.values().any(|id| *id == nid) {
+                                        let nid_shape = graph.shape(nid);
+                                        let nid_dtype = graph.dtype(nid);
+                                        // if the kernel wasn't stored yet, because it wasn't processed yet
+                                        let zview = View::contiguous(nid_shape);
+                                        kernels[kidy].max_id += 1;
+                                        let z = kernels[kidy].max_id;
+                                        let store_op = Op::Store {
+                                            z,
+                                            zview,
+                                            zscope: Scope::Global,
+                                            zdtype: nid_dtype,
+                                            x: inner_x,
+                                            xscope: Scope::Register,
+                                            xview: View::none(),
+                                        };
+                                        kernels[kidy].ops.push(store_op);
+                                        kernels[kidy].tensors.insert(z, nid);
+
+                                        let nkid = kernels.push(Kernel::leaf(
+                                            nid,
+                                            nid_shape,
+                                            nid_dtype,
+                                            BTreeSet::from([kidy]),
+                                        ));
+                                        if nid == y {
+                                            yt = 0;
+                                            kidy = nkid;
+                                        }
+                                    } else if nid == y {
+                                        let nid_shape = graph.shape(nid);
+                                        let nid_dtype = graph.dtype(nid);
+                                        let nkid = kernels.push(Kernel::leaf(
+                                            nid,
+                                            nid_shape,
+                                            nid_dtype,
+                                            BTreeSet::from([kidy]),
+                                        ));
+                                        yt = 0;
+                                        kidy = nkid;
+                                    }
+                                }
+                            }
+                            kernels[kidy].outputs.clear();
+                            debug_assert_eq!(yt, 0);
+                        }
+                        // TODO what if kidy depends on kidx, that is what if any kernel depends on kidx???
+                        #[cfg(debug_assertions)]
+                        if depends_on(&kernels, kidy, kidx) {
+                            panic!("Binary with kidy depending on kidx.")
+                        }
+
                         let Kernel { ops, tensors, outputs, max_id, depends_on } =
                             kernels.remove(kidy).unwrap();
 
-                        // After removing kidy, we have to decrease all depends_on
-                        /*if kidx > kidy {
-                            kidx -= 1;
-                        }
+                        // Now we have to search all depends_on for all kernels, if any kernel depends on
+                        // kidy, now it depends on kidx
                         for kernel in kernels.values_mut() {
                             let depends_on = kernel.depends_on.clone();
                             for kid in depends_on {
-                                if kid > kidy {
-                                    kernel.depends_on.insert(kid-1);
-                                    kernel.depends_on.remove(&kid);
+                                if kid == kidy {
+                                    kernel.depends_on.remove(&kidy);
+                                    kernel.depends_on.insert(kidx);
                                 }
                             }
-                        }*/
+                        }
 
                         for (i, op) in ops.into_iter().enumerate() {
                             if !(matches!(op, Op::Loop { .. }) && op == kernels[kidx].ops[i]) {
@@ -464,11 +537,6 @@ pub fn realize_graph(
         );
     }*/
 
-    /*for kernel in kernels.values().take(10) {
-        kernel.debug();
-        println!();
-    }*/
-
     /*for kernel in kernels.values() {
         if kernel.ops.len() < 20 {
             kernel.debug();
@@ -477,7 +545,7 @@ pub fn realize_graph(
 
     // Launch all kernels
     let mut num_evaluated = 0;
-    for _ in 0..kernels.len() {
+    for _ in 0..kernels.len() + 1 {
         let mut evaluated = BTreeSet::new();
         for (kid, kernel) in kernels.iter() {
             if kernel.depends_on.is_empty() {
@@ -486,6 +554,7 @@ pub fn realize_graph(
                 evaluated.insert(kid);
             }
         }
+        println!("Evaluated: {evaluated:?}");
         if evaluated.is_empty() {
             break;
         }
@@ -500,6 +569,10 @@ pub fn realize_graph(
     println!("Evaluated {num_evaluated} kernels");
 
     if num_evaluated != kernels_len {
+        for (id, kernel) in kernels.iter() {
+            println!("\nKernel id = {id}");
+            kernel.debug();
+        }
         panic!();
     }
 
@@ -516,7 +589,6 @@ pub fn realize_graph(
 }
 
 // Adds store to kernel and removes nid from outputs of all kernels
-#[allow(clippy::too_many_arguments)]
 fn store(
     kernels: &mut Slab<Kernel>,
     kid: KernelId,
@@ -524,6 +596,10 @@ fn store(
     nid_shape: &[usize],
     nid_dtype: DType,
 ) {
+    if kernels[kid].tensors.values().any(|id| *id == nid) {
+        return;
+    }
+
     //let _timer = Timer::new("scheduler store");
     // Add store op to kernel
     let x = kernels[kid].outputs[&nid];
@@ -549,25 +625,29 @@ fn store(
     };
     kernels[kid].ops.push(store_op);
     kernels[kid].tensors.insert(z, nid);
+}
 
-    // Remove this output from all other kernels that produce it. It will be used as a load kernel from now on.
-    //kernels[kid].outputs.remove(&nid).unwrap();
-    /*for kernel in kernels.values_mut() {
-        kernel.outputs.remove(&nid);
-    }*/
+// TODO benchmark if recursive or dynamic version is faster, but recursive should be faster,
+// since it does not allocate
+// Check if kidx depends on kidy
+/*fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
+    let mut depends_on = kernels[kidx].depends_on.clone();
+    while let Some(kid) = depends_on.pop_last() {
+        if kid == kidy {
+            return true;
+        }
+        depends_on.extend(kernels[kid].depends_on.iter().copied());
+    }
+    false
+}*/
 
-    /*println!("After cleanup of stored {x}");
-    for kernel in kernels.values() {
-        kernel.debug();
-        println!();
-    }*/
-
-    //println!("RCS: {rcs:?}");
-    //println!("tensors: {tensors:?}");
-
-    /*for kernel in kernels.values() {
-        kernel.debug();
-    }*/
+// Check if kidx depends on kidy
+fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
+    //println!("Checking if {kidx} depends on {kidy}, kidx dependencies: {:?}", kernels[kidx].depends_on);
+    if kernels[kidx].depends_on.contains(&kidy) {
+        return true;
+    }
+    kernels[kidx].depends_on.iter().any(|kid| depends_on(kernels, *kid, kidy))
 }
 
 // Choose kernel with most outputs (binary, unary)

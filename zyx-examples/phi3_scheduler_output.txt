@@ -1,0 +1,444 @@
+Scheduled 14 kernels, scheduling took 1139us, ops per kernel: min: 14, max: 109, avg: 28
+Kernel shape: [1, 1, 51200, 1], outputs: {362: 6}, tensors: {7: 362, 8: 362}, depends on: {}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 1
+Loop        axis: 2, len: 51200
+Loop        axis: 3, len: 1
+Accum.Sum   1, I64
+Loop        axis: 4, len: 51200
+  Const       0 <- value: 1, V(sh[102399] st[0] pd[(51199, 0)])V(sh[51201, 102399] st[0, 1] pd[(0, 0), (0, 0)])V(sh[5242880000] st[1] pd[(0, -51199)])V(sh[51200, 51200] st[102400, 1] pd[(0, 0), (0, -51200)])V(sh[1, 1, 51200, 1, 51200] st[51200, 51200, 1, 1, 51200] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Add  1 <- 0, 1
+EndLoop 
+Const       2 <- value: 0, V(sh[1, 1, 51200, 1] st[0, 0, 0, 0] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Add  3 <- 1, 2
+Const       4 <- value: 1, V(sh[1, 1, 51200, 1] st[0, 0, 0, 0] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Sub  5 <- 3, 4
+Unary.Cast(F16) 6 <- 5
+Store        7[Global] <- 6[Register], V(sh[1, 1, 51200, 1] st[51200, 51200, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F16
+Store        8[Global] <- 6[Register], V(sh[1, 1, 51200, 1] st[51200, 51200, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F16
+
+
+Kernel shape: [1, 1, 1], outputs: {1150: 12}, tensors: {0: 362, 1: 1132, 6: 1136, 13: 1150}, depends on: {0}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 1
+Loop        axis: 2, len: 1
+Accum.Sum   9, F16
+Loop        axis: 3, len: 2048
+  Accum.Sum   8, F16
+  Loop        axis: 4, len: 51200
+    Load        0[Register] <- [Global, F16], V(sh[1, 1, 1, 2048, 51200] st[51200, 51200, 51200, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Load        1[Register] <- [Global, U32], V(sh[1, 1, 1, 2048, 51200] st[1, 1, 1, 0, 0] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Unary.Cast(F16) 2 <- 1
+    Binary.NotEq  3 <- 0, 2
+    Unary.Not   4 <- 3
+    Unary.Cast(F16) 5 <- 4
+    Load        6[Register] <- [Global, F16], V(sh[1, 1, 1, 2048, 51200] st[104857600, 104857600, 104857600, 1, 2048] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Binary.Mul  7 <- 5, 6
+    Binary.Add  8 <- 7, 8
+  EndLoop 
+  Binary.Add  9 <- 8, 9
+EndLoop 
+Const       10 <- value: 2048, V(sh[1, 1, 1] st[1, 1, 1] pd[(0, 0), (0, 0), (0, 0)])
+Unary.Cast(F16) 11 <- 10
+Binary.Div  12 <- 9, 11
+Store        13[Global] <- 12[Register], V(sh[1, 1, 1] st[1, 1, 1] pd[(0, 0), (0, 0), (0, 0)]), F16
+
+
+Kernel shape: [1, 1, 1], outputs: {1159: 14}, tensors: {0: 362, 1: 1132, 6: 1136, 9: 1150, 15: 1159}, depends on: {0, 1}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 1
+Loop        axis: 2, len: 1
+Accum.Sum   11, F16
+Loop        axis: 3, len: 2048
+  Accum.Sum   8, F16
+  Loop        axis: 4, len: 51200
+    Load        0[Register] <- [Global, F16], V(sh[1, 1, 1, 2048, 51200] st[51200, 51200, 51200, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Load        1[Register] <- [Global, U32], V(sh[1, 1, 1, 2048, 51200] st[1, 1, 1, 0, 0] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Unary.Cast(F16) 2 <- 1
+    Binary.NotEq  3 <- 0, 2
+    Unary.Not   4 <- 3
+    Unary.Cast(F16) 5 <- 4
+    Load        6[Register] <- [Global, F16], V(sh[1, 1, 1, 2048, 51200] st[104857600, 104857600, 104857600, 1, 2048] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Binary.Mul  7 <- 5, 6
+    Binary.Add  8 <- 7, 8
+  EndLoop 
+  Load        9[Register] <- [Global, F16], V(sh[1, 1, 1, 2048] st[1, 1, 1, 0] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Sub  10 <- 8, 9
+  Binary.Add  11 <- 8, 11
+EndLoop 
+Const       12 <- value: 2048, V(sh[1, 1, 1] st[1, 1, 1] pd[(0, 0), (0, 0), (0, 0)])
+Unary.Cast(F16) 13 <- 12
+Binary.Div  14 <- 11, 13
+Store        15[Global] <- 14[Register], V(sh[1, 1, 1] st[1, 1, 1] pd[(0, 0), (0, 0), (0, 0)]), F16
+
+
+Kernel shape: [1, 1, 1], outputs: {1173: 21}, tensors: {0: 362, 1: 1132, 6: 1136, 9: 1150, 11: 1159, 22: 1173}, depends on: {0, 1, 2}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 1
+Loop        axis: 2, len: 1
+Accum.Sum   14, F16
+Loop        axis: 3, len: 2048
+  Accum.Sum   8, F16
+  Loop        axis: 4, len: 51200
+    Load        0[Register] <- [Global, F16], V(sh[1, 1, 1, 2048, 51200] st[51200, 51200, 51200, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Load        1[Register] <- [Global, U32], V(sh[1, 1, 1, 2048, 51200] st[1, 1, 1, 0, 0] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Unary.Cast(F16) 2 <- 1
+    Binary.NotEq  3 <- 0, 2
+    Unary.Not   4 <- 3
+    Unary.Cast(F16) 5 <- 4
+    Load        6[Register] <- [Global, F16], V(sh[1, 1, 1, 2048, 51200] st[104857600, 104857600, 104857600, 1, 2048] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Binary.Mul  7 <- 5, 6
+    Binary.Add  8 <- 7, 8
+  EndLoop 
+  Load        9[Register] <- [Global, F16], V(sh[1, 1, 1, 2048] st[1, 1, 1, 0] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Sub  10 <- 8, 9
+  Load        11[Register] <- [Global, F16], V(sh[1, 1, 1, 2048] st[1, 1, 1, 0] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Sub  12 <- 8, 11
+  Binary.Mul  13 <- 12, 12
+  Binary.Add  14 <- 13, 14
+EndLoop 
+Const       15 <- value: 2047, V(sh[1, 1, 1] st[1, 1, 1] pd[(0, 0), (0, 0), (0, 0)])
+Unary.Cast(F16) 16 <- 15
+Binary.Div  17 <- 14, 16
+Const       18 <- value: 0.00001, V(sh[1, 1, 1] st[1, 1, 1] pd[(0, 0), (0, 0), (0, 0)])
+Unary.Cast(F16) 19 <- 18
+Binary.Add  20 <- 17, 19
+Unary.Sqrt  21 <- 20
+Store        22[Global] <- 21[Register], V(sh[1, 1, 1] st[1, 1, 1] pd[(0, 0), (0, 0), (0, 0)]), F16
+
+
+Kernel shape: [1, 32, 1, 64], outputs: {1214: 5}, tensors: {0: 1179, 1: 16, 4: 1189, 6: 1214, 7: 1214}, depends on: {4}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 32
+Loop        axis: 2, len: 1
+Loop        axis: 3, len: 64
+Accum.Sum   3, F16
+Loop        axis: 4, len: 2048
+  Load        0[Register] <- [Global, F16], V(sh[1, 32, 1, 64, 2048] st[2048, 0, 2048, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Load        1[Register] <- [Global, F16], V(sh[1, 32, 1, 64, 2048] st[4194304, 131072, 4194304, 2048, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Mul  2 <- 0, 1
+  Binary.Add  3 <- 2, 3
+EndLoop 
+Load        4[Register] <- [Global, F16], V(sh[1, 32, 1, 64] st[2048, 64, 2048, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Add  5 <- 3, 4
+Store        6[Global] <- 5[Register], V(sh[1, 32, 1, 64] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F16
+Store        7[Global] <- 5[Register], V(sh[1, 32, 1, 64] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F16
+
+
+Kernel shape: [1, 32, 1, 16], outputs: {1236: 17, 1245: 9}, tensors: {0: 1214, 2: 394, 4: 1214, 7: 393, 10: 1245, 12: 393, 15: 394, 18: 1236}, depends on: {5, 9}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 32
+Loop        axis: 2, len: 1
+Loop        axis: 3, len: 16
+Load        0[Register] <- [Global, F16], V(sh[1, 32, 1, 16] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, -48)])
+Unary.Cast(F32) 1 <- 0
+Load        2[Register] <- [Global, F32], V(sh[1, 16] st[16, 1] pd[(0, -2047), (0, 0)])V(sh[1, 32, 1, 16] st[16, 0, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Mul  3 <- 1, 2
+Load        4[Register] <- [Global, F16], V(sh[1, 32, 1, 16] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-16, -32)])
+Unary.Neg   5 <- 4
+Unary.Cast(F32) 6 <- 5
+Load        7[Register] <- [Global, F32], V(sh[1, 16] st[16, 1] pd[(0, -2047), (0, 0)])V(sh[1, 32, 1, 16] st[16, 0, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Mul  8 <- 6, 7
+Binary.Add  9 <- 3, 8
+Store        10[Global] <- 9[Register], V(sh[1, 32, 1, 16] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F32
+Unary.Cast(F32) 11 <- 0
+Load        12[Register] <- [Global, F32], V(sh[1, 16] st[16, 1] pd[(0, -2047), (0, 0)])V(sh[1, 32, 1, 16] st[16, 0, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Mul  13 <- 11, 12
+Unary.Cast(F32) 14 <- 5
+Load        15[Register] <- [Global, F32], V(sh[1, 16] st[16, 1] pd[(0, -2047), (0, 0)])V(sh[1, 32, 1, 16] st[16, 0, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Mul  16 <- 14, 15
+Binary.Sub  17 <- 13, 16
+Store        18[Global] <- 17[Register], V(sh[1, 32, 1, 16] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F32
+
+
+Kernel shape: [1, 32, 1, 1, 1], outputs: {1311: 81}, tensors: {0: 1245, 1: 1236, 3: 1214, 6: 1279, 7: 1270, 9: 1216, 14: 1293, 17: 1245, 18: 1236, 20: 1214, 23: 1279, 24: 1270, 26: 1216, 31: 1293, 40: 1245, 41: 1236, 43: 1214, 46: 1279, 47: 1270, 49: 1216, 54: 1293, 57: 1245, 58: 1236, 60: 1214, 63: 1279, 64: 1270, 66: 1216, 71: 1293, 82: 1311}, depends on: {5, 6, 10, 11}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 32
+Loop        axis: 2, len: 1
+Loop        axis: 3, len: 1
+Loop        axis: 4, len: 1
+Accum.Sum   13, F32
+Loop        axis: 5, len: 64
+  Load        0[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 48)])V(sh[1, 32, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Load        1[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (16, 32)])V(sh[1, 32, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Add  2 <- 0, 1
+  Load        3[Register] <- [Global, F16], V(sh[1, 32, 1, 32] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-32, 0)])V(sh[1, 32, 1, 64] st[1024, 32, 32, 1] pd[(0, 0), (0, 0), (0, 0), (32, 0)])V(sh[1, 32, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Unary.Cast(F32) 4 <- 3
+  Binary.Add  5 <- 2, 4
+  Load        6[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 48)])V(sh[1, 32, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Load        7[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (16, 32)])V(sh[1, 32, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Add  8 <- 6, 7
+  Load        9[Register] <- [Global, F16], V(sh[1, 32, 1, 32] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-32, 0)])V(sh[1, 32, 1, 64] st[1024, 32, 32, 1] pd[(0, 0), (0, 0), (0, 0), (32, 0)])V(sh[1, 32, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Unary.Cast(F32) 10 <- 9
+  Binary.Add  11 <- 8, 10
+  Binary.Mul  12 <- 5, 11
+  Binary.Add  13 <- 12, 13
+EndLoop 
+Load        14[Register] <- [Global, F16], V(sh[1, 32, 1, 1, 1] st[1, 0, 1, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+Unary.Cast(F32) 15 <- 14
+Binary.Mul  16 <- 13, 15
+Accum.Max   34, F32
+Loop        axis: 5, len: 1
+  Accum.Sum   30, F32
+  Loop        axis: 6, len: 64
+    Load        17[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 48)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Load        18[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (16, 32)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Binary.Add  19 <- 17, 18
+    Load        20[Register] <- [Global, F16], V(sh[1, 32, 1, 32] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-32, 0)])V(sh[1, 32, 1, 64] st[1024, 32, 32, 1] pd[(0, 0), (0, 0), (0, 0), (32, 0)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Unary.Cast(F32) 21 <- 20
+    Binary.Add  22 <- 19, 21
+    Load        23[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 48)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Load        24[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (16, 32)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Binary.Add  25 <- 23, 24
+    Load        26[Register] <- [Global, F16], V(sh[1, 32, 1, 32] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-32, 0)])V(sh[1, 32, 1, 64] st[1024, 32, 32, 1] pd[(0, 0), (0, 0), (0, 0), (32, 0)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Unary.Cast(F32) 27 <- 26
+    Binary.Add  28 <- 25, 27
+    Binary.Mul  29 <- 22, 28
+    Binary.Add  30 <- 29, 30
+  EndLoop 
+  Load        31[Register] <- [Global, F16], V(sh[1, 32, 1, 1, 1, 1] st[1, 0, 1, 1, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Unary.Cast(F32) 32 <- 31
+  Binary.Mul  33 <- 30, 32
+  Binary.Max  34 <- 33, 34
+EndLoop 
+Binary.Sub  35 <- 16, 34
+Const       36 <- value: 1.4426950408889634, V(sh[1, 32, 1, 1, 1] st[1, 0, 1, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+Unary.Cast(F32) 37 <- 36
+Binary.Mul  38 <- 35, 37
+Unary.Exp2  39 <- 38
+Accum.Sum   80, F32
+Loop        axis: 5, len: 1
+  Accum.Sum   53, F32
+  Loop        axis: 6, len: 64
+    Load        40[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 48)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Load        41[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (16, 32)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Binary.Add  42 <- 40, 41
+    Load        43[Register] <- [Global, F16], V(sh[1, 32, 1, 32] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-32, 0)])V(sh[1, 32, 1, 64] st[1024, 32, 32, 1] pd[(0, 0), (0, 0), (0, 0), (32, 0)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Unary.Cast(F32) 44 <- 43
+    Binary.Add  45 <- 42, 44
+    Load        46[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 48)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Load        47[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (16, 32)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Binary.Add  48 <- 46, 47
+    Load        49[Register] <- [Global, F16], V(sh[1, 32, 1, 32] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-32, 0)])V(sh[1, 32, 1, 64] st[1024, 32, 32, 1] pd[(0, 0), (0, 0), (0, 0), (32, 0)])V(sh[1, 32, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Unary.Cast(F32) 50 <- 49
+    Binary.Add  51 <- 48, 50
+    Binary.Mul  52 <- 45, 51
+    Binary.Add  53 <- 52, 53
+  EndLoop 
+  Load        54[Register] <- [Global, F16], V(sh[1, 32, 1, 1, 1, 1] st[1, 0, 1, 1, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Unary.Cast(F32) 55 <- 54
+  Binary.Mul  56 <- 53, 55
+  Accum.Max   74, F32
+  Loop        axis: 6, len: 1
+    Accum.Sum   70, F32
+    Loop        axis: 7, len: 64
+      Load        57[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 48)])V(sh[1, 32, 1, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+      Load        58[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (16, 32)])V(sh[1, 32, 1, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+      Binary.Add  59 <- 57, 58
+      Load        60[Register] <- [Global, F16], V(sh[1, 32, 1, 32] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-32, 0)])V(sh[1, 32, 1, 64] st[1024, 32, 32, 1] pd[(0, 0), (0, 0), (0, 0), (32, 0)])V(sh[1, 32, 1, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+      Unary.Cast(F32) 61 <- 60
+      Binary.Add  62 <- 59, 61
+      Load        63[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 48)])V(sh[1, 32, 1, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+      Load        64[Register] <- [Global, F32], V(sh[1, 32, 1, 64] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (16, 32)])V(sh[1, 32, 1, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+      Binary.Add  65 <- 63, 64
+      Load        66[Register] <- [Global, F16], V(sh[1, 32, 1, 32] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-32, 0)])V(sh[1, 32, 1, 64] st[1024, 32, 32, 1] pd[(0, 0), (0, 0), (0, 0), (32, 0)])V(sh[1, 32, 1, 1, 1, 1, 1, 64] st[2048, 64, 64, 64, 64, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+      Unary.Cast(F32) 67 <- 66
+      Binary.Add  68 <- 65, 67
+      Binary.Mul  69 <- 62, 68
+      Binary.Add  70 <- 69, 70
+    EndLoop 
+    Load        71[Register] <- [Global, F16], V(sh[1, 32, 1, 1, 1, 1, 1] st[1, 0, 1, 1, 1, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Unary.Cast(F32) 72 <- 71
+    Binary.Mul  73 <- 70, 72
+    Binary.Max  74 <- 73, 74
+  EndLoop 
+  Binary.Sub  75 <- 56, 74
+  Const       76 <- value: 1.4426950408889634, V(sh[1, 32, 1, 1, 1, 1] st[1, 0, 1, 1, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Unary.Cast(F32) 77 <- 76
+  Binary.Mul  78 <- 75, 77
+  Unary.Exp2  79 <- 78
+  Binary.Add  80 <- 79, 80
+EndLoop 
+Binary.Div  81 <- 39, 80
+Store        82[Global] <- 81[Register], V(sh[1, 32, 1, 1, 1] st[32, 1, 1, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)]), F32
+
+
+Kernel shape: [2048, 1, 1], outputs: {387: 6}, tensors: {7: 387}, depends on: {}
+Loop        axis: 0, len: 2048
+Loop        axis: 1, len: 1
+Loop        axis: 2, len: 1
+Accum.Sum   1, U32
+Loop        axis: 3, len: 2048
+  Const       0 <- value: 1, V(sh[4095] st[0] pd[(2047, 0)])V(sh[2049, 4095] st[0, 1] pd[(0, 0), (0, 0)])V(sh[8388608] st[1] pd[(0, -2047)])V(sh[2048, 2048] st[4096, 1] pd[(0, 0), (0, -2048)])V(sh[2048, 1, 1, 2048] st[1, 1, 1, 2048] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Add  1 <- 0, 1
+EndLoop 
+Const       2 <- value: 0, V(sh[2048, 1, 1] st[0, 0, 0] pd[(0, 0), (0, 0), (0, 0)])
+Binary.Add  3 <- 1, 2
+Const       4 <- value: 1, V(sh[2048, 1, 1] st[0, 0, 0] pd[(0, 0), (0, 0), (0, 0)])
+Binary.Sub  5 <- 3, 4
+Unary.Cast(F32) 6 <- 5
+Store        7[Global] <- 6[Register], V(sh[2048, 1, 1] st[1, 1, 1] pd[(0, 0), (0, 0), (0, 0)]), F32
+
+
+Kernel shape: [2048, 16], outputs: {393: 7, 394: 4}, tensors: {0: 387, 1: 364, 5: 394, 6: 394, 8: 393, 9: 393, 10: 394, 11: 393}, depends on: {8}
+Loop        axis: 0, len: 2048
+Loop        axis: 1, len: 16
+Accum.Sum   3, F32
+Loop        axis: 2, len: 1
+  Load        0[Register] <- [Global, F32], V(sh[2048, 16, 1] st[1, 0, 1] pd[(0, 0), (0, 0), (0, 0)])
+  Load        1[Register] <- [Global, F32], V(sh[2048, 16, 1] st[0, 1, 16] pd[(0, 0), (0, 0), (0, 0)])
+  Binary.Mul  2 <- 0, 1
+  Binary.Add  3 <- 2, 3
+EndLoop 
+Unary.Cos   4 <- 3
+Store        5[Global] <- 4[Register], V(sh[2048, 16] st[16, 1] pd[(0, 0), (0, 0)]), F32
+Store        6[Global] <- 4[Register], V(sh[2048, 16] st[16, 1] pd[(0, 0), (0, 0)]), F32
+Unary.Sin   7 <- 3
+Store        8[Global] <- 7[Register], V(sh[2048, 16] st[16, 1] pd[(0, 0), (0, 0)]), F32
+Store        9[Global] <- 7[Register], V(sh[2048, 16] st[16, 1] pd[(0, 0), (0, 0)]), F32
+Store        10[Global] <- 4[Register], V(sh[2048, 16] st[16, 1] pd[(0, 0), (0, 0)]), F32
+Store        11[Global] <- 7[Register], V(sh[2048, 16] st[16, 1] pd[(0, 0), (0, 0)]), F32
+
+
+Kernel shape: [1, 32, 1, 64], outputs: {1216: 5}, tensors: {0: 1179, 1: 14, 4: 1200, 6: 1216, 7: 1216}, depends on: {4}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 32
+Loop        axis: 2, len: 1
+Loop        axis: 3, len: 64
+Accum.Sum   3, F16
+Loop        axis: 4, len: 2048
+  Load        0[Register] <- [Global, F16], V(sh[1, 32, 1, 64, 2048] st[2048, 0, 2048, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Load        1[Register] <- [Global, F16], V(sh[1, 32, 1, 64, 2048] st[4194304, 131072, 4194304, 2048, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Mul  2 <- 0, 1
+  Binary.Add  3 <- 2, 3
+EndLoop 
+Load        4[Register] <- [Global, F16], V(sh[1, 32, 1, 64] st[2048, 64, 2048, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Add  5 <- 3, 4
+Store        6[Global] <- 5[Register], V(sh[1, 32, 1, 64] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F16
+Store        7[Global] <- 5[Register], V(sh[1, 32, 1, 64] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F16
+
+
+Kernel shape: [1, 32, 1, 16], outputs: {1270: 17, 1279: 9}, tensors: {0: 1216, 2: 394, 4: 1216, 7: 393, 10: 1279, 12: 393, 15: 394, 18: 1270}, depends on: {9, 10}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 32
+Loop        axis: 2, len: 1
+Loop        axis: 3, len: 16
+Load        0[Register] <- [Global, F16], V(sh[1, 32, 1, 16] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (0, -48)])
+Unary.Cast(F32) 1 <- 0
+Load        2[Register] <- [Global, F32], V(sh[1, 16] st[16, 1] pd[(0, -2047), (0, 0)])V(sh[1, 32, 1, 16] st[16, 0, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Mul  3 <- 1, 2
+Load        4[Register] <- [Global, F16], V(sh[1, 32, 1, 16] st[2048, 64, 64, 1] pd[(0, 0), (0, 0), (0, 0), (-16, -32)])
+Unary.Neg   5 <- 4
+Unary.Cast(F32) 6 <- 5
+Load        7[Register] <- [Global, F32], V(sh[1, 16] st[16, 1] pd[(0, -2047), (0, 0)])V(sh[1, 32, 1, 16] st[16, 0, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Mul  8 <- 6, 7
+Binary.Add  9 <- 3, 8
+Store        10[Global] <- 9[Register], V(sh[1, 32, 1, 16] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F32
+Unary.Cast(F32) 11 <- 0
+Load        12[Register] <- [Global, F32], V(sh[1, 16] st[16, 1] pd[(0, -2047), (0, 0)])V(sh[1, 32, 1, 16] st[16, 0, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Mul  13 <- 11, 12
+Unary.Cast(F32) 14 <- 5
+Load        15[Register] <- [Global, F32], V(sh[1, 16] st[16, 1] pd[(0, -2047), (0, 0)])V(sh[1, 32, 1, 16] st[16, 0, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Mul  16 <- 14, 15
+Binary.Sub  17 <- 13, 16
+Store        18[Global] <- 17[Register], V(sh[1, 32, 1, 16] st[512, 16, 16, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F32
+
+
+Kernel shape: [1, 1, 1, 2048], outputs: {1321: 9}, tensors: {0: 1311, 1: 1179, 2: 18, 5: 1211, 10: 1321}, depends on: {4, 7}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 1
+Loop        axis: 2, len: 1
+Loop        axis: 3, len: 2048
+Accum.Sum   9, F32
+Loop        axis: 4, len: 1
+  Load        0[Register] <- [Global, F32], V(sh[1, 1, 32, 64, 1] st[32, 1, 1, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])V(sh[1, 1, 1, 2048, 1] st[2048, 2048, 2048, 1, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Accum.Sum   4, F16
+  Loop        axis: 5, len: 2048
+    Load        1[Register] <- [Global, F16], V(sh[1, 1, 1, 2048, 1, 2048] st[2048, 0, 0, 0, 2048, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Load        2[Register] <- [Global, F16], V(sh[1, 1, 1, 2048, 1, 2048] st[4194304, 131072, 4194304, 2048, 4194304, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+    Binary.Mul  3 <- 1, 2
+    Binary.Add  4 <- 3, 4
+  EndLoop 
+  Load        5[Register] <- [Global, F16], V(sh[1, 1, 1, 2048, 1] st[2048, 64, 2048, 1, 2048] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Add  6 <- 4, 5
+  Unary.Cast(F32) 7 <- 6
+  Binary.Mul  8 <- 0, 7
+  Binary.Add  9 <- 8, 9
+EndLoop 
+Store        10[Global] <- 9[Register], V(sh[1, 1, 1, 2048] st[2048, 2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F32
+
+
+Kernel shape: [1, 1, 2048], outputs: {1179: 35, 1359: 41}, tensors: {0: 1321, 1: 12, 5: 11, 8: 1347, 9: 10, 12: 1354, 16: 362, 17: 1132, 22: 1136, 25: 1150, 27: 1159, 30: 1173, 32: 1176, 34: 1178, 36: 1179, 37: 1179, 38: 1179, 39: 1179, 42: 1359}, depends on: {0, 1, 2, 3, 12, 14}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 1
+Loop        axis: 2, len: 2048
+Accum.Sum   4, F32
+Loop        axis: 3, len: 2048
+  Load        0[Register] <- [Global, F32], V(sh[1, 1, 2048, 2048] st[2048, 2048, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Load        1[Register] <- [Global, F16], V(sh[1, 1, 2048, 2048] st[4194304, 4194304, 2048, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Unary.Cast(F32) 2 <- 1
+  Binary.Mul  3 <- 0, 2
+  Binary.Add  4 <- 3, 4
+EndLoop 
+Load        5[Register] <- [Global, F16], V(sh[1, 1, 2048] st[2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0)])
+Unary.Cast(F32) 6 <- 5
+Binary.Add  7 <- 4, 6
+Accum.Sum   11, F16
+Loop        axis: 3, len: 8192
+  Load        8[Register] <- [Global, F16], V(sh[1, 1, 2048, 8192] st[8192, 8192, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Load        9[Register] <- [Global, F16], V(sh[1, 1, 2048, 8192] st[16777216, 16777216, 8192, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Mul  10 <- 8, 9
+  Binary.Add  11 <- 10, 11
+EndLoop 
+Load        12[Register] <- [Global, F16], V(sh[1, 1, 2048] st[2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0)])
+Binary.Add  13 <- 11, 12
+Unary.Cast(F32) 14 <- 13
+Binary.Add  15 <- 7, 14
+Accum.Sum   24, F16
+Loop        axis: 3, len: 51200
+  Load        16[Register] <- [Global, F16], V(sh[1, 1, 2048, 51200] st[51200, 51200, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Load        17[Register] <- [Global, U32], V(sh[1, 1, 2048, 51200] st[1, 1, 0, 0] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Unary.Cast(F16) 18 <- 17
+  Binary.NotEq  19 <- 16, 18
+  Unary.Not   20 <- 19
+  Unary.Cast(F16) 21 <- 20
+  Load        22[Register] <- [Global, F16], V(sh[1, 1, 2048, 51200] st[104857600, 104857600, 1, 2048] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Mul  23 <- 21, 22
+  Binary.Add  24 <- 23, 24
+EndLoop 
+Load        25[Register] <- [Global, F16], V(sh[1, 1, 2048] st[1, 1, 0] pd[(0, 0), (0, 0), (0, 0)])
+Binary.Sub  26 <- 24, 25
+Load        27[Register] <- [Global, F16], V(sh[1, 1, 2048] st[1, 1, 0] pd[(0, 0), (0, 0), (0, 0)])
+Binary.Sub  28 <- 24, 27
+Binary.Mul  29 <- 28, 28
+Load        30[Register] <- [Global, F16], V(sh[1, 1, 2048] st[1, 1, 0] pd[(0, 0), (0, 0), (0, 0)])
+Binary.Div  31 <- 26, 30
+Load        32[Register] <- [Global, F16], V(sh[1, 1, 2048] st[2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0)])
+Binary.Mul  33 <- 31, 32
+Load        34[Register] <- [Global, F16], V(sh[1, 1, 2048] st[2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0)])
+Binary.Add  35 <- 33, 34
+Store        36[Global] <- 19[Register], V(sh[1, 1, 2048] st[2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0)]), F16
+Store        37[Global] <- 19[Register], V(sh[1, 1, 2048] st[2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0)]), F16
+Store        38[Global] <- 19[Register], V(sh[1, 1, 2048] st[2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0)]), F16
+Store        39[Global] <- 19[Register], V(sh[1, 1, 2048] st[2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0)]), F16
+Unary.Cast(F32) 40 <- 24
+Binary.Add  41 <- 15, 40
+Store        42[Global] <- 41[Register], V(sh[1, 1, 2048] st[2048, 2048, 1] pd[(0, 0), (0, 0), (0, 0)]), F32
+
+
+Kernel shape: [1, 1, 1, 8192], outputs: {1347: 6}, tensors: {0: 1179, 1: 8, 4: 1342, 7: 1347}, depends on: {4}
+Loop        axis: 0, len: 1
+Loop        axis: 1, len: 1
+Loop        axis: 2, len: 1
+Loop        axis: 3, len: 8192
+Accum.Sum   3, F16
+Loop        axis: 4, len: 2048
+  Load        0[Register] <- [Global, F16], V(sh[1, 1, 1, 8192, 2048] st[2048, 2048, 0, 0, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Load        1[Register] <- [Global, F16], V(sh[1, 1, 1, 8192, 2048] st[16777216, 16777216, 16777216, 2048, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0), (0, 0)])
+  Binary.Mul  2 <- 0, 1
+  Binary.Add  3 <- 2, 3
+EndLoop 
+Load        4[Register] <- [Global, F16], V(sh[1, 1, 1, 8192] st[8192, 8192, 8192, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)])
+Binary.Add  5 <- 3, 4
+Unary.ReLU  6 <- 5
+Store        7[Global] <- 6[Register], V(sh[1, 1, 1, 8192] st[8192, 8192, 8192, 1] pd[(0, 0), (0, 0), (0, 0), (0, 0)]), F16

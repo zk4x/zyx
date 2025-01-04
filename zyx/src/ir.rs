@@ -1090,7 +1090,7 @@ impl IRCompiler {
                         } else if xv.is_one() {
                             match bop {
                                 BOp::Add => {}
-                                BOp::Sub => todo!(),
+                                BOp::Sub => {},
                                 BOp::Mul => {
                                     self.ops.remove(i);
                                     i -= 1;

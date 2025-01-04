@@ -390,3 +390,14 @@ fn binary_cross_dependency1() -> Result<(), ZyxError> {
 
     Ok(())
 }*/
+
+#[test]
+fn t4() -> Result<(), ZyxError> {
+    let mut x= Tensor::randn([2048, 2048], DType::F32)?;
+    let y= Tensor::randn([2048, 2048], DType::F32)?;
+    for _ in 0..20 {
+        x = x.dot(&y)?;
+    }
+    Tensor::realize([&x])?;
+    Ok(())
+}
