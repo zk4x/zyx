@@ -16,6 +16,8 @@
     - [ ] fix load calculation, probably using Atomic usize
     - [ ] spirv compiler
   - [x] dummy
+  - [ ] spirv compiler
+    - [ ] conversion to spirv SSA (dealing with accumulators)
 - [ ] dtype
   - [ ] quantized dtypes
 - [x] runtime

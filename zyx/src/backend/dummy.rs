@@ -70,12 +70,12 @@ impl MemoryPool for DummyMemoryPool {
     }
 
     fn get_buffer(&self, buffer: crate::slab::Id) -> BufferMut {
-        let _ = buffer;
-        BufferMut::Dummy
+        #[cfg(debug_assertions)]
+        self.buffers[buffer];
+        BufferMut::Dummy(buffer)
     }
 
     fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
-        let _ = bytes;
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
@@ -84,7 +84,8 @@ impl MemoryPool for DummyMemoryPool {
                 context: "OOM".into(),
             });
         }
-        Ok((0, Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))
+        let id = self.buffers.push(bytes);
+        Ok((id, Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))
     }
 
     fn deallocate(
@@ -175,9 +176,11 @@ impl Device for DummyDevice {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = program_id;
-        let _ = memory_pool;
-        let _ = args;
         let _ = event_wait_list;
+        #[cfg(debug_assertions)]
+        for &arg in args {
+            let BufferMut::Dummy(_) = memory_pool.get_buffer(arg) else { panic!() };
+        }
         Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
     }
 }

@@ -770,6 +770,7 @@ impl Runtime {
             } else {
                 for param in self.graph[*tensor].parameters() {
                     if to_delete.contains(&param) {
+                        //to_eval.insert(param);
                         new_leafs.insert(param);
                     }
                 }
@@ -782,10 +783,8 @@ impl Runtime {
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
         let mut visited: BTreeSet<TensorId> = BTreeSet::new();
         while let Some(nid) = params.pop() {
-            if visited.insert(nid) {
-                if !realized_nodes.contains(&nid) {
-                    params.extend(self.graph.nodes[nid].1.parameters());
-                }
+            if visited.insert(nid) && !realized_nodes.contains(&nid) {
+                params.extend(self.graph.nodes[nid].1.parameters());
             }
         }
         // Drop unnecessary nodes in order
@@ -794,6 +793,9 @@ impl Runtime {
 
         //println!("New leafs: {new_leafs:?}");
         //println!("Realizing {:?}", to_eval);
+        //debug_assert!(new_leafs.is_subset(&to_eval));
+
+        let to_eval = to_eval.difference(&realized_nodes).copied().collect();
 
         crate::scheduler::realize_graph(
             &self.graph,

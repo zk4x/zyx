@@ -205,7 +205,7 @@ struct Attention {
     q_layernorm: Option<LayerNorm>,
     k_layernorm: Option<LayerNorm>,
     rotary_emb: RotaryEmbedding,
-    softmax_scale: f64,
+    //softmax_scale: f64,
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
@@ -268,7 +268,7 @@ impl Attention {
         } else {
             (None, None)
         };
-        let softmax_scale = 1f64 / (head_dim as f64).sqrt();
+        //let softmax_scale = 1f64 / (head_dim as f64).sqrt();
         Ok(Self {
             q_proj,
             k_proj,
@@ -278,7 +278,7 @@ impl Attention {
             q_layernorm,
             k_layernorm,
             rotary_emb,
-            softmax_scale,
+            //softmax_scale,
             num_heads,
             num_kv_heads,
             head_dim,
@@ -346,35 +346,6 @@ impl Attention {
             }
         };
         self.kv_cache = Some((key_states.clone(), value_states.clone()));
-
-        // Repeat kv.
-        /*let key_states = self.repeat_kv(key_states).unwrap();
-        let value_states = self.repeat_kv(value_states).unwrap();
-
-        let attn_weights = query_states
-            .cast(DType::F32)
-            .matmul(&key_states.cast(DType::F32).t())
-            .unwrap()
-            * self.softmax_scale;
-        let attn_weights = match mask {
-            None => attn_weights,
-            Some(mask) => {
-                let mut sh = vec![b_size, self.num_heads];
-                sh.append(&mut mask.shape());
-                masked_fill(&attn_weights, &mask.expand(sh).unwrap(), f32::NEG_INFINITY).unwrap()
-            }
-        };
-        let attn_weights = attn_weights
-            .softmax([-3])
-            .unwrap()
-            .cast(value_states.dtype());
-        Tensor::realize([&attn_weights, &value_states]).unwrap();
-        let attn_output = attn_weights.matmul(&value_states).unwrap();
-        let attn_output = attn_output.transpose(1, 2).unwrap();
-        let d: usize = attn_output.shape()[2..].iter().product();
-        let attn_output = attn_output.reshape([b_size, seq_len, d]).unwrap();
-        let attn_output = self.dense.forward(attn_output).unwrap();
-        attn_output*/
 
         let num_kv_groups = self.num_heads/self.num_kv_heads;
         let key_states = repeat_kv(key_states, num_kv_groups);
@@ -501,10 +472,11 @@ impl Model {
         };
         for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, mask.as_ref());
-            println!("{xs}");
+            //Tensor::realize([&xs]).unwrap();
+            //println!("{xs}");
         }
-        println!("{xs}");
-        panic!();
+        //println!("{xs}");
+        //panic!();
         //Tensor::plot_graph([], "graph").unwrap();
         let xs = self
             .final_layernorm

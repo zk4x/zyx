@@ -46,7 +46,8 @@ pub fn initialize_backends(
 #[allow(private_interfaces)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum BufferMut<'a> {
-    Dummy,
+    #[allow(unused)]
+    Dummy(u32),
     OpenCL(&'a opencl::OpenCLBuffer),
     CUDA(&'a cuda::CUDABuffer),
     #[cfg(feature = "wgpu")]

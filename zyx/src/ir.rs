@@ -779,6 +779,7 @@ impl IRCompiler {
     }
 
     // Loop invariant code motion and dependence analysis
+    #[allow(unused)]
     fn loop_invariant_code_motion(&mut self) {
         // Go from innermost loop to outermost loop. If there are multiple innermost loops,
         // they can be processed in parallel.
@@ -1205,9 +1206,7 @@ impl IRKernel {
         //compiler.loop_unrolling();
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
-        if false {
-            compiler.loop_invariant_code_motion();
-        }
+        //compiler.loop_invariant_code_motion();
         compiler.loop_splitting();
         compiler.vectorization();
         compiler.constant_folding_and_propagation();

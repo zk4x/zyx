@@ -191,145 +191,6 @@ impl Drop for Timer {
     }
 }*/
 
-/*
-#[cfg(feature = "rand")]
-#[test]
-fn t4() {
-    let x = Tensor::uniform([1024, 1024], 0f32..1f32);
-    let y = Tensor::uniform([1024, 1024], 0f32..1f32);
-    //let z = (x * y).sum(2);
-    for _ in 0..20 {
-        let z = x.dot(&y);
-        Tensor::realize([&z]).unwrap();
-        drop(z);
-        //Tensor::plot_graph([], &format!("graph{i}"));
-    }
-    //Tensor::plot_graph([], "graph0");
-    //Tensor::realize([&z]).unwrap();
-}
-
-#[test]
-fn t5() {
-    let x = Tensor::from([[2f32, 3.], [4., 5.]]);
-    let y = x.t();
-    let z = x.exp();
-    //Tensor::plot_dot_graph([&y, &z], "graph1");
-    Tensor::realize([&y, &z]).unwrap();
-    println!("{y}\n{z}");
-}
-
-#[cfg(feature = "rand")]
-#[test]
-fn t6() {
-    //let x = Tensor::from([[2, 3], [4, 5]]).pad_zeros([(1, 3)]);
-
-    let x = Tensor::randn([14, 16], DType::U8);
-    let x = x.get((.., 8..-2));
-    println!("{x}");
-}
-
-#[test]
-fn t9() {
-    let mut x = Tensor::ones([1024, 1024], DType::F32);
-    let y = Tensor::ones([1024, 1024], DType::F32);
-    for _ in 0..10 {
-        x = x.dot(&y);
-    }
-    println!("{x}");
-}
-
-#[test]
-fn t_10() {
-    let x = Tensor::eye(8, DType::I32);
-    println!("{x}");
-}
-
-#[test]
-fn t_11() {
-    let x = Tensor::from([[2, 3, 1], [3, 4, 1]]);
-    let y = Tensor::from([[2, 3], [2, 1], [4, 1]]);
-    let x = x.dot(y);
-    //let x = x.reshape([2, 1, 3]) * y.t().reshape([1, 2, 3]);
-    //let x = x.sum(2);
-    println!("{x}");
-}
-
-#[test]
-fn t_12() {
-    let mut x = Tensor::from([2, 3, 1]);
-    let w = Tensor::from([[2, 3, 2], [2, 1, 1], [4, 1, 4]]);
-    let b = Tensor::from([2, 3, 5]);
-    for _ in 0..10 {
-        x = x.dot(&w) + &b;
-        Tensor::realize([&x]).unwrap();
-    }
-    println!("{x}");
-}
-
-#[test]
-fn t_14() {
-    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    x = x.repeat([2, 4, 1]);
-    println!("{x}");
-}
-
-#[test]
-fn t_15() {
-    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    for _ in 0..10 {
-        x = &x + &x;
-        println!("{x}");
-        //Tensor::plot_graph([], &format!("graph{i}"));
-        Tensor::realize([&x]).unwrap();
-    }
-    println!("{x}");
-}
-
-#[test]
-fn t_16() {
-    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    let y = Tensor::from([[5, 6, 9], [4, 2, 0]]);
-    let _z = x.exp2() + &y;
-    x = -x * &y;
-    Tensor::plot_graph([], "graph0");
-    Tensor::realize([&x]).unwrap();
-    Tensor::plot_graph([], "graph1");
-}
-
-#[test]
-fn t_17() {
-    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    println!("{x}");
-    x = x.sum([]);
-    println!("{x}");
-}
-*/
-
-/*
-#[test]
-fn t_12() {
-    let mut x = Tensor::from([2, 3, 1]);
-    let w = Tensor::from([[2, 3, 2], [2, 1, 1], [4, 1, 4]]);
-    let b = Tensor::from([2, 3, 5]);
-    for _ in 0..10 {
-        x = x.dot(&w) + &b;
-        //Tensor::realize([&x]).unwrap();
-    }
-    println!("{x}");
-}*/
-
-/*#[test]
-fn t1() {
-    use crate::DType;
-    let x = Tensor::from([0f32, 5., 1.]);
-    let y = Tensor::rand([3, 5], DType::F32);
-    let a = x.dot(y);
-    let x = Tensor::from([0f32, 5., 1.]);
-    let y = Tensor::rand([3, 5], DType::F32);
-    let b = x.dot(y);
-    println!("{a}, {b}");
-}*/
-
 #[test]
 fn t1() -> Result<(), ZyxError> {
     let x = Tensor::rand([4, 2, 3], DType::F32).unwrap();
@@ -360,7 +221,7 @@ fn t4() {
 }*/
 
 /*#[test]
-fn t6() {
+fn multithreading() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
     let handle = std::thread::spawn(|| {
         let y = Tensor::from([2, 3]);
@@ -390,14 +251,3 @@ fn binary_cross_dependency1() -> Result<(), ZyxError> {
 
     Ok(())
 }*/
-
-#[test]
-fn t4() -> Result<(), ZyxError> {
-    let mut x= Tensor::randn([2048, 2048], DType::F32)?;
-    let y= Tensor::randn([2048, 2048], DType::F32)?;
-    for _ in 0..20 {
-        x = x.dot(&y)?;
-    }
-    Tensor::realize([&x])?;
-    Ok(())
-}

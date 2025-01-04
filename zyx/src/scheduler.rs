@@ -69,7 +69,7 @@ pub fn realize_graph(
     let mut kernels: Slab<Kernel> = Slab::with_capacity(500);
 
     if debug.sched() {
-        println!("To eval: {to_eval:?}");
+        println!("To schedule: {} tensors, to eval: {to_eval:?}", order.len());
     }
 
     /*let mut expa_u = 0;
@@ -111,7 +111,13 @@ pub fn realize_graph(
                     //kernels.len() - 1
                     kernels.push(Kernel::constant(nid, value))
                 }
-                Node::Leaf { .. } => unreachable!(),
+                Node::Leaf { .. } => {
+                    let realized_nodes: BTreeSet<TensorId> = memory_pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+                    if !realized_nodes.contains(&nid) {
+                        println!("not in realized nodes and not in buffers");
+                    }
+                    unreachable!();
+                },
                 // Expand and pad are not always mergeable and thus can finish kernels.
                 // All other ops are always mergeable.
                 Node::Expand { x } => {
@@ -326,22 +332,18 @@ pub fn realize_graph(
                         // we delete kidy (could by also kidx) and put everything in kidx
                         let n = kernels[kidx].max_id + 1;
 
-                        // To check if kidx depends on kidy, we just make a list of loads,
-                        // then iterate through all kernels that store these loads,
-                        // then replace these loads with loads from those kernels
-                        // and keep repeating until we encounter kidy or there are no more loads.
-
                         // can't remove kidy if any kernel depends on kidy
                         // store y and all outputs that are not stored yet in kidy
                         // clear kidy's outputs
                         // write a load kernel for y
                         // mark kidy as new kernel
-                        if depends_on(&kernels, kidx, kidy) {
+                        if kernels[kidy].has_stores() && depends_on(&kernels, kidx, kidy) {
+                            //if !kernels[kidy].depends_on.is_empty() {
                             //println!("kidx depends on kidy");
                             let outputs = kernels[kidy].outputs.clone();
                             for (nid, inner_x) in outputs {
                                 if rcs.contains_key(&nid) {
-                                    if kernels[kidy].tensors.values().any(|id| *id == nid) {
+                                    if !kernels[kidy].tensors.values().any(|id| *id == nid) {
                                         let nid_shape = graph.shape(nid);
                                         let nid_dtype = graph.dtype(nid);
                                         // if the kernel wasn't stored yet, because it wasn't processed yet
@@ -385,28 +387,19 @@ pub fn realize_graph(
                                 }
                             }
                             kernels[kidy].outputs.clear();
+                            // TODO since no more ops will be added to kidy, we can immediatelly send it for
+                            // evaluation. This can make the scheduler faster as we will have fewer kernels to work with.
                             debug_assert_eq!(yt, 0);
                         }
-                        // TODO what if kidy depends on kidx, that is what if any kernel depends on kidx???
-                        #[cfg(debug_assertions)]
+
+                        // DUe to the way nodes are handled it should not be possible for kidx to depend on kidy
+                        /*#[cfg(debug_assertions)]
                         if depends_on(&kernels, kidy, kidx) {
                             panic!("Binary with kidy depending on kidx.")
-                        }
+                        }*/
 
                         let Kernel { ops, tensors, outputs, max_id, depends_on } =
                             kernels.remove(kidy).unwrap();
-
-                        // Now we have to search all depends_on for all kernels, if any kernel depends on
-                        // kidy, now it depends on kidx
-                        for kernel in kernels.values_mut() {
-                            let depends_on = kernel.depends_on.clone();
-                            for kid in depends_on {
-                                if kid == kidy {
-                                    kernel.depends_on.remove(&kidy);
-                                    kernel.depends_on.insert(kidx);
-                                }
-                            }
-                        }
 
                         for (i, op) in ops.into_iter().enumerate() {
                             if !(matches!(op, Op::Loop { .. }) && op == kernels[kidx].ops[i]) {
@@ -473,6 +466,19 @@ pub fn realize_graph(
                         kernels[kidx].outputs.insert(nid, z);
                         kidx
                     };
+
+                    // Now we have to search all depends_on for all kernels, if any kernel depends on
+                    // kidy, now it depends on kidx
+                    for kernel in kernels.values_mut() {
+                        let depends_on = kernel.depends_on.clone();
+                        for kid in depends_on {
+                            if kid == kidy {
+                                kernel.depends_on.remove(&kidy);
+                                kernel.depends_on.insert(kidx);
+                            }
+                        }
+                    }
+
                     if x == y && rcs[&x] < 3 {
                         kernels[kidx].outputs.remove(&x);
                     } else {
@@ -543,6 +549,11 @@ pub fn realize_graph(
         }
     }*/
 
+    //panic!();
+
+    #[cfg(debug_assertions)]
+    let mut evaluated_tensors = BTreeSet::new();
+
     // Launch all kernels
     let mut num_evaluated = 0;
     for _ in 0..kernels.len() + 1 {
@@ -552,9 +563,11 @@ pub fn realize_graph(
                 num_evaluated += 1;
                 kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
                 evaluated.insert(kid);
+                #[cfg(debug_assertions)]
+                evaluated_tensors.extend(kernel.ops.iter().filter_map(|op| if let Op::Store { z, .. } = op { Some(kernel.tensors[z]) } else  { None }));
             }
         }
-        println!("Evaluated: {evaluated:?}");
+        //println!("Evaluated: {evaluated:?}");
         if evaluated.is_empty() {
             break;
         }
@@ -566,9 +579,17 @@ pub fn realize_graph(
         }
     }
 
-    println!("Evaluated {num_evaluated} kernels");
+    #[cfg(debug_assertions)]
+    if to_eval.difference(&evaluated_tensors).count() != 0 {
+        let realized_nodes: BTreeSet<TensorId> = memory_pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+        if !to_eval.is_subset(&realized_nodes) {
+            let diff: BTreeSet<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+            panic!("In to eval but not evaluated: {diff:?}", );
+        }
+    }
 
     if num_evaluated != kernels_len {
+        println!("Evaluated {num_evaluated} kernels");
         for (id, kernel) in kernels.iter() {
             println!("\nKernel id = {id}");
             kernel.debug();
@@ -627,10 +648,10 @@ fn store(
     kernels[kid].tensors.insert(z, nid);
 }
 
-// TODO benchmark if recursive or dynamic version is faster, but recursive should be faster,
-// since it does not allocate
+// recursive should be faster, since it does not allocate, but in fact the dynamic programming
+// version is much faster, apparently cpus really hate recursion
 // Check if kidx depends on kidy
-/*fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
+fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
     let mut depends_on = kernels[kidx].depends_on.clone();
     while let Some(kid) = depends_on.pop_last() {
         if kid == kidy {
@@ -639,16 +660,16 @@ fn store(
         depends_on.extend(kernels[kid].depends_on.iter().copied());
     }
     false
-}*/
+}
 
 // Check if kidx depends on kidy
-fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
+/*fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
     //println!("Checking if {kidx} depends on {kidy}, kidx dependencies: {:?}", kernels[kidx].depends_on);
     if kernels[kidx].depends_on.contains(&kidy) {
         return true;
     }
     kernels[kidx].depends_on.iter().any(|kid| depends_on(kernels, *kid, kidy))
-}
+}*/
 
 // Choose kernel with most outputs (binary, unary)
 fn get_kernel_max(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {

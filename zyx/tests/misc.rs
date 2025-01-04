@@ -49,6 +49,14 @@ fn sum2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn sum3() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    x = x.sum([])?;
+    debug_assert_eq!(x, [13i32]);
+    Ok(())
+}
+
+#[test]
 fn pad_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
@@ -652,7 +660,121 @@ fn multiple_stores() -> Result<(), ZyxError> {
     let y = x.exp();
     let z = y.tanh();
     Tensor::realize([&y, &z])?;
-    println!("{z:.6}");
+    //println!("{z:.6}");
     assert_eq!(z, [[1f32, 1., 0.999329], [1., 1., 0.964028]]);
     Ok(())
 }
+
+#[test]
+fn dot2() -> Result<(), ZyxError> {
+    let mut x = Tensor::randn([1024, 1024], DType::F32)?;
+    let y = Tensor::randn([1024, 1024], DType::F32)?;
+    for _ in 0..5 {
+        x = x.dot(&y)?;
+    }
+    //println!("{x}");
+    Tensor::realize([&x])?;
+    Ok(())
+}
+
+#[test]
+fn repeat1() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    x = x.repeat([2, 3, 1])?;
+    println!("{x}");
+    assert_eq!(
+        x,
+        [
+            [
+                [2, 3, 1],
+                [2, 4, 1],
+                [2, 3, 1],
+                [2, 4, 1],
+                [2, 3, 1],
+                [2, 4, 1]
+            ],
+            [
+                [2, 3, 1],
+                [2, 4, 1],
+                [2, 3, 1],
+                [2, 4, 1],
+                [2, 3, 1],
+                [2, 4, 1]
+            ]
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn dot4() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([2i32, 3, 1]);
+    let w = Tensor::from([[2i32, 3, 2], [2, 1, 1], [4, 1, 4]]);
+    let b = Tensor::from([2i32, 3, 5]);
+    for _ in 0..10 {
+        x = x.dot(&w)? + &b;
+        //Tensor::realize([&x]).unwrap();
+    }
+    println!("{x}");
+    assert_eq!(x, [671627020i32, 441824135, 607929878]);
+    Ok(())
+}
+
+#[test]
+fn exp2() {
+    let x = Tensor::from([[2f32, 3.], [4., 5.]]);
+    let y = x.t();
+    let z = x.exp().cast(DType::I32);
+    Tensor::realize([&y, &z]).unwrap();
+    assert_eq!(z, [[7i32, 20], [54, 148]]);
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn rand_get() -> Result<(), ZyxError> {
+    Tensor::manual_seed(69420);
+    let x = Tensor::rand([3, 12], DType::U8)?;
+    let x = x.get((.., 8..=-2))?;
+    assert_eq!(x, [[41u8, 171, 236], [212, 222, 77], [16, 125, 60]]);
+    Ok(())
+}
+
+#[test]
+fn eye1() {
+    let x = Tensor::eye(8, DType::I32);
+    assert_eq!(
+        x,
+        [
+            [1i32, 0, 0, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1],
+        ]
+    );
+}
+
+#[test]
+fn dot5() {
+    let x = Tensor::from([[2, 3, 1], [3, 4, 1]]);
+    let y = Tensor::from([[2, 3], [2, 1], [4, 1]]);
+    let x = x.dot(y).unwrap();
+    //let x = x.reshape([2, 1, 3]) * y.t().reshape([1, 2, 3]);
+    //let x = x.sum(2);
+    assert_eq!(x, [[14, 10], [18, 14]]);
+}
+
+/*#[test]
+fn t1() {
+    use crate::DType;
+    let x = Tensor::from([0f32, 5., 1.]);
+    let y = Tensor::rand([3, 5], DType::F32);
+    let a = x.dot(y);
+    let x = Tensor::from([0f32, 5., 1.]);
+    let y = Tensor::rand([3, 5], DType::F32);
+    let b = x.dot(y);
+    println!("{a}, {b}");
+}*/

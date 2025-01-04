@@ -168,6 +168,10 @@ impl Kernel {
         self.ops.len() < 10
     }
 
+    pub(super) fn has_stores(&self) -> bool {
+        self.ops.iter().any(|op| matches!(op, Op::Store { .. }))
+    }
+
     /*#[cfg(debug_assertions)]
     pub(super) fn is_reshapable(&self, shape: &[usize]) -> bool {
         // TODO remove the first case
@@ -795,33 +799,34 @@ impl Kernel {
         // TODO deduplicate buffer ids, so that single tensor is not passed as multiple pointers
         let mut outputs = BTreeSet::new();
         let mut event_wait_list = Vec::new();
-        let args: Vec<Id> = self
-            .tensors
-            .values()
-            .map(|&tensor_id| {
-                if let Some(buffer_id) = pool.buffer_map.get(&tensor_id) {
-                    if let Some((_, event)) =
-                        pool.events.iter().find(|(key, _)| key.contains(buffer_id))
-                    {
-                        event_wait_list.push(event.clone());
-                    }
-                    *buffer_id
-                } else {
-                    // Allocate bytes for outputs
-                    let (buffer_id, event) = pool
-                        .pool
-                        .allocate(
-                            graph.shape(tensor_id).iter().product::<Dimension>()
-                                * graph.dtype(tensor_id).byte_size() as Dimension,
-                        )
-                        .unwrap();
-                    pool.buffer_map.insert(tensor_id, buffer_id);
-                    event_wait_list.push(event);
-                    outputs.insert(tensor_id);
-                    buffer_id
+        let args: Vec<Id> = self.ops.iter().filter_map(|op| match op {
+            Op::Load { z, .. } => {
+                let tensor_id = self.tensors[z];
+                let buffer_id = pool.buffer_map.get(&tensor_id).unwrap();
+                if let Some((_, event)) =
+                    pool.events.iter().find(|(key, _)| key.contains(buffer_id))
+                {
+                    event_wait_list.push(event.clone());
                 }
-            })
-            .collect();
+                Some(*buffer_id)
+            }
+            Op::Store { z, zview, zdtype, .. } => {
+                let tensor_id = self.tensors[z];
+                //println!("Allocating {zview} {}", zview.original_numel());
+                let (buffer_id, event) = pool
+                    .pool
+                    .allocate(
+                       zview.original_numel() 
+                            * (zdtype.byte_size() as Dimension),
+                    )
+                    .unwrap();
+                pool.buffer_map.insert(tensor_id, buffer_id);
+                event_wait_list.push(event);
+                outputs.insert(tensor_id);
+                Some(buffer_id)
+            }
+            _ => None
+        }).collect();
 
         optimizer.launch(
             self,

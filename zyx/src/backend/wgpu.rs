@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use nanoserde::DeJson;
 use pollster::FutureExt;
@@ -278,7 +278,7 @@ impl Device for WGPUDevice {
                 source += &format!(
                     "@group(0) @binding({id}) var<storage, {}> p{id}: array<{}>;\n",
                     if *read_only { "read" } else { "read_write" },
-                    dtype.wgsl(),
+                    dtype.spirv(),
                 );
             }
             read_only_args.push(*read_only);
@@ -286,7 +286,7 @@ impl Device for WGPUDevice {
         // Declare local variables
         for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Local {
-                source += &format!("var<workgroup> p{id}: array<{}, {len}>;\n", dtype.wgsl(),);
+                source += &format!("var<workgroup> p{id}: array<{}, {len}>;\n", dtype.spirv(),);
             }
         }
 
@@ -308,7 +308,7 @@ impl Device for WGPUDevice {
 
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!("{indent}var r{id}: {};\n", dtype.wgsl());
+            source += &format!("{indent}var r{id}: {};\n", dtype.spirv());
         }
 
         // Add indices for global and local loops
@@ -352,7 +352,7 @@ impl Device for WGPUDevice {
                     let dtype = kernel.registers[z as usize];
                     source += &match uop {
                         UOp::Cast(dtype) => {
-                            format!("{indent}r{z} = {}(r{x});\n", dtype.wgsl(),)
+                            format!("{indent}r{z} = {}(r{x});\n", dtype.spirv(),)
                         }
                         UOp::ReLU => format!(
                             "{indent}r{z} = max(r{x}, {});\n",
@@ -368,7 +368,7 @@ impl Device for WGPUDevice {
                         UOp::Not => {
                             format!(
                                 "{indent}r{z} = {}(r{x} == 0);\n",
-                                kernel.registers[z as usize].wgsl(),
+                                kernel.registers[z as usize].spirv(),
                             )
                         }
                     };
@@ -452,7 +452,7 @@ impl Device for WGPUDevice {
 
         let shader_module = self.device.create_shader_module(ShaderModuleDescriptor {
             label: None,
-            source: ShaderSource::Wgsl(Cow::Owned(source)),
+            source: ShaderSource::Wgsl(std::borrow::Cow::Owned(source)),
         });
         let id = self.programs.push(WGPUProgram {
             name,
@@ -464,6 +464,301 @@ impl Device for WGPUDevice {
 
         Ok(id)
     }
+
+    /*fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError> {
+        let mut indent = String::from("  ");
+        let mut source = String::from(
+            "
+        OpCapability Addresses
+        OpCapability Linkage
+        OpCapability Kernel
+        OpCapability Int16
+        OpCapability Float16Buffer
+        OpMemoryModel Physical32 OpenCL
+        ",
+        );
+
+        let mut global_work_size = [0; 3];
+        let mut local_work_size = [0; 3];
+
+        let mut loops = [0; 6];
+        for (i, op) in kernel.ops[..6].iter().enumerate() {
+            if let &IROp::Loop { id, len } = op {
+                if i % 2 == 0 {
+                    global_work_size[i / 2] = len;
+                } else {
+                    local_work_size[i / 2] = len;
+                }
+                loops[i] = id;
+            } else {
+                unreachable!()
+            }
+        }
+
+        // Function declaration and name
+        let name = format!(
+            "k_{}_{}_{}__{}_{}_{}",
+            global_work_size[0],
+            global_work_size[1],
+            global_work_size[2],
+            local_work_size[0],
+            local_work_size[1],
+            local_work_size[2],
+        );
+        source += &format!("
+        OpEntryPoint Kernel %35 \"{name}\" %__spirv_BuiltInGlobalInvocationId
+        OpExecutionMode %35 ContractionOff
+        OpDecorate %__spirv_BuiltInWorkgroupId LinkageAttributes \"__spirv_BuiltInWorkgroupId\" Import
+        OpDecorate %__spirv_BuiltInWorkgroupId Constant
+        OpDecorate %__spirv_BuiltInWorkgroupId BuiltIn WorkgroupId
+        OpDecorate %__spirv_BuiltInLocalInvocationId LinkageAttributes \"__spirv_BuiltInLocalInvocationId\" Import
+        OpDecorate %__spirv_BuiltInLocalInvocationId Constant
+        OpDecorate %__spirv_BuiltInLocalInvocationId BuiltIn LocalInvocationId
+        OpDecorate %{name} LinkageAttributes \"{name}\" Export
+        ");
+
+        // Declare global variables
+        let mut read_only_args = Vec::new();
+        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!(
+                    "{indent}OpDecorate %g{id} FuncParamAttr Nocapture\n{}{indent}OpDecorate %g{id} Alignment {}\n",
+                    if *read_only { String::new() } else { format!("  OpDecorate g{id}\n") },
+                    dtype.byte_size(),
+                );
+            }
+            read_only_args.push(*read_only);
+        }
+        // Declare local variables
+        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Local {
+                todo!()
+            }
+        }
+
+        // Global ids
+        source += &format!(
+            "
+        %u_64 = OpTypeInt 64 0
+        %u64 = OpConstant %u_64 64
+     %v3u64 = OpTypeVector %u_64 3
+%_ptr_Input_v3u64 = OpTypePointer Input %v3u64
+       %void = OpTypeVoid\n"
+        );
+
+        // Declare types of global parameters
+        for (_, (scope, dtype, _, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!(
+                    "
+                    %{0} = OpTypeFloat {1}
+%_ptr_CrossWorkgroup_{0} = OpTypePointer CrossWorkgroup %{0}
+        ",
+                    dtype.spirv(),
+                    dtype.byte_size() * 4
+                );
+            }
+        }
+
+        source += &format!("%10 = OpTypeFunction %void");
+        for (_, (scope, dtype, _, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!(" %_ptr_CrossWorkgroup_{}", dtype.spirv());
+            }
+        }
+
+        source += &format!(
+            "
+%__spirv_BuiltInWorkgroupId = OpVariable %_ptr_Input_v3u64 Input   
+%__spirv_BuiltInLocalInvocationId = OpVariable %_ptr_Input_v3u64 Input
+%{name} = OpFunction %void None %10            
+    "
+        );
+
+        // Registers for function parameter pointers
+        for (id, (scope, dtype, _, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!(
+                    "%g{id} = OpFunctionParameter %_ptr_CrossWorkgroup_{}\n",
+                    dtype.spirv()
+                );
+            }
+        }
+
+        source += &format!("%entry = OpLabel
+        %23 = OpLoad %v3u64 %__spirv_BuiltInWorkgroupId Aligned 16
+       %r{} = OpCompositeExtract %u64 %23 0
+       %r{} = OpCompositeExtract %u64 %23 1
+       %r{} = OpCompositeExtract %u64 %23 2
+        %26 = OpLoad %v3u64 %__spirv_BuiltInLocalInvocationId Aligned 16
+       %r{} = OpCompositeExtract %u64 %26 0
+       %r{} = OpCompositeExtract %u64 %26 1
+       %r{} = OpCompositeExtract %u64 %26 2
+      ", loops[0], loops[1], loops[2], loops[3], loops[4], loops[5]);
+
+
+
+
+
+        // Declare register variables
+        for (id, dtype) in kernel.registers.iter().enumerate() {
+            source += &format!("{indent}var r{id}: {};\n", dtype.spirv());
+        }
+
+        // Add indices for global and local loops
+        source += &format!(
+            "  r{} = u64(gid.x);   /* 0..{} */\n",
+            loops[0], global_work_size[0]
+        );
+        source += &format!(
+            "  r{} = u64(lid.x);   /* 0..{} */\n",
+            loops[1], local_work_size[0]
+        );
+        source += &format!(
+            "  r{} = u64(gid.y);   /* 0..{} */\n",
+            loops[2], global_work_size[1]
+        );
+        source += &format!(
+            "  r{} = u64(lid.y);   /* 0..{} */\n",
+            loops[3], local_work_size[1]
+        );
+        source += &format!(
+            "  r{} = u64(gid.z);   /* 0..{} */\n",
+            loops[4], global_work_size[2]
+        );
+        source += &format!(
+            "  r{} = u64(lid.z);   /* 0..{} */\n",
+            loops[5], local_work_size[2]
+        );
+
+        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
+            match op {
+                IROp::Load { z, address, offset } => {
+                    source += &format!("{indent}r{z} = p{address}[{}];\n", offset.wgsl());
+                }
+                IROp::Store { address, x, offset } => {
+                    source += &format!("{indent}p{address}[{}] = {};\n", offset.wgsl(), x.wgsl());
+                }
+                IROp::Set { z, value } => {
+                    source += &format!("{indent}r{z} = {};\n", value.wgsl());
+                }
+                IROp::Unary { z, x, uop } => {
+                    let dtype = kernel.registers[z as usize];
+                    source += &match uop {
+                        UOp::Cast(dtype) => {
+                            format!("{indent}r{z} = {}(r{x});\n", dtype.spirv(),)
+                        }
+                        UOp::ReLU => format!(
+                            "{indent}r{z} = max(r{x}, {});\n",
+                            dtype.zero_constant().wgsl()
+                        ),
+                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
+                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
+                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
+                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
+                        UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
+                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
+                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
+                        UOp::Not => {
+                            format!(
+                                "{indent}r{z} = {}(r{x} == 0);\n",
+                                kernel.registers[z as usize].spirv(),
+                            )
+                        }
+                    };
+                }
+                IROp::Binary { z, x, y, bop } => {
+                    source += &format!(
+                        "{indent}r{z} = {};\n",
+                        match bop {
+                            BOp::Add => format!("{} + {}", x.wgsl(), y.wgsl()),
+                            BOp::Sub => format!("{} - {}", x.wgsl(), y.wgsl()),
+                            BOp::Mul => format!("{} * {}", x.wgsl(), y.wgsl()),
+                            BOp::Div => format!("{} / {}", x.wgsl(), y.wgsl()),
+                            BOp::Mod => format!("{} % {}", x.wgsl(), y.wgsl()),
+                            BOp::Pow => format!("pow({}, {})", x.wgsl(), y.wgsl()),
+                            BOp::Max => format!("max({}, {})", x.wgsl(), y.wgsl()),
+                            BOp::BitOr => format!("{} | {}", x.wgsl(), y.wgsl()),
+                            BOp::BitXor => format!("{} ^ {}", x.wgsl(), y.wgsl()),
+                            BOp::BitAnd => format!("{} & {}", x.wgsl(), y.wgsl()),
+                            BOp::Cmplt => format!("{} < {}", x.wgsl(), y.wgsl()),
+                            BOp::Cmpgt => format!("{} > {}", x.wgsl(), y.wgsl()),
+                            BOp::NotEq => format!("{} != {}", x.wgsl(), y.wgsl()),
+                            BOp::Or => format!("{} || {}", x.wgsl(), y.wgsl()),
+                            BOp::And => format!("{} && {}", x.wgsl(), y.wgsl()),
+                            BOp::BitShiftLeft => format!(
+                                "{} << {}",
+                                x.wgsl(),
+                                if let Reg::Const(y) = y {
+                                    Reg::Const(y.unary(UOp::Cast(DType::U32)))
+                                } else {
+                                    y
+                                }
+                                .wgsl()
+                            ),
+                            BOp::BitShiftRight => format!(
+                                "{} >> {}",
+                                x.wgsl(),
+                                if let Reg::Const(y) = y {
+                                    Reg::Const(y.unary(UOp::Cast(DType::U32)))
+                                } else {
+                                    y
+                                }
+                                .wgsl()
+                            ),
+                        }
+                    );
+                }
+                IROp::MAdd { z, a, b, c } => {
+                    source += &format!(
+                        "{indent}r{z} = {} * {} + {};\n",
+                        a.wgsl(),
+                        b.wgsl(),
+                        c.wgsl()
+                    );
+                }
+                IROp::Loop { id, len } => {
+                    source += &format!(
+                        "{indent}for (var r{id}: u64 = 0; r{id} < {len}; r{id} = r{id} + 1) {{\n"
+                    );
+                    indent += "  ";
+                }
+                IROp::EndLoop { .. } => {
+                    indent.pop();
+                    indent.pop();
+                    source += &format!("{indent}}}\n");
+                }
+                IROp::Barrier { scope } => match scope {
+                    Scope::Global => source += &format!("{indent}storageBarrier();\n"),
+                    Scope::Local => source += &format!("{indent}workgroupBarrier();\n"),
+                    Scope::Register => unreachable!(),
+                },
+            }
+        }
+        source += "      OpReturn\n      OpFunctionEnd\n";
+
+        if debug_asm {
+            println!("{source}");
+        }
+
+        //let spirv_source = rspirv::binary::Assemble::assemble_into(&self, result);
+
+        let spirv_source = source.as_bytes();
+        let spirv_source = wgpu::util::make_spirv_raw(&spirv_source);
+        let shader_module = self.device.create_shader_module(ShaderModuleDescriptor {
+            label: None,
+            source: ShaderSource::SpirV(spirv_source),
+        });
+        let id = self.programs.push(WGPUProgram {
+            name,
+            global_work_size,
+            //local_work_size,
+            read_only_args,
+            shader: shader_module,
+        });
+
+        Ok(id)
+    }*/
 
     fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
         self.programs.remove(program_id);
@@ -560,9 +855,9 @@ impl Device for WGPUDevice {
 }
 
 impl DType {
-    fn wgsl(&self) -> &str {
+    fn spirv(&self) -> &str {
         match self {
-            DType::BF16 => todo!("WIP"),
+            DType::BF16 => "bf16",
             DType::F8 => "f8",
             DType::F16 => "f16",
             DType::F32 => "f32",

@@ -319,30 +319,6 @@ impl Tensor {
                 DType::BF16 | DType::F8 | DType::F16 | DType::F32 | DType::F64 => unreachable!(),
             }
         }
-        /*# threefry
-        if (num := math.ceil(((num_ := prod(shape)) * dtype.itemsize) / 4)) == 0: return Tensor.zeros(shape, device=device, dtype=dtype, **kwargs)
-        if not had_counter: Tensor._rng_counter.assign(Tensor._rng_counter + num)
-        counts1 = (Tensor.arange(math.ceil(num / 2), device=device, dtype=dtypes.uint32, requires_grad=False)+Tensor._rng_counter.to(device))
-        counts2 = counts1 + math.ceil(num / 2)*/
-
-        /*# threefry random bits
-        x = counts2.cast(dtypes.uint64) << 32 | counts1.cast(dtypes.uint64)
-        x = F.Threefry.apply(*x._broadcasted(Tensor._seed))
-        counts1, counts2 = (x & 0xffffffff).cast(dtypes.uint32), ((x >> 32) & 0xffffffff).cast(dtypes.uint32)
-        bits = counts1.cat(counts2)[:num]
-
-        # bitcast to uint with same number of bits
-        _, nmant = dtypes.finfo(dtype)
-        uint_dtype = {1: dtypes.uint8, 2: dtypes.uint16, 4: dtypes.uint32, 8: dtypes.uint64}[dtype.itemsize]
-        bits = bits.bitcast(uint_dtype)
-        # only randomize the mantissa bits and set the exponent to 1
-        one = Tensor.ones_like(bits, device=bits.device, dtype=dtype).bitcast(uint_dtype)
-        bits = bits.rshift((dtype.itemsize * 8) - nmant).bitwise_or(one)
-
-        # bitcast back to the original dtype
-        out = bits.bitcast(dtype)[:num_].sub(1).reshape(shape)
-        out.requires_grad = kwargs.get("requires_grad")
-        return out.contiguous()*/
     }
 
     // Initializers
