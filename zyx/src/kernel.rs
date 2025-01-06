@@ -878,6 +878,7 @@ impl Kernel {
     }
 
     pub(super) fn flop_mem_rw(&self) -> (u128, u128, u128) {
+        // TODO This does not yet account for multiple loads from the same buffer.
         let mut shape = Vec::new();
         let mut flop = 0;
         let mut mem_read = 0;
@@ -887,17 +888,19 @@ impl Kernel {
                 &Op::Loop { len, .. } => {
                     shape.push(len);
                 }
-                &Op::Load { xscope, .. } => {
+                &Op::Load { xscope, ref xview, xdtype, .. } => {
                     // Note that this calculates actual read speed, even if the load accesses the same
                     // value multiple times. This is usefull so that we can see whether the kernel
                     // is compute bound or memory bound.
                     if xscope == Scope::Global {
-                        mem_read += shape.iter().product::<usize>() as u128;
+                        //mem_read += shape.iter().product::<usize>() as u128;
+                        mem_read += xview.original_numel() as u128 * xdtype.byte_size() as u128;
                     }
                 }
-                &Op::Store { zscope, .. } => {
+                &Op::Store { zscope, ref zview, zdtype, .. } => {
                     if zscope == Scope::Global {
-                        mem_write += shape.iter().product::<usize>() as u128;
+                        //mem_write += shape.iter().product::<usize>() as u128 * zdtype.byte_size();
+                        mem_write += zview.original_numel() as u128 * zdtype.byte_size() as u128;
                     }
                 }
                 Op::EndLoop => {
