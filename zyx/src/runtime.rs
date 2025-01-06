@@ -677,8 +677,78 @@ impl Runtime {
         pool.pool.pool_to_host(buffer_id, byte_slice, Vec::new())?;
         Ok(())
     }
+    
+    pub(super) fn realize(&mut self, to_eval: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+        if to_eval.is_empty() {
+            return Ok(());
+        }
+        let realized_nodes: BTreeSet<TensorId> = self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+        if to_eval.is_subset(&realized_nodes) {
+            return Ok(());
+        }
+        if self.devices.is_empty() {
+            self.initialize_devices()?;
+        }
 
-    pub(super) fn realize(&mut self, mut to_eval: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+        /*
+        // Get user rcs, this is linear, thus should be fast
+        let mut user_rcs = vec![0i32; self.graph.nodes.max_id() as usize];
+        for (i, (rc, node)) in self.graph.nodes.iter() {
+            user_rcs[i as usize] += *rc as i32;
+            for param in node.parameters() {
+                user_rcs[param as usize] -= 1;
+            }
+        }*/
+
+        let to_eval: BTreeSet<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+        // Get order for evaluation using DFS with ref counting to resolve
+        // nodes with more than one parent.
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                if !realized_nodes.contains(&nid) {
+                    params.extend(self.graph.nodes[nid].1.parameters());
+                }
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    if !realized_nodes.contains(&nid) {
+                        params.extend(self.graph.nodes[nid].1.parameters());
+                    }
+                }
+            }
+        }
+        drop(internal_rcs);
+        drop(params);
+        order.reverse();
+
+        crate::scheduler::realize_graph(
+            &self.graph,
+            &order,
+            rcs,
+            &to_eval,
+            &mut self.devices,
+            &mut self.pools,
+            &mut self.optimizer,
+            self.search_iterations,
+            &realized_nodes,
+            self.debug,
+        )?;
+
+        Ok(())
+    }
+
+    /*#[allow(unused)]
+    pub(super) fn realize1(&mut self, mut to_eval: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         // TODO this is too complicated, simplify it!!!
         //let timer = backend::Timer::new();
         // Runs in O(4n) where n = self.graph.len(),
@@ -800,6 +870,7 @@ impl Runtime {
         crate::scheduler::realize_graph(
             &self.graph,
             &order,
+            rcs,
             &to_eval,
             &mut self.devices,
             &mut self.pools,
@@ -821,7 +892,7 @@ impl Runtime {
         // Delete the node, but do not use release function, just remove it from graph.nodes
         self.graph.delete_tensors(&to_delete);
         Ok(())
-    }
+    }*/
 
     fn deallocate_tensors(&mut self, to_remove: &BTreeSet<TensorId>) -> Result<(), ZyxError> {
         // This is basically tracing GC, seems faster than reference counting

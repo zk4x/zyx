@@ -1,17 +1,7 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::Device,
-    graph::Graph,
-    ir::Scope,
-    kernel::{Kernel, Op, TId},
-    node::Node,
-    optimizer::Optimizer,
-    runtime::Pool,
-    slab::{Id, Slab},
-    tensor::TensorId,
-    view::View,
-    DType, DebugMask, ZyxError,
+    backend::Device, graph::Graph, ir::Scope, kernel::{Kernel, Op, TId}, node::Node, optimizer::Optimizer, runtime::Pool, slab::{Id, Slab}, tensor::TensorId, view::View, DType, DebugMask, ZyxError
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -42,6 +32,7 @@ type KernelId = Id;
 pub fn realize_graph(
     graph: &Graph,
     order: &[TensorId],
+    mut rcs: BTreeMap<TensorId, u32>,
     to_eval: &BTreeSet<TensorId>,
     devices: &mut [Box<dyn Device>],
     memory_pools: &mut [Pool],
@@ -55,12 +46,12 @@ pub fn realize_graph(
 
     // Unary and binary ops do not require duplication of kernels
     // TODO merge this with rcs in realize function
-    let mut rcs = BTreeMap::new();
+    /*let mut rcs = BTreeMap::new();
     for &nid in order {
         for p in graph[nid].parameters() {
             rcs.entry(p).and_modify(|rc| *rc += 1).or_insert(1u32);
         }
-    }
+    }*/
     /*for nid in to_eval {
         rcs.entry(*nid).and_modify(|rc| *rc += 1).or_insert(1u32);
     }*/
@@ -77,8 +68,17 @@ pub fn realize_graph(
     let mut pad_u = 0;
     let mut red_u = 0;
     let mut perm_u = 0;*/
+    /*for &nid in order {
+        println!(
+            "ID({nid}): {:?}, sh: {:?}, rcs: {}, num kernels: {}",
+            graph[nid],
+            graph.shape(nid),
+            rcs.get(&nid).copied().unwrap_or(0),
+            kernels.len(),
+        );
+    }*/
 
-    for nid in order.iter().copied() {
+    for &nid in order {
         if debug.sched() {
             println!(
                 "ID({nid}): {:?}, sh: {:?}, rcs: {}, num kernels: {}",
@@ -393,10 +393,10 @@ pub fn realize_graph(
                         }
 
                         // DUe to the way nodes are handled it should not be possible for kidx to depend on kidy
-                        /*#[cfg(debug_assertions)]
+                        #[cfg(debug_assertions)]
                         if depends_on(&kernels, kidy, kidx) {
                             panic!("Binary with kidy depending on kidx.")
-                        }*/
+                        }
 
                         let Kernel { ops, tensors, outputs, max_id, depends_on } =
                             kernels.remove(kidy).unwrap();

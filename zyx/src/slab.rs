@@ -192,6 +192,11 @@ impl<T> Slab<T> {
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
     }*/
 
+    // TODO lower max id by searching for it in self.empty
+    /*pub(crate) fn max_id(&self) -> Id {
+        self.values.len().try_into().unwrap()
+    }*/
+
     pub(crate) fn len(&self) -> usize {
         self.values.len() - self.empty.len()
     }

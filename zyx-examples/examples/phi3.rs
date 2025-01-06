@@ -845,7 +845,8 @@ impl TextGeneration {
                 apply_repeat_penalty(&logits, self.repeat_penalty, &tokens[start_at..]).unwrap()
             };
 
-            let next_token = self.logits_processor.sample(&logits).unwrap();
+            let next_token: u32 = self.logits_processor.sample(&logits).unwrap();
+            println!("{next_token:?} -> {}", self.tokenizer.decode(&[next_token]).unwrap());
             tokens.push(next_token);
             generated_tokens += 1;
             if next_token == eos_token {

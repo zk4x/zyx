@@ -131,7 +131,9 @@ impl Optimizer {
                 pool.pool.sync_events(vec![event])?;
                 let nanos = nanos.elapsed();
                 let nanos = nanos.as_nanos();
-                print_perf(flop, mem_read, mem_write, nanos);
+                if debug.perf() {
+                    print_perf(flop, mem_read, mem_write, nanos);
+                }
                 //pool.events.insert(outputs, event);
                 self.programs.insert((kernel_id, dev_info_id), program_id);
             } else {

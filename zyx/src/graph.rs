@@ -161,6 +161,8 @@ impl Graph {
         for &tensor in tensors {
             self.nodes.remove(tensor);
             self.shapes.remove(&tensor);
+            self.paddings.remove(&tensor);
+            self.axes.remove(&tensor);
         }
     }
 
