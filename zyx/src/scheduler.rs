@@ -569,11 +569,42 @@ pub fn realize_graph(
 
     //panic!();
 
+    // Launch all kernels
+    let mut ids: Vec<Id> = kernels.ids().collect();
+    while !ids.is_empty() {
+        let mut i = 0;
+        while i < ids.len() {
+            let kid = ids[i];
+            if kernels[kid].depends_on.is_empty() {
+                ids.remove(i);
+                let mut kernel = kernels.remove(kid).unwrap();
+                kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
+                for kernel in kernels.values_mut() {
+                    kernel.depends_on.remove(&kid);
+                }
+                /*let loads: BTreeSet<TensorId> = kernel.ops.iter().filter_map(|op| if let Op::Load { x, .. } = op { Some(kernel.tensors[x]) } else { None }).collect();
+                let mut loads: BTreeSet<TensorId> = loads.difference(&to_eval).copied().collect();
+                for kernel in kernels.values() {
+                    for tensor in kernel.tensors.values() {
+                        loads.remove(tensor);
+                    }
+                }
+                for tensor in loads {
+                    for pool in &mut *memory_pools {
+                        if let Some(buffer_id) = pool.buffer_map.remove(&tensor) {
+                            pool.pool.deallocate(buffer_id, vec![])?;
+                        }
+                    }
+                }*/
+            } else {
+                i += 1
+            }
+        }
+    }
+
+    /*let mut num_evaluated = 0;
     #[cfg(debug_assertions)]
     let mut evaluated_tensors = BTreeSet::new();
-
-    // Launch all kernels
-    let mut num_evaluated = 0;
     for _ in 0..kernels.len() + 1 {
         let mut evaluated = BTreeSet::new();
         for (kid, kernel) in kernels.iter_mut() {
@@ -581,9 +612,6 @@ pub fn realize_graph(
                 num_evaluated += 1;
                 kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
                 evaluated.insert(kid);
-
-                // TODO delete input tensors that won't be used by other kernels,
-                // that is those loads that won't be loaded by other kernels and are not in realized_nodes
 
                 #[cfg(debug_assertions)]
                 evaluated_tensors.extend(kernel.ops.iter().filter_map(|op| {
@@ -605,18 +633,9 @@ pub fn realize_graph(
         for kernel in kernels.values_mut() {
             kernel.depends_on.retain(|x| !evaluated.contains(x));
         }
+        // TODO delete input tensors that won't be used by other kernels,
+        // that is those loads that won't be loaded by other kernels and are not in realized_nodes
     }
-
-    #[cfg(debug_assertions)]
-    if to_eval.difference(&evaluated_tensors).count() != 0 {
-        let realized_nodes: BTreeSet<TensorId> =
-            memory_pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
-        if !to_eval.is_subset(&realized_nodes) {
-            let diff: BTreeSet<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
-            panic!("In to eval but not evaluated: {diff:?}",);
-        }
-    }
-
     if num_evaluated != kernels_len {
         println!("Evaluated {num_evaluated} kernels");
         for (id, kernel) in kernels.iter() {
@@ -624,7 +643,17 @@ pub fn realize_graph(
             kernel.debug();
         }
         panic!();
-    }
+    }*/
+
+    /*#[cfg(debug_assertions)]
+    if to_eval.difference(&evaluated_tensors).count() != 0 {
+        let realized_nodes: BTreeSet<TensorId> =
+            memory_pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+        if !to_eval.is_subset(&realized_nodes) {
+            let diff: BTreeSet<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+            panic!("In to eval but not evaluated: {diff:?}",);
+        }
+    }*/
 
     /*#[cfg(debug_assertions)]
     if kernels.len() != 0 {
