@@ -259,6 +259,10 @@ impl Runtime {
         let bytes = data.bytes();
         let dtype = data.dtype();
         debug_assert_eq!(shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension, bytes);
+        if bytes == dtype.byte_size() as usize {
+            let value = data.read();
+            return Ok(self.graph.push(Node::Const { value: Constant::from_bytes(value, dtype) }));
+        }
         self.initialize_devices()?;
         // TODO rewrite this such that we try to allocate memory pools in fastest device
         // order and we use first one that does not fail.
@@ -748,7 +752,7 @@ impl Runtime {
     }
 
     /*#[allow(unused)]
-    pub(super) fn realize1(&mut self, mut to_eval: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+    pub(super) fn realize(&mut self, mut to_eval: BTreeSet<TensorId>) -> Result<(), ZyxError> {
         // TODO this is too complicated, simplify it!!!
         //let timer = backend::Timer::new();
         // Runs in O(4n) where n = self.graph.len(),
@@ -767,7 +771,7 @@ impl Runtime {
         //let t = crate::Timer::new("realize create graph");
         // Outside nodes are nodes that exist in realization graph, but also are needed by other parts of the graph or by user.
         // That is outside nodes have reference counts greater than their reference counts in realization graph.
-        let (outside_nodes, mut order) = {
+        let (outside_nodes, mut order, rcs) = {
             let this = &self.graph;
             let to_eval: &BTreeSet<TensorId> = &to_eval;
             // Following loops visit all children nodes up to leafs,
@@ -812,7 +816,7 @@ impl Runtime {
                 })
                 .chain(to_eval.iter().copied())
                 .collect();
-            (outside_nodes, order)
+            (outside_nodes, order, rcs)
         };
         //, |x| realized_tensors.contains(&x));
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?

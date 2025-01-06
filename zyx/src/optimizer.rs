@@ -66,44 +66,56 @@ impl Optimizer {
         //let t = crate::Timer::new("optimizer");
         // TODO if optimizer is not initialized yet, then first load from disk.
 
+        //println!("Looking for kernel:");
+        //kernel.debug();
+
         let dev_info_id = if let Some(&dev_info_id) = self.device_infos.get(device.info()) {
             dev_info_id
         } else {
-            let dev_info_id = self.device_infos.last_key_value().map_or(0, |(_, x)| x + 1);
-            debug_assert!(self.device_infos.insert(device.info().clone(), dev_info_id).is_none());
+            let dev_info_id = self.device_infos.last_key_value().map_or(0, |(_, x)| x.checked_add(1).unwrap());
+            assert!(self.device_infos.insert(device.info().clone(), dev_info_id).is_none());
             dev_info_id
         };
         if let Some(&kernel_id) = self.kernels.get(&kernel.ops) {
             // if kernel was already optimized
             if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
                 // if it was compiled for the given device
+                //println!("Launch cached, program id: {program_id}");
+                //kernel.debug();
                 let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
+                //pool.pool.sync_events(vec![event]).unwrap();
                 pool.events.insert(outputs, event);
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
+                let _ = optimization;
+                todo!()
                 // if it was optimized for similar device, but not compiled for the given device,
                 // or if it was in disk cache.
-                let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
+                /*let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                 pool.events.insert(outputs, event);
-                self.programs.insert((kernel_id, dev_info_id), program_id);
+                self.programs.insert((kernel_id, dev_info_id), program_id);*/
             } else {
+                unreachable!();
                 // if kernel was not optimized yet
-                let kernel_id = self.kernels.last_key_value().map_or(0, |(_, x)| x + 1);
-                self.kernels.insert(kernel.ops.clone(), kernel_id);
+                /*let kernel_id = self.kernels.last_key_value().map_or(0, |(_, x)| x + 1);
+                assert!(self.kernels.insert(kernel.ops.clone(), kernel_id).is_none());
                 if search_iters == 0 {
                     // if optimizations are not requested, use default optimizations
                     let optimization = Optimizer::default_optimizations(kernel, device.info());
                     let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                     let program_id = device.compile(&ir_kernel, debug.asm())?;
+                    println!("Default optimizations, program id: {program_id}");
+                    kernel.debug();
                     let event =
                         device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                     pool.events.insert(outputs, event);
-                    self.programs.insert((kernel_id, dev_info_id), program_id);
+                    assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
                 } else {
+                    todo!();
                     // TODO perhaps we really should allocate separate inputs for applying
                     // optimizations
-                    pool.pool.sync_events(event_wait_list).unwrap();
+                    /*pool.pool.sync_events(event_wait_list).unwrap();
                     let (optimization, program_id) = optimize_kernel(
                         kernel,
                         device,
@@ -113,19 +125,25 @@ impl Optimizer {
                         debug,
                     );
                     self.programs.insert((kernel_id, dev_info_id), program_id);
-                    self.optimizations.insert((kernel_id, dev_info_id), optimization);
-                }
+                    self.optimizations.insert((kernel_id, dev_info_id), optimization);*/
+                }*/
             }
         } else {
             // if kernel was not optimized yet
-            let kernel_id = self.kernels.last_key_value().map_or(0, |(_, x)| x + 1);
-            self.kernels.insert(kernel.ops.clone(), kernel_id);
+            let kernel_id = self.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap(); //, |x: &u32| x.checked_add(1).unwrap());
+            //println!("Kernel ids: {:?}", self.kernels.keys());
+            //println!("Program ids: {:?}", self.programs.keys());
+            assert!(self.kernels.insert(kernel.ops.clone(), kernel_id).is_none());
             if search_iters == 0 {
                 // if optimizations are not requested, use default optimizations
                 let optimization = Optimizer::default_optimizations(kernel, device.info());
                 let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
+
+                //println!("Default optimizations, program id: {program_id}");
+                //kernel.debug();
+
                 let nanos = std::time::Instant::now();
                 let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                 pool.pool.sync_events(vec![event])?;
@@ -135,11 +153,12 @@ impl Optimizer {
                     print_perf(flop, mem_read, mem_write, nanos);
                 }
                 //pool.events.insert(outputs, event);
-                self.programs.insert((kernel_id, dev_info_id), program_id);
+                assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
             } else {
+                todo!();
                 // TODO perhaps we really should allocate separate inputs for applying
                 // optimizations
-                pool.pool.sync_events(event_wait_list).unwrap();
+                /*pool.pool.sync_events(event_wait_list).unwrap();
                 let (optimization, program_id) = optimize_kernel(
                     kernel,
                     device,
@@ -149,7 +168,7 @@ impl Optimizer {
                     debug,
                 );
                 self.programs.insert((kernel_id, dev_info_id), program_id);
-                self.optimizations.insert((kernel_id, dev_info_id), optimization);
+                self.optimizations.insert((kernel_id, dev_info_id), optimization);*/
             }
         }
         Ok(())

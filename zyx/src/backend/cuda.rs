@@ -566,6 +566,9 @@ impl Device for CUDADevice {
     ) -> Result<Event, BackendError> {
         let stream_id = self.next_stream()?;
         let program = &self.programs[program_id];
+
+        //println!("CUDA launch program id: {program_id}, gws: {:?}, lws: {:?}", program.global_work_size, program.local_work_size);
+
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
         for &arg in args {
             let arg = memory_pool.get_buffer(arg);

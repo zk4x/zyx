@@ -667,13 +667,15 @@ fn multiple_stores() -> Result<(), ZyxError> {
 
 #[test]
 fn dot2() -> Result<(), ZyxError> {
-    let mut x = Tensor::randn([1024, 1024], DType::F32)?;
-    let y = Tensor::randn([1024, 1024], DType::F32)?;
+    let n = 512;
+    let mut x = Tensor::randn([n, n], DType::F32)?;
+    let y = Tensor::randn([n, n], DType::F32)?;
     for _ in 0..5 {
         x = x.dot(&y)?;
+        Tensor::realize([&x])?;
     }
-    //println!("{x}");
     Tensor::realize([&x])?;
+    //println!("{x}");
     Ok(())
 }
 

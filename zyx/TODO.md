@@ -15,7 +15,8 @@
   - [x] wgpu
     - [ ] fix load calculation, probably using Atomic usize
     - [ ] spirv compiler
-  - [x] dummy
+  - [ ] dummy
+    - [ ] validation for program ids
   - [ ] spirv compiler
     - [ ] conversion to spirv SSA (dealing with accumulators)
 - [ ] dtype

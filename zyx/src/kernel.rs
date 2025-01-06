@@ -58,6 +58,7 @@ pub enum Op {
         z: TId,
         zscope: Scope,
         zview: View,
+        x: TId,
         xscope: Scope,
         xview: View,
         xdtype: DType,
@@ -132,6 +133,7 @@ impl Kernel {
             z: 0,
             zscope: Scope::Register,
             zview: View::none(),
+            x: 0,
             xscope: Scope::Global,
             xview: View::contiguous(shape),
             xdtype: dtype,
@@ -715,7 +717,7 @@ impl Kernel {
     /// Store is the only function that evaluates kernels, it just checks if outputs
     /// are empty after store. Returns ids of evaluated tensors.
     pub(super) fn launch(
-        &self,
+        &mut self,
         graph: &Graph,
         devices: &mut [Box<dyn Device>],
         memory_pools: &mut [Pool],
@@ -796,19 +798,25 @@ impl Kernel {
             .unwrap()
             .as_mut();
 
-        // TODO deduplicate buffer ids, so that single tensor is not passed as multiple pointers
         let mut outputs = BTreeSet::new();
         let mut event_wait_list = Vec::new();
-        let args: Vec<Id> = self.ops.iter().filter_map(|op| match op {
-            Op::Load { z, .. } => {
-                let tensor_id = self.tensors[z];
-                let buffer_id = pool.buffer_map.get(&tensor_id).unwrap();
-                if let Some((_, event)) =
-                    pool.events.iter().find(|(key, _)| key.contains(buffer_id))
-                {
-                    event_wait_list.push(event.clone());
+        let mut visited_tensors = BTreeMap::new();
+        let args: Vec<Id> = self.ops.iter_mut().filter_map(|op| match op {
+            Op::Load { x, .. } => {
+                let tensor_id = self.tensors[x];
+                let buffer_id = *pool.buffer_map.get(&tensor_id).unwrap();
+                if let Some(&tx) = visited_tensors.get(&buffer_id) {
+                    *x = tx;
+                    None
+                } else {
+                    visited_tensors.insert(buffer_id, *x);
+                    if let Some((_, event)) =
+                        pool.events.iter().find(|(key, _)| key.contains(&buffer_id))
+                    {
+                        event_wait_list.push(event.clone());
+                    }
+                    Some(buffer_id)
                 }
-                Some(*buffer_id)
             }
             Op::Store { z, zview, zdtype, .. } => {
                 let tensor_id = self.tensors[z];
@@ -820,6 +828,7 @@ impl Kernel {
                             * (zdtype.byte_size() as Dimension),
                     )
                     .unwrap();
+                debug_assert!(visited_tensors.insert(buffer_id, *z).is_none());
                 pool.buffer_map.insert(tensor_id, buffer_id);
                 event_wait_list.push(event);
                 outputs.insert(tensor_id);
@@ -827,6 +836,16 @@ impl Kernel {
             }
             _ => None
         }).collect();
+
+        //println!("\nArgs: {args:?}");
+        //self.debug();
+        #[cfg(debug_assertions)]
+        {
+            let mut visited = BTreeSet::new();
+            for &arg in &args {
+                debug_assert!(visited.insert(arg));
+            }
+        }
 
         optimizer.launch(
             self,
@@ -907,8 +926,8 @@ impl std::fmt::Display for Op {
             Op::Const { z, value, view } => f.write_fmt(format_args!(
                 "{C_WHITE}Const{C_RESET}       {z} <- value: {value}, {view}"
             )),
-            Op::Load { z, zscope, zview: _, xscope, xview, xdtype } => f.write_fmt(format_args!(
-                "{C_YELLOW}Load{C_RESET}        {z}[{zscope:?}] <- [{xscope:?}, {xdtype}], {xview}"
+            Op::Load { z, zscope, zview: _, x, xscope, xview, xdtype } => f.write_fmt(format_args!(
+                "{C_YELLOW}Load{C_RESET}        {z}[{zscope:?}] <- {x}[{xscope:?}, {xdtype}], {xview}"
             )),
             Op::Store { z, zview, zscope, zdtype, x, xscope, xview: _ } => {
                 f.write_fmt(format_args!(

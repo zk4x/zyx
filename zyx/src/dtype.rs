@@ -252,6 +252,25 @@ impl Constant {
         }
     }
 
+    pub(crate) fn from_bytes(bytes: &[u8], dtype: DType) -> Self {
+        match dtype {
+            DType::BF16 => todo!(),
+            DType::F8 => todo!(),
+            DType::F16 => Self::F16(f16::from_ne_bytes([bytes[0], bytes[1]]).to_bits()),
+            DType::F32 => Self::F32(f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]).to_bits()),
+            DType::F64 => Self::F64(f64::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]).to_bits()),
+            DType::U8 => Self::U8(u8::from_ne_bytes([bytes[0]])),
+            DType::U16 => Self::U16(u16::from_ne_bytes([bytes[0], bytes[1]])),
+            DType::U32 => Self::U32(u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+            DType::U64 => Self::U64(u64::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]])),
+            DType::I8 => Self::I8(i8::from_ne_bytes([bytes[0]])),
+            DType::I16 => Self::I16(i16::from_ne_bytes([bytes[0], bytes[1]])),
+            DType::I32 => Self::I32(i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+            DType::I64 => Self::I64(i64::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]])),
+            DType::Bool => Self::Bool(bytes[0] != 0),
+        }
+    }
+
     pub(crate) const fn dtype(&self) -> DType {
         match self {
             Self::BF16(_) => DType::BF16,

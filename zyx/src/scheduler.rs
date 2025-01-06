@@ -1,7 +1,17 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::Device, graph::Graph, ir::Scope, kernel::{Kernel, Op, TId}, node::Node, optimizer::Optimizer, runtime::Pool, slab::{Id, Slab}, tensor::TensorId, view::View, DType, DebugMask, ZyxError
+    backend::Device,
+    graph::Graph,
+    ir::Scope,
+    kernel::{Kernel, Op, TId},
+    node::Node,
+    optimizer::Optimizer,
+    runtime::Pool,
+    slab::{Id, Slab},
+    tensor::TensorId,
+    view::View,
+    DType, DebugMask, ZyxError,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -112,12 +122,17 @@ pub fn realize_graph(
                     kernels.push(Kernel::constant(nid, value))
                 }
                 Node::Leaf { .. } => {
-                    let realized_nodes: BTreeSet<TensorId> = memory_pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+                    let realized_nodes: BTreeSet<TensorId> = memory_pools
+                        .iter()
+                        .map(|pool| pool.buffer_map.keys())
+                        .flatten()
+                        .copied()
+                        .collect();
                     if !realized_nodes.contains(&nid) {
                         println!("not in realized nodes and not in buffers");
                     }
                     unreachable!();
-                },
+                }
                 // Expand and pad are not always mergeable and thus can finish kernels.
                 // All other ops are always mergeable.
                 Node::Expand { x } => {
@@ -403,7 +418,7 @@ pub fn realize_graph(
 
                         for (i, op) in ops.into_iter().enumerate() {
                             if !(matches!(op, Op::Loop { .. }) && op == kernels[kidx].ops[i]) {
-                                kernels[kidx].ops.push(match op {
+                                let new_op = match op {
                                     Op::Loop { axis, len } => Op::Loop { axis, len },
                                     Op::EndLoop => Op::EndLoop,
                                     Op::Const { z, value, ref view } => {
@@ -413,6 +428,7 @@ pub fn realize_graph(
                                         z,
                                         zscope,
                                         ref zview,
+                                        x,
                                         xscope,
                                         ref xview,
                                         xdtype,
@@ -420,6 +436,7 @@ pub fn realize_graph(
                                         z: z + n,
                                         zscope,
                                         zview: zview.clone(),
+                                        x: x + n,
                                         xscope,
                                         xview: xview.clone(),
                                         xdtype,
@@ -452,7 +469,8 @@ pub fn realize_graph(
                                         Op::Binary { z: z + n, x: x + n, y: y + n, bop }
                                     }
                                     Op::Barrier { scope } => Op::Barrier { scope },
-                                });
+                                };
+                                kernels[kidx].ops.push(new_op);
                             }
                         }
                         kernels[kidx].max_id += max_id + 2;
@@ -558,13 +576,23 @@ pub fn realize_graph(
     let mut num_evaluated = 0;
     for _ in 0..kernels.len() + 1 {
         let mut evaluated = BTreeSet::new();
-        for (kid, kernel) in kernels.iter() {
+        for (kid, kernel) in kernels.iter_mut() {
             if kernel.depends_on.is_empty() {
                 num_evaluated += 1;
                 kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
                 evaluated.insert(kid);
+
+                // TODO delete input tensors that won't be used by other kernels,
+                // that is those loads that won't be loaded by other kernels and are not in realized_nodes
+
                 #[cfg(debug_assertions)]
-                evaluated_tensors.extend(kernel.ops.iter().filter_map(|op| if let Op::Store { z, .. } = op { Some(kernel.tensors[z]) } else  { None }));
+                evaluated_tensors.extend(kernel.ops.iter().filter_map(|op| {
+                    if let Op::Store { z, .. } = op {
+                        Some(kernel.tensors[z])
+                    } else {
+                        None
+                    }
+                }));
             }
         }
         //println!("Evaluated: {evaluated:?}");
@@ -581,10 +609,11 @@ pub fn realize_graph(
 
     #[cfg(debug_assertions)]
     if to_eval.difference(&evaluated_tensors).count() != 0 {
-        let realized_nodes: BTreeSet<TensorId> = memory_pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+        let realized_nodes: BTreeSet<TensorId> =
+            memory_pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
         if !to_eval.is_subset(&realized_nodes) {
             let diff: BTreeSet<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
-            panic!("In to eval but not evaluated: {diff:?}", );
+            panic!("In to eval but not evaluated: {diff:?}",);
         }
     }
 

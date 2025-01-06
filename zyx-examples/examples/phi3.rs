@@ -353,7 +353,7 @@ impl Attention {
 
         let attn_output = {
             let scale = half::f16::from_f64(1f64 / f64::sqrt(self.head_dim as f64));
-            let attn_weights = query_states.matmul(key_states.transpose(2, 3).unwrap()).unwrap() * scale;
+            let attn_weights = query_states.matmul(key_states.transpose(2, 3).unwrap()).unwrap() * Tensor::constant(scale);
 
             let attn_weights = match attention_mask {
                 None => attn_weights,
@@ -473,6 +473,7 @@ impl Model {
         for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, mask.as_ref());
             //Tensor::realize([&xs]).unwrap();
+            //let _z: Vec<f32> = xs.clone().try_into().unwrap();
             //println!("{xs}");
         }
         //println!("{xs}");

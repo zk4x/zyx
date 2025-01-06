@@ -4,7 +4,7 @@
 
 use super::{kernel::Op, node::ROp};
 use crate::{
-    dtype::Constant, kernel::{Kernel, TId}, node::{BOp, UOp}, optimizer::Optimization, shape::Dimension, DType, DebugMask
+    dtype::Constant, kernel::Kernel, node::{BOp, UOp}, optimizer::Optimization, shape::Dimension, DType, DebugMask
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -234,7 +234,6 @@ impl IRCompiler {
 
     fn vops_to_ssa_ir(
         kernel_ops: &[Op],
-        args: &mut Vec<TId>,
         addressables: &mut Vec<(Scope, DType, usize, bool)>,
     ) -> IRCompiler {
         let max_id = kernel_ops
@@ -255,13 +254,13 @@ impl IRCompiler {
         // Declare global arguments
         for op in kernel_ops {
             match *op {
-                Op::Load { z, xscope, ref xview, xdtype, zscope: _, zview: _ } => {
-                    if xscope == Scope::Global && !pointers_map.contains_key(&(z, xscope)) {
-                        args.push(z);
+                Op::Load { z: _, xscope, x, ref xview, xdtype, zscope: _, zview: _ } => {
+                    if xscope == Scope::Global && !pointers_map.contains_key(&(x, xscope)) {
+                        //args.push(x);
                         let dtype = xdtype;
                         addressables.push((xscope, dtype, xview.original_numel(), true));
                         let id = u16::try_from(addressables.len() - 1).unwrap();
-                        pointers_map.insert((z, xscope), id);
+                        pointers_map.insert((x, xscope), id);
                     }
                 }
                 Op::Store { z, zscope, ref zview, zdtype, x: _, xscope, xview: _ } => {
@@ -274,7 +273,7 @@ impl IRCompiler {
                                 addressables[id as usize].3 = false;
                             })
                             .or_insert_with(|| {
-                                args.push(z);
+                                //args.push(z);
                                 addressables.push((zscope, zdtype, zview.original_numel(), false));
                                 u16::try_from(addressables.len() - 1).unwrap()
                             });
@@ -322,13 +321,13 @@ impl IRCompiler {
                     let zreg = view.ir_for_constant_load(&mut c, value);
                     register_map.insert(z, zreg);
                 }
-                &Op::Load { z, zscope, ref zview, xscope, ref xview, xdtype } => {
-                    let xaddress = pointers_map[&(z, xscope)];
+                &Op::Load { z, zscope, ref zview, x, xscope, ref xview, xdtype } => {
+                    let xaddress = pointers_map[&(x, xscope)];
                     let zreg = xview.ir_for_indexed_load(&mut c, xaddress, xdtype);
                     register_map.insert(z, zreg);
                     match (zscope, xscope) {
                         (Scope::Local, Scope::Global) => {
-                            let zaddress = pointers_map[&(z, zscope)];
+                            let zaddress = pointers_map[&(x, zscope)];
                             zview.ir_for_indexed_store(&mut c, zaddress, zreg);
                         }
                         (Scope::Register, Scope::Local | Scope::Global) => {}
@@ -1197,10 +1196,8 @@ impl IRKernel {
 
         // Returned IRKernel
         let mut addressables: Vec<(Scope, DType, usize, bool)> = Vec::new();
-        // Returned tensors
-        let mut args = Vec::new();
 
-        let mut compiler = IRCompiler::vops_to_ssa_ir(&kernel.ops, &mut args, &mut addressables);
+        let mut compiler = IRCompiler::vops_to_ssa_ir(&kernel.ops, &mut addressables);
         // Optimizations
         compiler.global_loop_unrolling();
         //compiler.loop_unrolling();

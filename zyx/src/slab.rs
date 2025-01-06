@@ -184,13 +184,13 @@ impl<T> Slab<T> {
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_ref() }))
     }
 
-    /*pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
         self.values
             .iter_mut()
             .enumerate()
             .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
-    }*/
+    }
 
     // TODO lower max id by searching for it in self.empty
     /*pub(crate) fn max_id(&self) -> Id {

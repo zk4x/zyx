@@ -82,7 +82,7 @@ pub(super) struct OpenCLMemoryPool {
 
 #[derive(Debug)]
 pub(super) struct OpenCLBuffer {
-    ptr: *mut c_void,
+    buffer: *mut c_void,
     bytes: Dimension,
 }
 
@@ -433,20 +433,20 @@ impl MemoryPool for OpenCLMemoryPool {
         }
         //println!("Allocating bytes {bytes}");
         let mut status = OpenCLStatus::CL_SUCCESS;
-        let ptr = unsafe {
+        let buffer = unsafe {
             (self.clCreateBuffer)(
                 self.context,
-                CL_MEM_READ_ONLY,
+                CL_MEM_READ_WRITE,
                 bytes,
                 ptr::null_mut(),
                 &mut status,
             )
         };
         status.check(ErrorStatus::MemoryAllocation)?;
-        //println!("Allocated buffer {ptr:?}, bytes {bytes}");
+        //println!("Allocated buffer {buffer:?}, bytes {bytes}");
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
         Ok((
-            self.buffers.push(OpenCLBuffer { ptr, bytes }),
+            self.buffers.push(OpenCLBuffer { buffer, bytes }),
             Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }),
         ))
     }
@@ -458,7 +458,7 @@ impl MemoryPool for OpenCLMemoryPool {
     ) -> Result<(), BackendError> {
         //println!("Deallocate {:?}", self.buffers[buffer_id].ptr);
         if let Some(buffer) = self.buffers.remove(buffer_id) {
-            debug_assert!(!buffer.ptr.is_null(), "Deallocating null buffer is invalid");
+            debug_assert!(!buffer.buffer.is_null(), "Deallocating null buffer is invalid");
             let event_wait_list: Vec<*mut c_void> = event_wait_list
                 .into_iter()
                 .map(|event| {
@@ -481,7 +481,7 @@ impl MemoryPool for OpenCLMemoryPool {
             /*for event in event_wait_list {
                 unsafe { (self.clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization)?;
             }*/
-            unsafe { (self.clReleaseMemObject)(buffer.ptr) }
+            unsafe { (self.clReleaseMemObject)(buffer.buffer) }
                 .check(ErrorStatus::Deinitialization)?;
             self.free_bytes += buffer.bytes;
         }
@@ -513,7 +513,7 @@ impl MemoryPool for OpenCLMemoryPool {
         unsafe {
             (self.clEnqueueWriteBuffer)(
                 self.queue,
-                dst.ptr,
+                dst.buffer,
                 CL_NON_BLOCKING,
                 0,
                 src.len(),
@@ -537,7 +537,7 @@ impl MemoryPool for OpenCLMemoryPool {
         let src = &self.buffers[src];
         //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
         debug_assert!(
-            !src.ptr.is_null(),
+            !src.buffer.is_null(),
             "Trying to read null memory. Internal bug."
         );
         let mut event_wait_list: Vec<*mut c_void> = event_wait_list
@@ -557,7 +557,7 @@ impl MemoryPool for OpenCLMemoryPool {
         unsafe {
             (self.clEnqueueReadBuffer)(
                 self.queue,
-                src.ptr,
+                src.buffer,
                 CL_NON_BLOCKING,
                 0,
                 dst.len(),
@@ -903,6 +903,15 @@ impl Device for OpenCLDevice {
         args: &[Id],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        memory_pool.sync_events(event_wait_list.clone())?;
+        /*for &arg in args {
+            let buffer = memory_pool.get_buffer(arg);
+            let BufferMut::OpenCL(buffer) = buffer else { unreachable!() };
+            let mut dst = vec![0; buffer.bytes];
+            memory_pool.pool_to_host(arg, &mut dst, vec![]).unwrap();
+            println!("{dst:?}");
+        }*/
+
         let queue_id = self.next_queue()?;
         /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
@@ -919,7 +928,7 @@ impl Device for OpenCLDevice {
             let arg = memory_pool.get_buffer(arg);
             let BufferMut::OpenCL(arg) = arg else { unreachable!() };
             //println!("Kernel arg: {arg:?} at index {i}");
-            let ptr: *const _ = &arg.ptr;
+            let ptr: *const _ = &arg.buffer;
             unsafe {
                 (self.clSetKernelArg)(
                     program.kernel,
@@ -959,7 +968,9 @@ impl Device for OpenCLDevice {
             )
         }
         .check(ErrorStatus::KernelLaunch)?;
-        self.queues[queue_id].load += 1;
+        unsafe { (self.clFinish)(self.queues[queue_id].queue) }.check(ErrorStatus::KernelLaunch)?;
+        //self.queues[queue_id].load += 1;
+
         //println!("Launch event: {event:?}");
         Ok(Event::OpenCL(OpenCLEvent { event }))
     }
@@ -1203,7 +1214,8 @@ const CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS: cl_uint = 0x1003; // 4099
 const CL_DEVICE_MAX_WORK_ITEM_SIZES: cl_uint = 0x1005; // 4101
 const CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT: cl_uint = 0x100A; // 4106
 const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;
-const CL_MEM_READ_ONLY: cl_bitfield = 4;
+const CL_MEM_READ_WRITE: cl_bitfield = 1;
+//const CL_MEM_READ_ONLY: cl_bitfield = 4;
 const CL_NON_BLOCKING: cl_uint = 0;
 const CL_PROGRAM_BUILD_LOG: cl_uint = 0x1183; // 4483
 
