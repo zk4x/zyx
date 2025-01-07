@@ -744,7 +744,7 @@ impl Runtime {
             &mut self.pools,
             &mut self.optimizer,
             self.search_iterations,
-            &realized_nodes,
+            realized_nodes,
             self.debug,
         )?;
 

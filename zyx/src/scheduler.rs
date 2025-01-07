@@ -48,7 +48,7 @@ pub fn realize_graph(
     memory_pools: &mut [Pool],
     optimizer: &mut Optimizer,
     search_iters: usize,
-    realized_nodes: &BTreeSet<TensorId>,
+    mut realized_nodes: BTreeSet<TensorId>,
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
     //let t = crate::Timer::new("realize_graph");
@@ -569,6 +569,8 @@ pub fn realize_graph(
 
     //panic!();
 
+    realized_nodes.extend(to_eval);
+
     // Launch all kernels
     let mut ids: Vec<Id> = kernels.ids().collect();
     while !ids.is_empty() {
@@ -582,8 +584,8 @@ pub fn realize_graph(
                 for kernel in kernels.values_mut() {
                     kernel.depends_on.remove(&kid);
                 }
-                /*let loads: BTreeSet<TensorId> = kernel.ops.iter().filter_map(|op| if let Op::Load { x, .. } = op { Some(kernel.tensors[x]) } else { None }).collect();
-                let mut loads: BTreeSet<TensorId> = loads.difference(&to_eval).copied().collect();
+                let loads: BTreeSet<TensorId> = kernel.ops.iter().filter_map(|op| if let Op::Load { x, .. } = op { Some(kernel.tensors[x]) } else { None }).collect();
+                let mut loads: BTreeSet<TensorId> = loads.difference(&realized_nodes).copied().collect();
                 for kernel in kernels.values() {
                     for tensor in kernel.tensors.values() {
                         loads.remove(tensor);
@@ -595,7 +597,7 @@ pub fn realize_graph(
                             pool.pool.deallocate(buffer_id, vec![])?;
                         }
                     }
-                }*/
+                }
             } else {
                 i += 1
             }
