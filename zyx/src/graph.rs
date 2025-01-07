@@ -108,6 +108,15 @@ impl Graph {
         self.shapes.insert(id, shape);
     }
 
+    pub(super) fn delete_tensors(&mut self, tensors: &BTreeSet<TensorId>) {
+        for &tensor in tensors {
+            self.nodes.remove(tensor);
+            self.shapes.remove(&tensor);
+            self.paddings.remove(&tensor);
+            self.axes.remove(&tensor);
+        }
+    }
+
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
         for _ in 0..1000 {
@@ -153,17 +162,6 @@ impl Graph {
             tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
         }
         panic!("Shape of {tensor_id} could not be found. This is internal bug.")
-    }
-
-    //pub(super) fn rc(&self, x: TensorId) -> u32 { self.nodes[x].0 }
-
-    pub(super) fn delete_tensors(&mut self, tensors: &BTreeSet<TensorId>) {
-        for &tensor in tensors {
-            self.nodes.remove(tensor);
-            self.shapes.remove(&tensor);
-            self.paddings.remove(&tensor);
-            self.axes.remove(&tensor);
-        }
     }
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &BTreeSet<TensorId>) -> Vec<TensorId> {

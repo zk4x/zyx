@@ -28,14 +28,9 @@ nanoserde = { version = "*", default-features = false }
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # Support for f8 dtypes
-float8 = { version = "0.1.1" } # MIT or Apache 2.0
+float8 = { version = "0.1.1", default-features = false } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
-half = { version = "2.4.1" } # MIT or Apache 2.0
-# Support for random number generation
-#rand = { version = "0.8.5", default-features = false, features = [
-#"small_rng",
-#] } # MIT or Apache 2.0
-
+half = { version = "2.4.1", default-features = false } # MIT or Apache 2.0
 # Progress bar for loading tensors, compilation ...
 indicatif = { version = "0.17.9", default-features = false }
 

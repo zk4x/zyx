@@ -97,40 +97,10 @@ impl Optimizer {
                 self.programs.insert((kernel_id, dev_info_id), program_id);*/
             } else {
                 unreachable!();
-                // if kernel was not optimized yet
-                /*let kernel_id = self.kernels.last_key_value().map_or(0, |(_, x)| x + 1);
-                assert!(self.kernels.insert(kernel.ops.clone(), kernel_id).is_none());
-                if search_iters == 0 {
-                    // if optimizations are not requested, use default optimizations
-                    let optimization = Optimizer::default_optimizations(kernel, device.info());
-                    let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
-                    let program_id = device.compile(&ir_kernel, debug.asm())?;
-                    println!("Default optimizations, program id: {program_id}");
-                    kernel.debug();
-                    let event =
-                        device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
-                    pool.events.insert(outputs, event);
-                    assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
-                } else {
-                    todo!();
-                    // TODO perhaps we really should allocate separate inputs for applying
-                    // optimizations
-                    /*pool.pool.sync_events(event_wait_list).unwrap();
-                    let (optimization, program_id) = optimize_kernel(
-                        kernel,
-                        device,
-                        pool.pool.as_mut(),
-                        args,
-                        search_iters,
-                        debug,
-                    );
-                    self.programs.insert((kernel_id, dev_info_id), program_id);
-                    self.optimizations.insert((kernel_id, dev_info_id), optimization);*/
-                }*/
             }
         } else {
             // if kernel was not optimized yet
-            let kernel_id = self.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap(); //, |x: &u32| x.checked_add(1).unwrap());
+            let kernel_id = self.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
             //println!("Kernel ids: {:?}", self.kernels.keys());
             //println!("Program ids: {:?}", self.programs.keys());
             assert!(self.kernels.insert(kernel.ops.clone(), kernel_id).is_none());

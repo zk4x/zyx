@@ -3,22 +3,21 @@
     - [x] fix async memcopy
     - [ ] tensor cores
     - [ ] fix load calculation, probably using Atomic usize
-    - [ ] fix event memory leaks, all events must be properly destroyed
+    - [x] fix event memory leaks, all events must be properly destroyed
   - [ ] hip
   - [x] opencl
     - [ ] fix load calculation, probably using Atomic usize
   - [ ] vulkan
     - [ ] initialization
     - [ ] memory management
-    - [ ] spirv compiler
+    - [ ] spirv compiler (to spirv binary)
     - [ ] kernel launch
   - [x] wgpu
     - [ ] fix load calculation, probably using Atomic usize
     - [ ] spirv compiler
-  - [ ] dummy
+      - [ ] conversion to spirv SSA (dealing with accumulators)
+  - [x] dummy
     - [ ] validation for program ids
-  - [ ] spirv compiler
-    - [ ] conversion to spirv SSA (dealing with accumulators)
 - [ ] dtype
   - [ ] quantized dtypes
 - [x] runtime
@@ -36,7 +35,7 @@
     - [ ] just asserts that various graphs fuse into single kernel
   - [x] scheduling to multiple devices
   - [ ] automatic sharding across devices
-  - [ ] fix bug when running phi3, panic on min_kernel function
+  - [x] fix bug when running phi3, panic on min_kernel function
 - [x] kernel
   - [x] ops remove unary view
   - [x] ops remove binary views
@@ -46,6 +45,8 @@
   - [ ] local tiling of all variables
   - [ ] better picking of next optimization, or even optimization search
   - [ ] flash attention
+  - [ ] splitting of global loops into register loops
+  - [ ] splitting of register loops into global loops (if global work size is too small)
 - [x] view
   - [x] split on padded view
   - [x] view padding to ir
@@ -71,7 +72,7 @@
   - [ ] vectorization, vector dtypes!
   - [ ] ops fusion, merges1
 - [ ] runtime
-  - [ ] fix event handling
+  - [x] fix event handling
   - [ ] graph recording - unfortunatelly seems necessary for some high performance stuff, basically start record at the beginning of the loop and stop recording at the end of the loop. Then there needs to be a detector which tensors are inputs to this graph, which are model's parameters.
 - [ ] node
   - [ ] increase the size of nodes, by adding more complex ops, e.g. tanh. These should still only be unary, binary, or reduce ops, not new types of ops. It will keep the graph smaller and faster to kernelize and in IR we can split them into smaller ops again to keep backends simple.
@@ -84,4 +85,4 @@
   - [ ] remove indicatiff
 
 - examples
-  - [ ] get phi working
+  - [x] get phi working

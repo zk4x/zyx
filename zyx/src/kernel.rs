@@ -858,22 +858,6 @@ impl Kernel {
             debug,
         )?;
 
-        // add load kernels for all outputs of this kernel
-        /*return Ok(Some(
-            self.ops
-                .iter()
-                .filter_map(|op| {
-                    if let Op::Store { z, .. } = op {
-                        //tensor_buffer_map
-                        //memory_pool.pool_to_host(buffer_id, data);
-                        //self.tensors.get(z)
-                        Some(*self.tensors.get(z).unwrap())
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-        ));*/
         Ok(())
     }
 
@@ -944,9 +928,6 @@ impl std::fmt::Display for Op {
                 "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, {dtype}",
             )),
             Op::EndLoop => f.write_fmt(format_args!("{C_BLUE}EndLoop{C_RESET} ")),
-            /*Op::Move { z, x, mop } => {
-                f.write_fmt(format_args!("{C_WHITE}Move{C_RESET}.{mop:?}   {z} <- {x}"))
-            }*/
             Op::Unary { z, x, uop } => {
                 let mut len = format!("{uop:?}").len();
                 if len > 5 {

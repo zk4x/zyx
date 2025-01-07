@@ -67,9 +67,11 @@ mod shape;
 mod slab;
 mod tensor;
 mod view;
-
 // Constant initializable hasher because apparently noone invented that yet...
-//mod chasher;
+mod chasher;
+
+pub(crate) type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
+pub(crate) type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 
 pub use dtype::DType;
 pub use runtime::ZyxError;

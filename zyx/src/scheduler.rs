@@ -1,19 +1,9 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::Device,
-    graph::Graph,
-    ir::Scope,
-    kernel::{Kernel, Op, TId},
-    node::Node,
-    optimizer::Optimizer,
-    runtime::Pool,
-    slab::{Id, Slab},
-    tensor::TensorId,
-    view::View,
-    DType, DebugMask, ZyxError,
+    backend::Device, graph::Graph, ir::Scope, kernel::{Kernel, Op, TId}, node::Node, optimizer::Optimizer, runtime::Pool, slab::{Id, Slab}, tensor::TensorId, view::View, DType, DebugMask, Map, Set, ZyxError
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 type KernelId = Id;
 
@@ -42,13 +32,13 @@ type KernelId = Id;
 pub fn realize_graph(
     graph: &Graph,
     order: &[TensorId],
-    mut rcs: BTreeMap<TensorId, u32>,
-    to_eval: &BTreeSet<TensorId>,
+    mut rcs: Map<TensorId, u32>,
+    to_eval: &Set<TensorId>,
     devices: &mut [Box<dyn Device>],
     memory_pools: &mut [Pool],
     optimizer: &mut Optimizer,
     search_iters: usize,
-    mut realized_nodes: BTreeSet<TensorId>,
+    mut realized_nodes: Set<TensorId>,
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
     //let t = crate::Timer::new("realize_graph");
@@ -122,7 +112,7 @@ pub fn realize_graph(
                     kernels.push(Kernel::constant(nid, value))
                 }
                 Node::Leaf { .. } => {
-                    let realized_nodes: BTreeSet<TensorId> = memory_pools
+                    let realized_nodes: Set<TensorId> = memory_pools
                         .iter()
                         .map(|pool| pool.buffer_map.keys())
                         .flatten()
@@ -536,7 +526,7 @@ pub fn realize_graph(
         }
     }
 
-    let taken = begin.elapsed().as_micros();
+    let elapsed = begin.elapsed().as_micros();
     let mut min_ops = usize::MAX;
     let mut max_ops = 0;
     let mut avg_ops = 0;
@@ -551,7 +541,7 @@ pub fn realize_graph(
         avg_ops += n;
     }
     let kernels_len = kernels.len();
-    println!("Scheduled {kernels_len} kernels, scheduling took {taken}us, ops per kernel: min: {min_ops}, max: {max_ops}, avg: {}", avg_ops/kernels_len);
+    println!("Scheduled {kernels_len} kernels, scheduling took {elapsed}us, ops per kernel: min: {min_ops}, max: {max_ops}, avg: {}", avg_ops/kernels_len);
     //println!("Expand clones: {expa_u}, reshape clones: {resh_u}, pad clones: {pad_u}, permute clones: {perm_u}, reduce clones: {red_u}");
     // Timer
     /*for (name, (time, iters)) in crate::ET.lock().iter() {
@@ -584,8 +574,8 @@ pub fn realize_graph(
                 for kernel in kernels.values_mut() {
                     kernel.depends_on.remove(&kid);
                 }
-                let loads: BTreeSet<TensorId> = kernel.ops.iter().filter_map(|op| if let Op::Load { x, .. } = op { Some(kernel.tensors[x]) } else { None }).collect();
-                let mut loads: BTreeSet<TensorId> = loads.difference(&realized_nodes).copied().collect();
+                let loads: Set<TensorId> = kernel.ops.iter().filter_map(|op| if let Op::Load { x, .. } = op { Some(kernel.tensors[x]) } else { None }).collect();
+                let mut loads: Set<TensorId> = loads.difference(&realized_nodes).copied().collect();
                 for kernel in kernels.values() {
                     for tensor in kernel.tensors.values() {
                         loads.remove(tensor);

@@ -9,14 +9,13 @@ use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Axis, Dimension};
 use crate::slab::Id;
 use crate::tensor::TensorId;
-use crate::DebugMask;
+use crate::{DebugMask, Map, Set};
 use std::path::PathBuf;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
-
 use half::{bf16, f16};
 use nanoserde::DeJson;
 
@@ -258,7 +257,10 @@ impl Runtime {
     ) -> Result<TensorId, ZyxError> {
         let bytes = data.bytes();
         let dtype = data.dtype();
-        debug_assert_eq!(shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension, bytes);
+        debug_assert_eq!(
+            shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension,
+            bytes
+        );
         if bytes == dtype.byte_size() as usize {
             let value = data.read();
             return Ok(self.graph.push(Node::Const { value: Constant::from_bytes(value, dtype) }));
@@ -391,7 +393,9 @@ impl Runtime {
             self.retain(x);
             return Ok(x);
         }
-        self.realize(BTreeSet::from([x]))?;
+        let mut to_eval = Set::with_capacity_and_hasher(10, Default::default());
+        to_eval.insert(x);
+        self.realize(to_eval)?;
         let mut shape = self.shape(x).to_vec();
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
@@ -640,7 +644,8 @@ impl Runtime {
 pub fn apply_padding(shape: &mut [Dimension], padding: &[(isize, isize)]) {
     let mut i = 0;
     for d in shape.iter_mut().rev() {
-        *d = Dimension::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
+        *d = Dimension::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1)
+            .unwrap();
         i += 1;
         if i >= padding.len() {
             break;
@@ -663,7 +668,9 @@ impl Runtime {
         debug_assert!(data.len() <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
-            self.realize(BTreeSet::from([x]))?;
+            let mut to_eval = Set::with_capacity_and_hasher(10, Default::default());
+            to_eval.insert(x);
+            self.realize(to_eval)?;
         }
 
         let byte_slice: &mut [u8] = unsafe {
@@ -681,59 +688,90 @@ impl Runtime {
         pool.pool.pool_to_host(buffer_id, byte_slice, Vec::new())?;
         Ok(())
     }
-    
-    pub(super) fn realize(&mut self, to_eval: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+
+    pub(super) fn realize(&mut self, to_eval: Set<TensorId>) -> Result<(), ZyxError> {
+        let begin = std::time::Instant::now();
         if to_eval.is_empty() {
             return Ok(());
         }
-        let realized_nodes: BTreeSet<TensorId> = self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
-        if to_eval.is_subset(&realized_nodes) {
+        let realized_nodes: Set<TensorId> =
+            self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+        let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+        if to_eval.is_empty() {
             return Ok(());
         }
         if self.devices.is_empty() {
             self.initialize_devices()?;
         }
 
-        /*
-        // Get user rcs, this is linear, thus should be fast
-        let mut user_rcs = vec![0i32; self.graph.nodes.max_id() as usize];
-        for (i, (rc, node)) in self.graph.nodes.iter() {
-            user_rcs[i as usize] += *rc as i32;
-            for param in node.parameters() {
-                user_rcs[param as usize] -= 1;
-            }
-        }*/
-
-        let to_eval: BTreeSet<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
         // Get order for evaluation using DFS with ref counting to resolve
         // nodes with more than one parent.
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-        while let Some(nid) = params.pop() {
-            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                if !realized_nodes.contains(&nid) {
-                    params.extend(self.graph.nodes[nid].1.parameters());
-                }
-                1
-            });
-        }
-        // Order them using rcs reference counts
-        let mut order = Vec::new();
-        let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        while let Some(nid) = params.pop() {
-            if let Some(&rc) = rcs.get(&nid) {
-                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                    order.push(nid);
+        let (rcs, order) = {
+            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+            let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, Default::default());
+            while let Some(nid) = params.pop() {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                     if !realized_nodes.contains(&nid) {
                         params.extend(self.graph.nodes[nid].1.parameters());
                     }
+                    1
+                });
+            }
+            // Order them using rcs reference counts
+            let mut order = Vec::new();
+            let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, Default::default());
+            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+            while let Some(nid) = params.pop() {
+                if let Some(&rc) = rcs.get(&nid) {
+                    if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                        order.push(nid);
+                        if !realized_nodes.contains(&nid) {
+                            params.extend(self.graph.nodes[nid].1.parameters());
+                        }
+                    }
                 }
             }
-        }
-        drop(internal_rcs);
-        drop(params);
-        order.reverse();
+            order.reverse();
+            (rcs, order)
+        };
+        let elapsed = begin.elapsed();
+        println!("Search for order took {} us", elapsed.as_micros());
+
+        // Constant folding and deleting unused parts of graph
+        /*{
+            // Get user rcs, this is linear, thus should be fast
+            let mut user_rcs = vec![0i32; self.graph.nodes.max_id() as usize];
+            for (i, (rc, node)) in self.graph.nodes.iter() {
+                user_rcs[i as usize] += *rc as i32;
+                for param in node.parameters() {
+                    user_rcs[param as usize] -= 1;
+                }
+            }
+            //let user_nodes: BTreeSet<TensorId> = user_rcs.iter().enumerate().filter_map(|(i, rc)| if *rc > 0 { Some(i as u32) } else { None }).collect();
+            let mut user_nodes: BTreeSet<TensorId> = BTreeSet::new();
+            let mut i = 0;
+            for rc in user_rcs {
+                if rc > 0 {
+                    user_nodes.insert(i);
+                }
+                i += 1;
+            }
+            // Go backward from user nodes, create a map of parent nodes
+            let mut parents = BTreeMap::new();
+            let mut params = user_nodes;
+            while let Some(param) = params.pop_last() {
+                if parents.insert(param, parent).is_none() {
+                    params.extend();
+                }
+            }
+
+            // Go forward using map of parent nodes
+            // Create intersection of those nodes
+            // Go over those nodes again. If any children of those nodes are not in those nodes,
+            // then those children are new_leafs, add shape to them and do not realize them, but do not delete them.
+            // If all children of that nodes are not in those nodes, then assert that this node is a user node
+            // and add this node to to_eval, and add it to new_leafs.
+        }*/
 
         crate::scheduler::realize_graph(
             &self.graph,
