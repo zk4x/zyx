@@ -14,7 +14,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Graph {
     // First value is reference count, second is node
     pub(super) nodes: Slab<(u32, Node)>,
-    //dtypes: BTreeMap<TensorId, DType>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
     paddings: BTreeMap<TensorId, Vec<(isize, isize)>>,
@@ -28,7 +27,6 @@ impl Graph {
             shapes: BTreeMap::new(),
             paddings: BTreeMap::new(),
             axes: BTreeMap::new(),
-            //dtypes: BTreeMap::new(),
         }
     }
 
@@ -46,6 +44,7 @@ impl Graph {
         params.push(x);
         let mut to_remove = Set::with_capacity_and_hasher(10, Default::default());
         while let Some(x) = params.pop() {
+            //println!("Releasing {x}");
             let node = &mut self.nodes[x];
             node.0 -= 1;
             if node.0 == 0 {
@@ -109,21 +108,21 @@ impl Graph {
         self.shapes.insert(id, shape);
     }
 
-    pub(super) fn retain_nodes(&mut self, func: impl Fn(&TensorId) -> bool) -> Set<TensorId> {
+    /*pub(super) fn retain_nodes(&mut self, func: impl Fn(&TensorId) -> bool) -> Set<TensorId> {
         self.shapes.retain(|k, _| func(k));
         self.axes.retain(|k, _| func(k));
         self.paddings.retain(|k, _| func(k));
         self.nodes.retain(func)
-    }
+    }*/
 
-    /*pub(super) fn delete_tensors(&mut self, tensors: &Set<TensorId>) {
+    pub(super) fn delete_tensors(&mut self, tensors: &Set<TensorId>) {
         for &tensor in tensors {
             self.nodes.remove(tensor);
             self.shapes.remove(&tensor);
             self.paddings.remove(&tensor);
             self.axes.remove(&tensor);
         }
-    }*/
+    }
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;

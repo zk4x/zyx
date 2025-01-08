@@ -92,8 +92,6 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-use crate::Set;
-
 pub type Id = u32;
 
 #[derive(Debug)]
@@ -194,7 +192,7 @@ impl<T> Slab<T> {
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
     }*/
 
-    pub(crate) fn retain(&mut self, func: impl Fn(&Id) -> bool) -> Set<Id> {
+    /*pub(crate) fn retain(&mut self, func: impl Fn(&Id) -> bool) -> Set<Id> {
         let mut deleted = Set::with_capacity_and_hasher(10, Default::default());
         let mut i = 0;
         for x in &mut self.values {
@@ -206,7 +204,7 @@ impl<T> Slab<T> {
             i += 1;
         }
         deleted
-    }
+    }*/
 
     // TODO lower max id by searching for it in self.empty
     #[allow(unused)]

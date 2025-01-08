@@ -32,6 +32,7 @@ type KernelId = Id;
 pub fn realize_graph(
     graph: &Graph,
     order: &[TensorId],
+    // RCS are only ref counts from parameters, excluding ref counts from being in to_eval/user rcs
     mut rcs: Map<TensorId, u32>,
     to_eval: &Set<TensorId>,
     devices: &mut [Box<dyn Device>],
@@ -51,9 +52,6 @@ pub fn realize_graph(
         for p in graph[nid].parameters() {
             rcs.entry(p).and_modify(|rc| *rc += 1).or_insert(1u32);
         }
-    }*/
-    /*for nid in to_eval {
-        rcs.entry(*nid).and_modify(|rc| *rc += 1).or_insert(1u32);
     }*/
 
     // Unfinished kernels represented by ops
