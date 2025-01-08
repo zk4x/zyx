@@ -137,7 +137,7 @@ impl RotaryEmbedding {
             .cast(DType::F32)
             .reshape((cfg.max_position_embeddings, 1))
             .unwrap();
-        let freqs = t.matmul(&inv_freq).unwrap();
+        let freqs = t.matmul(&inv_freq).unwrap().cast(DType::F16);
         Ok(Self {
             dim,
             sin: freqs.sin(),
@@ -153,7 +153,6 @@ impl RotaryEmbedding {
         let xs_pass = xs.get((.., .., .., self.dim as isize..)).unwrap();
         let c = self.cos.narrow(0, seqlen_offset, seq_len).unwrap();
         let s = self.sin.narrow(0, seqlen_offset, seq_len).unwrap();
-        //let xs_rot = candle_nn::rotary_emb::rope(&xs_rot, &c, &s).unwrap();
         let xs_rot = xs_rot.rope(c, s).unwrap();
         Tensor::cat([&xs_rot, &xs_pass], -1)
     }

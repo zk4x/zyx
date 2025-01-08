@@ -116,14 +116,14 @@ impl Graph {
         self.nodes.retain(func)
     }
 
-    /*pub(super) fn delete_tensors(&mut self, tensors: &BTreeSet<TensorId>) {
+    pub(super) fn delete_tensors(&mut self, tensors: &Set<TensorId>) {
         for &tensor in tensors {
             self.nodes.remove(tensor);
             self.shapes.remove(&tensor);
             self.paddings.remove(&tensor);
             self.axes.remove(&tensor);
         }
-    }*/
+    }
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
@@ -166,7 +166,7 @@ impl Graph {
         panic!("Shape of {tensor_id} could not be found. This is internal bug.")
     }
 
-    pub(super) fn build_topo(&self, x: TensorId, sources: &BTreeSet<TensorId>) -> Vec<TensorId> {
+    pub(super) fn build_topo(&self, x: TensorId, sources: &Set<TensorId>) -> Vec<TensorId> {
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = vec![x];
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
@@ -212,10 +212,10 @@ impl Graph {
 
     /// Plot dot graph in dot format between given nodes
     #[must_use]
-    pub fn plot_dot_graph(&self, ids: &BTreeSet<TensorId>) -> String {
+    pub fn plot_dot_graph(&self, ids: &Set<TensorId>) -> String {
         use core::fmt::Write;
         use std::format as f;
-        let ids: BTreeSet<TensorId> = if ids.is_empty() {
+        let ids: Set<TensorId> = if ids.is_empty() {
             self.nodes.ids().collect()
         } else {
             ids.clone()

@@ -12,9 +12,9 @@ use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use half::{bf16, f16};
 use nanoserde::DeJson;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::{
-    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
@@ -52,9 +52,15 @@ pub trait TempData: Send {
 pub struct Pool {
     #[allow(clippy::struct_field_names)]
     pub pool: Box<dyn MemoryPool>,
-    pub events: BTreeMap<BTreeSet<Id>, Event>,
+    pub events: Map<BTreeSet<Id>, Event>,
     // tensor id => buffer id
-    pub buffer_map: BTreeMap<TensorId, Id>,
+    pub buffer_map: Map<TensorId, Id>,
+}
+
+impl Pool {
+    pub(crate) fn new(pool: Box<dyn MemoryPool>) -> Self {
+        Self { pool, events: Map::with_capacity_and_hasher(100, Default::default()), buffer_map: Map::with_capacity_and_hasher(100, Default::default()) }
+    }
 }
 
 fn get_mut_buffer(pools: &mut [Pool], tensor_id: TensorId) -> (&mut Pool, Id) {
@@ -235,7 +241,7 @@ impl Runtime {
 
     /// Creates dot plot of graph between given tensors
     #[must_use]
-    pub(super) fn plot_dot_graph(&self, tensors: &BTreeSet<TensorId>) -> String {
+    pub(super) fn plot_dot_graph(&self, tensors: &Set<TensorId>) -> String {
         //println!("Tensor storage {:?}", self.tensor_buffer_map);
         self.graph.plot_dot_graph(tensors)
     }
@@ -689,7 +695,7 @@ impl Runtime {
         Ok(())
     }
 
-    pub(super) fn realize(&mut self, to_eval: Set<TensorId>) -> Result<(), ZyxError> {
+    /*pub(super) fn realize(&mut self, to_eval: Set<TensorId>) -> Result<(), ZyxError> {
         let begin = std::time::Instant::now();
         if to_eval.is_empty() {
             return Ok(());
@@ -740,7 +746,7 @@ impl Runtime {
         println!("Search for order took {} us", elapsed.as_micros());
 
         // Constant folding and deleting unused parts of graph
-        /*let (new_leafs, needed_nodes) = {
+        let (new_leafs, needed_nodes) = {
             let begin = std::time::Instant::now();
             // Get user rcs, this is linear, thus should be fast
             let mut user_rcs = vec![0i32; self.graph.nodes.max_id() as usize];
@@ -751,7 +757,7 @@ impl Runtime {
                 }
             }
             //let user_nodes: BTreeSet<TensorId> = user_rcs.iter().enumerate().filter_map(|(i, rc)| if *rc > 0 { Some(i as u32) } else { None }).collect();
-            let mut user_nodes: BTreeSet<TensorId> = BTreeSet::new();
+            let mut user_nodes: HashSet<TensorId> = HashSet::with_capacity_and_hasher(10, Default::default());
             let mut i = 0;
             for rc in user_rcs {
                 if rc > 0 {
@@ -856,7 +862,8 @@ impl Runtime {
             let elapsed = begin.elapsed();
             println!("Create new_leafs, to_delete and adding to to_eval took {} us", elapsed.as_micros());
             (new_leafs, needed_nodes)
-        };*/
+        };
+        println!("New leafs: {new_leafs:?}");
 
         crate::scheduler::realize_graph(
             &self.graph,
@@ -871,25 +878,27 @@ impl Runtime {
             self.debug,
         )?;
 
+        //{38, 1, 32, 35, 17, 51, 47, 41, 56}
+
         // Remove evaluated part of graph unless needed for backpropagation,
         // this must be done before deleting any nodes, because deleting nodes invalidates shapes and dtypes.
-        /*for tensor in new_leafs {
+        for tensor in new_leafs {
             self.graph.add_shape(tensor);
             self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
         }
 
         // Delete the node, but do not use release function, just remove it from graph.nodes
         let to_delete = self.graph.retain_nodes(|x| needed_nodes.contains(x));
-        //println!("To delete: {to_delete:?}");
+        println!("To delete: {to_delete:?}");
 
         // Deallocate them from devices
-        self.deallocate_tensors(&to_delete)?;*/
+        self.deallocate_tensors(&to_delete)?;
 
         Ok(())
-    }
+    }*/
 
-    /*#[allow(unused)]
-    pub(super) fn realize(&mut self, mut to_eval: BTreeSet<TensorId>) -> Result<(), ZyxError> {
+    #[allow(unused)]
+    pub(super) fn realize(&mut self, mut to_eval: Set<TensorId>) -> Result<(), ZyxError> {
         // TODO this is too complicated, simplify it!!!
         //let timer = backend::Timer::new();
         // Runs in O(4n) where n = self.graph.len(),
@@ -910,12 +919,12 @@ impl Runtime {
         // That is outside nodes have reference counts greater than their reference counts in realization graph.
         let (outside_nodes, mut order, rcs) = {
             let this = &self.graph;
-            let to_eval: &BTreeSet<TensorId> = &to_eval;
+            let to_eval: &Set<TensorId> = &to_eval;
             // Following loops visit all children nodes up to leafs,
             // because we need to know which parts of the graph can be dropped.
             // Get refcounts of all nodes
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+            let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(10, Default::default());
             while let Some(nid) = params.pop() {
                 rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                     params.extend(this.nodes[nid].1.parameters());
@@ -924,7 +933,7 @@ impl Runtime {
             }
             // Order them using rcs reference counts
             let mut order = Vec::new();
-            let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+            let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(10, Default::default());
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
             while let Some(nid) = params.pop() {
                 if let Some(&rc) = rcs.get(&nid) {
@@ -936,7 +945,7 @@ impl Runtime {
             }
             order.reverse();
             // TODO can we get rid of this third pass?
-            let outside_nodes: BTreeSet<TensorId> = self
+            let outside_nodes: Set<TensorId> = self
                 .graph
                 .nodes
                 .iter()
@@ -958,8 +967,8 @@ impl Runtime {
         //, |x| realized_tensors.contains(&x));
         // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
         // New leafs never store data, so we can deallocate them if they are allocated.
-        let mut to_delete = BTreeSet::new();
-        let mut new_leafs = BTreeSet::new();
+        let mut to_delete = Set::with_capacity_and_hasher(10, Default::default());
+        let mut new_leafs = Set::with_capacity_and_hasher(10, Default::default());
         //println!("Graph: {:?}", self.graph);
         //println!("Outside nodes: {outside_nodes:?}");
         //println!("Order: {order:?}");
@@ -990,9 +999,9 @@ impl Runtime {
 
         // delete from order all nodes that don't need to be evaluated, since order is now too huge,
         // because it calculates to_delete and new_leafs.
-        let realized_nodes: BTreeSet<TensorId> = self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+        let realized_nodes: Set<TensorId> = self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        let mut visited: BTreeSet<TensorId> = BTreeSet::new();
+        let mut visited: Set<TensorId> = Set::with_capacity_and_hasher(100, Default::default());
         while let Some(nid) = params.pop() {
             if visited.insert(nid) && !realized_nodes.contains(&nid) {
                 params.extend(self.graph.nodes[nid].1.parameters());
@@ -1017,7 +1026,7 @@ impl Runtime {
             &mut self.pools,
             &mut self.optimizer,
             self.search_iterations,
-            &realized_nodes,
+            realized_nodes,
             self.debug,
         )?;
 
@@ -1033,7 +1042,7 @@ impl Runtime {
         // Delete the node, but do not use release function, just remove it from graph.nodes
         self.graph.delete_tensors(&to_delete);
         Ok(())
-    }*/
+    }
 
     fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) -> Result<(), ZyxError> {
         // This is basically tracing GC, seems faster than reference counting
@@ -1066,19 +1075,19 @@ impl Runtime {
     pub(super) fn backward(
         &mut self,
         x: TensorId,
-        sources: &BTreeSet<TensorId>,
-    ) -> BTreeMap<TensorId, TensorId> {
+        sources: &Set<TensorId>,
+    ) -> Map<TensorId, TensorId> {
         fn insert_or_add_grad(
             r: &mut Runtime,
-            grads: &mut BTreeMap<TensorId, TensorId>,
+            grads: &mut Map<TensorId, TensorId>,
             x: TensorId,
             grad: TensorId,
         ) {
             match grads.entry(x) {
-                Entry::Vacant(e) => {
+                std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(grad);
                 }
-                Entry::Occupied(e) => {
+                std::collections::hash_map::Entry::Occupied(e) => {
                     let (k, prev_grad) = e.remove_entry();
                     grads.insert(
                         k,
@@ -1096,10 +1105,10 @@ impl Runtime {
         let topo = self.graph.build_topo(x, sources);
         //println!("Topo: {topo:?}");
 
-        let req_grad: BTreeSet<TensorId> =
+        let req_grad: Set<TensorId> =
             topo.iter().copied().chain(sources.iter().copied()).collect();
         // Node -> Grad
-        let mut grads: BTreeMap<TensorId, TensorId> = BTreeMap::new();
+        let mut grads: Map<TensorId, TensorId> = Map::with_capacity_and_hasher(100, Default::default());
         // Initial gradient of ones
         let grad1 = self.ones(vec![1], self.dtype(x));
         let sh: Vec<Dimension> = self.shape(x).into();
@@ -1368,7 +1377,7 @@ impl Runtime {
                 },
             }
         }
-        let mut res = BTreeMap::new();
+        let mut res = Map::with_capacity_and_hasher(10, Default::default());
         for (k, v) in grads {
             if sources.contains(&k) {
                 res.insert(k, v);

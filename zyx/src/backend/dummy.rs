@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ptr};
+use std::ptr;
 
 use nanoserde::DeJson;
 
@@ -44,7 +44,7 @@ pub(super) fn initialize_device(
         free_bytes: 1024 * 1024 * 1024 * 1024 * 1024,
         buffers: Slab::new(),
     });
-    memory_pools.push(Pool { pool, events: BTreeMap::new(), buffer_map: BTreeMap::new() });
+    memory_pools.push(Pool::new(pool));
     devices.push(Box::new(DummyDevice {
         device_info: DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,

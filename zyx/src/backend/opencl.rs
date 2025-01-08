@@ -16,7 +16,6 @@ use crate::{
 use libloading::Library;
 use nanoserde::DeJson;
 use std::{
-    collections::BTreeMap,
     ffi::{c_void, CString},
     ptr,
     sync::Arc,
@@ -403,11 +402,7 @@ pub(super) fn initialize_device(
             clEnqueueWriteBuffer,
             clCreateBuffer,
         };
-        memory_pools.push(Pool {
-            pool: Box::new(pool),
-            events: BTreeMap::new(),
-            buffer_map: BTreeMap::new(),
-        });
+        memory_pools.push(Pool::new(Box::new(pool)));
         memory_pool_id += 1;
     }
     Ok(())

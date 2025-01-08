@@ -5,7 +5,6 @@
 // TODO properly deallocate events
 
 use std::{
-    collections::BTreeMap,
     ffi::{c_char, c_int, c_uint, c_void},
     ptr,
     sync::Arc,
@@ -286,7 +285,7 @@ pub(super) fn initialize_device(
             //cuCtxSetCurrent,
             //cuCtxDestroy,
         });
-        memory_pools.push(Pool { pool, events: BTreeMap::new(), buffer_map: BTreeMap::new() });
+        memory_pools.push(Pool::new(pool)); 
         let mut streams = Vec::new();
         for _ in 0..8 {
             let mut stream = ptr::null_mut();

@@ -11,7 +11,6 @@ use crate::shape::{into_axes, into_axis, Axis, Dimension, IntoShape};
 use core::cmp::Ordering;
 use float8::F8E4M3 as f8;
 use half::{bf16, f16};
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Debug, Display};
 use std::iter::{once, repeat};
 use std::ops::{
@@ -21,7 +20,7 @@ use std::ops::{
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{DebugMask, Map, RT};
+use crate::{DebugMask, Map, Set, RT};
 
 pub type TensorId = u32;
 
@@ -103,7 +102,7 @@ impl Tensor {
         sources: impl IntoIterator<Item = &'a Tensor>,
     ) -> Vec<Option<Tensor>> {
         let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
-        let grads: BTreeMap<TensorId, TensorId> =
+        let grads: Map<TensorId, TensorId> =
             RT.lock().backward(self.id, &sources.iter().copied().collect());
         sources
             .into_iter()
@@ -903,7 +902,7 @@ impl Tensor {
 
         let exp2x = (self + self).exp();
         let one = Tensor::constant(1).cast(self.dtype());
-        (exp2x.clone() - one.clone())/(exp2x + one)
+        (exp2x.clone() - one.clone()) / (exp2x + one)
     }
 
     // movement
@@ -1225,7 +1224,7 @@ impl Tensor {
     pub fn max(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes = into_axes(axes, rank)?;
-        let mut unique = BTreeSet::new();
+        let mut unique = Set::with_capacity_and_hasher(10, Default::default());
         for a in &axes {
             if !unique.insert(a) {
                 return Err(ZyxError::ShapeError("Axes contain duplicates.".into()));
@@ -2490,6 +2489,15 @@ impl Tensor {
         let sh = self.shape();
         let sin_freqs = sin_freqs.into();
         let cos_freqs = cos_freqs.into();
+        #[cfg(not(feature = "implicit_casting"))]
+        {
+            let dtype = self.dtype();
+            let sdtype = sin_freqs.dtype();
+            let cdtype = cos_freqs.dtype();
+            if dtype != sdtype || dtype != cdtype {
+                return Err(ZyxError::DTypeError(format!("ROPE all inputs must have the same dtype self dtype {dtype}, sin_freqs {sdtype}, cos_freqs {cdtype}")));
+            }
+        }
         let sin_freqs = sin_freqs.squeeze(1).unwrap().squeeze(0).unwrap(); // [seq_len, dim]
         let cos_freqs = cos_freqs.squeeze(1).unwrap().squeeze(0).unwrap(); // [seq_len, dim]
         let d = isize::try_from(*sh.last().unwrap()).unwrap();
