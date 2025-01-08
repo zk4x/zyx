@@ -666,7 +666,13 @@ fn multiple_stores() -> Result<(), ZyxError> {
 fn tanh1() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 1], [5, 4, 1]]).cast(DType::F32);
     let x = x.tanh();
-    assert_eq!(x, [[0.964028f32, 0.999329, 0.761594], [0.999909, 0.999329, 0.761594]]);
+    assert_eq!(
+        x,
+        [
+            [0.964028f32, 0.999329, 0.761594],
+            [0.999909, 0.999329, 0.761594]
+        ]
+    );
     Ok(())
 }
 
@@ -785,3 +791,19 @@ fn t1() {
     let b = x.dot(y);
     println!("{a}, {b}");
 }*/
+
+#[test]
+fn graph_tensor_ordering() -> Result<(), ZyxError> {
+    let z2 = {
+        let x = Tensor::from([3f32, 4., 2.]); // 0
+        let z1 = x.exp2() + x.log2(); // 3
+        z1.exp2() // 4
+    };
+    println!("{z2}");
+    let z3 = {
+        z2.exp2() * z2 // 6
+    };
+    println!("{z3}");
+
+    Ok(())
+}

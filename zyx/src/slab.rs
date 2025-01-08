@@ -201,6 +201,7 @@ impl<T> Slab<T> {
             if !func(&i) && !self.empty.contains(&i) {
                 deleted.insert(i);
                 unsafe { x.assume_init_drop() };
+                self.empty.insert(i);
             }
             i += 1;
         }

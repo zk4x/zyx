@@ -695,7 +695,7 @@ impl Runtime {
         Ok(())
     }
 
-    /*pub(super) fn realize(&mut self, to_eval: Set<TensorId>) -> Result<(), ZyxError> {
+    pub(super) fn realize(&mut self, to_eval: Set<TensorId>) -> Result<(), ZyxError> {
         let begin = std::time::Instant::now();
         if to_eval.is_empty() {
             return Ok(());
@@ -757,7 +757,8 @@ impl Runtime {
                 }
             }
             //let user_nodes: BTreeSet<TensorId> = user_rcs.iter().enumerate().filter_map(|(i, rc)| if *rc > 0 { Some(i as u32) } else { None }).collect();
-            let mut user_nodes: HashSet<TensorId> = HashSet::with_capacity_and_hasher(10, Default::default());
+            //let mut user_nodes: Set<TensorId> = Set::with_capacity_and_hasher(10, Default::default());
+            let mut user_nodes = BTreeSet::new();
             let mut i = 0;
             for rc in user_rcs {
                 if rc > 0 {
@@ -878,8 +879,6 @@ impl Runtime {
             self.debug,
         )?;
 
-        //{38, 1, 32, 35, 17, 51, 47, 41, 56}
-
         // Remove evaluated part of graph unless needed for backpropagation,
         // this must be done before deleting any nodes, because deleting nodes invalidates shapes and dtypes.
         for tensor in new_leafs {
@@ -895,10 +894,11 @@ impl Runtime {
         self.deallocate_tensors(&to_delete)?;
 
         Ok(())
-    }*/
+    }
 
-    #[allow(unused)]
+    /*#[allow(unused)]
     pub(super) fn realize(&mut self, mut to_eval: Set<TensorId>) -> Result<(), ZyxError> {
+        let begin = std::time::Instant::now();
         // TODO this is too complicated, simplify it!!!
         //let timer = backend::Timer::new();
         // Runs in O(4n) where n = self.graph.len(),
@@ -1017,6 +1017,9 @@ impl Runtime {
 
         let to_eval = to_eval.difference(&realized_nodes).copied().collect();
 
+        let elapsed = begin.elapsed();
+        println!("Search for order and to eval took {} us", elapsed.as_micros());
+
         crate::scheduler::realize_graph(
             &self.graph,
             &order,
@@ -1042,7 +1045,7 @@ impl Runtime {
         // Delete the node, but do not use release function, just remove it from graph.nodes
         self.graph.delete_tensors(&to_delete);
         Ok(())
-    }
+    }*/
 
     fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) -> Result<(), ZyxError> {
         // This is basically tracing GC, seems faster than reference counting

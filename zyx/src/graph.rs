@@ -116,14 +116,14 @@ impl Graph {
         self.nodes.retain(func)
     }
 
-    pub(super) fn delete_tensors(&mut self, tensors: &Set<TensorId>) {
+    /*pub(super) fn delete_tensors(&mut self, tensors: &Set<TensorId>) {
         for &tensor in tensors {
             self.nodes.remove(tensor);
             self.shapes.remove(&tensor);
             self.paddings.remove(&tensor);
             self.axes.remove(&tensor);
         }
-    }
+    }*/
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;

@@ -20,6 +20,7 @@
     - [ ] validation for program ids
 - [ ] dtype
   - [ ] quantized dtypes
+  - [x] optional implicit dtype casts
 - [x] runtime
   - [x] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes
 - [x] scheduler
@@ -73,6 +74,7 @@
   - [ ] ops fusion, merges1
 - [ ] runtime
   - [x] fix event handling
+  - [ ] fix node deallocation after realization
   - [ ] graph recording - unfortunatelly seems necessary for some high performance stuff, basically start record at the beginning of the loop and stop recording at the end of the loop. Then there needs to be a detector which tensors are inputs to this graph, which are model's parameters.
 - [ ] node
   - [ ] increase the size of nodes, by adding more complex ops, e.g. tanh. These should still only be unary, binary, or reduce ops, not new types of ops. It will keep the graph smaller and faster to kernelize and in IR we can split them into smaller ops again to keep backends simple.
