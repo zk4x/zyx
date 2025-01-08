@@ -1016,22 +1016,22 @@ impl Tensor {
     /// Pad last dimension by (1, 2)
     /// ```rust
     /// use zyx::Tensor;
-    /// let x = Tensor::from([[2, 3],
+    /// let x = Tensor::from([[2i32, 3],
     ///                       [4, 1]]);
     /// println!("{:?}\n{x}", x.shape());
-    /// let z = x.pad([(1, 2)], 0)?;
+    /// let z = x.pad([(1, 2)], 0i32)?;
     /// println!("{:?}\n{z}", z.shape());
-    /// assert_eq!(z, [[0, 2, 3, 0, 0],
+    /// assert_eq!(z, [[0i32, 2, 3, 0, 0],
     ///                [0, 4, 1, 0, 0]]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     /// Pad last dimension by (2, -1) and second last dimension by (1, 1)
     /// ```rust
     /// # use zyx::Tensor;
-    /// # let x = Tensor::from([[2, 3],
+    /// # let x = Tensor::from([[2i32, 3],
     /// #                       [4, 1]]);
-    /// let z = x.pad([(2, -1), (1, 1)], 0)?;
-    /// assert_eq!(z, [[0, 0, 0],
+    /// let z = x.pad([(2, -1), (1, 1)], 0i32)?;
+    /// assert_eq!(z, [[0i32, 0, 0],
     ///                [0, 0, 2],
     ///                [0, 0, 4],
     ///                [0, 0, 0]]);
@@ -1060,11 +1060,11 @@ impl Tensor {
         if !padding.len() <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dimension::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dimension::try_from(-rp).unwrap() <= d } else { true }) {
             return Err(ZyxError::ShapeError(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}")));
         }
-        let t0 = self.pad_zeros(padding.clone());
+        let t0 = self.pad_zeros(padding.clone())?;
         let ones = Tensor::ones(sh.clone(), dtype);
         apply_padding(&mut sh, &padding);
-        let zeros = Tensor::zeros(sh, self.dtype());
-        Ok(t0? + ones.pad_zeros(padding)?.where_(zeros, value)?)
+        let zeros = Tensor::zeros(sh, dtype);
+        Ok(t0 + ones.pad_zeros(padding)?.where_(zeros, value)?)
     }
 
     /// Narrow tensor along an axis, is essentially just padding
@@ -1645,7 +1645,7 @@ impl Tensor {
     ///
     /// let a = Tensor::from([1.0, 2.0, 3.0]);
     /// let b = Tensor::from([4.0, 5.0, 6.0]);
-    /// assert_eq!(a.cmplt(b)?.cast(DType::I32), [1i32, 1, 1]);
+    /// assert_eq!(a.cmplt(b)?.cast(zyx::DType::I32), [1i32, 1, 1]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -1819,11 +1819,12 @@ impl Tensor {
         if_true: impl Into<Tensor>,
         if_false: impl Into<Tensor>,
     ) -> Result<Tensor, ZyxError> {
+        let dtype = self.dtype();
         let (x, y) = Tensor::broadcast(self.clone(), if_true)?;
         let (x, z) = Tensor::broadcast(x, if_false)?;
         let (y, z) = Tensor::broadcast(y, z)?;
         let x_nonzero = x.nonzero();
-        Ok(&x_nonzero * y + !x_nonzero * z)
+        Ok(x_nonzero.cast(dtype) * y + (!x_nonzero).cast(dtype) * z)
     }
 
     // loss functions
