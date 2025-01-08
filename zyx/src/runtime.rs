@@ -10,14 +10,14 @@ use crate::shape::{permute, reduce, Axis, Dimension};
 use crate::slab::Id;
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
+use half::{bf16, f16};
+use nanoserde::DeJson;
 use std::path::PathBuf;
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
-use half::{bf16, f16};
-use nanoserde::DeJson;
 
 // This is the whole global state of zyx
 pub struct Runtime {
@@ -696,7 +696,7 @@ impl Runtime {
         }
         let realized_nodes: Set<TensorId> =
             self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
-        let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+        let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
         if to_eval.is_empty() {
             return Ok(());
         }
@@ -708,7 +708,8 @@ impl Runtime {
         // nodes with more than one parent.
         let (rcs, order) = {
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, Default::default());
+            let mut rcs: Map<TensorId, u32> =
+                Map::with_capacity_and_hasher(100, Default::default());
             while let Some(nid) = params.pop() {
                 rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                     if !realized_nodes.contains(&nid) {
@@ -719,7 +720,8 @@ impl Runtime {
             }
             // Order them using rcs reference counts
             let mut order = Vec::new();
-            let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, Default::default());
+            let mut internal_rcs: Map<TensorId, u32> =
+                Map::with_capacity_and_hasher(100, Default::default());
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
             while let Some(nid) = params.pop() {
                 if let Some(&rc) = rcs.get(&nid) {
@@ -738,7 +740,8 @@ impl Runtime {
         println!("Search for order took {} us", elapsed.as_micros());
 
         // Constant folding and deleting unused parts of graph
-        /*{
+        /*let (new_leafs, needed_nodes) = {
+            let begin = std::time::Instant::now();
             // Get user rcs, this is linear, thus should be fast
             let mut user_rcs = vec![0i32; self.graph.nodes.max_id() as usize];
             for (i, (rc, node)) in self.graph.nodes.iter() {
@@ -756,22 +759,104 @@ impl Runtime {
                 }
                 i += 1;
             }
-            // Go backward from user nodes, create a map of parent nodes
-            let mut parents = BTreeMap::new();
-            let mut params = user_nodes;
+            //let elapsed = begin.elapsed();
+            //println!("Search for user nodes took {} us", elapsed.as_micros());
+
+            // Go backward from user nodes, create a map of parent nodes, this is the slowest part
+            //let begin = std::time::Instant::now();
+            let mut parents = Map::with_capacity_and_hasher(100, Default::default());
+            let mut backward_visited = Set::with_capacity_and_hasher(100, Default::default());
+            let mut params = user_nodes.clone();
             while let Some(param) = params.pop_last() {
-                if parents.insert(param, parent).is_none() {
-                    params.extend();
+                if backward_visited.insert(param) {
+                    for p in self.graph.nodes[param].1.parameters() {
+                        params.insert(p);
+                        parents.insert(p, param);
+                    }
                 }
             }
+            //let elapsed = begin.elapsed();
+            //println!("User backward pass took {} us", elapsed.as_micros());
 
             // Go forward using map of parent nodes
+            //let begin = std::time::Instant::now();
+            let mut params = user_nodes.clone();
+            let mut forward_visited = Set::with_capacity_and_hasher(100, Default::default());
+            while let Some(param) = params.pop_last() {
+                if forward_visited.insert(param) {
+                    if let Some(&parent) = parents.get(&param) {
+                        params.insert(parent);
+                    }
+                }
+            }
+            //let elapsed = begin.elapsed();
+            //println!("User forward pass took {} us", elapsed.as_micros());
+
             // Create intersection of those nodes
-            // Go over those nodes again. If any children of those nodes are not in those nodes,
+            //let begin = std::time::Instant::now();
+            let mut needed_nodes: Set<TensorId> =
+                Set::with_capacity_and_hasher(100, Default::default());
+            for &x in forward_visited.intersection(&backward_visited) {
+                needed_nodes.insert(x);
+            }
+            //let elapsed = begin.elapsed();
+            //println!("Create intersection took {} us", elapsed.as_micros());
+
+            // Go over needed_nodes. If any children of needed_nodes are not in needed_nodes,
             // then those children are new_leafs, add shape to them and do not realize them, but do not delete them.
-            // If all children of that nodes are not in those nodes, then assert that this node is a user node
+            // If all children of needed_nodes are not in those nodes, then assert that this node is a user node
             // and add this node to to_eval, and add it to new_leafs.
-        }*/
+            //let begin = std::time::Instant::now();
+            let mut new_leafs = Set::with_capacity_and_hasher(10, Default::default());
+            for &nid in &needed_nodes {
+                let node = &self.graph.nodes[nid].1;
+                match node.num_parameters() {
+                    0 => {}
+                    1 => {
+                        let x: TensorId = node.param1();
+                        if !needed_nodes.contains(&x) {
+                            debug_assert!(user_nodes.contains(&nid));
+                            if !realized_nodes.contains(&nid) {
+                                to_eval.insert(nid);
+                            }
+                            new_leafs.insert(nid);
+                        }
+                    }
+                    2 => {
+                        let (x, y) = node.param2();
+                        let x_needed = needed_nodes.contains(&x);
+                        let y_needed = needed_nodes.contains(&y);
+                        match (x_needed, y_needed) {
+                            (true, true) => {}
+                            (true, false) => {
+                                if !realized_nodes.contains(&nid) {
+                                    to_eval.insert(nid);
+                                }
+                                new_leafs.insert(y);
+                            }
+                            (false, true) => {
+                                new_leafs.insert(x);
+                            }
+                            (false, false) => {
+                                debug_assert!(user_nodes.contains(&nid));
+                                if !realized_nodes.contains(&nid) {
+                                    to_eval.insert(nid);
+                                }
+                                new_leafs.insert(nid);
+                            }
+                        }
+                    }
+                    _ => unreachable!()
+                }
+            }
+            for &leaf in &new_leafs {
+                needed_nodes.insert(leaf);
+            }
+
+            let elapsed = begin.elapsed();
+            println!("Create new_leafs, to_delete and adding to to_eval took {} us", elapsed.as_micros());
+            (new_leafs, needed_nodes)
+        };*/
 
         crate::scheduler::realize_graph(
             &self.graph,
@@ -785,6 +870,20 @@ impl Runtime {
             realized_nodes,
             self.debug,
         )?;
+
+        // Remove evaluated part of graph unless needed for backpropagation,
+        // this must be done before deleting any nodes, because deleting nodes invalidates shapes and dtypes.
+        /*for tensor in new_leafs {
+            self.graph.add_shape(tensor);
+            self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
+        }
+
+        // Delete the node, but do not use release function, just remove it from graph.nodes
+        let to_delete = self.graph.retain_nodes(|x| needed_nodes.contains(x));
+        //println!("To delete: {to_delete:?}");
+
+        // Deallocate them from devices
+        self.deallocate_tensors(&to_delete)?;*/
 
         Ok(())
     }
@@ -936,20 +1035,26 @@ impl Runtime {
         Ok(())
     }*/
 
-    fn deallocate_tensors(&mut self, to_remove: &BTreeSet<TensorId>) -> Result<(), ZyxError> {
+    fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) -> Result<(), ZyxError> {
         // This is basically tracing GC, seems faster than reference counting
         // remove all buffers that are not used by any tensors
         // Check which buffers will possibly need to be dropped
-        for pool in &mut self.pools {
-            for tensor_id in to_remove {
+        for tensor_id in to_remove {
+            let mut buffer = None;
+            for (pool_id, pool) in self.pools.iter_mut().enumerate() {
                 if let Some(buffer_id) = pool.buffer_map.remove(tensor_id) {
-                    if !pool.buffer_map.values().any(|bid| *bid == buffer_id) {
-                        if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
-                            let event = pool.events.remove(&key.clone()).unwrap();
-                            pool.pool.deallocate(buffer_id, vec![event])?;
-                        } else {
-                            pool.pool.deallocate(buffer_id, Vec::new())?;
-                        }
+                    buffer = Some((pool_id, buffer_id));
+                    break;
+                }
+            }
+            if let Some((pool_id, buffer_id)) = buffer {
+                if !self.pools.iter().any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id)) {
+                    let pool = &mut self.pools[pool_id];
+                    if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
+                        let event = pool.events.remove(&key.clone()).unwrap();
+                        pool.pool.deallocate(buffer_id, vec![event])?;
+                    } else {
+                        pool.pool.deallocate(buffer_id, Vec::new())?;
                     }
                 }
             }

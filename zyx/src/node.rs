@@ -133,6 +133,41 @@ impl Node {
         }
     }
 
+    pub const fn num_parameters(&self) -> u8 {
+        match self {
+            Node::Const { .. } => 0,
+            Node::Leaf { .. } => 0,
+            Node::Expand { .. } => 1,
+            Node::Permute { .. } => 1,
+            Node::Reshape { .. } => 1,
+            Node::Pad { .. } => 1,
+            Node::Reduce { .. } => 1,
+            Node::Unary { .. } => 1,
+            Node::Binary { .. } => 2,
+        }
+    }
+
+    pub const fn param1(&self) -> u32 {
+        match *self {
+            Node::Const { .. } => unreachable!(),
+            Node::Leaf { .. } => unreachable!(),
+            Node::Expand { x } => x,
+            Node::Permute { x } => x,
+            Node::Reshape { x } => x,
+            Node::Pad { x } => x,
+            Node::Reduce { x, .. } => x,
+            Node::Unary { x, .. } => x,
+            Node::Binary { .. } => unreachable!(),
+        }
+    }
+
+    pub const fn param2(&self) -> (u32, u32) {
+        match *self {
+            Node::Binary { x, y, .. } => (x, y),
+            _ => unreachable!(),
+        }
+    }
+
     /*pub(super) const fn is_movement(&self) -> bool {
         matches!(
             self,

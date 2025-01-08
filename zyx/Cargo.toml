@@ -72,6 +72,12 @@ default = [
     #"py",
 ]
 
+# Enables implicit casting to different dtype in binary operations with different dtypes
+# and unary operations that are not implemented for the provided dtype.
+# This tries to copy the default behaviour of pytorch, but since rust does not
+# have implicit casting, we do not recommend using this feature.
+implicit_casting = []
+
 # Enables caching of optimized kernels to disk
 disk_cache = ["dep:bitcode"]
 

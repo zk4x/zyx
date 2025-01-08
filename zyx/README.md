@@ -100,6 +100,10 @@ Tensor::realize(&model).unwrap();
 ```
 This function might get obsolete in the future once detection of repeating graph patterns is implemented.
 
+## Error handling
+
+In case of incorrect user input and incorrect 
+
 ## Goals
 
 1. Correctness
@@ -142,12 +146,12 @@ Zyx uses some code duplication. If you hate code that is not DRY, please do not 
 
 ## Dependencies
 
-Zyx tries to use 0 dependencies, but we are not reinventing the wheel, so we use serde json for config
+Zyx tries to use 0 dependencies, but we are not reinventing the wheel, so we use json for config
 parsing, libloading to dynamically load backend dynamic library files (i.e. libcuda.so), float8 and half
 for numbers and memmap2 for memory mapped disk reads and writes. All dependencies are carefully considered
 and are used only if deemed absolutely necessary, that is only if they do one thing and do it well.
-Wgpu is an exception, it brings lot of it's own dependencies, but it brings lot of functionality
-like wasm, so it is used, but at least it is optional dependency.
+
+Optional dependencies do not have size limits, so zyx can bring lot of features with those.
 
 ## Code of conduct
 

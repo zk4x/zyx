@@ -8,11 +8,11 @@ impl Default for CHasher {
     }
 }
 
-impl CHasher {
+/*impl CHasher {
     pub(crate) const fn new() -> CHasher {
         CHasher(0xcbf29ce484222325)
     }
-}
+}*/
 
 impl std::hash::Hasher for CHasher {
     #[inline]

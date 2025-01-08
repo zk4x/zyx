@@ -2,6 +2,7 @@
 
 use crate::node::{BOp, Node, UOp};
 use crate::tensor::TensorId;
+use crate::Set;
 use crate::{
     shape::{Axis, Dimension},
     slab::Slab,
@@ -40,10 +41,10 @@ impl Graph {
     }
 
     /// Returns which tensors should be deallocated
-    pub(super) fn release(&mut self, x: TensorId) -> BTreeSet<TensorId> {
+    pub(super) fn release(&mut self, x: TensorId) -> Set<TensorId> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
-        let mut to_remove = BTreeSet::new();
+        let mut to_remove = Set::with_capacity_and_hasher(10, Default::default());
         while let Some(x) = params.pop() {
             let node = &mut self.nodes[x];
             node.0 -= 1;
@@ -108,35 +109,36 @@ impl Graph {
         self.shapes.insert(id, shape);
     }
 
-    pub(super) fn delete_tensors(&mut self, tensors: &BTreeSet<TensorId>) {
+    pub(super) fn retain_nodes(&mut self, func: impl Fn(&TensorId) -> bool) -> Set<TensorId> {
+        self.shapes.retain(|k, _| func(k));
+        self.axes.retain(|k, _| func(k));
+        self.paddings.retain(|k, _| func(k));
+        self.nodes.retain(func)
+    }
+
+    /*pub(super) fn delete_tensors(&mut self, tensors: &BTreeSet<TensorId>) {
         for &tensor in tensors {
             self.nodes.remove(tensor);
             self.shapes.remove(&tensor);
             self.paddings.remove(&tensor);
             self.axes.remove(&tensor);
         }
-    }
+    }*/
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
-        for _ in 0..1000 {
-            if let Node::Leaf { dtype } = self.nodes[tensor_id].1 {
-                return dtype;
-            } else if let Node::Const { value } = self.nodes[tensor_id].1 {
-                return value.dtype();
-            } else if let Node::Unary { uop , .. } = self.nodes[tensor_id].1 {
-                if let UOp::Cast(dtype) = uop {
-                    return dtype;
-                }
-            } else if let Node::Binary { bop, .. } = self.nodes[tensor_id].1 {
-                if matches!(
-                    bop,
-                    BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or
-                ) {
-                    return DType::Bool;
+        for _ in 0..10000 {
+            match self.nodes[tensor_id].1 {
+                Node::Const { value } => return value.dtype(),
+                Node::Leaf { dtype } | Node::Unary { uop: UOp::Cast(dtype), .. } => return dtype,
+                Node::Binary {
+                    bop: BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or,
+                    ..
+                } => return DType::Bool,
+                _ => {
+                    tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
                 }
             }
-            tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
         }
         panic!("DType of {tensor_id} could not be found. This is internal bug.")
     }
@@ -151,7 +153,7 @@ impl Graph {
 
     pub(super) fn shape(&self, tensor_id: TensorId) -> &[Dimension] {
         let mut tensor_id = tensor_id;
-        for _ in 0..1000 {
+        for _ in 0..10000 {
             if let Some(shape) = self.shapes.get(&tensor_id) {
                 //println!("Found shape {shape:?} for tensor {tensor_id}");
                 return shape;
@@ -284,11 +286,9 @@ impl Graph {
             let node = &self.nodes[id].1;
             match node {
                 Node::Const { value } => add_node(id, &f!("Const({value:?})"), "box"),
-                Node::Leaf { dtype } => add_node(
-                    id,
-                    &f!("Leaf({:?}, {})", self.shape(id), dtype),
-                    "box",
-                ),
+                Node::Leaf { dtype } => {
+                    add_node(id, &f!("Leaf({:?}, {})", self.shape(id), dtype), "box")
+                }
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),
                 Node::Binary { x, y, bop } => add_node(id, &f!("{bop:?}({x}, {y})"), "oval"),
                 Node::Reshape { x } => add_node(id, &f!("Reshape({x})"), "oval"),

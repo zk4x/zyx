@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
@@ -212,7 +210,7 @@ fn rand() {
 fn const_() -> Result<(), ZyxError> {
     let x = Tensor::from([[3f32, 4., 2.], [4., 3., 2.]]);
     //.get(1);
-    let y = Tensor::constant(1) + x;
+    let y = Tensor::constant(1f32) + x;
     //println!("{y}'");
     //Tensor::plot_graph([], "graph0");
     //let c: Tensor = Tensor::constant(1f64 / std::f64::consts::E.log2());
@@ -305,7 +303,7 @@ fn matmul_1024() -> Result<(), ZyxError> {
     //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
     //let y = xy.pop().unwrap();
     //let x = xy.pop().unwrap();
-    let mut xyz: HashMap<String, Tensor> = Tensor::load("../xyz2.safetensors")?;
+    let mut xyz: std::collections::HashMap<String, Tensor> = Tensor::load("../xyz2.safetensors")?;
     let z = xyz.remove("z").unwrap();
     let y = xyz.remove("y").unwrap();
     let x = xyz.remove("x").unwrap();
@@ -322,7 +320,7 @@ fn matmul_1024() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[test]
+/*#[test]
 fn save() -> Result<(), ZyxError> {
     //use zyx::TensorSave;
     //let x = Tensor::from([2f32, 4., 3.]);
@@ -331,7 +329,7 @@ fn save() -> Result<(), ZyxError> {
     //let x: Vec<i64> = x["x"].clone().try_into()?;
     //println!("{:?}", x);
     Ok(())
-}
+}*/
 
 #[test]
 fn softmax1() -> Result<(), ZyxError> {
@@ -625,10 +623,10 @@ fn t_15() {
 
 #[test]
 fn layer_norm() -> Result<(), ZyxError> {
-    let weight = Some(Tensor::from([4, 5, 1, 2]));
+    let weight = Some(Tensor::from([4f32, 5., 1., 2.]));
     let d_dims = weight.as_ref().unwrap().rank();
     let bias: Option<Tensor> = None;
-    let eps = 0.00001;
+    let eps = 0.00001f32;
 
     let x = Tensor::from([[3, 5, 2, 1], [6, 1, 4, 2]]).cast(DType::F32);
 
@@ -656,12 +654,19 @@ fn layer_norm() -> Result<(), ZyxError> {
 
 #[test]
 fn multiple_stores() -> Result<(), ZyxError> {
-    let x = Tensor::from([[3, 4, 2], [5, 4, 1]]);
-    let y = x.exp();
+    let x = Tensor::from([[3f32, 4., 2.], [5., 4., 1.]]);
+    let y = x.ln();
     let z = y.tanh();
     Tensor::realize([&y, &z])?;
-    //println!("{z:.6}");
-    assert_eq!(z, [[1f32, 1., 0.999329], [1., 1., 0.964028]]);
+    assert_eq!(z, [[0.8f32, 0.882353, 0.6], [0.923077, 0.882353, 0.]]);
+    Ok(())
+}
+
+#[test]
+fn tanh1() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2, 4, 1], [5, 4, 1]]).cast(DType::F32);
+    let x = x.tanh();
+    assert_eq!(x, [[0.964028f32, 0.999329, 0.761594], [0.999909, 0.999329, 0.761594]]);
     Ok(())
 }
 

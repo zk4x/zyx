@@ -21,7 +21,7 @@ use std::ops::{
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{DebugMask, RT};
+use crate::{DebugMask, Map, RT};
 
 pub type TensorId = u32;
 
@@ -364,7 +364,7 @@ impl Tensor {
         } else {
             self.clone()
         };
-        let cw = weight.cumsum(1)?.float_cast();
+        let cw = weight.cumsum(1)?.cast(DType::F32);
         let cdf = &cw / cw.get((.., -1))?.unsqueeze(1)?;
         let cdf_sh = cdf.shape();
         let unif_samples = Tensor::rand([num_samples, cdf_sh[0], 1], DType::F32)?;
@@ -528,7 +528,7 @@ impl Tensor {
     /// Returns a new tensor with the cosine of the elements of self.
     #[must_use]
     pub fn cos(&self) -> Tensor {
-        let x = self.float_cast();
+        let x = self.float_cast().unwrap();
         let x = Tensor { id: RT.lock().cos(x.id) };
         x
     }
@@ -576,7 +576,7 @@ impl Tensor {
     /// Returns a new tensor with the exponential of 2 raised to the power of each element in self.
     #[must_use]
     pub fn exp2(&self) -> Tensor {
-        let x = self.float_cast();
+        let x = self.float_cast().unwrap();
         let x = Tensor { id: RT.lock().exp2(x.id) };
         x
     }
@@ -639,7 +639,7 @@ impl Tensor {
     ///         as `log2(input_element)`.
     #[must_use]
     pub fn log2(&self) -> Tensor {
-        let x = self.float_cast();
+        let x = self.float_cast().unwrap();
         return Tensor { id: RT.lock().log2(x.id) };
     }
 
@@ -658,7 +658,7 @@ impl Tensor {
     /// A new tensor with the same shape as the input, but with each element computed as `ln(input_element)`.
     #[must_use]
     pub fn ln(&self) -> Tensor {
-        let x = self.float_cast();
+        let x = self.float_cast().unwrap();
         let c: Tensor = Tensor::constant(1f64 / std::f64::consts::E.log2());
         x.log2() * c.cast(x.dtype())
     }
@@ -792,7 +792,7 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, where each element is the sine of the corresponding element in the input tensor.
     #[must_use]
     pub fn sin(&self) -> Tensor {
-        let x = self.float_cast();
+        let x = self.float_cast().unwrap();
         let x = Tensor { id: RT.lock().sin(x.id) };
         x
     }
@@ -844,7 +844,7 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, where each element is the square root of the corresponding element in the input tensor.
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
-        let x = self.float_cast();
+        let x = self.float_cast().unwrap();
         let x = Tensor { id: RT.lock().sqrt(x.id) };
         x
     }
@@ -886,8 +886,8 @@ impl Tensor {
     /// ```rust
     /// use zyx::Tensor;
     ///
-    /// let t = Tensor::from(vec![0.5, 1.0]);
-    /// assert_eq!(t.tanh(), [0.46211715738221946, 0.761594166564993]);
+    /// let t = Tensor::from(vec![0.5f64, 1.0]);
+    /// assert_eq!(t.tanh(), [0.46211715738221946f64, 0.761594166564993]);
     /// ```
     ///
     /// # Panics
@@ -895,8 +895,15 @@ impl Tensor {
     /// This function will panic if the input tensor is empty.
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        let x = (self.clone() + self.clone()).sigmoid();
-        (x.clone() + x) - Tensor::constant(1).cast(self.dtype())
+        //let x = (self.clone() + self.clone()).sigmoid();
+        //(x.clone() + x) - Tensor::constant(1).cast(self.dtype())
+        /*let x = self.exp();
+        let nx = (-self).exp();
+        (x.clone() - nx.clone())/(x + nx)*/
+
+        let exp2x = (self + self).exp();
+        let one = Tensor::constant(1).cast(self.dtype());
+        (exp2x.clone() - one.clone())/(exp2x + one)
     }
 
     // movement
@@ -1638,7 +1645,7 @@ impl Tensor {
     ///
     /// let a = Tensor::from([1.0, 2.0, 3.0]);
     /// let b = Tensor::from([4.0, 5.0, 6.0]);
-    /// assert_eq!(a.cmplt(b)?, [true, true, true]);
+    /// assert_eq!(a.cmplt(b)?.cast(DType::I32), [1i32, 1, 1]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -2554,14 +2561,17 @@ impl Tensor {
             let n: usize = shape.iter().product();
             let n_bytes = n * dtype.byte_size() as Dimension;
             let x = if cfg!(target_endian = "big") {
-                let buf: &[u8] =
-                    unsafe { std::slice::from_raw_parts(*mptr, n * dtype.byte_size() as Dimension) };
+                let buf: &[u8] = unsafe {
+                    std::slice::from_raw_parts(*mptr, n * dtype.byte_size() as Dimension)
+                };
                 //let mut buf = Vec::with_capacity(n_bytes);
                 //unsafe { buf.set_len(n_bytes) }
                 //let mut buf: Vec<u8> = vec![u8::zero(); n_bytes];
                 //f.read_exact(&mut buf)?;
-                let vec: Vec<T> =
-                    buf.chunks_exact(dtype.byte_size() as Dimension).map(Scalar::from_le_bytes).collect();
+                let vec: Vec<T> = buf
+                    .chunks_exact(dtype.byte_size() as Dimension)
+                    .map(Scalar::from_le_bytes)
+                    .collect();
                 Tensor::from(vec).reshape(shape)
             } else {
                 //let mut buf: Vec<T> = Vec::with_capacity(n);
@@ -2599,7 +2609,7 @@ impl Tensor {
         let mut text = String::with_capacity(10);
         let mut begin_str = false;
         let mut i = 0;
-        let mut tensors = std::collections::HashMap::new();
+        let mut tensors = Map::with_capacity_and_hasher(100, Default::default());
         let mut dtype = DType::F32;
         let mut shape = vec![1];
         let mut label = String::new();
@@ -2667,7 +2677,8 @@ impl Tensor {
                             })
                             .collect::<Result<Vec<_>, ZyxError>>()?;
                         //println!("Offsets: {offsets:?}");
-                        let bytes = shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension;
+                        let bytes =
+                            shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension;
                         if offsets[1] - offsets[0] != bytes {
                             return Err(ZyxError::ParseError(
                                 "Safetensors shapes and offsets are incorrect.".into(),
@@ -2840,23 +2851,27 @@ impl Drop for DebugGuard {
 impl Tensor {
     /// If self is not float, then cast it to float
     #[must_use]
-    fn float_cast(&self) -> Tensor {
+    fn float_cast(&self) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
         if !dtype.is_float() {
-            return match dtype.byte_size() {
-                1 => self.cast(DType::F8),
-                2 => self.cast(DType::F16),
-                4 => self.cast(DType::F32),
-                8 => self.cast(DType::F64),
-                _ => panic!(),
-            };
+            if cfg!(feature = "implicit_casting") {
+                return Ok(match dtype.byte_size() {
+                    1 => self.cast(DType::F8),
+                    2 => self.cast(DType::F16),
+                    4 => self.cast(DType::F32),
+                    8 => self.cast(DType::F64),
+                    _ => panic!(),
+                });
+            } else {
+                return Err(ZyxError::DTypeError(format!("Called function that only supports float on a tensor that is of dtype = {dtype}")));
+            }
         }
-        self.clone()
+        Ok(self.clone())
     }
 
     /// Braodcasts to synchronize shapes and casts to synchronize dtypss
     /// This does both automatic expand AND automatic casting between dtypes.
-    // TODO Both of these can be disable by changing a setting in the backend.
+    // TODO Broadcasting can be disable by changing a setting in the backend.
     fn broadcast(x: impl Into<Tensor>, y: impl Into<Tensor>) -> Result<(Tensor, Tensor), ZyxError> {
         let mut x = x.into();
         let mut y = y.into();
@@ -2869,105 +2884,118 @@ impl Tensor {
         );*/
         // Now we just do implicit conversions. Not exactly rust style, but it's convenient.
         // We can later add option for backend to disable these implicit conversions.
-        let y_dtype = y.dtype();
         let x_dtype = x.dtype();
-        match (x_dtype, y_dtype) {
-            (DType::I16 | DType::I8 | DType::U8 | DType::Bool | DType::F8, DType::BF16) => {
-                x = x.cast(DType::BF16);
+        let y_dtype = y.dtype();
+        if cfg!(feature = "implicit_casting") {
+            match (x_dtype, y_dtype) {
+                (DType::I16 | DType::I8 | DType::U8 | DType::Bool | DType::F8, DType::BF16) => {
+                    x = x.cast(DType::BF16);
+                }
+                (DType::BF16, DType::I16 | DType::I8 | DType::U8 | DType::Bool | DType::F8) => {
+                    y = y.cast(DType::BF16);
+                }
+                (DType::I16 | DType::I8 | DType::U8 | DType::Bool, DType::F8) => {
+                    x = x.cast(DType::F8)
+                }
+                (DType::F8, DType::I16 | DType::I8 | DType::U8 | DType::Bool) => {
+                    y = y.cast(DType::F8)
+                }
+                (
+                    DType::F8 | DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
+                    DType::F16,
+                ) => x = x.cast(DType::F16),
+                (
+                    DType::F16,
+                    DType::F8 | DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
+                ) => y = y.cast(DType::F16),
+                (
+                    DType::F16
+                    | DType::F8
+                    | DType::BF16
+                    | DType::I32
+                    | DType::I16
+                    | DType::I8
+                    | DType::U32
+                    | DType::U8
+                    | DType::Bool,
+                    DType::F32,
+                ) => x = x.cast(DType::F32),
+                (
+                    DType::F32,
+                    DType::F16
+                    | DType::F8
+                    | DType::BF16
+                    | DType::I32
+                    | DType::I16
+                    | DType::I8
+                    | DType::U32
+                    | DType::U8
+                    | DType::Bool,
+                ) => y = y.cast(DType::F32),
+                (
+                    DType::F32
+                    | DType::F16
+                    | DType::F8
+                    | DType::BF16
+                    | DType::I64
+                    | DType::I32
+                    | DType::I16
+                    | DType::I8
+                    | DType::U32
+                    | DType::U8
+                    | DType::Bool,
+                    DType::F64,
+                ) => x = x.cast(DType::F64),
+                (
+                    DType::F64,
+                    DType::F32
+                    | DType::F16
+                    | DType::F8
+                    | DType::BF16
+                    | DType::I64
+                    | DType::I32
+                    | DType::I16
+                    | DType::I8
+                    | DType::U32
+                    | DType::U8
+                    | DType::Bool,
+                ) => y = y.cast(DType::F64),
+                (DType::BF16, DType::BF16)
+                | (DType::F8, DType::F8)
+                | (DType::F16, DType::F16)
+                | (DType::F32, DType::F32)
+                | (DType::F64, DType::F64)
+                | (DType::U8, DType::U8)
+                | (DType::U32, DType::U32)
+                | (DType::I8, DType::I8)
+                | (DType::I16, DType::I16)
+                | (DType::I32, DType::I32)
+                | (DType::I64, DType::I64)
+                | (DType::Bool, DType::Bool) => {}
+                (
+                    DType::I64 | DType::I32 | DType::I16 | DType::I8 | DType::U32 | DType::U8,
+                    DType::Bool,
+                ) => {
+                    y = y.cast(x_dtype);
+                }
+                (
+                    DType::Bool,
+                    DType::I64 | DType::I32 | DType::I16 | DType::I8 | DType::U32 | DType::U8,
+                ) => {
+                    x = x.cast(y_dtype);
+                }
+                (dt0, dt1) => {
+                    return Err(ZyxError::DTypeError(format!("Binary operands have dtypes {dt0} and {dt1}, which could not be implicitly casted. Please explicitly cast them to common dtype.")));
+                }
             }
-            (DType::BF16, DType::I16 | DType::I8 | DType::U8 | DType::Bool | DType::F8) => {
-                y = y.cast(DType::BF16);
-            }
-            (DType::I16 | DType::I8 | DType::U8 | DType::Bool, DType::F8) => x = x.cast(DType::F8),
-            (DType::F8, DType::I16 | DType::I8 | DType::U8 | DType::Bool) => y = y.cast(DType::F8),
-            (
-                DType::F8 | DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
-                DType::F16,
-            ) => x = x.cast(DType::F16),
-            (
-                DType::F16,
-                DType::F8 | DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
-            ) => y = y.cast(DType::F16),
-            (
-                DType::F16
-                | DType::F8
-                | DType::BF16
-                | DType::I32
-                | DType::I16
-                | DType::I8
-                | DType::U32
-                | DType::U8
-                | DType::Bool,
-                DType::F32,
-            ) => x = x.cast(DType::F32),
-            (
-                DType::F32,
-                DType::F16
-                | DType::F8
-                | DType::BF16
-                | DType::I32
-                | DType::I16
-                | DType::I8
-                | DType::U32
-                | DType::U8
-                | DType::Bool,
-            ) => y = y.cast(DType::F32),
-            (
-                DType::F32
-                | DType::F16
-                | DType::F8
-                | DType::BF16
-                | DType::I64
-                | DType::I32
-                | DType::I16
-                | DType::I8
-                | DType::U32
-                | DType::U8
-                | DType::Bool,
-                DType::F64,
-            ) => x = x.cast(DType::F64),
-            (
-                DType::F64,
-                DType::F32
-                | DType::F16
-                | DType::F8
-                | DType::BF16
-                | DType::I64
-                | DType::I32
-                | DType::I16
-                | DType::I8
-                | DType::U32
-                | DType::U8
-                | DType::Bool,
-            ) => y = y.cast(DType::F64),
-            (DType::BF16, DType::BF16)
-            | (DType::F8, DType::F8)
-            | (DType::F16, DType::F16)
-            | (DType::F32, DType::F32)
-            | (DType::F64, DType::F64)
-            | (DType::U8, DType::U8)
-            | (DType::U32, DType::U32)
-            | (DType::I8, DType::I8)
-            | (DType::I16, DType::I16)
-            | (DType::I32, DType::I32)
-            | (DType::I64, DType::I64)
-            | (DType::Bool, DType::Bool) => {}
-            (
-                DType::I64 | DType::I32 | DType::I16 | DType::I8 | DType::U32 | DType::U8,
-                DType::Bool,
-            ) => {
-                y = y.cast(x_dtype);
-            }
-            (
-                DType::Bool,
-                DType::I64 | DType::I32 | DType::I16 | DType::I8 | DType::U32 | DType::U8,
-            ) => {
-                x = x.cast(y_dtype);
-            }
-            (dt0, dt1) => {
-                return Err(ZyxError::DTypeError(format!("Binary operands have dtypes {dt0} and {dt1}, which could not be implicitly casted. Please explicitly cast them to common dtype.")));
+        } else {
+            if x_dtype != y_dtype {
+                return Err(ZyxError::DTypeError(format!(
+                    "Binary inputs have different dtypes: {x_dtype} and {y_dtype}"
+                )));
             }
         }
+
         let x_shape = x.shape();
         let y_shape = y.shape();
 

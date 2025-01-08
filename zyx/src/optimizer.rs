@@ -1,5 +1,5 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event, MemoryPool}, ir::IRKernel, kernel::{Kernel, Op}, runtime::Pool, shape::Dimension, slab::Id, DebugMask
+    backend::{BackendError, Device, DeviceInfo, Event}, ir::IRKernel, kernel::{Kernel, Op}, runtime::Pool, shape::Dimension, slab::Id, DebugMask
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -186,7 +186,7 @@ impl Optimizer {
 }
 
 // Optimize kernel further, search_iters times
-fn optimize_kernel(
+/*fn optimize_kernel(
     kernel: &Kernel,
     device: &dyn Device,
     memory_pool: &dyn MemoryPool,
@@ -272,7 +272,7 @@ fn optimize_kernel(
         opts.is_empty(),
     )*/*/
     todo!()
-}
+}*/
 
 /*impl Kernel {
     fn available_optimizations(
