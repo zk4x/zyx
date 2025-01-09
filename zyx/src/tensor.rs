@@ -203,6 +203,15 @@ impl Tensor {
         guard
     }
 
+    /// Enable or disable gradient tracing for backpropagation.
+    /// If gradient tracing is disabled, then realize function will delete
+    /// graph of all operations between tensors.
+    /// By default tracing is disabled.
+    #[must_use]
+    pub fn set_gradient_tracing(tracing: bool) {
+        RT.lock().gradient_tracing = tracing;
+    }
+
     /// Write graph of operations between tensors as png image with given filename
     /// Expects dot program to be in the path. Otherwise create dot graph file
     /// without converting it to png.

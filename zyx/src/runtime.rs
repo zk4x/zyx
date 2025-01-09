@@ -32,6 +32,7 @@ pub struct Runtime {
     pub(super) rng: Rng,
     // Are we in training mode?
     pub(super) training: bool,
+    pub(super) gradient_tracing: bool,
     /// How many variations of one kernel to try during optimization
     pub(super) search_iterations: usize,
     /// Debug mask
@@ -84,6 +85,7 @@ impl Runtime {
             config_dir: None,
             optimizer: Optimizer::new(),
             training: false,
+            gradient_tracing: false,
             search_iterations: 0,
             debug: DebugMask(0),
             temp_data: Vec::new(),
