@@ -46,13 +46,6 @@ pub fn realize_graph(
     let begin = std::time::Instant::now();
 
     // Unary and binary ops do not require duplication of kernels
-    // TODO merge this with rcs in realize function
-    /*let mut rcs = BTreeMap::new();
-    for &nid in order {
-        for p in graph[nid].parameters() {
-            rcs.entry(p).and_modify(|rc| *rc += 1).or_insert(1u32);
-        }
-    }*/
 
     // Unfinished kernels represented by ops
     let mut kernels: Slab<Kernel> = Slab::with_capacity(500);
@@ -117,7 +110,7 @@ pub fn realize_graph(
                         .copied()
                         .collect();
                     if !realized_nodes.contains(&nid) {
-                        println!("not in realized nodes and not in buffers");
+                        println!("tensor {nid} not in realized nodes and not in buffers");
                     }
                     unreachable!();
                 }

@@ -244,7 +244,7 @@ impl Runtime {
     #[must_use]
     pub(super) fn plot_dot_graph(&self, tensors: &Set<TensorId>) -> String {
         //println!("Tensor storage {:?}", self.tensor_buffer_map);
-        self.graph.plot_dot_graph(tensors)
+        self.graph.plot_dot_graph(tensors, &self.pools)
     }
 
     #[must_use]
@@ -711,6 +711,8 @@ impl Runtime {
             self.initialize_devices()?;
         }
 
+        //let mut orig_params: Vec<TensorId> = to_eval.iter().copied().collect();
+
         /*for (id, node) in self.graph.nodes.iter() {
             println!("{id} -> {node:?}");
         }*/
@@ -749,20 +751,19 @@ impl Runtime {
             order.reverse();
             (outside_nodes, order)
         };
-        let elapsed = begin.elapsed();
-        println!("Search for order took {} us", elapsed.as_micros());
         //println!("Outside nodes: {outside_nodes:?}");
 
         // Constant folding and deleting unused parts of graph
-        let begin = std::time::Instant::now();
         let mut new_leafs = Set::with_capacity_and_hasher(100, Default::default());
         let mut to_delete = Set::with_capacity_and_hasher(100, Default::default());
         for &nid in &order {
             let node = &self.graph.nodes[nid].1;
             match node.num_parameters() {
-                0 => if !outside_nodes.contains(&nid) {
-                    to_delete.insert(nid);
-                },
+                0 => {
+                    if !outside_nodes.contains(&nid) {
+                        to_delete.insert(nid);
+                    }
+                }
                 1 => {
                     let x = node.param1();
                     if to_delete.contains(&x) {
@@ -788,37 +789,25 @@ impl Runtime {
                             }
                         }
                         (true, false) => {
-                            if outside_nodes.contains(&nid) {
-                                to_eval.insert(nid);
-                                new_leafs.insert(x);
-                            } else {
-                                new_leafs.insert(x);
-                            }
+                            to_eval.insert(nid);
+                            new_leafs.insert(x);
                         }
                         (false, true) => {
-                            if outside_nodes.contains(&nid) {
-                                to_eval.insert(nid);
-                                new_leafs.insert(y);
-                            } else {
-                                new_leafs.insert(y);
-                            }
+                            to_eval.insert(nid);
+                            new_leafs.insert(y);
                         }
-                        (false, false) => {},
+                        (false, false) => {}
                     }
                 }
                 _ => unreachable!(),
             }
         }
-        let elapsed = begin.elapsed();
-        println!("Create new_leafs, to_delete and adding to to_eval took {} us", elapsed.as_micros());
 
         //println!("To eval: {to_eval:?}");
         //println!("New leafs: {new_leafs:?}");
         //println!("To delete: {to_delete:?}");
-
-        let begin = std::time::Instant::now();
-        let mut rcs: Map<TensorId, u32> =
-            Map::with_capacity_and_hasher(100, Default::default());
+        let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, Default::default());
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if let Some(rc) = rcs.get_mut(&nid) {
@@ -835,10 +824,32 @@ impl Runtime {
         }
         order.retain(|x| rcs.contains_key(x));
         let elapsed = begin.elapsed();
-        println!("Filter order and new rcs took {} us", elapsed.as_micros());
+        println!(
+            "Search for order, create new_leafs, to_delete and adding to to_eval + filtering took {} us for {} tensors",
+            elapsed.as_micros(),
+            self.graph.nodes.len(),
+        );
 
         //println!("Order {order:?}");
         //println!("RCSs {rcs:?}");
+
+        /*let mut visited = Set::with_capacity_and_hasher(100, Default::default());
+        println!("Orig params {orig_params:?}");
+        while let Some(nid) = orig_params.pop() {
+            println!("NID {nid}");
+            let is_realized = realized_nodes.contains(&nid);
+            let is_to_eval = to_eval.contains(&nid);
+            let is_to_delete = to_delete.contains(&nid);
+            let is_new_leaf = new_leafs.contains(&nid);
+            if !is_to_delete {
+                if visited.insert(nid) {
+                    orig_params.extend(self.graph.nodes[nid].1.parameters());
+                }
+            } else {
+                assert!(is_new_leaf, "{nid}");
+                assert!(is_to_eval || is_realized, "{nid}");
+            }
+        }*/
 
         crate::scheduler::realize_graph(
             &self.graph,
@@ -856,169 +867,19 @@ impl Runtime {
         // Remove evaluated part of graph unless needed for backpropagation,
         // this must be done before deleting any nodes, because deleting nodes invalidates shapes and dtypes.
 
-        // Deallocate them from devices, new_leafs can be deallocated too
-        self.deallocate_tensors(&to_delete)?;
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {
             self.graph.add_shape(tensor);
             self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
             to_delete.remove(&tensor);
         }
+        // Deallocate them from devices, new_leafs can be deallocated too
+        self.deallocate_tensors(&to_delete)?;
         // Delete the node, but do not use release function, just remove it from graph.nodes
         self.graph.delete_tensors(&to_delete);
 
         Ok(())
     }
-
-    /*#[allow(unused)]
-    pub(super) fn realize(&mut self, mut to_eval: Set<TensorId>) -> Result<(), ZyxError> {
-        let begin = std::time::Instant::now();
-        // TODO this is too complicated, simplify it!!!
-        //let timer = backend::Timer::new();
-        // Runs in O(4n) where n = self.graph.len(),
-        // first pass for visited nodes, second pass for outisde_rcs, third pass for order,
-        // fourth pass for to_delete and new_leafs
-        // Could possibly be optimized a bit
-        if to_eval.is_empty() {
-            return Ok(());
-        }
-        if to_eval.iter().all(|id| self.pools.iter().any(|pool| pool.buffer_map.contains_key(id))) {
-            return Ok(());
-        }
-        if self.devices.is_empty() {
-            self.initialize_devices()?;
-        }
-        //let t = crate::Timer::new("realize create graph");
-        // Outside nodes are nodes that exist in realization graph, but also are needed by other parts of the graph or by user.
-        // That is outside nodes have reference counts greater than their reference counts in realization graph.
-        let (outside_nodes, mut order, rcs) = {
-            let this = &self.graph;
-            let to_eval: &Set<TensorId> = &to_eval;
-            // Following loops visit all children nodes up to leafs,
-            // because we need to know which parts of the graph can be dropped.
-            // Get refcounts of all nodes
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(10, Default::default());
-            while let Some(nid) = params.pop() {
-                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                    params.extend(this.nodes[nid].1.parameters());
-                    1
-                });
-            }
-            // Order them using rcs reference counts
-            let mut order = Vec::new();
-            let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(10, Default::default());
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            while let Some(nid) = params.pop() {
-                if let Some(&rc) = rcs.get(&nid) {
-                    if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                        order.push(nid);
-                        params.extend(this.nodes[nid].1.parameters());
-                    }
-                }
-            }
-            order.reverse();
-            // TODO can we get rid of this third pass?
-            let outside_nodes: Set<TensorId> = self
-                .graph
-                .nodes
-                .iter()
-                .filter_map(|(id, (rc, _))| {
-                    if let Some(&rc2) = rcs.get(&id) {
-                        if *rc > rc2 {
-                            Some(id)
-                        } else {
-                            None
-                        }
-                    } else {
-                        Some(id)
-                    }
-                })
-                .chain(to_eval.iter().copied())
-                .collect();
-            (outside_nodes, order, rcs)
-        };
-        //, |x| realized_tensors.contains(&x));
-        // Which parts of graph are no longer needed and can be deleted and which nodes will be new leafs?
-        // New leafs never store data, so we can deallocate them if they are allocated.
-        let mut to_delete = Set::with_capacity_and_hasher(10, Default::default());
-        let mut new_leafs = Set::with_capacity_and_hasher(10, Default::default());
-        //println!("Graph: {:?}", self.graph);
-        //println!("Outside nodes: {outside_nodes:?}");
-        //println!("Order: {order:?}");
-        // Calculates which tensors are not needed and which tensors need to be evaluated
-        // in order to drop those unneeded tensors. This is basically constant folding.
-        for tensor in &order {
-            if matches!(self.graph[*tensor], Node::Leaf { .. } | Node::Const { .. }) {
-                if !outside_nodes.contains(tensor) {
-                    to_delete.insert(*tensor);
-                    continue;
-                }
-            } else if self.graph[*tensor].parameters().all(|tensor| to_delete.contains(&tensor)) {
-                if outside_nodes.contains(tensor) {
-                    to_eval.insert(*tensor);
-                    new_leafs.insert(*tensor);
-                } else {
-                    to_delete.insert(*tensor);
-                }
-            } else {
-                for param in self.graph[*tensor].parameters() {
-                    if to_delete.contains(&param) {
-                        new_leafs.insert(param);
-                    }
-                }
-            }
-        }
-
-        // delete from order all nodes that don't need to be evaluated, since order is now too huge,
-        // because it calculates to_delete and new_leafs.
-        let realized_nodes: Set<TensorId> = self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        let mut visited: Set<TensorId> = Set::with_capacity_and_hasher(100, Default::default());
-        while let Some(nid) = params.pop() {
-            if visited.insert(nid) && !realized_nodes.contains(&nid) {
-                params.extend(self.graph.nodes[nid].1.parameters());
-            }
-        }
-        // Drop unnecessary nodes in order
-        order.retain(|nid| visited.contains(nid));
-        drop(visited);
-
-        //println!("New leafs: {new_leafs:?}");
-        //println!("Realizing {:?}", to_eval);
-        //debug_assert!(new_leafs.is_subset(&to_eval));
-
-        let to_eval = to_eval.difference(&realized_nodes).copied().collect();
-
-        let elapsed = begin.elapsed();
-        println!("Search for order and to eval took {} us", elapsed.as_micros());
-
-        crate::scheduler::realize_graph(
-            &self.graph,
-            &order,
-            rcs,
-            &to_eval,
-            &mut self.devices,
-            &mut self.pools,
-            &mut self.optimizer,
-            self.search_iterations,
-            realized_nodes,
-            self.debug,
-        )?;
-
-        // Deallocate them from devices
-        self.deallocate_tensors(&to_delete)?;
-        // Remove evaluated part of graph unless needed for backpropagation
-        for tensor in new_leafs {
-            self.graph.add_shape(tensor);
-            self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
-            to_delete.remove(&tensor);
-        }
-        //println!("To delete: {to_delete:?}");
-        // Delete the node, but do not use release function, just remove it from graph.nodes
-        self.graph.delete_tensors(&to_delete);
-        Ok(())
-    }*/
 
     fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) -> Result<(), ZyxError> {
         // This is basically tracing GC, seems faster than reference counting

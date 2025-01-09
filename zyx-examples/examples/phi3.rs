@@ -477,7 +477,9 @@ impl Model {
         }
         //println!("{xs}");
         //panic!();
-        //Tensor::plot_graph([], "graph").unwrap();
+        //Tensor::plot_graph([], "graph1").unwrap();
+        //Tensor::realize([&xs]).unwrap();
+        //panic!();
         let xs = self
             .final_layernorm
             .forward(xs)

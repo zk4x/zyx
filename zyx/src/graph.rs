@@ -211,7 +211,7 @@ impl Graph {
 
     /// Plot dot graph in dot format between given nodes
     #[must_use]
-    pub fn plot_dot_graph(&self, ids: &Set<TensorId>) -> String {
+    pub fn plot_dot_graph(&self, ids: &Set<TensorId>, pools: &[crate::runtime::Pool]) -> String {
         use core::fmt::Write;
         use std::format as f;
         let ids: Set<TensorId> = if ids.is_empty() {
@@ -259,6 +259,7 @@ impl Graph {
             }
         }
         //std::println!("User {:?}", user_rc);
+        let realized_nodes: Set<TensorId> = pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
         let mut res_dot_graph =
             String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
         let mut add_node = |i: TensorId, text: &str, shape: &str| {
@@ -267,9 +268,18 @@ impl Graph {
                 write!(res, "  {id}[label=\"{}NL{} x {}NL{}NL{}\", shape={}, fillcolor=\"{}\", style=filled]",
                     label, id, rc[id], text, get_shape(NodeId::new(id)), shape, fillcolor).unwrap();
             } else {*/
+            let border_color;
+            let border_width;
+            if realized_nodes.contains(&i) {
+                border_color = "darkred";
+                border_width = 5;
+            } else {
+                border_color = "black";
+                border_width = 1;
+            }
             write!(
                 res_dot_graph,
-                "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled]",
+                "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled], color=\"{border_color}\", penwidth={border_width}",
                 i,
                 self.nodes[i].0,
                 text,
