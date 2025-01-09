@@ -23,6 +23,9 @@
   - [x] optional implicit dtype casts
 - [x] runtime
   - [x] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes
+  - [x] realization while tracing gradients
+  - [ ] realization while not tracing gradients
+  - [ ] gradient tape
 - [x] scheduler
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
   - [ ] fix reshape node

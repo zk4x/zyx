@@ -166,6 +166,26 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
     }
 }
 
+/// Gradient tape
+/// 
+/// Graph is always recorded, but when tensor is realized, it's graph is dropped.
+/// When GradientTape is alive, graph is not dropped until GradientTape is dropped.
+/// 
+/// Unlike other deep learning frameworks, there is no need to specify which tensors
+/// are differentiable nor is there need to specify multiple gradient tapes to calculate
+/// higher order derivatives. In zyx as long as gradient tape is alive, derivatives
+/// of all operations then occured since it's creation can be calculated.
+/// 
+/// Gradient tape is necessary because without it graph would grow
+/// indefinitely with each iteration of training/inference loop.
+/// By creating gradient tape in the beginning of each training loop and dropping
+/// it at the end, the user ensures that graph of tensors is dropped after each
+/// iteration of the training loop.
+/// 
+/// Since tensors are realized lazily, intermediate tensors needed for backpropagation
+/// are not held in memory.
+pub struct GradientTape {}
+
 /// Execution timer
 /*static ET: mutex::Mutex<std::collections::BTreeMap<String, (u128, u128)>, 1_000_000_000> =
     mutex::Mutex::new(std::collections::BTreeMap::new());

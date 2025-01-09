@@ -32,7 +32,7 @@ pub struct Runtime {
     pub(super) rng: Rng,
     // Are we in training mode?
     pub(super) training: bool,
-    pub(super) gradient_tracing: bool,
+    pub(super) gradient_tape: bool,
     /// How many variations of one kernel to try during optimization
     pub(super) search_iterations: usize,
     /// Debug mask
@@ -85,7 +85,7 @@ impl Runtime {
             config_dir: None,
             optimizer: Optimizer::new(),
             training: false,
-            gradient_tracing: false,
+            gradient_tape: false,
             search_iterations: 0,
             debug: DebugMask(0),
             temp_data: Vec::new(),
@@ -832,27 +832,6 @@ impl Runtime {
             self.graph.nodes.len(),
         );
 
-        //println!("Order {order:?}");
-        //println!("RCSs {rcs:?}");
-
-        /*let mut visited = Set::with_capacity_and_hasher(100, Default::default());
-        println!("Orig params {orig_params:?}");
-        while let Some(nid) = orig_params.pop() {
-            println!("NID {nid}");
-            let is_realized = realized_nodes.contains(&nid);
-            let is_to_eval = to_eval.contains(&nid);
-            let is_to_delete = to_delete.contains(&nid);
-            let is_new_leaf = new_leafs.contains(&nid);
-            if !is_to_delete {
-                if visited.insert(nid) {
-                    orig_params.extend(self.graph.nodes[nid].1.parameters());
-                }
-            } else {
-                assert!(is_new_leaf, "{nid}");
-                assert!(is_to_eval || is_realized, "{nid}");
-            }
-        }*/
-
         crate::scheduler::realize_graph(
             &self.graph,
             &order,
@@ -866,8 +845,8 @@ impl Runtime {
             self.debug,
         )?;
 
-        // Remove evaluated part of graph unless needed for backpropagation,
-        // this must be done before deleting any nodes, because deleting nodes invalidates shapes and dtypes.
+        // Deallocate them from devices, new_leafs can be deallocated too
+        self.deallocate_tensors(&to_delete)?;
 
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {
@@ -875,8 +854,6 @@ impl Runtime {
             self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
             to_delete.remove(&tensor);
         }
-        // Deallocate them from devices, new_leafs can be deallocated too
-        self.deallocate_tensors(&to_delete)?;
         // Delete the node, but do not use release function, just remove it from graph.nodes
         self.graph.delete_tensors(&to_delete);
 
@@ -912,6 +889,10 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn drop_gradient_tape(&mut self) {
+        todo!()
     }
 
     #[allow(clippy::similar_names)]

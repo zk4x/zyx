@@ -20,9 +20,40 @@ use std::ops::{
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{DebugMask, Map, Set, RT};
+use crate::{DebugMask, GradientTape, Map, Set, RT};
 
 pub type TensorId = u32;
+
+impl GradientTape {
+    /// Create new gradient tape.
+    pub fn new() -> Self {
+        RT.lock().gradient_tape = true;
+        Self {}
+    }
+
+    /// Returns gradients of target derived w.r.t. sources
+    #[must_use]
+    pub fn gradient<'a>(
+        &self,
+        target: &Tensor,
+        sources: impl IntoIterator<Item = &'a Tensor>,
+    ) -> Vec<Option<Tensor>> {
+        let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
+        let grads: Map<TensorId, TensorId> =
+            RT.lock().backward(target.id, &sources.iter().copied().collect());
+        sources
+            .into_iter()
+            .map(|x: TensorId| grads.get(&x).copied())
+            .map(|id: Option<TensorId>| id.map(|id| Tensor { id }))
+            .collect()
+    }
+}
+
+impl Drop for GradientTape {
+    fn drop(&mut self) {
+        RT.lock().drop_gradient_tape();
+    }
+}
 
 /// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
 ///
@@ -93,22 +124,6 @@ impl Tensor {
     /// Returns device error if the device fails to realize one or more tensors.
     pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
         RT.lock().realize(tensors.into_iter().map(|t| t.id).collect())
-    }
-
-    /// Returns gradients of self derived w.r.t. sources
-    #[must_use]
-    pub fn backward<'a>(
-        &self,
-        sources: impl IntoIterator<Item = &'a Tensor>,
-    ) -> Vec<Option<Tensor>> {
-        let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
-        let grads: Map<TensorId, TensorId> =
-            RT.lock().backward(self.id, &sources.iter().copied().collect());
-        sources
-            .into_iter()
-            .map(|x: TensorId| grads.get(&x).copied())
-            .map(|id: Option<TensorId>| id.map(|id| Tensor { id }))
-            .collect()
     }
 
     /// Detaches tensor from graph.
@@ -196,20 +211,11 @@ impl Tensor {
     /// the one set `by ZYX_DEBUG` env variable.
     /// For more look at `ENV_VARS.md`
     #[must_use]
-    pub fn debug_guard(debug: DebugMask) -> DebugGuard {
+    pub fn with_debug(debug: DebugMask) -> DebugGuard {
         let mut rt = RT.lock();
         let guard = DebugGuard { debug: rt.debug };
         rt.debug = debug;
         guard
-    }
-
-    /// Enable or disable gradient tracing for backpropagation.
-    /// If gradient tracing is disabled, then realize function will delete
-    /// graph of all operations between tensors.
-    /// By default tracing is disabled.
-    #[must_use]
-    pub fn set_gradient_tracing(tracing: bool) {
-        RT.lock().gradient_tracing = tracing;
     }
 
     /// Write graph of operations between tensors as png image with given filename
