@@ -177,7 +177,6 @@ impl Device for DummyDevice {
     ) -> Result<Event, BackendError> {
         let _ = program_id;
         let _ = event_wait_list;
-        #[cfg(debug_assertions)]
         for &arg in args {
             let BufferMut::Dummy(_) = memory_pool.get_buffer(arg) else { panic!() };
         }

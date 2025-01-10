@@ -25,9 +25,13 @@ use crate::{DebugMask, GradientTape, Map, Set, RT};
 pub type TensorId = u32;
 
 impl GradientTape {
-    /// Create new gradient tape.
+    /// Create new gradient tape. Only one gradient tape can exist at a time.
     pub fn new() -> Self {
-        RT.lock().gradient_tape = true;
+        let mut rt = RT.lock();
+        if rt.gradient_tape {
+            panic!("Only one gradient tape can exist at a time.");
+        }
+        rt.gradient_tape = true;
         Self {}
     }
 

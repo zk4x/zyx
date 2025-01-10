@@ -807,3 +807,22 @@ fn graph_tensor_ordering() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn t6() -> Result<(), ZyxError> {
+    use zyx::GradientTape;
+    let x = Tensor::randn([8, 1024, 1024], DType::F32).unwrap();
+    let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32).unwrap();
+    let b = Tensor::zeros([1024], DType::F32);
+    let tape = GradientTape::new();
+    let _z = &x + &y;
+    let z = (x.dot(&y).unwrap() + &b).gelu();
+    // Zyx allows for arbitrary differentiation
+    let b_grad = tape.gradient(&z, [&b])[0].clone().unwrap();
+    println!("{b_grad}");
+    // Also higher order derivatives
+    let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
+    println!("{bb_grad}");
+
+    Ok(())
+}
