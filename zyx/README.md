@@ -19,17 +19,18 @@ cargo add zyx
 Zyx uses syntax similar to pytorch.
 
 ```rust no_run
-use zyx::{Tensor, DType};
+use zyx::{Tensor, DType, GradientTape};
 
 let x = Tensor::randn([1024, 1024], DType::F32)?;
 let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32)?;
 let b = Tensor::zeros([1024], DType::F32);
+let tape = GradientTape::new();
 let z = &x + &y;
 let z = (x.dot(&y)? + &b).gelu();
 // Zyx allows for arbitrary differentiation
-let b_grad = z.backward([&b])[0].clone().unwrap();
+let b_grad = tape.gradient(&z, [&b])[0].clone().unwrap();
 // Also higher order derivatives
-let bb_grad = b_grad.backward([&b])[0].clone().unwrap();
+let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
 # Ok::<(), zyx::ZyxError>(())
 ```
 
@@ -74,10 +75,11 @@ let mut optim = zyx_optim::SGD {
 
 let train_steps = 100;
 for _ in 0..train_steps {
+    let tape = GradientTape::new();
     let y = l0.forward(&x).relu();
     let y = l1.forward(&y).sigmoid();
     let loss = y.mse_loss(&target)?:
-    let grads = loss.backward(l0.into_iter().chain(l1.into_iter()));
+    let grads = tape.gradient(&loss, l0.into_iter().chain(l1.into_iter()));
     optim.update(l0.into_iter().chain(l1.into_iter()), grads);
 }
 

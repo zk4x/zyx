@@ -940,8 +940,6 @@ fn main() -> Result<(), ZyxError> {
     );
     let tokenizer = Tokenizer::from_file("../tokenizer.json").unwrap();
 
-    Tensor::set_gradient_tracing(false);
-
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
         let mut vb: HashMap<String, Tensor> =
