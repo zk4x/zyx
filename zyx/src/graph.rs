@@ -10,7 +10,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(Debug)]
 pub struct Graph {
     // First value is reference count, second is node
     pub(super) nodes: Slab<(u32, Node)>,
