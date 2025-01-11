@@ -414,18 +414,18 @@ impl MemoryPool for CUDAMemoryPool {
         buffer_id: Id,
         mut event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
-        if let Some(buffer) = self.buffers.remove(buffer_id) {
-            while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
-                if !event.is_null() {
-                    unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }
-                        .check(ErrorStatus::MemoryDeallocation)?;
-                    unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H)?;
-                }
+        while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
+            if !event.is_null() {
+                unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }
+                    .check(ErrorStatus::MemoryDeallocation)?;
+                unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H)?;
             }
-            //unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation).unwrap();
-            unsafe { (self.cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation).unwrap();
-            self.free_bytes += buffer.bytes;
         }
+        let buffer = &mut self.buffers[buffer_id];
+        //unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation).unwrap();
+        unsafe { (self.cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation).unwrap();
+        self.free_bytes += buffer.bytes;
+        self.buffers.remove(buffer_id);
         Ok(())
     }
 
@@ -614,12 +614,11 @@ impl Device for CUDADevice {
         Ok(Event::CUDA(CUDAEvent { event }))
     }
 
-    fn release(&mut self, program_id: crate::slab::Id) -> Result<(), BackendError> {
-        if let Some(program) = self.programs.remove(program_id) {
-            unsafe { (self.cuModuleUnload)(program.module) }
-                .check(ErrorStatus::Deinitialization)
-                .unwrap();
-        }
+    fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+        unsafe { (self.cuModuleUnload)(self.programs[program_id].module) }
+            .check(ErrorStatus::Deinitialization)
+            .unwrap();
+        self.programs.remove(program_id);
         Ok(())
     }
 }

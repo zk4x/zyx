@@ -71,9 +71,9 @@ impl Graph {
                     let shape = self.shape(nid);
                     if sh != shape {
                         println!("{:?}", self.shapes);
-                        for (i, (rc, node)) in self.nodes.iter() {
+                        /*for (i, (rc, node)) in self.nodes.iter() {
                             println!("ID {i} x {rc} -> {node:?}");
-                        }
+                        }*/
                         panic!("{sh:?} != {shape:?} Pushing new node {node:?}");
                     }
                 } else {

@@ -452,34 +452,36 @@ impl MemoryPool for OpenCLMemoryPool {
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
         //println!("Deallocate {:?}", self.buffers[buffer_id].ptr);
-        if let Some(buffer) = self.buffers.remove(buffer_id) {
-            debug_assert!(!buffer.buffer.is_null(), "Deallocating null buffer is invalid");
-            let event_wait_list: Vec<*mut c_void> = event_wait_list
-                .into_iter()
-                .map(|event| {
-                    let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
-                    event
-                })
-                .filter(|event| !event.is_null())
-                .collect();
-            if !event_wait_list.is_empty() {
-                let event_wait_list_ptr = event_wait_list.as_ptr();
-                unsafe {
-                    (self.clWaitForEvents)(
-                        event_wait_list.len().try_into().unwrap(),
-                        event_wait_list_ptr,
-                    )
-                }
-                .check(ErrorStatus::Deinitialization)?;
+        let buffer = &mut self.buffers[buffer_id];
+        debug_assert!(
+            !buffer.buffer.is_null(),
+            "Deallocating null buffer is invalid"
+        );
+        let event_wait_list: Vec<*mut c_void> = event_wait_list
+            .into_iter()
+            .map(|event| {
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+                event
+            })
+            .filter(|event| !event.is_null())
+            .collect();
+        if !event_wait_list.is_empty() {
+            let event_wait_list_ptr = event_wait_list.as_ptr();
+            unsafe {
+                (self.clWaitForEvents)(
+                    event_wait_list.len().try_into().unwrap(),
+                    event_wait_list_ptr,
+                )
             }
-            // This segfaults... AFAIK it shouldn't...
-            /*for event in event_wait_list {
-                unsafe { (self.clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization)?;
-            }*/
-            unsafe { (self.clReleaseMemObject)(buffer.buffer) }
-                .check(ErrorStatus::Deinitialization)?;
-            self.free_bytes += buffer.bytes;
+            .check(ErrorStatus::Deinitialization)?;
         }
+        // This segfaults... AFAIK it shouldn't...
+        /*for event in event_wait_list {
+            unsafe { (self.clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization)?;
+        }*/
+        unsafe { (self.clReleaseMemObject)(buffer.buffer) }.check(ErrorStatus::Deinitialization)?;
+        self.free_bytes += buffer.bytes;
+        self.buffers.remove(buffer_id);
         Ok(())
     }
 
@@ -972,10 +974,9 @@ impl Device for OpenCLDevice {
 
     fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
         //println!("Releasing {:?}", program);
-        if let Some(program) = self.programs.remove(program_id) {
-            unsafe { (self.clReleaseProgram)(program.program) }
-                .check(ErrorStatus::Deinitialization)?;
-        }
+        unsafe { (self.clReleaseProgram)(self.programs[program_id].program) }
+            .check(ErrorStatus::Deinitialization)?;
+        self.programs.remove(program_id);
         Ok(())
     }
 
@@ -1041,7 +1042,8 @@ impl OpenCLDevice {
                 * 4,
             local_mem_size: Dimension::try_from(u64::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
-            )).unwrap(),
+            ))
+            .unwrap(),
             num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
             tensor_cores: false,
         };

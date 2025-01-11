@@ -5,7 +5,6 @@
 
 use std::{
     alloc::{alloc, alloc_zeroed, dealloc, handle_alloc_error, realloc, Layout},
-    mem::MaybeUninit,
     ops::{Index, IndexMut},
     ptr::{self, NonNull},
 };
@@ -62,16 +61,16 @@ impl<T> Slab<T> {
         ((block >> bit_pos) & 0b1) != 0
     }
 
-    unsafe fn get_unchecked(&self, idx: Id) -> &T {
+    fn get_unchecked(&self, idx: Id) -> &T {
         debug_assert!(idx < self.cap);
         debug_assert!(self.has_element_at(idx));
-        &*self.values.as_ptr().add(idx as usize)
+        unsafe { &*self.values.as_ptr().add(idx as usize) }
     }
 
-    unsafe fn get_unchecked_mut(&mut self, idx: Id) -> &mut T {
+    fn get_unchecked_mut(&mut self, idx: Id) -> &mut T {
         debug_assert!(idx < self.cap);
         debug_assert!(self.has_element_at(idx));
-        &mut *self.values.as_ptr().add(idx as usize)
+        unsafe { &mut *self.values.as_ptr().add(idx as usize) }
     }
 
     unsafe fn old_elem_layout(&self) -> Layout {
@@ -93,8 +92,10 @@ impl<T> Slab<T> {
         #[inline(never)]
         #[cold]
         fn capacity_overflow() -> ! {
-            panic!("capacity overflow in `stable_vec::BitVecCore::realloc` (attempt \
-                to allocate more than `usize::MAX` bytes");
+            panic!(
+                "capacity overflow in `stable_vec::BitVecCore::realloc` (attempt \
+                to allocate more than `usize::MAX` bytes"
+            );
         }
         // Handle special case
         if new_cap == 0 {
@@ -117,11 +118,13 @@ impl<T> Slab<T> {
         if size_of::<T>() != 0 {
             // Get the new number of bytes for the allocation and create the
             // memory layout.
-            let size = (new_cap as usize).checked_mul(size_of::<T>()).unwrap_or_else(|| capacity_overflow());
+            let size = (new_cap as usize)
+                .checked_mul(size_of::<T>())
+                .unwrap_or_else(|| capacity_overflow());
             let new_elem_layout = Layout::from_size_align_unchecked(size, align_of::<T>());
 
             // (Re)allocate memory.
-                let ptr = if self.cap == 0 {
+            let ptr = if self.cap == 0 {
                 alloc(new_elem_layout)
             } else {
                 realloc(self.values.as_ptr() as *mut _, self.old_elem_layout(), size)
@@ -129,7 +132,7 @@ impl<T> Slab<T> {
             // If the element allocation failed, we quit the program with an
             // OOM error.
             if ptr.is_null() {
-                 handle_alloc_error(new_elem_layout);
+                handle_alloc_error(new_elem_layout);
             }
             // We already overwrite the pointer here. It is not read/changed
             // anywhere else in this function.
@@ -152,7 +155,7 @@ impl<T> Slab<T> {
             // If the element allocation failed, we quit the program with an
             // OOM error.
             if ptr.is_null() {
-                 handle_alloc_error(new_bit_layout);
+                handle_alloc_error(new_bit_layout);
             }
             // If we reallocated, the new memory is not necessarily zeroed, so
             // we need to do it. TODO: if `alloc` offers a `realloc_zeroed`
@@ -194,7 +197,8 @@ impl<T> Slab<T> {
         if capacity > i32::max_value() as u32 {
             panic!("Capacity too large.");
         }
-        let mut res = Self { values: NonNull::dangling(), empty: NonNull::dangling(), cap: 0, len: 0 };
+        let mut res =
+            Self { values: NonNull::dangling(), empty: NonNull::dangling(), cap: 0, len: 0 };
         unsafe {
             res.realloc(capacity);
         }
@@ -206,15 +210,41 @@ impl<T> Slab<T> {
     }
 
     pub(crate) fn push(&mut self, value: T) -> Id {
-        if let Some(id) = self.empty.pop_first() {
-            self.values[id] = MaybeUninit::new(value);
-            //println!("Pushing to empty {id}");
-            id
-        } else {
-            self.values.push(MaybeUninit::new(value));
-            //println!("Pushing {}, empty: {:?}", self.values.len() - 1, self.empty);
-            Id::try_from(self.values.len() - 1).unwrap()
+        let mut ptr = self.empty.as_ptr();
+        let mut i = 0;
+        while i < self.cap {
+            let x = unsafe { *ptr };
+            if x < usize::MAX {
+                for j in 0..BITS_PER_USIZE {
+                    let found = ((x >> j) & 0b1) != 0;
+                    if found {
+                        unsafe {
+                            *self.empty.as_ptr().add((i / BITS_PER_USIZE) as usize) |= 1 << j;
+                            *self.values.as_ptr().add(i as usize) = value;
+                        }
+                        return i;
+                    }
+                    i += 1;
+                }
+            }
+            i += BITS_PER_USIZE;
+            ptr = unsafe { ptr.add(1) };
         }
+        if self.len == self.cap {
+            if self.cap == 0 {
+                unsafe { self.realloc(32) };
+                self.len += 32;
+            } else {
+                unsafe { self.realloc(self.cap * 2) };
+                self.len *= 2;
+            }
+        }
+        let mask = 1 << (i % BITS_PER_USIZE);
+        println!("{i}, cap {}, mask {mask}", self.cap);
+        unsafe { *self.empty.as_ptr().add((i / BITS_PER_USIZE) as usize) |= mask };
+        panic!();
+        unsafe { *self.values.as_ptr().add(i as usize) = value };
+        return i;
     }
 
     pub(crate) fn remove(&mut self, id: Id) -> T {
@@ -226,49 +256,57 @@ impl<T> Slab<T> {
         let bit_pos = id % BITS_PER_USIZE;
         let mask = !(1 << bit_pos);
         unsafe { *self.empty.as_ptr().add(usize_pos as usize) &= mask };
+        self.len -= 1;
         unsafe { ptr::read(self.values.as_ptr().add(id as usize)) }
     }
 
     pub(crate) fn ids(&self) -> impl Iterator<Item = Id> + '_ {
-        (0..Id::try_from(self.values.len()).unwrap()).filter(|x| !self.empty.contains(x))
+        todo!();
+        //(0..Id::try_from(self.values.len()).unwrap()).filter(|x| !self.empty.contains(x))
+        Vec::new().into_iter()
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
-        self.values
-            .iter()
-            .enumerate()
-            .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
-            .map(|(_, x)| unsafe { x.assume_init_ref() })
+        todo!();
+        /*self.values
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
+        .map(|(_, x)| unsafe { x.assume_init_ref() })*/
+        Vec::new().into_iter()
     }
 
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.values
-            .iter_mut()
-            .enumerate()
-            .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
-            .map(|(_, x)| unsafe { x.assume_init_mut() })
+        todo!();
+        /*self.values
+        .iter_mut()
+        .enumerate()
+        .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
+        .map(|(_, x)| unsafe { x.assume_init_mut() })*/
+        Vec::new().into_iter()
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (Id, &T)> {
-        self.values
-            .iter()
-            .enumerate()
-            .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
-            .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_ref() }))
+        todo!();
+        /*self.values
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
+        .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_ref() }))*/
+        Vec::new().into_iter()
     }
 }
 
 impl<T> Index<Id> for Slab<T> {
     type Output = T;
     fn index(&self, index: Id) -> &Self::Output {
-        debug_assert!(!self.empty.contains(&index));
-        unsafe { self.values[index as usize].assume_init_ref() }
+        //unsafe { self.values.as_ptr().add(index as usize).as_ref() }.unwrap()
+        self.get_unchecked(index)
     }
 }
 
 impl<T> IndexMut<Id> for Slab<T> {
     fn index_mut(&mut self, index: Id) -> &mut Self::Output {
-        debug_assert!(!self.empty.contains(&index));
-        unsafe { self.values[index as usize].assume_init_mut() }
+        self.get_unchecked_mut(index)
     }
 }

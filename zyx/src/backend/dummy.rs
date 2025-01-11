@@ -93,11 +93,10 @@ impl MemoryPool for DummyMemoryPool {
         buffer_id: crate::slab::Id,
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
-        let _ = buffer_id;
         let _ = event_wait_list;
-        if let Some(bytes) = self.buffers.remove(buffer_id) {
-            self.free_bytes += bytes;
-        }
+        let bytes = self.buffers[buffer_id];
+        self.buffers.remove(buffer_id);
+        self.free_bytes += bytes;
         Ok(())
     }
 
