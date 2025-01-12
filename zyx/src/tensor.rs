@@ -5,7 +5,7 @@
 #![allow(clippy::fallible_impl_from)]
 
 use crate::dtype::DType;
-use crate::node::BOp;
+use crate::node::{BOp, UOp};
 use crate::runtime::{apply_padding, TempData, ZyxError};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{into_axes, into_axis, Axis, Dimension, IntoShape};
@@ -548,7 +548,7 @@ impl Tensor {
     #[must_use]
     pub fn cos(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().cos(x.id) };
+        let x = Tensor { id: RT.lock().unary(x.id, UOp::Cos) };
         x
     }
 
@@ -596,7 +596,7 @@ impl Tensor {
     #[must_use]
     pub fn exp2(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().exp2(x.id) };
+        let x = Tensor { id: RT.lock().unary(x.id, UOp::Exp2) };
         x
     }
 
@@ -659,7 +659,7 @@ impl Tensor {
     #[must_use]
     pub fn log2(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        return Tensor { id: RT.lock().log2(x.id) };
+        return Tensor { id: RT.lock().unary(x.id, UOp::Log2) };
     }
 
     /// Computes the natural logarithm (ln) of each element in the input tensor.
@@ -680,20 +680,6 @@ impl Tensor {
         let x = self.float_cast().unwrap();
         let c: Tensor = Tensor::constant(1f64 / std::f64::consts::E.log2());
         x.log2() * c.cast(x.dtype())
-    }
-
-    /// Computes the multiplicative inverse of each element in the input tensor.
-    ///
-    /// This function returns a new tensor with the same shape as the input, where each element is the multiplicative inverse (i.e., reciprocal) of the corresponding element in the input tensor.
-    ///
-    /// **Parameters:**
-    ///
-    /// * self: The input tensor.
-    ///
-    /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor.
-    #[must_use]
-    pub fn inv(&self) -> Tensor {
-        return Tensor { id: RT.lock().inv(self.id) };
     }
 
     /// Computes the Mish activation function for each element in the input tensor.
@@ -735,7 +721,7 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor using a faster implementation.
     #[must_use]
     pub fn reciprocal(&self) -> Tensor {
-        return Tensor { id: RT.lock().reciprocal(self.id) };
+        return Tensor { id: RT.lock().unary(self.id, UOp::Reciprocal) };
     }
 
     /// Applies the Rectified Linear Unit (`ReLU`) activation function to each element in the input tensor.
@@ -749,7 +735,7 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `max(0, input_element)`.
     #[must_use]
     pub fn relu(&self) -> Tensor {
-        return Tensor { id: RT.lock().relu(self.id) };
+        return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) };
     }
 
     /// Computes the reciprocal square root of each element in the input tensor.
@@ -812,7 +798,7 @@ impl Tensor {
     #[must_use]
     pub fn sin(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().sin(x.id) };
+        let x = Tensor { id: RT.lock().unary(x.id, UOp::Sin) };
         x
     }
 
@@ -864,7 +850,7 @@ impl Tensor {
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().sqrt(x.id) };
+        let x = Tensor { id: RT.lock().unary(x.id, UOp::Sqrt) };
         x
     }
 
@@ -4099,28 +4085,28 @@ impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
 impl Neg for Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        Tensor { id: RT.lock().neg(self.id) }
+        Tensor { id: RT.lock().unary(self.id, UOp::Neg) }
     }
 }
 
 impl Neg for &Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
-        Tensor { id: RT.lock().neg(self.id) }
+        Tensor { id: RT.lock().unary(self.id, UOp::Neg) }
     }
 }
 
 impl Not for Tensor {
     type Output = Tensor;
     fn not(self) -> Self::Output {
-        Tensor { id: RT.lock().not(self.id) }
+        Tensor { id: RT.lock().unary(self.id, UOp::Not) }
     }
 }
 
 impl Not for &Tensor {
     type Output = Tensor;
     fn not(self) -> Self::Output {
-        Tensor { id: RT.lock().not(self.id) }
+        Tensor { id: RT.lock().unary(self.id, UOp::Not) }
     }
 }
 

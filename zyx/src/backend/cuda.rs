@@ -765,7 +765,7 @@ impl CUDADevice {
                         UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
                         UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
                         UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
-                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
+                        UOp::Reciprocal => format!("{indent}r{z} = 1/r{x};\n"),
                         UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
                         UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
                         UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),

@@ -37,7 +37,7 @@ pub enum UOp {
     Neg,
     Exp2,
     Log2,
-    Inv,
+    Reciprocal,
     Sqrt,
     Sin,
     Cos,
@@ -212,7 +212,7 @@ impl Constant {
                 UOp::Cast(_)
                 | UOp::Exp2
                 | UOp::Log2
-                | UOp::Inv
+                | UOp::Reciprocal
                 | UOp::Sqrt
                 | UOp::Sin
                 | UOp::Cos => unreachable!(),
@@ -228,7 +228,7 @@ impl Constant {
                 UOp::Neg => x.neg(),
                 UOp::Exp2 => x.exp2(),
                 UOp::Log2 => x.log2(),
-                UOp::Inv => x.reciprocal(),
+                UOp::Reciprocal => x.reciprocal(),
                 UOp::Sqrt => x.sqrt(),
                 UOp::Sin => x.sin(),
                 UOp::Cos => x.cos(),

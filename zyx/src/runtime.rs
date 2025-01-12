@@ -379,17 +379,6 @@ impl Runtime {
         expanded
     }
 
-    // Unary ops
-    #[must_use]
-    pub(super) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
-        if dtype == self.dtype(x) {
-            self.retain(x);
-            return x;
-        }
-        //self.graph.push_wdtype(Node::Unary { x, uop: UOp::Cast(dtype) }, dtype)
-        self.graph.push(Node::Unary { x, uop: UOp::Cast(dtype) })
-    }
-
     /// Bitcast self to other type, currently immediatelly realizes the tensor.
     /// The caller is responsible for ensuring that destination dtype is representable
     /// with bytes of source data.
@@ -427,56 +416,6 @@ impl Runtime {
         }
         //println!("TBM:\n{:?}", self.tensor_buffer_map);
         Ok(id)
-    }
-
-    #[must_use]
-    pub(super) fn reciprocal(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::Inv })
-    }
-
-    #[must_use]
-    pub(super) fn neg(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::Neg })
-    }
-
-    #[must_use]
-    pub(super) fn relu(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::ReLU })
-    }
-
-    #[must_use]
-    pub(super) fn exp2(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::Exp2 })
-    }
-
-    #[must_use]
-    pub(super) fn log2(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::Log2 })
-    }
-
-    #[must_use]
-    pub(super) fn inv(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::Inv })
-    }
-
-    #[must_use]
-    pub(super) fn sin(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::Sin })
-    }
-
-    #[must_use]
-    pub(super) fn cos(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::Cos })
-    }
-
-    #[must_use]
-    pub(super) fn sqrt(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::Sqrt })
-    }
-
-    #[must_use]
-    pub(super) fn not(&mut self, x: TensorId) -> TensorId {
-        self.graph.push(Node::Unary { x, uop: UOp::Not })
     }
 
     #[must_use]
@@ -577,6 +516,17 @@ impl Runtime {
         let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Max }, shape);
         self.graph.push_axes(id, axes);
         id
+    }
+
+    // Unary ops
+    #[must_use]
+    pub(super) fn cast(&mut self, x: TensorId, dtype: DType) -> TensorId {
+        if dtype == self.dtype(x) {
+            self.retain(x);
+            return x;
+        }
+        //self.graph.push_wdtype(Node::Unary { x, uop: UOp::Cast(dtype) }, dtype)
+        self.graph.push(Node::Unary { x, uop: UOp::Cast(dtype) })
     }
 
     #[must_use]
@@ -950,7 +900,7 @@ impl Runtime {
                             insert_or_add_grad(self, &mut grads, x, grad);
                         }
                         if req_grad.contains(&y) {
-                            let grad = self.neg(grad);
+                            let grad = self.unary(grad, UOp::Neg);
                             insert_or_add_grad(self, &mut grads, y, grad);
                         }
                     }
@@ -983,7 +933,7 @@ impl Runtime {
                             let two_2 = self.binary(y, two_e, BOp::Pow);
                             self.release(two_e).unwrap();
                             let temp = self.binary(x, grad, BOp::Mul);
-                            let temp_neg = self.neg(temp);
+                            let temp_neg = self.unary(temp, UOp::Neg);
                             self.release(temp).unwrap();
                             let y_grad = self.binary(temp_neg, two_2, BOp::Div);
                             self.release(temp_neg).unwrap();
@@ -1008,7 +958,7 @@ impl Runtime {
                         }
                         if req_grad.contains(&y) {
                             // grad * x.pow(y) * ln(x)
-                            let temp1 = self.log2(x);
+                            let temp1 = self.unary(x, UOp::Log2);
                             let temp2 = self.binary(nid, temp1, BOp::Mul);
                             self.release(temp1).unwrap();
                             let y_grad = self.binary(grad, temp2, BOp::Mul);
@@ -1051,10 +1001,10 @@ impl Runtime {
                     }
                 },
                 Node::Unary { x, uop } => match uop {
-                    UOp::Inv => {
+                    UOp::Reciprocal => {
                         // -1/(x*x)
                         let x_2_inv = self.binary(nid, nid, BOp::Mul);
-                        let x_grad = self.neg(x_2_inv);
+                        let x_grad = self.unary(x_2_inv, UOp::Neg);
                         self.release(x_2_inv).unwrap();
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
@@ -1087,14 +1037,14 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Sin => {
-                        let x_temp = self.cos(x);
+                        let x_temp = self.unary(x, UOp::Cos);
                         let grad = self.binary(x_temp, grad, BOp::Mul);
                         self.release(x_temp).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Cos => {
-                        let x_temp1 = self.sin(x);
-                        let x_temp = self.neg(x_temp1);
+                        let x_temp1 = self.unary(x, UOp::Sin);
+                        let x_temp = self.unary(x_temp1, UOp::Neg);
                         self.release(x_temp1).unwrap();
                         let grad = self.binary(x_temp, grad, BOp::Mul);
                         self.release(x_temp).unwrap();
@@ -1102,7 +1052,7 @@ impl Runtime {
                     }
                     UOp::Sqrt => {
                         // x_grad = grad/(2*sqrt(x))
-                        let sqrt_x = self.sqrt(x);
+                        let sqrt_x = self.unary(x, UOp::Sqrt);
                         let sqrtx_2 = self.binary(sqrt_x, sqrt_x, BOp::Add);
                         self.release(sqrt_x).unwrap();
                         let grad = self.binary(grad, sqrtx_2, BOp::Div);
@@ -1113,7 +1063,7 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Neg => {
-                        let grad = self.neg(grad);
+                        let grad = self.unary(grad, UOp::Neg);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     /*UOp::Tanh => {
