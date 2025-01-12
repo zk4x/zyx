@@ -1,6 +1,6 @@
 //! Graph of tensor operations.
 
-use crate::node::{BOp, Node, UOp};
+use crate::node::{BOp, Node};
 use crate::tensor::TensorId;
 use crate::Set;
 use crate::{
@@ -129,7 +129,7 @@ impl Graph {
         for _ in 0..10000 {
             match self.nodes[tensor_id].1 {
                 Node::Const { value } => return value.dtype(),
-                Node::Leaf { dtype } | Node::Unary { uop: UOp::Cast(dtype), .. } => return dtype,
+                Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
                 Node::Binary {
                     bop: BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or,
                     ..
@@ -298,6 +298,7 @@ impl Graph {
                 Node::Leaf { dtype } => {
                     add_node(id, &f!("Leaf({:?}, {})", self.shape(id), dtype), "box")
                 }
+                Node::Cast { x, dtype } => add_node(id, &f!("C-{dtype}({x})"), "oval"),
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),
                 Node::Binary { x, y, bop } => add_node(id, &f!("{bop:?}({x}, {y})"), "oval"),
                 Node::Reshape { x } => add_node(id, &f!("Reshape({x})"), "oval"),

@@ -295,6 +295,19 @@ pub fn realize_graph(
                     );
                     kid
                 }
+                Node::Cast { x, dtype } => {
+                    //let _timer = Timer::new("unary");
+                    let (xt, kid) = get_kernel_max(x, &kernels);
+                    debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
+                    kernels[kid].max_id += 1;
+                    let z = kernels[kid].max_id;
+                    kernels[kid].ops.push(Op::Cast { z, x: xt, dtype });
+                    if rcs[&x] < 2 {
+                        kernels[kid].outputs.remove(&x);
+                    }
+                    kernels[kid].outputs.insert(nid, z);
+                    kid
+                }
                 Node::Unary { x, uop } => {
                     //let _timer = Timer::new("unary");
                     let (xt, kid) = get_kernel_max(x, &kernels);
@@ -442,7 +455,9 @@ pub fn realize_graph(
                                     Op::Accumulator { z, rop, dtype } => {
                                         Op::Accumulator { z: z + n, rop, dtype }
                                     }
-                                    //Op::Move { z, x, mop } => Op::Move { z: z + n, x: x + n, mop },
+                                    Op::Cast { z, x, dtype } => {
+                                        Op::Cast { z: z + n, x: x + n, dtype }
+                                    }
                                     Op::Unary { z, x, uop } => {
                                         Op::Unary { z: z + n, x: x + n, uop }
                                     }

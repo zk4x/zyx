@@ -83,6 +83,11 @@ pub enum Op {
         x: TId,
         mop: MOp,
     },*/
+    Cast {
+        z: TId,
+        x: TId,
+        dtype: DType,
+    },
     Unary {
         z: TId,
         x: TId,
@@ -246,7 +251,7 @@ impl Kernel {
                     Op::Accumulator { .. }
                     | Op::Loop { .. }
                     | Op::EndLoop
-                    //| Op::Move { .. }
+                    | Op::Cast { .. }
                     | Op::Unary { .. }
                     | Op::Binary { .. }
                     | Op::Barrier { .. } => {}
@@ -383,7 +388,7 @@ impl Kernel {
                     Op::Accumulator { .. }
                     | Op::Loop { .. }
                     | Op::EndLoop
-                    //| Op::Move { .. }
+                    | Op::Cast { .. }
                     | Op::Unary { .. }
                     | Op::Binary { .. }
                     | Op::Barrier { .. } => {}
@@ -890,7 +895,7 @@ impl Kernel {
                 Op::EndLoop => {
                     shape.pop();
                 }
-                Op::Unary { .. } | Op::Binary { .. } => {
+                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
                     flop += shape.iter().product::<usize>() as u128;
                 }
                 Op::Accumulator { .. } | Op::Const { .. } | Op::Barrier { .. } => {}
@@ -928,6 +933,16 @@ impl std::fmt::Display for Op {
                 "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, {dtype}",
             )),
             Op::EndLoop => f.write_fmt(format_args!("{C_BLUE}EndLoop{C_RESET} ")),
+            Op::Cast { z, x, dtype } => {
+                let mut len = format!("C-{dtype}").len();
+                if len > 5 {
+                    len = 5;
+                }
+                f.write_fmt(format_args!(
+                    "{C_WHITE}Unary{C_RESET}.C-{dtype}{} {z} <- {x}",
+                    " ".repeat(5 - len)
+                ))
+            }
             Op::Unary { z, x, uop } => {
                 let mut len = format!("{uop:?}").len();
                 if len > 5 {

@@ -32,7 +32,6 @@ pub enum BOp {
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub enum UOp {
-    Cast(DType),
     ReLU,
     Neg,
     Exp2,
@@ -83,6 +82,10 @@ pub enum Node {
         rop: ROp,
         //axes: Box<Vec<usize>>,
     },
+    Cast {
+        x: TensorId,
+        dtype: DType,
+    },
     Unary {
         x: TensorId,
         uop: UOp,
@@ -120,6 +123,7 @@ impl Node {
                 NodeParametersIterator { parameters: [0, 0], idx: 0, len: 0 }
             }
             Node::Unary { x, .. }
+            | Node::Cast { x, .. }
             | Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Permute { x, .. }
@@ -142,6 +146,7 @@ impl Node {
             Node::Reshape { .. } => 1,
             Node::Pad { .. } => 1,
             Node::Reduce { .. } => 1,
+            Node::Cast { .. } => 1,
             Node::Unary { .. } => 1,
             Node::Binary { .. } => 2,
         }
@@ -156,6 +161,7 @@ impl Node {
             Node::Reshape { x } => x,
             Node::Pad { x } => x,
             Node::Reduce { x, .. } => x,
+            Node::Cast { x, .. } => x,
             Node::Unary { x, .. } => x,
             Node::Binary { .. } => unreachable!(),
         }
@@ -205,12 +211,30 @@ impl<T: Scalar> CastDType for T {}
 
 // TODO clean this up
 impl Constant {
+    pub(super) fn cast(self, dtype: DType) -> Constant {
+        return match self {
+            Constant::BF16(x) => half::bf16::from_bits(x).cast_dtype(dtype),
+            Constant::F8(x) => f8::from_bits(x).cast_dtype(dtype),
+            Constant::F16(x) => half::f16::from_bits(x).cast_dtype(dtype),
+            Constant::F32(x) => f32::from_bits(x).cast_dtype(dtype),
+            Constant::F64(x) => f64::from_bits(x).cast_dtype(dtype),
+            Constant::U8(x) => x.cast_dtype(dtype),
+            Constant::I8(x) => x.cast_dtype(dtype),
+            Constant::I16(x) => x.cast_dtype(dtype),
+            Constant::U16(x) => x.cast_dtype(dtype),
+            Constant::U32(x) => x.cast_dtype(dtype),
+            Constant::U64(x) => x.cast_dtype(dtype),
+            Constant::I32(x) => x.cast_dtype(dtype),
+            Constant::I64(x) => x.cast_dtype(dtype),
+            Constant::Bool(x) => x.cast_dtype(dtype),
+        };
+    }
+
     pub(super) fn unary(self, uop: UOp) -> Constant {
         use crate::Float;
         fn unary_func<T: Scalar>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Cast(_)
-                | UOp::Exp2
+                UOp::Exp2
                 | UOp::Log2
                 | UOp::Reciprocal
                 | UOp::Sqrt
@@ -223,7 +247,6 @@ impl Constant {
         }
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Cast(_) => unreachable!(),
                 UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
                 UOp::Exp2 => x.exp2(),
@@ -234,24 +257,6 @@ impl Constant {
                 UOp::Cos => x.cos(),
                 UOp::Not => x.not(),
             }
-        }
-        if let UOp::Cast(dtype) = uop {
-            return match self {
-                Constant::BF16(x) => half::bf16::from_bits(x).cast_dtype(dtype),
-                Constant::F8(x) => f8::from_bits(x).cast_dtype(dtype),
-                Constant::F16(x) => half::f16::from_bits(x).cast_dtype(dtype),
-                Constant::F32(x) => f32::from_bits(x).cast_dtype(dtype),
-                Constant::F64(x) => f64::from_bits(x).cast_dtype(dtype),
-                Constant::U8(x) => x.cast_dtype(dtype),
-                Constant::I8(x) => x.cast_dtype(dtype),
-                Constant::I16(x) => x.cast_dtype(dtype),
-                Constant::U16(x) => x.cast_dtype(dtype),
-                Constant::U32(x) => x.cast_dtype(dtype),
-                Constant::U64(x) => x.cast_dtype(dtype),
-                Constant::I32(x) => x.cast_dtype(dtype),
-                Constant::I64(x) => x.cast_dtype(dtype),
-                Constant::Bool(x) => x.cast_dtype(dtype),
-            };
         }
         match self {
             Constant::BF16(x) => {

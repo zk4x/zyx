@@ -48,6 +48,11 @@ pub enum IROp {
         z: u16,
         value: Constant,
     },
+    Cast {
+        z: u16,
+        x: u16,
+        dtype: DType,
+    },
     Unary {
         z: u16,
         x: u16,
@@ -192,7 +197,15 @@ impl IRCompiler {
     }
 
     pub(super) fn cast(&mut self, x: Reg, dtype: DType) -> Reg {
-        self.unary_op(x, UOp::Cast(dtype))
+        match x {
+            Reg::Var(x) => {
+                self.max_id += 1;
+                let z = self.max_id;
+                self.ops.push(IROp::Cast { z, x, dtype });
+                Reg::Var(z)
+            }
+            Reg::Const(c) => Reg::Const(c.cast(dtype)),
+        }
     }
 
     pub(super) fn and(&mut self, x: Reg, y: Reg) -> Reg {
@@ -355,9 +368,11 @@ impl IRCompiler {
                     let zreg = c.set(acc_init);
                     register_map.insert(z, zreg);
                 }
-                /*&Op::Move { z, x, .. } => {
-                    register_map.insert(z, register_map[&x]);
-                }*/
+                &Op::Cast { z, x, dtype } => {
+                    let xreg = register_map[&x];
+                    let zreg = c.cast(xreg, dtype);
+                    register_map.insert(z, zreg);
+                }
                 &Op::Unary { z, x, uop } => {
                     let xreg = register_map[&x];
                     let zreg = c.unary_op(xreg, uop);
@@ -404,7 +419,7 @@ impl IRCompiler {
                 &IROp::Load { offset: Reg::Var(x), .. } => {
                     ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                 }
-                &IROp::Unary { x, .. } => {
+                &IROp::Cast { x, .. } | &IROp::Unary { x, .. } => {
                     ref_counts.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                 }
                 IROp::Binary { x, y, .. } => {
@@ -484,14 +499,19 @@ impl IRCompiler {
                         cmp.insert(z, zr);
                     }
                 }
+                IROp::Cast { z, x, dtype } => {
+                    if let Some(&zrc) = ref_counts.get(&z) {
+                        dtypes.insert(z, dtype);
+                        let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                        let xr = cmp[&x];
+                        reg_rcs[xr as usize] -= 1;
+                        ops.push(IROp::Cast { z: zr, x: xr, dtype });
+                        cmp.insert(z, zr);
+                    }
+                }
                 IROp::Unary { z, x, uop } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
-                        if let UOp::Cast(dt) = uop {
-                            dtypes.insert(z, dt);
-                        } else {
-                            dtypes.insert(z, dtypes[&x]);
-                        }
-
+                        dtypes.insert(z, dtypes[&x]);
                         let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
                         let xr = cmp[&x];
                         reg_rcs[xr as usize] -= 1;
@@ -641,7 +661,7 @@ impl IRCompiler {
                     }
                     println!();*/
                     if let Some(tc) = self.ops[op_i..].iter().find_map(|op| match op {
-                        IROp::Set { z, .. } | IROp::Unary { z, .. } | IROp::Binary { z, .. } | IROp::MAdd { z, .. } => {
+                        IROp::Set { z, .. } | IROp::Cast { z, .. } | IROp::Unary { z, .. } | IROp::Binary { z, .. } | IROp::MAdd { z, .. } => {
                             Some(z - 1)
                         }
                         IROp::Loop { .. }
@@ -683,7 +703,7 @@ impl IRCompiler {
                                             *z += ta;
                                         }
                                     }
-                                    IROp::Unary { ref mut z, ref mut x, .. } => {
+                                    IROp::Cast { ref mut z, ref mut x, .. } | IROp::Unary { ref mut z, ref mut x, .. } => {
                                         if *x > tc {
                                             *x += ta;
                                         }
@@ -819,7 +839,7 @@ impl IRCompiler {
                             a && b
                         }
                         IROp::Set { .. } | IROp::Barrier { .. } => false,
-                        IROp::Unary { z, x, .. } => {
+                        IROp::Cast { z, x, .. } | IROp::Unary { z, x, .. } => {
                             if dependents.contains(&x) {
                                 dependents.insert(z);
                                 false
@@ -889,6 +909,16 @@ impl IRCompiler {
         // TODO make this non recursive
         for i in 0..self.ops.len() {
             match self.ops[i] {
+                IROp::Cast { z, ref mut x, dtype } => {
+                    if *x == to_replace {
+                        match replace_with {
+                            Reg::Var(replace_with) => *x = replace_with,
+                            Reg::Const(replace_with) => {
+                                self.replace(z, Reg::Const(replace_with.cast(dtype)));
+                            }
+                        }
+                    }
+                }
                 IROp::Unary { z, ref mut x, uop } => {
                     if *x == to_replace {
                         match replace_with {
@@ -1141,6 +1171,7 @@ impl IRCompiler {
                 },
                 IROp::MAdd { .. } => unreachable!(),
                 IROp::Set { .. }
+                | IROp::Cast { .. }
                 | IROp::Unary { .. }
                 | IROp::Loop { .. }
                 | IROp::EndLoop { .. }

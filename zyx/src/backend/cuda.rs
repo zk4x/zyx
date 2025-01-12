@@ -748,13 +748,13 @@ impl CUDADevice {
                 IROp::Set { z, value } => {
                     source.push_str(&format!("{indent}r{z} = {};\n", value.cu()));
                 }
+                IROp::Cast { z, x, dtype } => {
+                    source.push_str(&format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x));
+                }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
-                    let zero = Constant::new(0).unary(UOp::Cast(dtype)).cu();
+                    let zero = Constant::new(0).cast(dtype).cu();
                     source.push_str(&match uop {
-                        UOp::Cast(_) => {
-                            format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x)
-                        }
                         UOp::ReLU => {
                             if dtype == DType::F16 {
                                 format!("{indent}r{z} = r{x} * __float2half(r{x} > {zero});\n")

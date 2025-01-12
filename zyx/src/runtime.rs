@@ -526,7 +526,7 @@ impl Runtime {
             return x;
         }
         //self.graph.push_wdtype(Node::Unary { x, uop: UOp::Cast(dtype) }, dtype)
-        self.graph.push(Node::Unary { x, uop: UOp::Cast(dtype) })
+        self.graph.push(Node::Cast { x, dtype })
     }
 
     #[must_use]
@@ -1000,6 +1000,10 @@ impl Runtime {
                         todo!("BitXor backward.");
                     }
                 },
+                Node::Cast { x, .. } => {
+                    let grad = self.cast(grad, self.dtype(x));
+                    insert_or_add_grad(self, &mut grads, x, grad);
+                }
                 Node::Unary { x, uop } => match uop {
                     UOp::Reciprocal => {
                         // -1/(x*x)
@@ -1056,10 +1060,6 @@ impl Runtime {
                         let sqrtx_2 = self.binary(sqrt_x, sqrt_x, BOp::Add);
                         self.release(sqrt_x).unwrap();
                         let grad = self.binary(grad, sqrtx_2, BOp::Div);
-                        insert_or_add_grad(self, &mut grads, x, grad);
-                    }
-                    UOp::Cast(_) => {
-                        let grad = self.cast(grad, self.dtype(x));
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Neg => {

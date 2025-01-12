@@ -740,12 +740,12 @@ impl Device for OpenCLDevice {
                 IROp::Set { z, value } => {
                     source.push_str(&format!("{indent}r{z} = {};\n", value.ocl()));
                 }
+                IROp::Cast { z, x, dtype } => {
+                    source += &format!("{indent}r{z} = ({})r{x};\n", dtype.ocl());
+                }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
                     source += &match uop {
-                        UOp::Cast(_) => {
-                            format!("{indent}r{z} = ({})r{x};\n", dtype.ocl())
-                        }
                         UOp::ReLU => format!(
                             "{indent}r{z} = max(r{x}, {});\n",
                             dtype.zero_constant().ocl()

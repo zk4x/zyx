@@ -81,7 +81,7 @@ fn fuzzy() -> Result<(), ZyxError> {
                 cpu_tensors[x] = cpu_tensors[x].log2();
             }
             4 => {
-                tensors[x] = tensors[x].inv();
+                tensors[x] = tensors[x].reciprocal();
                 cpu_tensors[x] = cpu_tensors[x].inv();
             }
             5 => {
