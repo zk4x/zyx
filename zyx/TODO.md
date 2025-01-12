@@ -77,13 +77,15 @@
   - [ ] ops fusion, merges1
 - [ ] runtime
   - [x] fix event handling
-  - [ ] fix node deallocation after realization
+  - [x] fix node deallocation after realization
   - [ ] graph recording - unfortunatelly seems necessary for some high performance stuff, basically start record at the beginning of the loop and stop recording at the end of the loop. Then there needs to be a detector which tensors are inputs to this graph, which are model's parameters.
 - [ ] node
-  - [ ] increase the size of nodes, by adding more complex ops, e.g. tanh. These should still only be unary, binary, or reduce ops, not new types of ops. It will keep the graph smaller and faster to kernelize and in IR we can split them into smaller ops again to keep backends simple.
+  - [ ] increase the size of nodes, by adding more complex ops, e.g. tanh. These should still only be unary, binary, or reduce ops, not new types of ops. It will keep the graph smaller and faster to kernelize and in IR we can split them into smaller ops again to keep backends simple. But we will have to see if that is actually a good idea.
   - [ ] implement lowerer in the beginning of IRKernel
   - [ ] add tanh
   - [ ] add dot
+- [ ] backward
+  - [ ] fix t6 test
 
 - [x] docs
   - [x] manual for adding new backends
@@ -94,3 +96,4 @@
 
 - examples
   - [x] get phi working
+    - [ ] fix tensor memory leak

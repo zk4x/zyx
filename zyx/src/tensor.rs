@@ -5,6 +5,7 @@
 #![allow(clippy::fallible_impl_from)]
 
 use crate::dtype::DType;
+use crate::node::BOp;
 use crate::runtime::{apply_padding, TempData, ZyxError};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{into_axes, into_axis, Axis, Dimension, IntoShape};
@@ -1672,7 +1673,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().cmplt(x.id, y.id);
+        let id = RT.lock().binary(x.id, y.id, BOp::Cmplt);
         Ok(Tensor { id })
     }
 
@@ -1683,7 +1684,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn cmpgt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().cmpgt(x.id, y.id);
+        let id = RT.lock().binary(x.id, y.id, BOp::Cmpgt);
         Ok(Tensor { id })
     }
 
@@ -1694,7 +1695,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().maximum(x.id, y.id);
+        let id = RT.lock().binary(x.id, y.id, BOp::Max);
         Ok(Tensor { id })
     }
 
@@ -1780,7 +1781,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), exponent)?;
-        let id = RT.lock().pow(x.id, y.id);
+        let id = RT.lock().binary(x.id, y.id, BOp::Pow);
         Ok(Tensor { id })
     }
 
@@ -1791,7 +1792,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn logical_and(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().and(x.id, y.id);
+        let id = RT.lock().binary(x.id, y.id, BOp::And);
         Ok(Tensor { id })
     }
 
@@ -1802,7 +1803,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn logical_or(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().or(x.id, y.id);
+        let id = RT.lock().binary(x.id, y.id, BOp::Or);
         Ok(Tensor { id })
     }
 
@@ -1813,7 +1814,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn equal(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().not_eq(x.id, y.id);
+        let id = RT.lock().binary(x.id, y.id, BOp::NotEq);
         let x = Tensor { id };
         Ok(x.not())
     }
@@ -3950,7 +3951,7 @@ impl<IT: Into<Tensor>> Add<IT> for Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().add(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Add) };
         tensor
     }
 }
@@ -3963,7 +3964,7 @@ impl<IT: Into<Tensor>> Add<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().add(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Add) };
         tensor
     }
 }
@@ -3976,7 +3977,7 @@ impl<IT: Into<Tensor>> Sub<IT> for Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().sub(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
         tensor
     }
 }
@@ -3989,7 +3990,7 @@ impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().sub(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
         tensor
     }
 }
@@ -4004,7 +4005,7 @@ impl<IT: Into<Tensor>> Mul<IT> for Tensor {
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
         //println!("Multiply by {y}");
-        let tensor = Tensor { id: RT.lock().mul(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Mul) };
         tensor
     }
 }
@@ -4018,7 +4019,7 @@ impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
         // otherwise rust drops tensor before dropping mutexguard,
         // causing deadlock. But with temporary variable
         // it works. Welcome to most beloved language of all time.
-        let tensor = Tensor { id: RT.lock().mul(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Mul) };
         tensor
     }
 }
@@ -4027,7 +4028,7 @@ impl<IT: Into<Tensor>> Div<IT> for Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        let tensor = Tensor { id: RT.lock().div(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Div) };
         tensor
     }
 }
@@ -4036,7 +4037,7 @@ impl<IT: Into<Tensor>> Div<IT> for &Tensor {
     type Output = Tensor;
     fn div(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        let tensor = Tensor { id: RT.lock().div(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Div) };
         tensor
     }
 }
@@ -4045,7 +4046,7 @@ impl<IT: Into<Tensor>> BitOr<IT> for Tensor {
     type Output = Tensor;
     fn bitor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        let tensor = Tensor { id: RT.lock().bitor(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitOr) };
         tensor
     }
 }
@@ -4054,7 +4055,7 @@ impl<IT: Into<Tensor>> BitOr<IT> for &Tensor {
     type Output = Tensor;
     fn bitor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        let tensor = Tensor { id: RT.lock().bitor(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitOr) };
         tensor
     }
 }
@@ -4063,7 +4064,7 @@ impl<IT: Into<Tensor>> BitXor<IT> for Tensor {
     type Output = Tensor;
     fn bitxor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        let tensor = Tensor { id: RT.lock().bitxor(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitXor) };
         tensor
     }
 }
@@ -4072,7 +4073,7 @@ impl<IT: Into<Tensor>> BitXor<IT> for &Tensor {
     type Output = Tensor;
     fn bitxor(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        let tensor = Tensor { id: RT.lock().bitxor(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitXor) };
         tensor
     }
 }
@@ -4081,7 +4082,7 @@ impl<IT: Into<Tensor>> BitAnd<IT> for Tensor {
     type Output = Tensor;
     fn bitand(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        let tensor = Tensor { id: RT.lock().bitand(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitAnd) };
         tensor
     }
 }
@@ -4090,7 +4091,7 @@ impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
     type Output = Tensor;
     fn bitand(self, rhs: IT) -> Self::Output {
         let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        let tensor = Tensor { id: RT.lock().bitand(x.id, y.id) };
+        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitAnd) };
         tensor
     }
 }

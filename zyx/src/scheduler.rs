@@ -395,7 +395,7 @@ pub fn realize_graph(
                         }
 
                         let Kernel { ops, tensors, outputs, max_id, depends_on } =
-                            kernels.remove(kidy);
+                            unsafe { kernels.remove_and_use(kidy) };
 
                         for (i, op) in ops.into_iter().enumerate() {
                             if !(matches!(op, Op::Loop { .. }) && op == kernels[kidx].ops[i]) {
@@ -560,7 +560,7 @@ pub fn realize_graph(
             let kid = ids[i];
             if kernels[kid].depends_on.is_empty() {
                 ids.remove(i);
-                let mut kernel = kernels.remove(kid);
+                let mut kernel = unsafe { kernels.remove_and_use(kid) };
                 kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
                 for kernel in kernels.values_mut() {
                     kernel.depends_on.remove(&kid);

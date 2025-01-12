@@ -580,73 +580,13 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn add(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Add })
+    pub(super) fn unary(&mut self, x: TensorId, uop: UOp) -> TensorId {
+        self.graph.push(Node::Unary { x, uop })
     }
 
     #[must_use]
-    pub(super) fn sub(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Sub })
-    }
-
-    #[must_use]
-    pub(super) fn mul(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Mul })
-    }
-
-    #[must_use]
-    pub(super) fn div(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Div })
-    }
-
-    #[must_use]
-    pub(super) fn and(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::And })
-    }
-
-    #[must_use]
-    pub(super) fn or(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Or })
-    }
-
-    #[must_use]
-    pub(super) fn bitor(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::BitOr })
-    }
-
-    #[must_use]
-    pub(super) fn bitxor(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::BitXor })
-    }
-
-    #[must_use]
-    pub(super) fn bitand(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::BitAnd })
-    }
-
-    #[must_use]
-    pub(super) fn pow(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Pow })
-    }
-
-    #[must_use]
-    pub(super) fn cmplt(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Cmplt })
-    }
-
-    #[must_use]
-    pub(super) fn cmpgt(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Cmpgt })
-    }
-
-    #[must_use]
-    pub(super) fn not_eq(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::NotEq })
-    }
-
-    #[must_use]
-    pub(super) fn maximum(&mut self, x: TensorId, y: TensorId) -> TensorId {
-        self.graph.push(Node::Binary { x, y, bop: BOp::Max })
+    pub(super) fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> TensorId {
+        self.graph.push(Node::Binary { x, y, bop })
     }
 }
 
@@ -1016,11 +956,11 @@ impl Runtime {
                     }
                     BOp::Mul => {
                         if req_grad.contains(&x) {
-                            let grad = self.mul(y, grad);
+                            let grad = self.binary(y, grad, BOp::Mul);
                             insert_or_add_grad(self, &mut grads, x, grad);
                         }
                         if req_grad.contains(&y) {
-                            let grad = self.mul(x, grad);
+                            let grad = self.binary(x, grad, BOp::Mul);
                             insert_or_add_grad(self, &mut grads, y, grad);
                         }
                     }
@@ -1029,23 +969,23 @@ impl Runtime {
                     }
                     BOp::Div => {
                         if req_grad.contains(&x) {
-                            grads.insert(x, self.div(grad, y));
+                            grads.insert(x, self.binary(grad, y, BOp::Div));
                             insert_or_add_grad(self, &mut grads, x, grad);
                         }
                         if req_grad.contains(&y) {
                             // -grad*x/(y^2)
                             let dtype = self.dtype(y);
-                            let two_temp = self.ones(vec![1], dtype);
-                            let two = self.add(two_temp, two_temp);
-                            self.release(two_temp).unwrap();
+                            let one = self.ones(vec![1], dtype);
+                            let two = self.binary(one, one, BOp::Add);
+                            self.release(one).unwrap();
                             let two_e = self.expand(two, self.shape(y).into());
                             self.release(two).unwrap();
-                            let two_2 = self.pow(y, two_e);
+                            let two_2 = self.binary(y, two_e, BOp::Pow);
                             self.release(two_e).unwrap();
-                            let temp = self.mul(x, grad);
+                            let temp = self.binary(x, grad, BOp::Mul);
                             let temp_neg = self.neg(temp);
                             self.release(temp).unwrap();
-                            let y_grad = self.div(temp_neg, two_2);
+                            let y_grad = self.binary(temp_neg, two_2, BOp::Div);
                             self.release(temp_neg).unwrap();
                             self.release(two_2).unwrap();
                             grads.insert(y, y_grad);
@@ -1056,22 +996,22 @@ impl Runtime {
                         if req_grad.contains(&x) {
                             // grad * y * x.pow(y-1)
                             let ones = self.ones(self.shape(y).into(), self.dtype(y));
-                            let y_1 = self.sub(y, ones);
+                            let y_1 = self.binary(y, ones, BOp::Sub);
                             self.release(ones).unwrap();
-                            let pow_y_1 = self.pow(x, y_1);
+                            let pow_y_1 = self.binary(x, y_1, BOp::Pow);
                             self.release(y_1).unwrap();
-                            let y_mul = self.mul(y, pow_y_1);
+                            let y_mul = self.binary(y, pow_y_1, BOp::Mul);
                             self.release(pow_y_1).unwrap();
-                            let x_grad = self.mul(grad, y_mul);
+                            let x_grad = self.binary(grad, y_mul, BOp::Mul);
                             self.release(y_mul).unwrap();
                             insert_or_add_grad(self, &mut grads, x, x_grad);
                         }
                         if req_grad.contains(&y) {
                             // grad * x.pow(y) * ln(x)
                             let temp1 = self.log2(x);
-                            let temp2 = self.mul(nid, temp1);
+                            let temp2 = self.binary(nid, temp1, BOp::Mul);
                             self.release(temp1).unwrap();
-                            let y_grad = self.mul(grad, temp2);
+                            let y_grad = self.binary(grad, temp2, BOp::Mul);
                             self.release(temp2).unwrap();
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
@@ -1113,16 +1053,16 @@ impl Runtime {
                 Node::Unary { x, uop } => match uop {
                     UOp::Inv => {
                         // -1/(x*x)
-                        let x_2_inv = self.mul(nid, nid);
+                        let x_2_inv = self.binary(nid, nid, BOp::Mul);
                         let x_grad = self.neg(x_2_inv);
                         self.release(x_2_inv).unwrap();
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
                     UOp::ReLU => {
                         let zeros = self.zeros(self.shape(x).into(), self.dtype(x));
-                        let zl = self.cmplt(zeros, x);
+                        let zl = self.binary(zeros, x, BOp::Cmplt);
                         self.release(zeros).unwrap();
-                        let x_grad = self.mul(zl, grad);
+                        let x_grad = self.binary(zl, grad, BOp::Mul);
                         self.release(zl).unwrap();
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
@@ -1130,9 +1070,9 @@ impl Runtime {
                         let temp = self.constant(std::f64::consts::E.log2());
                         let temp1 = self.expand(temp, self.shape(x).into());
                         self.release(temp).unwrap();
-                        let temp2 = self.mul(nid, temp1);
+                        let temp2 = self.binary(nid, temp1, BOp::Mul);
                         self.release(temp1).unwrap();
-                        let grad = self.mul(nid, temp2);
+                        let grad = self.binary(nid, temp2, BOp::Mul);
                         self.release(temp2).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
@@ -1140,15 +1080,15 @@ impl Runtime {
                         let temp = self.constant(std::f64::consts::E.log2());
                         let temp1 = self.expand(temp, self.shape(x).into());
                         self.release(temp).unwrap();
-                        let temp2 = self.mul(x, temp1);
+                        let temp2 = self.binary(x, temp1, BOp::Mul);
                         self.release(temp1).unwrap();
-                        let grad = self.div(grad, temp2);
+                        let grad = self.binary(grad, temp2, BOp::Div);
                         self.release(temp2).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Sin => {
                         let x_temp = self.cos(x);
-                        let grad = self.mul(x_temp, grad);
+                        let grad = self.binary(x_temp, grad, BOp::Mul);
                         self.release(x_temp).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
@@ -1156,16 +1096,16 @@ impl Runtime {
                         let x_temp1 = self.sin(x);
                         let x_temp = self.neg(x_temp1);
                         self.release(x_temp1).unwrap();
-                        let grad = self.mul(x_temp, grad);
+                        let grad = self.binary(x_temp, grad, BOp::Mul);
                         self.release(x_temp).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Sqrt => {
                         // x_grad = grad/(2*sqrt(x))
                         let sqrt_x = self.sqrt(x);
-                        let sqrtx_2 = self.add(sqrt_x, sqrt_x);
+                        let sqrtx_2 = self.binary(sqrt_x, sqrt_x, BOp::Add);
                         self.release(sqrt_x).unwrap();
-                        let grad = self.div(grad, sqrtx_2);
+                        let grad = self.binary(grad, sqrtx_2, BOp::Div);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Cast(_) => {
@@ -1235,13 +1175,13 @@ impl Runtime {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
                         let x_shape: Vec<Dimension> = self.shape(x).into();
                         let z_temp = self.expand(nid, x_shape.clone());
-                        let cmp_t = self.cmplt(x, z_temp);
+                        let cmp_t = self.binary(x, z_temp, BOp::Cmplt);
                         self.release(z_temp).unwrap();
                         let ones = self.zeros(x_shape, self.dtype(x));
-                        let max_1s = self.sub(ones, cmp_t);
+                        let max_1s = self.binary(ones, cmp_t, BOp::Sub);
                         self.release(ones).unwrap();
                         self.release(cmp_t).unwrap();
-                        let grad = self.mul(max_1s, grad);
+                        let grad = self.binary(max_1s, grad, BOp::Mul);
                         self.release(max_1s).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }

@@ -819,6 +819,7 @@ fn t6() -> Result<(), ZyxError> {
     let z = (x.dot(&y).unwrap() + &b).gelu();
     // Zyx allows for arbitrary differentiation
     let b_grad = tape.gradient(&z, [&b])[0].clone().unwrap();
+    panic!();
     println!("{b_grad}");
     // Also higher order derivatives
     let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
