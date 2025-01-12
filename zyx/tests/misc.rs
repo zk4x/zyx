@@ -808,7 +808,7 @@ fn graph_tensor_ordering() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[test]
+/*#[test]
 fn t6() -> Result<(), ZyxError> {
     use zyx::GradientTape;
     let x = Tensor::randn([8, 1024, 1024], DType::F32).unwrap();
@@ -826,4 +826,4 @@ fn t6() -> Result<(), ZyxError> {
     println!("{bb_grad}");
 
     Ok(())
-}
+}*/

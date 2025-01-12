@@ -469,17 +469,17 @@ impl Model {
         } else {
             Some(get_mask(seq_len).unwrap())
         };
+        xs = xs.cast(DType::F32);
         for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, mask.as_ref());
             //Tensor::realize([&xs]).unwrap();
             //let _z: Vec<f32> = xs.clone().try_into().unwrap();
-            //println!("{xs}");
+            //println!("{xs} at layer {i}");
         }
         //println!("{xs}");
         //panic!();
-        //Tensor::plot_graph([], "graph1").unwrap();
+        //Tensor::plot_graph([], "graph2").unwrap();
         //Tensor::realize([&xs]).unwrap();
-        //panic!();
         let xs = self
             .final_layernorm
             .forward(xs)
@@ -826,7 +826,7 @@ impl TextGeneration {
             Some(token) => token,
             None => panic!("cannot find the endoftext token"),
         };
-        println!("{prompt}");
+        println!("EOS token: {eos_token}, prompt:\n{prompt}");
         std::io::stdout().flush().unwrap();
         let start_gen = std::time::Instant::now();
         //let mut pos = 0;
@@ -850,6 +850,7 @@ impl TextGeneration {
             let next_token: u32 = self.logits_processor.sample(&logits).unwrap();
             println!("{next_token:?} -> {}", self.tokenizer.decode(&[next_token]).unwrap());
             tokens.push(next_token);
+            //if let Some(t) = self.tokenizer.decode_rest().unwrap() { print!("{t}"); }
             generated_tokens += 1;
             if next_token == eos_token {
                 if let Some(t) = self.tokenizer.decode_rest().unwrap() {

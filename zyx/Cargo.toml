@@ -70,6 +70,7 @@ default = [
     #"complex",
     #"gguf",
     #"py",
+    "implicit_casting",
 ]
 
 # Enables implicit casting to different dtype in binary operations with different dtypes
