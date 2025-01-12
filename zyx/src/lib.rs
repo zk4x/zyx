@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]
-#![forbid(missing_docs)]
+#![deny(missing_docs)]
 #![forbid(rustdoc::missing_crate_level_docs)]
 #![forbid(rustdoc::private_doc_tests)]
 #![forbid(rustdoc::invalid_codeblock_attributes)]
@@ -184,6 +184,7 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
 /// 
 /// Since tensors are realized lazily, intermediate tensors needed for backpropagation
 /// are not held in memory.
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct GradientTape {}
 
 /// Execution timer

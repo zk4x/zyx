@@ -1,15 +1,13 @@
 //! Python bindings for zyx
 
+#![allow(missing_docs)]
+
 use pyo3::{
-    exceptions::PyOSError,
-    pymethods, pymodule,
-    types::{PyAnyMethods, PyList, PyModule, PyModuleMethods, PyTuple},
-    Bound, PyAny, PyErr, PyResult,
+    exceptions::PyOSError, pymethods, pymodule, types::{PyAnyMethods, PyList, PyModule, PyModuleMethods, PyTuple}, Bound, FromPyObject, PyAny, PyErr, PyResult
 };
 
 use crate::{
-    runtime::{BackendConfig, ZyxError},
-    DType, Tensor,
+    runtime::ZyxError, DType, GradientTape, Tensor
 };
 
 impl From<ZyxError> for PyErr {
@@ -19,21 +17,28 @@ impl From<ZyxError> for PyErr {
 }
 
 #[pymethods]
+impl GradientTape {
+    #[must_use]
+    #[pyo3(name = "backward")]
+    pub fn gradient_py(&self, x: &Tensor, sources: &Bound<'_, PyList>) -> Vec<Option<Tensor>> {
+        let sources: Vec<Tensor> = sources
+            .into_iter()
+            .map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)"))
+            .collect();
+        self.gradient(x, &sources)
+    }
+}
+
+#[pymethods]
 impl Tensor {
     #[staticmethod]
     #[pyo3(name = "plot_dot_graph")]
-    pub fn plot_dot_graph_py(tensors: &Bound<'_, PyList>, name: &str) {
+    pub fn plot_dot_graph_py(tensors: &Bound<'_, PyList>, name: &str) -> Result<(), std::io::Error> {
         let tensors: Vec<Tensor> = tensors
             .into_iter()
             .map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)"))
             .collect();
-        Tensor::plot_dot_graph(&tensors, name);
-    }
-
-    #[staticmethod]
-    #[pyo3(name = "configure_backends")]
-    pub fn configure_backends_py(config: &BackendConfig) -> Result<(), ZyxError> {
-        Tensor::configure_backends(config)
+        Tensor::plot_graph(&tensors, name)
     }
 
     #[staticmethod]
@@ -53,16 +58,6 @@ impl Tensor {
     #[pyo3(name = "set_training")]
     pub fn set_training_py(training: bool) {
         Tensor::set_training(training);
-    }
-
-    #[must_use]
-    #[pyo3(name = "backward")]
-    pub fn backward_py(&self, sources: &Bound<'_, PyList>) -> Vec<Option<Tensor>> {
-        let sources: Vec<Tensor> = sources
-            .into_iter()
-            .map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)"))
-            .collect();
-        self.backward(&sources)
     }
 
     #[staticmethod]
@@ -99,18 +94,24 @@ impl Tensor {
         self.dtype()
     }
 
+    /*#[must_use]
+    #[pyo3(name = "detach")]
+    pub fn detach() -> Result<Tensor, ZyxError> {
+        todo!()
+    }*/
+
     #[staticmethod]
     #[must_use]
     #[pyo3(name = "randn", signature = (*shape, dtype=DType::F32))]
-    pub fn randn_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Tensor {
-        let shape: Vec<usize> = shape
-            .into_iter()
-            .map(|d| {
-                d.extract::<usize>()
-                    .expect("Shape must be positive integers")
-            })
-            .collect();
-        return Tensor::randn(shape, dtype);
+    pub fn randn_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Result<Tensor, ZyxError> {
+        Tensor::randn(to_sh(shape)?, dtype)
+    }
+
+    #[staticmethod]
+    #[must_use]
+    #[pyo3(name = "rand", signature = (*shape, dtype=DType::F32))]
+    pub fn rand_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Result<Tensor, ZyxError> {
+        Tensor::rand(to_sh(shape)?, dtype)
     }
 
     // TODO uniform
@@ -121,14 +122,7 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "zeros", signature = (*shape, dtype=DType::F32))]
     pub fn zeros_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Tensor {
-        let shape: Vec<usize> = shape
-            .into_iter()
-            .map(|d| {
-                d.extract::<usize>()
-                    .expect("Shape must be positive integers")
-            })
-            .collect();
-        return Tensor::zeros(shape, dtype);
+        Tensor::zeros(to_sh(shape).unwrap(), dtype)
     }
 
     #[staticmethod]
@@ -207,6 +201,98 @@ impl Tensor {
     pub fn ln_py(&self) -> Tensor {
         return self.ln();
     }
+
+    #[must_use]
+    #[pyo3(name = "expand")]
+    pub fn expand_py(&self, shape: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
+        self.expand(to_sh(shape)?)
+    }
+
+    #[must_use]
+    #[pyo3(name = "reshape")]
+    pub fn reshape_py(&self, shape: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
+        self.reshape(to_sh(shape)?)
+    }
+
+    #[must_use]
+    #[pyo3(name = "permute")]
+    pub fn permute_py(&self, axes: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
+        self.permute(to_ax(axes))
+    }
+
+    /*#[must_use]
+    #[pyo3(name = "pad")]
+    pub fn pad_py(&self, padding: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
+        self.pad(padding)
+    }*/
+
+    #[must_use]
+    #[pyo3(name = "dot")]
+    fn dot_py(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(rhs) = rhs.extract::<Self>() {
+            self.dot(rhs)
+        } else {
+            return Err(ZyxError::DTypeError("unsupported rhs for add".into()))
+        }
+    }
+
+    #[must_use]
+    fn __sub__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(rhs) = rhs.extract::<Self>() {
+            Ok(self - rhs)
+        } else if let Ok(rhs) = rhs.extract::<f64>() {
+            Ok(self - rhs)
+        } else {
+            return Err(ZyxError::DTypeError("unsupported rhs for add".into()))
+        }
+    }
+
+    #[must_use]
+    fn __mul__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(rhs) = rhs.extract::<Self>() {
+            Ok(self * rhs)
+        } else if let Ok(rhs) = rhs.extract::<f64>() {
+            Ok(self * rhs)
+        } else {
+            return Err(ZyxError::DTypeError("unsupported rhs for add".into()))
+        }
+    }
+
+    #[must_use]
+    fn __div__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(rhs) = rhs.extract::<Self>() {
+            Ok(self / rhs)
+        } else if let Ok(rhs) = rhs.extract::<f64>() {
+            Ok(self / rhs)
+        } else {
+            return Err(ZyxError::DTypeError("unsupported rhs for add".into()))
+        }
+    }
+}
+
+fn to_sh(shape: &Bound<'_, PyAny>) -> Result<Vec<usize>, ZyxError> {
+    if shape.is_none() {
+        return Err(ZyxError::ShapeError("Shape cannot be None".into()));
+    }
+    let tuple = shape.downcast::<PyTuple>().unwrap();
+    if tuple.len().unwrap() == 1 {
+        let first_element = tuple.get_item(0).unwrap();
+        let dims: Vec<usize> = FromPyObject::extract_bound(&first_element).unwrap();
+        Ok(dims)
+    } else {
+        let dims: Vec<usize> = FromPyObject::extract_bound(tuple).unwrap();
+        Ok(dims)
+    }
+}
+
+fn to_ax(axes: &Bound<'_, PyTuple>) -> Vec<isize> {
+    axes
+        .into_iter()
+        .map(|d| {
+            d.extract::<isize>()
+                .expect("Shape must be positive integers")
+        })
+        .collect()
 }
 
 /// A Python module implemented in Rust.
@@ -215,7 +301,7 @@ impl Tensor {
 fn zyx_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Tensor>()?;
     m.add_class::<DType>()?;
-    m.add_class::<BackendConfig>()?;
+    m.add_class::<GradientTape>()?;
     //m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     Ok(())
 }

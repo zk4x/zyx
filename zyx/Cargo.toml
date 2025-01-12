@@ -68,12 +68,12 @@ crate-type = ["lib"] #, "cdylib"]
 
 [features]
 default = [
+    "implicit_casting",
     #"disk_cache",
     #"wgpu",
     #"complex",
     #"gguf",
     #"py",
-    "implicit_casting",
 ]
 
 # Enables implicit casting to different dtype in binary operations with different dtypes
