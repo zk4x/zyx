@@ -86,6 +86,7 @@
   - [ ] add dot
 - [ ] backward
   - [ ] fix t6 test
+  - [ ] more backpropagation tests
 
 - [x] docs
   - [x] manual for adding new backends
