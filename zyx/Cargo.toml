@@ -60,6 +60,9 @@ pyo3 = { version = "0.23.1", optional = true } # MIT or Apache 2.0
 # Vulkano, will be later removed
 vulkano = { version = "*", optional = true }
 
+[dev-dependencies]
+rand = { version = "*", default-features = false, features = ["std", "small_rng"] }
+
 [lib]
 crate-type = ["lib"] #, "cdylib"]
 

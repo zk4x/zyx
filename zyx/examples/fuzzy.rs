@@ -1,33 +1,17 @@
 #![allow(unused)]
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::{ops::RangeBounds, rc::Rc};
 use zyx::{DType, Float, Scalar, Tensor, ZyxError};
 
-struct Rng(u64);
-
-impl Rng {
-    const fn seed_from_u64(seed: u64) -> Self {
-        Self(seed)
-    }
-
-    fn rand<T: Scalar>(&mut self) -> T {
-        todo!()
-    }
-
-    fn gen_range<T: Scalar>(&mut self, r: impl RangeBounds<T>) -> T {
-        todo!()
-    }
-}
-
 #[allow(unused)]
-//#[test]
-fn fuzzy() -> Result<(), ZyxError> {
+fn main() -> Result<(), ZyxError> {
     let rand_seed = 21847091824098071;
     let max_tensors = 5;
     let max_numel = 256 * 256;
     let max_dims = 3;
     let num_nodes = 5;
 
-    let mut rng = Rng::seed_from_u64(rand_seed);
+    let mut rng = SmallRng::seed_from_u64(rand_seed);
     let num_t: u64 = rng.gen_range(0..max_tensors);
     let mut tensors = Vec::new();
     let mut cpu_tensors = Vec::new();
@@ -177,11 +161,12 @@ macro_rules! unary_op_float {
 macro_rules! binary_op {
     ($x: expr, $y: expr, $op: expr) => {{
         CPUTensor {
-            view: $x.view.clone(),
+            view: todo!(),
             data: match &$x.data {
                 Data::F32(xdata) => {
                     let Data::F32(ydata) = &$y.data else { unreachable!() };
                     //Data::F32(binary(&$x.view, xdata, &$y.view, ydata, $op))
+                    //Data::F32(binary(&$x.view, xdata.as_ref(), &$y.view, ydata.as_ref(), $op))
                     todo!()
                 }
                 Data::F64(xdata) => {
@@ -230,13 +215,13 @@ impl CPUTensor {
         let numel = self.view.numel();
         match &self.data {
             Data::F32(data) => unsafe {
-                t(self.view.iterate_padded(data).take(numel).collect::<Vec<f32>>())
+                t(self.view.iterate(data).take(numel).collect::<Vec<f32>>())
             },
             Data::F64(data) => unsafe {
-                t(self.view.iterate_padded(data).take(numel).collect::<Vec<f64>>())
+                t(self.view.iterate(data).take(numel).collect::<Vec<f64>>())
             },
             Data::I32(data) => unsafe {
-                t(self.view.iterate_padded(data).take(numel).collect::<Vec<i32>>())
+                t(self.view.iterate(data).take(numel).collect::<Vec<i32>>())
             },
         }
     }
@@ -310,7 +295,23 @@ impl CPUTensor {
     }
 
     pub fn add(&self, other: &CPUTensor) -> CPUTensor {
-        binary_op!(self, other, Scalar::add)
+        let n;
+        let data = match &self.data {
+            Data::F32(xdata) => {
+                n = xdata.len();
+                let Data::F32(ydata) = &other.data else { unreachable!() };
+                //Data::F32(binary(&$x.view, xdata, &$y.view, ydata, $op))
+                Data::F32(binary(
+                    &self.view,
+                    xdata.as_ref(),
+                    &other.view,
+                    ydata.as_ref(),
+                    Scalar::add,
+                ))
+            }
+            _ => todo!(),
+        };
+        CPUTensor { view: View::new(&[n]), data }
     }
 
     pub fn sub(&self, other: &CPUTensor) -> CPUTensor {
@@ -438,7 +439,7 @@ fn binary<XT: Scalar + Sync + Send, YT: Scalar + Sync + Send, T2: Scalar + Send>
     ydata: &[YT],
     op: impl Fn(XT, YT) -> T2 + Sync + Send,
 ) -> Rc<[T2]> {
-    xview.iterate_padded(xdata).zip(yview.iterate_padded(ydata)).map(|(x, y)| op(x, y)).collect()
+    xview.iterate(xdata).zip(yview.iterate(ydata)).map(|(x, y)| op(x, y)).collect()
 }
 
 fn reduce_op<T: Scalar>(
@@ -468,7 +469,7 @@ fn reduce_op<T: Scalar>(
     // Go over all data and apply sum function to correct values
     // then indices can be added just by making another vector and constantly
     // updating it (adding in case of sum) with new indices as new max/min are found
-    for (i, x) in view.iterate_padded(data).enumerate() {
+    for (i, x) in view.iterate(data).enumerate() {
         // calculate index in result
         let mut j = 0;
         for dim in &*included_dims {
@@ -575,7 +576,7 @@ impl View {
     }
 
     #[must_use]
-    pub fn iterate_padded<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
+    pub fn iterate<'a, T: Scalar>(&'a self, data: &'a [T]) -> impl Iterator<Item = T> + 'a {
         CPUPaddedIter { data, view: self, idx: 0, num_iters: self.numel() - 1 }
     }
 

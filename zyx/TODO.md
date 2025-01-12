@@ -87,6 +87,11 @@
 - [ ] backward
   - [ ] fix t6 test
   - [ ] more backpropagation tests
+- [ ] testing
+  - [ ] lot of testing for scheduler correctness
+  - [ ] fuzzy tester
+    - [ ] movemnt ops
+    - [ ] binary ops
 
 - [x] docs
   - [x] manual for adding new backends
