@@ -346,17 +346,15 @@ impl Tensor {
     /// Retuns device error if device fails to allocate memory for given tensor.
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
-        let shape: Vec<Dimension> = once(2).chain(shape.into_shape()).collect();
-        let src = Tensor::rand(shape, dtype)?;
-        let mut x = src.get(0)?;
-        x = x.mul(Tensor::constant(2f32 * std::f32::consts::PI));
-        //panic!();
-        x = x.cos();
-        let mut y = Tensor::constant(1f32) - src.get(1)?;
-        //println!("{y} minus");
-        y = y.ln().mul(Tensor::constant(-2f32)).sqrt();
-        //println!("{y}");
-        Ok(x.mul(y).cast(dtype))
+        let shape: Vec<usize> = shape.into_shape().collect();
+        let nshape: Vec<Dimension> = once(2).chain(shape.clone()).collect();
+        let src = Tensor::rand(nshape, DType::F32)?;
+        Ok(src
+            .get(0)?.reshape(&shape)?
+            .mul(2f32 * std::f32::consts::PI)
+            .cos()
+            .mul((Tensor::constant(1f32) - src.get(1)?.reshape(shape)?).ln().mul(-2f32).sqrt())
+            .cast(dtype))
     }
 
     /// Multinomial function

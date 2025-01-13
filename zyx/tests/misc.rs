@@ -827,3 +827,16 @@ fn t6() -> Result<(), ZyxError> {
 
     Ok(())
 }*/
+
+#[test]
+fn iter1() -> Result<(), ZyxError> {
+    let mut x = Tensor::randn([64, 64], DType::F32)?;
+    let y = Tensor::randn([64, 64], DType::F32)?;
+
+    for _ in 0..100 {
+        x = x.dot(&y)?.softmax([-1])?;
+        Tensor::realize([&x])?;
+    }
+
+    Ok(())
+}

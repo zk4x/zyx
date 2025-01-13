@@ -159,7 +159,6 @@ impl Scalar for f64 {
     fn is_equal(self, rhs: Self) -> bool {
         // Less than 1% error is OK
         (self == -f64::INFINITY && rhs == -f64::INFINITY)
-            || (self - rhs).abs() < Self::epsilon()
             || (self - rhs).abs() < self.abs() * 0.01
     }
 
