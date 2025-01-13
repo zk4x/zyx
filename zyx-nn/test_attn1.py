@@ -18,7 +18,10 @@ class CausalSelfAttention:
         q = q.reshape([b, t, self.n_head, c // self.n_head]).transpose(1, 2)
         v = v.reshape([b, t, self.n_head, c // self.n_head]).transpose(1, 2)
 
-        att = q.matmul(k.mT) * (1.0 / math.sqrt(k.shape[0]))
+        scale = 1.0 / math.sqrt(k.size(-1))
+        att = q.matmul(k.transpose(-2, -1)) * scale
+
+        #print(f"{scale=}, att: {att}")
 
         att = att.softmax(-1)
         y = att.matmul(v)
@@ -69,6 +72,7 @@ x = torch.tensor([[
 
 for _ in range(5):
     x = attn.forward(x)
+
 print(x.shape)
 print(x.dtype)
 print(x)

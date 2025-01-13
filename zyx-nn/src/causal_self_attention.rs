@@ -51,7 +51,12 @@ impl CausalSelfAttention {
             .reshape([b, t, self.n_head, c / self.n_head])?
             .transpose(1, 2)?;
 
-        let mut att = q.dot(k.t())? * (1.0 / (*k.shape().last().unwrap() as f64).sqrt()) as f32;
+        let scale = (1.0 / (*k.shape().last().unwrap() as f64).sqrt()) as f32;
+        //println!("scale = {scale}");
+        let mut att = q.dot(k.t())? * scale;
+        //println!("{att}");
+        //panic!();
+
         // TODO rewrite this
         //att = att.masked_fill(self.bias.get((.., .., ..T, ..T)) == 0, f32::INF);
         att = att.softmax([-1])?;
@@ -116,30 +121,21 @@ fn attention1() -> Result<(), ZyxError> {
         Tensor::realize([&x])?;
     }
 
-    println!("{x:.8}");
+    //println!("{x:.8}");
 
+    /*assert_eq!(
+        x,
+        [[[ 0.04401812f32, -0.14199661, -0.11446018,  0.03237676],
+         [ 0.05587596, -0.12779452, -0.10237779,  0.02773934],
+         [ 0.03065444, -0.15511249, -0.12694199,  0.03479434]]]
+    );*/
+
+    // after 5 iterations
     assert_eq!(
         x,
-        [[
-            [
-                -1.39674346e-04f32,
-                -3.07053444e-04,
-                -3.34636250e-04,
-                3.34599536e-05
-            ],
-            [
-                -1.39674346e-04,
-                -3.07053444e-04,
-                -3.34636250e-04,
-                3.34599536e-05
-            ],
-            [
-                -1.39674346e-04,
-                -3.07053444e-04,
-                -3.34636250e-04,
-                3.34599536e-05
-            ]
-        ]]
+        [[[-1.34166388e-04f32, -3.10145377e-04, -3.39602208e-04,  2.14193460e-05],
+         [-1.34166388e-04, -3.10145377e-04, -3.39602208e-04,  2.14193460e-05],
+         [-1.34166388e-04, -3.10145377e-04, -3.39602208e-04,  2.14193460e-05]]]
     );
 
     Ok(())
