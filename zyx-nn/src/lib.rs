@@ -40,3 +40,6 @@ pub use causal_self_attention::CausalSelfAttention;
 
 mod embedding;
 pub use embedding::Embedding;
+
+mod activation;
+pub use activation::Activation;

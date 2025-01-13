@@ -350,7 +350,8 @@ impl Tensor {
         let nshape: Vec<Dimension> = once(2).chain(shape.clone()).collect();
         let src = Tensor::rand(nshape, DType::F32)?;
         Ok(src
-            .get(0)?.reshape(&shape)?
+            .get(0)?
+            .reshape(&shape)?
             .mul(2f32 * std::f32::consts::PI)
             .cos()
             .mul((Tensor::constant(1f32) - src.get(1)?.reshape(shape)?).ln().mul(-2f32).sqrt())
@@ -784,6 +785,17 @@ impl Tensor {
         exp_x.clone() / (one + exp_x)
     }
 
+    /// Applies the hard sigmoid activation function to each element in the input tensor.
+    #[must_use]
+    pub fn hard_sigmoid(&self) -> Tensor {
+        let dtype = self.dtype();
+        let c1 = Tensor::constant(-3).cast(dtype);
+        let c2 = Tensor::constant(1).cast(dtype);
+        let c3 = Tensor::constant(6f32).cast(dtype);
+        let c4 = Tensor::constant(0.5f32).cast(dtype);
+        (self.cmpgt(c1).unwrap() * (self / c3 + c4)).minimum(c2).unwrap()
+    }
+
     /// Applies the sine function to each element in the input tensor.
     ///
     /// This function returns a new tensor with the same shape as the input, where each element is the sine of the corresponding element in the input tensor. The sine function is useful for various mathematical and scientific computations involving angles or periodic phenomena.
@@ -907,6 +919,15 @@ impl Tensor {
         let exp2x = (self + self).exp();
         let one = Tensor::constant(1).cast(self.dtype());
         (exp2x.clone() - one.clone()) / (exp2x + one)
+    }
+
+    /// Clamps value between min and max
+    pub fn clamp(
+        &self,
+        min: impl Into<Tensor>,
+        max: impl Into<Tensor>,
+    ) -> Result<Tensor, ZyxError> {
+        self.maximum(min)?.minimum(max)
     }
 
     // movement
