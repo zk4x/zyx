@@ -67,9 +67,11 @@ impl VarMap for HashMap<String, Tensor> {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq)]
 enum Activation {
     ReLU,
+    #[default]
+    GeLU,
 }
 
 impl Activation {
@@ -77,6 +79,7 @@ impl Activation {
         let x = x.into();
         match self {
             Activation::ReLU => x.relu(),
+            Activation::GeLU => x.gelu(),
         }
     }
 }
@@ -956,8 +959,8 @@ fn main() -> Result<(), ZyxError> {
             intermediate_size: 8192,
             num_hidden_layers: 24,
             num_attention_heads: 32,
-            num_key_value_heads: None,
-            hidden_act: Activation::ReLU,
+            num_key_value_heads: Some(32),
+            hidden_act: Activation::GeLU,
             max_position_embeddings: 2048,
             layer_norm_eps: 1e-5,
             tie_word_embeddings: false,
