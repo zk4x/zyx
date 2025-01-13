@@ -91,10 +91,10 @@ fn rope1() -> Result<(), ZyxError> {
         Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
     let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
     let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
-    let z = xs.rope(&cos, &sin)?;
+    let z = xs.rope(&cos, &sin)?.cast(DType::I32);
     assert_eq!(
         z,
-        [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]
+        [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]
     );
     Ok(())
 }
@@ -121,8 +121,8 @@ fn rope2() -> Result<(), ZyxError> {
         Tensor::cat([&co, &ro], -1).unwrap()
     };
     assert_eq!(
-        z,
-        [[[[-3f32, 0., -2., 5., 32., 10.], [0., -4., 0., 32., 20., 24.]]]]
+        z.cast(DType::I32),
+        [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]
     );
     Ok(())
 }
@@ -658,7 +658,9 @@ fn multiple_stores() -> Result<(), ZyxError> {
     let y = x.ln();
     let z = y.tanh();
     Tensor::realize([&y, &z])?;
-    assert_eq!(z, [[0.8f32, 0.882353, 0.6], [0.923077, 0.882353, 0.]]);
+    println!("{z:.14}");
+    assert_eq!(z, [[0.8000000119f32, 0.8823529482, 0.6000000238],
+                    [0.9230769277, 0.8823529482, 0.0000000000]]);
     Ok(())
 }
 

@@ -158,10 +158,10 @@ impl Scalar for f32 {
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        // Less than 0.01% error is OK
+        // Less than 0.1% error is OK
         (self == -f32::INFINITY && rhs == -f32::INFINITY)
             || (self.is_nan() && rhs.is_nan())
-            || (self - rhs).abs() < self.abs() * 0.01
+            || (self - rhs).abs() <= self.abs() * 0.001
     }
 
     fn epsilon() -> Self {
