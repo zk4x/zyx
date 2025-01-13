@@ -508,6 +508,13 @@ impl Tensor {
         Tensor { id: RT.lock().constant(value) }
     }
 
+    /// Create tensor from vec and shape
+    pub fn from_vec<T: Scalar>(data: Vec<T>, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
+        let shape = shape.into_shape().collect();
+        let id = RT.lock().variable(shape, Box::new(data))?;
+        Ok(Tensor { id })
+    }
+
     // unary
     /// Computes the absolute value of each element in self.
     #[must_use]
