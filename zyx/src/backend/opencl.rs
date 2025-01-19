@@ -737,6 +737,7 @@ impl Device for OpenCLDevice {
                 IROp::Store { address, offset, x } => {
                     source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
                 }
+                IROp::SetLocal { .. } => todo!(),
                 IROp::Set { z, value } => {
                     source.push_str(&format!("{indent}r{z} = {};\n", value.ocl()));
                 }

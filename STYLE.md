@@ -1,9 +1,12 @@
 # These are notes on style used in zyx and possibly general coding practices
 
-## On virtual tables and other trash
+## On virtual tables
 
-Don't use dyn, or virtual tables, just use enums instead. If there is necessity to work with function pointers,
-then pass those function pointers around directly.
+Don't use dyn, or virtual tables, just use enums instead. If there is necessity to work with function pointers, then pass those function pointers around directly. Dyn can be use extremely carefully in rust to avoid macro hell. Zyx uses it for backends.
+
+## On Arc, Rc
+
+Don't use it unless really necessary. When using one big singleton struct it is not needed. Zyx is forced to use it in wgpu backend.
 
 ## Mutable state
 
@@ -21,7 +24,7 @@ of code. Lines of code however matter only if the code is readable. Short unread
 
 ## Inheritance
 
-Inheritance is bad. Do not use it.
+Inheritance is bad. Do not use it at all.
 
 ## Asserts
 
@@ -63,6 +66,7 @@ Just use Vec and accept that it takes 24 bytes instead of 16 bytes (on 64 bit ma
 much more useful than RefCell. It depends on the usecase, but if you really need the performance, use UnsafeCell.
 If you don't and you may want to make the code multithreaded, just use Mutex. Use RefCell only if the performance
 is good enough and you are 100% certain you won't ever make it multithreaded.
+These kinds of optimizations are nicer in zig than in rust.
 
 ## Functions should exist only if called in two or more places
 

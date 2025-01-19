@@ -4,7 +4,12 @@
 
 use super::{kernel::Op, node::ROp};
 use crate::{
-    dtype::Constant, kernel::Kernel, node::{BOp, UOp}, optimizer::Optimization, shape::Dimension, DType, DebugMask
+    dtype::Constant,
+    kernel::Kernel,
+    node::{BOp, UOp},
+    optimizer::Optimization,
+    shape::Dimension,
+    DType, DebugMask,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -43,6 +48,11 @@ pub enum IROp {
         // Offset is u32 var that needs to be added to address
         offset: Reg,
         x: Reg,
+    },
+    SetLocal {
+        address: u16,
+        len: Dimension,
+        value: Constant,
     },
     Set {
         z: u16,
@@ -347,19 +357,17 @@ impl IRCompiler {
                         scopes => panic!("Invalid load scopes {scopes:?}. Internal bug."),
                     }
                 }
-                &Op::Store { z, zscope, ref zview, x, xscope, .. } => {
-                    match (zscope, xscope) {
-                        (Scope::Local, Scope::Register) => {
-                            todo!()
-                        }
-                        (Scope::Global, Scope::Register) => {
-                            let zaddress = pointers_map[&(z, zscope)];
-                            let xreg = register_map[&x];
-                            zview.ir_for_indexed_store(&mut c, zaddress, xreg);
-                        }
-                        scopes => panic!("Invalid store scopes {scopes:?}"),
+                &Op::Store { z, zscope, ref zview, x, xscope, .. } => match (zscope, xscope) {
+                    (Scope::Local, Scope::Register) => {
+                        todo!()
                     }
-                }
+                    (Scope::Global, Scope::Register) => {
+                        let zaddress = pointers_map[&(z, zscope)];
+                        let xreg = register_map[&x];
+                        zview.ir_for_indexed_store(&mut c, zaddress, xreg);
+                    }
+                    scopes => panic!("Invalid store scopes {scopes:?}"),
+                },
                 &Op::Accumulator { z, rop, dtype } => {
                     let acc_init = match rop {
                         ROp::Sum => dtype.zero_constant(),
@@ -445,6 +453,7 @@ impl IRCompiler {
                     ref_counts.entry(id).and_modify(|rc| *rc += 1).or_insert(1);
                 }
                 IROp::Set { .. }
+                | IROp::SetLocal { .. }
                 | IROp::Loop { .. }
                 | IROp::Load { offset: Reg::Const(_), .. }
                 | IROp::Barrier { .. } => {}
@@ -490,6 +499,9 @@ impl IRCompiler {
                         offset
                     };
                     ops.push(IROp::Store { address, offset, x: xr });
+                }
+                IROp::SetLocal { address, len, value: values } => {
+                    ops.push(IROp::SetLocal { address, len, value: values });
                 }
                 IROp::Set { z, value } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
@@ -661,10 +673,13 @@ impl IRCompiler {
                     }
                     println!();*/
                     if let Some(tc) = self.ops[op_i..].iter().find_map(|op| match op {
-                        IROp::Set { z, .. } | IROp::Cast { z, .. } | IROp::Unary { z, .. } | IROp::Binary { z, .. } | IROp::MAdd { z, .. } => {
-                            Some(z - 1)
-                        }
-                        IROp::Loop { .. }
+                        IROp::Set { z, .. }
+                        | IROp::Cast { z, .. }
+                        | IROp::Unary { z, .. }
+                        | IROp::Binary { z, .. }
+                        | IROp::MAdd { z, .. } => Some(z - 1),
+                        IROp::SetLocal { .. }
+                        | IROp::Loop { .. }
                         | IROp::EndLoop { .. }
                         | IROp::Barrier { .. }
                         | IROp::Store { .. }
@@ -703,7 +718,8 @@ impl IRCompiler {
                                             *z += ta;
                                         }
                                     }
-                                    IROp::Cast { ref mut z, ref mut x, .. } | IROp::Unary { ref mut z, ref mut x, .. } => {
+                                    IROp::Cast { ref mut z, ref mut x, .. }
+                                    | IROp::Unary { ref mut z, ref mut x, .. } => {
                                         if *x > tc {
                                             *x += ta;
                                         }
@@ -746,11 +762,13 @@ impl IRCompiler {
                                             *z += ta;
                                         }
                                     }
-                                    IROp::Loop { ref mut id, .. } | IROp::EndLoop { ref mut id, .. } => {
+                                    IROp::Loop { ref mut id, .. }
+                                    | IROp::EndLoop { ref mut id, .. } => {
                                         if *id > tc {
                                             *id += ta;
                                         }
                                     }
+                                    IROp::SetLocal { .. } => {}
                                     IROp::Barrier { .. } => {}
                                 }
                             }
@@ -762,7 +780,9 @@ impl IRCompiler {
                             self.replace(id, Reg::Const(Constant::U64(i as u64)));
                         }
                     }
-                    let x = isize::try_from(ops2.len()).unwrap() * (isize::try_from(len).unwrap() - 1) - 2;
+                    let x = isize::try_from(ops2.len()).unwrap()
+                        * (isize::try_from(len).unwrap() - 1)
+                        - 2;
                     for end in &mut last_end_loop {
                         *end = usize::try_from(isize::try_from(*end).unwrap() + x).unwrap();
                     }
@@ -838,7 +858,7 @@ impl IRCompiler {
                             };
                             a && b
                         }
-                        IROp::Set { .. } | IROp::Barrier { .. } => false,
+                        IROp::SetLocal { .. } | IROp::Set { .. } | IROp::Barrier { .. } => false,
                         IROp::Cast { z, x, .. } | IROp::Unary { z, x, .. } => {
                             if dependents.contains(&x) {
                                 dependents.insert(z);
@@ -961,7 +981,11 @@ impl IRCompiler {
                         *x = replace_with;
                     }
                 }
-                IROp::Set { .. } | IROp::Loop { .. } | IROp::EndLoop { .. } | IROp::Barrier { .. } => {}
+                IROp::SetLocal { .. }
+                | IROp::Set { .. }
+                | IROp::Loop { .. }
+                | IROp::EndLoop { .. }
+                | IROp::Barrier { .. } => {}
             }
         }
     }
@@ -1120,7 +1144,7 @@ impl IRCompiler {
                         } else if xv.is_one() {
                             match bop {
                                 BOp::Add => {}
-                                BOp::Sub => {},
+                                BOp::Sub => {}
                                 BOp::Mul => {
                                     self.ops.remove(i);
                                     i -= 1;
@@ -1170,7 +1194,8 @@ impl IRCompiler {
                     }
                 },
                 IROp::MAdd { .. } => unreachable!(),
-                IROp::Set { .. }
+                IROp::SetLocal { .. }
+                | IROp::Set { .. }
                 | IROp::Cast { .. }
                 | IROp::Unary { .. }
                 | IROp::Loop { .. }
@@ -1180,6 +1205,97 @@ impl IRCompiler {
                 | IROp::Barrier { .. } => {}
             }
             i += 1;
+        }
+    }
+
+    fn upcast(&mut self, axis: u16, local_acc_len: Dimension, addressables: &mut Vec<(Scope, DType, usize, bool)>) {
+        let mut loop_id = None;
+        let mut last_reg_acc_id = 0;
+        for i in 0..self.ops.len() {
+            if matches!(self.ops[i], IROp::Set { .. }) {
+                last_reg_acc_id = i;
+            }
+            if let IROp::Loop { id, len: olen } = &mut self.ops[i] {
+                if *id == axis {
+                    *olen /= local_acc_len;
+                    loop_id = Some(i);
+                }
+            }
+        }
+        let Some(loop_id) = loop_id else {
+            return;
+        };
+
+        let local_address = addressables.len() as u16;
+
+        // Put local acc instead of register acc
+        let register_acc = self.ops.remove(last_reg_acc_id);
+        let IROp::Set { z: acc_reg_id, value } = register_acc else { unreachable!() };
+        self.ops.insert(
+            last_reg_acc_id,
+            IROp::SetLocal { address: local_address, len: local_acc_len, value },
+        );
+
+        addressables.push((Scope::Local, value.dtype(), local_acc_len, false));
+
+        let mut num_loops = 0;
+        // Find where the loop ends and put an accumulator and a second loop there.
+        for i in loop_id..self.ops.len() {
+            match self.ops[i] {
+                IROp::Loop { id, len } => num_loops += 1,
+                IROp::EndLoop { id, len } => {
+                    if num_loops == 0 {
+                        let i = i - 2;
+                        // Last op before the end of the loop should be binary that accumulates into acc_reg_id
+                        let IROp::Binary { z, x: temp_reg_id, y, bop: acc_bop } = self.ops[i - 1]
+                        else {
+                            unreachable!()
+                        };
+                        let Reg::Var(y) = y else { unreachable!() };
+                        assert_eq!(z, y);
+                        // Add load from local and store into local
+                        self.ops.insert(
+                            i - 1,
+                            IROp::Load { z, address: local_address, offset: Reg::Var(5) },
+                        );
+                        self.ops.insert(
+                            i + 1,
+                            IROp::Store {
+                                address: local_address,
+                                offset: Reg::Var(5),
+                                x: Reg::Var(z),
+                            },
+                        );
+
+                        // Creates second accumulator loop
+                        let Reg::Var(temp_reg_id) = temp_reg_id else { unreachable!() };
+                        self.ops.insert(i + 3, register_acc);
+                        self.ops.insert(i + 4, IROp::Loop { id: axis, len: local_acc_len });
+                        self.ops.insert(
+                            i + 5,
+                            IROp::Load {
+                                z: temp_reg_id,
+                                address: local_address,
+                                offset: Reg::Var(5),
+                            },
+                        );
+                        self.ops.insert(
+                            i + 6,
+                            IROp::Binary {
+                                z: acc_reg_id,
+                                x: Reg::Var(temp_reg_id),
+                                y: Reg::Var(acc_reg_id),
+                                bop: acc_bop,
+                            },
+                        );
+                        self.ops.insert(i + 7, IROp::EndLoop { id: axis, len: local_acc_len });
+                        return;
+                    } else {
+                        num_loops -= 1
+                    }
+                }
+                _ => {}
+            }
         }
     }
 }
@@ -1205,21 +1321,38 @@ fn new_var(
 // Returns IRKernel and order in which tensors are passed to it as arguments
 // Axes have the same id in registers.
 impl IRKernel {
-    pub(super) fn new(mut kernel: Kernel, optimization: &Optimization, debug: DebugMask) -> IRKernel {
+    pub(super) fn new(
+        mut kernel: Kernel,
+        optimization: &Optimization,
+        debug: DebugMask,
+    ) -> IRKernel {
         if debug.sched() {
             kernel.debug();
         }
         // Reshape kernel so that it has 3 global and 3 local dimensions
         let [lx, ly, lz] = optimization.local_work_size;
+
+        /*if let Some((axis, len)) = optimization.upcast {
+            lz *= len;
+            // Split inner loop
+        }*/
+
         let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
         debug_assert_ne!(num_loops, 0);
         let shape = kernel.shape();
         match num_loops {
             0 => unreachable!(),
-            1 => kernel.reshape(&[1, 1, 1, 1, shape[0]/lz, lz]),
-            2 => kernel.reshape(&[1, 1, shape[0]/ly, ly, shape[1]/lz, lz]),
-            3 => kernel.reshape(&[shape[0]/lx, lx, shape[1]/ly, ly, shape[2]/lz, lz]),
-            _ => kernel.reshape(&[shape[0..num_loops-2].iter().product::<usize>()/lx, lx, shape[num_loops-2]/ly, ly, shape[num_loops-1]/lz, lz]),
+            1 => kernel.reshape(&[1, 1, 1, 1, shape[0] / lz, lz]),
+            2 => kernel.reshape(&[1, 1, shape[0] / ly, ly, shape[1] / lz, lz]),
+            3 => kernel.reshape(&[shape[0] / lx, lx, shape[1] / ly, ly, shape[2] / lz, lz]),
+            _ => kernel.reshape(&[
+                shape[0..num_loops - 2].iter().product::<usize>() / lx,
+                lx,
+                shape[num_loops - 2] / ly,
+                ly,
+                shape[num_loops - 1] / lz,
+                lz,
+            ]),
         }
         debug_assert_eq!(kernel.shape().len(), 6);
 
@@ -1230,6 +1363,15 @@ impl IRKernel {
 
         let mut compiler = IRCompiler::vops_to_ssa_ir(&kernel.ops, &mut addressables);
         // Optimizations
+        /*if let Some((axis, len)) = optimization.upcast {
+            compiler.upcast(axis, len, &mut addressables);
+        }*/
+        /*for op in &compiler.ops {
+            println!("{op:?}");
+        }
+        println!();
+        panic!();*/
+
         compiler.global_loop_unrolling();
         //compiler.loop_unrolling();
         // TODO automatic reordering of additions such that we minimize dependencies

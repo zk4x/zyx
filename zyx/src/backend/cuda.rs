@@ -745,6 +745,7 @@ impl CUDADevice {
                         x.cu()
                     ));
                 }
+                IROp::SetLocal { .. } => todo!(),
                 IROp::Set { z, value } => {
                     source.push_str(&format!("{indent}r{z} = {};\n", value.cu()));
                 }
