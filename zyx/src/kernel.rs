@@ -403,6 +403,7 @@ impl Kernel {
         );
     }
 
+    #[allow(unused)]
     pub(super) fn split_loop(&mut self, op_id: usize, dimensions: &[usize]) {
         //self.debug();
         //println!("Splitting {op_id} into {dimensions:?}");

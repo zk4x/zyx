@@ -762,8 +762,9 @@ impl Runtime {
         };
         let elapsed = begin.elapsed();
         println!(
-            "Runtime realize graph order took {} us for {} tensors with gradient_tape = {}",
+            "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape = {}",
             elapsed.as_micros(),
+            order.len(),
             self.graph.nodes.len(),
             self.gradient_tape,
         );

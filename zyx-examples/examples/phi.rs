@@ -445,7 +445,7 @@ impl Model {
         };
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let mut vb_m = vb_m.g("layers");
-        for layer_idx in 0..cfg.num_hidden_layers {
+        for layer_idx in 0..1 { //cfg.num_hidden_layers {
             let layer = DecoderLayer::new(cfg, &mut vb_m.g(&format!("{layer_idx}"))).unwrap();
             layers.push(layer);
         }

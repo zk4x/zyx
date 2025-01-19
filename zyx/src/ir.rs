@@ -49,6 +49,7 @@ pub enum IROp {
         offset: Reg,
         x: Reg,
     },
+    #[allow(unused)]
     SetLocal {
         address: u16,
         len: Dimension,
@@ -1208,7 +1209,7 @@ impl IRCompiler {
         }
     }
 
-    fn upcast(&mut self, axis: u16, local_acc_len: Dimension, addressables: &mut Vec<(Scope, DType, usize, bool)>) {
+    /*fn upcast(&mut self, axis: u16, local_acc_len: Dimension, addressables: &mut Vec<(Scope, DType, usize, bool)>) {
         let mut loop_id = None;
         let mut last_reg_acc_id = 0;
         for i in 0..self.ops.len() {
@@ -1297,7 +1298,7 @@ impl IRCompiler {
                 _ => {}
             }
         }
-    }
+    }*/
 }
 
 fn new_var(
