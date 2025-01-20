@@ -175,18 +175,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "console"
-version = "0.15.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea3c6ecd8059b57859df5c69830340ed3c41d30e3da0c1cbed90a96ac853041b"
-dependencies = [
- "encode_unicode",
- "libc",
- "once_cell",
- "windows-sys",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -244,25 +232,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "encode_unicode"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
-
-[[package]]
 name = "equivalent"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5443807d6dff69373d433ab9ef5378ad8df50ca6298caf15de6e52e24aaf54d5"
-
-[[package]]
-name = "float8"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7c3475274d374d263c4c40c43ad854c5bdf733c7db775bbd3c1ca2ad7427978"
-dependencies = [
- "half",
-]
 
 [[package]]
 name = "foldhash"
@@ -505,18 +478,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "indicatif"
-version = "0.17.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbf675b85ed934d3c67b5c5469701eec7db22689d0a2139d856e0925fa28b281"
-dependencies = [
- "console",
- "number_prefix",
- "portable-atomic",
- "web-time",
-]
-
-[[package]]
 name = "indoc"
 version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -717,12 +678,6 @@ dependencies = [
  "memchr",
  "minimal-lexical",
 ]
-
-[[package]]
-name = "number_prefix"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "objc"
@@ -1319,16 +1274,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-time"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "wgpu"
 version = "23.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1643,11 +1588,9 @@ name = "zyx"
 version = "0.15.0"
 dependencies = [
  "bitcode",
- "float8",
  "futures",
  "gguf",
  "half",
- "indicatif",
  "libloading 0.8.6",
  "memmap2",
  "nanoserde",

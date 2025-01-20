@@ -337,7 +337,6 @@ impl Runtime {
     pub(super) fn ones(&mut self, shape: Vec<Dimension>, dtype: DType) -> TensorId {
         let x = match dtype {
             DType::BF16 => self.constant(bf16::ONE),
-            DType::F8 => todo!(),
             DType::F16 => self.constant(f16::ONE),
             DType::F32 => self.constant(1f32),
             DType::F64 => self.constant(1f64),
@@ -360,7 +359,6 @@ impl Runtime {
     pub(super) fn zeros(&mut self, shape: Vec<Dimension>, dtype: DType) -> TensorId {
         let x = match dtype {
             DType::BF16 => self.constant(bf16::ZERO),
-            DType::F8 => todo!(),
             DType::F16 => self.constant(f16::ZERO),
             DType::F32 => self.constant(0f32),
             DType::F64 => self.constant(0f64),

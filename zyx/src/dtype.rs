@@ -1,6 +1,5 @@
 //! `DType` and constant
 
-use float8::F8E4M3 as f8;
 use half::{bf16, f16};
 use std::fmt::{Debug, Display};
 
@@ -13,8 +12,6 @@ use crate::{Scalar, ZyxError};
 pub enum DType {
     /// 16 bit bfloat data type.
     BF16,
-    /// 8 bit float data type, 4 bit exponent, 3 bit mantissa.
-    F8,
     /// 16 bit float data type.
     F16,
     /// 32 bit float data type.
@@ -45,7 +42,6 @@ impl Display for DType {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             Self::BF16 => "BF16",
-            Self::F8 => "F8",
             Self::F16 => "F16",
             Self::F32 => "F32",
             Self::F64 => "F64",
@@ -67,7 +63,7 @@ impl DType {
     #[must_use]
     pub const fn is_float(self) -> bool {
         match self {
-            Self::BF16 | Self::F8 | Self::F16 | Self::F32 | Self::F64 => true,
+            Self::BF16 | Self::F16 | Self::F32 | Self::F64 => true,
             Self::U8
             | Self::U16
             | Self::U32
@@ -84,7 +80,6 @@ impl DType {
     pub(super) const fn is_shiftable(self) -> bool {
         match self {
             Self::BF16
-            | Self::F8
             | Self::F16
             | Self::F32
             | Self::F64
@@ -102,7 +97,7 @@ impl DType {
     #[must_use]
     pub const fn byte_size(&self) -> u8 {
         match self {
-            Self::F8 | Self::U8 | Self::I8 | Self::Bool => 1,
+            Self::U8 | Self::I8 | Self::Bool => 1,
             Self::BF16 | Self::F16 | Self::I16 | Self::U16 => 2,
             Self::F32 | Self::I32 | Self::U32 => 4,
             Self::F64 | Self::I64 | Self::U64 => 8,
@@ -113,7 +108,7 @@ impl DType {
     #[must_use]
     pub const fn bit_size(&self) -> u8 {
         match self {
-            Self::F8 | Self::U8 | Self::I8 | Self::Bool => 8,
+            Self::U8 | Self::I8 | Self::Bool => 8,
             Self::BF16 | Self::F16 | Self::I16 | Self::U16 => 16,
             Self::F32 | Self::I32 | Self::U32 => 32,
             Self::F64 | Self::I64 | Self::U64 => 64,
@@ -124,7 +119,6 @@ impl DType {
     pub(super) const fn zero_constant(self) -> Constant {
         match self {
             Self::BF16 => Constant::BF16(bf16::ZERO.to_bits()),
-            Self::F8 => Constant::F8(float8::F8E4M3::ZERO.to_bits()),
             Self::F16 => Constant::F16(f16::ZERO.to_bits()),
             Self::F32 => Constant::F32(0f32.to_bits()),
             Self::F64 => Constant::F64(0f64.to_bits()),
@@ -144,7 +138,6 @@ impl DType {
     pub(super) const fn one_constant(self) -> Constant {
         match self {
             Self::BF16 => Constant::BF16(bf16::ONE.to_bits()),
-            Self::F8 => Constant::F8(float8::F8E4M3::ONE.to_bits()),
             Self::F16 => Constant::F16(f16::ONE.to_bits()),
             Self::F32 => Constant::F32(1f32.to_bits()),
             Self::F64 => Constant::F64(1f64.to_bits()),
@@ -164,7 +157,6 @@ impl DType {
     pub(super) const fn min_constant(self) -> Constant {
         match self {
             Self::BF16 => Constant::BF16(bf16::MIN.to_bits()),
-            Self::F8 => Constant::F8(255),
             Self::F16 => Constant::F16(f16::MIN.to_bits()),
             Self::F32 => Constant::F32(f32::MIN.to_bits()),
             Self::F64 => Constant::F64(f64::MIN.to_bits()),
@@ -184,7 +176,6 @@ impl DType {
     pub(super) const fn safetensors(&self) -> &str {
         match self {
             Self::BF16 => "BF16",
-            Self::F8 => "F8",
             Self::F16 => "F16",
             Self::F32 => "F32",
             Self::F64 => "F64",
@@ -203,7 +194,6 @@ impl DType {
     pub(super) fn from_safetensors(text: &str) -> Result<Self, ZyxError> {
         Ok(match text {
             "BF16" => Self::BF16,
-            "F8" => Self::F8,
             "F16" => Self::F16,
             "F32" => Self::F32,
             "F64" => Self::F64,
@@ -228,7 +218,6 @@ impl DType {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Constant {
     BF16(u16),
-    F8(u8),
     F16(u16),
     F32(u32),
     F64(u64),
@@ -248,7 +237,6 @@ impl Constant {
         use core::mem::transmute_copy as t;
         match T::dtype() {
             DType::BF16 => Self::BF16(unsafe { t(&x) }),
-            DType::F8 => Self::F8(unsafe { t(&x) }),
             DType::F16 => Self::F16(unsafe { t(&x) }),
             DType::F32 => Self::F32(unsafe { t(&x) }),
             DType::F64 => Self::F64(unsafe { t(&x) }),
@@ -266,8 +254,7 @@ impl Constant {
 
     pub(crate) fn from_bytes(bytes: &[u8], dtype: DType) -> Self {
         match dtype {
-            DType::BF16 => todo!(),
-            DType::F8 => todo!(),
+            DType::BF16 => Self::BF16(bf16::from_ne_bytes([bytes[0], bytes[1]]).to_bits()),
             DType::F16 => Self::F16(f16::from_ne_bytes([bytes[0], bytes[1]]).to_bits()),
             DType::F32 => Self::F32(f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]).to_bits()),
             DType::F64 => Self::F64(f64::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]).to_bits()),
@@ -286,7 +273,6 @@ impl Constant {
     pub(crate) const fn dtype(&self) -> DType {
         match self {
             Self::BF16(_) => DType::BF16,
-            Self::F8(_) => DType::F8,
             Self::F16(_) => DType::F16,
             Self::F32(_) => DType::F32,
             Self::F64(_) => DType::F64,
@@ -305,7 +291,6 @@ impl Constant {
     pub(crate) fn is_zero(&self) -> bool {
         match *self {
             Constant::BF16(x) => bf16::from_bits(x) == bf16::ZERO,
-            Constant::F8(x) => f8::from_bits(x) == f8::ZERO,
             Constant::F16(x) => f16::from_bits(x) == f16::ZERO,
             Constant::F32(x) => f32::from_bits(x) == 0f32,
             Constant::F64(x) => f64::from_bits(x) == 0f64,
@@ -325,7 +310,6 @@ impl Constant {
     pub(crate) fn is_one(&self) -> bool {
         match *self {
             Constant::BF16(x) => bf16::from_bits(x) == bf16::ONE,
-            Constant::F8(x) => f8::from_bits(x) == f8::ONE,
             Constant::F16(x) => f16::from_bits(x) == f16::ONE,
             Constant::F32(x) => f32::from_bits(x) == 1f32,
             Constant::F64(x) => f64::from_bits(x) == 1f64,
@@ -345,7 +329,6 @@ impl Constant {
     pub(crate) fn is_two(&self) -> bool {
         match *self {
             Constant::BF16(x) => bf16::from_bits(x) == bf16::ONE + bf16::ONE,
-            Constant::F8(x) => f8::from_bits(x) == f8::ONE + f8::ONE,
             Constant::F16(x) => f16::from_bits(x) == f16::ONE + f16::ONE,
             Constant::F32(x) => f32::from_bits(x) == 2f32,
             Constant::F64(x) => f64::from_bits(x) == 2f64,
@@ -366,10 +349,6 @@ impl Display for Constant {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::BF16(value) => f.write_fmt(format_args!("{}", bf16::from_bits(*value))),
-            Self::F8(_) => {
-                //return f.write_fmt(format_args!("{}", todo!()));
-                todo!()
-            }
             Self::F16(value) => f.write_fmt(format_args!("{}", f16::from_bits(*value))),
             Self::F32(value) => f.write_fmt(format_args!("{}", f32::from_bits(*value))),
             Self::F64(value) => f.write_fmt(format_args!("{}", f64::from_bits(*value))),

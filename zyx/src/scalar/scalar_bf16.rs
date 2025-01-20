@@ -1,15 +1,10 @@
 use crate::dtype::DType;
 use crate::scalar::{Float, Scalar};
-use float8::F8E4M3;
 use half::{bf16, f16};
 
 impl Scalar for bf16 {
     fn from_bf16(t: bf16) -> Self {
         t
-    }
-
-    fn from_f8(t: F8E4M3) -> Self {
-        bf16::from_f32(t.into())
     }
 
     fn from_f16(t: f16) -> Self {
@@ -66,7 +61,8 @@ impl Scalar for bf16 {
     }
 
     fn dtype() -> DType {
-        DType::BF16
+        //DType::BF16
+        todo!()
     }
 
     fn zero() -> Self {

@@ -1,16 +1,11 @@
 use crate::DType;
 
 use super::Scalar;
-use float8::F8E4M3;
 use half::{bf16, f16};
 
 impl Scalar for bool {
     fn from_bf16(t: bf16) -> Self {
         t != bf16::ZERO
-    }
-
-    fn from_f8(t: F8E4M3) -> Self {
-        t != F8E4M3::ZERO
     }
 
     fn from_f16(t: f16) -> Self {

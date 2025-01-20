@@ -1177,7 +1177,6 @@ impl DType {
     fn ocl(self) -> &'static str {
         match self {
             Self::BF16 => todo!("bf16 should be casted to f16 or f32"),
-            Self::F8 => "f8",
             Self::F16 => "half",
             Self::F32 => "float",
             Self::F64 => "double",
@@ -1198,7 +1197,6 @@ impl Constant {
     fn ocl(&self) -> String {
         match self {
             &Self::BF16(x) => format!("{:.16}f", half::bf16::from_bits(x)),
-            &Self::F8(x) => format!("{:.8}f", float8::F8E4M3::from_bits(x)),
             &Self::F16(x) => format!("(half){:.16}", half::f16::from_bits(x)),
             &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
             &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),

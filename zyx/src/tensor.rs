@@ -10,7 +10,6 @@ use crate::runtime::{apply_padding, TempData, ZyxError};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{into_axes, into_axis, Axis, Dimension, IntoShape};
 use core::cmp::Ordering;
-use float8::F8E4M3 as f8;
 use half::{bf16, f16};
 use std::fmt::{Debug, Display};
 use std::iter::{once, repeat};
@@ -155,10 +154,6 @@ impl Tensor {
                 let data: Vec<bf16> = self.try_into()?;
                 RT.lock().variable(shape, Box::new(data))
             }
-            DType::F8 => {
-                let data: Vec<f8> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
-            }
             DType::F16 => {
                 let data: Vec<f16> = self.try_into()?;
                 RT.lock().variable(shape, Box::new(data))
@@ -271,10 +266,6 @@ impl Tensor {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, Box::new(data))? }.cast(DType::BF16))
                 }
-                DType::F8 => {
-                    let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? }.cast(DType::F8))
-                }
                 DType::F16 => {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
                     Ok(Tensor { id: rt.variable(shape, Box::new(data))? }.cast(DType::F16))
@@ -335,7 +326,7 @@ impl Tensor {
                 DType::Bool => Err(ZyxError::DTypeError(
                     "Uniform is not supported for bool".into(),
                 )),
-                DType::BF16 | DType::F8 | DType::F16 | DType::F32 | DType::F64 => unreachable!(),
+                DType::BF16 | DType::F16 | DType::F32 | DType::F64 => unreachable!(),
             }
         }
     }
@@ -2655,17 +2646,17 @@ impl Tensor {
         let mut shape = vec![1];
         let mut label = String::new();
         let mut metadata = true;
-        let progress_bar = if RT.lock().debug.dev() {
+        let mut progress_bar = if RT.lock().debug.dev() {
             println!("Loading tensors from safetensors file");
-            let bar = indicatif::ProgressBar::new(
+            let bar = crate::bar::ProgressBar::new(
                 header.chars().filter(|&c| c == '[').count() as u64 / 2,
             );
-            bar.set_style(
-                indicatif::ProgressStyle::with_template(
+            /*bar.set_style(
+                crate::bar::ProgressStyle::with_template(
                     "[{elapsed_precise}/{eta_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
                 )
                 .unwrap(),
-            );
+            );*/
             Some(bar)
         } else {
             None
@@ -2725,16 +2716,12 @@ impl Tensor {
                                 "Safetensors shapes and offsets are incorrect.".into(),
                             ));
                         }
-                        if let Some(bar) = &progress_bar {
-                            bar.inc(1);
-                            bar.set_message(format!("{label}, {shape:?}, {dtype:?}"));
+                        if let Some(bar) = &mut progress_bar {
+                            bar.inc(1, &format!("{label}, {shape:?}, {dtype:?}"));
                         }
                         tensors.insert(
                             label.clone(),
                             match dtype {
-                                DType::F8 => {
-                                    read_into_tensor::<f8>(mmap.clone(), &mut mptr, &shape)?
-                                }
                                 DType::BF16 => {
                                     read_into_tensor::<bf16>(mmap.clone(), &mut mptr, &shape)?
                                 }
@@ -2812,11 +2799,6 @@ impl Tensor {
             DType::BF16 => {
                 let data: Vec<bf16> = self.clone().try_into()?;
                 data.into_iter().flat_map(bf16::to_le_bytes).collect()
-            }
-            DType::F8 => {
-                //let data: Vec<f8> = self.clone().try_into()?;
-                //data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
-                todo!()
             }
             DType::F16 => {
                 let data: Vec<f16> = self.clone().try_into()?;
@@ -2897,7 +2879,6 @@ impl Tensor {
         if !dtype.is_float() {
             if cfg!(feature = "implicit_casting") {
                 return Ok(match dtype.byte_size() {
-                    1 => self.cast(DType::F8),
                     2 => self.cast(DType::F16),
                     4 => self.cast(DType::F32),
                     8 => self.cast(DType::F64),
@@ -2929,29 +2910,22 @@ impl Tensor {
         let y_dtype = y.dtype();
         if cfg!(feature = "implicit_casting") {
             match (x_dtype, y_dtype) {
-                (DType::I16 | DType::I8 | DType::U8 | DType::Bool | DType::F8, DType::BF16) => {
+                (DType::I16 | DType::I8 | DType::U8 | DType::Bool, DType::BF16) => {
                     x = x.cast(DType::BF16);
                 }
-                (DType::BF16, DType::I16 | DType::I8 | DType::U8 | DType::Bool | DType::F8) => {
+                (DType::BF16, DType::I16 | DType::I8 | DType::U8 | DType::Bool) => {
                     y = y.cast(DType::BF16);
                 }
-                (DType::I16 | DType::I8 | DType::U8 | DType::Bool, DType::F8) => {
-                    x = x.cast(DType::F8)
-                }
-                (DType::F8, DType::I16 | DType::I8 | DType::U8 | DType::Bool) => {
-                    y = y.cast(DType::F8)
-                }
                 (
-                    DType::F8 | DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
+                    DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
                     DType::F16,
                 ) => x = x.cast(DType::F16),
                 (
                     DType::F16,
-                    DType::F8 | DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
+                    DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
                 ) => y = y.cast(DType::F16),
                 (
                     DType::F16
-                    | DType::F8
                     | DType::BF16
                     | DType::I32
                     | DType::I16
@@ -2964,7 +2938,6 @@ impl Tensor {
                 (
                     DType::F32,
                     DType::F16
-                    | DType::F8
                     | DType::BF16
                     | DType::I32
                     | DType::I16
@@ -2976,7 +2949,6 @@ impl Tensor {
                 (
                     DType::F32
                     | DType::F16
-                    | DType::F8
                     | DType::BF16
                     | DType::I64
                     | DType::I32
@@ -2991,7 +2963,6 @@ impl Tensor {
                     DType::F64,
                     DType::F32
                     | DType::F16
-                    | DType::F8
                     | DType::BF16
                     | DType::I64
                     | DType::I32
@@ -3002,7 +2973,6 @@ impl Tensor {
                     | DType::Bool,
                 ) => y = y.cast(DType::F64),
                 (DType::BF16, DType::BF16)
-                | (DType::F8, DType::F8)
                 | (DType::F16, DType::F16)
                 | (DType::F32, DType::F32)
                 | (DType::F64, DType::F64)
@@ -3099,15 +3069,6 @@ impl TryFrom<Tensor> for bf16 {
     type Error = ZyxError;
     fn try_from(value: Tensor) -> Result<Self, Self::Error> {
         let mut data = [bf16::ZERO];
-        RT.lock().load(value.id, &mut data)?;
-        Ok(data[0])
-    }
-}
-
-impl TryFrom<Tensor> for f8 {
-    type Error = ZyxError;
-    fn try_from(value: Tensor) -> Result<Self, Self::Error> {
-        let mut data = [f8::ZERO];
         RT.lock().load(value.id, &mut data)?;
         Ok(data[0])
     }
@@ -3291,13 +3252,6 @@ impl Display for Tensor {
         let res = match self.dtype() {
             DType::BF16 => {
                 let data: Result<Vec<bf16>, _> = x.try_into();
-                match data {
-                    Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
-                    Err(e) => format!("f16 tensor failed to realize {e:?}"),
-                }
-            }
-            DType::F8 => {
-                let data: Result<Vec<f8>, _> = x.try_into();
                 match data {
                     Ok(data) => tensor_to_string(&data, &self.shape(), precision, f.width()),
                     Err(e) => format!("f16 tensor failed to realize {e:?}"),
@@ -4155,7 +4109,6 @@ macro_rules! impl_trait {
 }
 
 impl_trait!(Add for bf16, add);
-impl_trait!(Add for f8, add);
 impl_trait!(Add for f16, add);
 impl_trait!(Add for f32, add);
 impl_trait!(Add for f64, add);
@@ -4168,7 +4121,6 @@ impl_trait!(Add for i64, add);
 impl_trait!(Add for bool, add);
 
 impl_trait!(Sub for bf16, sub);
-impl_trait!(Sub for f8, sub);
 impl_trait!(Sub for f16, sub);
 impl_trait!(Sub for f32, sub);
 impl_trait!(Sub for f64, sub);
@@ -4181,7 +4133,6 @@ impl_trait!(Sub for i64, sub);
 impl_trait!(Sub for bool, sub);
 
 impl_trait!(Mul for bf16, mul);
-impl_trait!(Mul for f8, mul);
 impl_trait!(Mul for f16, mul);
 impl_trait!(Mul for f32, mul);
 impl_trait!(Mul for f64, mul);
@@ -4194,7 +4145,6 @@ impl_trait!(Mul for i64, mul);
 impl_trait!(Mul for bool, mul);
 
 impl_trait!(Div for bf16, div);
-impl_trait!(Div for f8, div);
 impl_trait!(Div for f16, div);
 impl_trait!(Div for f32, div);
 impl_trait!(Div for f64, div);
@@ -4207,7 +4157,6 @@ impl_trait!(Div for i64, div);
 impl_trait!(Div for bool, div);
 
 impl_trait!(BitXor for bf16, bitxor);
-impl_trait!(BitXor for f8, bitxor);
 impl_trait!(BitXor for f16, bitxor);
 impl_trait!(BitXor for f32, bitxor);
 impl_trait!(BitXor for f64, bitxor);
@@ -4220,7 +4169,6 @@ impl_trait!(BitXor for i64, bitxor);
 impl_trait!(BitXor for bool, bitxor);
 
 impl_trait!(BitOr for bf16, bitor);
-impl_trait!(BitOr for f8, bitor);
 impl_trait!(BitOr for f16, bitor);
 impl_trait!(BitOr for f32, bitor);
 impl_trait!(BitOr for f64, bitor);
@@ -4233,7 +4181,6 @@ impl_trait!(BitOr for i64, bitor);
 impl_trait!(BitOr for bool, bitor);
 
 impl_trait!(BitAnd for bf16, bitand);
-impl_trait!(BitAnd for f8, bitand);
 impl_trait!(BitAnd for f16, bitand);
 impl_trait!(BitAnd for f32, bitand);
 impl_trait!(BitAnd for f64, bitand);

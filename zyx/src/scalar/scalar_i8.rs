@@ -1,6 +1,5 @@
 use crate::dtype::DType;
 use crate::scalar::Scalar;
-use float8::F8E4M3;
 use half::{bf16, f16};
 
 impl Scalar for i8 {
@@ -8,11 +7,6 @@ impl Scalar for i8 {
     fn from_bf16(t: bf16) -> Self {
         let t: f32 = t.into();
         t as Self
-    }
-
-    #[allow(clippy::cast_possible_truncation)]
-    fn from_f8(t: F8E4M3) -> Self {
-        t.to_f32() as Self
     }
 
     #[allow(clippy::cast_possible_truncation)]

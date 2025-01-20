@@ -27,12 +27,8 @@ memmap2 = { version = "0.9.5" }
 nanoserde = { version = "*", default-features = false }
 # xdg is used to read backend config
 xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
-# Support for f8 dtypes
-float8 = { version = "0.1.1", default-features = false } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
 half = { version = "2.4.1", default-features = false } # MIT or Apache 2.0
-# Progress bar for loading tensors, compilation ...
-indicatif = { version = "0.17.9", default-features = false }
 
 # Optional dependencies
 # For caching of searched kernels
@@ -60,8 +56,8 @@ pyo3 = { version = "0.23.1", optional = true } # MIT or Apache 2.0
 # Vulkano, will be later removed
 vulkano = { version = "*", optional = true }
 
-[dev-dependencies]
-rand = { version = "*", default-features = false, features = ["std", "small_rng"] }
+# For fuzzy tester
+rand = { version = "*", default-features = false, features = ["std", "small_rng"], optional = true }
 
 [lib]
 crate-type = ["lib"] #, "cdylib"]
@@ -96,6 +92,13 @@ gguf = ["dep:gguf"]
 
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
 py = ["dep:pyo3"]
+
+# Fuzzy tester
+fuzzy = ["dep:rand"]
+
+[[example]]
+name = "fuzzy"
+required-features = ["fuzzy"]
 
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.

@@ -102,7 +102,7 @@ impl Rng {
 
     pub(super) fn rand<T: Scalar>(&mut self) -> T {
         match T::dtype() {
-            DType::BF16 | DType::F8 | DType::F16 | DType::F32 | DType::F64 => self.next_f32().cast(),
+            DType::BF16 | DType::F16 | DType::F32 | DType::F64 => self.next_f32().cast(),
             DType::U8 | DType::Bool => self.next_u8().cast(),
             DType::U16 => self.next_u16().cast(),
             DType::U32 => self.next_u32().cast(),

@@ -4,9 +4,6 @@
 use crate::{dtype::Constant, tensor::TensorId, DType, Scalar};
 use half::{bf16, f16};
 
-#[allow(non_camel_case_types)]
-type f8 = float8::F8E4M3;
-
 #[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub enum BOp {
@@ -190,7 +187,6 @@ trait CastDType: Scalar {
     fn cast_dtype(self, dtype: DType) -> Constant {
         match dtype {
             DType::BF16 => Constant::BF16(self.cast::<half::bf16>().to_bits()),
-            DType::F8 => todo!(),
             DType::F16 => Constant::F16(self.cast::<half::f16>().to_bits()),
             DType::F32 => Constant::F32(self.cast::<f32>().to_bits()),
             DType::F64 => Constant::F64(self.cast::<f64>().to_bits()),
@@ -214,7 +210,6 @@ impl Constant {
     pub(super) fn cast(self, dtype: DType) -> Constant {
         return match self {
             Constant::BF16(x) => half::bf16::from_bits(x).cast_dtype(dtype),
-            Constant::F8(x) => f8::from_bits(x).cast_dtype(dtype),
             Constant::F16(x) => half::f16::from_bits(x).cast_dtype(dtype),
             Constant::F32(x) => f32::from_bits(x).cast_dtype(dtype),
             Constant::F64(x) => f64::from_bits(x).cast_dtype(dtype),
@@ -262,7 +257,6 @@ impl Constant {
             Constant::BF16(x) => {
                 Constant::BF16(unary_func_float(half::bf16::from_bits(x), uop).to_bits())
             }
-            Constant::F8(x) => Constant::F8(unary_func_float(f8::from_bits(x), uop).to_bits()),
             Constant::F16(x) => {
                 Constant::F16(unary_func_float(half::f16::from_bits(x), uop).to_bits())
             }
@@ -309,10 +303,6 @@ impl Constant {
             Constant::BF16(x) => {
                 let Constant::BF16(y) = y else { unreachable!() };
                 binary_func(bf16::from_bits(x), bf16::from_bits(y), bop)
-            }
-            Constant::F8(x) => {
-                let Constant::F8(y) = y else { unreachable!() };
-                binary_func(f8::from_bits(x), f8::from_bits(y), bop)
             }
             Constant::F16(x) => {
                 let Constant::F16(y) = y else { unreachable!() };

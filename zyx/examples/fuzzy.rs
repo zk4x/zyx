@@ -193,7 +193,6 @@ impl CPUTensor {
             view: View::new(&[data.len()]),
             data: match T::dtype() {
                 DType::BF16 => todo!(),
-                DType::F8 => todo!(),
                 DType::F16 => todo!(),
                 DType::F32 => Data::F32(unsafe { t::<_, &[f32]>(data) }.into()),
                 DType::F64 => todo!(),

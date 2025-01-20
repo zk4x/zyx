@@ -10,7 +10,6 @@ use std::{
     sync::Arc,
 };
 
-use float8::F8E4M3;
 use libloading::Library;
 use nanoserde::DeJson;
 
@@ -1131,7 +1130,6 @@ impl DType {
     pub(super) fn cu(&self) -> &str {
         match self {
             Self::BF16 => todo!("BF16 is not native to OpenCL, workaround is WIP."),
-            Self::F8 => todo!("F8 is not native to OpenCL, workaround is WIP."),
             Self::F16 => "__half",
             Self::F32 => "float",
             Self::F64 => "double",
@@ -1161,7 +1159,6 @@ impl Constant {
     fn cu(&self) -> String {
         match self {
             &Self::BF16(x) => format!("{}f", half::bf16::from_bits(x)),
-            &Self::F8(x) => format!("{:.16}f", F8E4M3::from_bits(x)),
             &Self::F16(x) => format!("__float2half({:.6}f)", half::f16::from_bits(x)),
             &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
             &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),

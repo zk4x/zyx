@@ -5,7 +5,6 @@ mod scalar_bool;
 mod scalar_f16;
 mod scalar_f32;
 mod scalar_f64;
-mod scalar_f8;
 mod scalar_i16;
 mod scalar_i32;
 mod scalar_i64;
@@ -15,7 +14,6 @@ mod scalar_u64;
 mod scalar_u8;
 mod scalar_u16;
 
-use float8::F8E4M3;
 use half::{bf16, f16};
 
 use crate::dtype::DType;
@@ -25,9 +23,6 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// From bf16
     #[must_use]
     fn from_bf16(t: bf16) -> Self;
-    /// From f8
-    #[must_use]
-    fn from_f8(t: F8E4M3) -> Self;
     /// From f16
     #[must_use]
     fn from_f16(t: f16) -> Self;
@@ -161,7 +156,6 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
         unsafe {
             match Self::dtype() {
                 DType::BF16 => T::from_bf16(t(&self)),
-                DType::F8 => T::from_f8(t(&self)),
                 DType::F16 => T::from_f16(t(&self)),
                 DType::F32 => T::from_f32(t(&self)),
                 DType::F64 => T::from_f64(t(&self)),
