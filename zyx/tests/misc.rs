@@ -604,7 +604,7 @@ fn dot_pad() -> Result<(), ZyxError> {
 #[test]
 #[should_panic]
 fn t3() {
-    let x = Tensor::randn([1024, 1024], DType::F32).unwrap().expand([1024, 1024, 1024]).unwrap();
+    let x = Tensor::randn([1024, 1024], DType::F32).unwrap().expand([1024, 1024, 1024, 1024, 1024, 1024]).unwrap();
     Tensor::realize([&x]).unwrap();
 }
 

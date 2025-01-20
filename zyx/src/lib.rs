@@ -215,7 +215,7 @@ impl Drop for Timer {
 }*/
 
 #[test]
-fn t1() -> Result<(), ZyxError> {
+fn t0() -> Result<(), ZyxError> {
     let x = Tensor::rand([4, 2, 3], DType::F32).unwrap();
     let y = x.exp2();
     //let y = x.sum([-1]).unwrap();

@@ -670,12 +670,12 @@ impl Device for OpenCLDevice {
         }
 
         // Declare global variables
-        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
+        for (id, (scope, _, _, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!(
-                    "{indent}__global {}{}* p{id},\n",
+                    "{indent}__global {}float4* p{id},\n",
                     if *read_only { "const " } else { "" },
-                    dtype.ocl(),
+                    //dtype.ocl(),
                 );
             }
         }
@@ -726,16 +726,43 @@ impl Device for OpenCLDevice {
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Load { z, address, offset } => {
-                    if let Reg::Var(id) = offset {
-                        if id == 11 {
-                            //source += &format!("{indent}printf(\"%u, \", r11);\n");
+                    //source += &format!("{indent}r{z} = p{address}[{}];\n", offset.ocl());
+                    let dtype = kernel.addressables[address as usize].1;
+                    /*let dt_bits = dtype.bit_size();
+                    if dt_bits <= 64 {
+                        source += &format!(
+                            "{indent}r{z} = p{address}[{0}/{1}] >> (({0} % {1}) * {dt_bits});\n",
+                            offset.ocl(),
+                            64 / dt_bits
+                        );
+                    } else {
+                        todo!()
+                    }*/
+                    match dtype {
+                        DType::F16 | DType::F32 | DType::F64 | DType::U8 | DType::U16 | DType::U32 | DType::U64 | DType::I8 | DType::I16 | DType::I32 | DType::I64 | DType::Bool => {
+                            source += &format!(
+                                "{indent}r{z} = *((__global {}*)p{address} + {});\n",
+                                dtype.ocl(),
+                                offset.ocl(),
+                            );
                         }
+                        _ => todo!(),
                     }
-                    source += &format!("{indent}r{z} = p{address}[{}];\n", offset.ocl());
-                    //source += &format!( "  printf(\"r{z}, p{address} = %f r2 = %u r4 = %u\\n\", r{z}, r2, r4);\n" );
                 }
                 IROp::Store { address, offset, x } => {
-                    source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
+                    //source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
+                    let dtype = kernel.addressables[address as usize].1;
+                    match dtype {
+                        DType::F16 | DType::F32 | DType::F64 | DType::U8 | DType::U16 | DType::U32 | DType::U64 | DType::I8 | DType::I16 | DType::I32 | DType::I64 | DType::Bool => {
+                            source += &format!(
+                                "{indent}*((__global {}*)p{address} + {}) = {};\n",
+                                dtype.ocl(),
+                                offset.ocl(),
+                                x.ocl(),
+                            );
+                        }
+                        _ => todo!(),
+                    }
                 }
                 IROp::SetLocal { .. } => todo!(),
                 IROp::Set { z, value } => {

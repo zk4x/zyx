@@ -824,6 +824,7 @@ impl TextGeneration {
             }
         }
         let mut tokens = tokens.get_ids().to_vec();
+        println!("Tokens {tokens:?}");
         let mut generated_tokens = 0usize;
         let eos_token = match self.tokenizer.get_token("<|endoftext|>") {
             Some(token) => token,
