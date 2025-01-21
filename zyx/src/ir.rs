@@ -1151,7 +1151,9 @@ impl IRCompiler {
                                     i -= 1;
                                     self.replace(z, Reg::Var(yv));
                                 }
-                                BOp::Div => todo!(),
+                                BOp::Div => {
+                                    self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::Reciprocal }
+                                }
                                 BOp::Pow => todo!(),
                                 BOp::Mod => todo!(),
                                 BOp::Cmplt => todo!(),

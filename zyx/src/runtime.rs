@@ -19,7 +19,7 @@ use std::{vec, vec::Vec};
 // This is the whole global state of zyx
 pub struct Runtime {
     // Current graph of tensor operations as nodes
-    graph: Graph,
+    pub(super) graph: Graph,
     // Physical memory pools
     pools: Vec<Pool>,
     // Physical compute devices, each has their own program cache
@@ -32,7 +32,6 @@ pub struct Runtime {
     pub(super) rng: Rng,
     // Are we in training mode?
     pub(super) training: bool,
-    pub(super) gradient_tape: bool,
     /// How many variations of one kernel to try during optimization
     pub(super) search_iterations: usize,
     /// Debug mask
@@ -85,7 +84,6 @@ impl Runtime {
             config_dir: None,
             optimizer: Optimizer::new(),
             training: false,
-            gradient_tape: false,
             search_iterations: 0,
             debug: DebugMask(0),
             temp_data: Vec::new(),
@@ -326,11 +324,11 @@ impl Runtime {
         &mut self,
         shape: Vec<Dimension>,
         value: impl Scalar,
-    ) -> Result<TensorId, ZyxError> {
+    ) -> TensorId {
         let x = self.constant(value);
         let expanded = self.expand(x, shape);
-        self.release(x)?;
-        Ok(expanded)
+        self.release(x).unwrap();
+        expanded
     }
 
     #[must_use]
@@ -602,7 +600,7 @@ impl Runtime {
             self.initialize_devices()?;
         }
 
-        let (order, rcs, mut to_delete, new_leafs) = if self.gradient_tape {
+        let (order, rcs, mut to_delete, new_leafs) = if self.graph.gradient_tape.is_some() {
             // Get order for evaluation using DFS with ref counting to resolve
             // nodes with more than one parent.
             let (outside_nodes, mut order) = {
@@ -764,7 +762,7 @@ impl Runtime {
             elapsed.as_micros(),
             order.len(),
             self.graph.nodes.len(),
-            self.gradient_tape,
+            self.graph.gradient_tape.is_some(),
         );
 
         crate::scheduler::realize_graph(
@@ -827,8 +825,8 @@ impl Runtime {
     }
 
     pub(super) fn drop_gradient_tape(&mut self) {
-        self.gradient_tape = false;
-        todo!()
+        self.graph.gradient_tape = None;
+        // TODO delete all unneeded nodes
     }
 
     #[allow(clippy::similar_names)]
@@ -872,8 +870,10 @@ impl Runtime {
         // Initial gradient of ones
         let grad1 = self.ones(vec![1], self.dtype(x));
         let sh: Vec<Dimension> = self.shape(x).into();
-        grads.insert(x, self.graph.push_wshape(Node::Expand { x: grad1 }, sh));
+        let grad2 = self.graph.push_wshape(Node::Reshape { x: grad1 }, vec![1; sh.len()]);
         self.release(grad1).unwrap();
+        grads.insert(x, self.graph.push_wshape(Node::Expand { x: grad2 }, sh));
+        self.release(grad2).unwrap();
         //println!("{:?}", self.nodes.last().unwrap());
 
         // All releases that cannot fail use unwrap to catch incorrect refcounts immediatelly.
@@ -918,27 +918,19 @@ impl Runtime {
                     }
                     BOp::Div => {
                         if req_grad.contains(&x) {
-                            grads.insert(x, self.binary(grad, y, BOp::Div));
-                            insert_or_add_grad(self, &mut grads, x, grad);
+                            let x_grad = self.binary(grad, y, BOp::Div);
+                            insert_or_add_grad(self, &mut grads, x, x_grad);
                         }
                         if req_grad.contains(&y) {
-                            // -grad*x/(y^2)
-                            let dtype = self.dtype(y);
-                            let one = self.ones(vec![1], dtype);
-                            let two = self.binary(one, one, BOp::Add);
-                            self.release(one).unwrap();
-                            let two_e = self.expand(two, self.shape(y).into());
-                            self.release(two).unwrap();
-                            let two_2 = self.binary(y, two_e, BOp::Pow);
-                            self.release(two_e).unwrap();
-                            let temp = self.binary(x, grad, BOp::Mul);
-                            let temp_neg = self.unary(temp, UOp::Neg);
-                            self.release(temp).unwrap();
-                            let y_grad = self.binary(temp_neg, two_2, BOp::Div);
-                            self.release(temp_neg).unwrap();
-                            self.release(two_2).unwrap();
-                            grads.insert(y, y_grad);
-                            insert_or_add_grad(self, &mut grads, y, grad);
+                            // -(grad*x/(y^y))
+                            let y_squared =  self.binary(y, y, BOp::Mul);
+                            let x_div = self.binary(x, y_squared, BOp::Div);
+                            self.release(y_squared).unwrap();
+                            let grad1 = self.binary(grad, x_div, BOp::Mul);
+                            self.release(x_div).unwrap();
+                            let y_grad = self.unary(grad1, UOp::Neg);
+                            self.release(grad1).unwrap();
+                            insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
                     }
                     BOp::Pow => {
@@ -956,12 +948,20 @@ impl Runtime {
                             insert_or_add_grad(self, &mut grads, x, x_grad);
                         }
                         if req_grad.contains(&y) {
-                            // grad * x.pow(y) * ln(x)
-                            let temp1 = self.unary(x, UOp::Log2);
-                            let temp2 = self.binary(nid, temp1, BOp::Mul);
-                            self.release(temp1).unwrap();
-                            let y_grad = self.binary(grad, temp2, BOp::Mul);
-                            self.release(temp2).unwrap();
+                            // grad * x.pow(y) * log2(x) * (1/E.log2)
+                            let sh = self.shape(y).into();
+                            let dtype = self.dtype(y);
+                            let one_elog2 = self.graph.push(Node::Const { value: Constant::new(1f64/std::f64::consts::E.log2()).cast(dtype) });
+                            let one_elog2_ex = self.expand(one_elog2, sh);
+                            self.release(one_elog2).unwrap();
+                            let log2 = self.unary(x, UOp::Log2);
+                            let log2_one_elog2 = self.binary(log2, one_elog2_ex, BOp::Mul);
+                            self.release(log2).unwrap();
+                            self.release(one_elog2_ex).unwrap();
+                            let xpowy_log2_one_elog2 = self.binary(nid, log2_one_elog2, BOp::Mul);
+                            self.release(log2_one_elog2).unwrap();
+                            let y_grad = self.binary(grad, xpowy_log2_one_elog2, BOp::Mul);
+                            self.release(xpowy_log2_one_elog2).unwrap();
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
                     }
@@ -1085,24 +1085,26 @@ impl Runtime {
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Expand { x } => {
-                    let shape = self.graph.shape(nid);
-                    let mut vec: Vec<Dimension> = shape.into();
-                    while vec.len() < shape.len() {
-                        vec.insert(0, 1);
+                    let sh = self.graph.shape(nid);
+                    let x_shape = self.shape(x).into();
+                    let mut shape: Vec<Dimension> = sh.into();
+                    while shape.len() < shape.len() {
+                        shape.insert(0, 1);
                     }
-                    let expand_axes: Vec<usize> = vec
+                    let expand_axes: Vec<usize> = shape.clone()
                         .into_iter()
-                        .zip(shape)
+                        .zip(&x_shape)
                         .enumerate()
-                        .filter_map(|(a, (d, e))| if d == *e { None } else { Some(a) })
+                        .filter_map(|(a, (d, &e))| if d == e { None } else { Some(a) })
                         .collect();
+                    //println!("x shape {:?}, nid shape {:?}, expand_axes: {:?}", self.shape(x), self.shape(nid), expand_axes);
                     let temp = self.sum_reduce(grad, expand_axes);
-                    let grad = self.reshape(temp, self.shape(x).into());
+                    let grad = self.reshape(temp, x_shape);
                     self.release(temp).unwrap();
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Permute { x } => {
-                    let axes = self.graph.axes(x);
+                    let axes = self.graph.axes(nid);
                     let mut axes: Vec<(usize, usize)> = axes.iter().copied().enumerate().collect();
                     axes.sort_by_key(|(_, v)| *v);
                     let argsort_axes: Vec<usize> = axes.iter().map(|(k, _)| *k).collect();

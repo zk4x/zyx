@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Graph {
     // First value is reference count, second is node
     pub(super) nodes: Slab<(u32, Node)>,
+    pub(super) gradient_tape: Option<Set<TensorId>>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
     paddings: BTreeMap<TensorId, Vec<(isize, isize)>>,
@@ -24,6 +25,7 @@ impl Graph {
     pub(super) const fn new() -> Self {
         Self {
             nodes: Slab::new(),
+            gradient_tape: None,
             shapes: BTreeMap::new(),
             paddings: BTreeMap::new(),
             axes: BTreeMap::new(),
@@ -82,10 +84,23 @@ impl Graph {
             }
         }
 
-        for nid in node.parameters() {
-            self.nodes[nid].0 += 1;
+        if let Some(tape) = self.gradient_tape.as_mut() {
+            let mut requires_grad = false;
+            for nid in node.parameters() {
+                self.nodes[nid].0 += 1;
+                requires_grad = requires_grad || tape.contains(&nid);
+            }
+            let nid = self.nodes.push((1, node));
+            if requires_grad {
+                tape.insert(nid);
+            }
+            nid
+        } else {
+            for nid in node.parameters() {
+                self.nodes[nid].0 += 1;
+            }
+            self.nodes.push((1, node))
         }
-        self.nodes.push((1, node))
     }
 
     pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dimension>) -> TensorId {
@@ -107,13 +122,6 @@ impl Graph {
         let shape = self.shape(id).into();
         self.shapes.insert(id, shape);
     }
-
-    /*pub(super) fn retain_nodes(&mut self, func: impl Fn(&TensorId) -> bool) -> Set<TensorId> {
-        self.shapes.retain(|k, _| func(k));
-        self.axes.retain(|k, _| func(k));
-        self.paddings.retain(|k, _| func(k));
-        self.nodes.retain(func)
-    }*/
 
     pub(super) fn delete_tensors(&mut self, tensors: &Set<TensorId>) {
         for &tensor in tensors {
@@ -166,6 +174,8 @@ impl Graph {
     }
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &Set<TensorId>) -> Vec<TensorId> {
+        // TODO make use of gradient_tape
+
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = vec![x];
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();

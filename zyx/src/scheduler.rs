@@ -70,7 +70,7 @@ pub fn realize_graph(
     }*/
 
     for &nid in order {
-        /*if debug.sched() {
+        if debug.sched() {
             println!(
                 "ID({nid}): {:?}, sh: {:?}, rcs: {}, num kernels: {}",
                 graph[nid],
@@ -78,7 +78,7 @@ pub fn realize_graph(
                 rcs.get(&nid).copied().unwrap_or(0),
                 kernels.len(),
             );
-        }*/
+        }
 
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1

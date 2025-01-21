@@ -20,44 +20,9 @@ use std::ops::{
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{DebugMask, GradientTape, Map, Set, RT};
+use crate::{DebugMask, Map, Set, RT};
 
 pub type TensorId = u32;
-
-impl GradientTape {
-    /// Create new gradient tape. Only one gradient tape can exist at a time.
-    pub fn new() -> Self {
-        let mut rt = RT.lock();
-        if rt.gradient_tape {
-            panic!("Only one gradient tape can exist at a time.");
-        }
-        rt.gradient_tape = true;
-        Self {}
-    }
-
-    /// Returns gradients of target derived w.r.t. sources
-    #[must_use]
-    pub fn gradient<'a>(
-        &self,
-        target: &Tensor,
-        sources: impl IntoIterator<Item = &'a Tensor>,
-    ) -> Vec<Option<Tensor>> {
-        let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
-        let grads: Map<TensorId, TensorId> =
-            RT.lock().backward(target.id, &sources.iter().copied().collect());
-        sources
-            .into_iter()
-            .map(|x: TensorId| grads.get(&x).copied())
-            .map(|id: Option<TensorId>| id.map(|id| Tensor { id }))
-            .collect()
-    }
-}
-
-impl Drop for GradientTape {
-    fn drop(&mut self) {
-        RT.lock().drop_gradient_tape();
-    }
-}
 
 /// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
 ///
@@ -66,7 +31,7 @@ impl Drop for GradientTape {
 /// locking a mutex.
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Tensor {
-    id: TensorId,
+    pub(super) id: TensorId,
 }
 
 impl Clone for Tensor {
@@ -456,8 +421,8 @@ impl Tensor {
     /// # Errors
     /// Returns device error if the device failed to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
-    pub fn full(shape: impl IntoShape, value: impl Scalar) -> Result<Tensor, ZyxError> {
-        Ok(Tensor { id: RT.lock().full(shape.into_shape().collect(), value)? })
+    pub fn full(shape: impl IntoShape, value: impl Scalar) -> Tensor {
+        Tensor { id: RT.lock().full(shape.into_shape().collect(), value) }
     }
 
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
@@ -483,7 +448,7 @@ impl Tensor {
         //println!("Arange {start:?}, {stop:?}, {step:?}");
         let n: i64 = stop.sub(start).div(step).cast();
         //println!("Shape {n}");
-        let x = Tensor::full(Dimension::try_from(n).unwrap(), step)?;
+        let x = Tensor::full(Dimension::try_from(n).unwrap(), step);
         //println!("{x}");
         let x = x.cumsum(0)?;
         Ok(x + Tensor::constant(start) - Tensor::constant(step))
@@ -707,7 +672,7 @@ impl Tensor {
         self * (1.702f32 * self).sigmoid()
     }
 
-    /// Computes the multiplicative inverse of each element in the input tensor using a faster implementation.
+    /// Computes the multiplicative inverse of each element in the input tensor, 1/x.
     ///
     /// This function returns a new tensor with the same shape as the input, where each element is the multiplicative inverse (i.e., reciprocal) of the corresponding element in the input tensor. This implementation uses `1.0 / self` which is generally faster than calling the `inv()` method directly.
     ///
@@ -1927,9 +1892,10 @@ impl Tensor {
     ///
     /// Returns error if the tensors have non broadcasteable shapes.
     #[must_use]
-    pub fn mse_loss(&self, target: impl Into<Tensor>) -> Tensor {
-        let x = self - target;
-        x.clone() * x
+    pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self, target)?;
+        let x = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
+        Ok(x.clone() * x)
     }
 
     /// Calculates the cosine similarity between this tensor and another.

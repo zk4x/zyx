@@ -92,6 +92,10 @@
   - [ ] fuzzy tester
     - [ ] movemnt ops
     - [ ] binary ops
+- [ ] autograd
+  - [ ] drop unneded nodes when gradient tape is released
+  - [ ] proper realize function with gradient tape
+  - [ ] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
 
 - [x] docs
   - [x] manual for adding new backends

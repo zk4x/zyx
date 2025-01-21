@@ -10,8 +10,16 @@ but thanks to lazyness all unnecessary memory allocations are optimized away.
 
 ## Install
 
-```shell
-cargo add zyx
+Zyx is under lot of development and breaking changes are expected.
+Please use latest github version.
+
+```toml
+// Only tensors (includes autograd)
+zyx = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx" }
+// Neural network modules - Linear, normalization layers, ...
+zyx-nn = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx-nn" }
+// Optimizers - SGD, Adam
+zyx-optim = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx-optim" }
 ```
 
 ## Syntax
@@ -59,31 +67,31 @@ cargo add zyx-nn;
 use zyx::{Tensor, DType};
 use zyx_nn::Linear;
 
-let l0 = Linear::init(3, 1024, DType::F32);
-let l1 = Linear::init(1024, 2, DType::F32);
+    let mut l0 = Linear::init(3, 1024, true, DType::F32)?;
+    let mut l1 = Linear::init(1024, 2, true, DType::F32)?;
 
-let x = Tensor::from([2, 3, 1]).cast(DType::F32);
-let target = Tensor::from([2, 4]);
+    let x = Tensor::from([2, 3, 1]).cast(DType::F32);
+    let target = Tensor::from([2, 4]);
 
-// Zyx also provides some optimizers like SGD and Adam
-let mut optim = zyx_optim::SGD {
-    learning_rate: 0.01,
-    momentum: 0.9,
-    nesterov: true,
-    ..Default::default()
-};
+    // Zyx also provides some optimizers like SGD and Adam
+    let mut optim = zyx_optim::SGD {
+        learning_rate: 0.01,
+        momentum: 0.9,
+        nesterov: true,
+        ..Default::default()
+    };
 
-let train_steps = 100;
-for _ in 0..train_steps {
-    let tape = GradientTape::new();
-    let y = l0.forward(&x).relu();
-    let y = l1.forward(&y).sigmoid();
-    let loss = y.mse_loss(&target)?:
-    let grads = tape.gradient(&loss, l0.into_iter().chain(l1.into_iter()));
-    optim.update(l0.into_iter().chain(l1.into_iter()), grads);
-}
+    let train_steps = 100;
+    for _ in 0..train_steps {
+        let tape = GradientTape::new();
+        let y = l0.forward(&x)?.relu();
+        let y = l1.forward(&y)?.sigmoid();
+        let loss = y.mse_loss(&target)?;
+        let grads = tape.gradient(&loss, l0.into_iter().chain(l1.into_iter()));
+        optim.update((&mut l0).into_iter().chain((&mut l1).into_iter()), grads);
+    }
 
-l0.into_iter().chain(l1.into_iter()).save("my_net.safetensors");
+    l0.into_iter().chain(l1.into_iter()).save("my_net.safetensors")?;
 # Ok::<(), zyx::ZyxError>(())
 ```
 
