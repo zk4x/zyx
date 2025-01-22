@@ -172,6 +172,8 @@ impl Kernel {
     // Returns true if it is cheaper to evaluate this kernel twice as embedded into bigger kernel
     // instead of launching this kernel.
     pub(super) fn is_small(&self) -> bool {
+        //println!("Duplicating small kernel");
+        // !self.ops.iter().any(|op| matches!(op, Op::Load { .. }))
         self.ops.len() < 10
     }
 

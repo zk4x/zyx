@@ -278,11 +278,25 @@ pub fn realize_graph(
 
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
                         // If the kernel is not too complex, we can just clone it
+                        //if kernels[kid].is_small() {
                         let mut new_kernel = kernels[kid].clone();
                         if rcs[&x] < 2 {
                             new_kernel.outputs.remove(&x);
                         }
                         kernels.push(new_kernel);
+                        /*} else {
+                            let x_shape = graph.shape(x);
+                            let x_dtype = graph.dtype(x);
+                            store(&mut kernels, kid, x, x_shape, x_dtype);
+                            let nkid = kernels.push(Kernel::leaf(
+                                x,
+                                x_shape,
+                                x_dtype,
+                                BTreeSet::from([kid]),
+                            ));
+                            xt = 0;
+                            kid = nkid;
+                        }*/
                     }
 
                     kernels[kid].reduce(

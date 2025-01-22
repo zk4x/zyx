@@ -438,6 +438,10 @@ impl Runtime {
         shape: Vec<Dimension>,
     ) -> Result<TensorId, ZyxError> {
         let sh: Vec<Dimension> = self.shape(x).into();
+        if shape == sh {
+            self.retain(x);
+            return Ok(x);
+        }
         //println!("Expanding {x} from {sh:?} to {shape:?}");
         if shape.len() < sh.len() {
             return Err(ZyxError::ShapeError(format!(
@@ -458,7 +462,11 @@ impl Runtime {
             }
         }
         if new_shape != sh {
-            let x = self.reshape(x, new_shape);
+            let x = self.reshape(x, new_shape.clone());
+            if shape == new_shape {
+                self.retain(x);
+                return Ok(x);
+            }
             let y = self.graph.push_wshape(Node::Expand { x }, shape);
             self.release(x).unwrap();
             return Ok(y);
@@ -1082,19 +1090,16 @@ impl Runtime {
                 }
                 Node::Expand { x } => {
                     let sh = self.graph.shape(nid);
-                    let x_shape = self.shape(x).into();
-                    let mut shape: Vec<Dimension> = sh.into();
-                    while shape.len() < shape.len() {
-                        shape.insert(0, 1);
-                    }
-                    let expand_axes: Vec<usize> = shape
-                        .clone()
+                    let x_shape: Vec<Dimension> = self.shape(x).into();
+                    debug_assert_eq!(sh.len(), x_shape.len());
+                    let expand_axes: Vec<usize> = sh
                         .into_iter()
                         .zip(&x_shape)
                         .enumerate()
-                        .filter_map(|(a, (d, &e))| if d == e { None } else { Some(a) })
+                        .filter_map(|(a, (&d, &e))| if d == e { None } else { Some(a) })
                         .collect();
-                    //println!("x shape {:?}, nid shape {:?}, expand_axes: {:?}", self.shape(x), self.shape(nid), expand_axes);
+                    //println!("x shape {:?}, nid shape {:?}, expand_axes: {:?}", x_shape, sh, expand_axes);
+                    debug_assert!(!expand_axes.is_empty());
                     let temp = self.sum_reduce(grad, expand_axes);
                     let grad = self.reshape(temp, x_shape);
                     self.release(temp).unwrap();
