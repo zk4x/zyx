@@ -320,13 +320,9 @@ impl Runtime {
     }
 
     // Initialization
-    pub(super) fn full(
-        &mut self,
-        shape: Vec<Dimension>,
-        value: impl Scalar,
-    ) -> TensorId {
+    pub(super) fn full(&mut self, shape: Vec<Dimension>, value: impl Scalar) -> TensorId {
         let x = self.constant(value);
-        let expanded = self.expand(x, shape);
+        let expanded = self.expand(x, shape).unwrap();
         self.release(x).unwrap();
         expanded
     }
@@ -348,7 +344,7 @@ impl Runtime {
             DType::I64 => self.constant(1i64),
             DType::Bool => self.constant(true),
         };
-        let expanded = self.expand(x, shape);
+        let expanded = self.expand(x, shape).unwrap();
         self.release(x).unwrap();
         expanded
     }
@@ -370,7 +366,7 @@ impl Runtime {
             DType::I64 => self.constant(0i64),
             DType::Bool => self.constant(false),
         };
-        let expanded = self.expand(x, shape);
+        let expanded = self.expand(x, shape).unwrap();
         self.release(x).unwrap();
         expanded
     }
@@ -434,35 +430,40 @@ impl Runtime {
         id
     }
 
+    /// Expand verification is so complex, that it may be simpler to just do it here instead of in tensor
     #[must_use]
-    pub(super) fn expand(&mut self, x: TensorId, shape: Vec<Dimension>) -> TensorId {
+    pub(super) fn expand(
+        &mut self,
+        x: TensorId,
+        shape: Vec<Dimension>,
+    ) -> Result<TensorId, ZyxError> {
         let sh: Vec<Dimension> = self.shape(x).into();
         //println!("Expanding {x} from {sh:?} to {shape:?}");
-        if shape == sh {
-            self.retain(x);
-            return x;
+        if shape.len() < sh.len() {
+            return Err(ZyxError::ShapeError(format!(
+                "Cannot expand {sh:?} into {shape:?}"
+            )));
         }
-        // Expand with only inserting first dimensions is noop
-        if sh.iter().product::<Dimension>() == shape.iter().product::<Dimension>() {
-            if let Some((pool, bid)) = get_mut_buffer(&mut self.pools, x) {
-                let id = self.graph.push_wshape(Node::Expand { x }, shape);
-                pool.buffer_map.insert(id, bid);
-                return id;
+        let new_shape = if shape.len() > sh.len() {
+            std::iter::repeat(1).take(shape.len() - sh.len()).chain(sh.iter().copied()).collect()
+        } else {
+            sh.clone()
+        };
+        debug_assert_eq!(shape.len(), new_shape.len());
+        for (&s, &d) in new_shape.iter().zip(shape.iter()) {
+            if !(s == d || s == 1) {
+                return Err(ZyxError::ShapeError(format!(
+                    "Cannot expand {sh:?} into {shape:?}"
+                )));
             }
         }
-        if shape.len() > sh.len() {
-            let sh: Vec<_> = std::iter::repeat(1)
-                .take(shape.len() - sh.len())
-                .chain(sh.iter().copied())
-                .collect();
-            debug_assert_eq!(shape.len(), sh.len());
-            let y = self.reshape(x, sh);
-            let x = self.graph.push_wshape(Node::Expand { x: y }, shape);
-            self.release(y).unwrap();
-            return x;
+        if new_shape != sh {
+            let x = self.reshape(x, new_shape);
+            let y = self.graph.push_wshape(Node::Expand { x }, shape);
+            self.release(x).unwrap();
+            return Ok(y);
         }
-        debug_assert_eq!(shape.len(), sh.len());
-        self.graph.push_wshape(Node::Expand { x }, shape)
+        Ok(self.graph.push_wshape(Node::Expand { x }, shape))
     }
 
     #[must_use]
@@ -864,13 +865,9 @@ impl Runtime {
         // Node -> Grad
         let mut grads: Map<TensorId, TensorId> =
             Map::with_capacity_and_hasher(100, Default::default());
+
         // Initial gradient of ones
-        let grad1 = self.ones(vec![1], self.dtype(x));
-        let sh: Vec<Dimension> = self.shape(x).into();
-        let grad2 = self.graph.push_wshape(Node::Reshape { x: grad1 }, vec![1; sh.len()]);
-        self.release(grad1).unwrap();
-        grads.insert(x, self.graph.push_wshape(Node::Expand { x: grad2 }, sh));
-        self.release(grad2).unwrap();
+        grads.insert(x, self.ones(self.shape(x).into(), self.dtype(x)));
         //println!("{:?}", self.nodes.last().unwrap());
 
         // All releases that cannot fail use unwrap to catch incorrect refcounts immediatelly.
@@ -920,7 +917,7 @@ impl Runtime {
                         }
                         if req_grad.contains(&y) {
                             // -(grad*x/(y^y))
-                            let y_squared =  self.binary(y, y, BOp::Mul);
+                            let y_squared = self.binary(y, y, BOp::Mul);
                             let x_div = self.binary(x, y_squared, BOp::Div);
                             self.release(y_squared).unwrap();
                             let grad1 = self.binary(grad, x_div, BOp::Mul);
@@ -948,8 +945,10 @@ impl Runtime {
                             // grad * x.pow(y) * log2(x) * (1/E.log2)
                             let sh = self.shape(y).into();
                             let dtype = self.dtype(y);
-                            let one_elog2 = self.graph.push(Node::Const { value: Constant::new(1f64/std::f64::consts::E.log2()).cast(dtype) });
-                            let one_elog2_ex = self.expand(one_elog2, sh);
+                            let one_elog2 = self.graph.push(Node::Const {
+                                value: Constant::new(1f64 / std::f64::consts::E.log2()).cast(dtype),
+                            });
+                            let one_elog2_ex = self.expand(one_elog2, sh).unwrap();
                             self.release(one_elog2).unwrap();
                             let log2 = self.unary(x, UOp::Log2);
                             let log2_one_elog2 = self.binary(log2, one_elog2_ex, BOp::Mul);
@@ -1018,7 +1017,7 @@ impl Runtime {
                     }
                     UOp::Exp2 => {
                         let temp = self.constant(std::f64::consts::E.log2());
-                        let temp1 = self.expand(temp, self.shape(x).into());
+                        let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
                         self.release(temp).unwrap();
                         let temp2 = self.binary(nid, temp1, BOp::Mul);
                         self.release(temp1).unwrap();
@@ -1028,7 +1027,7 @@ impl Runtime {
                     }
                     UOp::Log2 => {
                         let temp = self.constant(std::f64::consts::E.log2());
-                        let temp1 = self.expand(temp, self.shape(x).into());
+                        let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
                         self.release(temp).unwrap();
                         let temp2 = self.binary(x, temp1, BOp::Mul);
                         self.release(temp1).unwrap();
@@ -1088,7 +1087,8 @@ impl Runtime {
                     while shape.len() < shape.len() {
                         shape.insert(0, 1);
                     }
-                    let expand_axes: Vec<usize> = shape.clone()
+                    let expand_axes: Vec<usize> = shape
+                        .clone()
                         .into_iter()
                         .zip(&x_shape)
                         .enumerate()
@@ -1101,7 +1101,6 @@ impl Runtime {
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Permute { x } => {
-                    println!("Permute backward on nid: {nid} with x {x}");
                     let axes = self.graph.axes(nid);
                     let mut axes: Vec<(usize, usize)> = axes.iter().copied().enumerate().collect();
                     axes.sort_by_key(|(_, v)| *v);
@@ -1115,15 +1114,23 @@ impl Runtime {
                     let grad = self.pad_zeros(grad, inv_padding);
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
-                Node::Reduce { x, rop, .. } => match rop {
+                Node::Reduce { x, rop } => match rop {
                     ROp::Sum => {
-                        let grad = self.expand(grad, self.shape(x).into());
+                        let x_shape: Vec<Dimension> = self.shape(x).into();
+                        let mut z_shape: Vec<Dimension> = self.shape(nid).into();
+                        //println!("Reduce backward, z shape: {z_shape:?}, x shape: {x_shape:?}, reduce axes: {:?}", self.graph.axes(nid));
+                        for &axis in self.graph.axes(nid) {
+                            z_shape.insert(axis, 1);
+                        }
+                        let temp = self.reshape(grad, z_shape);
+                        let grad = self.expand(temp, x_shape).unwrap();
+                        self.release(temp).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     ROp::Max => {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
                         let x_shape: Vec<Dimension> = self.shape(x).into();
-                        let z_temp = self.expand(nid, x_shape.clone());
+                        let z_temp = self.expand(nid, x_shape.clone()).unwrap();
                         let cmp_t = self.binary(x, z_temp, BOp::Cmplt);
                         self.release(z_temp).unwrap();
                         let ones = self.zeros(x_shape, self.dtype(x));
@@ -1137,7 +1144,7 @@ impl Runtime {
                 },
             }
         }
-        println!("gradients: {grads:?}");
+        //println!("gradients: {grads:?}");
         let mut res = Map::with_capacity_and_hasher(10, Default::default());
         for (k, v) in grads {
             if sources.contains(&k) {
@@ -1146,7 +1153,7 @@ impl Runtime {
                 self.release(v).unwrap();
             }
         }
-        println!("res: {res:?}");
+        //println!("res: {res:?}");
         res
     }
 }

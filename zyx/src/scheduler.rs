@@ -401,9 +401,7 @@ pub fn realize_graph(
                             debug_assert_eq!(yt, 0);
                         }
 
-                        // DUe to the way nodes are handled it should not be possible for kidx to depend on kidy
-                        #[cfg(debug_assertions)]
-                        if depends_on(&kernels, kidy, kidx) {
+                        if kernels[kidx].has_stores() && depends_on(&kernels, kidy, kidx) {
                             panic!("Binary with kidy depending on kidx.")
                         }
 

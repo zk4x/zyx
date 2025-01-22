@@ -40,7 +40,7 @@ impl GradientTape {
         sources: impl IntoIterator<Item = &'a Tensor>,
     ) -> Vec<Option<Tensor>> {
         let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
-        println!("Sources: {sources:?}");
+        //println!("Sources: {sources:?}");
         let grads: Map<TensorId, TensorId> =
             RT.lock().backward(target.id(), &sources.iter().copied().collect());
         sources

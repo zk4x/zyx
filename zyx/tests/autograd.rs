@@ -82,13 +82,24 @@ fn grad_reshape() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad_expand() -> Result<(), ZyxError> {
+fn grad_expand_1() -> Result<(), ZyxError> {
     let x = Tensor::from([[4i32], [3], [1]]);
     let tape = GradientTape::new();
     let z = x.expand([3, 4])?;
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap().unwrap();
     assert_eq!(x_grad, [[4], [4], [4]]);
+    Ok(())
+}
+
+#[test]
+fn grad_expand_2() -> Result<(), ZyxError> {
+    let x = Tensor::from([4i32, 3, 1]);
+    let tape = GradientTape::new();
+    let z = x.reshape([3, 1])?.expand([3, 4])?;
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+    assert_eq!(x_grad, [4, 4, 4]);
     Ok(())
 }
 

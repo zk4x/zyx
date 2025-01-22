@@ -910,17 +910,9 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be expanded into shape.
     pub fn expand(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        let sh = self.shape();
-        let shape: Vec<Dimension> = shape.into_shape().collect();
-        //println!("Expand to {shape:?}");
-        if shape.len() < sh.len() {
-            return Err(ZyxError::ShapeError(format!(
-                "Cannot expand {:?} into {:?}",
-                self.shape(),
-                shape
-            )));
-        }
-        Ok(Tensor { id: RT.lock().expand(self.id, shape) })
+        //println!("Expand from {sh:?} to {shape:?}");
+        let id = RT.lock().expand(self.id, shape.into_shape().collect())?;
+        Ok(Tensor { id })
     }
 
     /// Permutes the axes of this tensor.
@@ -3027,7 +3019,7 @@ impl Tensor {
     }
 
     /// Tensor id
-    pub const fn id(&self) -> TensorId {
+    pub(super) const fn id(&self) -> TensorId {
         self.id
     }
 }

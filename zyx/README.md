@@ -29,7 +29,7 @@ Zyx uses syntax similar to other ML frameworks.
 ```rust
 use zyx::{Tensor, DType, GradientTape};
 
-let x = Tensor::randn([11024, 1024], DType::F32)?;
+let x = Tensor::randn([8, 1024, 1024], DType::F32)?;
 let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32)?;
 let b = Tensor::zeros([1024], DType::F32);
 let tape = GradientTape::new();
@@ -58,35 +58,54 @@ With [env var](https://github.com/zk4x/zyx/blob/main/zyx/ENV_VARS.md) `ZYX_DEBUG
 
 ## Simple neural network
 
+zyx-nn and zyx-optim provide high level constructs for neural networks.
+
 ```rust ignore
-use zyx::{Tensor, DType};
-use zyx_nn::Linear;
+use zyx::{Tensor, DType, GradientTape, ZyxError};
+use zyx_nn::{Linear, Module};
+use zyx_optim::SGD;
 
-    let mut l0 = Linear::init(3, 1024, true, DType::F32)?;
-    let mut l1 = Linear::init(1024, 2, true, DType::F32)?;
+#[derive(Module)]
+struct TinyNet {
+    l0: Linear,
+    l1: Linear,
+    lr: f32,
+}
 
-    let x = Tensor::from([2, 3, 1]).cast(DType::F32);
-    let target = Tensor::from([2, 4]);
-
-    // Zyx also provides some optimizers like SGD and Adam
-    let mut optim = zyx_optim::SGD {
-        learning_rate: 0.01,
-        momentum: 0.9,
-        nesterov: true,
-        ..Default::default()
-    };
-
-    let train_steps = 100;
-    for _ in 0..train_steps {
-        let tape = GradientTape::new();
-        let y = l0.forward(&x)?.relu();
-        let y = l1.forward(&y)?.sigmoid();
-        let loss = y.mse_loss(&target)?;
-        let grads = tape.gradient(&loss, l0.into_iter().chain(l1.into_iter()));
-        optim.update((&mut l0).into_iter().chain((&mut l1).into_iter()), grads);
+impl TinyNet {
+    fn forward(&self, x: &Tensor) -> Tensor {
+        let x = self.l0.forward(x).unwrap().relu();
+        self.l1.forward(x).unwrap().sigmoid()
     }
+}
 
-    l0.into_iter().chain(l1.into_iter()).save("my_net.safetensors")?;
+let mut net = TinyNet {
+    l0: Linear::init(3, 1024, true, DType::F32)?,
+    l1: Linear::init(1024, 2, true, DType::F32)?,
+    lr: 0.0,
+};
+
+for x in &mut net {
+    println!("Tensor: {}", x.id());
+}
+
+let mut optim = SGD {
+    learning_rate: 0.01,
+    momentum: 0.9,
+    nesterov: true,
+    ..Default::default()
+};
+
+let x = Tensor::from([2, 3, 1]).cast(DType::F32);
+let target = Tensor::from([5, 7]);
+
+for _ in 0..100 {
+    let tape = GradientTape::new();
+    let y = net.forward(&x);
+    let loss = y.mse_loss(&target)?;
+    let grads = tape.gradient(&loss, &net);
+    optim.update(&mut net, grads);
+}
 # Ok::<(), zyx::ZyxError>(())
 ```
 

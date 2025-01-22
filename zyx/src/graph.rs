@@ -55,7 +55,9 @@ impl Graph {
                 to_remove.insert(x);
                 self.nodes.remove(x);
                 self.shapes.remove(&x);
-                //self.dtypes.remove(&x);
+                if let Some(tape) = self.gradient_tape.as_mut() {
+                    tape.remove(&x);
+                }
                 self.axes.remove(&x);
                 self.paddings.remove(&x);
             }
@@ -159,16 +161,14 @@ impl Graph {
                 return &[1];
             }
             //println!("Getting params of id: {tensor_id}, {:?}", self.nodes[tensor_id].1);
-            tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
+            tensor_id = self.nodes[tensor_id].1.param1();
         }
         panic!("Shape of {tensor_id} could not be found. This is internal bug.")
     }
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &Set<TensorId>) -> Vec<TensorId> {
         let Some(tape) = self.gradient_tape.as_ref() else { return Vec::new() };
-        for (id, (rc, node)) in self.nodes.iter() {
-            println!("{id} x {rc}  {node:?}");
-        }
+        //for (id, (rc, node)) in self.nodes.iter() { println!("{id} x {rc}  {node:?}"); }
         //println!("Gradient tape: {tape:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = vec![x];
@@ -211,7 +211,7 @@ impl Graph {
             }
         }
         topo.reverse();
-        println!("topo {topo:?}");
+        //println!("topo {topo:?}");
         topo
     }
 

@@ -160,7 +160,7 @@ impl Node {
             Node::Reduce { x, .. } => x,
             Node::Cast { x, .. } => x,
             Node::Unary { x, .. } => x,
-            Node::Binary { .. } => unreachable!(),
+            Node::Binary { x, .. } => x,
         }
     }
 
