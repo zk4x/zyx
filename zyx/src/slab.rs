@@ -355,7 +355,7 @@ impl<T> Slab<T> {
         unsafe { self.values[id as usize].assume_init_drop() };
     }
 
-    pub(crate) unsafe fn remove_and_use(&mut self, id: Id) -> T {
+    pub(crate) unsafe fn remove_and_return(&mut self, id: Id) -> T {
         debug_assert!(!self.empty.contains(&id));
         self.empty.insert(id);
         self.values.push(MaybeUninit::uninit());
