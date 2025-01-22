@@ -14,11 +14,11 @@ Zyx is under lot of development and breaking changes are expected.
 Please use latest github version.
 
 ```toml
-// Only tensors (includes autograd)
+# Only tensors (includes autograd)
 zyx = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx" }
-// Neural network modules - Linear, normalization layers, ...
+# Neural network modules - Linear, normalization layers, ...
 zyx-nn = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx-nn" }
-// Optimizers - SGD, Adam
+# Optimizers - SGD, Adam
 zyx-optim = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx-optim" }
 ```
 
@@ -26,10 +26,10 @@ zyx-optim = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx
 
 Zyx uses syntax similar to other ML frameworks.
 
-```rust no_run
+```rust
 use zyx::{Tensor, DType, GradientTape};
 
-let x = Tensor::randn([1024, 1024], DType::F32)?;
+let x = Tensor::randn([11024, 1024], DType::F32)?;
 let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32)?;
 let b = Tensor::zeros([1024], DType::F32);
 let tape = GradientTape::new();
@@ -44,9 +44,9 @@ let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
 
 ## Backends
 
-- [x] CUDA
+- [x] `CUDA`
 - [x] `OpenCL`
-- [x] WGPU
+- [x] `WGPU`
 
 Please look at file [DEVICE_CONFIG.md](https://github.com/zk4x/zyx/blob/main/zyx/DEVICE_CONFIG.md)
 for detailed info how to tell Zyx which hardware it should utilize.
@@ -58,11 +58,6 @@ With [env var](https://github.com/zk4x/zyx/blob/main/zyx/ENV_VARS.md) `ZYX_DEBUG
 
 ## Simple neural network
 
-```shell
-cargo add zyx;
-cargo add zyx-optim;
-cargo add zyx-nn;
-```
 ```rust ignore
 use zyx::{Tensor, DType};
 use zyx_nn::Linear;
@@ -95,7 +90,7 @@ use zyx_nn::Linear;
 # Ok::<(), zyx::ZyxError>(())
 ```
 
-For more details, there is a [book](https://zk4x.github.io/zyx).
+For more details, there is a [book](https://zk4x.github.io/zyx) in works.
 
 ## Lazyness
 
@@ -108,11 +103,11 @@ If you do not know when to realize tensors, just do it after updating them with 
 sgd.update(&mut model, grads);
 Tensor::realize(&model).unwrap();
 ```
-This function might get obsolete in the future once detection of repeating graph patterns is implemented.
 
 ## Error handling
 
-In case of incorrect user input and incorrect 
+In case of incorrect user input and incorrect hardware behavior, zyx returns results.
+Every panic is a bug.
 
 ## Goals
 

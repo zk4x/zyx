@@ -84,23 +84,14 @@ impl Graph {
             }
         }
 
-        if let Some(tape) = self.gradient_tape.as_mut() {
-            let mut requires_grad = false;
-            for nid in node.parameters() {
-                self.nodes[nid].0 += 1;
-                requires_grad = requires_grad || tape.contains(&nid);
-            }
-            let nid = self.nodes.push((1, node));
-            if requires_grad {
-                tape.insert(nid);
-            }
-            nid
-        } else {
-            for nid in node.parameters() {
-                self.nodes[nid].0 += 1;
-            }
-            self.nodes.push((1, node))
+        for nid in node.parameters() {
+            self.nodes[nid].0 += 1;
         }
+        let nid = self.nodes.push((1, node));
+        if let Some(tape) = self.gradient_tape.as_mut() {
+            tape.insert(nid);
+        }
+        nid
     }
 
     pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dimension>) -> TensorId {
@@ -174,8 +165,11 @@ impl Graph {
     }
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &Set<TensorId>) -> Vec<TensorId> {
-        // TODO make use of gradient_tape
-
+        let Some(tape) = self.gradient_tape.as_ref() else { return Vec::new() };
+        for (id, (rc, node)) in self.nodes.iter() {
+            println!("{id} x {rc}  {node:?}");
+        }
+        println!("Gradient tape: {tape:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = vec![x];
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
@@ -185,7 +179,9 @@ impl Graph {
                     && !matches!(self.nodes[nid].1, Node::Binary { bop: BOp::Cmplt, .. })
                 // or Node::Detach
                 {
-                    params.extend(self.nodes[nid].1.parameters());
+                    if tape.contains(&nid) {
+                        params.extend(self.nodes[nid].1.parameters());
+                    }
                 }
                 1
             });
@@ -202,6 +198,7 @@ impl Graph {
                 }
             }
         }
+        println!("{order:?}");
         // Build topo, this way it ensures that grad is not used in backprop
         // before it was insert_or_add by all parents.
         let mut topo = Vec::new();
@@ -216,6 +213,7 @@ impl Graph {
             }
         }
         topo.reverse();
+        println!("{topo:?}");
         topo
     }
 

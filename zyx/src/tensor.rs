@@ -1885,7 +1885,7 @@ impl Tensor {
     /// let input = Tensor::from([2.0, 3.0]);
     /// let target = Tensor::from([4.0, 5.0]);
     ///
-    /// assert_eq!(input.mse_loss(target), [4.0, 4.0]);
+    /// assert_eq!(input.mse_loss(target).unwrap(), [4.0, 4.0]);
     /// ```
     ///
     /// # Errors
@@ -3309,7 +3309,7 @@ impl Display for Tensor {
             }
         };
         f.write_fmt(format_args!(
-            "Tensor {:?} {}\n{res}",
+            "{res}\nTensor {:?} {}",
             self.shape(),
             self.dtype()
         ))

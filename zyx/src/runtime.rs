@@ -64,13 +64,13 @@ impl Pool {
     }
 }
 
-fn get_mut_buffer(pools: &mut [Pool], tensor_id: TensorId) -> (&mut Pool, Id) {
+fn get_mut_buffer(pools: &mut [Pool], tensor_id: TensorId) -> Option<(&mut Pool, Id)> {
     for pool in pools {
         if let Some(&id) = pool.buffer_map.get(&tensor_id) {
-            return (pool, id);
+            return Some((pool, id));
         }
     }
-    unreachable!()
+    None
 }
 
 impl Runtime {
@@ -426,19 +426,17 @@ impl Runtime {
             self.retain(x);
             return x;
         }
-        // Reshape on leaf is NOOP, tensor_buffer_map traces ownership
-        if let Node::Leaf { dtype } = self.graph[x] {
-            let (pool, bid) = get_mut_buffer(&mut self.pools, x);
-            let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
+        let id = self.graph.push_wshape(Node::Reshape { x }, shape);
+        // Reshape on realized variable is NOOP, buffer_maps trace ownership
+        if let Some((pool, bid)) = get_mut_buffer(&mut self.pools, x) {
             pool.buffer_map.insert(id, bid);
-            return id;
         }
-        self.graph.push_wshape(Node::Reshape { x }, shape)
+        id
     }
 
     #[must_use]
     pub(super) fn expand(&mut self, x: TensorId, shape: Vec<Dimension>) -> TensorId {
-        let sh = self.shape(x);
+        let sh: Vec<Dimension> = self.shape(x).into();
         //println!("Expanding {x} from {sh:?} to {shape:?}");
         if shape == sh {
             self.retain(x);
@@ -446,9 +444,8 @@ impl Runtime {
         }
         // Expand with only inserting first dimensions is noop
         if sh.iter().product::<Dimension>() == shape.iter().product::<Dimension>() {
-            if let Node::Leaf { dtype } = self.graph[x] {
-                let (pool, bid) = get_mut_buffer(&mut self.pools, x);
-                let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
+            if let Some((pool, bid)) = get_mut_buffer(&mut self.pools, x) {
+                let id = self.graph.push_wshape(Node::Expand { x }, shape);
                 pool.buffer_map.insert(id, bid);
                 return id;
             }
@@ -572,7 +569,7 @@ impl Runtime {
             std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size())
         };
 
-        let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x);
+        let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x).unwrap();
         for buffers in pool.events.keys() {
             if buffers.contains(&x) {
                 let event = pool.events.remove(&buffers.clone()).unwrap();
@@ -1171,13 +1168,6 @@ pub enum ZyxError {
     /// Error returned by backends
     BackendError(BackendError),
 }
-
-/*impl<Err: std::fmt::Display> From<Err> for ZyxError {
-    #[track_caller]
-    fn from(err: Err) -> Self {
-        panic!("error: {}: {}", std::any::type_name::<Err>(), err);
-    }
-}*/
 
 impl std::fmt::Display for ZyxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

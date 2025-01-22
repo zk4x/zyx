@@ -75,11 +75,9 @@ fn grad_reshape() -> Result<(), ZyxError> {
     let x = Tensor::from([[4i32], [3], [1]]);
     let tape = GradientTape::new();
     let z = x.reshape([1, 3, 1, 1])?;
-    let grads = tape.gradient(&z, [&x]);
-    let _ = grads;
-    //let x_grad = grads.pop().unwrap().unwrap();
-    //assert_eq!(x_grad, );
-    // TODO
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+    assert_eq!(x_grad, [[1i32], [1], [1]]);
     Ok(())
 }
 
@@ -103,4 +101,17 @@ fn grad_permute() -> Result<(), ZyxError> {
     let x_grad = grads.pop().unwrap().unwrap();
     assert_eq!(x_grad, [[1], [1], [1]]);
     Ok(())
+}
+
+#[test]
+fn grad_dot() {
+    let x = Tensor::from([2, 3, 1]);
+    let y = Tensor::from([2, 3, 1]).reshape([3, 1]).unwrap();
+    let tape = GradientTape::new();
+    let z = x.dot(&y).unwrap();
+    let mut grads = tape.gradient(&z, [&x, &y]);
+    let y_grad = grads.pop().unwrap().unwrap();
+    let x_grad = grads.pop().unwrap().unwrap();
+    assert_eq!(x_grad, [2, 3, 1]);
+    assert_eq!(y_grad, [[2], [3], [1]]);
 }
