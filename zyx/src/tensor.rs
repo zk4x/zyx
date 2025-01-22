@@ -2272,12 +2272,12 @@ impl Tensor {
         let rank = shape.len();
 
         let s_: Vec<usize> = if stride.len() == 1 {
-            repeat(stride[0]).take(k_.len()).collect()
+            vec![stride[0]; k_.len()]
         } else {
             stride
         };
         let d_: Vec<usize> = if dilation.len() == 1 {
-            repeat(dilation[0]).take(k_.len()).collect()
+            vec![dilation[0]; k_.len()]
         } else {
             dilation
         };
