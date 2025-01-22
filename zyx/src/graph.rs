@@ -169,7 +169,7 @@ impl Graph {
         for (id, (rc, node)) in self.nodes.iter() {
             println!("{id} x {rc}  {node:?}");
         }
-        println!("Gradient tape: {tape:?}");
+        //println!("Gradient tape: {tape:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = vec![x];
         let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
@@ -177,11 +177,9 @@ impl Graph {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 if !sources.contains(&nid)
                     && !matches!(self.nodes[nid].1, Node::Binary { bop: BOp::Cmplt, .. })
-                // or Node::Detach
+                    && tape.contains(&nid)
                 {
-                    if tape.contains(&nid) {
-                        params.extend(self.nodes[nid].1.parameters());
-                    }
+                    params.extend(self.nodes[nid].1.parameters());
                 }
                 1
             });
@@ -198,7 +196,7 @@ impl Graph {
                 }
             }
         }
-        println!("{order:?}");
+        //println!("order {order:?}");
         // Build topo, this way it ensures that grad is not used in backprop
         // before it was insert_or_add by all parents.
         let mut topo = Vec::new();
@@ -213,7 +211,7 @@ impl Graph {
             }
         }
         topo.reverse();
-        println!("{topo:?}");
+        println!("topo {topo:?}");
         topo
     }
 
@@ -267,7 +265,8 @@ impl Graph {
             }
         }
         //std::println!("User {:?}", user_rc);
-        let realized_nodes: Set<TensorId> = pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+        let realized_nodes: Set<TensorId> =
+            pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
         let mut res_dot_graph =
             String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
         let mut add_node = |i: TensorId, text: &str, shape: &str| {

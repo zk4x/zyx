@@ -38,6 +38,7 @@ fn linear() -> Result<(), ZyxError> {
     println!("{}\n{}", l0.weight, l0.bias.as_ref().unwrap());
     let x = Tensor::randn([8, 4], DType::F32)?;
     let y = l0.forward(x)?.relu();
+
     println!("{y}");
 
     Ok(())

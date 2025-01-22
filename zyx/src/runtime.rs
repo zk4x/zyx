@@ -1101,6 +1101,7 @@ impl Runtime {
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Permute { x } => {
+                    println!("Permute backward on nid: {nid} with x {x}");
                     let axes = self.graph.axes(nid);
                     let mut axes: Vec<(usize, usize)> = axes.iter().copied().enumerate().collect();
                     axes.sort_by_key(|(_, v)| *v);
@@ -1136,6 +1137,7 @@ impl Runtime {
                 },
             }
         }
+        println!("gradients: {grads:?}");
         let mut res = Map::with_capacity_and_hasher(10, Default::default());
         for (k, v) in grads {
             if sources.contains(&k) {
@@ -1144,6 +1146,7 @@ impl Runtime {
                 self.release(v).unwrap();
             }
         }
+        println!("res: {res:?}");
         res
     }
 }

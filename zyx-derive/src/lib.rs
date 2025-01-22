@@ -104,19 +104,19 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     };
 
     let mut field_iterators = quote! {
-        trait __MarkerTraitMut<'a>: Sized {
-            fn __iterate_by_mut(mut self, res: &mut std::vec::Vec<&'a mut zyx::Tensor>) {}
+        trait MarkerTraitMut<'a>: Sized {
+            fn iterate_by_mut(mut self, res: &mut Vec<&'a mut zyx::Tensor>) {}
         }
 
-        struct __MarkerStructMut<T>(T);
+        struct MarkerStructMut<T>(T);
 
-        impl<'a, T: IntoIterator<Item = &'a mut zyx::Tensor>> __MarkerStructMut<T> {
-            fn __iterate_by_mut(mut self, res: &mut std::vec::Vec<&'a mut zyx::Tensor>) {
+        impl<'a, T: IntoIterator<Item = &'a mut zyx::Tensor>> MarkerStructMut<T> {
+            fn iterate_by_mut(mut self, res: &mut Vec<&'a mut zyx::Tensor>) {
                 res.extend(self.0.into_iter());
             }
         }
 
-        impl<'a, T> __MarkerTraitMut<'a> for __MarkerStructMut<T>{}
+        impl<'a, T> MarkerTraitMut<'a> for MarkerStructMut<T>{}
 
         let mut res = Vec::<&mut zyx::Tensor>::new();
     };
@@ -137,7 +137,7 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
             } else {
                 field_iterators = quote! {
                     #field_iterators
-                    __MarkerStructMut::<&#field_ty>::__iterate_by_mut(__MarkerStructMut(&mut self.#field_name), &mut res);
+                    MarkerStructMut::<&mut #field_ty>::iterate_by_mut(MarkerStructMut(&mut self.#field_name), &mut res);
                 };
             }
         }

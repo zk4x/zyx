@@ -3026,7 +3026,8 @@ impl Tensor {
         shape
     }
 
-    pub(super) const fn id(&self) -> TensorId {
+    /// Tensor id
+    pub const fn id(&self) -> TensorId {
         self.id
     }
 }
