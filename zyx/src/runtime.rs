@@ -97,8 +97,6 @@ impl Runtime {
     pub(super) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
         let to_remove = self.graph.release(x);
         self.deallocate_tensors(&to_remove)?;
-        // TODO Check the number of tensors. If there are no tensors remaining, deinitialize the runtime,
-        // since rust does not implement drop for us.
         if self.graph.is_empty() && self.pools.iter().all(|mp| mp.buffer_map.is_empty()) {
             self.deinitialize()?;
         }
