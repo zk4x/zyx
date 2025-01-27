@@ -16,6 +16,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::{vec, vec::Vec};
 
+const NUM_CONSTANTS: usize = 64;
+
 // This is the whole global state of zyx
 pub struct Runtime {
     // Current graph of tensor operations as nodes
@@ -36,8 +38,10 @@ pub struct Runtime {
     pub(super) search_iterations: usize,
     /// Debug mask
     pub(super) debug: DebugMask,
-    /// Temporary storage
+    /// Temporary storage, TODO limit the number of elements in temporary storage
     temp_data: Vec<Box<dyn TempData>>,
+    constants: [Constant; NUM_CONSTANTS],
+    constants_len: usize,
 }
 
 pub trait TempData: Send {
@@ -87,6 +91,8 @@ impl Runtime {
             search_iterations: 0,
             debug: DebugMask(0),
             temp_data: Vec::new(),
+            constants: [Constant::I32(0); NUM_CONSTANTS],
+            constants_len: 0,
         }
     }
 
@@ -268,7 +274,16 @@ impl Runtime {
         );
         if bytes == dtype.byte_size() as usize {
             let value = data.read();
-            return Ok(self.graph.push(Node::Const { value: Constant::from_bytes(value, dtype) }));
+            let value = Constant::from_bytes(value, dtype);
+            if self.constants_len < NUM_CONSTANTS {
+                if !self.constants.contains(&value) {
+                    self.constants[self.constants_len] = value;
+                    self.constants_len += 1;
+                }
+                return Ok(self.graph.push(Node::Const { value }));
+            } else if self.constants.contains(&value) {
+                return Ok(self.graph.push(Node::Const { value }));
+            }
         }
         self.initialize_devices()?;
         // TODO rewrite this such that we try to allocate memory pools in fastest device
