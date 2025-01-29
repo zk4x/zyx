@@ -821,7 +821,7 @@ fn t6() -> Result<(), ZyxError> {
     let z = (x.dot(&y).unwrap() + &b).gelu();
     // Zyx allows for arbitrary differentiation
     let b_grad = tape.gradient(&z, [&b])[0].clone().unwrap();
-    panic!();
+    //panic!();
     println!("{b_grad}");
     // Also higher order derivatives
     let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
@@ -839,6 +839,21 @@ fn iter1() -> Result<(), ZyxError> {
         x = x.dot(&y)?.softmax([-1])?;
         Tensor::realize([&x])?;
     }
+
+    Ok(())
+}
+
+#[test]
+fn add_x_depends_y() -> Result<(), ZyxError> {
+    let x = Tensor::from([2, 4, 1, 3, 2]);
+    let y = Tensor::from([9, 2, 2, 8, 5]);
+
+    let x1 = x.relu();
+    let y1 = x1.relu();
+    let x2 = &x1 + y1;
+
+    Tensor::realize([&x1, &x2])?;
+
 
     Ok(())
 }

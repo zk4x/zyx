@@ -1,6 +1,40 @@
 use zyx::{GradientTape, Tensor, ZyxError};
 
 #[test]
+fn grad_relu() -> Result<(), ZyxError> {
+    let x = Tensor::from([3, 2, 4]);
+    let tape = GradientTape::new();
+    let z = x.relu();
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+    assert_eq!(x_grad, [1, 1, 1]);
+    Ok(())
+}
+
+#[test]
+fn grad_reciprocal() -> Result<(), ZyxError> {
+    let x = Tensor::from([3f32, 2., 4.]);
+    let tape = GradientTape::new();
+    let z = x.reciprocal();
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+    assert_eq!(x_grad, [-0.1111111111f32, -0.25, -0.0625]);
+    Ok(())
+}
+
+#[test]
+fn grad_cos() -> Result<(), ZyxError> {
+    let x = Tensor::from([3f32, 2., 4.]);
+    let tape = GradientTape::new();
+    let z = x.cos();
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+    println!("{x_grad:.10}");
+    assert_eq!(x_grad, [-0.1411200017f32, -0.9092974067, 0.7568024993]);
+    Ok(())
+}
+
+#[test]
 fn grad_add() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 2, 4]);
     let y = Tensor::from([3, 1, 5]);
@@ -125,4 +159,59 @@ fn grad_dot() {
     let x_grad = grads.pop().unwrap().unwrap();
     assert_eq!(x_grad, [2, 3, 1]);
     assert_eq!(y_grad, [[2], [3], [1]]);
+}
+
+#[test]
+fn grad_linear_1() -> Result<(), ZyxError> {
+    let x = Tensor::from([2, 3, 1]);
+    let w = Tensor::from([2, 3, 1, 4, 5, 1, 6, 2, 3, 1, 6, 2, 4, 1, 4]).reshape([3, 5])?;
+    let b = Tensor::from([4, 1, 5, 7, 6]);
+
+    let tape = GradientTape::new();
+
+    let z = x.matmul(&w)? + &b;
+
+    let mut grads = tape.gradient(&z, [&w, &b]);
+    let b_grad = grads.pop().unwrap().unwrap();
+    let w_grad = grads.pop().unwrap().unwrap();
+
+    assert_eq!(w_grad, [[2, 2, 2, 2, 2], [3, 3, 3, 3, 3], [1, 1, 1, 1, 1]]);
+    assert_eq!(b_grad, [1, 1, 1, 1, 1]);
+
+    Ok(())
+}
+
+#[test]
+fn grad_linear_2() -> Result<(), ZyxError> {
+    let x = Tensor::from([2, 3, 1]);
+    let y = Tensor::from([5, 4, 5, 2]);
+    let w1 = Tensor::from([2, 3, 1, 4, 5, 1, 6, 2, 3, 1, 6, 2, 4, 1, 4]).reshape([3, 5])?;
+    let b1 = Tensor::from([4, 1, 5, 7, 6]);
+
+    let w2 = Tensor::from([2, 3, 1, 4, 5, 1, 6, 2, 3, 1, 6, 2, 4, 1, 4, 5, 1, 2, 4, 1]).reshape([5, 4])?;
+    let b2 = Tensor::from([4, 1, 5, 7]);
+
+    let tape = GradientTape::new();
+
+    let x = x.matmul(&w1)? + &b1;
+    //let x = x.relu();
+    let x = x.matmul(&w2)? + &b2;
+    //let x = x.sigmoid();
+    let x = x.mse_loss(y)?;
+
+    let mut grads = tape.gradient(&x, [&w1, &b1, &w2, &b2]);
+    let b2_grad = grads.pop().unwrap().unwrap();
+    let w2_grad = grads.pop().unwrap().unwrap();
+    let b1_grad = grads.pop().unwrap().unwrap();
+    let w1_grad = grads.pop().unwrap().unwrap();
+
+    println!("{w1_grad}");
+    println!("{b1_grad}");
+    println!("{w2_grad}");
+    println!("{b2_grad}");
+
+    assert_eq!(w1_grad, [[2, 2, 2, 2, 2], [3, 3, 3, 3, 3], [1, 1, 1, 1, 1]]);
+    assert_eq!(b1_grad, [1, 1, 1, 1, 1]);
+
+    Ok(())
 }

@@ -1032,8 +1032,10 @@ impl Runtime {
                         let zeros = self.zeros(self.shape(x).into(), self.dtype(x));
                         let zl = self.binary(zeros, x, BOp::Cmplt);
                         self.release(zeros).unwrap();
-                        let x_grad = self.binary(zl, grad, BOp::Mul);
+                        let zl_cast = self.cast(zl, self.dtype(x));
                         self.release(zl).unwrap();
+                        let x_grad = self.binary(zl_cast, grad, BOp::Mul);
+                        self.release(zl_cast).unwrap();
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
                     UOp::Exp2 => {

@@ -469,7 +469,6 @@ pub fn realize_graph(
                             // evaluation. This can make the scheduler faster as we will have fewer kernels to work with.
                             debug_assert_eq!(xt, 0);
                             // TODO this seems wrong
-                            panic!();
                         }
 
                         let Kernel { ops, tensors, outputs, max_id, depends_on } =
@@ -622,6 +621,7 @@ pub fn realize_graph(
         );
     }*/
 
+    // Check for small kernels (to improve performance)
     /*for kernel in kernels.values() {
         if kernel.ops.len() < 20 {
             kernel.debug();
@@ -641,6 +641,11 @@ pub fn realize_graph(
             if kernels[kid].depends_on.is_empty() {
                 ids.remove(i);
                 let mut kernel = unsafe { kernels.remove_and_return(kid) };
+                #[cfg(debug_assertions)]
+                if !kernel.has_stores() {
+                    kernel.debug();
+                    panic!("Trying to launch kernel without stores");
+                }
                 kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
                 for kernel in kernels.values_mut() {
                     kernel.depends_on.remove(&kid);
