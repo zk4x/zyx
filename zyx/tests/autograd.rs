@@ -12,6 +12,29 @@ fn grad_relu() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn grad_reciprocal() -> Result<(), ZyxError> {
+    let x = Tensor::from([3f32, 2., 4.]);
+    let tape = GradientTape::new();
+    let z = x.reciprocal();
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+    assert_eq!(x_grad, [-0.1111111111f32, -0.25, -0.0625]);
+    Ok(())
+}
+
+#[test]
+fn grad_cos() -> Result<(), ZyxError> {
+    let x = Tensor::from([3f32, 2., 4.]);
+    let tape = GradientTape::new();
+    let z = x.cos();
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+    println!("{x_grad:.10}");
+    assert_eq!(x_grad, [-0.1411200017f32, -0.9092974067, 0.7568024993]);
+    Ok(())
+}
+
+#[test]
 fn grad_add() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 2, 4]);
     let y = Tensor::from([3, 1, 5]);
