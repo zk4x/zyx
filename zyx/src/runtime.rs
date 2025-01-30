@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::{vec, vec::Vec};
 
-const NUM_CONSTANTS: usize = 64;
+const NUM_CONSTANTS: usize = 32;
 
 // This is the whole global state of zyx
 pub struct Runtime {
@@ -775,14 +775,14 @@ impl Runtime {
             //println!("NewLeafs {new_leafs:?}");
             (order, rcs, to_delete, new_leafs)
         };
-        let elapsed = begin.elapsed();
-        println!(
+        let _elapsed = begin.elapsed();
+        /*println!(
             "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape = {}",
             elapsed.as_micros(),
             order.len(),
             self.graph.nodes.len(),
             self.graph.gradient_tape.is_some(),
-        );
+        );*/
 
         crate::scheduler::realize_graph(
             &self.graph,
@@ -937,14 +937,13 @@ impl Runtime {
                             insert_or_add_grad(self, &mut grads, x, x_grad);
                         }
                         if req_grad.contains(&y) {
-                            // -(grad*x/(y^y))
+                            // -(grad*x/(y*y))
+                            let grad_neg = self.unary(grad, UOp::Neg);
+                            let x_mul = self.binary(grad_neg, x, BOp::Mul);
+                            self.release(grad_neg).unwrap();
                             let y_squared = self.binary(y, y, BOp::Mul);
-                            let x_div = self.binary(x, y_squared, BOp::Div);
+                            let y_grad = self.binary(x_mul, y_squared, BOp::Div);
                             self.release(y_squared).unwrap();
-                            let grad1 = self.binary(grad, x_div, BOp::Mul);
-                            self.release(x_div).unwrap();
-                            let y_grad = self.unary(grad1, UOp::Neg);
-                            self.release(grad1).unwrap();
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
                     }
@@ -1141,6 +1140,9 @@ impl Runtime {
                         //println!("Reduce backward, z shape: {z_shape:?}, x shape: {x_shape:?}, reduce axes: {:?}", self.graph.axes(nid));
                         for &axis in self.graph.axes(nid) {
                             z_shape.insert(axis, 1);
+                        }
+                        if self.graph.axes(nid).len() == x_shape.len() {
+                            z_shape.remove(0);
                         }
                         let temp = self.reshape(grad, z_shape);
                         let grad = self.expand(temp, x_shape).unwrap();

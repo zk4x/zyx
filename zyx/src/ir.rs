@@ -1172,7 +1172,7 @@ impl IRCompiler {
                             match bop {
                                 BOp::Add => {}
                                 BOp::Sub => todo!(),
-                                BOp::Mul => todo!(),
+                                BOp::Mul => self.ops[i] = IROp::Binary { z, x: y, y, bop: BOp::Add },
                                 BOp::Div => todo!(),
                                 BOp::Pow => todo!(),
                                 BOp::Mod => todo!(),

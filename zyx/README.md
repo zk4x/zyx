@@ -80,14 +80,10 @@ impl TinyNet {
 }
 
 let mut net = TinyNet {
-    l0: Linear::init(3, 1024, true, DType::F32)?,
-    l1: Linear::init(1024, 2, true, DType::F32)?,
+    l0: Linear::init(3, 1024, true, DType::F16)?,
+    l1: Linear::init(1024, 2, true, DType::F16)?,
     lr: 0.0,
 };
-
-for x in &mut net {
-    println!("Tensor: {}", x.id());
-}
 
 let mut optim = SGD {
     learning_rate: 0.01,
@@ -96,7 +92,7 @@ let mut optim = SGD {
     ..Default::default()
 };
 
-let x = Tensor::from([2, 3, 1]).cast(DType::F32);
+let x = Tensor::from([2, 3, 1]).cast(DType::F16);
 let target = Tensor::from([5, 7]);
 
 for _ in 0..100 {

@@ -810,26 +810,6 @@ fn graph_tensor_ordering() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[test]
-fn t6() -> Result<(), ZyxError> {
-    use zyx::GradientTape;
-    let x = Tensor::randn([8, 1024, 1024], DType::F32).unwrap();
-    let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32).unwrap();
-    let b = Tensor::zeros([1024], DType::F32);
-    let tape = GradientTape::new();
-    let _z = &x + &y;
-    let z = (x.dot(&y).unwrap() + &b).gelu();
-    // Zyx allows for arbitrary differentiation
-    let b_grad = tape.gradient(&z, [&b])[0].clone().unwrap();
-    //panic!();
-    println!("{b_grad}");
-    // Also higher order derivatives
-    let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
-    println!("{bb_grad}");
-
-    Ok(())
-}*/
-
 #[test]
 fn iter1() -> Result<(), ZyxError> {
     let mut x = Tensor::randn([64, 64], DType::F32)?;
@@ -846,13 +826,13 @@ fn iter1() -> Result<(), ZyxError> {
 #[test]
 fn add_x_depends_y() -> Result<(), ZyxError> {
     let x = Tensor::from([2, 4, 1, 3, 2]);
-    let y = Tensor::from([9, 2, 2, 8, 5]);
 
     let x1 = x.relu();
     let y1 = x1.relu();
     let x2 = &x1 + y1;
 
     Tensor::realize([&x1, &x2])?;
+    //Tensor::realize([&x2])?;
 
 
     Ok(())

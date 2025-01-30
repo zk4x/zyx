@@ -698,7 +698,7 @@ impl Device for OpenCLDevice {
 
         // Add indices for global and local loops
         source += &format!(
-            "{indent}r{} = get_group_id(0);   /* 0..{} */\n",
+            "{indent}r{} = get_group_id(0); /* 0..{} */\n",
             loops[0], global_work_size[0]
         );
         source += &format!(
@@ -796,6 +796,7 @@ impl Device for OpenCLDevice {
                     };
                 }
                 IROp::Binary { z, x, y, bop } => {
+                    let dtype = kernel.registers[z as usize];
                     source += &format!(
                         "{indent}r{z} = {};\n",
                         match bop {
@@ -804,7 +805,8 @@ impl Device for OpenCLDevice {
                             BOp::Mul => format!("{} * {}", x.ocl(), y.ocl()),
                             BOp::Div => format!("{} / {}", x.ocl(), y.ocl()),
                             BOp::Mod => format!("{} % {}", x.ocl(), y.ocl()),
-                            BOp::Pow => format!("pow({}, {})", x.ocl(), y.ocl()),
+                            BOp::Pow => format!("{}({}, {})", if dtype.is_float() { "pow" } else { "pown" }, x.ocl(), y.ocl()),
+                            //BOp::Pow => format!("exp2({} * log2(abs({})))", y.ocl(), x.ocl()),
                             BOp::Cmplt => format!("{} < {}", x.ocl(), y.ocl()),
                             BOp::Cmpgt => format!("{} > {}", x.ocl(), y.ocl()),
                             BOp::NotEq => format!("{} != {}", x.ocl(), y.ocl()),

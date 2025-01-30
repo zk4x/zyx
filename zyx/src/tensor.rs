@@ -1740,6 +1740,7 @@ impl Tensor {
     ///
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn pow(&self, exponent: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        //Ok((self.log2() * exponent).exp2())
         let (x, y) = Tensor::broadcast(self.clone(), exponent)?;
         let id = RT.lock().binary(x.id, y.id, BOp::Pow);
         Ok(Tensor { id })
@@ -1877,7 +1878,7 @@ impl Tensor {
     /// let input = Tensor::from([2.0, 3.0]);
     /// let target = Tensor::from([4.0, 5.0]);
     ///
-    /// assert_eq!(input.mse_loss(target).unwrap(), [4.0, 4.0]);
+    /// assert_eq!(input.mse_loss(target).unwrap(), 4.0);
     /// ```
     ///
     /// # Errors
@@ -1887,7 +1888,7 @@ impl Tensor {
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, target)?;
         let x = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
-        Ok(x.clone() * x)
+        Ok((x.clone() * x).mean([])?)
     }
 
     /// Calculates the cosine similarity between this tensor and another.

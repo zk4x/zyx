@@ -39,7 +39,7 @@ pub fn realize_graph(
     memory_pools: &mut [Pool],
     optimizer: &mut Optimizer,
     search_iters: usize,
-    mut realized_nodes: Set<TensorId>,
+    realized_nodes: Set<TensorId>,
     debug: DebugMask,
 ) -> Result<(), ZyxError> {
     //let t = crate::Timer::new("realize_graph");
@@ -611,7 +611,9 @@ pub fn realize_graph(
         avg_ops += n;
     }
     let kernels_len = kernels.len();
-    println!("Scheduled {kernels_len} kernels, scheduling took {elapsed}us, ops per kernel: min: {min_ops}, max: {max_ops}, avg: {}", avg_ops/kernels_len);
+    if debug.sched() {
+        println!("Scheduled {kernels_len} kernels, scheduling took {elapsed}us, ops per kernel: min: {min_ops}, max: {max_ops}, avg: {}", avg_ops/kernels_len);
+    }
     //println!("Expand clones: {expa_u}, reshape clones: {resh_u}, pad clones: {pad_u}, permute clones: {perm_u}, reduce clones: {red_u}");
     // Timer
     /*for (name, (time, iters)) in crate::ET.lock().iter() {
@@ -629,6 +631,8 @@ pub fn realize_graph(
     }*/
 
     //panic!();
+
+    let mut realized_nodes = realized_nodes;
 
     realized_nodes.extend(to_eval);
 
@@ -776,7 +780,7 @@ fn store(
 
 // recursive should be faster, since it does not allocate, but in fact the dynamic programming
 // version is much faster, apparently cpus really hate recursion
-// Check if kidx depends on kidy
+/// Check if kidx depends on kidy
 fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
     let mut depends_on = kernels[kidx].depends_on.clone();
     while let Some(kid) = depends_on.pop_last() {
