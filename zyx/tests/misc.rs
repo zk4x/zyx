@@ -824,16 +824,23 @@ fn iter1() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn add_x_depends_y() -> Result<(), ZyxError> {
-    let x = Tensor::from([2, 4, 1, 3, 2]);
+fn binary_y_depends_on_x() -> Result<(), ZyxError> {
+    let z = {
+        let x = Tensor::from([[2, 4, 1], [3, 2, 4]]);
 
-    let x1 = x.relu();
-    let y1 = x1.relu();
-    let x2 = &x1 + y1;
+        let x = x.exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2();
 
-    Tensor::realize([&x1, &x2])?;
-    //Tensor::realize([&x2])?;
+        let y = x.permute([1, 0]).unwrap();
 
+        let z = x.reshape(6).unwrap() + y.reshape(6).unwrap();
+        z.exp2().log2()
+    };
+
+    Tensor::plot_graph([], "graph").unwrap();
+
+    println!("{z}");
+
+    panic!();
 
     Ok(())
 }

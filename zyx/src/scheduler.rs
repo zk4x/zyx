@@ -251,6 +251,7 @@ pub fn realize_graph(
                             }
                             kernels.push(new_kernel);
                         } else {
+                            println!("Kernel too big, creating depends on");
                             let x_shape = graph.shape(x);
                             let x_dtype = graph.dtype(x);
                             store(&mut kernels, kid, x, x_shape, x_dtype);
@@ -417,7 +418,7 @@ pub fn realize_graph(
 
                         if kernels[kidx].has_stores() && depends_on(&kernels, kidy, kidx) {
                             //if !kernels[kidy].depends_on.is_empty() {
-                            //println!("kidx depends on kidy");
+                            println!("kidy depends on kidx");
                             let outputs = kernels[kidx].outputs.clone();
                             // Stores all outputs that are not stored yet
                             for (nid, inner_x) in outputs {
@@ -470,6 +471,7 @@ pub fn realize_graph(
                             // evaluation. This can make the scheduler faster as we will have fewer kernels to work with.
                             debug_assert_eq!(xt, 0);
                             // TODO this seems wrong
+                            //panic!()
                         }
 
                         let Kernel { ops, tensors, outputs, max_id, depends_on } =

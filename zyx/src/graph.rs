@@ -286,7 +286,7 @@ impl Graph {
             }
             write!(
                 res_dot_graph,
-                "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled], color=\"{border_color}\", penwidth={border_width}",
+                "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled, color=\"{border_color}\", penwidth={border_width}]",
                 i,
                 self.nodes[i].0,
                 text,
