@@ -419,12 +419,13 @@ pub fn realize_graph(
                             //if !kernels[kidy].depends_on.is_empty() {
                             //println!("kidx depends on kidy");
                             let outputs = kernels[kidx].outputs.clone();
+                            // Stores all outputs that are not stored yet
                             for (nid, inner_x) in outputs {
                                 if rcs.contains_key(&nid) {
                                     if !kernels[kidx].tensors.values().any(|id| *id == nid) {
+                                        // if the kernel wasn't stored yet, because it wasn't processed yet
                                         let nid_shape = graph.shape(nid);
                                         let nid_dtype = graph.dtype(nid);
-                                        // if the kernel wasn't stored yet, because it wasn't processed yet
                                         let zview = View::contiguous(nid_shape);
                                         kernels[kidx].max_id += 1;
                                         let z = kernels[kidx].max_id;
@@ -584,6 +585,17 @@ pub fn realize_graph(
         }
 
         debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
+
+        #[cfg(debug_assertions)]
+        {
+            debug_assert!(kernels[kid].ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
+            - kernels[kid].ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count() > 0);
+
+            for kernel in kernels.values() {
+                debug_assert!(kernel.ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
+                - kernel.ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count() > 0);
+            }
+        }
 
         if to_eval.contains(&nid) {
             let nid_shape = graph.shape(nid);

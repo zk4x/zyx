@@ -837,3 +837,10 @@ fn add_x_depends_y() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn sum4() {
+    let x = Tensor::from([[3, 1, 3], [2, 4, 1]]);
+    let y = x.sum([]).unwrap();
+    println!("{y}");
+}

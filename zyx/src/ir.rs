@@ -808,11 +808,6 @@ impl IRCompiler {
         }
     }
 
-    const fn loop_splitting(&self) {
-        let _ = self;
-        // TODO
-    }
-
     const fn common_subexpression_elimination(&self) {
         let _ = self;
         // TODO
@@ -1380,7 +1375,7 @@ impl IRKernel {
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
         //compiler.loop_invariant_code_motion();
-        compiler.loop_splitting();
+        //compiler.loop_splitting();
         compiler.vectorization();
         compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
