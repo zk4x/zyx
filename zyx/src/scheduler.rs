@@ -1,7 +1,17 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::Device, graph::Graph, ir::Scope, kernel::{Kernel, Op, TId}, node::Node, optimizer::Optimizer, runtime::Pool, slab::{Id, Slab}, tensor::TensorId, view::View, DType, DebugMask, Map, Set, ZyxError
+    backend::Device,
+    graph::Graph,
+    ir::Scope,
+    kernel::{Kernel, Op, TId},
+    node::Node,
+    optimizer::Optimizer,
+    runtime::Pool,
+    slab::{Id, Slab},
+    tensor::TensorId,
+    view::View,
+    DType, DebugMask, Map, Set, ZyxError,
 };
 use std::collections::BTreeSet;
 
@@ -362,30 +372,21 @@ pub fn realize_graph(
                         // write a load kernel for y
                         // mark kidy as new kernel
                         if kernels[kidy].has_stores() && depends_on(&kernels, kidx, kidy) {
-                            //if !kernels[kidy].depends_on.is_empty() {
-                            //println!("kidx depends on kidy");
                             let outputs = kernels[kidy].outputs.clone();
-                            for (nid, inner_x) in outputs {
+                            // Stores all outputs that are not stored yet
+                            for (nid, _) in outputs {
                                 if rcs.contains_key(&nid) {
-                                    if !kernels[kidy].tensors.values().any(|id| *id == nid) {
-                                        let nid_shape = graph.shape(nid);
-                                        let nid_dtype = graph.dtype(nid);
-                                        // if the kernel wasn't stored yet, because it wasn't processed yet
-                                        let zview = View::contiguous(nid_shape);
-                                        kernels[kidy].max_id += 1;
-                                        let z = kernels[kidy].max_id;
-                                        let store_op = Op::Store {
-                                            z,
-                                            zview,
-                                            zscope: Scope::Global,
-                                            zdtype: nid_dtype,
-                                            x: inner_x,
-                                            xscope: Scope::Register,
-                                            xview: View::none(),
+                                    let nid_shape = graph.shape(nid);
+                                    let nid_dtype = graph.dtype(nid);
+                                    let kernel_stored =
+                                        if kernels[kidy].tensors.values().all(|id| *id != nid) {
+                                            // if the kernel wasn't stored yet, because it wasn't processed yet
+                                            store(&mut kernels, kidy, nid, nid_shape, nid_dtype);
+                                            true
+                                        } else {
+                                            false
                                         };
-                                        kernels[kidy].ops.push(store_op);
-                                        kernels[kidy].tensors.insert(z, nid);
-
+                                    if kernel_stored || nid == y {
                                         let nkid = kernels.push(Kernel::leaf(
                                             nid,
                                             nid_shape,
@@ -396,23 +397,12 @@ pub fn realize_graph(
                                             yt = 0;
                                             kidy = nkid;
                                         }
-                                    } else if nid == y {
-                                        let nid_shape = graph.shape(nid);
-                                        let nid_dtype = graph.dtype(nid);
-                                        let nkid = kernels.push(Kernel::leaf(
-                                            nid,
-                                            nid_shape,
-                                            nid_dtype,
-                                            BTreeSet::from([kidy]),
-                                        ));
-                                        yt = 0;
-                                        kidy = nkid;
                                     }
+                                } else {
+                                    unreachable!();
                                 }
                             }
                             kernels[kidy].outputs.clear();
-                            // TODO since no more ops will be added to kidy, we can immediatelly send it for
-                            // evaluation. This can make the scheduler faster as we will have fewer kernels to work with.
                             debug_assert_eq!(yt, 0);
                         }
 
@@ -421,27 +411,19 @@ pub fn realize_graph(
                             println!("kidy depends on kidx");
                             let outputs = kernels[kidx].outputs.clone();
                             // Stores all outputs that are not stored yet
-                            for (nid, inner_x) in outputs {
+                            for (nid, _) in outputs {
                                 if rcs.contains_key(&nid) {
-                                    if !kernels[kidx].tensors.values().any(|id| *id == nid) {
-                                        // if the kernel wasn't stored yet, because it wasn't processed yet
-                                        let nid_shape = graph.shape(nid);
-                                        let nid_dtype = graph.dtype(nid);
-                                        let zview = View::contiguous(nid_shape);
-                                        kernels[kidx].max_id += 1;
-                                        let z = kernels[kidx].max_id;
-                                        let store_op = Op::Store {
-                                            z,
-                                            zview,
-                                            zscope: Scope::Global,
-                                            zdtype: nid_dtype,
-                                            x: inner_x,
-                                            xscope: Scope::Register,
-                                            xview: View::none(),
+                                    let nid_shape = graph.shape(nid);
+                                    let nid_dtype = graph.dtype(nid);
+                                    let kernel_stored =
+                                        if kernels[kidx].tensors.values().all(|id| *id != nid) {
+                                            // if the kernel wasn't stored yet, because it wasn't processed yet
+                                            store(&mut kernels, kidx, nid, nid_shape, nid_dtype);
+                                            true
+                                        } else {
+                                            false
                                         };
-                                        kernels[kidx].ops.push(store_op);
-                                        kernels[kidx].tensors.insert(z, nid);
-
+                                    if kernel_stored || nid == x {
                                         let nkid = kernels.push(Kernel::leaf(
                                             nid,
                                             nid_shape,
@@ -452,26 +434,13 @@ pub fn realize_graph(
                                             xt = 0;
                                             kidx = nkid;
                                         }
-                                    } else if nid == x {
-                                        let nid_shape = graph.shape(nid);
-                                        let nid_dtype = graph.dtype(nid);
-                                        let nkid = kernels.push(Kernel::leaf(
-                                            nid,
-                                            nid_shape,
-                                            nid_dtype,
-                                            BTreeSet::from([kidx]),
-                                        ));
-                                        xt = 0;
-                                        kidx = nkid;
                                     }
+                                } else {
+                                    unreachable!();
                                 }
                             }
                             kernels[kidx].outputs.clear();
-                            // TODO since no more ops will be added to kidy, we can immediatelly send it for
-                            // evaluation. This can make the scheduler faster as we will have fewer kernels to work with.
                             debug_assert_eq!(xt, 0);
-                            // TODO this seems wrong
-                            //panic!()
                         }
 
                         let Kernel { ops, tensors, outputs, max_id, depends_on } =
@@ -590,23 +559,31 @@ pub fn realize_graph(
 
         #[cfg(debug_assertions)]
         {
-            debug_assert!(kernels[kid].ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
-            - kernels[kid].ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count() > 0);
+            debug_assert!(
+                kernels[kid].ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
+                    - kernels[kid].ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count()
+                    > 0
+            );
 
             for kernel in kernels.values() {
-                debug_assert!(kernel.ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
-                - kernel.ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count() > 0);
+                debug_assert!(
+                    kernel.ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
+                        - kernel.ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count()
+                        > 0
+                );
             }
         }
 
         if to_eval.contains(&nid) {
             let nid_shape = graph.shape(nid);
             let nid_dtype = graph.dtype(nid);
-            store(&mut kernels, kid, nid, nid_shape, nid_dtype);
-            /*if rcs.contains_key(&nid) {
-                let nkid = kernels.push(Kernel::leaf(nid, nid_shape, nid_dtype));
-                kernels[nkid].depends_on.insert(kid);
-            }*/
+            if let Some(&x) = kernels[kid].tensors.get(&0) {
+                if x != nid {
+                    store(&mut kernels, kid, nid, nid_shape, nid_dtype);
+                }
+            } else {
+                store(&mut kernels, kid, nid, nid_shape, nid_dtype);
+            }
         }
     }
 
@@ -668,7 +645,17 @@ pub fn realize_graph(
                 for kernel in kernels.values_mut() {
                     kernel.depends_on.remove(&kid);
                 }
-                let loads: Set<TensorId> = kernel.ops.iter().filter_map(|op| if let Op::Load { x, .. } = op { Some(kernel.tensors[x]) } else { None }).collect();
+                let loads: Set<TensorId> = kernel
+                    .ops
+                    .iter()
+                    .filter_map(|op| {
+                        if let Op::Load { x, .. } = op {
+                            Some(kernel.tensors[x])
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 let mut loads: Set<TensorId> = loads.difference(&realized_nodes).copied().collect();
                 for kernel in kernels.values() {
                     for tensor in kernel.tensors.values() {
@@ -761,11 +748,15 @@ fn store(
     nid_shape: &[usize],
     nid_dtype: DType,
 ) {
+    //let _timer = Timer::new("scheduler store");
     if kernels[kid].tensors.values().any(|id| *id == nid) {
+        #[cfg(debug_assertions)]
+        {
+            assert!(!kernels[kid].ops.iter().any(|op| matches!(op, Op::Load { .. })));
+        }
         return;
     }
 
-    //let _timer = Timer::new("scheduler store");
     // Add store op to kernel
     let x = kernels[kid].outputs[&nid];
     let zview = View::contiguous(nid_shape);
@@ -805,15 +796,6 @@ fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
     }
     false
 }
-
-// Check if kidx depends on kidy
-/*fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
-    //println!("Checking if {kidx} depends on {kidy}, kidx dependencies: {:?}", kernels[kidx].depends_on);
-    if kernels[kidx].depends_on.contains(&kidy) {
-        return true;
-    }
-    kernels[kidx].depends_on.iter().any(|kid| depends_on(kernels, *kid, kidy))
-}*/
 
 // Choose kernel with most outputs (binary, unary)
 fn get_kernel_max(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {

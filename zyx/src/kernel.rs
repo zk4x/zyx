@@ -599,8 +599,7 @@ impl Kernel {
     pub(super) fn is_paddable(&self) -> bool {
         self.ops.iter().all(|op| match op {
             // For now just do not pad reduce kernels
-            //matches!(rop, ROp::Sum),
-            // TODO this can be later removed, but it's a trade-off,
+            // Padding stores can be later removed, but it's a trade-off,
             // it makes kernels bigger, but harder to reason about
             Op::Accumulator { .. } | Op::Store { .. } => false,
             _ => true,
