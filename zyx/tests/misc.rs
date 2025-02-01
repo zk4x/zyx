@@ -832,16 +832,12 @@ fn binary_y_depends_on_x() -> Result<(), ZyxError> {
 
         let y = x.permute([1, 0]).unwrap();
 
-        let z = x.reshape(6).unwrap() + y.reshape(6).unwrap();
+        let z = x.reshape(6).unwrap() + y.reshape(6).unwrap() + x.reshape(6).unwrap();
         z.exp2().log2()
     };
-
-    Tensor::plot_graph([], "graph").unwrap();
-
     println!("{z}");
-
-    panic!();
-
+    //Tensor::plot_graph([], "graph").unwrap();
+    //println!("{z}");
     Ok(())
 }
 

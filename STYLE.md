@@ -209,3 +209,12 @@ parts of the code base. Good code enables localized changes and localized bug fi
 of good code is to make communication boundaries between module as succint as possible. Simply do not pass much stuff
 between modules. Modules should be about 1000 loc. More than that is hard to track, but also less than that
 is hard to track, because code will be split between too many files.
+
+## Simplicity
+
+There are many measurements, good ones are for example:
+1. Readability - how long it takes to understand 100 lines of code.
+2. Number of lines of code
+3. Fragility - how many other lines of code need to be changed in response to change in one line of code
+4. Call stack depth - at least limit it to max 20 functions deep per module, 5 functions deep is understandable
+
