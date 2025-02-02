@@ -39,11 +39,11 @@ type KernelId = Id;
 /// Potentially if this is expensive kernel or it requires many ops, then we might evaluate it immediatelly.
 #[allow(clippy::cognitive_complexity)]
 #[allow(clippy::too_many_arguments)]
-pub fn realize_graph(
+pub fn schedule(
     graph: &Graph,
     order: &[TensorId],
     // RCS are only ref counts from parameters, excluding ref counts from being in to_eval/user rcs
-    mut rcs: Map<TensorId, u32>,
+    rcs: Map<TensorId, u32>,
     to_eval: &Set<TensorId>,
     devices: &mut [Box<dyn Device>],
     memory_pools: &mut [Pool],
@@ -57,27 +57,54 @@ pub fn realize_graph(
 
     // Unary and binary ops do not require duplication of kernels
 
-    // Unfinished kernels represented by ops
+    // Kernels represented by ops
     let mut kernels: Slab<Kernel> = Slab::with_capacity(500);
 
     if debug.sched() {
         println!("To schedule: {} tensors, to eval: {to_eval:?}", order.len());
     }
 
-    /*let mut expa_u = 0;
-    let mut resh_u = 0;
-    let mut pad_u = 0;
-    let mut red_u = 0;
-    let mut perm_u = 0;*/
-    /*for &nid in order {
-        println!(
-            "ID({nid}): {:?}, sh: {:?}, rcs: {}, num kernels: {}",
-            graph[nid],
-            graph.shape(nid),
-            rcs.get(&nid).copied().unwrap_or(0),
-            kernels.len(),
-        );
-    }*/
+    let mut rcs = if rcs.is_empty() {
+        let mut rcs = Map::with_capacity_and_hasher(100, Default::default());
+        // to_eval are not in rcs
+        for &nid in order {
+            if !realized_nodes.contains(&nid) {
+                for nid in graph[nid].parameters() {
+                    rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+            }
+        }
+        rcs
+    } else {
+        rcs
+    };
+
+    #[cfg(debug_assertions)]
+    {
+        let mut rcs2 = Map::with_hasher(Default::default());
+        // to_eval are not in rcs
+        for &nid in order {
+            if !realized_nodes.contains(&nid) {
+                for nid in graph[nid].parameters() {
+                    rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+            }
+        }
+        if rcs2 != rcs {
+            println!("Realized nodes: {realized_nodes:?}");
+            for &nid in order {
+                println!(
+                    "ID({nid}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}, num kernels: {}",
+                    graph[nid],
+                    graph.shape(nid),
+                    rcs.get(&nid).copied().unwrap_or(0),
+                    rcs2.get(&nid).copied().unwrap_or(0),
+                    kernels.len(),
+                );
+            }
+            panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
+        }
+    }
 
     for &nid in order {
         if debug.sched() {
@@ -142,6 +169,9 @@ pub fn realize_graph(
                             } else {
                                 let x_dtype = graph.dtype(x);
                                 store(&mut kernels, kid, x, x_shape, x_dtype);
+                                if rcs[&x] < 2 {
+                                    kernels[kid].outputs.remove(&x).unwrap();
+                                }
                                 let nkid = kernels.push(Kernel::leaf(
                                     x,
                                     x_shape,
@@ -174,7 +204,6 @@ pub fn realize_graph(
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     let padding = graph.padding(nid);
 
-                    // TODO make kernel always paddable by padding store view, thus removing the else branch
                     if kernels[kid].is_paddable() {
                         if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
                             if kernels[kid].is_small() {
@@ -187,6 +216,9 @@ pub fn realize_graph(
                                 let x_dtype = graph.dtype(x);
                                 let x_shape = graph.shape(x);
                                 store(&mut kernels, kid, x, x_shape, x_dtype);
+                                if rcs[&x] < 2 {
+                                    kernels[kid].outputs.remove(&x).unwrap();
+                                }
                                 let nkid = kernels.push(Kernel::leaf(
                                     x,
                                     x_shape,
@@ -220,7 +252,6 @@ pub fn realize_graph(
                     //println!("Reshaping x = {x} to {nid}");
                     //kernels[kid].debug();
                     let shape = graph.shape(nid);
-
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
                         if kernels[kid].is_small() {
                             let mut new_kernel = kernels[kid].clone();
@@ -232,6 +263,9 @@ pub fn realize_graph(
                             let x_shape = graph.shape(x);
                             let x_dtype = graph.dtype(x);
                             store(&mut kernels, kid, x, x_shape, x_dtype);
+                            if rcs[&x] < 2 {
+                                kernels[kid].outputs.remove(&x).unwrap();
+                            }
                             let nkid = kernels.push(Kernel::leaf(
                                 x,
                                 x_shape,
@@ -265,6 +299,9 @@ pub fn realize_graph(
                             let x_shape = graph.shape(x);
                             let x_dtype = graph.dtype(x);
                             store(&mut kernels, kid, x, x_shape, x_dtype);
+                            if rcs[&x] < 2 {
+                                kernels[kid].outputs.remove(&x).unwrap();
+                            }
                             let nkid = kernels.push(Kernel::leaf(
                                 x,
                                 x_shape,
@@ -299,6 +336,7 @@ pub fn realize_graph(
                             let x_shape = graph.shape(x);
                             let x_dtype = graph.dtype(x);
                             store(&mut kernels, kid, x, x_shape, x_dtype);
+                            kernels[kid].outputs.remove(&x).unwrap();
                             let nkid = kernels.push(Kernel::leaf(
                                 x,
                                 x_shape,
@@ -355,7 +393,6 @@ pub fn realize_graph(
                     debug_assert_eq!(kernels[kidx].shape(), graph.shape(x));
                     debug_assert_eq!(kernels[kidy].shape(), graph.shape(y));
 
-                    #[allow(clippy::branches_sharing_code)]
                     let kid = if kidx == kidy {
                         kernels[kidx].max_id += 1;
                         let z = kernels[kidx].max_id;
@@ -372,34 +409,30 @@ pub fn realize_graph(
                         // write a load kernel for y
                         // mark kidy as new kernel
                         if kernels[kidy].has_stores() && depends_on(&kernels, kidx, kidy) {
+                            kernels[kidy].debug();
                             let outputs = kernels[kidy].outputs.clone();
+                            //println!("outputs: {outputs:?}");
                             // Stores all outputs that are not stored yet
                             for (nid, _) in outputs {
-                                if rcs.contains_key(&nid) {
-                                    let nid_shape = graph.shape(nid);
-                                    let nid_dtype = graph.dtype(nid);
-                                    let kernel_stored =
-                                        if kernels[kidy].tensors.values().all(|id| *id != nid) {
-                                            // if the kernel wasn't stored yet, because it wasn't processed yet
-                                            store(&mut kernels, kidy, nid, nid_shape, nid_dtype);
-                                            true
-                                        } else {
-                                            false
-                                        };
-                                    if kernel_stored || nid == y {
-                                        let nkid = kernels.push(Kernel::leaf(
-                                            nid,
-                                            nid_shape,
-                                            nid_dtype,
-                                            BTreeSet::from([kidy]),
-                                        ));
-                                        if nid == y {
-                                            yt = 0;
-                                            kidy = nkid;
-                                        }
-                                    }
+                                debug_assert!(rcs.contains_key(&nid), "Kernel contains useless outputs. rc of {nid} is 0");
+                                let nid_shape = graph.shape(nid);
+                                let nid_dtype = graph.dtype(nid);
+                                if kernels[kidy].tensors.values().all(|id| *id != nid) {
+                                    // if the kernel wasn't stored yet (some other kernel needs it)
+                                    store(&mut kernels, kidy, nid, nid_shape, nid_dtype);
+                                    debug_assert!(rcs[&nid] > 0);
                                 } else {
-                                    unreachable!();
+                                    debug_assert_eq!(nid, y);
+                                };
+                                let nkid = kernels.push(Kernel::leaf(
+                                    nid,
+                                    nid_shape,
+                                    nid_dtype,
+                                    BTreeSet::from([kidy]),
+                                ));
+                                if nid == y {
+                                    yt = 0;
+                                    kidy = nkid;
                                 }
                             }
                             kernels[kidy].outputs.clear();
@@ -408,35 +441,29 @@ pub fn realize_graph(
 
                         if kernels[kidx].has_stores() && depends_on(&kernels, kidy, kidx) {
                             //if !kernels[kidy].depends_on.is_empty() {
-                            println!("kidy depends on kidx");
+                            //println!("kidy depends on kidx");
                             let outputs = kernels[kidx].outputs.clone();
                             // Stores all outputs that are not stored yet
                             for (nid, _) in outputs {
-                                if rcs.contains_key(&nid) {
-                                    let nid_shape = graph.shape(nid);
-                                    let nid_dtype = graph.dtype(nid);
-                                    let kernel_stored =
-                                        if kernels[kidx].tensors.values().all(|id| *id != nid) {
-                                            // if the kernel wasn't stored yet, because it wasn't processed yet
-                                            store(&mut kernels, kidx, nid, nid_shape, nid_dtype);
-                                            true
-                                        } else {
-                                            false
-                                        };
-                                    if kernel_stored || nid == x {
-                                        let nkid = kernels.push(Kernel::leaf(
-                                            nid,
-                                            nid_shape,
-                                            nid_dtype,
-                                            BTreeSet::from([kidx]),
-                                        ));
-                                        if nid == x {
-                                            xt = 0;
-                                            kidx = nkid;
-                                        }
-                                    }
+                                debug_assert!(rcs.contains_key(&nid), "Kernel contains useless outputs. rc of {nid} is 0");
+                                let nid_shape = graph.shape(nid);
+                                let nid_dtype = graph.dtype(nid);
+                                if kernels[kidx].tensors.values().all(|id| *id != nid) {
+                                    // if the kernel wasn't stored yet, because it wasn't processed yet
+                                    store(&mut kernels, kidx, nid, nid_shape, nid_dtype);
+                                    debug_assert!(rcs[&nid] > 0);
                                 } else {
-                                    unreachable!();
+                                    debug_assert_eq!(nid, x);
+                                }
+                                let nkid = kernels.push(Kernel::leaf(
+                                    nid,
+                                    nid_shape,
+                                    nid_dtype,
+                                    BTreeSet::from([kidx]),
+                                ));
+                                if nid == x {
+                                    xt = 0;
+                                    kidx = nkid;
                                 }
                             }
                             kernels[kidx].outputs.clear();
@@ -548,8 +575,10 @@ pub fn realize_graph(
 
         for param in graph[nid].parameters() {
             if let Some(rc) = rcs.get_mut(&param) {
+                //println!("Decrementing rc of {param} from {rc}");
                 *rc -= 1;
                 if *rc == 0 {
+                    //println!("Removing rc of {param}");
                     rcs.remove(&param);
                 }
             }
@@ -675,68 +704,6 @@ pub fn realize_graph(
         }
     }
 
-    /*let mut num_evaluated = 0;
-    #[cfg(debug_assertions)]
-    let mut evaluated_tensors = BTreeSet::new();
-    for _ in 0..kernels.len() + 1 {
-        let mut evaluated = BTreeSet::new();
-        for (kid, kernel) in kernels.iter_mut() {
-            if kernel.depends_on.is_empty() {
-                num_evaluated += 1;
-                kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
-                evaluated.insert(kid);
-
-                #[cfg(debug_assertions)]
-                evaluated_tensors.extend(kernel.ops.iter().filter_map(|op| {
-                    if let Op::Store { z, .. } = op {
-                        Some(kernel.tensors[z])
-                    } else {
-                        None
-                    }
-                }));
-            }
-        }
-        //println!("Evaluated: {evaluated:?}");
-        if evaluated.is_empty() {
-            break;
-        }
-        for kid in &evaluated {
-            kernels.remove(*kid);
-        }
-        for kernel in kernels.values_mut() {
-            kernel.depends_on.retain(|x| !evaluated.contains(x));
-        }
-        // TODO delete input tensors that won't be used by other kernels,
-        // that is those loads that won't be loaded by other kernels and are not in realized_nodes
-    }
-    if num_evaluated != kernels_len {
-        println!("Evaluated {num_evaluated} kernels");
-        for (id, kernel) in kernels.iter() {
-            println!("\nKernel id = {id}");
-            kernel.debug();
-        }
-        panic!();
-    }*/
-
-    /*#[cfg(debug_assertions)]
-    if to_eval.difference(&evaluated_tensors).count() != 0 {
-        let realized_nodes: BTreeSet<TensorId> =
-            memory_pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
-        if !to_eval.is_subset(&realized_nodes) {
-            let diff: BTreeSet<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
-            panic!("In to eval but not evaluated: {diff:?}",);
-        }
-    }*/
-
-    /*#[cfg(debug_assertions)]
-    if kernels.len() != 0 {
-        /*for kernel in kernels.values() {
-            kernel.debug();
-            println!();
-        }*/
-        panic!("Kernels in scheduler are not empty.");
-    }*/
-
     Ok(())
 }
 
@@ -752,7 +719,14 @@ fn store(
     if kernels[kid].tensors.values().any(|id| *id == nid) {
         #[cfg(debug_assertions)]
         {
-            assert!(!kernels[kid].ops.iter().any(|op| matches!(op, Op::Load { .. })));
+            for op in kernels[kid].ops.iter() {
+                if let Op::Load { x, .. } = op {
+                    if kernels[kid].tensors[x] == nid {
+                        kernels[kid].debug();
+                        panic!("Trying to store tensor that is used as a load in a kernel.");
+                    }
+                }
+            }
         }
         return;
     }

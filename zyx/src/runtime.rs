@@ -619,7 +619,7 @@ impl Runtime {
             self.initialize_devices()?;
         }
 
-        let (order, rcs, mut to_delete, new_leafs) = if self.graph.gradient_tape.is_some() {
+        let (order, mut to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
             // Get order for evaluation using DFS with ref counting to resolve
             // nodes with more than one parent.
             let (outside_nodes, mut order) = {
@@ -721,12 +721,17 @@ impl Runtime {
                     }
                 }
             }
-            for x in &to_eval {
+            /*for x in &to_eval {
                 *rcs.get_mut(x).unwrap() -= 1;
-            }
+                if *rcs.get(x).unwrap() == 0 {
+                    rcs.remove(x);
+                }
+            }*/
             order.retain(|x| rcs.contains_key(x));
-            (order, rcs, to_delete, new_leafs)
+            // Currently rcs with gradient tape cannot be used by scheduler, so we give it empty ids
+            (order, to_delete, new_leafs, Map::with_hasher(Default::default()))
         } else {
+            let old_to_eval = to_eval.clone();
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
             let mut rcs: Map<TensorId, u32> =
                 Map::with_capacity_and_hasher(100, Default::default());
@@ -769,11 +774,17 @@ impl Runtime {
                 }
             }
             order.reverse();
+            for x in &old_to_eval {
+                *rcs.get_mut(x).unwrap() -= 1;
+                if *rcs.get(x).unwrap() == 0 {
+                    rcs.remove(x);
+                }
+            }
             //println!("Order {order:?}");
             //println!("ToEval {to_eval:?}");
             //println!("ToDelete {to_delete:?}");
             //println!("NewLeafs {new_leafs:?}");
-            (order, rcs, to_delete, new_leafs)
+            (order, to_delete, new_leafs, rcs)
         };
         let _elapsed = begin.elapsed();
         /*println!(
@@ -784,7 +795,7 @@ impl Runtime {
             self.graph.gradient_tape.is_some(),
         );*/
 
-        crate::scheduler::realize_graph(
+        crate::scheduler::schedule(
             &self.graph,
             &order,
             rcs,
