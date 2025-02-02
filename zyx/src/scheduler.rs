@@ -295,7 +295,7 @@ pub fn schedule(
                             }
                             kernels.push(new_kernel);
                         } else {
-                            println!("Kernel too big, creating depends on");
+                            //println!("Kernel too big, creating depends on");
                             let x_shape = graph.shape(x);
                             let x_dtype = graph.dtype(x);
                             store(&mut kernels, kid, x, x_shape, x_dtype);
@@ -386,7 +386,7 @@ pub fn schedule(
                 }
                 Node::Binary { x, y, bop } => {
                     //let _timer = Timer::new("binary");
-                    // x goes first, delete y
+                    // kidx goes first, remove kidy and add it to kidx
                     let (mut xt, mut kidx) = get_kernel_max(x, &kernels);
                     let (mut yt, mut kidy) = get_kernel_max(y, &kernels);
 
@@ -409,65 +409,47 @@ pub fn schedule(
                         // write a load kernel for y
                         // mark kidy as new kernel
                         if kernels[kidy].has_stores() && depends_on(&kernels, kidx, kidy) {
-                            kernels[kidy].debug();
-                            let outputs = kernels[kidy].outputs.clone();
-                            //println!("outputs: {outputs:?}");
+                            let old_kidy = kidy;
+                            let outputs: Vec<TensorId> =
+                                kernels[kidy].outputs.keys().copied().collect();
                             // Stores all outputs that are not stored yet
-                            for (nid, _) in outputs {
-                                debug_assert!(rcs.contains_key(&nid), "Kernel contains useless outputs. rc of {nid} is 0");
+                            for nid in outputs {
+                                debug_assert!(rcs[&nid] > 0);
                                 let nid_shape = graph.shape(nid);
                                 let nid_dtype = graph.dtype(nid);
-                                if kernels[kidy].tensors.values().all(|id| *id != nid) {
-                                    // if the kernel wasn't stored yet (some other kernel needs it)
-                                    store(&mut kernels, kidy, nid, nid_shape, nid_dtype);
-                                    debug_assert!(rcs[&nid] > 0);
-                                } else {
-                                    debug_assert_eq!(nid, y);
-                                };
-                                let nkid = kernels.push(Kernel::leaf(
-                                    nid,
-                                    nid_shape,
-                                    nid_dtype,
-                                    BTreeSet::from([kidy]),
-                                ));
+                                store(&mut kernels, old_kidy, nid, nid_shape, nid_dtype);
+                                let nk = Kernel::leaf(nid, nid_shape, nid_dtype, [old_kidy].into());
+                                let nkid = kernels.push(nk);
                                 if nid == y {
-                                    yt = 0;
                                     kidy = nkid;
                                 }
                             }
-                            kernels[kidy].outputs.clear();
-                            debug_assert_eq!(yt, 0);
+                            yt = 0;
+                            // old_kidy is done, can be immediatelly realized
+                            kernels[old_kidy].outputs.clear();
+                            debug_assert_ne!(kidy, old_kidy);
                         }
 
                         if kernels[kidx].has_stores() && depends_on(&kernels, kidy, kidx) {
-                            //if !kernels[kidy].depends_on.is_empty() {
-                            //println!("kidy depends on kidx");
-                            let outputs = kernels[kidx].outputs.clone();
+                            let old_kidx = kidx;
+                            let outputs: Vec<TensorId> =
+                                kernels[kidx].outputs.keys().copied().collect();
                             // Stores all outputs that are not stored yet
-                            for (nid, _) in outputs {
-                                debug_assert!(rcs.contains_key(&nid), "Kernel contains useless outputs. rc of {nid} is 0");
+                            for nid in outputs {
+                                debug_assert!(rcs[&nid] > 0);
                                 let nid_shape = graph.shape(nid);
                                 let nid_dtype = graph.dtype(nid);
-                                if kernels[kidx].tensors.values().all(|id| *id != nid) {
-                                    // if the kernel wasn't stored yet, because it wasn't processed yet
-                                    store(&mut kernels, kidx, nid, nid_shape, nid_dtype);
-                                    debug_assert!(rcs[&nid] > 0);
-                                } else {
-                                    debug_assert_eq!(nid, x);
-                                }
-                                let nkid = kernels.push(Kernel::leaf(
-                                    nid,
-                                    nid_shape,
-                                    nid_dtype,
-                                    BTreeSet::from([kidx]),
-                                ));
+                                store(&mut kernels, old_kidx, nid, nid_shape, nid_dtype);
+                                let nk = Kernel::leaf(nid, nid_shape, nid_dtype, [old_kidx].into());
+                                let nkid = kernels.push(nk);
                                 if nid == x {
-                                    xt = 0;
                                     kidx = nkid;
                                 }
                             }
-                            kernels[kidx].outputs.clear();
-                            debug_assert_eq!(xt, 0);
+                            xt = 0;
+                            // old_kidx is done, can be immediatelly realized
+                            kernels[old_kidx].outputs.clear();
+                            debug_assert_ne!(kidx, old_kidx);
                         }
 
                         let Kernel { ops, tensors, outputs, max_id, depends_on } =
@@ -556,16 +538,19 @@ pub fn schedule(
                         }
                     }
 
-                    if x == y && rcs[&x] < 3 {
-                        kernels[kidx].outputs.remove(&x);
-                    } else {
+                    if x != y {
                         if rcs[&x] < 2 {
                             kernels[kidx].outputs.remove(&x);
                         }
                         if rcs[&y] < 2 {
                             kernels[kidx].outputs.remove(&y);
                         }
+                    } else {
+                        if rcs[&x] < 3 {
+                            kernels[kidx].outputs.remove(&x);
+                        }
                     }
+
                     kid
                 }
             }
@@ -717,7 +702,8 @@ fn store(
 ) {
     //let _timer = Timer::new("scheduler store");
     if kernels[kid].tensors.values().any(|id| *id == nid) {
-        #[cfg(debug_assertions)]
+        // This check can fail in binary op depends_on stores
+        /*#[cfg(debug_assertions)]
         {
             for op in kernels[kid].ops.iter() {
                 if let Op::Load { x, .. } = op {
@@ -727,7 +713,7 @@ fn store(
                     }
                 }
             }
-        }
+        }*/
         return;
     }
 

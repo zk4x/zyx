@@ -805,13 +805,16 @@ impl Kernel {
             .unwrap()
             .as_mut();
 
+        //println!("Pool contains {:?}", pool.buffer_map.keys());
+        //self.debug();
+
         let mut outputs = BTreeSet::new();
         let mut event_wait_list = Vec::new();
         let mut visited_tensors = BTreeMap::new();
         let args: Vec<Id> = self.ops.iter_mut().filter_map(|op| match op {
             Op::Load { x, .. } => {
                 let tensor_id = self.tensors[x];
-                let buffer_id = *pool.buffer_map.get(&tensor_id).unwrap();
+                let buffer_id = pool.buffer_map[&tensor_id];
                 if let Some(&tx) = visited_tensors.get(&buffer_id) {
                     *x = tx;
                     None
