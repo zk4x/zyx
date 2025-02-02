@@ -170,7 +170,7 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
     }
 }
 
-/// Execution timer
+// Execution timer
 /*static ET: mutex::Mutex<std::collections::BTreeMap<String, (u128, u128)>, 1_000_000_000> =
     mutex::Mutex::new(std::collections::BTreeMap::new());
 
@@ -197,14 +197,14 @@ impl Drop for Timer {
     }
 }*/
 
-#[test]
+/*#[test]
 fn t0() -> Result<(), ZyxError> {
     let x = Tensor::rand([4, 2, 3], DType::F32).unwrap();
     let y = x.exp2();
     //let y = x.sum([-1]).unwrap();
     println!("{y}");
     Ok(())
-}
+}*/
 
 /*#[test]
 fn t4() {

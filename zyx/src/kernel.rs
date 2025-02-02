@@ -129,7 +129,12 @@ impl Kernel {
         }
     }
 
-    pub(super) fn leaf(nid: TensorId, shape: &[Dimension], dtype: DType, depends_on: BTreeSet<Id>) -> Kernel {
+    pub(super) fn leaf(
+        nid: TensorId,
+        shape: &[Dimension],
+        dtype: DType,
+        depends_on: BTreeSet<Id>,
+    ) -> Kernel {
         let mut ops = Vec::with_capacity(50);
         for (axis, dimension) in shape.iter().copied().enumerate() {
             ops.push(Op::Loop { axis, len: dimension });
@@ -380,21 +385,21 @@ impl Kernel {
         }
         for op in &mut self.ops {
             match op {
-                    Op::Const { view, .. }
-                    | Op::Load { xview: view, .. }
-                    | Op::Store { zview: view, .. } => {
-                        for (org_sh, sh) in reshapes.iter().rev() {
-                            view.reshape(org_sh.clone(), &nshape[sh.clone()]);
-                        }
+                Op::Const { view, .. }
+                | Op::Load { xview: view, .. }
+                | Op::Store { zview: view, .. } => {
+                    for (org_sh, sh) in reshapes.iter().rev() {
+                        view.reshape(org_sh.clone(), &nshape[sh.clone()]);
                     }
-                    Op::Accumulator { .. }
-                    | Op::Loop { .. }
-                    | Op::EndLoop
-                    | Op::Cast { .. }
-                    | Op::Unary { .. }
-                    | Op::Binary { .. }
-                    | Op::Barrier { .. } => {}
                 }
+                Op::Accumulator { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop
+                | Op::Cast { .. }
+                | Op::Unary { .. }
+                | Op::Binary { .. }
+                | Op::Barrier { .. } => {}
+            }
         }
         //self.debug();
         // TODO deal with loop inserts
@@ -805,47 +810,49 @@ impl Kernel {
             .unwrap()
             .as_mut();
 
-        //println!("Pool contains {:?}", pool.buffer_map.keys());
-        //self.debug();
-
         let mut outputs = BTreeSet::new();
         let mut event_wait_list = Vec::new();
         let mut visited_tensors = BTreeMap::new();
-        let args: Vec<Id> = self.ops.iter_mut().filter_map(|op| match op {
-            Op::Load { x, .. } => {
-                let tensor_id = self.tensors[x];
-                let buffer_id = pool.buffer_map[&tensor_id];
-                if let Some(&tx) = visited_tensors.get(&buffer_id) {
-                    *x = tx;
-                    None
-                } else {
-                    visited_tensors.insert(buffer_id, *x);
-                    if let Some((_, event)) =
-                        pool.events.iter().find(|(key, _)| key.contains(&buffer_id))
-                    {
-                        event_wait_list.push(event.clone());
+
+        //println!("Pool contains {:?}", pool.buffer_map.keys());
+        //self.debug();
+
+        let args: Vec<Id> = self
+            .ops
+            .iter_mut()
+            .filter_map(|op| match op {
+                Op::Load { x, .. } => {
+                    let tensor_id = self.tensors[x];
+                    let buffer_id = pool.buffer_map[&tensor_id];
+                    if let Some(&tx) = visited_tensors.get(&buffer_id) {
+                        *x = tx;
+                        None
+                    } else {
+                        visited_tensors.insert(buffer_id, *x);
+                        if let Some((_, event)) =
+                            pool.events.iter().find(|(key, _)| key.contains(&buffer_id))
+                        {
+                            event_wait_list.push(event.clone());
+                        }
+                        Some(buffer_id)
                     }
+                }
+                Op::Store { z, zview, zdtype, .. } => {
+                    let tensor_id = self.tensors[z];
+                    //println!("Allocating {zview} {}", zview.original_numel());
+                    let (buffer_id, event) = pool
+                        .pool
+                        .allocate(zview.original_numel() * (zdtype.byte_size() as Dimension))
+                        .unwrap();
+                    debug_assert!(visited_tensors.insert(buffer_id, *z).is_none());
+                    pool.buffer_map.insert(tensor_id, buffer_id);
+                    event_wait_list.push(event);
+                    outputs.insert(tensor_id);
                     Some(buffer_id)
                 }
-            }
-            Op::Store { z, zview, zdtype, .. } => {
-                let tensor_id = self.tensors[z];
-                //println!("Allocating {zview} {}", zview.original_numel());
-                let (buffer_id, event) = pool
-                    .pool
-                    .allocate(
-                       zview.original_numel() 
-                            * (zdtype.byte_size() as Dimension),
-                    )
-                    .unwrap();
-                debug_assert!(visited_tensors.insert(buffer_id, *z).is_none());
-                pool.buffer_map.insert(tensor_id, buffer_id);
-                event_wait_list.push(event);
-                outputs.insert(tensor_id);
-                Some(buffer_id)
-            }
-            _ => None
-        }).collect();
+                _ => None,
+            })
+            .collect();
 
         //println!("\nArgs: {args:?}");
         //self.debug();

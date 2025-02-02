@@ -107,7 +107,7 @@ pub fn schedule(
     }
 
     for &nid in order {
-        if debug.sched() {
+        /*if debug.sched() {
             println!(
                 "ID({nid}): {:?}, sh: {:?}, rcs: {}, num kernels: {}",
                 graph[nid],
@@ -115,7 +115,7 @@ pub fn schedule(
                 rcs.get(&nid).copied().unwrap_or(0),
                 kernels.len(),
             );
-        }
+        }*/
 
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1
@@ -400,9 +400,6 @@ pub fn schedule(
                         kernels[kidx].outputs.insert(nid, z);
                         kidx
                     } else {
-                        // we delete kidy (could by also kidx) and put everything in kidx
-                        let n = kernels[kidx].max_id + 1;
-
                         // can't remove kidy if any kernel depends on kidy
                         // store y and all outputs that are not stored yet in kidy
                         // clear kidy's outputs
@@ -454,6 +451,9 @@ pub fn schedule(
 
                         let Kernel { ops, tensors, outputs, max_id, depends_on } =
                             unsafe { kernels.remove_and_return(kidy) };
+
+                        // we delete kidy (could by also kidx) and put everything in kidx
+                        let n = kernels[kidx].max_id + 1;
 
                         for (i, op) in ops.into_iter().enumerate() {
                             if !(matches!(op, Op::Loop { .. }) && op == kernels[kidx].ops[i]) {

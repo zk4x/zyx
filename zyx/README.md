@@ -36,7 +36,7 @@ let tape = GradientTape::new();
 let z = &x + &y;
 let z = (x.dot(&y)? + &b).gelu();
 // Zyx allows for arbitrary differentiation
-let b_grad = tape.gradient(&z, [&b])[0].clone().unwrap();
+let b_grad = tape.gradient_persistent(&z, [&b])[0].clone().unwrap();
 // Also higher order derivatives
 let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
 # Ok::<(), zyx::ZyxError>(())
