@@ -66,7 +66,7 @@
   - [x] remove ref counting from ir
   - [x] merge all mul + add into mad instructions
   - [x] add new reference counting that accounts for all variables, including indexing variables
-  - [ ] loop invariant code motion!
+  - [x] loop invariant code motion
   - [x] fix destructuring back from SSA
   - [x] loop unrolling
   - [ ] loop splitting!

@@ -7,8 +7,8 @@ fn sum_1() -> Result<(), ZyxError> {
     let x1 = x.sum([-2])?;
     let x2 = x.sum([])?;
     assert_eq!(x0, [8, 10, 18]);
-    //assert_eq!(x1, [15, 8, 13]);
-    //assert_eq!(x2, [36]);
+    assert_eq!(x1, [15, 8, 13]);
+    assert_eq!(x2, [36]);
     Ok(())
 }
 

@@ -413,8 +413,10 @@ impl IRCompiler {
     /// Converts from SSA form to using as few registers as possible + dead store elimination
     #[allow(clippy::cognitive_complexity)]
     fn deduplicate_ssa(self) -> (Vec<DType>, Vec<IROp>) {
+        // iterate over all loops
+        // for each loop make a map of ref counts
+
         let mut ref_counts: BTreeMap<u16, u32> = BTreeMap::new();
-        // Get reference counts
         for op in &self.ops {
             match op {
                 IROp::Store { x, offset, .. } => {
@@ -453,26 +455,107 @@ impl IRCompiler {
                 &IROp::EndLoop { id, .. } => {
                     ref_counts.entry(id).and_modify(|rc| *rc += 1).or_insert(1);
                 }
-                IROp::Set { .. }
+                IROp::Loop { .. }
+                | IROp::Set { .. }
                 | IROp::SetLocal { .. }
-                | IROp::Loop { .. }
                 | IROp::Load { offset: Reg::Const(_), .. }
                 | IROp::Barrier { .. } => {}
             }
         }
-        //println!("Ref counts {ref_counts:?}");
-        // Create new registers and ops but mutable, so that we don't have so many variables
+
+        // Find all variables used inside of loops, but declared outside and not used outside.
+        // Increase their ref count by one.
+        let mut used: Vec<BTreeSet<u16>> = Vec::new();
+        used.push(BTreeSet::new());
+        let mut loop_level = 0;
+        for op in self.ops.iter().rev() {
+            match op {
+                IROp::Load { z, offset, .. } => {
+                    if !used[loop_level].contains(z) {
+                        if let Some(rc) = ref_counts.get_mut(z) {
+                            *rc += 1;
+                        }
+                    }
+                    if let Reg::Var(x) = offset {
+                        used[loop_level].insert(*x);
+                    }
+                }
+                IROp::Store { offset, x, .. } => {
+                    if let Reg::Var(x) = offset {
+                        used[loop_level].insert(*x);
+                    }
+                    if let Reg::Var(x) = x {
+                        used[loop_level].insert(*x);
+                    }
+                }
+                IROp::Cast { z, x, .. } => {
+                    if !used[loop_level].contains(z) {
+                        if let Some(rc) = ref_counts.get_mut(z) {
+                            *rc += 1;
+                        }
+                    }
+                    used[loop_level].insert(*x);
+                }
+                IROp::Unary { z, x, .. } => {
+                    if !used[loop_level].contains(z) {
+                        if let Some(rc) = ref_counts.get_mut(z) {
+                            *rc += 1;
+                        }
+                    }
+                    used[loop_level].insert(*x);
+                }
+                IROp::Binary { z, x, y, .. } => {
+                    if !used[loop_level].contains(z) {
+                        if let Some(rc) = ref_counts.get_mut(z) {
+                            *rc += 1;
+                        }
+                    }
+                    if let Reg::Var(x) = x {
+                        used[loop_level].insert(*x);
+                    }
+                    if let Reg::Var(x) = y {
+                        used[loop_level].insert(*x);
+                    }
+                }
+                IROp::MAdd { z, a, b, c } => {
+                    if !used[loop_level].contains(z) {
+                        if let Some(rc) = ref_counts.get_mut(z) {
+                            *rc += 1;
+                        }
+                    }
+                    if let Reg::Var(x) = a {
+                        used[loop_level].insert(*x);
+                    }
+                    if let Reg::Var(x) = b {
+                        used[loop_level].insert(*x);
+                    }
+                    if let Reg::Var(x) = c {
+                        used[loop_level].insert(*x);
+                    }
+                }
+                IROp::Loop { .. } => {
+                    loop_level -= 1;
+                }
+                &IROp::EndLoop { .. } => {
+                    used.push(BTreeSet::new());
+                    loop_level += 1;
+                }
+                IROp::SetLocal { .. }
+                | IROp::Set { .. }
+                | IROp::Barrier { .. } => {},
+            }
+        }
+
+        //println!("Ref counts:\n{ref_counts:?}");
         let mut registers = Vec::new();
         let mut reg_rcs = Vec::new();
         let mut ops = Vec::new();
         let mut cmp = BTreeMap::new();
-        let mut dtypes = BTreeMap::new();
         for op in self.ops {
             match op {
                 IROp::Load { z, address, offset } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
-                        dtypes.insert(z, self.load_dtypes[&address]);
-                        let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                        let zr = new_var(&mut registers, &mut reg_rcs, self.load_dtypes[&address], zrc);
                         let offset = if let Reg::Var(offset) = offset {
                             let offset = cmp[&offset];
                             reg_rcs[offset as usize] -= 1;
@@ -506,16 +589,14 @@ impl IRCompiler {
                 }
                 IROp::Set { z, value } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
-                        dtypes.insert(z, value.dtype());
-                        let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                        let zr = new_var(&mut registers, &mut reg_rcs, value.dtype(), zrc);
                         ops.push(IROp::Set { z: zr, value });
                         cmp.insert(z, zr);
                     }
                 }
                 IROp::Cast { z, x, dtype } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
-                        dtypes.insert(z, dtype);
-                        let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                        let zr = new_var(&mut registers, &mut reg_rcs, dtype, zrc);
                         let xr = cmp[&x];
                         reg_rcs[xr as usize] -= 1;
                         ops.push(IROp::Cast { z: zr, x: xr, dtype });
@@ -524,9 +605,9 @@ impl IRCompiler {
                 }
                 IROp::Unary { z, x, uop } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
-                        dtypes.insert(z, dtypes[&x]);
-                        let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
                         let xr = cmp[&x];
+                        let dtype = registers[xr as usize];
+                        let zr = new_var(&mut registers, &mut reg_rcs, dtype, zrc);
                         reg_rcs[xr as usize] -= 1;
                         ops.push(IROp::Unary { z: zr, x: xr, uop });
                         cmp.insert(z, zr);
@@ -534,18 +615,15 @@ impl IRCompiler {
                 }
                 IROp::Binary { z, x, y, bop } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
-                        dtypes.insert(
-                            z,
-                            match bop {
-                                BOp::Cmplt | BOp::Cmpgt | BOp::Or | BOp::And | BOp::NotEq => {
-                                    DType::Bool
-                                }
-                                _ => match x {
-                                    Reg::Var(x) => dtypes[&x],
-                                    Reg::Const(constant) => constant.dtype(),
-                                },
+                        let dtype = match bop {
+                            BOp::Cmplt | BOp::Cmpgt | BOp::Or | BOp::And | BOp::NotEq => {
+                                DType::Bool
+                            }
+                            _ => match x {
+                                Reg::Var(x) => registers[cmp[&x] as usize],
+                                Reg::Const(constant) => constant.dtype(),
                             },
-                        );
+                        };
                         let x = if let Reg::Var(x) = x {
                             let xr = cmp[&x];
                             reg_rcs[xr as usize] -= 1;
@@ -563,7 +641,7 @@ impl IRCompiler {
                         if let Some(&zr) = cmp.get(&z) {
                             ops.push(IROp::Binary { z: zr, x, y, bop });
                         } else {
-                            let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                            let zr = new_var(&mut registers, &mut reg_rcs, dtype, zrc);
                             cmp.insert(z, zr);
                             ops.push(IROp::Binary { z: zr, x, y, bop });
                         }
@@ -571,13 +649,10 @@ impl IRCompiler {
                 }
                 IROp::MAdd { z, a, b, c } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
-                        dtypes.insert(
-                            z,
-                            match a {
-                                Reg::Var(a) => dtypes[&a],
-                                Reg::Const(constant) => constant.dtype(),
-                            },
-                        );
+                        let dtype = match a {
+                            Reg::Var(a) => registers[cmp[&a] as usize],
+                            Reg::Const(constant) => constant.dtype(),
+                        };
                         let a = if let Reg::Var(x) = a {
                             let xr = cmp[&x];
                             reg_rcs[xr as usize] -= 1;
@@ -602,7 +677,7 @@ impl IRCompiler {
                         if let Some(&zr) = cmp.get(&z) {
                             ops.push(IROp::MAdd { z: zr, a, b, c });
                         } else {
-                            let zr = new_var(&mut registers, &mut reg_rcs, dtypes[&z], zrc);
+                            let zr = new_var(&mut registers, &mut reg_rcs, dtype, zrc);
                             cmp.insert(z, zr);
                             ops.push(IROp::MAdd { z: zr, a, b, c });
                         }
@@ -610,7 +685,6 @@ impl IRCompiler {
                 }
                 IROp::Loop { id, len } => {
                     let &zrc = ref_counts.get(&id).unwrap();
-                    dtypes.insert(id, DType::U64);
                     let zr = new_var(&mut registers, &mut reg_rcs, DType::U64, zrc);
                     ops.push(IROp::Loop { id: zr, len });
                     cmp.insert(id, zr);
@@ -1387,7 +1461,7 @@ impl IRKernel {
         //compiler.loop_unrolling();
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
-        //compiler.loop_invariant_code_motion();
+        compiler.loop_invariant_code_motion();
         compiler.vectorization();
         compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
