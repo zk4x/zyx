@@ -7,17 +7,6 @@ This document describes limitations and design choices behind zyx.
 Zyx supports many hardware backends through singular intermediate representation, which is very close to assembly
 and simply uses enum as an op.
 
-## Performance
-
-Zyx creates graph of nodes at runtime. No calculations are performend until explicit realization. This ensures
-zero unnecessary allocations and is particularly important for backpropagation with implicit tracing of all
-tensors. Graph realization consits of these steps:
-1. Kernel generation
-2. Scheduling kernel to devices
-3. Kernel optimization
-4. Kernel compilation
-5. Search for better kernel, continue with step 3
-
 ## Error handling
 
 Zyx uses simple method to differentiate when to panic and when to return a result. If a user provides incorrect
@@ -28,3 +17,51 @@ is to immediately stop execution. One other option when panic happens is in case
 Zyx already detects hardware devices at runtime and disallows explicit programming for cpu or gpu only.
 However zyx currently assumes that hardware configuration stays constant as long as at least one tensor exists.
 
+## How does it actually work?
+
+Zyx creates graph of nodes at runtime. No calculations are performend until explicit realization. This ensures
+zero unnecessary allocations and is particularly important for backpropagation with implicit tracing of all
+tensors.
+
+Graph realization consits of these steps:
+
+### 1. Graph tracing
+
+Depth first search is used to find all tensors that are needed to evaluate tensors requested by Tensor::realize
+function. Dead tensors are optimized away using constant folding.
+
+### 2. Kernel generation
+
+In this stage tensor ops are fused into large kernels.
+
+### 3. Scheduling kernel to devices
+
+Once kernels are generated, a device or a set of devices are picked that will run it. Currently the heurestic
+is very primitive, but in the future this can contain complex decision process including automatic sharding.
+
+### 4. Kernel optimization
+
+An optimizer then takes the kernel and runs tree search trying different optimizations possible with the kernel
+and the device it was scheduled for. There can be thousands of different work sizes and other optimizations
+that can be applied for each kernel. This search tries it's best to find the best kernel version with as few
+tries as possible, but if you want to really want to push your hardware from 80% to 90%, it will take some time,
+especially for large kernels.
+
+### 5. IR generation
+
+Each optimization is aplied in this step which converts high level kernel into IR kernel. IR kernel is also
+optimized using standard methods like loop invariant code motion, vectorization, constant evaluation, loop
+unrolling, algebraic tricks, ...
+
+### 6. Kernel compilation
+
+Finally kernels are compiled from IR into respective backends - CUDA, OpenCL, WGPU, ...
+Compilation from IR into backends is straightforward and usually the whole function is about 100 lines of code
+per backend.
+
+## Conclusion
+
+As you can see, zyx uses JIT kernel fusion, search and compilation with fully dynamic graph. Optimized kernels
+are cached, but if you want to achieve maximum speed, static graph can be beneficial, because then kernel
+generator won't need to run during every iteration of training loop. Also more constant folding may be possible
+with static graph.

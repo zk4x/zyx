@@ -172,7 +172,13 @@ pub(super) fn initialize_device(
     devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
-    let opencl_paths = ["/lib64/libOpenCL.so", "/lib/x86_64-linux-gnu/libOpenCL.so"];
+    let opencl_paths = [
+        "/lib/libOpenCL.so",
+        "/lib64/libOpenCL.so",
+        "/lib/x86_64-linux-gnu/libOpenCL.so",
+        "/usr/lib/libOpenCL.so",
+        "/usr/lib/x86_64-linux-gnu/libOpenCL.so",
+    ];
     let opencl = opencl_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
         return Err(BackendError {
@@ -739,7 +745,18 @@ impl Device for OpenCLDevice {
                         todo!()
                     }*/
                     match dtype {
-                        DType::F16 | DType::F32 | DType::F64 | DType::U8 | DType::U16 | DType::U32 | DType::U64 | DType::I8 | DType::I16 | DType::I32 | DType::I64 | DType::Bool => {
+                        DType::F16
+                        | DType::F32
+                        | DType::F64
+                        | DType::U8
+                        | DType::U16
+                        | DType::U32
+                        | DType::U64
+                        | DType::I8
+                        | DType::I16
+                        | DType::I32
+                        | DType::I64
+                        | DType::Bool => {
                             source += &format!(
                                 "{indent}r{z} = *((__global {}*)p{address} + {});\n",
                                 dtype.ocl(),
@@ -753,7 +770,18 @@ impl Device for OpenCLDevice {
                     //source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
                     let dtype = kernel.addressables[address as usize].1;
                     match dtype {
-                        DType::F16 | DType::F32 | DType::F64 | DType::U8 | DType::U16 | DType::U32 | DType::U64 | DType::I8 | DType::I16 | DType::I32 | DType::I64 | DType::Bool => {
+                        DType::F16
+                        | DType::F32
+                        | DType::F64
+                        | DType::U8
+                        | DType::U16
+                        | DType::U32
+                        | DType::U64
+                        | DType::I8
+                        | DType::I16
+                        | DType::I32
+                        | DType::I64
+                        | DType::Bool => {
                             source += &format!(
                                 "{indent}*((__global {}*)p{address} + {}) = {};\n",
                                 dtype.ocl(),
@@ -805,7 +833,12 @@ impl Device for OpenCLDevice {
                             BOp::Mul => format!("{} * {}", x.ocl(), y.ocl()),
                             BOp::Div => format!("{} / {}", x.ocl(), y.ocl()),
                             BOp::Mod => format!("{} % {}", x.ocl(), y.ocl()),
-                            BOp::Pow => format!("{}({}, {})", if dtype.is_float() { "pow" } else { "pown" }, x.ocl(), y.ocl()),
+                            BOp::Pow => format!(
+                                "{}({}, {})",
+                                if dtype.is_float() { "pow" } else { "pown" },
+                                x.ocl(),
+                                y.ocl()
+                            ),
                             //BOp::Pow => format!("exp2({} * log2(abs({})))", y.ocl(), x.ocl()),
                             BOp::Cmplt => format!("{} < {}", x.ocl(), y.ocl()),
                             BOp::Cmpgt => format!("{} > {}", x.ocl(), y.ocl()),

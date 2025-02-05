@@ -788,9 +788,7 @@ impl IRCompiler {
                         *end = usize::try_from(isize::try_from(*end).unwrap() + x).unwrap();
                     }
                     num_unrolls += 1;
-                    if num_unrolls > 0 {
-                        return;
-                    }
+                    //if num_unrolls > 0 { return; }
                 }
             }
         }
@@ -816,6 +814,18 @@ impl IRCompiler {
     // Loop invariant code motion and dependence analysis
     #[allow(unused)]
     fn loop_invariant_code_motion(&mut self) {
+        // Make a list of accumulators. These cannot be moved.
+        let accs: BTreeSet<u16> = self
+            .ops
+            .iter()
+            .filter_map(|op| {
+                if let IROp::Set { z, .. } = op {
+                    Some(*z)
+                } else {
+                    None
+                }
+            })
+            .collect();
         // Go from innermost loop to outermost loop. If there are multiple innermost loops,
         // they can be processed in parallel.
         for op_id in (6..self.ops.len()).rev() {
@@ -884,7 +894,8 @@ impl IRCompiler {
                             } else {
                                 true
                             };
-                            a && b
+                            let c = !accs.contains(&z);
+                            a && b && c
                         }
                         IROp::MAdd { .. } => todo!(),
                         IROp::Loop { .. } => {
@@ -1167,7 +1178,9 @@ impl IRCompiler {
                             match bop {
                                 BOp::Add => {}
                                 BOp::Sub => todo!(),
-                                BOp::Mul => self.ops[i] = IROp::Binary { z, x: y, y, bop: BOp::Add },
+                                BOp::Mul => {
+                                    self.ops[i] = IROp::Binary { z, x: y, y, bop: BOp::Add }
+                                }
                                 BOp::Div => todo!(),
                                 BOp::Pow => todo!(),
                                 BOp::Mod => todo!(),
@@ -1375,7 +1388,6 @@ impl IRKernel {
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
         //compiler.loop_invariant_code_motion();
-        //compiler.loop_splitting();
         compiler.vectorization();
         compiler.constant_folding_and_propagation();
         compiler.common_subexpression_elimination();
@@ -1394,10 +1406,6 @@ impl IRKernel {
 
         //for op in &compiler.ops { println!("{op:?}"); }
         let (registers, ops) = compiler.deduplicate_ssa();
-        //println!();
-        //println!();
-        //for op in &ops { println!("{op:?}"); }
-        //panic!();
 
         /*if debug_ir {
             for op in &ops {

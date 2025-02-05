@@ -69,7 +69,8 @@
   - [ ] loop invariant code motion!
   - [x] fix destructuring back from SSA
   - [x] loop unrolling
-  - [ ] loop splitting
+  - [ ] loop splitting!
+  - [ ] loop reordering!
   - [x] constant folding and propagation
   - [ ] common subexpression elimination
   - [x] dead store elimination
@@ -95,7 +96,7 @@
 - [ ] autograd
   - [ ] drop unneded nodes when gradient tape is released
   - [ ] proper realize function with gradient tape
-  - [ ] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
+  - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
 
 - [x] docs
   - [x] manual for adding new backends
