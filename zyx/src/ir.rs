@@ -862,7 +862,7 @@ impl IRCompiler {
                         *end = usize::try_from(isize::try_from(*end).unwrap() + x).unwrap();
                     }
                     num_unrolls += 1;
-                    //if num_unrolls > 0 { return; }
+                    if num_unrolls > 0 { return; }
                 }
             }
         }
@@ -938,7 +938,8 @@ impl IRCompiler {
                             };
                             a && b
                         }
-                        IROp::SetLocal { .. } | IROp::Set { .. } | IROp::Barrier { .. } => false,
+                        IROp::SetLocal { .. } | IROp::Set { .. } => false,
+                        IROp::Barrier { .. } => false,
                         IROp::Cast { z, x, .. } | IROp::Unary { z, x, .. } => {
                             if dependents.contains(&x) {
                                 dependents.insert(z);
@@ -971,7 +972,40 @@ impl IRCompiler {
                             let c = !accs.contains(&z);
                             a && b && c
                         }
-                        IROp::MAdd { .. } => todo!(),
+                        IROp::MAdd { z, a, b, c } => {
+                            let a = if let Reg::Var(x) = a {
+                                if dependents.contains(&x) {
+                                    dependents.insert(z);
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            };
+                            let b = if let Reg::Var(x) = b {
+                                if dependents.contains(&x) {
+                                    dependents.insert(z);
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            };
+                            let c = if let Reg::Var(x) = c {
+                                if dependents.contains(&x) {
+                                    dependents.insert(z);
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            };
+                            let z = !accs.contains(&z);
+                            a && b && c && z
+                        }
                         IROp::Loop { .. } => {
                             inner_loop_counter += 1;
                             // This is a bit more complicated. We have to check all values
@@ -988,6 +1022,7 @@ impl IRCompiler {
                             false
                         }
                     };
+                    //println!("Move possible: {move_possible}");
                     if move_possible && inner_loop_counter == 0 {
                         let op = self.ops.remove(op_id);
                         self.ops.insert(loop_id, op);
@@ -1110,7 +1145,7 @@ impl IRCompiler {
                             }
                         } else if yv.is_one() {
                             match bop {
-                                BOp::Mul | BOp::Div | BOp::Pow | BOp::BitAnd => {
+                                BOp::Mul | BOp::Div | BOp::Pow => {
                                     self.ops.remove(i);
                                     i -= 1;
                                     self.replace(z, Reg::Var(xv));
@@ -1126,6 +1161,7 @@ impl IRCompiler {
                                     self.replace(z, Reg::Const(yv));
                                 }
                                 BOp::BitXor
+                                | BOp::BitAnd
                                 | BOp::Cmplt
                                 | BOp::And
                                 | BOp::Or
@@ -1459,6 +1495,7 @@ impl IRKernel {
 
         compiler.global_loop_unrolling();
         //compiler.loop_unrolling();
+        compiler.constant_folding_and_propagation();
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
         compiler.loop_invariant_code_motion();
