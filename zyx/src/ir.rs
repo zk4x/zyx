@@ -767,7 +767,9 @@ impl IRCompiler {
                     self.ops.remove(end);
                     self.ops.remove(op_i);
                     let ops2: Vec<IROp> = self.ops[op_i..end - 1].into();
-                    self.replace(id, Reg::Const(Constant::U64(len as u64 - 1)));
+
+                    // THis is an issue with multiple loops
+                    self.replace(id, Reg::Const(Constant::U64(len as u64 - 1)), op_i);
                     /*println!();
                     for op in &ops {
                         println!("{op:?}");
@@ -878,7 +880,7 @@ impl IRCompiler {
                             while let Some(op) = ops3.pop() {
                                 self.ops.insert(op_i, op);
                             }
-                            self.replace(id, Reg::Const(Constant::U64(i as u64)));
+                            self.replace(id, Reg::Const(Constant::U64(i as u64)), op_i);
                         }
                     }
                     let x = isize::try_from(ops2.len()).unwrap()
@@ -888,7 +890,7 @@ impl IRCompiler {
                         *end = usize::try_from(isize::try_from(*end).unwrap() + x).unwrap();
                     }
                     num_unrolls += 1;
-                    if num_unrolls > 1 { return; }
+                    //if num_unrolls > 0 { return; }
                 }
             }
         }
@@ -900,7 +902,7 @@ impl IRCompiler {
             op_i -= 1;
             if let IROp::Loop { id, len } = self.ops[op_i] {
                 if len == 1 {
-                    self.replace(id, Reg::Const(Constant::U64(0)));
+                    self.replace(id, Reg::Const(Constant::U64(0)), 0);
                 }
             }
         }
@@ -1071,16 +1073,16 @@ impl IRCompiler {
 
     // Replace all occurences of z with register x
     #[allow(clippy::match_on_vec_items)]
-    fn replace(&mut self, to_replace: u16, replace_with: Reg) {
+    fn replace(&mut self, to_replace: u16, replace_with: Reg, begin: usize) {
         // TODO make this non recursive
-        for i in 0..self.ops.len() {
+        for i in begin..self.ops.len() {
             match self.ops[i] {
                 IROp::Cast { z, ref mut x, dtype } => {
                     if *x == to_replace {
                         match replace_with {
                             Reg::Var(replace_with) => *x = replace_with,
                             Reg::Const(replace_with) => {
-                                self.replace(z, Reg::Const(replace_with.cast(dtype)));
+                                self.replace(z, Reg::Const(replace_with.cast(dtype)), begin);
                             }
                         }
                     }
@@ -1090,7 +1092,7 @@ impl IRCompiler {
                         match replace_with {
                             Reg::Var(replace_with) => *x = replace_with,
                             Reg::Const(replace_with) => {
-                                self.replace(z, Reg::Const(replace_with.unary(uop)));
+                                self.replace(z, Reg::Const(replace_with.unary(uop)), begin);
                             }
                         }
                     }
@@ -1153,18 +1155,18 @@ impl IRCompiler {
                                 BOp::Mul | BOp::And | BOp::BitAnd => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Const(yv));
+                                    self.replace(z, Reg::Const(yv), 0);
                                 }
                                 BOp::Div | BOp::Mod => panic!("Division by zero constant"),
                                 BOp::Pow | BOp::Or => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Const(yv.dtype().one_constant()));
+                                    self.replace(z, Reg::Const(yv.dtype().one_constant()), 0);
                                 }
                                 BOp::Add | BOp::Sub | BOp::BitXor | BOp::BitOr => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Var(xv));
+                                    self.replace(z, Reg::Var(xv), 0);
                                 }
                                 BOp::Max => self.ops[i] = IROp::Unary { z, x: xv, uop: UOp::ReLU },
                                 BOp::NotEq
@@ -1178,17 +1180,17 @@ impl IRCompiler {
                                 BOp::Mul | BOp::Div | BOp::Pow => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Var(xv));
+                                    self.replace(z, Reg::Var(xv), 0);
                                 }
                                 BOp::Mod => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Const(yv.dtype().zero_constant()));
+                                    self.replace(z, Reg::Const(yv.dtype().zero_constant()), 0);
                                 }
                                 BOp::BitOr => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Const(yv));
+                                    self.replace(z, Reg::Const(yv), 0);
                                 }
                                 BOp::BitXor
                                 | BOp::BitAnd
@@ -1265,13 +1267,13 @@ impl IRCompiler {
                                 BOp::Add => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Var(yv));
+                                    self.replace(z, Reg::Var(yv), 0);
                                 }
                                 BOp::Sub => self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::Neg },
                                 BOp::Mul | BOp::Div | BOp::Pow | BOp::Mod | BOp::And => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Const(xv));
+                                    self.replace(z, Reg::Const(xv), 0);
                                 }
                                 BOp::Cmplt => {}
                                 BOp::Cmpgt => {}
@@ -1279,7 +1281,7 @@ impl IRCompiler {
                                 BOp::Or => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Var(yv));
+                                    self.replace(z, Reg::Var(yv), 0);
                                 }
                                 BOp::BitXor => todo!(),
                                 BOp::BitOr => todo!(),
@@ -1295,7 +1297,7 @@ impl IRCompiler {
                                 BOp::Mul => {
                                     self.ops.remove(i);
                                     i -= 1;
-                                    self.replace(z, Reg::Var(yv));
+                                    self.replace(z, Reg::Var(yv), 0);
                                 }
                                 BOp::Div => {
                                     self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::Reciprocal }
@@ -1341,7 +1343,7 @@ impl IRCompiler {
                     (Reg::Const(x), Reg::Const(y)) => {
                         self.ops.remove(i);
                         i -= 1;
-                        self.replace(z, Reg::Const(Constant::binary(x, y, bop)));
+                        self.replace(z, Reg::Const(Constant::binary(x, y, bop)), 0);
                     }
                 },
                 IROp::MAdd { .. } => unreachable!(),
@@ -1550,9 +1552,8 @@ impl IRKernel {
         panic!();*/
 
         compiler.global_loop_unrolling();
-        //compiler.loop_unrolling();
+        compiler.loop_unrolling();
         compiler.constant_folding_and_propagation();
-        //compiler.debug();
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
         compiler.loop_invariant_code_motion();
