@@ -92,10 +92,7 @@ fn rope1() -> Result<(), ZyxError> {
     let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
     let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
     let z = xs.rope(&cos, &sin)?.cast(DType::I32);
-    assert_eq!(
-        z,
-        [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]
-    );
+    assert_eq!(z, [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]);
     Ok(())
 }
 
@@ -348,15 +345,14 @@ fn softmax1() -> Result<(), ZyxError> {
     //assert_eq!(y, [0.09003056585788726807, 0.66524088382720947266, 0.24472846090793609619]);
     let y = x.softmax([])?;
     //println!("{y}");
-    let y_data: Vec<f32> = y.try_into()?;
-    for (x, y) in y_data.into_iter().zip([
-        0.09003056585788726807,
-        0.66524088382720947266,
-        0.24472846090793609619,
-    ]) {
-        //assert!((x - y).abs() < 0.00001);
-        assert!(x.is_equal(y));
-    }
+    assert_eq!(
+        y,
+        [
+            0.09003056585788726807f32,
+            0.66524088382720947266,
+            0.24472846090793609619,
+        ]
+    );
     //Tensor::plot_graph([], "graph").unwrap();
     Ok(())
 }
@@ -604,7 +600,10 @@ fn dot_pad() -> Result<(), ZyxError> {
 #[test]
 #[should_panic]
 fn t3() {
-    let x = Tensor::randn([1024, 1024], DType::F32).unwrap().expand([1024, 1024, 1024, 1024, 1024, 1024]).unwrap();
+    let x = Tensor::randn([1024, 1024], DType::F32)
+        .unwrap()
+        .expand([1024, 1024, 1024, 1024, 1024, 1024])
+        .unwrap();
     Tensor::realize([&x]).unwrap();
 }
 
@@ -659,8 +658,13 @@ fn multiple_stores() -> Result<(), ZyxError> {
     let z = y.tanh();
     Tensor::realize([&y, &z])?;
     println!("{z:.14}");
-    assert_eq!(z, [[0.8000000119f32, 0.8823529482, 0.6000000238],
-                    [0.9230769277, 0.8823529482, 0.0000000000]]);
+    assert_eq!(
+        z,
+        [
+            [0.8000000119f32, 0.8823529482, 0.6000000238],
+            [0.9230769277, 0.8823529482, 0.0000000000]
+        ]
+    );
     Ok(())
 }
 
@@ -828,7 +832,23 @@ fn binary_y_depends_on_x() -> Result<(), ZyxError> {
     let z = {
         let x = Tensor::from([[2, 4, 1], [3, 2, 4]]);
 
-        let x = x.exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2().exp2().log2();
+        let x = x
+            .exp2()
+            .log2()
+            .exp2()
+            .log2()
+            .exp2()
+            .log2()
+            .exp2()
+            .log2()
+            .exp2()
+            .log2()
+            .exp2()
+            .log2()
+            .exp2()
+            .log2()
+            .exp2()
+            .log2();
 
         let y = x.permute([1, 0]).unwrap();
 

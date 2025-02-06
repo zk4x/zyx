@@ -116,7 +116,7 @@ impl Display for IROp {
             IROp::Binary { z, x, y, bop } => f.write_fmt(format_args!("b.{bop:?} {z} <- {x:?}, {y:?}")),
             IROp::MAdd { z, a, b, c } => f.write_fmt(format_args!("madd {z} <- {a:?}, {b:?}, {c:?}")),
             IROp::Loop { id, len } => f.write_fmt(format_args!("{GREEN}for {id} in 0..{len}{RESET}")),
-            IROp::EndLoop { id, len } => f.write_fmt(format_args!("endloop {id}")),
+            IROp::EndLoop { id, .. } => f.write_fmt(format_args!("endloop {id}")),
             IROp::Barrier { scope } => f.write_fmt(format_args!("{BLUE}barrier.{scope}{RESET}")),
         }
     }
@@ -437,7 +437,7 @@ impl IRCompiler {
 
     /// Converts from SSA form to using as few registers as possible + dead store elimination
     #[allow(clippy::cognitive_complexity)]
-    fn deduplicate_ssa(self) -> (Vec<DType>, Vec<IROp>) {
+    fn reduce_register_use(self) -> (Vec<DType>, Vec<IROp>) {
         // iterate over all loops
         // for each loop make a map of ref counts
 
@@ -640,6 +640,7 @@ impl IRCompiler {
                 }
                 IROp::Binary { z, x, y, bop } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
+                        //println!("b.{bop:?} {z} <- {x:?}, {y:?}");
                         let dtype = match bop {
                             BOp::Cmplt | BOp::Cmpgt | BOp::Or | BOp::And | BOp::NotEq => {
                                 DType::Bool
@@ -887,7 +888,7 @@ impl IRCompiler {
                         *end = usize::try_from(isize::try_from(*end).unwrap() + x).unwrap();
                     }
                     num_unrolls += 1;
-                    if num_unrolls > 0 { return; }
+                    if num_unrolls > 1 { return; }
                 }
             }
         }
@@ -963,7 +964,11 @@ impl IRCompiler {
                             };
                             a && b
                         }
-                        IROp::SetLocal { .. } | IROp::Set { .. } => false,
+                        IROp::SetLocal { .. } => false,
+                        IROp::Set { z, .. } => {
+                            dependents.insert(z);
+                            false
+                        }
                         IROp::Barrier { .. } => false,
                         IROp::Cast { z, x, .. } | IROp::Unary { z, x, .. } => {
                             if dependents.contains(&x) {
@@ -1545,8 +1550,9 @@ impl IRKernel {
         panic!();*/
 
         compiler.global_loop_unrolling();
-        compiler.loop_unrolling();
+        //compiler.loop_unrolling();
         compiler.constant_folding_and_propagation();
+        //compiler.debug();
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
         compiler.loop_invariant_code_motion();
@@ -1564,7 +1570,7 @@ impl IRKernel {
         // TODO loop splitting and loop peeling
 
         //for op in &compiler.ops { println!("{op:?}"); }
-        let (registers, ops) = compiler.deduplicate_ssa();
+        let (registers, ops) = compiler.reduce_register_use();
 
         /*if debug_ir {
             for op in &ops {
