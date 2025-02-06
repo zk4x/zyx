@@ -97,6 +97,31 @@ pub enum IROp {
     },
 }
 
+impl Display for IROp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const BLUE: &str = "\x1B[34m";
+        const GREEN: &str = "\x1B[32m";
+        const MAGENTA: &str = "\x1B[35m";
+        const RED: &str = "\x1B[31m";
+        //const WHITE: &str = "\x1B[37m";
+        const YELLOW: &str = "\x1B[33m";
+        const RESET: &str = "\x1B[39m";
+        match self {
+            IROp::Load { z, address, offset } => f.write_fmt(format_args!("{MAGENTA}load {z} <- *{address} + {offset:?}{RESET}")),
+            IROp::Store { address, offset, x } => f.write_fmt(format_args!("{RED}store *{address} + {offset:?} <- {x:?}{RESET}")),
+            IROp::SetLocal { address, len, value } => f.write_fmt(format_args!("set.local {address}[{len}] <- {value}")),
+            IROp::Set { z, value } => f.write_fmt(format_args!("{YELLOW}set {z} <- {value}{RESET}")),
+            IROp::Cast { z, x, dtype } => f.write_fmt(format_args!("cast.{dtype} {z} <- {x}")),
+            IROp::Unary { z, x, uop } => f.write_fmt(format_args!("u.{uop:?} {z} <- {x}")),
+            IROp::Binary { z, x, y, bop } => f.write_fmt(format_args!("b.{bop:?} {z} <- {x:?}, {y:?}")),
+            IROp::MAdd { z, a, b, c } => f.write_fmt(format_args!("madd {z} <- {a:?}, {b:?}, {c:?}")),
+            IROp::Loop { id, len } => f.write_fmt(format_args!("{GREEN}for {id} in 0..{len}{RESET}")),
+            IROp::EndLoop { id, len } => f.write_fmt(format_args!("endloop {id}")),
+            IROp::Barrier { scope } => f.write_fmt(format_args!("{BLUE}barrier.{scope}{RESET}")),
+        }
+    }
+}
+
 // TODO add vectorization
 #[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1329,6 +1354,32 @@ impl IRCompiler {
         }
     }
 
+    fn debug(&self) {
+        let mut first_loops = true;
+        let mut indent = String::new();
+        println!("IRKernel");
+        for op in &self.ops {
+            match op {
+                IROp::Loop { .. } => {
+                    println!("{indent}{op}");
+                    if !first_loops {
+                        indent += "  ";
+                    }
+                }
+                IROp::EndLoop { .. } => {
+                    indent.pop();
+                    indent.pop();
+                    println!("{indent}{op}");
+                }
+                _ => {
+                    println!("{indent}{op}");
+                    first_loops = false;
+                }
+            }
+        }
+        println!();
+    }
+
     /*fn upcast(&mut self, axis: u16, local_acc_len: Dimension, addressables: &mut Vec<(Scope, DType, usize, bool)>) {
         let mut loop_id = None;
         let mut last_reg_acc_id = 0;
@@ -1494,7 +1545,7 @@ impl IRKernel {
         panic!();*/
 
         compiler.global_loop_unrolling();
-        //compiler.loop_unrolling();
+        compiler.loop_unrolling();
         compiler.constant_folding_and_propagation();
         // TODO automatic reordering of additions such that we minimize dependencies
         // for loop invariant code motion
@@ -1505,10 +1556,7 @@ impl IRKernel {
 
         compiler.fuse_ops();
         if debug.ir() {
-            for op in &compiler.ops {
-                println!("{op:?}");
-            }
-            println!();
+            compiler.debug();
         }
 
         // TODO perhaps we can do even more optimizations with instruction scheduling

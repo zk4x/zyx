@@ -931,7 +931,7 @@ impl std::fmt::Display for Op {
                 "{C_WHITE}Const{C_RESET}       {z} <- value: {value}, {view}"
             )),
             Op::Load { z, zscope, zview: _, x, xscope, xview, xdtype } => f.write_fmt(format_args!(
-                "{C_YELLOW}Load{C_RESET}        {z}[{zscope:?}] <- {x}[{xscope:?}, {xdtype}], {xview}"
+                "{C_MAGENTA}Load{C_RESET}        {z}[{zscope:?}] <- {x}[{xscope:?}, {xdtype}], {xview}"
             )),
             Op::Store { z, zview, zscope, zdtype, x, xscope, xview: _ } => {
                 f.write_fmt(format_args!(
@@ -969,7 +969,7 @@ impl std::fmt::Display for Op {
                 "{C_WHITE}Binary{C_RESET}.{bop:?}  {z} <- {x}, {y}"
             )),
             Op::Barrier { scope } => {
-                f.write_fmt(format_args!("{C_MAGENTA}Barrier{C_RESET}({scope})"))
+                f.write_fmt(format_args!("{C_YELLOW}Barrier{C_RESET}({scope})"))
             }
         }
     }
