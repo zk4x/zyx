@@ -1,5 +1,5 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event}, ir::IRKernel, kernel::{Kernel, Op}, runtime::Pool, shape::Dimension, slab::Id, DebugMask
+    backend::{BackendError, Device, DeviceInfo, Event, MemoryPool}, ir::IRKernel, kernel::{Kernel, Op}, runtime::Pool, shape::Dimension, slab::Id, DebugMask
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -119,18 +119,14 @@ impl Optimizer {
                 let nanos = std::time::Instant::now();
                 let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
                 pool.pool.sync_events(vec![event])?;
-                let nanos = nanos.elapsed();
-                let nanos = nanos.as_nanos();
+                let nanos = nanos.elapsed().as_nanos();
                 if debug.perf() {
                     print_perf(flop, mem_read, mem_write, nanos);
                 }
                 //pool.events.insert(outputs, event);
                 assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
             } else {
-                todo!();
-                // TODO perhaps we really should allocate separate inputs for applying
-                // optimizations
-                /*pool.pool.sync_events(event_wait_list).unwrap();
+                pool.pool.sync_events(event_wait_list).unwrap();
                 let (optimization, program_id) = optimize_kernel(
                     kernel,
                     device,
@@ -140,7 +136,7 @@ impl Optimizer {
                     debug,
                 );
                 self.programs.insert((kernel_id, dev_info_id), program_id);
-                self.optimizations.insert((kernel_id, dev_info_id), optimization);*/
+                self.optimizations.insert((kernel_id, dev_info_id), optimization);
             }
         }
         Ok(())
@@ -190,7 +186,7 @@ impl Optimizer {
 }
 
 // Optimize kernel further, search_iters times
-/*fn optimize_kernel(
+fn optimize_kernel(
     kernel: &Kernel,
     device: &dyn Device,
     memory_pool: &dyn MemoryPool,
@@ -276,7 +272,7 @@ impl Optimizer {
         opts.is_empty(),
     )*/*/
     todo!()
-}*/
+}
 
 #[allow(clippy::similar_names)]
 fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
