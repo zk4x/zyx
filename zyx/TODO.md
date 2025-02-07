@@ -51,6 +51,7 @@
   - [ ] flash attention
   - [ ] splitting of global loops into register loops
   - [ ] splitting of register loops into global loops (if global work size is too small)
+  - [ ] proper optimizer with tree search
 - [x] view
   - [x] split on padded view
   - [x] view padding to ir

@@ -1,17 +1,19 @@
 use crate::{
     backend::{BackendError, Device, DeviceInfo, Event, MemoryPool}, ir::IRKernel, kernel::{Kernel, Op}, runtime::Pool, shape::Dimension, slab::Id, DebugMask
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{collections::{BTreeMap, BTreeSet}, iter::Map};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Optimization {
     pub local_work_size: [Dimension; 3],
     // upcast op id -> Dimension, where op is loop split from register to global
-    pub upcast: Option<(u16, Dimension)>,
+    //pub upcast: Option<(u16, Dimension)>,
+    // loop id, order of the id (first, second, thired, ... loop with that id) and lenght of the split
+    splits: Vec<(u16, u16, Dimension)>,
 }
 
 #[derive(Debug)]
-pub struct Optimizer {
+pub struct KernelCache {
     device_infos: BTreeMap<DeviceInfo, u32>,
     kernels: BTreeMap<Vec<Op>, u32>,
     // Finished optimizations of kernels for given devices
@@ -22,15 +24,9 @@ pub struct Optimizer {
     programs: BTreeMap<(u32, u32), Id>,
 }
 
-/*#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Optimization {
-    splits: Vec<(usize, Vec<Dimension>)>,
-    local_tiles: bool,
-}*/
-
-impl Optimizer {
-    pub(super) const fn new() -> Optimizer {
-        Optimizer {
+impl KernelCache {
+    pub(super) const fn new() -> KernelCache {
+        KernelCache {
             device_infos: BTreeMap::new(),
             kernels: BTreeMap::new(),
             optimizations: BTreeMap::new(),
@@ -108,7 +104,7 @@ impl Optimizer {
             assert!(self.kernels.insert(kernel.ops.clone(), kernel_id).is_none());
             if search_iters == 0 {
                 // if optimizations are not requested, use default optimizations
-                let optimization = Optimizer::default_optimizations(kernel, device.info());
+                let optimization = KernelCache::default_optimizations(kernel, device.info());
                 let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
@@ -127,6 +123,9 @@ impl Optimizer {
                 assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
             } else {
                 pool.pool.sync_events(event_wait_list).unwrap();
+
+                //while let Some(optimization) = optimizer.next_optimization() {}
+
                 let (optimization, program_id) = optimize_kernel(
                     kernel,
                     device,
@@ -181,8 +180,14 @@ impl Optimizer {
 
         // Upcast is only possible if last local dimension (lz) is 1
 
-        Optimization { local_work_size: [lx, ly, lz], upcast: Some((6, 32)) }
+        Optimization { local_work_size: [lx, ly, lz], splits: Vec::new() }
     }
+}
+
+#[allow(unused)]
+struct Optimizer {
+    // optimization => time taken to run that kernel in nanoseconds
+    visited: Map<Optimization, u128>,
 }
 
 // Optimize kernel further, search_iters times
@@ -321,9 +326,6 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     );
 }
 
-#[test]
-fn red1() {
-    let x = crate::Tensor::rand([1024 * 1024], crate::DType::F32).unwrap();
-    let y = x.sum([]).unwrap();
-    println!("{y}");
-}
+
+
+

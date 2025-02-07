@@ -14,7 +14,7 @@ use crate::{
     graph::Graph,
     ir::Scope,
     node::{BOp, ROp, UOp},
-    optimizer::Optimizer,
+    optimizer::KernelCache,
     runtime::Pool,
     shape::{Axis, Dimension},
     slab::Id,
@@ -733,7 +733,7 @@ impl Kernel {
         graph: &Graph,
         devices: &mut [Box<dyn Device>],
         memory_pools: &mut [Pool],
-        optimizer: &mut Optimizer,
+        optimizer: &mut KernelCache,
         search_iters: usize,
         debug: DebugMask,
     ) -> Result<(), ZyxError> {

@@ -9,7 +9,7 @@ use crate::{
     node::{BOp, UOp},
     optimizer::Optimization,
     shape::Dimension,
-    DType, DebugMask,
+    DType, DebugMask, Set,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -185,6 +185,7 @@ impl std::fmt::Display for Scope {
 // Indexing also needs to be rewritten so that as much of it happens outside of the loops
 // and so that it does work properly
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct IRCompiler {
     pub(super) ops: Vec<IROp>,
     // address => DType,
@@ -753,9 +754,9 @@ impl IRCompiler {
     #[allow(clippy::cognitive_complexity)]
     #[allow(unused)]
     fn loop_unrolling(&mut self) {
+        // TODO after unroll of a loop, constant propagate the accumulator
         let mut op_i = self.ops.len();
         let mut last_end_loop = Vec::new();
-        let mut num_unrolls = 0;
         while op_i > 6 {
             op_i -= 1;
             if let IROp::EndLoop { .. } = self.ops[op_i] {
@@ -768,7 +769,6 @@ impl IRCompiler {
                     self.ops.remove(op_i);
                     let ops2: Vec<IROp> = self.ops[op_i..end - 1].into();
 
-                    // THis is an issue with multiple loops
                     self.replace(id, Reg::Const(Constant::U64(len as u64 - 1)), op_i);
                     /*println!();
                     for op in &ops {
@@ -889,8 +889,6 @@ impl IRCompiler {
                     for end in &mut last_end_loop {
                         *end = usize::try_from(isize::try_from(*end).unwrap() + x).unwrap();
                     }
-                    num_unrolls += 1;
-                    //if num_unrolls > 0 { return; }
                 }
             }
         }
@@ -1477,6 +1475,102 @@ impl IRCompiler {
             }
         }
     }*/
+
+    #[allow(unused)]
+    fn deduplicate(&mut self) {
+        // Get all accs
+        let mut accs = Set::with_hasher(Default::default());
+        for op in &self.ops {
+            if let IROp::Set { z, .. } = op {
+                accs.insert(*z);
+            }
+        }
+        // Keep over each op, till you find a duplicate
+        let mut i = 0;
+        while i < self.ops.len() {
+            let mut changed = false;
+            match self.ops[i] {
+                IROp::Load { z, address, offset } => {
+                    for j in i+1..self.ops.len() {
+                        if let IROp::Load { z: z2, address: address2, offset: offset2 } = self.ops[j] {
+                            if address == address2 && offset == offset2 {
+                                self.replace(z2, Reg::Var(z), j);
+                                self.ops.remove(j);
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                IROp::Cast { z, x, dtype } => {
+                    if !accs.contains(&z) {
+                        for j in i+1..self.ops.len() {
+                            if let IROp::Cast { z: z2, x: x2, dtype: dtype2 } = self.ops[j] {
+                                if x == x2 && dtype == dtype2 && !accs.contains(&z2) {
+                                    self.replace(z2, Reg::Var(z), j);
+                                    self.ops.remove(j);
+                                    changed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                IROp::Unary { z, x, uop } => {
+                    if !accs.contains(&z) {
+                        for j in i+1..self.ops.len() {
+                            if let IROp::Unary { z: z2, x: x2, uop: uop2 } = self.ops[j] {
+                                if x == x2 && uop == uop2 && !accs.contains(&z2) {
+                                    self.replace(z2, Reg::Var(z), j);
+                                    self.ops.remove(j);
+                                    changed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                IROp::Binary { z, x, y, bop } => {
+                    if !accs.contains(&z) {
+                        for j in i+1..self.ops.len() {
+                            if let IROp::Binary { z: z2, x: x2, y: y2, bop: bop2 } = self.ops[j] {
+                                if x == x2 && y == y2 && bop == bop2 && !accs.contains(&z2) {
+                                    self.replace(z2, Reg::Var(z), j);
+                                    self.ops.remove(j);
+                                    changed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                IROp::MAdd { z, a, b, c } => {
+                    if !accs.contains(&z) {
+                        for j in i+1..self.ops.len() {
+                            if let IROp::MAdd { z: z2, a: a2, b: b2, c: c2 } = self.ops[j] {
+                                if a == a2 && b == b2 && c == c2 && !accs.contains(&z2) {
+                                    self.replace(z2, Reg::Var(z), j);
+                                    self.ops.remove(j);
+                                    changed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                IROp::SetLocal { .. } => {}
+                IROp::Set { .. } => {}
+                IROp::Store { .. } => {}
+                IROp::Loop { .. } => {}
+                IROp::EndLoop { .. } => {}
+                IROp::Barrier { .. } => {}
+            }
+            if !changed {
+                i += 1;
+            }
+        }
+    }
 }
 
 fn new_var(
@@ -1510,6 +1604,8 @@ impl IRKernel {
         }
         // Reshape kernel so that it has 3 global and 3 local dimensions
         let [lx, ly, lz] = optimization.local_work_size;
+
+        // TODO loop splitting and loop peeling
 
         /*if let Some((axis, len)) = optimization.upcast {
             lz *= len;
@@ -1553,13 +1649,25 @@ impl IRKernel {
 
         compiler.global_loop_unrolling();
         compiler.loop_unrolling();
-        compiler.constant_folding_and_propagation();
-        // TODO automatic reordering of additions such that we minimize dependencies
-        // for loop invariant code motion
-        compiler.loop_invariant_code_motion();
-        compiler.vectorization();
-        compiler.constant_folding_and_propagation();
-        compiler.common_subexpression_elimination();
+
+        let mut old_compiler = compiler.clone();
+        loop {
+            compiler.constant_folding_and_propagation();
+            // TODO automatic reordering of additions such that we minimize dependencies
+            // for loop invariant code motion
+            compiler.loop_invariant_code_motion();
+            compiler.vectorization();
+            compiler.constant_folding_and_propagation();
+            compiler.common_subexpression_elimination();
+            //compiler.deduplicate();
+            if compiler == old_compiler {
+                break;
+            } else {
+                old_compiler = compiler.clone();
+            }
+        }
+
+        //compiler.debug();
 
         compiler.fuse_ops();
         if debug.ir() {
@@ -1568,7 +1676,6 @@ impl IRKernel {
 
         // TODO perhaps we can do even more optimizations with instruction scheduling
         // and register allocation? But that's a big perhaps...
-        // TODO loop splitting and loop peeling
 
         //for op in &compiler.ops { println!("{op:?}"); }
         let (registers, ops) = compiler.reduce_register_use();
