@@ -1344,7 +1344,7 @@ impl IRCompiler {
                         self.replace(z, Reg::Const(Constant::binary(x, y, bop)), 0);
                     }
                 },
-                IROp::MAdd { .. } => unreachable!(),
+                IROp::MAdd { .. } => {},
                 IROp::SetLocal { .. }
                 | IROp::Set { .. }
                 | IROp::Cast { .. }
@@ -1476,7 +1476,6 @@ impl IRCompiler {
         }
     }*/
 
-    #[allow(unused)]
     fn deduplicate(&mut self) {
         // Get all accs
         let mut accs = Set::with_hasher(Default::default());
@@ -1499,6 +1498,8 @@ impl IRCompiler {
                                 changed = true;
                                 break;
                             }
+                        } else if matches!(self.ops[j], IROp::EndLoop { .. }) {
+                            break;
                         }
                     }
                 }
@@ -1512,6 +1513,8 @@ impl IRCompiler {
                                     changed = true;
                                     break;
                                 }
+                            } else if matches!(self.ops[j], IROp::EndLoop { .. }) {
+                                break;
                             }
                         }
                     }
@@ -1526,6 +1529,8 @@ impl IRCompiler {
                                     changed = true;
                                     break;
                                 }
+                            } else if matches!(self.ops[j], IROp::EndLoop { .. }) {
+                                break;
                             }
                         }
                     }
@@ -1535,11 +1540,21 @@ impl IRCompiler {
                         for j in i+1..self.ops.len() {
                             if let IROp::Binary { z: z2, x: x2, y: y2, bop: bop2 } = self.ops[j] {
                                 if x == x2 && y == y2 && bop == bop2 && !accs.contains(&z2) {
-                                    self.replace(z2, Reg::Var(z), j);
-                                    self.ops.remove(j);
-                                    changed = true;
-                                    break;
+                                    if let Reg::Var(x2) = x2 {
+                                        if !accs.contains(&x2) {
+                                            if let Reg::Var(y2) = y2 {
+                                                if !accs.contains(&y2) {
+                                                    self.replace(z2, Reg::Var(z), j);
+                                                    self.ops.remove(j);
+                                                    changed = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
+                            } else if matches!(self.ops[j], IROp::EndLoop { .. } | IROp::Loop { .. }) {
+                                break;
                             }
                         }
                     }
@@ -1554,6 +1569,8 @@ impl IRCompiler {
                                     changed = true;
                                     break;
                                 }
+                            } else if matches!(self.ops[j], IROp::EndLoop { .. }) {
+                                break;
                             }
                         }
                     }
@@ -1641,11 +1658,6 @@ impl IRKernel {
         /*if let Some((axis, len)) = optimization.upcast {
             compiler.upcast(axis, len, &mut addressables);
         }*/
-        /*for op in &compiler.ops {
-            println!("{op:?}");
-        }
-        println!();
-        panic!();*/
 
         compiler.global_loop_unrolling();
         compiler.loop_unrolling();
@@ -1659,7 +1671,7 @@ impl IRKernel {
             compiler.vectorization();
             compiler.constant_folding_and_propagation();
             compiler.common_subexpression_elimination();
-            //compiler.deduplicate();
+            compiler.deduplicate();
             if compiler == old_compiler {
                 break;
             } else {
@@ -1667,9 +1679,8 @@ impl IRKernel {
             }
         }
 
-        //compiler.debug();
-
         compiler.fuse_ops();
+
         if debug.ir() {
             compiler.debug();
         }
