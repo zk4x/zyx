@@ -71,6 +71,7 @@ mod view;
 mod chasher;
 mod bar;
 mod autograd;
+mod static_graph;
 //mod tvec;
 
 pub(crate) type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;

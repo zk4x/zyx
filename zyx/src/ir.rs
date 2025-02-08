@@ -1685,17 +1685,7 @@ impl IRKernel {
             compiler.debug();
         }
 
-        // TODO perhaps we can do even more optimizations with instruction scheduling
-        // and register allocation? But that's a big perhaps...
-
-        //for op in &compiler.ops { println!("{op:?}"); }
         let (registers, ops) = compiler.reduce_register_use();
-
-        /*if debug_ir {
-            for op in &ops {
-                println!("{op:?}");
-            }
-        }*/
 
         IRKernel { addressables, registers, ops }
     }

@@ -8,6 +8,7 @@ use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Axis, Dimension};
 use crate::slab::Id;
+use crate::static_graph::GraphOp;
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use half::{bf16, f16};
@@ -821,6 +822,11 @@ impl Runtime {
         self.graph.delete_tensors(&to_delete);
 
         Ok(())
+    }
+
+    pub(super) fn compile_graph(&mut self, _inputs: &Set<TensorId>, _outputs: &Set<TensorId>) -> Vec<GraphOp> {
+        let ops = Vec::new();
+        ops
     }
 
     fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) -> Result<(), ZyxError> {
