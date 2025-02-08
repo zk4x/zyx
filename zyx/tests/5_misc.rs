@@ -207,7 +207,7 @@ fn rand() {
 fn const_() -> Result<(), ZyxError> {
     let x = Tensor::from([[3f32, 4., 2.], [4., 3., 2.]]);
     //.get(1);
-    let y = Tensor::constant(1f32) + x;
+    let y = 1f32 + x;
     //println!("{y}'");
     //Tensor::plot_graph([], "graph0");
     //let c: Tensor = Tensor::constant(1f64 / std::f64::consts::E.log2());
@@ -220,7 +220,7 @@ fn const_() -> Result<(), ZyxError> {
 
 #[test]
 fn graph_shapes() -> Result<(), ZyxError> {
-    let x = Tensor::constant(2);
+    let x: Tensor = 2.into();
     let y = x.expand([1, 1])?;
     println!("{y}");
     Ok(())
@@ -630,7 +630,7 @@ fn layer_norm() -> Result<(), ZyxError> {
     let x = Tensor::from([[3, 5, 2, 1], [6, 1, 4, 2]]).cast(DType::F32);
 
     let axes = -(d_dims as isize)..=-1;
-    let eps = Tensor::constant(eps).cast(x.dtype());
+    let eps = Tensor::from(eps).cast(x.dtype());
     let a = &x - x.mean_kd(axes.clone())?;
     //println!("{a}");
     let b = (x.var_kd(axes, 1)? + eps).sqrt();

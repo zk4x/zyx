@@ -1,7 +1,13 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event, MemoryPool}, ir::IRKernel, kernel::{Kernel, Op}, runtime::Pool, shape::Dimension, slab::Id, DebugMask
+    backend::{BackendError, Device, DeviceInfo, Event},
+    ir::IRKernel,
+    kernel::{Kernel, Op},
+    runtime::Pool,
+    shape::Dimension,
+    slab::Id,
+    DebugMask,
 };
-use std::{collections::{BTreeMap, BTreeSet}, iter::Map};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Optimization {
@@ -70,7 +76,8 @@ impl KernelCache {
         let dev_info_id = if let Some(&dev_info_id) = self.device_infos.get(device.info()) {
             dev_info_id
         } else {
-            let dev_info_id = self.device_infos.last_key_value().map_or(0, |(_, x)| x.checked_add(1).unwrap());
+            let dev_info_id =
+                self.device_infos.last_key_value().map_or(0, |(_, x)| x.checked_add(1).unwrap());
             assert!(self.device_infos.insert(device.info().clone(), dev_info_id).is_none());
             dev_info_id
         };
@@ -98,44 +105,50 @@ impl KernelCache {
             }
         } else {
             // if kernel was not optimized yet
-            let kernel_id = self.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
+            let kernel_id =
+                self.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
             //println!("Kernel ids: {:?}", self.kernels.keys());
             //println!("Program ids: {:?}", self.programs.keys());
             assert!(self.kernels.insert(kernel.ops.clone(), kernel_id).is_none());
+            let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
             if search_iters == 0 {
                 // if optimizations are not requested, use default optimizations
                 let optimization = KernelCache::default_optimizations(kernel, device.info());
-                let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
-
-                //println!("Default optimizations, program id: {program_id}");
-                //kernel.debug();
-
                 let nanos = std::time::Instant::now();
                 let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
-                pool.pool.sync_events(vec![event])?;
-                let nanos = nanos.elapsed().as_nanos();
                 if debug.perf() {
+                    pool.pool.sync_events(vec![event])?;
+                    let nanos = nanos.elapsed().as_nanos();
                     print_perf(flop, mem_read, mem_write, nanos);
+                } else {
+                    pool.events.insert(outputs, event);
                 }
-                //pool.events.insert(outputs, event);
                 assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
             } else {
-                pool.pool.sync_events(event_wait_list).unwrap();
+                todo!();
+                /*pool.pool.sync_events(event_wait_list).unwrap();
 
-                //while let Some(optimization) = optimizer.next_optimization() {}
+                let mut optimizer = Optimizer::new(kernel, device.info().clone(), search_iters);
+                // optimization => time taken to run that kernel in nanoseconds
+                let visited: Map<Optimization, u128> = Map::with_hasher(Default::default());
+                while let Some(optimization) = optimizer.next(&visited) {
+                    let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
+                    let program_id = device.compile(&ir_kernel, debug.asm())?;
+                    let nanos = std::time::Instant::now();
+                    let event = device.launch(program_id, pool.pool.as_mut(), args, Vec::new())?;
+                    pool.pool.sync_events(vec![event])?;
+                    let nanos = nanos.elapsed().as_nanos();
+                    if debug.perf() {
+                        print_perf(flop, mem_read, mem_write, nanos);
+                    }
+                }
+                // Get the best optimizations and store both the program and the optimization.
+                let best_optimization = visited.iter().min_by_key(|x| x.1).unwrap().0;
+                self.optimizations.insert((kernel_id, dev_info_id), best_optimization.clone());*/
 
-                let (optimization, program_id) = optimize_kernel(
-                    kernel,
-                    device,
-                    pool.pool.as_mut(),
-                    args,
-                    search_iters,
-                    debug,
-                );
-                self.programs.insert((kernel_id, dev_info_id), program_id);
-                self.optimizations.insert((kernel_id, dev_info_id), optimization);
+                //assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
             }
         }
         Ok(())
@@ -144,7 +157,6 @@ impl KernelCache {
     fn default_optimizations(kernel: &Kernel, dev_info: &DeviceInfo) -> Optimization {
         let mlws = dev_info.max_local_threads;
         let mlwd = dev_info.max_local_work_dims;
-
         //let mut reshapes = Vec::new();
         let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
         debug_assert_ne!(num_loops, 0);
@@ -184,14 +196,8 @@ impl KernelCache {
     }
 }
 
-#[allow(unused)]
-struct Optimizer {
-    // optimization => time taken to run that kernel in nanoseconds
-    visited: Map<Optimization, u128>,
-}
-
 // Optimize kernel further, search_iters times
-fn optimize_kernel(
+/*fn optimize_kernel(
     kernel: &Kernel,
     device: &dyn Device,
     memory_pool: &dyn MemoryPool,
@@ -277,7 +283,7 @@ fn optimize_kernel(
         opts.is_empty(),
     )*/*/
     todo!()
-}
+}*/
 
 #[allow(clippy::similar_names)]
 fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
@@ -297,11 +303,11 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     let (br, br_u) = value_unit(bytes_read);
     let (bw, bw_u) = value_unit(bytes_written);
     let (t, t_u) = match nanos {
-        0..1_000 => (nanos*10, "ns"),
-        1_000..1_000_000 => (nanos/100, "μs"),
-        1_000_000..1_000_000_000 => (nanos/100_000, "ms"),
-        1_000_000_000..1_000_000_000_000 => (nanos/100_000_000, "s"),
-        1_000_000_000_000.. => (nanos/6_000_000_000, "min"),
+        0..1_000 => (nanos * 10, "ns"),
+        1_000..1_000_000 => (nanos / 100, "μs"),
+        1_000_000..1_000_000_000 => (nanos / 100_000, "ms"),
+        1_000_000_000..1_000_000_000_000 => (nanos / 100_000_000, "s"),
+        1_000_000_000_000.. => (nanos / 6_000_000_000, "min"),
     };
 
     let (fs, f_us) = value_unit(flop * 1_000_000_000 / nanos);
@@ -325,7 +331,3 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
         bw%100,
     );
 }
-
-
-
-

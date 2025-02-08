@@ -1622,30 +1622,24 @@ impl IRKernel {
         // Reshape kernel so that it has 3 global and 3 local dimensions
         let [lx, ly, lz] = optimization.local_work_size;
 
-        // TODO loop splitting and loop peeling
-
-        /*if let Some((axis, len)) = optimization.upcast {
-            lz *= len;
-            // Split inner loop
-        }*/
-
         let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
         debug_assert_ne!(num_loops, 0);
         let shape = kernel.shape();
-        match num_loops {
+        let shape = match num_loops {
             0 => unreachable!(),
-            1 => kernel.reshape(&[1, 1, 1, 1, shape[0] / lz, lz]),
-            2 => kernel.reshape(&[1, 1, shape[0] / ly, ly, shape[1] / lz, lz]),
-            3 => kernel.reshape(&[shape[0] / lx, lx, shape[1] / ly, ly, shape[2] / lz, lz]),
-            _ => kernel.reshape(&[
+            1 => [1, 1, 1, 1, shape[0] / lz, lz],
+            2 => [1, 1, shape[0] / ly, ly, shape[1] / lz, lz],
+            3 => [shape[0] / lx, lx, shape[1] / ly, ly, shape[2] / lz, lz],
+            _ => [
                 shape[0..num_loops - 2].iter().product::<usize>() / lx,
                 lx,
                 shape[num_loops - 2] / ly,
                 ly,
                 shape[num_loops - 1] / lz,
                 lz,
-            ]),
-        }
+            ],
+        };
+        kernel.reshape(&shape);
         debug_assert_eq!(kernel.shape().len(), 6);
 
         //kernel.debug();

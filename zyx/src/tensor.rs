@@ -310,7 +310,7 @@ impl Tensor {
             .reshape(&shape)?
             .mul(2f32 * std::f32::consts::PI)
             .cos()
-            .mul((Tensor::constant(1f32) - src.get(1)?.reshape(shape)?).ln().mul(-2f32).sqrt())
+            .mul((1f32 - src.get(1)?.reshape(shape)?).ln().mul(-2f32).sqrt())
             .cast(dtype))
     }
 
@@ -451,17 +451,7 @@ impl Tensor {
         let x = Tensor::full(Dimension::try_from(n).unwrap(), step);
         //println!("{x}");
         let x = x.cumsum(0)?;
-        Ok(x + Tensor::constant(start) - Tensor::constant(step))
-    }
-
-    /// Create constant that will be baked into compiled kernels.
-    /// Using different value in graph in place of this constnat will force
-    /// recompilation of one or more kernels.
-    /// For performance reason use this if the value does not
-    /// change during the run of the program or if there are only few repeating variations.
-    #[must_use]
-    pub fn constant(value: impl Scalar) -> Tensor {
-        Tensor { id: RT.lock().constant(value) }
+        Ok(x + start - step)
     }
 
     /// Create tensor from vec and shape
@@ -573,7 +563,7 @@ impl Tensor {
     ///         as `e^input_element`.
     #[must_use]
     pub fn exp(&self) -> Tensor {
-        let c: Tensor = Tensor::constant(std::f64::consts::E.log2());
+        let c: Tensor = std::f64::consts::E.log2().into();
         (self * c.cast(self.dtype())).exp2()
     }
 
@@ -640,7 +630,7 @@ impl Tensor {
     #[must_use]
     pub fn ln(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let c: Tensor = Tensor::constant(1f64 / std::f64::consts::E.log2());
+        let c: Tensor = (1f64 / std::f64::consts::E.log2()).into();
         x.log2() * c.cast(x.dtype())
     }
 
@@ -752,10 +742,10 @@ impl Tensor {
     #[must_use]
     pub fn hard_sigmoid(&self) -> Tensor {
         let dtype = self.dtype();
-        let c1 = Tensor::constant(-3).cast(dtype);
-        let c2 = Tensor::constant(1).cast(dtype);
-        let c3 = Tensor::constant(6f32).cast(dtype);
-        let c4 = Tensor::constant(0.5f32).cast(dtype);
+        let c1 = Tensor::from(-3).cast(dtype);
+        let c2 = Tensor::from(1).cast(dtype);
+        let c3 = Tensor::from(6f32).cast(dtype);
+        let c4 = Tensor::from(0.5f32).cast(dtype);
         (self.cmpgt(c1).unwrap() * (self / c3 + c4)).minimum(c2).unwrap()
     }
 
@@ -873,14 +863,8 @@ impl Tensor {
     /// This function will panic if the input tensor is empty.
     #[must_use]
     pub fn tanh(&self) -> Tensor {
-        //let x = (self.clone() + self.clone()).sigmoid();
-        //(x.clone() + x) - Tensor::constant(1).cast(self.dtype())
-        /*let x = self.exp();
-        let nx = (-self).exp();
-        (x.clone() - nx.clone())/(x + nx)*/
-
         let exp2x = (self + self).exp();
-        let one = Tensor::constant(1).cast(self.dtype());
+        let one = Tensor::from(1).cast(self.dtype());
         (exp2x.clone() - one.clone()) / (exp2x + one)
     }
 
@@ -1259,7 +1243,7 @@ impl Tensor {
         let axes: Vec<_> = axes.into_iter().collect();
         let shape = self.shape();
         Ok(self.sum(axes.clone())?
-            / Tensor::constant(
+            / Tensor::from(
                 i64::try_from(
                     into_axes(axes, shape.rank())?.into_iter().map(|a| shape[a]).product::<usize>(),
                 )
@@ -1496,7 +1480,7 @@ impl Tensor {
         )
         .unwrap()
             - i64::try_from(correction).unwrap();
-        Ok((x.clone() * x.clone()).sum(axes)? / Tensor::constant(d).cast(x.dtype()))
+        Ok((x.clone() * x.clone()).sum(axes)? / Tensor::from(d).cast(x.dtype()))
     }
 
     /// Calculates the variance along the specified axes.
@@ -1784,7 +1768,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn nonzero(&self) -> Tensor {
-        !self.equal(Tensor::constant(0).cast(self.dtype())).unwrap()
+        !self.equal(Tensor::from(0).cast(self.dtype())).unwrap()
     }
 
     // ternary
