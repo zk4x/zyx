@@ -48,7 +48,7 @@ futures = { version = "0.3.31", default-features = false, features = [
 pollster = { version = "0.4.0", default-features = false, optional = true }
 
 # gguf models
-gguf = { version = "0.1.2", default-features = false, optional = true }
+gguf-rs = { version = "0.1.3", default-features = false }
 
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.23.1", optional = true } # MIT or Apache 2.0
@@ -68,7 +68,6 @@ default = [
     #"disk_cache",
     #"wgpu",
     #"complex",
-    #"gguf",
     #"py",
 ]
 
@@ -86,9 +85,6 @@ wgpu = ["dep:wgpu", "dep:pollster", "dep:futures"]
 
 # Enables vulkan backend, dependency will be later removed
 vulkan = ["dep:vulkano"]
-
-# Enables loading of gguf models
-gguf = ["dep:gguf"]
 
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
 py = ["dep:pyo3"]

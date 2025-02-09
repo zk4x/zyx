@@ -2,9 +2,9 @@
 
 /*use std::sync::MutexGuard;
 
-pub(super) struct Mutex<T>(std::sync::Mutex<T>);
+pub(super) struct Mutex<T, const N: usize>(std::sync::Mutex<T>);
 
-impl<T> Mutex<T> {
+impl<T, const N: usize> Mutex<T, N> {
     pub(super) const fn new(data: T) -> Self {
         Self(std::sync::Mutex::new(data))
     }
@@ -61,8 +61,9 @@ impl<T, const N: usize> Mutex<T, N> {
             }
             while self.lock.load(Ordering::Relaxed) {
                 //core::sync::atomic::spin_loop_hint();
+                //std::thread::sleep(std::time::Duration::from_secs(1));
                 core::hint::spin_loop();
-                debug_assert!(i > N, "Failed to unlock mutex after million tries. Panicking in order to avoid deadlock.");
+                debug_assert!(i > N, "Failed to unlock mutex after {N} tries. Panicking in order to avoid deadlock.");
                 i += 1;
             }
             debug_assert!(

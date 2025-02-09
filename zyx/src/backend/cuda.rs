@@ -133,8 +133,6 @@ pub(super) fn initialize_device(
     devices: &mut Vec<Box<dyn Device>>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
-    let _ = config;
-
     let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
     let cuda = cuda_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(cuda) = cuda else {

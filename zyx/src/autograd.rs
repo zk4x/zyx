@@ -26,8 +26,10 @@ impl GradientTape {
     pub fn new() -> Self {
         let mut rt = RT.lock();
         if rt.graph.gradient_tape.is_some() {
-            panic!("Only one gradient tape can exist at a time.");
+            //panic!("Only one gradient tape can exist at a time.");
+            return Self {}
         }
+        rt.graph.gradient_tape_ref_count += 1;
         rt.graph.gradient_tape = Some(Set::with_capacity_and_hasher(100, Default::default()));
         Self {}
     }
@@ -43,9 +45,11 @@ impl GradientTape {
     ) -> Vec<Option<Tensor>> {
         let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
         //println!("Sources: {sources:?}");
+        let mut rt = RT.lock();
         let grads: Map<TensorId, TensorId> =
-            RT.lock().backward(target.id(), &sources.iter().copied().collect());
-        RT.lock().drop_gradient_tape();
+            rt.backward(target.id(), &sources.iter().copied().collect());
+        rt.graph.gradient_tape_ref_count += 1;
+        rt.drop_gradient_tape();
         sources
             .into_iter()
             .map(|x: TensorId| grads.get(&x).copied())

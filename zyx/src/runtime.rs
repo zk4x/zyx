@@ -787,14 +787,16 @@ impl Runtime {
             //println!("NewLeafs {new_leafs:?}");
             (order, to_delete, new_leafs, rcs)
         };
-        let _elapsed = begin.elapsed();
-        /*println!(
-            "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape = {}",
-            elapsed.as_micros(),
-            order.len(),
-            self.graph.nodes.len(),
-            self.graph.gradient_tape.is_some(),
-        );*/
+        let elapsed = begin.elapsed();
+        if self.debug.perf() {
+            println!(
+                "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape = {}",
+                elapsed.as_micros(),
+                order.len(),
+                self.graph.nodes.len(),
+                self.graph.gradient_tape.is_some(),
+            );
+        }
 
         crate::scheduler::schedule(
             &self.graph,
@@ -861,8 +863,11 @@ impl Runtime {
     }
 
     pub(super) fn drop_gradient_tape(&mut self) {
-        self.graph.gradient_tape = None;
-        // TODO delete all unneeded nodes
+        self.graph.gradient_tape_ref_count -= 1;
+        if self.graph.gradient_tape_ref_count == 0 {
+            self.graph.gradient_tape = None;
+            // TODO delete all unneeded nodes
+        }
     }
 
     #[allow(clippy::similar_names)]

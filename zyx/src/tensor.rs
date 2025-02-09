@@ -2493,10 +2493,23 @@ impl Tensor {
         let e = path.as_ref().extension().and_then(std::ffi::OsStr::to_str).unwrap();
         match e {
             "safetensors" => Self::load_safetensors(path),
-            #[cfg(feature = "gguf")]
             "gguf" => Self::load_gguf(path),
             _ => panic!("Unknown file extension. Zyx currently supports only safetensors format."),
         }
+    }
+
+    /// Load gguf module from path
+    fn load_gguf<Module: FromIterator<(String, Tensor)>>(
+        path: impl AsRef<Path>,
+    ) -> Result<Module, ZyxError> {
+        let mut container = gguf_rs::get_gguf_container(path.as_ref().to_str().unwrap()).unwrap();
+        let model = container.decode().unwrap();
+
+        println!("Model Family: {}", model.model_family());
+        println!("Number of Parameters: {}", model.model_parameters());
+        println!("File Type: {}", model.file_type());
+        println!("Number of Tensors: {}", model.num_tensor());
+        todo!()
     }
 
     /// Load safetensors module from path
@@ -2567,7 +2580,6 @@ impl Tensor {
             x
         }
         use std::io::Read;
-        RT.lock().initialize_devices()?;
         let mut f = std::fs::File::open(path)?;
         //println!("File size is {} bytes", f.metadata()?.len());
         let mut header_len = [0u8; 8];
@@ -2594,12 +2606,6 @@ impl Tensor {
             let bar = crate::bar::ProgressBar::new(
                 header.chars().filter(|&c| c == '[').count() as u64 / 2,
             );
-            /*bar.set_style(
-                crate::bar::ProgressStyle::with_template(
-                    "[{elapsed_precise}/{eta_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-                )
-                .unwrap(),
-            );*/
             Some(bar)
         } else {
             None
@@ -2719,17 +2725,6 @@ impl Tensor {
             }
         }
         Ok(Module::from_iter(tensors))
-    }
-
-    /// Load gguf model
-    #[cfg(feature = "gguf")]
-    fn load_gguf<M: FromIterator<(String, Tensor)>>(path: impl AsRef<Path>) -> Result<M, ZyxError> {
-        let f = std::fs::File::open(path)?;
-        let reader = std::io::BufReader::new(f);
-        let f = gguf::GGUFFile::read(reader.buffer()).unwrap().unwrap();
-        println!("{:?}, {:?}", f.header.version, f.header.tensor_count);
-        //println!("{}", f.tensors);
-        todo!()
     }
 
     /// All tensor elements as contiguous `le_bytes` vector in row major order

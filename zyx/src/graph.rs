@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Graph {
     // First value is reference count, second is node
     pub(super) nodes: Slab<(u32, Node)>,
+    pub(super) gradient_tape_ref_count: u32,
     pub(super) gradient_tape: Option<Set<TensorId>>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: BTreeMap<TensorId, Vec<Dimension>>,
@@ -25,6 +26,7 @@ impl Graph {
     pub(super) const fn new() -> Self {
         Self {
             nodes: Slab::new(),
+            gradient_tape_ref_count: 0,
             gradient_tape: None,
             shapes: BTreeMap::new(),
             paddings: BTreeMap::new(),

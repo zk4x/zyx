@@ -817,16 +817,14 @@ impl Kernel {
         //println!("Pool contains {:?}", pool.buffer_map.keys());
         //self.debug();
 
-        let args: Vec<Id> = self
-            .ops
-            .iter_mut()
-            .filter_map(|op| match op {
+        let mut args: Vec<Id> = Vec::new();
+        for op in &mut self.ops {
+            match op {
                 Op::Load { x, .. } => {
                     let tensor_id = self.tensors[x];
                     let buffer_id = pool.buffer_map[&tensor_id];
                     if let Some(&tx) = visited_tensors.get(&buffer_id) {
                         *x = tx;
-                        None
                     } else {
                         visited_tensors.insert(buffer_id, *x);
                         if let Some((_, event)) =
@@ -834,7 +832,7 @@ impl Kernel {
                         {
                             event_wait_list.push(event.clone());
                         }
-                        Some(buffer_id)
+                        args.push(buffer_id);
                     }
                 }
                 Op::Store { z, zview, zdtype, .. } => {
@@ -842,17 +840,16 @@ impl Kernel {
                     //println!("Allocating {zview} {}", zview.original_numel());
                     let (buffer_id, event) = pool
                         .pool
-                        .allocate(zview.original_numel() * (zdtype.byte_size() as Dimension))
-                        .unwrap();
+                        .allocate(zview.original_numel() * (zdtype.byte_size() as Dimension))?;
                     debug_assert!(visited_tensors.insert(buffer_id, *z).is_none());
                     pool.buffer_map.insert(tensor_id, buffer_id);
                     event_wait_list.push(event);
                     outputs.insert(tensor_id);
-                    Some(buffer_id)
+                    args.push(buffer_id);
                 }
-                _ => None,
-            })
-            .collect();
+                _ => (),
+            }
+        }
 
         //println!("\nArgs: {args:?}");
         //self.debug();

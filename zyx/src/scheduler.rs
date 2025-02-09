@@ -51,7 +51,7 @@ pub fn schedule(
         avg_ops += n;
     }
     let kernels_len = kernels.len();
-    if debug.sched() {
+    if debug.perf() {
         println!("Scheduled {kernels_len} kernels, scheduling took {elapsed}us, ops per kernel: min: {min_ops}, max: {max_ops}, avg: {}", avg_ops/kernels_len);
     }
     //println!("Expand clones: {expa_u}, reshape clones: {resh_u}, pad clones: {pad_u}, permute clones: {perm_u}, reduce clones: {red_u}");

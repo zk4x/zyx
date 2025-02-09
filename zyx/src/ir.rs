@@ -752,7 +752,6 @@ impl IRCompiler {
     }
 
     #[allow(clippy::cognitive_complexity)]
-    #[allow(unused)]
     fn loop_unrolling(&mut self) {
         // TODO after unroll of a loop, constant propagate the accumulator
         let mut op_i = self.ops.len();
@@ -912,7 +911,6 @@ impl IRCompiler {
     }
 
     // Loop invariant code motion and dependence analysis
-    #[allow(unused)]
     fn loop_invariant_code_motion(&mut self) {
         // Make a list of accumulators. These cannot be moved.
         let accs: BTreeSet<u16> = self
@@ -1062,11 +1060,6 @@ impl IRCompiler {
                 }
             }
         }
-    }
-
-    const fn vectorization(&self) {
-        let _ = self;
-        // TODO
     }
 
     // Replace all occurences of z with register x
@@ -1588,6 +1581,16 @@ impl IRCompiler {
             }
         }
     }
+
+    #[allow(unused)]
+    fn upcast_loop(&mut self, loop_id: u16, loop_no: u16) {
+        // move this loop up, before the previous loop
+    }
+
+    #[allow(unused)]
+    fn downcast_loop(&mut self) {
+        // move this loop down, after the following loop
+    }
 }
 
 fn new_var(
@@ -1662,7 +1665,7 @@ impl IRKernel {
             // TODO automatic reordering of additions such that we minimize dependencies
             // for loop invariant code motion
             compiler.loop_invariant_code_motion();
-            compiler.vectorization();
+            //compiler.vectorization();
             compiler.constant_folding_and_propagation();
             compiler.common_subexpression_elimination();
             compiler.deduplicate();
