@@ -3,7 +3,7 @@
 
 use crate::{DType, Scalar};
 
-//
+/// Random number generator
 pub struct Rng {
     s: [u64; 4],
 }
@@ -100,6 +100,23 @@ impl Rng {
         next_seed as f32 / M as f32
     }
 
+    #[allow(unused)]
+    #[allow(clippy::cast_precision_loss)]
+    const fn next_f64(&mut self) -> f64 {
+        const A: u32 = 1_664_525;
+        const C: u32 = 1_013_904_223;
+        const M: u32 = u32::MAX;
+
+        let seed = self.next_u32();
+
+        // Generate the next random number using the seed and LCG formula
+        let next_seed = (A.wrapping_mul(seed).wrapping_add(C)) % M;
+
+        // Convert the u32 result to a float in the range [0, 1)
+        next_seed as f64 / M as f64
+    }
+
+    /// Generates random number, floats in range 0..1, integers in range int::MIN..int::MAX
     pub(super) fn rand<T: Scalar>(&mut self) -> T {
         match T::dtype() {
             DType::BF16 | DType::F16 | DType::F32 | DType::F64 => self.next_f32().cast(),
@@ -113,6 +130,56 @@ impl Rng {
             DType::I64 => unsafe { std::mem::transmute::<u64, i64>(self.next_u64()) }.cast(),
         }
     }
+
+    /*pub(super) fn range<T: Scalar>(&mut self, range: impl RangeBounds<T>) -> T {
+        match T::dtype() {
+            DType::BF16 | DType::F16 | DType::F32 | DType::F64 => {
+                let mut start: f64 = match range.start_bound() {
+                    std::ops::Bound::Included(_) => todo!(),
+                    std::ops::Bound::Excluded(start) => *start,
+                    std::ops::Bound::Unbounded => T::min_value(),
+                }.cast();
+                let mut end: f64 = match range.end_bound() {
+                    std::ops::Bound::Included(_) => todo!(),
+                    std::ops::Bound::Excluded(end) => *end,
+                    std::ops::Bound::Unbounded => T::max_value(),
+                }.cast();
+                if end < start {
+                    (start, end) = (end, start);
+                }
+                let x = self.next_f64();
+                (x * (end - start) + start).cast()
+            }
+
+            DType::U8 | DType::U16 | DType::U32 | DType::U64 => {
+                match range.start_bound() {
+                    std::ops::Bound::Included(start) => todo!(),
+                    std::ops::Bound::Excluded(start) => todo!(),
+                    std::ops::Bound::Unbounded => todo!(),
+                }
+                match range.end_bound() {
+                    std::ops::Bound::Included(_) => todo!(),
+                    std::ops::Bound::Excluded(_) => todo!(),
+                    std::ops::Bound::Unbounded => todo!(),
+                }
+            }
+
+            DType::I8 | DType::I16 | DType::I32 | DType::I64 => {
+                match range.start_bound() {
+                    std::ops::Bound::Included(start) => todo!(),
+                    std::ops::Bound::Excluded(start) => todo!(),
+                    std::ops::Bound::Unbounded => todo!(),
+                }
+                match range.end_bound() {
+                    std::ops::Bound::Included(_) => todo!(),
+                    std::ops::Bound::Excluded(_) => todo!(),
+                    std::ops::Bound::Unbounded => todo!(),
+                }
+            }
+
+            DType::Bool => todo!(),
+        }
+    }*/
 }
 
 /*#[test]

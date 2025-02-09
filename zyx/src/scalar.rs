@@ -19,7 +19,7 @@ use half::{bf16, f16};
 use crate::dtype::DType;
 
 /// Scalar trait is implemented for all [dtypes](DType)
-pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq + Send + Sync {
+pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq + Send + Sync + PartialEq + PartialOrd {
     /// From bf16
     #[must_use]
     fn from_bf16(t: bf16) -> Self;
