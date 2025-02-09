@@ -8,7 +8,7 @@ use zyx_derive::Module;
 pub struct Conv2d {
     stride: Vec<usize>,
     dilation: Vec<usize>,
-    groups: Vec<usize>,
+    groups: usize,
     padding: Vec<usize>,
     /// weight
     pub weight: Tensor,
@@ -37,7 +37,7 @@ impl Conv2d {
         Ok(Conv2d {
             stride: stride.into_shape().collect(),
             dilation: dilation.into_shape().collect(),
-            groups: groups.into_shape().collect(),
+            groups,
             padding: padding.into_shape().collect(),
             weight: Tensor::uniform(weight_shape, -scale..scale)?.cast(dtype),
             bias: if bias {
@@ -50,7 +50,7 @@ impl Conv2d {
 
     /// Forward conv2d layer
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        x.into().conv2d(self.weight, self.bias, self.groups, self.stride, self.dilation, self.padding)
+        x.into().conv(&self.weight, self.bias.as_ref(), self.groups, &self.stride, &self.dilation, &self.padding)
     }
 }
 

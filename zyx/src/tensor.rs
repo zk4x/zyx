@@ -2435,10 +2435,13 @@ impl Tensor {
         }
 
         let x = self
-            .pad_zeros(padding_.chunks(2).map(|x| (x[0] as isize, x[1] as isize))).unwrap()
-            .pool(hw, stride, dilation).unwrap();
+            .pad_zeros(padding_.chunks(2).map(|x| (x[0] as isize, x[1] as isize)))
+            .unwrap()
+            .pool(hw, stride, dilation)
+            .unwrap();
         let rcout = cout / groups;
         let oyx = &x.shape()[2..x.shape().len() - hw.len()];
+        println!("{:?}", oyx);
 
         // for now without winograd
         let shape: Vec<usize> = [bs, groups, cin, 1].iter().chain(oyx).chain(hw).copied().collect();
@@ -2454,7 +2457,7 @@ impl Tensor {
         for i in 0..hw.len() {
             axes.push(4 + oyx.len() + i);
         }
-        let x = x.permute(axes.iter().map(|&a| a as isize))?;
+        let x = x.permute(axes.iter().map(|&a| a as isize)).unwrap();
 
         let shape: Vec<usize> = [1, groups, rcout]
             .iter()
@@ -2463,16 +2466,15 @@ impl Tensor {
             .chain(hw)
             .copied()
             .collect();
+        println!("Shape {shape:?}");
         let weight = weight.reshape(shape).unwrap();
         let mut axes = Vec::new();
         for i in 0..1 + oyx.len() {
             axes.push(-1 - i as isize);
         }
-        let weight = weight.sum_kd(axes)?;
+        println!("Axes: {axes:?}");
         let shape: Vec<usize> = [bs, cout].iter().chain(oyx).copied().collect();
-        let weight = weight.reshape(shape).unwrap();
-
-        let mut ret = x * weight;
+        let mut ret = (x * weight).sum_kd(axes).unwrap().reshape(shape).unwrap();
 
         if let Some(bias) = bias {
             let shape: Vec<usize> = [1]
