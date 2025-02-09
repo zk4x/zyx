@@ -2390,6 +2390,122 @@ impl Tensor {
         Ok(xup)
     }
 
+    /// Convolution, works for any number of dimensions
+    /// ```text
+    /// t = Tensor.arange(9).reshape(1, 1, 3, 3);
+    /// w = Tensor.ones(1, 1, 2, 2)
+    /// print(t.conv2d(w).numpy())
+    /// ```
+    pub fn conv(
+        &self,
+        weight: &Tensor,
+        bias: Option<&Tensor>,
+        groups: usize,
+        stride: impl IntoShape,
+        dilation: impl IntoShape,
+        padding: impl IntoShape,
+    ) -> Result<Tensor, ZyxError> {
+        let [bs, cin_] = self.shape()[..2] else { panic!() };
+        let [cout, cin] = weight.shape()[..2] else { panic!() };
+        let hw = &weight.shape()[2..];
+
+        fn resolve_pool_pads(padding: Vec<usize>, dims: usize) -> Vec<usize> {
+            if padding.len() == 1 {
+                vec![padding[0]; 2 * dims]
+            } else {
+                if padding.len() == 2 * dims {
+                    padding
+                } else {
+                    let mut npadding = Vec::new();
+                    for _ in 0..2 {
+                        for &p in &padding {
+                            npadding.push(p);
+                        }
+                    }
+                    npadding.reverse();
+                    npadding
+                }
+            }
+        }
+
+        let padding_ = resolve_pool_pads(padding.into_shape().collect(), hw.len());
+
+        if (groups * cin != cin_) || (self.shape().len() != weight.shape().len()) {
+            return Err(ZyxError::ShapeError(format!("Input Tensor shape {:?} does not match the shape of the weights {:?}. ({} vs. {cin_})", self.shape(), weight.shape(), groups*cin)));
+        }
+
+        let x = self
+            .pad_zeros(padding_.chunks(2).map(|x| (x[0] as isize, x[1] as isize))).unwrap()
+            .pool(hw, stride, dilation).unwrap();
+        let rcout = cout / groups;
+        let oyx = &x.shape()[2..x.shape().len() - hw.len()];
+
+        // for now without winograd
+        let shape: Vec<usize> = [bs, groups, cin, 1].iter().chain(oyx).chain(hw).copied().collect();
+        let x = x.reshape(shape).unwrap();
+        let shape: Vec<usize> =
+            [bs, groups, cin, rcout].iter().chain(oyx).chain(hw).copied().collect();
+        let x = x.expand(shape).unwrap();
+        let mut axes = vec![0, 1, 3];
+        for i in 0..oyx.len() {
+            axes.push(4 + i);
+        }
+        axes.push(2);
+        for i in 0..hw.len() {
+            axes.push(4 + oyx.len() + i);
+        }
+        let x = x.permute(axes.iter().map(|&a| a as isize))?;
+
+        let shape: Vec<usize> = [1, groups, rcout]
+            .iter()
+            .chain(&vec![1; oyx.len()])
+            .chain(&[cin])
+            .chain(hw)
+            .copied()
+            .collect();
+        let weight = weight.reshape(shape).unwrap();
+        let mut axes = Vec::new();
+        for i in 0..1 + oyx.len() {
+            axes.push(-1 - i as isize);
+        }
+        let weight = weight.sum_kd(axes)?;
+        let shape: Vec<usize> = [bs, cout].iter().chain(oyx).copied().collect();
+        let weight = weight.reshape(shape).unwrap();
+
+        let mut ret = x * weight;
+
+        if let Some(bias) = bias {
+            let shape: Vec<usize> = [1]
+                .into_iter()
+                .chain([bias.shape().iter().product::<usize>()])
+                .chain(vec![1; hw.len()])
+                .collect();
+            ret = ret + bias.reshape(shape).unwrap();
+        }
+
+        Ok(ret)
+    }
+
+    /*
+    def gather(self:Tensor, dim:int, index:Tensor) -> Tensor:
+    """
+    Gathers values along an axis specified by `dim`.
+
+    ```python exec="true" source="above" session="tensor" result="python"
+    t = Tensor([[1, 2], [3, 4]])
+    print(t.numpy())
+    ```
+    ```python exec="true" source="above" session="tensor" result="python"
+    print(t.gather(1, Tensor([[0, 0], [1, 0]])).numpy())
+    ```
+    """
+    assert index.ndim == self.ndim, f"self.ndim must equal index.ndim, {self.ndim=}, {index.ndim=}"
+    dim = self._resolve_dim(dim)
+    assert all(s >= i for d,(s,i) in enumerate(zip(self.shape, index.shape)) if d != dim), "requires self.shape[d] >= index.shape[d] for all d != dim"
+    index = index.to(self.device)
+    x = self.shrink(tuple((0, i) if d != dim else None for d,i in enumerate(index.shape))).unsqueeze(-1).transpose(-1, dim)
+    return (x * index.unsqueeze(-1)._one_hot_along_dim(self.shape[dim])).sum(-1, acc_dtype=self.dtype)*/
+
     /// Creates a new tensor by repeating the input tensor along its dimensions.
     ///
     /// The `repeats` parameter specifies how many times to repeat each dimension of the tensor. If the length of `repeats`
@@ -2854,14 +2970,12 @@ impl Tensor {
                 (DType::BF16, DType::I16 | DType::I8 | DType::U8 | DType::Bool) => {
                     y = y.cast(DType::BF16);
                 }
-                (
-                    DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
-                    DType::F16,
-                ) => x = x.cast(DType::F16),
-                (
-                    DType::F16,
-                    DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool,
-                ) => y = y.cast(DType::F16),
+                (DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool, DType::F16) => {
+                    x = x.cast(DType::F16)
+                }
+                (DType::F16, DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool) => {
+                    y = y.cast(DType::F16)
+                }
                 (
                     DType::F16
                     | DType::BF16

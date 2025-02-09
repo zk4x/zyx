@@ -41,5 +41,8 @@ pub use causal_self_attention::CausalSelfAttention;
 mod embedding;
 pub use embedding::Embedding;
 
+mod conv2d;
+pub use conv2d::Conv2d;
+
 mod activation;
 pub use activation::Activation;

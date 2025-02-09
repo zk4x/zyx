@@ -867,3 +867,14 @@ fn sum4() {
     let y = x.sum([]).unwrap();
     println!("{y}");
 }
+
+#[test]
+fn conv1() -> Result<(), ZyxError> {
+    let t = Tensor::arange(0f32, 9., 1.)?.reshape([1, 1, 3, 3])?;
+    let w = Tensor::ones([1, 1, 2, 2], DType::F32);
+    let x = t.conv(&w, None, 1, 1, 1, 0)?;
+
+    println!("{x}");
+
+    Ok(())
+}
