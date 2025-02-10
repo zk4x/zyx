@@ -551,11 +551,15 @@ impl MemoryPool for OpenCLMemoryPool {
             })
             .filter(|event| !event.is_null())
             .collect();
-        let event_wait_list_ptr = if event_wait_list.is_empty() {
+        /*let event_wait_list_ptr = if event_wait_list.is_empty() {
             ptr::null()
         } else {
             event_wait_list.as_ptr()
-        };
+        };*/
+        if !event_wait_list.is_empty() {
+            //println!("Syncing events: {event_wait_list:?}");
+            unsafe { (self.clWaitForEvents)(event_wait_list.len() as u32, event_wait_list.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H)?;
+        }
         let mut event: *mut c_void = ptr::null_mut();
         unsafe {
             (self.clEnqueueReadBuffer)(
@@ -565,8 +569,8 @@ impl MemoryPool for OpenCLMemoryPool {
                 0,
                 dst.len(),
                 dst.as_mut_ptr().cast(),
-                event_wait_list.len().try_into().unwrap(),
-                event_wait_list_ptr,
+                0, //event_wait_list.len().try_into().unwrap(),
+                ptr::null(), //event_wait_list_ptr,
                 &mut event,
             )
         }
@@ -676,12 +680,12 @@ impl Device for OpenCLDevice {
         }
 
         // Declare global variables
-        for (id, (scope, _, _, read_only)) in kernel.addressables.iter().enumerate() {
+        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
                 source += &format!(
-                    "{indent}__global {}float4* p{id},\n",
+                    "{indent}__global {}{}* p{id},\n",
                     if *read_only { "const " } else { "" },
-                    //dtype.ocl(),
+                    dtype.ocl(),
                 );
             }
         }
@@ -963,7 +967,7 @@ impl Device for OpenCLDevice {
         args: &[Id],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        memory_pool.sync_events(event_wait_list.clone())?;
+        //memory_pool.sync_events(event_wait_list.clone())?;
         /*for &arg in args {
             let buffer = memory_pool.get_buffer(arg);
             let BufferMut::OpenCL(buffer) = buffer else { unreachable!() };
@@ -1009,6 +1013,7 @@ impl Device for OpenCLDevice {
             })
             .filter(|event| !event.is_null())
             .collect();
+        //println!("Launch kernel with events: {event_wait_list:?}");
         let event_wait_list_ptr = if event_wait_list.is_empty() {
             ptr::null()
         } else {
@@ -1028,8 +1033,9 @@ impl Device for OpenCLDevice {
             )
         }
         .check(ErrorStatus::KernelLaunch)?;
+        self.queues[queue_id].load += 1;
+
         unsafe { (self.clFinish)(self.queues[queue_id].queue) }.check(ErrorStatus::KernelLaunch)?;
-        //self.queues[queue_id].load += 1;
 
         //println!("Launch event: {event:?}");
         Ok(Event::OpenCL(OpenCLEvent { event }))

@@ -34,7 +34,15 @@ pub fn schedule(
 ) -> Result<(), ZyxError> {
     //let t = crate::Timer::new("realize_graph");
     let begin = std::time::Instant::now();
-    let mut kernels = kernelize(graph, order, rcs, to_eval, memory_pools, &realized_nodes, debug);
+    let mut kernels = kernelize(
+        graph,
+        order,
+        rcs,
+        to_eval,
+        memory_pools,
+        &realized_nodes,
+        debug,
+    );
 
     let elapsed = begin.elapsed().as_micros();
     let mut min_ops = u32::MAX;
@@ -89,7 +97,7 @@ pub fn schedule(
                     kernel.debug();
                     panic!("Trying to launch kernel without stores");
                 }
-                kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
+                let event = kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
                 for kernel in kernels.values_mut() {
                     kernel.depends_on.remove(&kid);
                 }
@@ -113,7 +121,18 @@ pub fn schedule(
                 for tensor in loads {
                     for pool in &mut *memory_pools {
                         if let Some(buffer_id) = pool.buffer_map.remove(&tensor) {
-                            pool.pool.deallocate(buffer_id, vec![])?;
+                            let mut events = Vec::new();
+                            for buffers in pool.events.keys() {
+                                if buffers.contains(&buffer_id) {
+                                    events.push(pool.events.remove(&buffers.clone()).unwrap());
+                                    break;
+                                }
+                            }
+                            // Push event from the current kernel
+                            if let Some(event) = &event {
+                                events.push(event.clone());
+                            }
+                            pool.pool.deallocate(buffer_id, events)?;
                         }
                     }
                 }
@@ -146,10 +165,10 @@ pub fn schedule(
 ///
 /// If tensor is used elsewhere (rc > 1), then create rc - 1 copies of the kernel.
 /// Potentially if this is expensive kernel or it requires many ops, then we might evaluate it immediatelly.
-fn kernelize( 
+fn kernelize(
     graph: &Graph,
     order: &[TensorId],
-    // RCS are only ref counts from parameters, excluding ref counts from being in to_eval/user rcs
+    // RCS are only ref counts from parameters, excluding ref counts from being in to_eval
     rcs: Map<TensorId, u32>,
     to_eval: &Set<TensorId>,
     memory_pools: &mut [Pool],
@@ -207,7 +226,7 @@ fn kernelize(
     }
 
     for &nid in order {
-        /*if debug.sched() {
+        if debug.sched() {
             println!(
                 "ID({nid}): {:?}, sh: {:?}, rcs: {}, num kernels: {}",
                 graph[nid],
@@ -215,7 +234,7 @@ fn kernelize(
                 rcs.get(&nid).copied().unwrap_or(0),
                 kernels.len(),
             );
-        }*/
+        }
 
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1
@@ -260,7 +279,7 @@ fn kernelize(
                     let x_shape = graph.shape(x);
                     if kernels[kid].is_expandable(x_shape) {
                         if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                            if kernels[kid].is_small() {
+                            if kernels[kid].is_inlinable() {
                                 let mut new_kernel = kernels[kid].clone();
                                 if rcs[&x] < 2 {
                                     new_kernel.outputs.remove(&x);
@@ -306,7 +325,7 @@ fn kernelize(
 
                     if kernels[kid].is_paddable() {
                         if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                            if kernels[kid].is_small() {
+                            if kernels[kid].is_inlinable() {
                                 let mut new_kernel = kernels[kid].clone();
                                 if rcs[&x] < 2 {
                                     new_kernel.outputs.remove(&x);
@@ -353,7 +372,7 @@ fn kernelize(
                     //kernels[kid].debug();
                     let shape = graph.shape(nid);
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                        if kernels[kid].is_small() {
+                        if kernels[kid].is_inlinable() {
                             let mut new_kernel = kernels[kid].clone();
                             if rcs[&x] < 2 {
                                 new_kernel.outputs.remove(&x);
@@ -388,7 +407,7 @@ fn kernelize(
                     let (mut xt, mut kid) = get_kernel_min(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
                     if kernels[kid].outputs.len() > 1 || rcs[&x] > 1 {
-                        if kernels[kid].is_small() {
+                        if kernels[kid].is_inlinable() {
                             let mut new_kernel = kernels[kid].clone();
                             if rcs[&x] < 2 {
                                 new_kernel.outputs.remove(&x);
@@ -673,18 +692,20 @@ fn kernelize(
 
         #[cfg(debug_assertions)]
         {
-            debug_assert!(
-                kernels[kid].ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
-                    - kernels[kid].ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count()
-                    > 0
-            );
+            if kernels[kid].ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
+                <= kernels[kid].ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count()
+            {
+                kernels[kid].debug();
+                panic!();
+            }
 
             for kernel in kernels.values() {
-                debug_assert!(
-                    kernel.ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
-                        - kernel.ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count()
-                        > 0
-                );
+                if kernel.ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
+                    <= kernel.ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count()
+                {
+                    kernel.debug();
+                    panic!();
+                }
             }
         }
 

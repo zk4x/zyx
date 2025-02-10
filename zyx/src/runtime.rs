@@ -596,6 +596,7 @@ impl Runtime {
         for buffers in pool.events.keys() {
             if buffers.contains(&x) {
                 let event = pool.events.remove(&buffers.clone()).unwrap();
+                //println!("Loading with event {event:?}");
                 pool.pool.pool_to_host(buffer_id, byte_slice, vec![event])?;
                 return Ok(());
             }
@@ -607,9 +608,6 @@ impl Runtime {
     pub(super) fn realize(&mut self, to_eval: Set<TensorId>) -> Result<(), ZyxError> {
         let begin = std::time::Instant::now();
 
-        if to_eval.is_empty() {
-            return Ok(());
-        }
         let realized_nodes: Set<TensorId> =
             self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
         let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();

@@ -6,8 +6,8 @@ struct Optimizer<'a> {
     rng: Rng,
     kernel: &'a Kernel,
     search_iters: usize,
-    visited: Set<Vec<OptOp>>,
-    best_node: Vec<OptOp>,
+    visited: Set<Set<OptOp>>,
+    best_node: Set<OptOp>,
 }
 
 enum OptOp {
@@ -34,7 +34,7 @@ impl<'a> Optimizer<'a> {
             rng,
             search_iters,
             visited: Set::with_hasher(Default::default()),
-            best_node: Vec::new(),
+            best_node: Set::with_hasher(Default::default()),
         }
     }
 

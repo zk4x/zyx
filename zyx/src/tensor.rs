@@ -2466,13 +2466,11 @@ impl Tensor {
             .chain(hw)
             .copied()
             .collect();
-        println!("Shape {shape:?}");
         let weight = weight.reshape(shape).unwrap();
         let mut axes = Vec::new();
         for i in 0..1 + oyx.len() {
             axes.push(-1 - i as isize);
         }
-        println!("Axes: {axes:?}");
         let shape: Vec<usize> = [bs, cout].iter().chain(oyx).copied().collect();
         let mut ret = (x * weight).sum_kd(axes).unwrap().reshape(shape).unwrap();
 
@@ -2618,15 +2616,14 @@ impl Tensor {
 
     /// Load gguf module from path
     fn load_gguf<Module: FromIterator<(String, Tensor)>>(
-        path: impl AsRef<Path>,
+        _path: impl AsRef<Path>,
     ) -> Result<Module, ZyxError> {
-        let mut container = gguf_rs::get_gguf_container(path.as_ref().to_str().unwrap()).unwrap();
+        /*let mut container = gguf_rs::get_gguf_container(path.as_ref().to_str().unwrap()).unwrap();
         let model = container.decode().unwrap();
-
         println!("Model Family: {}", model.model_family());
         println!("Number of Parameters: {}", model.model_parameters());
         println!("File Type: {}", model.file_type());
-        println!("Number of Tensors: {}", model.num_tensor());
+        println!("Number of Tensors: {}", model.num_tensor());*/
         todo!()
     }
 

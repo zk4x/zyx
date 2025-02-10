@@ -47,9 +47,6 @@ futures = { version = "0.3.31", default-features = false, features = [
 ], optional = true }
 pollster = { version = "0.4.0", default-features = false, optional = true }
 
-# gguf models
-gguf-rs = { version = "0.1.3", default-features = false }
-
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.23.1", optional = true } # MIT or Apache 2.0
 

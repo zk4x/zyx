@@ -9,7 +9,7 @@ use std::{
 };
 
 use crate::{
-    backend::Device,
+    backend::{Device, Event},
     dtype::Constant,
     graph::Graph,
     ir::Scope,
@@ -174,12 +174,22 @@ impl Kernel {
             .collect()
     }
 
-    // Returns true if it is cheaper to evaluate this kernel twice as embedded into bigger kernel
-    // instead of launching this kernel.
-    pub(super) fn is_small(&self) -> bool {
-        //println!("Duplicating small kernel");
-        // !self.ops.iter().any(|op| matches!(op, Op::Load { .. }))
-        self.ops.len() < 10
+    // Returns true if it is cheaper to evaluate this kernel twice as inlined into bigger kernel
+    // instead of launching this kernel. separately
+    pub(super) fn is_inlinable(&self) -> bool {
+        if self.ops.len() > 20 {
+            return false;
+        }
+        for i in 0..self.ops.len() {
+            if matches!(self.ops[i], Op::Accumulator { .. }) {
+                if let Op::Loop { len, .. } = self.ops[i + 1] {
+                    if len > 32 {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     pub(super) fn has_stores(&self) -> bool {
@@ -736,7 +746,7 @@ impl Kernel {
         optimizer: &mut KernelCache,
         search_iters: usize,
         debug: DebugMask,
-    ) -> Result<(), ZyxError> {
+    ) -> Result<Option<Event>, ZyxError> {
         // Pick a device to run program
         // Find in which memory pool are most of input tensors stored
         let tensors: BTreeSet<TensorId> = self.tensors.values().copied().collect();
@@ -775,7 +785,7 @@ impl Kernel {
 
                     let src = memory_pools[pool_id].buffer_map[&tensor_id];
                     for buffers in memory_pools[pool_id].events.keys() {
-                        if buffers.contains(&tensor_id) {
+                        if buffers.contains(&memory_pools[pool_id].buffer_map[&tensor_id]) {
                             // Pool to host blocks on event, so we can remove that event.
                             let event =
                                 memory_pools[pool_id].events.remove(&buffers.clone()).unwrap();
@@ -811,7 +821,7 @@ impl Kernel {
             .as_mut();
 
         let mut outputs = BTreeSet::new();
-        let mut event_wait_list = Vec::new();
+        let mut event_wait_list: Vec<Event> = Vec::new();
         let mut visited_tensors = BTreeMap::new();
 
         //println!("Pool contains {:?}", pool.buffer_map.keys());
@@ -866,13 +876,16 @@ impl Kernel {
             device,
             pool,
             &args,
-            outputs,
+            outputs.clone(),
             event_wait_list,
             search_iters,
             debug,
         )?;
-
-        Ok(())
+        if let Some(event) = pool.events.get(&outputs) {
+            Ok(Some(event.clone()))
+        } else {
+            Ok(None)
+        }
     }
 
     pub(super) fn flop_mem_rw(&self) -> (u128, u128, u128) {
