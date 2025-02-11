@@ -97,7 +97,8 @@ pub fn schedule(
                     kernel.debug();
                     panic!("Trying to launch kernel without stores");
                 }
-                let event = kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
+                let event =
+                    kernel.launch(graph, devices, memory_pools, optimizer, search_iters, debug)?;
                 for kernel in kernels.values_mut() {
                     kernel.depends_on.remove(&kid);
                 }
@@ -509,6 +510,9 @@ fn kernelize(
                     let (mut xt, mut kidx) = get_kernel_max(x, &kernels);
                     let (mut yt, mut kidy) = get_kernel_max(y, &kernels);
 
+                    //kernels[kidx].debug();
+                    //kernels[kidy].debug();
+
                     debug_assert_eq!(kernels[kidx].shape(), graph.shape(x));
                     debug_assert_eq!(kernels[kidy].shape(), graph.shape(y));
 
@@ -574,23 +578,21 @@ fn kernelize(
                         // we delete kidy (could by also kidx) and put everything in kidx
                         let n = kernels[kidx].max_id + 1;
 
-                        for (i, op) in ops.into_iter().enumerate() {
-                            if !(matches!(op, Op::Loop { .. }) && op == kernels[kidx].ops[i]) {
-                                let new_op = match op {
-                                    Op::Loop { axis, len } => Op::Loop { axis, len },
-                                    Op::EndLoop => Op::EndLoop,
-                                    Op::Const { z, value, ref view } => {
-                                        Op::Const { z: z + n, value, view: view.clone() }
-                                    }
+                        let mut i = 0;
+                        while matches!(ops[i], Op::Loop { .. })
+                            && ops[i] == kernels[kidx].ops[i]
+                        {
+                            i += 1;
+                        }
+                        for op in ops.into_iter().skip(i) {
+                            let new_op = match op {
+                                Op::Loop { axis, len } => Op::Loop { axis, len },
+                                Op::EndLoop => Op::EndLoop,
+                                Op::Const { z, value, ref view } => {
+                                    Op::Const { z: z + n, value, view: view.clone() }
+                                }
+                                Op::Load { z, zscope, ref zview, x, xscope, ref xview, xdtype } => {
                                     Op::Load {
-                                        z,
-                                        zscope,
-                                        ref zview,
-                                        x,
-                                        xscope,
-                                        ref xview,
-                                        xdtype,
-                                    } => Op::Load {
                                         z: z + n,
                                         zscope,
                                         zview: zview.clone(),
@@ -598,40 +600,36 @@ fn kernelize(
                                         xscope,
                                         xview: xview.clone(),
                                         xdtype,
-                                    },
-                                    Op::Store {
-                                        z,
-                                        zscope,
-                                        ref zview,
-                                        zdtype,
-                                        x,
-                                        xscope,
-                                        ref xview,
-                                    } => Op::Store {
-                                        z: z + n,
-                                        zscope,
-                                        zview: zview.clone(),
-                                        zdtype,
-                                        x: x + n,
-                                        xscope,
-                                        xview: xview.clone(),
-                                    },
-                                    Op::Accumulator { z, rop, dtype } => {
-                                        Op::Accumulator { z: z + n, rop, dtype }
                                     }
-                                    Op::Cast { z, x, dtype } => {
-                                        Op::Cast { z: z + n, x: x + n, dtype }
-                                    }
-                                    Op::Unary { z, x, uop } => {
-                                        Op::Unary { z: z + n, x: x + n, uop }
-                                    }
-                                    Op::Binary { z, x, y, bop } => {
-                                        Op::Binary { z: z + n, x: x + n, y: y + n, bop }
-                                    }
-                                    Op::Barrier { scope } => Op::Barrier { scope },
-                                };
-                                kernels[kidx].ops.push(new_op);
-                            }
+                                }
+                                Op::Store {
+                                    z,
+                                    zscope,
+                                    ref zview,
+                                    zdtype,
+                                    x,
+                                    xscope,
+                                    ref xview,
+                                } => Op::Store {
+                                    z: z + n,
+                                    zscope,
+                                    zview: zview.clone(),
+                                    zdtype,
+                                    x: x + n,
+                                    xscope,
+                                    xview: xview.clone(),
+                                },
+                                Op::Accumulator { z, rop, dtype } => {
+                                    Op::Accumulator { z: z + n, rop, dtype }
+                                }
+                                Op::Cast { z, x, dtype } => Op::Cast { z: z + n, x: x + n, dtype },
+                                Op::Unary { z, x, uop } => Op::Unary { z: z + n, x: x + n, uop },
+                                Op::Binary { z, x, y, bop } => {
+                                    Op::Binary { z: z + n, x: x + n, y: y + n, bop }
+                                }
+                                Op::Barrier { scope } => Op::Barrier { scope },
+                            };
+                            kernels[kidx].ops.push(new_op);
                         }
                         kernels[kidx].max_id += max_id + 2;
                         kernels[kidx]
