@@ -11,6 +11,8 @@ use cuda::{CUDADevice, CUDAMemoryPool};
 use dummy::{DummyDevice, DummyMemoryPool};
 use nanoserde::DeJson;
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
+#[cfg(feature = "wgpu")]
+use wgpu::{WGPUDevice, WGPUMemoryPool};
 use std::fmt::Display;
 
 mod cuda;
@@ -44,8 +46,8 @@ pub fn initialize_backends(
     let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_dev);
     //let _ = hip::initialize_device(&device_config.hip, memory_pools, devices, debug_dev);
     let _ = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_dev);
-    #[cfg(feature = "vulkan")]
-    let _ = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_dev);
+    //#[cfg(feature = "vulkan")]
+    //let _ = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_dev);
     #[cfg(feature = "wgpu")]
     let _ = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_dev);
 
@@ -79,9 +81,9 @@ pub struct DeviceConfig {
     //pub hip: hip::HIPConfig,
     /// `OpenCL` configuration
     pub opencl: opencl::OpenCLConfig,
-    /// Vulkan configuration
-    #[cfg(feature = "vulkan")]
-    pub vulkan: vulkan::VulkanConfig,
+    // Vulkan configuration
+    //#[cfg(feature = "vulkan")]
+    //pub vulkan: vulkan::VulkanConfig,
     /// WGSL configuration
     #[cfg(feature = "wgpu")]
     pub wgpu: wgpu::WGPUConfig,
@@ -148,6 +150,8 @@ pub struct DeviceInfo {
 pub(super) enum MemoryPool {
     CUDA(CUDAMemoryPool),
     OpenCL(OpenCLMemoryPool),
+    #[cfg(feature = "wgpu")]
+    WGPU(WGPUMemoryPool),
     Dummy(DummyMemoryPool),
 }
 
@@ -156,6 +160,8 @@ impl MemoryPool {
         match self {
             MemoryPool::CUDA(pool) => pool.deinitialize(),
             MemoryPool::OpenCL(pool) => pool.deinitialize(),
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(pool) => pool.deinitialize(),
             MemoryPool::Dummy(pool) => pool.deinitialize(),
         }
     }
@@ -164,6 +170,8 @@ impl MemoryPool {
         match self {
             MemoryPool::CUDA(pool) => pool.free_bytes(),
             MemoryPool::OpenCL(pool) => pool.free_bytes(),
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(pool) => pool.free_bytes(),
             MemoryPool::Dummy(pool) => pool.free_bytes(),
         }
     }
@@ -172,6 +180,8 @@ impl MemoryPool {
         match self {
             MemoryPool::CUDA(pool) => pool.allocate(bytes),
             MemoryPool::OpenCL(pool) => pool.allocate(bytes),
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(pool) => pool.allocate(bytes),
             MemoryPool::Dummy(pool) => pool.allocate(bytes),
         }
     }
@@ -185,6 +195,8 @@ impl MemoryPool {
         match self {
             MemoryPool::CUDA(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.deallocate(buffer_id, event_wait_list),
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::Dummy(pool) => pool.deallocate(buffer_id, event_wait_list),
         }
     }
@@ -200,6 +212,8 @@ impl MemoryPool {
         match self {
             MemoryPool::CUDA(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.host_to_pool(src, dst, event_wait_list),
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::Dummy(pool) => pool.host_to_pool(src, dst, event_wait_list),
         }
     }
@@ -214,6 +228,8 @@ impl MemoryPool {
         match self {
             MemoryPool::CUDA(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.pool_to_host(src, dst, event_wait_list),
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::Dummy(pool) => pool.pool_to_host(src, dst, event_wait_list),
         }
     }
@@ -223,6 +239,8 @@ impl MemoryPool {
         match self {
             MemoryPool::CUDA(pool) => pool.sync_events(events),
             MemoryPool::OpenCL(pool) => pool.sync_events(events),
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(pool) => pool.sync_events(events),
             MemoryPool::Dummy(pool) => pool.sync_events(events),
         }
     }
@@ -232,6 +250,8 @@ impl MemoryPool {
         match self {
             MemoryPool::CUDA(pool) => pool.release_events(events),
             MemoryPool::OpenCL(pool) => pool.release_events(events),
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(pool) => pool.release_events(events),
             MemoryPool::Dummy(pool) => pool.release_events(events),
         }
     }
@@ -240,7 +260,8 @@ impl MemoryPool {
 pub(super) enum Device {
     CUDA(CUDADevice),
     OpenCL(OpenCLDevice),
-    //WGPU(WGPuDevice),
+    #[cfg(feature = "wgpu")]
+    WGPU(WGPUDevice),
     Dummy(DummyDevice),
 }
 
@@ -249,6 +270,8 @@ impl Device {
         match self {
             Device::CUDA(dev) => dev.deinitialize(),
             Device::OpenCL(dev) => dev.deinitialize(),
+            #[cfg(feature = "wgpu")]
+            Device::WGPU(dev) => dev.deinitialize(),
             Device::Dummy(dev) => dev.deinitialize(),
         }
     }
@@ -257,6 +280,8 @@ impl Device {
         match self {
             Device::CUDA(dev) => dev.info(),
             Device::OpenCL(dev) => dev.info(),
+            #[cfg(feature = "wgpu")]
+            Device::WGPU(dev) => dev.info(),
             Device::Dummy(dev) => dev.info(),
         }
     }
@@ -265,6 +290,8 @@ impl Device {
         match self {
             Device::CUDA(dev) => dev.memory_pool_id(),
             Device::OpenCL(dev) => dev.memory_pool_id(),
+            #[cfg(feature = "wgpu")]
+            Device::WGPU(dev) => dev.memory_pool_id(),
             Device::Dummy(dev) => dev.memory_pool_id(),
         }
     }
@@ -273,6 +300,8 @@ impl Device {
         match self {
             Device::CUDA(dev) => dev.compute(),
             Device::OpenCL(dev) => dev.compute(),
+            #[cfg(feature = "wgpu")]
+            Device::WGPU(dev) => dev.compute(),
             Device::Dummy(dev) => dev.compute(),
         }
     }
@@ -281,6 +310,8 @@ impl Device {
         match self {
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
             Device::OpenCL(dev) => dev.compile(kernel, debug_asm),
+            #[cfg(feature = "wgpu")]
+            Device::WGPU(dev) => dev.compile(kernel, debug_asm),
             Device::Dummy(dev) => dev.compile(kernel, debug_asm),
         }
     }
@@ -289,6 +320,8 @@ impl Device {
         match self {
             Device::CUDA(dev) => dev.release(program_id),
             Device::OpenCL(dev) => dev.release(program_id),
+            #[cfg(feature = "wgpu")]
+            Device::WGPU(dev) => dev.release(program_id),
             Device::Dummy(dev) => dev.release(program_id),
         }
     }
@@ -307,6 +340,11 @@ impl Device {
             }
             Device::OpenCL(dev) => {
                 let MemoryPool::OpenCL(pool) = memory_pool else { unreachable!() };
+                dev.launch(program_id, pool, args, event_wait_list)
+            }
+            #[cfg(feature = "wgpu")]
+            Device::WGPU(dev) => {
+                let MemoryPool::WGPU(pool) = memory_pool else { unreachable!() };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::Dummy(dev) => {

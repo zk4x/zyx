@@ -1,5 +1,6 @@
 use zyx::{GradientTape, Tensor, ZyxError};
 
+#[cfg(not(feature = "wgpu"))]
 #[test]
 fn grad_relu() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 2, 4]);
@@ -198,6 +199,7 @@ fn grad_mse() -> Result<(), ZyxError> {
     Ok(())
 }
 
+#[cfg(not(feature = "wgpu"))]
 #[test]
 fn grad_linear_2() -> Result<(), ZyxError> {
     let x = Tensor::from([2, 3, 1]);

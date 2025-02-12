@@ -27,7 +27,7 @@ pub struct Runtime {
     // Physical compute devices, each has their own program cache
     devices: Vec<Device>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
-    optimizer: KernelCache,
+    kernel_cache: KernelCache,
     // Zyx configuration directory path
     config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
     // Random number generator
@@ -86,7 +86,7 @@ impl Runtime {
             pools: Vec::new(),
             rng: Rng::seed_from_u64(42069),
             config_dir: None,
-            optimizer: KernelCache::new(),
+            kernel_cache: KernelCache::new(),
             training: false,
             search_iterations: 0,
             debug: DebugMask(0),
@@ -191,8 +191,8 @@ impl Runtime {
                     use std::io::Read;
                     let mut buf = Vec::new();
                     file.read_to_end(&mut buf).unwrap();
-                    if let Ok(optimizer_cache) = bitcode::decode(&buf) {
-                        self.optimizer_cache = optimizer_cache;
+                    if let Ok(kernel_cache) = bitcode::decode(&buf) {
+                        self.kernel_cache = kernel_cache;
                     }
                 }
             }
@@ -215,7 +215,7 @@ impl Runtime {
         // drop graph
         self.graph = Graph::new();
         // Drop programs
-        self.optimizer.deinitialize(&mut self.devices);
+        self.kernel_cache.deinitialize(&mut self.devices);
         // drop devices
         while let Some(mut dev) = self.devices.pop() {
             dev.deinitialize()?;
@@ -774,7 +774,7 @@ impl Runtime {
             &to_eval,
             &mut self.devices,
             &mut self.pools,
-            &mut self.optimizer,
+            &mut self.kernel_cache,
             self.search_iterations,
             realized_nodes,
             self.debug,

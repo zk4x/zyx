@@ -25,11 +25,11 @@ impl GradientTape {
     /// Create new gradient tape. Only one gradient tape can exist at a time.
     pub fn new() -> Self {
         let mut rt = RT.lock();
+        rt.graph.gradient_tape_ref_count += 1;
         if rt.graph.gradient_tape.is_some() {
             //panic!("Only one gradient tape can exist at a time.");
             return Self {}
         }
-        rt.graph.gradient_tape_ref_count += 1;
         rt.graph.gradient_tape = Some(Set::with_capacity_and_hasher(100, Default::default()));
         Self {}
     }
@@ -50,6 +50,7 @@ impl GradientTape {
             rt.backward(target.id(), &sources.iter().copied().collect());
         rt.graph.gradient_tape_ref_count += 1;
         rt.drop_gradient_tape();
+        drop(rt);
         sources
             .into_iter()
             .map(|x: TensorId| grads.get(&x).copied())

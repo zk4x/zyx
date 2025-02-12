@@ -1,5 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
-
+use std::sync::Arc;
 use nanoserde::DeJson;
 use pollster::FutureExt;
 use wgpu::{
@@ -16,7 +15,7 @@ use crate::{
     DType,
 };
 
-use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
+use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
 
 #[derive(DeJson, Debug, Default)]
 pub struct WGPUConfig {
@@ -24,7 +23,7 @@ pub struct WGPUConfig {
 }
 
 #[derive(Debug)]
-pub(super) struct WGPUMemoryPool {
+pub struct WGPUMemoryPool {
     free_bytes: usize,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -32,7 +31,7 @@ pub(super) struct WGPUMemoryPool {
 }
 
 #[derive(Debug)]
-pub(super) struct WGPUDevice {
+pub struct WGPUDevice {
     dev_info: DeviceInfo,
     memory_pool_id: u32,
     device: Arc<wgpu::Device>,
@@ -41,8 +40,6 @@ pub(super) struct WGPUDevice {
     programs: Slab<WGPUProgram>,
     queue: Arc<wgpu::Queue>,
 }
-
-pub(super) type WGPUBuffer = wgpu::Buffer;
 
 #[derive(Debug, Clone)]
 pub struct WGPUEvent {}
@@ -59,7 +56,7 @@ pub(super) struct WGPUProgram {
 pub(super) fn initialize_device(
     config: &WGPUConfig,
     memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Box<dyn Device>>,
+    devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
@@ -113,14 +110,14 @@ pub(super) fn initialize_device(
     }
     let device = Arc::new(device);
     let queue = Arc::new(queue);
-    let pool = Box::new(WGPUMemoryPool {
+    let pool = MemoryPool::WGPU(WGPUMemoryPool {
         free_bytes: 1_000_000_000,
         device: device.clone(),
         queue: queue.clone(),
         buffers: Slab::new(),
     });
-    memory_pools.push(Pool { pool, events: BTreeMap::new(), buffer_map: BTreeMap::new() });
-    devices.push(Box::new(WGPUDevice {
+    memory_pools.push(Pool::new(pool));
+    devices.push(Device::WGPU(WGPUDevice {
         device: device.clone(),
         adapter,
         dev_info: DeviceInfo {
@@ -141,20 +138,16 @@ pub(super) fn initialize_device(
     Ok(())
 }
 
-impl MemoryPool for WGPUMemoryPool {
-    fn deinitialize(&mut self) -> Result<(), BackendError> {
+impl WGPUMemoryPool {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
-    fn free_bytes(&self) -> usize {
+    pub fn free_bytes(&self) -> usize {
         self.free_bytes
     }
 
-    fn get_buffer(&self, buffer: Id) -> BufferMut {
-        BufferMut::WGPU(&self.buffers[buffer])
-    }
-
-    fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: usize) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
@@ -173,19 +166,18 @@ impl MemoryPool for WGPUMemoryPool {
         Ok((id, event))
     }
 
-    fn deallocate(
+    pub fn deallocate(
         &mut self,
         buffer_id: Id,
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
         let _ = event_wait_list;
-        if let Some(buffer) = self.buffers.remove(buffer_id) {
-            buffer.destroy();
-        }
+        let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
+        buffer.destroy();
         Ok(())
     }
 
-    fn host_to_pool(
+    pub fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: Id,
@@ -201,7 +193,7 @@ impl MemoryPool for WGPUMemoryPool {
         Ok(Event::WGPU(WGPUEvent {}))
     }
 
-    fn pool_to_host(
+    pub fn pool_to_host(
         &mut self,
         src: Id,
         dst: &mut [u8],
@@ -222,35 +214,35 @@ impl MemoryPool for WGPUMemoryPool {
         Ok(())
     }
 
-    fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let _ = events;
         Ok(())
     }
 
-    fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let _ = events;
         Ok(())
     }
 }
 
-impl Device for WGPUDevice {
-    fn deinitialize(&mut self) -> Result<(), BackendError> {
+impl WGPUDevice {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
-    fn info(&self) -> &DeviceInfo {
+    pub fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
-    fn memory_pool_id(&self) -> u32 {
+    pub fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 
-    fn compute(&self) -> u128 {
+    pub fn compute(&self) -> u128 {
         self.dev_info.compute
     }
 
-    fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError> {
+    pub fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError> {
         let mut source = String::new();
         let mut indent = String::from("  ");
 
@@ -348,12 +340,12 @@ impl Device for WGPUDevice {
                 IROp::Set { z, value } => {
                     source += &format!("{indent}r{z} = {};\n", value.wgsl());
                 }
+                IROp::Cast { z, x, dtype } => {
+                    source += &format!("{indent}r{z} = {}(r{x});\n", dtype.spirv());
+                }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
                     source += &match uop {
-                        UOp::Cast(dtype) => {
-                            format!("{indent}r{z} = {}(r{x});\n", dtype.spirv(),)
-                        }
                         UOp::ReLU => format!(
                             "{indent}r{z} = max(r{x}, {});\n",
                             dtype.zero_constant().wgsl()
@@ -361,7 +353,7 @@ impl Device for WGPUDevice {
                         UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
                         UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
                         UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
-                        UOp::Inv => format!("{indent}r{z} = 1/r{x};\n"),
+                        UOp::Reciprocal => format!("{indent}r{z} = 1/r{x};\n"),
                         UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
                         UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
                         UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
@@ -396,7 +388,7 @@ impl Device for WGPUDevice {
                                 "{} << {}",
                                 x.wgsl(),
                                 if let Reg::Const(y) = y {
-                                    Reg::Const(y.unary(UOp::Cast(DType::U32)))
+                                    Reg::Const(y.cast(DType::U32))
                                 } else {
                                     y
                                 }
@@ -406,7 +398,7 @@ impl Device for WGPUDevice {
                                 "{} >> {}",
                                 x.wgsl(),
                                 if let Reg::Const(y) = y {
-                                    Reg::Const(y.unary(UOp::Cast(DType::U32)))
+                                    Reg::Const(y.cast(DType::U32))
                                 } else {
                                     y
                                 }
@@ -439,6 +431,7 @@ impl Device for WGPUDevice {
                     Scope::Local => source += &format!("{indent}workgroupBarrier();\n"),
                     Scope::Register => unreachable!(),
                 },
+                IROp::SetLocal { .. } => todo!(),
             }
         }
         source += "}\n";
@@ -760,15 +753,15 @@ impl Device for WGPUDevice {
         Ok(id)
     }*/
 
-    fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+    pub fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
         self.programs.remove(program_id);
         Ok(())
     }
 
-    fn launch(
+    pub fn launch(
         &mut self,
         program_id: Id,
-        memory_pool: &mut dyn MemoryPool,
+        memory_pool: &mut WGPUMemoryPool,
         args: &[Id],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -789,7 +782,7 @@ impl Device for WGPUDevice {
                 },
                 count: None,
             };
-            let BufferMut::WGPU(buffer) = memory_pool.get_buffer(arg) else { unreachable!() };
+            let buffer = &memory_pool.buffers[arg];
             let bind = wgpu::BindGroupEntry {
                 binding: u32::try_from(bind_id).unwrap(),
                 resource: buffer.as_entire_binding(),
@@ -858,7 +851,6 @@ impl DType {
     fn spirv(&self) -> &str {
         match self {
             DType::BF16 => "bf16",
-            DType::F8 => "f8",
             DType::F16 => "f16",
             DType::F32 => "f32",
             DType::F64 => "f64",
@@ -878,7 +870,6 @@ impl DType {
 impl Constant {
     fn wgsl(&self) -> String {
         match self {
-            &Constant::F8(x) => format!("f8({})", float8::F8E4M3::from_bits(x)),
             &Constant::F16(x) => format!("f16({})", half::f16::from_bits(x)),
             &Constant::BF16(x) => format!("bf16({})", half::bf16::from_bits(x)),
             &Constant::F32(x) => format!("f32({:.16})", f32::from_bits(x)),
