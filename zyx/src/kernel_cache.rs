@@ -9,7 +9,6 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Optimization {
     pub local_work_size: [Dimension; 3],
@@ -19,7 +18,6 @@ pub struct Optimization {
     splits: Vec<(u16, u16, Dimension)>,
 }
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Decode))]
 #[derive(Debug)]
 pub struct KernelCache {
     device_infos: BTreeMap<DeviceInfo, u32>,

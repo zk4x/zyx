@@ -126,7 +126,6 @@ pub struct BackendError {
 }
 
 /// Hardware information needed for applying optimizations
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DeviceInfo {
     /// Device compute in flops

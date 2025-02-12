@@ -30,13 +30,6 @@ xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
 half = { version = "2.4.1", default-features = false } # MIT or Apache 2.0
 
-# Optional dependencies
-# For caching of searched kernels
-bitcode = { version = "0.6.3", default-features = false, features = [
-    "std",
-    "derive",
-], optional = true } # MIT or Apache 2.0
-
 # Lot of dependencies from wgpu, probably just don't use that
 wgpu = { version = "23.0.1", default-features = false, features = [
     "wgsl",
@@ -51,47 +44,25 @@ pollster = { version = "0.4.0", default-features = false, optional = true }
 pyo3 = { version = "0.23.1", optional = true } # MIT or Apache 2.0
 
 # Vulkano, will be later removed
-vulkano = { version = "*", optional = true }
-
-# For fuzzy tester
-rand = { version = "*", default-features = false, features = ["std", "small_rng"], optional = true }
+#vulkano = { version = "*", optional = true }
 
 [lib]
 crate-type = ["lib"] #, "cdylib"]
 
 [features]
 default = [
-    "implicit_casting",
-    #"disk_cache",
     #"wgpu",
-    #"complex",
     #"py",
 ]
-
-# Enables implicit casting to different dtype in binary operations with different dtypes
-# and unary operations that are not implemented for the provided dtype.
-# This tries to copy the default behaviour of pytorch, but since rust does not
-# have implicit casting, we do not recommend using this feature.
-implicit_casting = []
-
-# Enables caching of optimized kernels to disk
-disk_cache = ["dep:bitcode"]
 
 # Enables wgpu backend
 wgpu = ["dep:wgpu", "dep:pollster", "dep:futures"]
 
 # Enables vulkan backend, dependency will be later removed
-vulkan = ["dep:vulkano"]
+#vulkan = ["dep:vulkano"]
 
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
 py = ["dep:pyo3"]
-
-# Fuzzy tester
-fuzzy = ["dep:rand"]
-
-[[example]]
-name = "fuzzy"
-required-features = ["fuzzy"]
 
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.
@@ -118,15 +89,3 @@ panic = "abort"
 incremental = false
 codegen-units = 1
 debug = 0
-
-# Just for the fuzzy tester
-#[profile.test]
-#opt-level = 3
-#strip = true
-#debug-assertions = false
-#overflow-checks = true
-#lto = true
-#panic = "abort"
-#incremental = false
-#codegen-units = 1
-#debug = 0

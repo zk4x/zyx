@@ -42,6 +42,11 @@ pub struct Runtime {
     temp_data: Vec<Box<dyn TempData>>,
     constants: [Constant; NUM_CONSTANTS],
     constants_len: usize,
+    // Enables implicit casting to different dtype in binary operations with different dtypes
+    // and unary operations that are not implemented for the provided dtype.
+    // This tries to copy the default behaviour of pytorch, but since rust does not
+    // have implicit casting, we do not recommend using this feature.
+    pub(super) implicit_casts: bool,
 }
 
 pub trait TempData: Send {
@@ -93,6 +98,7 @@ impl Runtime {
             temp_data: Vec::new(),
             constants: [Constant::I32(0); NUM_CONSTANTS],
             constants_len: 0,
+            implicit_casts: true,
         }
     }
 
@@ -183,20 +189,17 @@ impl Runtime {
             });
 
         // Load optimizer cache from disk if it exists
-        #[cfg(feature = "disk_cache")]
-        {
-            if let Some(mut path) = self.config_dir.clone() {
-                path.push("cached_kernels");
-                if let Ok(mut file) = std::fs::File::open(path) {
-                    use std::io::Read;
-                    let mut buf = Vec::new();
-                    file.read_to_end(&mut buf).unwrap();
-                    if let Ok(kernel_cache) = bitcode::decode(&buf) {
-                        self.kernel_cache = kernel_cache;
-                    }
+        /*if let Some(mut path) = self.config_dir.clone() {
+            path.push("cached_kernels");
+            if let Ok(mut file) = std::fs::File::open(path) {
+                use std::io::Read;
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf).unwrap();
+                if let Ok(kernel_cache) = bitcode::decode(&buf) {
+                    self.kernel_cache = kernel_cache;
                 }
             }
-        }
+        }*/
         crate::backend::initialize_backends(
             &device_config,
             &mut self.pools,

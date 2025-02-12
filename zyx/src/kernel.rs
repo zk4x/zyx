@@ -23,7 +23,6 @@ use crate::{
     DType, DebugMask, ZyxError,
 };
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Kernel {
     pub(super) ops: Vec<Op>,
@@ -40,7 +39,6 @@ pub struct Kernel {
 pub type TId = u16;
 
 // TODO this needs to be smaller, since it's stored on the disk
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
     Loop {

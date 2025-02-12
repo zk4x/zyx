@@ -23,7 +23,6 @@ pub enum Reg {
     Const(Constant),
 }
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scope {
     Global,

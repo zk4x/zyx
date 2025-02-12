@@ -65,14 +65,14 @@ fn grad_sub() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_mul() -> Result<(), ZyxError> {
-    let x = Tensor::from([3, 2, 4]);
+    let x = Tensor::from([3i32, 2, 4]);
     let y = Tensor::from([3, 1, 5]);
     let tape = GradientTape::new();
     let z = &x * &y;
     let mut grads = tape.gradient(&z, [&x, &y]);
     let y_grad = grads.pop().unwrap().unwrap();
     let x_grad = grads.pop().unwrap().unwrap();
-    assert_eq!(x_grad, [3, 1, 5]);
+    assert_eq!(x_grad, [3i32, 1, 5]);
     assert_eq!(y_grad, [3, 2, 4]);
     Ok(())
 }

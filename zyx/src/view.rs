@@ -4,11 +4,9 @@ use super::ir::{IRCompiler, IROp, Reg};
 use crate::{dtype::Constant, shape::{Axis, Dimension}, DType};
 use std::{fmt::Display, ops::Range};
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct View(Vec<Vec<RDim>>);
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct RDim {
     d: Dimension,  // dim

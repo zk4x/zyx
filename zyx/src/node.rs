@@ -4,7 +4,6 @@
 use crate::{dtype::Constant, tensor::TensorId, DType, Scalar};
 use half::{bf16, f16};
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub enum BOp {
     Add,
@@ -28,7 +27,6 @@ pub enum BOp {
     NotEq,
 }
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub enum UOp {
     ReLU,
@@ -42,7 +40,6 @@ pub enum UOp {
     Not,
 }
 
-#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub enum ROp {
     Sum,

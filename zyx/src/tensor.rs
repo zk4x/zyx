@@ -84,6 +84,19 @@ impl Tensor {
         RT.lock().training = training;
     }
 
+    /// Is implicit casting enabled?
+    /// Implicit casts are enabled by default.
+    #[must_use]
+    pub fn implicit_casts() -> bool {
+        RT.lock().implicit_casts
+    }
+
+    /// Set implicit casts.
+    /// Implicit casts are enabled by default.
+    pub fn set_implicit_casts(implicit_casts: bool) {
+        RT.lock().implicit_casts = implicit_casts;
+    }
+
     /// Immediatelly evaluate passed tensors This will asynchronously enqueue the computational graph
     /// to the device, but it will not block (await). This is for performance reasons. Actual
     /// blocking only happens when you access a tensor by printing it, converting it to vector,
@@ -2571,8 +2584,7 @@ impl Tensor {
         let sh = self.shape();
         let sin_freqs = sin_freqs.into();
         let cos_freqs = cos_freqs.into();
-        #[cfg(not(feature = "implicit_casting"))]
-        {
+        if !RT.lock().implicit_casts {
             let dtype = self.dtype();
             let sdtype = sin_freqs.dtype();
             let cdtype = cos_freqs.dtype();
@@ -2930,7 +2942,7 @@ impl Tensor {
     fn float_cast(&self) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
         if !dtype.is_float() {
-            if cfg!(feature = "implicit_casting") {
+            if RT.lock().implicit_casts {
                 return Ok(match dtype.byte_size() {
                     2 => self.cast(DType::F16),
                     4 => self.cast(DType::F32),
@@ -2961,7 +2973,7 @@ impl Tensor {
         // We can later add option for backend to disable these implicit conversions.
         let x_dtype = x.dtype();
         let y_dtype = y.dtype();
-        if cfg!(feature = "implicit_casting") {
+        if RT.lock().implicit_casts {
             match (x_dtype, y_dtype) {
                 (DType::I16 | DType::I8 | DType::U8 | DType::Bool, DType::BF16) => {
                     x = x.cast(DType::BF16);

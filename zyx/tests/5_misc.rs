@@ -248,12 +248,12 @@ fn pad1() -> Result<(), ZyxError> {
 
 #[test]
 fn pad2() -> Result<(), ZyxError> {
-    let a = Tensor::from([[1, 2], [3, 4]]).reshape([1, 1, 2, 2])?;
+    let a = Tensor::from([[1i32, 2], [3, 4]]).reshape([1, 1, 2, 2])?;
     let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 1, 4])?;
     let c = a.pad_zeros([(0, 2), (0, 2)])? + b;
     assert_eq!(
         c,
-        [[[[6, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]
+        [[[[6i32, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]
     );
     Ok(())
 }
@@ -830,7 +830,7 @@ fn iter1() -> Result<(), ZyxError> {
 #[test]
 fn binary_y_depends_on_x() -> Result<(), ZyxError> {
     let z = {
-        let x = Tensor::from([[2, 4, 1], [3, 2, 4]]);
+        let x = Tensor::from([[2, 4, 1], [3, 2, 4]]).cast(DType::F32);
 
         let x = x
             .exp2()
