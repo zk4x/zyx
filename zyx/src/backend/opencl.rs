@@ -4,7 +4,7 @@
 #![allow(non_snake_case)]
 #![allow(clippy::question_mark)]
 
-use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
+use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
 use crate::{
     dtype::Constant,
     ir::{IROp, Reg, Scope},
@@ -32,7 +32,7 @@ pub struct OpenCLConfig {
 // OpenCL does not have the concept of memory pools,
 // so we simply say it is all in one memory pool
 #[derive(Debug)]
-pub(super) struct OpenCLMemoryPool {
+pub struct OpenCLMemoryPool {
     // Just to close the connection
     #[allow(unused)]
     library: Arc<Library>,
@@ -408,24 +408,24 @@ pub(super) fn initialize_device(
             clEnqueueWriteBuffer,
             clCreateBuffer,
         };
-        memory_pools.push(Pool::new(Box::new(pool)));
+        memory_pools.push(Pool::new(MemoryPool::OpenCL(pool)));
         memory_pool_id += 1;
     }
     Ok(())
 }
 
-impl MemoryPool for OpenCLMemoryPool {
-    fn deinitialize(&mut self) -> Result<(), BackendError> {
+impl OpenCLMemoryPool {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
         unsafe { (self.clReleaseContext)(self.context) }.check(ErrorStatus::Deinitialization)?;
         unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization)?;
         Ok(())
     }
 
-    fn free_bytes(&self) -> Dimension {
+    pub fn free_bytes(&self) -> Dimension {
         self.free_bytes
     }
 
-    fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError {
                 status: ErrorStatus::MemoryAllocation,
@@ -452,7 +452,7 @@ impl MemoryPool for OpenCLMemoryPool {
         ))
     }
 
-    fn deallocate(
+    pub fn deallocate(
         &mut self,
         buffer_id: Id,
         event_wait_list: Vec<Event>,
@@ -491,7 +491,7 @@ impl MemoryPool for OpenCLMemoryPool {
         Ok(())
     }
 
-    fn host_to_pool(
+    pub fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: Id,
@@ -531,7 +531,7 @@ impl MemoryPool for OpenCLMemoryPool {
         Ok(Event::OpenCL(OpenCLEvent { event }))
     }
 
-    fn pool_to_host(
+    pub fn pool_to_host(
         &mut self,
         src: Id,
         dst: &mut [u8],
@@ -602,11 +602,7 @@ impl MemoryPool for OpenCLMemoryPool {
         Ok(())
     }*/
 
-    fn get_buffer(&self, buffer: Id) -> BufferMut {
-        BufferMut::OpenCL(&self.buffers[buffer])
-    }
-
-    fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let events: Vec<*mut c_void> = events
             .into_iter()
             .map(|event| {
@@ -629,7 +625,7 @@ impl MemoryPool for OpenCLMemoryPool {
         Ok(())
     }
 
-    fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let _ = events;
         // For whatever reason this segfaults... Buggy opencl implementation?
         /*for event in events {
@@ -963,7 +959,7 @@ impl OpenCLDevice {
     pub fn launch(
         &mut self,
         program_id: Id,
-        memory_pool: &mut dyn MemoryPool,
+        memory_pool: &mut OpenCLMemoryPool,
         args: &[Id],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -989,8 +985,7 @@ impl OpenCLDevice {
         let mut i = 0;
         #[allow(clippy::explicit_counter_loop)]
         for &arg in args {
-            let arg = memory_pool.get_buffer(arg);
-            let BufferMut::OpenCL(arg) = arg else { unreachable!() };
+            let arg = &memory_pool.buffers[arg];
             //println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &arg.buffer;
             unsafe {
@@ -1034,9 +1029,7 @@ impl OpenCLDevice {
         }
         .check(ErrorStatus::KernelLaunch)?;
         self.queues[queue_id].load += 1;
-
-        unsafe { (self.clFinish)(self.queues[queue_id].queue) }.check(ErrorStatus::KernelLaunch)?;
-
+        //unsafe { (self.clFinish)(self.queues[queue_id].queue) }.check(ErrorStatus::KernelLaunch)?;
         //println!("Launch event: {event:?}");
         Ok(Event::OpenCL(OpenCLEvent { event }))
     }

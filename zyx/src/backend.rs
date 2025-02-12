@@ -7,10 +7,10 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
 use crate::{ir::IRKernel, runtime::Pool, shape::Dimension, slab::Id, ZyxError};
-use cuda::CUDADevice;
-use dummy::DummyDevice;
+use cuda::{CUDADevice, CUDAMemoryPool};
+use dummy::{DummyDevice, DummyMemoryPool};
 use nanoserde::DeJson;
-use opencl::OpenCLDevice;
+use opencl::{OpenCLDevice, OpenCLMemoryPool};
 use std::fmt::Display;
 
 mod cuda;
@@ -56,17 +56,6 @@ pub fn initialize_backends(
         });
     }
     Ok(())
-}
-
-#[allow(private_interfaces)]
-#[allow(clippy::upper_case_acronyms)]
-pub enum BufferMut<'a> {
-    #[allow(unused)]
-    Dummy(u32),
-    OpenCL(&'a opencl::OpenCLBuffer),
-    CUDA(&'a cuda::CUDABuffer),
-    #[cfg(feature = "wgpu")]
-    WGPU(&'a wgpu::WGPUBuffer),
 }
 
 #[derive(Debug, Clone)]
@@ -156,41 +145,96 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
 }
 
-// Passing events in event wait lists does not destroy those events.
-// Events are destroyed only on pool to host, which is blocking and on device sync, which is also blocking.
-// All other operations keep events alive.
-// For example passing event wait list into kernel launch does not guarantee that the events are executed,
-// only that kernel won't be launched until they are finished. We have no way of knowing when those events
-// and kernel launch actually happen. It's all async.
+pub(super) enum MemoryPool {
+    CUDA(CUDAMemoryPool),
+    OpenCL(OpenCLMemoryPool),
+    Dummy(DummyMemoryPool),
+}
 
-pub trait MemoryPool: Send {
-    fn deinitialize(&mut self) -> Result<(), BackendError>;
-    fn free_bytes(&self) -> Dimension;
-    fn get_buffer(&self, buffer: Id) -> BufferMut;
-    fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError>;
+impl MemoryPool {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
+        match self {
+            MemoryPool::CUDA(pool) => pool.deinitialize(),
+            MemoryPool::OpenCL(pool) => pool.deinitialize(),
+            MemoryPool::Dummy(pool) => pool.deinitialize(),
+        }
+    }
+
+    pub fn free_bytes(&self) -> Dimension {
+        match self {
+            MemoryPool::CUDA(pool) => pool.free_bytes(),
+            MemoryPool::OpenCL(pool) => pool.free_bytes(),
+            MemoryPool::Dummy(pool) => pool.free_bytes(),
+        }
+    }
+
+    pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
+        match self {
+            MemoryPool::CUDA(pool) => pool.allocate(bytes),
+            MemoryPool::OpenCL(pool) => pool.allocate(bytes),
+            MemoryPool::Dummy(pool) => pool.allocate(bytes),
+        }
+    }
+
     // Deallocate drops events without synchronization
-    fn deallocate(
+    pub fn deallocate(
         &mut self,
         buffer_id: Id,
         event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError>;
-    fn host_to_pool(
+    ) -> Result<(), BackendError> {
+        match self {
+            MemoryPool::CUDA(pool) => pool.deallocate(buffer_id, event_wait_list),
+            MemoryPool::OpenCL(pool) => pool.deallocate(buffer_id, event_wait_list),
+            MemoryPool::Dummy(pool) => pool.deallocate(buffer_id, event_wait_list),
+        }
+    }
+
+    // Host to pool does not synchronize events, it keeps them alive
+    // src must be alive as long as Event is not synchronized
+    pub fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: Id,
         event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError>;
-    /// Pool to host is blocking operation
-    fn pool_to_host(
+    ) -> Result<Event, BackendError> {
+        match self {
+            MemoryPool::CUDA(pool) => pool.host_to_pool(src, dst, event_wait_list),
+            MemoryPool::OpenCL(pool) => pool.host_to_pool(src, dst, event_wait_list),
+            MemoryPool::Dummy(pool) => pool.host_to_pool(src, dst, event_wait_list),
+        }
+    }
+
+    /// Pool to host is blocking operation, synchronizes events and drops them
+    pub fn pool_to_host(
         &mut self,
         src: Id,
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError>;
-    // Synchronize events, blocking
-    fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError>;
+    ) -> Result<(), BackendError> {
+        match self {
+            MemoryPool::CUDA(pool) => pool.pool_to_host(src, dst, event_wait_list),
+            MemoryPool::OpenCL(pool) => pool.pool_to_host(src, dst, event_wait_list),
+            MemoryPool::Dummy(pool) => pool.pool_to_host(src, dst, event_wait_list),
+        }
+    }
+    
+    // Synchronize events, blocking, drops those events
+    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        match self {
+            MemoryPool::CUDA(pool) => pool.sync_events(events),
+            MemoryPool::OpenCL(pool) => pool.sync_events(events),
+            MemoryPool::Dummy(pool) => pool.sync_events(events),
+        }
+    }
+
     // Drop events without synchronization, non-blocking
-    fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError>;
+    pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        match self {
+            MemoryPool::CUDA(pool) => pool.release_events(events),
+            MemoryPool::OpenCL(pool) => pool.release_events(events),
+            MemoryPool::Dummy(pool) => pool.release_events(events),
+        }
+    }
 }
 
 pub(super) enum Device {
@@ -252,14 +296,23 @@ impl Device {
     pub fn launch(
         &mut self,
         program_id: Id,
-        memory_pool: &mut dyn MemoryPool,
+        memory_pool: &mut MemoryPool,
         args: &[Id],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {
-            Device::CUDA(dev) => dev.launch(program_id, memory_pool, args, event_wait_list),
-            Device::OpenCL(dev) => dev.launch(program_id, memory_pool, args, event_wait_list),
-            Device::Dummy(dev) => dev.launch(program_id, memory_pool, args, event_wait_list),
+            Device::CUDA(dev) => {
+                let MemoryPool::CUDA(pool) = memory_pool else { unreachable!() };
+                dev.launch(program_id, pool, args, event_wait_list)
+            }
+            Device::OpenCL(dev) => {
+                let MemoryPool::OpenCL(pool) = memory_pool else { unreachable!() };
+                dev.launch(program_id, pool, args, event_wait_list)
+            }
+            Device::Dummy(dev) => {
+                let MemoryPool::Dummy(pool) = memory_pool else { unreachable!() };
+                dev.launch(program_id, pool, args, event_wait_list)
+            }
         }
     }
 }

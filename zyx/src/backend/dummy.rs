@@ -1,14 +1,10 @@
 use std::ptr;
-
 use nanoserde::DeJson;
-
 use crate::{
     runtime::Pool, shape::Dimension, slab::{Id, Slab}
 };
-
 use super::{
-    opencl::OpenCLEvent, BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event,
-    MemoryPool,
+    opencl::OpenCLEvent, BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool,
 };
 
 #[derive(Default, Debug, DeJson)]
@@ -16,7 +12,7 @@ pub struct DummyConfig {
     enabled: bool,
 }
 
-struct DummyMemoryPool {
+pub struct DummyMemoryPool {
     free_bytes: Dimension,
     buffers: Slab<Dimension>,
 }
@@ -40,7 +36,7 @@ pub(super) fn initialize_device(
     if debug_dev {
         println!("Using dummy backend");
     }
-    let pool = Box::new(DummyMemoryPool {
+    let pool = MemoryPool::Dummy(DummyMemoryPool {
         free_bytes: 1024 * 1024 * 1024 * 1024 * 1024,
         buffers: Slab::new(),
     });
@@ -60,22 +56,16 @@ pub(super) fn initialize_device(
     Ok(())
 }
 
-impl MemoryPool for DummyMemoryPool {
-    fn deinitialize(&mut self) -> Result<(), BackendError> {
+impl DummyMemoryPool {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
-    fn free_bytes(&self) -> Dimension {
+    pub fn free_bytes(&self) -> Dimension {
         self.free_bytes
     }
 
-    fn get_buffer(&self, buffer: crate::slab::Id) -> BufferMut {
-        #[cfg(debug_assertions)]
-        self.buffers[buffer];
-        BufferMut::Dummy(buffer)
-    }
-
-    fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
@@ -88,7 +78,7 @@ impl MemoryPool for DummyMemoryPool {
         Ok((id, Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))
     }
 
-    fn deallocate(
+    pub fn deallocate(
         &mut self,
         buffer_id: crate::slab::Id,
         event_wait_list: Vec<Event>,
@@ -100,7 +90,7 @@ impl MemoryPool for DummyMemoryPool {
         Ok(())
     }
 
-    fn host_to_pool(
+    pub fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: crate::slab::Id,
@@ -112,7 +102,7 @@ impl MemoryPool for DummyMemoryPool {
         Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
     }
 
-    fn pool_to_host(
+    pub fn pool_to_host(
         &mut self,
         src: crate::slab::Id,
         dst: &mut [u8],
@@ -124,12 +114,12 @@ impl MemoryPool for DummyMemoryPool {
         Ok(())
     }
 
-    fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let _ = events;
         Ok(())
     }
 
-    fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let _ = events;
         Ok(())
     }
@@ -170,14 +160,14 @@ impl DummyDevice {
     pub fn launch(
         &mut self,
         program_id: Id,
-        memory_pool: &mut dyn MemoryPool,
+        memory_pool: &mut DummyMemoryPool,
         args: &[Id],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = program_id;
         let _ = event_wait_list;
         for &arg in args {
-            let BufferMut::Dummy(_) = memory_pool.get_buffer(arg) else { panic!() };
+            let _dfs = memory_pool.buffers[arg];
         }
         Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
     }

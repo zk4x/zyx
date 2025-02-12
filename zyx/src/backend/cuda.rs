@@ -17,7 +17,7 @@ use crate::{
     dtype::Constant, ir::{IRKernel, IROp, Reg, Scope}, node::{BOp, UOp}, shape::Dimension, slab::{Id, Slab}, DType
 };
 
-use super::{BackendError, BufferMut, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
+use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -26,7 +26,7 @@ pub struct CUDAConfig {
 }
 
 #[derive(Debug)]
-pub(super) struct CUDAMemoryPool {
+pub struct CUDAMemoryPool {
     // Just to close the connection
     #[allow(unused)]
     lib: Arc<Library>,
@@ -258,7 +258,7 @@ pub(super) fn initialize_device(
         else {
             continue;
         };
-        let pool = Box::new(CUDAMemoryPool {
+        let pool = MemoryPool::CUDA(CUDAMemoryPool {
             lib: cuda.clone(),
             context,
             device,
@@ -374,16 +374,16 @@ pub(super) fn initialize_device(
     Ok(())
 }
 
-impl MemoryPool for CUDAMemoryPool {
-    fn deinitialize(&mut self) -> Result<(), BackendError> {
+impl CUDAMemoryPool {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
-    fn free_bytes(&self) -> Dimension {
+    pub fn free_bytes(&self) -> Dimension {
         self.free_bytes
     }
 
-    fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError {
                 status: ErrorStatus::MemoryAllocation,
@@ -406,7 +406,7 @@ impl MemoryPool for CUDAMemoryPool {
         ))
     }
 
-    fn deallocate(
+    pub fn deallocate(
         &mut self,
         buffer_id: Id,
         mut event_wait_list: Vec<Event>,
@@ -426,7 +426,7 @@ impl MemoryPool for CUDAMemoryPool {
         Ok(())
     }
 
-    fn host_to_pool(
+    pub fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: Id,
@@ -450,7 +450,7 @@ impl MemoryPool for CUDAMemoryPool {
         Ok(Event::CUDA(CUDAEvent { event }))
     }
 
-    fn pool_to_host(
+    pub fn pool_to_host(
         &mut self,
         src: Id,
         dst: &mut [u8],
@@ -477,12 +477,8 @@ impl MemoryPool for CUDAMemoryPool {
         Ok(())
     }
 
-    fn get_buffer(&self, buffer: crate::slab::Id) -> super::BufferMut {
-        BufferMut::CUDA(&self.buffers[buffer])
-    }
-
-    fn sync_events(&mut self, mut event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
+    pub fn sync_events(&mut self, mut events: Vec<Event>) -> Result<(), BackendError> {
+        while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
             if !event.is_null() {
                 unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync)?;
                 unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::KernelSync)?;
@@ -491,7 +487,7 @@ impl MemoryPool for CUDAMemoryPool {
         Ok(())
     }
 
-    fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         for event in events {
             let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
             unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization)?;
@@ -555,7 +551,7 @@ impl CUDADevice {
     pub fn launch(
         &mut self,
         program_id: crate::slab::Id,
-        memory_pool: &mut dyn MemoryPool,
+        memory_pool: &mut CUDAMemoryPool,
         args: &[crate::slab::Id],
         // If sync is empty, kernel will be immediatelly synchronized
         mut event_wait_list: Vec<Event>,
@@ -567,8 +563,7 @@ impl CUDADevice {
 
         let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
         for &arg in args {
-            let arg = memory_pool.get_buffer(arg);
-            let BufferMut::CUDA(arg) = arg else { unreachable!() };
+            let arg = &memory_pool.buffers[arg];
             //let ptr = &mut arg.mem;
             let ptr: *const u64 = &arg.ptr;
             let ptr: *mut u64 = ptr.cast_mut();

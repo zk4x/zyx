@@ -87,7 +87,7 @@ impl KernelCache {
                 // if it was compiled for the given device
                 //println!("Launch cached, program id: {program_id}");
                 //kernel.debug();
-                let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
+                let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 //pool.pool.sync_events(vec![event]).unwrap();
                 pool.events.insert(outputs, event);
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
@@ -117,7 +117,7 @@ impl KernelCache {
                 let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let nanos = std::time::Instant::now();
-                let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
+                let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 if debug.perf() {
                     pool.pool.sync_events(vec![event])?;
                     let nanos = nanos.elapsed().as_nanos();

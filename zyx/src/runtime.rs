@@ -11,7 +11,6 @@ use crate::slab::Id;
 use crate::static_graph::GraphOp;
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
-use half::{bf16, f16};
 use nanoserde::DeJson;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -53,14 +52,14 @@ pub trait TempData: Send {
 
 pub struct Pool {
     #[allow(clippy::struct_field_names)]
-    pub pool: Box<dyn MemoryPool>,
+    pub pool: MemoryPool,
     pub events: Map<BTreeSet<Id>, Event>,
     // tensor id => buffer id
     pub buffer_map: Map<TensorId, Id>,
 }
 
 impl Pool {
-    pub(crate) fn new(pool: Box<dyn MemoryPool>) -> Self {
+    pub(crate) fn new(pool: MemoryPool) -> Self {
         Self {
             pool,
             events: Map::with_capacity_and_hasher(100, Default::default()),
@@ -343,21 +342,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn ones(&mut self, shape: Vec<Dimension>, dtype: DType) -> TensorId {
-        let x = match dtype {
-            DType::BF16 => self.constant(bf16::ONE),
-            DType::F16 => self.constant(f16::ONE),
-            DType::F32 => self.constant(1f32),
-            DType::F64 => self.constant(1f64),
-            DType::U8 => self.constant(1u8),
-            DType::U16 => self.constant(1u16),
-            DType::U32 => self.constant(1u32),
-            DType::U64 => self.constant(1u64),
-            DType::I8 => self.constant(1i8),
-            DType::I16 => self.constant(1i16),
-            DType::I32 => self.constant(1i32),
-            DType::I64 => self.constant(1i64),
-            DType::Bool => self.constant(true),
-        };
+        let x = self.graph.push(Node::Const { value: dtype.one_constant() });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x).unwrap();
         expanded
@@ -365,21 +350,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn zeros(&mut self, shape: Vec<Dimension>, dtype: DType) -> TensorId {
-        let x = match dtype {
-            DType::BF16 => self.constant(bf16::ZERO),
-            DType::F16 => self.constant(f16::ZERO),
-            DType::F32 => self.constant(0f32),
-            DType::F64 => self.constant(0f64),
-            DType::U8 => self.constant(0u8),
-            DType::U16 => self.constant(0u16),
-            DType::U32 => self.constant(0u32),
-            DType::U64 => self.constant(0u64),
-            DType::I8 => self.constant(0i8),
-            DType::I16 => self.constant(0i16),
-            DType::I32 => self.constant(0i32),
-            DType::I64 => self.constant(0i64),
-            DType::Bool => self.constant(false),
-        };
+        let x = self.graph.push(Node::Const { value: dtype.zero_constant() });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x).unwrap();
         expanded
