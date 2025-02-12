@@ -7,7 +7,7 @@ use crate::{
     dtype::Constant,
     kernel::Kernel,
     node::{BOp, UOp},
-    optimizer::Optimization,
+    kernel_cache::Optimization,
     shape::Dimension,
     DType, DebugMask, Set,
 };

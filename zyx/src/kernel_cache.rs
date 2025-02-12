@@ -40,7 +40,7 @@ impl KernelCache {
         }
     }
 
-    pub(super) fn deinitialize(&mut self, devices: &mut [Box<dyn Device>]) {
+    pub(super) fn deinitialize(&mut self, devices: &mut [Device]) {
         while let Some(((_, device_id), program_id)) = self.programs.pop_last() {
             let _ = devices[device_id as usize].release(program_id);
         }
@@ -58,7 +58,7 @@ impl KernelCache {
     pub(super) fn launch(
         &mut self,
         kernel: &Kernel,
-        device: &mut dyn Device,
+        device: &mut Device,
         pool: &mut Pool,
         args: &[Id],
         outputs: BTreeSet<Id>,

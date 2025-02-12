@@ -1,17 +1,7 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::Device,
-    graph::Graph,
-    ir::Scope,
-    kernel::{Kernel, Op, TId},
-    node::Node,
-    optimizer::KernelCache,
-    runtime::Pool,
-    slab::{Id, Slab},
-    tensor::TensorId,
-    view::View,
-    DType, DebugMask, Map, Set, ZyxError,
+    backend::Device, graph::Graph, ir::Scope, kernel::{Kernel, Op, TId}, kernel_cache::KernelCache, node::Node, runtime::Pool, slab::{Id, Slab}, tensor::TensorId, view::View, DType, DebugMask, Map, Set, ZyxError
 };
 use std::collections::BTreeSet;
 
@@ -25,7 +15,7 @@ pub fn schedule(
     // RCS are only ref counts from parameters, excluding ref counts from being in to_eval/user rcs
     rcs: Map<TensorId, u32>,
     to_eval: &Set<TensorId>,
-    devices: &mut [Box<dyn Device>],
+    devices: &mut [Device],
     memory_pools: &mut [Pool],
     optimizer: &mut KernelCache,
     search_iters: usize,

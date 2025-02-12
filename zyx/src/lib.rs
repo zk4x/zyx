@@ -56,7 +56,7 @@ mod ir;
 mod kernel;
 mod mutex;
 mod node;
-mod optimizer;
+mod kernel_cache;
 #[cfg(feature = "py")]
 mod py_bindings;
 mod rng;

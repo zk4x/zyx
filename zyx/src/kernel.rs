@@ -14,7 +14,7 @@ use crate::{
     graph::Graph,
     ir::Scope,
     node::{BOp, ROp, UOp},
-    optimizer::KernelCache,
+    kernel_cache::KernelCache,
     runtime::Pool,
     shape::{Axis, Dimension},
     slab::Id,
@@ -741,7 +741,7 @@ impl Kernel {
     pub(super) fn launch(
         &mut self,
         graph: &Graph,
-        devices: &mut [Box<dyn Device>],
+        devices: &mut [Device],
         memory_pools: &mut [Pool],
         optimizer: &mut KernelCache,
         search_iters: usize,
@@ -817,8 +817,7 @@ impl Kernel {
             .iter_mut()
             .filter(|device| device.memory_pool_id() == u32::try_from(memory_pool_id).unwrap())
             .max_by_key(|device| device.compute())
-            .unwrap()
-            .as_mut();
+            .unwrap();
 
         let mut outputs = BTreeSet::new();
         let mut event_wait_list: Vec<Event> = Vec::new();

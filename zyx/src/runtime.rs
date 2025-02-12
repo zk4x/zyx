@@ -3,7 +3,7 @@ use crate::backend::{BackendError, Device, DeviceConfig, Event, MemoryPool};
 use crate::dtype::{Constant, DType};
 use crate::graph::Graph;
 use crate::node::{BOp, Node, ROp, UOp};
-use crate::optimizer::KernelCache;
+use crate::kernel_cache::KernelCache;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Axis, Dimension};
@@ -26,7 +26,7 @@ pub struct Runtime {
     // Physical memory pools
     pools: Vec<Pool>,
     // Physical compute devices, each has their own program cache
-    devices: Vec<Box<dyn Device>>,
+    devices: Vec<Device>,
     // Optimizer cache, maps between unoptimized kernels and available/done optimizations
     optimizer: KernelCache,
     // Zyx configuration directory path

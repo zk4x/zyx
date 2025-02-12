@@ -86,7 +86,7 @@ pub(super) struct OpenCLBuffer {
 }
 
 #[derive(Debug)]
-pub(super) struct OpenCLDevice {
+pub struct OpenCLDevice {
     ptr: *mut c_void,
     context: *mut c_void,
     dev_info: DeviceInfo,
@@ -169,7 +169,7 @@ unsafe impl Send for OpenCLEvent {}
 pub(super) fn initialize_device(
     config: &OpenCLConfig,
     memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Box<dyn Device>>,
+    devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     let opencl_paths = [
@@ -386,7 +386,7 @@ pub(super) fn initialize_device(
             };
             if let Ok(bytes) = device.get_device_data(CL_DEVICE_GLOBAL_MEM_SIZE) {
                 total_bytes += Dimension::from_ne_bytes(bytes.try_into().unwrap());
-                devices.push(Box::new(device));
+                devices.push(Device::OpenCL(device));
             }
         }
         let Ok(()) = status.check(ErrorStatus::Initialization) else {
@@ -640,21 +640,21 @@ impl MemoryPool for OpenCLMemoryPool {
     }
 }
 
-impl Device for OpenCLDevice {
-    fn deinitialize(&mut self) -> Result<(), BackendError> {
+impl OpenCLDevice {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
-    fn info(&self) -> &DeviceInfo {
+    pub fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
-    fn memory_pool_id(&self) -> u32 {
+    pub fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 
     #[allow(clippy::cognitive_complexity)]
-    fn compile(
+    pub fn compile(
         &mut self,
         kernel: &crate::ir::IRKernel,
         debug_asm: bool,
@@ -960,7 +960,7 @@ impl Device for OpenCLDevice {
         )
     }
 
-    fn launch(
+    pub fn launch(
         &mut self,
         program_id: Id,
         memory_pool: &mut dyn MemoryPool,
@@ -1041,7 +1041,7 @@ impl Device for OpenCLDevice {
         Ok(Event::OpenCL(OpenCLEvent { event }))
     }
 
-    fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+    pub fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
         //println!("Releasing {:?}", program);
         unsafe { (self.clReleaseProgram)(self.programs[program_id].program) }
             .check(ErrorStatus::Deinitialization)?;
@@ -1049,7 +1049,7 @@ impl Device for OpenCLDevice {
         Ok(())
     }
 
-    fn compute(&self) -> u128 {
+    pub fn compute(&self) -> u128 {
         self.dev_info.compute
     }
 }

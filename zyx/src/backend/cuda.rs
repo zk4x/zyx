@@ -63,7 +63,7 @@ pub(super) struct CUDABuffer {
 }
 
 #[derive(Debug)]
-pub(super) struct CUDADevice {
+pub struct CUDADevice {
     device: CUdevice,
     memory_pool_id: u32,
     dev_info: DeviceInfo,
@@ -130,7 +130,7 @@ unsafe impl Send for CUDAEvent {}
 pub(super) fn initialize_device(
     config: &CUDAConfig,
     memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Box<dyn Device>>,
+    devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
@@ -369,7 +369,7 @@ pub(super) fn initialize_device(
             preferred_vector_size: 16,
             tensor_cores: major > 7,
         };
-        devices.push(Box::new(dev));
+        devices.push(Device::CUDA(dev));
     }
     Ok(())
 }
@@ -500,24 +500,24 @@ impl MemoryPool for CUDAMemoryPool {
     }
 }
 
-impl Device for CUDADevice {
-    fn deinitialize(&mut self) -> Result<(), BackendError> {
+impl CUDADevice {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
-    fn info(&self) -> &DeviceInfo {
+    pub fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
-    fn memory_pool_id(&self) -> u32 {
+    pub fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 
-    fn compute(&self) -> u128 {
+    pub fn compute(&self) -> u128 {
         self.dev_info.compute
     }
 
-    fn compile(
+    pub fn compile(
         &mut self,
         kernel: &crate::ir::IRKernel,
         debug_asm: bool,
@@ -552,7 +552,7 @@ impl Device for CUDADevice {
         Ok(program_id)
     }
 
-    fn launch(
+    pub fn launch(
         &mut self,
         program_id: crate::slab::Id,
         memory_pool: &mut dyn MemoryPool,
@@ -611,7 +611,7 @@ impl Device for CUDADevice {
         Ok(Event::CUDA(CUDAEvent { event }))
     }
 
-    fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+    pub fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
         unsafe { (self.cuModuleUnload)(self.programs[program_id].module) }
             .check(ErrorStatus::Deinitialization)
             .unwrap();

@@ -7,7 +7,10 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
 use crate::{ir::IRKernel, runtime::Pool, shape::Dimension, slab::Id, ZyxError};
+use cuda::CUDADevice;
+use dummy::DummyDevice;
 use nanoserde::DeJson;
+use opencl::OpenCLDevice;
 use std::fmt::Display;
 
 mod cuda;
@@ -19,10 +22,22 @@ mod vulkan;*/
 #[cfg(feature = "wgpu")]
 mod wgpu;
 
+impl From<BackendError> for ZyxError {
+    fn from(value: BackendError) -> Self {
+        ZyxError::BackendError(value)
+    }
+}
+
+impl Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:?}: {}", self.status, self.context))
+    }
+}
+
 pub fn initialize_backends(
     device_config: &DeviceConfig,
     memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Box<dyn Device>>,
+    devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     let _ = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_dev);
@@ -178,30 +193,73 @@ pub trait MemoryPool: Send {
     fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError>;
 }
 
-pub trait Device: Send {
-    fn deinitialize(&mut self) -> Result<(), BackendError>;
-    fn info(&self) -> &DeviceInfo;
-    fn memory_pool_id(&self) -> u32;
-    fn compute(&self) -> u128;
-    fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError>;
-    fn release(&mut self, program_id: Id) -> Result<(), BackendError>;
-    fn launch(
+pub(super) enum Device {
+    CUDA(CUDADevice),
+    OpenCL(OpenCLDevice),
+    //WGPU(WGPuDevice),
+    Dummy(DummyDevice),
+}
+
+impl Device {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
+        match self {
+            Device::CUDA(dev) => dev.deinitialize(),
+            Device::OpenCL(dev) => dev.deinitialize(),
+            Device::Dummy(dev) => dev.deinitialize(),
+        }
+    }
+
+    pub fn info(&self) -> &DeviceInfo {
+        match self {
+            Device::CUDA(dev) => dev.info(),
+            Device::OpenCL(dev) => dev.info(),
+            Device::Dummy(dev) => dev.info(),
+        }
+    }
+
+    pub fn memory_pool_id(&self) -> u32 {
+        match self {
+            Device::CUDA(dev) => dev.memory_pool_id(),
+            Device::OpenCL(dev) => dev.memory_pool_id(),
+            Device::Dummy(dev) => dev.memory_pool_id(),
+        }
+    }
+
+    pub fn compute(&self) -> u128 {
+        match self {
+            Device::CUDA(dev) => dev.compute(),
+            Device::OpenCL(dev) => dev.compute(),
+            Device::Dummy(dev) => dev.compute(),
+        }
+    }
+
+    pub fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError> {
+        match self {
+            Device::CUDA(dev) => dev.compile(kernel, debug_asm),
+            Device::OpenCL(dev) => dev.compile(kernel, debug_asm),
+            Device::Dummy(dev) => dev.compile(kernel, debug_asm),
+        }
+    }
+
+    pub fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+        match self {
+            Device::CUDA(dev) => dev.release(program_id),
+            Device::OpenCL(dev) => dev.release(program_id),
+            Device::Dummy(dev) => dev.release(program_id),
+        }
+    }
+
+    pub fn launch(
         &mut self,
         program_id: Id,
         memory_pool: &mut dyn MemoryPool,
         args: &[Id],
         event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError>;
-}
-
-impl From<BackendError> for ZyxError {
-    fn from(value: BackendError) -> Self {
-        ZyxError::BackendError(value)
-    }
-}
-
-impl Display for BackendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{:?}: {}", self.status, self.context))
+    ) -> Result<Event, BackendError> {
+        match self {
+            Device::CUDA(dev) => dev.launch(program_id, memory_pool, args, event_wait_list),
+            Device::OpenCL(dev) => dev.launch(program_id, memory_pool, args, event_wait_list),
+            Device::Dummy(dev) => dev.launch(program_id, memory_pool, args, event_wait_list),
+        }
     }
 }

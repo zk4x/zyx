@@ -21,14 +21,14 @@ struct DummyMemoryPool {
     buffers: Slab<Dimension>,
 }
 
-struct DummyDevice {
+pub struct DummyDevice {
     device_info: DeviceInfo,
 }
 
 pub(super) fn initialize_device(
     config: &DummyConfig,
     memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Box<dyn Device>>,
+    devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
@@ -45,7 +45,7 @@ pub(super) fn initialize_device(
         buffers: Slab::new(),
     });
     memory_pools.push(Pool::new(pool));
-    devices.push(Box::new(DummyDevice {
+    devices.push(Device::Dummy(DummyDevice {
         device_info: DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: [u32::MAX as Dimension, u32::MAX as Dimension, u32::MAX as Dimension],
@@ -135,24 +135,24 @@ impl MemoryPool for DummyMemoryPool {
     }
 }
 
-impl Device for DummyDevice {
-    fn deinitialize(&mut self) -> Result<(), BackendError> {
+impl DummyDevice {
+    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
 
-    fn info(&self) -> &super::DeviceInfo {
+    pub fn info(&self) -> &super::DeviceInfo {
         &self.device_info
     }
 
-    fn memory_pool_id(&self) -> u32 {
+    pub fn memory_pool_id(&self) -> u32 {
         0
     }
 
-    fn compute(&self) -> u128 {
+    pub fn compute(&self) -> u128 {
         self.device_info.compute
     }
 
-    fn compile(
+    pub fn compile(
         &mut self,
         kernel: &crate::ir::IRKernel,
         debug_asm: bool,
@@ -162,12 +162,12 @@ impl Device for DummyDevice {
         Ok(0)
     }
 
-    fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+    pub fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
         let _ = program_id;
         Ok(())
     }
 
-    fn launch(
+    pub fn launch(
         &mut self,
         program_id: Id,
         memory_pool: &mut dyn MemoryPool,
