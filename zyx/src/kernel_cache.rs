@@ -1,22 +1,7 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event},
-    ir::IRKernel,
-    kernel::{Kernel, Op},
-    runtime::Pool,
-    shape::Dimension,
-    slab::Id,
-    DebugMask,
+    backend::{BackendError, Device, DeviceInfo, Event}, ir::IRKernel, kernel::{Kernel, Op}, optimizer::Optimization, runtime::Pool, slab::Id, DebugMask
 };
 use std::collections::{BTreeMap, BTreeSet};
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Optimization {
-    pub local_work_size: [Dimension; 3],
-    // upcast op id -> Dimension, where op is loop split from register to global
-    //pub upcast: Option<(u16, Dimension)>,
-    // loop id, order of the id (first, second, thired, ... loop with that id) and lenght of the split
-    splits: Vec<(u16, u16, Dimension)>,
-}
 
 #[derive(Debug)]
 pub struct KernelCache {
@@ -113,7 +98,7 @@ impl KernelCache {
             let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
             if search_iters == 0 {
                 // if optimizations are not requested, use default optimizations
-                let optimization = KernelCache::default_optimizations(kernel, device.info());
+                let optimization = Optimization::new(kernel, device.info());
                 let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let nanos = std::time::Instant::now();
@@ -152,47 +137,6 @@ impl KernelCache {
             }
         }
         Ok(())
-    }
-
-    fn default_optimizations(kernel: &Kernel, dev_info: &DeviceInfo) -> Optimization {
-        let mlws = dev_info.max_local_threads;
-        let mlwd = dev_info.max_local_work_dims;
-        //let mut reshapes = Vec::new();
-        let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
-        debug_assert_ne!(num_loops, 0);
-        let mut gws = [1; 3];
-        if num_loops < 3 {
-            //reshapes.push((0, dims));
-            let mut gws_i = 3 - num_loops;
-            for d in &kernel.shape() {
-                gws[gws_i] = *d;
-                gws_i += 1;
-            }
-        } else {
-            let sh = kernel.shape();
-            for (gws_d, d) in gws.iter_mut().zip(sh[sh.len() - 3..].iter()) {
-                *gws_d = *d;
-            }
-            gws[0] = sh[..sh.len() - 2].iter().product();
-        }
-
-        //let mrws = dev_info.num_registers;
-        //let max_reg_split = 32;
-
-        let lz = (1..=mlws.min(mlwd[2])).rev().filter(|lz| gws[2] % lz == 0).max().unwrap_or(1);
-        let ly =
-            (1..=(mlws / lz).min(mlwd[1])).rev().filter(|ly| gws[1] % ly == 0).max().unwrap_or(1);
-        let lx = (1..=(mlws / (lz * ly)).min(mlwd[0]))
-            .rev()
-            .filter(|lx| gws[0] % lx == 0)
-            .max()
-            .unwrap_or(1);
-
-        //println!("gws = {gws:?}, lws = [{lx}, {ly}, {lz}]");
-
-        // Upcast is only possible if last local dimension (lz) is 1
-
-        Optimization { local_work_size: [lx, ly, lz], splits: Vec::new() }
     }
 }
 

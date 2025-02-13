@@ -72,7 +72,7 @@ mod chasher;
 mod bar;
 mod autograd;
 mod static_graph;
-mod optimizer2;
+mod optimizer;
 
 pub(crate) type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 pub(crate) type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;

@@ -252,10 +252,10 @@ impl WGPUDevice {
         let mut loops = [0; 6];
         for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let &IROp::Loop { id, len } = op {
-                if i % 2 == 0 {
-                    global_work_size[i / 2] = len;
+                if i < 3 {
+                    global_work_size[i] = len;
                 } else {
-                    local_work_size[i / 2] = len;
+                    local_work_size[i - 3] = len;
                 }
                 loops[i] = id;
             } else {
@@ -304,30 +304,10 @@ impl WGPUDevice {
         }
 
         // Add indices for global and local loops
-        source += &format!(
-            "  r{} = u64(gid.x);   /* 0..{} */\n",
-            loops[0], global_work_size[0]
-        );
-        source += &format!(
-            "  r{} = u64(lid.x);   /* 0..{} */\n",
-            loops[1], local_work_size[0]
-        );
-        source += &format!(
-            "  r{} = u64(gid.y);   /* 0..{} */\n",
-            loops[2], global_work_size[1]
-        );
-        source += &format!(
-            "  r{} = u64(lid.y);   /* 0..{} */\n",
-            loops[3], local_work_size[1]
-        );
-        source += &format!(
-            "  r{} = u64(gid.z);   /* 0..{} */\n",
-            loops[4], global_work_size[2]
-        );
-        source += &format!(
-            "  r{} = u64(lid.z);   /* 0..{} */\n",
-            loops[5], local_work_size[2]
-        );
+        source.push_str(&format!(
+            "{indent}r{} = u64(gid.x);  /* 0..{} */\n{indent}r{} = u64(gid.y);  /* 0..{} */\n{indent}r{} = u64(gid.z);  /* 0..{} */\n
+r{} = u64(lid.x);  /* 0..{} */\n{indent}r{} = u64(gid.y);  /* 0..{} */\n{indent}r{} = u64(gid.z);  /* 0..{} */\n", loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0],
+loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {

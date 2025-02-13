@@ -4,12 +4,7 @@
 
 use super::{kernel::Op, node::ROp};
 use crate::{
-    dtype::Constant,
-    kernel::Kernel,
-    node::{BOp, UOp},
-    kernel_cache::Optimization,
-    shape::Dimension,
-    DType, DebugMask, Set,
+    dtype::Constant, kernel::Kernel, node::{BOp, UOp}, optimizer::Optimization, shape::Dimension, DType, DebugMask, Set
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1621,28 +1616,8 @@ impl IRKernel {
         if debug.sched() {
             kernel.debug();
         }
-        // Reshape kernel so that it has 3 global and 3 local dimensions
-        let [lx, ly, lz] = optimization.local_work_size;
-
-        let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
-        debug_assert_ne!(num_loops, 0);
-        let shape = kernel.shape();
-        let shape = match num_loops {
-            0 => unreachable!(),
-            1 => [1, 1, 1, 1, shape[0] / lz, lz],
-            2 => [1, 1, shape[0] / ly, ly, shape[1] / lz, lz],
-            3 => [shape[0] / lx, lx, shape[1] / ly, ly, shape[2] / lz, lz],
-            _ => [
-                shape[0..num_loops - 2].iter().product::<usize>() / lx,
-                lx,
-                shape[num_loops - 2] / ly,
-                ly,
-                shape[num_loops - 1] / lz,
-                lz,
-            ],
-        };
-        kernel.reshape(&shape);
-        debug_assert_eq!(kernel.shape().len(), 6);
+        kernel.reshape(&optimization.shape);
+        debug_assert_eq!(kernel.shape().len(), 9);
 
         //kernel.debug();
 
@@ -1656,7 +1631,7 @@ impl IRKernel {
         }*/
 
         compiler.global_loop_unrolling();
-        compiler.loop_unrolling();
+        //compiler.loop_unrolling();
 
         let mut old_compiler = compiler.clone();
         loop {

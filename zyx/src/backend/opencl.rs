@@ -558,7 +558,10 @@ impl OpenCLMemoryPool {
         };*/
         if !event_wait_list.is_empty() {
             //println!("Syncing events: {event_wait_list:?}");
-            unsafe { (self.clWaitForEvents)(event_wait_list.len() as u32, event_wait_list.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H)?;
+            unsafe {
+                (self.clWaitForEvents)(event_wait_list.len() as u32, event_wait_list.as_ptr())
+            }
+            .check(ErrorStatus::MemoryCopyP2H)?;
         }
         let mut event: *mut c_void = ptr::null_mut();
         unsafe {
@@ -569,7 +572,7 @@ impl OpenCLMemoryPool {
                 0,
                 dst.len(),
                 dst.as_mut_ptr().cast(),
-                0, //event_wait_list.len().try_into().unwrap(),
+                0,           //event_wait_list.len().try_into().unwrap(),
                 ptr::null(), //event_wait_list_ptr,
                 &mut event,
             )
@@ -661,15 +664,15 @@ impl OpenCLDevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        let mut loops = [0; 6];
+        let mut loop_ids = [0; 6];
         for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let IROp::Loop { id, len } = op {
-                if i % 2 == 0 {
-                    global_work_size[i / 2] = *len;
+                if i < 3 {
+                    global_work_size[i] = *len;
                 } else {
-                    local_work_size[i / 2] = *len;
+                    local_work_size[i - 3] = *len;
                 }
-                loops[i] = *id;
+                loop_ids[i] = *id;
             } else {
                 unreachable!()
             }
@@ -703,30 +706,10 @@ impl OpenCLDevice {
         }
 
         // Add indices for global and local loops
-        source += &format!(
-            "{indent}r{} = get_group_id(0); /* 0..{} */\n",
-            loops[0], global_work_size[0]
-        );
-        source += &format!(
-            "{indent}r{} = get_local_id(0); /* 0..{} */\n",
-            loops[1], local_work_size[0]
-        );
-        source += &format!(
-            "{indent}r{} = get_group_id(1); /* 0..{} */\n",
-            loops[2], global_work_size[1]
-        );
-        source += &format!(
-            "{indent}r{} = get_local_id(1); /* 0..{} */\n",
-            loops[3], local_work_size[1]
-        );
-        source += &format!(
-            "{indent}r{} = get_group_id(2); /* 0..{} */\n",
-            loops[4], global_work_size[2]
-        );
-        source += &format!(
-            "{indent}r{} = get_local_id(2); /* 0..{} */\n",
-            loops[5], local_work_size[2]
-        );
+        source.push_str(&format!(
+            "{indent}r{} = get_group_id(0);  /* 0..{} */\n{indent}r{} = get_group_id(1);  /* 0..{} */\n{indent}r{} = get_group_id(2);  /* 0..{} */\n{indent}r{} = get_local_id(0);  /* 0..{} */\n{indent}r{} = get_local_id(1);  /* 0..{} */\n{indent}r{} = get_local_id(2);  /* 0..{} */\n",
+            loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0], loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
+
         //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
@@ -856,7 +839,12 @@ impl OpenCLDevice {
                     //if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
                 }
                 IROp::MAdd { z, a, b, c } => {
-                    source += &format!("{indent}r{z} = {} * {} + {};\n", a.ocl(), b.ocl(), c.ocl());
+                    let dtype = kernel.registers[z as usize];
+                    if dtype.is_float() {
+                        source += &format!("{indent}r{z} = mad({}, {}, {});\n", a.ocl(), b.ocl(), c.ocl());
+                    } else {
+                        source += &format!("{indent}r{z} = {} * {} + {};\n", a.ocl(), b.ocl(), c.ocl());
+                    }
                 }
                 IROp::Loop { id, len } => {
                     source += &format!(

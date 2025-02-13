@@ -657,10 +657,10 @@ impl CUDADevice {
         let mut loop_ids = [0; 6];
         for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let IROp::Loop { id, len } = op {
-                if i % 2 == 0 {
-                    global_work_size[i / 2] = *len;
+                if i < 3 {
+                    global_work_size[i] = *len;
                 } else {
-                    local_work_size[i / 2] = *len;
+                    local_work_size[i-3] = *len;
                 }
                 loop_ids[i] = *id;
             } else {
@@ -701,29 +701,9 @@ impl CUDADevice {
 
         // Add indices for global and local loops
         source.push_str(&format!(
-            "  r{} = blockIdx.x;   /* 0..{} */\n",
-            loop_ids[0], global_work_size[0]
-        ));
-        source.push_str(&format!(
-            "  r{} = threadIdx.x;   /* 0..{} */\n",
-            loop_ids[1], local_work_size[0]
-        ));
-        source.push_str(&format!(
-            "  r{} = blockIdx.y;   /* 0..{} */\n",
-            loop_ids[2], global_work_size[1]
-        ));
-        source.push_str(&format!(
-            "  r{} = threadIdx.y;   /* 0..{} */\n",
-            loop_ids[3], local_work_size[1]
-        ));
-        source.push_str(&format!(
-            "  r{} = blockIdx.z;   /* 0..{} */\n",
-            loop_ids[4], global_work_size[2]
-        ));
-        source.push_str(&format!(
-            "  r{} = threadIdx.z;   /* 0..{} */\n",
-            loop_ids[5], local_work_size[2]
-        ));
+            "{indent}r{} = blockIdx.x;  /* 0..{} */\n{indent}r{} = blockIdx.y;  /* 0..{} */\n{indent}r{} = blockIdx.z;  /* 0..{} */\n
+r{} = threadIdx.x;  /* 0..{} */\n{indent}r{} = threadIdx.y;  /* 0..{} */\n{indent}r{} = threadIdx.z;  /* 0..{} */\n", loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0],
+loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
