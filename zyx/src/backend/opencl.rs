@@ -255,7 +255,7 @@ pub(super) fn initialize_device(
             Vec::new()
         }
     };
-    let mut memory_pool_id = 0;
+    let mut memory_pool_id = memory_pools.len() as u32;
     for (platform_id, platform) in platform_ids
         .iter()
         .enumerate()

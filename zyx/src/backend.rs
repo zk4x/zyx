@@ -42,16 +42,17 @@ pub fn initialize_backends(
     device_config: &DeviceConfig,
     memory_pools: &mut Vec<Pool>,
     devices: &mut Vec<Device>,
-    debug_dev: bool,
+    debug_backends: bool,
 ) -> Result<(), BackendError> {
-    let _ = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_dev);
-    let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_dev);
+    let _ = disk::initialize_pool(memory_pools, debug_backends);
+    let _ = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends);
+    let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends);
     //let _ = hip::initialize_device(&device_config.hip, memory_pools, devices, debug_dev);
-    let _ = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_dev);
+    let _ = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends);
     //#[cfg(feature = "vulkan")]
     //let _ = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_dev);
     #[cfg(feature = "wgpu")]
-    let _ = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_dev);
+    let _ = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends);
 
     if devices.is_empty() || memory_pools.is_empty() {
         return Err(BackendError {
@@ -170,6 +171,13 @@ impl MemoryPool {
         }
     }
 
+    pub fn disk_pool(&mut self) -> Option<&mut DiskMemoryPool> {
+        match self {
+            Self::Disk(disk) => Some(disk),
+            _ => None,
+        }
+    }
+
     pub fn free_bytes(&self) -> Dimension {
         match self {
             MemoryPool::Disk(pool) => pool.free_bytes(),
@@ -183,7 +191,7 @@ impl MemoryPool {
 
     pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
         match self {
-            MemoryPool::Disk(pool) => pool.allocate(bytes),
+            MemoryPool::Disk(_) => todo!(),
             MemoryPool::CUDA(pool) => pool.allocate(bytes),
             MemoryPool::OpenCL(pool) => pool.allocate(bytes),
             #[cfg(feature = "wgpu")]
@@ -217,7 +225,7 @@ impl MemoryPool {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {
-            MemoryPool::Disk(pool) => pool.host_to_pool(src, dst, event_wait_list),
+            MemoryPool::Disk(_) => todo!(),
             MemoryPool::CUDA(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.host_to_pool(src, dst, event_wait_list),
             #[cfg(feature = "wgpu")]

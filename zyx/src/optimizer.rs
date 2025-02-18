@@ -94,6 +94,7 @@ impl<'a> Optimizer<'a> {
     fn next(&mut self) {
         // I think tinygrad picks an optimization and then finds the best reshape, then adds another optimization and finds the best reshape and so on
         // First list all possible optimizations
+        let mut possible_optimizations: Vec<Optimization> = Vec::new();
 
         // Then delete those optimizations that were already visited
 

@@ -264,6 +264,36 @@ impl Runtime {
         self.graph.dtype(x)
     }
 
+    #[must_use]
+    pub(super) fn from_disk(&mut self, shape: Vec<Dimension>, dtype: DType, path: impl AsRef<std::path::Path>, offset_bytes: u64) -> Result<TensorId, ZyxError> {
+        let bytes = shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension;
+        self.initialize_devices()?;
+        if bytes == dtype.byte_size() as usize {
+            /*let value = data.read();
+            let value = Constant::from_bytes(value, dtype);
+            if self.constants_len < NUM_CONSTANTS {
+                if !self.constants.contains(&value) {
+                    self.constants[self.constants_len] = value;
+                    self.constants_len += 1;
+                }
+                return Ok(self.graph.push(Node::Const { value }));
+            } else if self.constants.contains(&value) {
+                return Ok(self.graph.push(Node::Const { value }));
+            }*/
+            todo!();
+        }
+        if let Some(disk) = self.pools[0].pool.disk_pool() {
+            let (buffer_id, event) = disk.from_path(path, offset_bytes)?;
+            let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
+            self.pools[0].buffer_map.insert(id, buffer_id);
+            self.pools[0].events.insert(BTreeSet::from([buffer_id]), event);
+            Ok(id)
+        } else {
+            Err(ZyxError::NoBackendAvailable)
+        }
+    }
+
+    #[must_use]
     pub(super) fn variable(
         &mut self,
         shape: Vec<Dimension>,
@@ -289,8 +319,6 @@ impl Runtime {
             }
         }
         self.initialize_devices()?;
-        // TODO rewrite this such that we try to allocate memory pools in fastest device
-        // order and we use first one that does not fail.
         // Put it into memory pool with fastest device out of memory pools with enough free capacity
         let mem_pools: Vec<u32> = self
             .pools
@@ -307,13 +335,16 @@ impl Runtime {
         if mem_pools.is_empty() {
             return Err(ZyxError::AllocationError);
         }
+        println!("Memory pools: {mem_pools:?}");
         // Pick memory pool with fastest device
         let mut memory_pool_id = mem_pools[0];
         let mut max_compute = 0;
         for dev in &self.devices {
-            if dev.compute() > max_compute && mem_pools.contains(&dev.memory_pool_id()) {
+            let mpid = dev.memory_pool_id();
+            println!("Compute: {}, id: {mpid}", dev.compute());
+            if dev.compute() > max_compute && mem_pools.contains(&mpid) {
                 max_compute = dev.compute();
-                memory_pool_id = dev.memory_pool_id();
+                memory_pool_id = mpid;
             }
         }
         let mpid = memory_pool_id as usize;

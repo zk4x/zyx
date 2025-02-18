@@ -19,7 +19,6 @@ use std::ops::{
 };
 use std::path::Path;
 use std::sync::Arc;
-
 use crate::{DebugMask, Map, Set, RT};
 
 pub type TensorId = u32;
@@ -2608,6 +2607,12 @@ impl Tensor {
         todo!()
     }*/
 
+    fn from_disk(shape: Vec<Dimension>, dtype: DType, path: impl AsRef<Path>, offset: u64) -> Result<Tensor, ZyxError> {
+        Ok(Tensor {
+            id: RT.lock().from_disk(shape, dtype, path, offset)?,
+        })
+    }
+
     // io
     /// Load module from path. This function will determine the filetype based on file extension.
     ///
@@ -2619,30 +2624,139 @@ impl Tensor {
         path: impl AsRef<Path>,
     ) -> Result<Module, ZyxError> {
         let e = path.as_ref().extension().and_then(std::ffi::OsStr::to_str).unwrap();
-        match e {
+        let res = match e {
             "safetensors" => Self::load_safetensors(path),
-            "gguf" => Self::load_gguf(path),
+            "gguf" => Ok(Self::load_gguf(path)?.1),
             _ => panic!("Unknown file extension. Zyx currently supports only safetensors format."),
-        }
+        }?;
+        Ok(Module::from_iter(res))
     }
 
     /// Load gguf module from path
-    fn load_gguf<Module: FromIterator<(String, Tensor)>>(
-        _path: impl AsRef<Path>,
-    ) -> Result<Module, ZyxError> {
-        /*let mut container = gguf_rs::get_gguf_container(path.as_ref().to_str().unwrap()).unwrap();
-        let model = container.decode().unwrap();
-        println!("Model Family: {}", model.model_family());
-        println!("Number of Parameters: {}", model.model_parameters());
-        println!("File Type: {}", model.file_type());
-        println!("Number of Tensors: {}", model.num_tensor());*/
-        todo!()
+    /// First returned value is metadata, second returned value are named tensors
+    pub fn load_gguf(path: impl AsRef<Path>) -> Result<(Map<String, GGUFMetadataValue>, Map<String, Tensor>), ZyxError> {
+        use std::io::Read;
+        let mut f = std::fs::File::open(&path)?;
+        let mut magic = [0; 4];
+        f.read_exact(&mut magic)?;
+        if magic != [b'G', b'G', b'U', b'F'] {
+            if magic == [b'F', b'U', b'G', b'G'] {
+                return Err(ZyxError::ParseError("GGUF data seems to be stored in big endian order. Only little endian is supported for GGUF in zyx.".into()));
+            } else {
+                return Err(ZyxError::ParseError(format!("Unknown GGUF magic: {magic:?}. Please check your file.")));
+            }
+        }
+        let mut version = [0; 4];
+        f.read_exact(&mut version)?;
+        //println!("File size is {} bytes", f.metadata()?.len());
+        let mut tensor_count = [0u8; 8];
+        f.read_exact(&mut tensor_count)?;
+        let tensor_count = u64::from_le_bytes(tensor_count);
+        let mut metadata_kv_count = [0u8; 8];
+        f.read_exact(&mut metadata_kv_count)?;
+        let metadata_kv_count = usize::try_from(u64::from_le_bytes(metadata_kv_count)).map_err(|e| {
+            ZyxError::ParseError(format!(
+                "Failed to parse tensor count in GGUF file. {e}"
+            ))
+        })?;
+
+        let mut metadata = Map::default();
+        for _ in 0..metadata_kv_count {
+            // First string key, (len u64, chars), 
+            let mut metadata_key_len = [0; 8];
+            f.read_exact(&mut metadata_key_len)?;
+            let metadata_key_len = u64::from_le_bytes(metadata_key_len);
+            let mut metadata_key = String::with_capacity(usize::try_from(metadata_key_len).unwrap());
+            f.read_exact(unsafe { metadata_key.as_bytes_mut() })?;
+
+            // Then metadata value type.
+            // Then we the value itself.
+            let mut metadata_value_type = [0; 1];
+            f.read_exact(&mut metadata_value_type)?;
+            let metadata_value_type = u8::from_le_bytes(metadata_value_type);
+            let metadata_value = match metadata_value_type {
+                // uint8
+                0 => {
+                    let mut buf = [0; 1];
+                    f.read_exact(&mut buf)?;
+                    let v = u8::from_le_bytes(buf);
+                    GGUFMetadataValue::Uint8(v)
+                }
+                // int8
+                1 => {
+                    let mut buf = [0; 1];
+                    f.read_exact(&mut buf)?;
+                    let v = i8::from_le_bytes(buf);
+                    GGUFMetadataValue::Int8(v)
+                }
+                x => todo!("{x}"),
+            };
+            metadata.insert(metadata_key, metadata_value);
+        }
+
+        // First we read the whole description of tensors
+        let mut tensor_header = Map::default();
+        for _ in 0..tensor_count {
+            // name
+            let mut tensor_name_len = [0; 8];
+            f.read_exact(&mut tensor_name_len)?;
+            let tensor_name_len = u64::from_le_bytes(tensor_name_len);
+            let mut tensor_name = String::with_capacity(usize::try_from(tensor_name_len).unwrap());
+            f.read_exact(unsafe { tensor_name.as_bytes_mut() })?;
+
+            // rank (number of dimensions)
+            let mut rank = [0; 4];
+            f.read_exact(&mut rank)?;
+            let rank = u32::from_le_bytes(rank);
+
+            // shape (NOTE there is no explicit check for endiannes here)
+            let mut shape = vec![0; rank as usize * 8];
+            f.read_exact(shape.as_mut_slice())?;
+            let shape: Vec<Dimension> = shape.chunks_exact(8).map(|x| u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]) as usize).collect();
+
+            // dtype
+            let mut dtype = [0; 4];
+            f.read_exact(&mut dtype)?;
+            let dtype = u32::from_le_bytes(dtype);
+            let dtype = match dtype {
+                0 => DType::F32,
+                1 => DType::F16,
+                24 => DType::I8,
+                25 => DType::I16,
+                26 => DType::I32,
+                27 => DType::I64,
+                28 => DType::F64,
+                x => todo!("GGUF dtype {x} is not supported by zyx yet."),
+            };
+
+            // offset (position in file)
+            let mut offset = [0; 8];
+            f.read_exact(&mut offset)?;
+            let offset = u64::from_le_bytes(offset);
+
+            tensor_header.insert(tensor_name, (shape, dtype, offset));
+        }
+
+        let mut progress_bar = if RT.lock().debug.dev() {
+            println!("Loading tensors from safetensors file");
+            let bar = crate::bar::ProgressBar::new(tensor_count);
+            Some(bar)
+        } else {
+            None
+        };
+
+        let mut tensors = Map::default();
+        for (name, (shape, dtype, offset)) in tensor_header {
+            if let Some(progress_bar) = &mut progress_bar {
+                progress_bar.inc(1, &format!("{name}, {shape:?}, {dtype}"));
+            }
+            tensors.insert(name, Tensor::from_disk(shape, dtype, &path, offset)?);
+        }
+        Ok((metadata, tensors))
     }
 
     /// Load safetensors module from path
-    fn load_safetensors<Module: FromIterator<(String, Tensor)>>(
-        path: impl AsRef<Path>,
-    ) -> Result<Module, ZyxError> {
+    fn load_safetensors(path: impl AsRef<Path>) -> Result<Map<String, Tensor>, ZyxError> {
         fn read_into_tensor<T: Scalar>(
             mmap: Arc<memmap2::Mmap>,
             //f: &mut std::fs::File,
@@ -2851,7 +2965,7 @@ impl Tensor {
                 text.push(x);
             }
         }
-        Ok(Module::from_iter(tensors))
+        Ok(tensors)
     }
 
     /// All tensor elements as contiguous `le_bytes` vector in row major order
@@ -4170,6 +4284,22 @@ macro_rules! impl_trait {
             }
         }
     };
+}
+
+/// GGUF metadata
+pub enum GGUFMetadataValue {
+    Uint8(u8),
+    Int8(i8),
+    Uint16(u16),
+    Int16(i16),
+    Uint32(u32),
+    Int32(i32),
+    Uint64(u64),
+    Int64(i64),
+    Float64(f64),
+    Bool(bool),
+    String(String),
+    Array(Box<[GGUFMetadataValue]>),
 }
 
 impl_trait!(Add for bf16, add);

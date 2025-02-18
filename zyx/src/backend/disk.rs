@@ -1,9 +1,5 @@
 use crate::{runtime::Pool, shape::Dimension, slab::{Id, Slab}};
-use super::{BackendError, Device, ErrorStatus, Event, MemoryPool};
-
-pub struct DiskConfig {
-    enabled: bool,
-}
+use super::{BackendError, Event, MemoryPool};
 
 pub struct DiskMemoryPool {
     free_bytes: Dimension,
@@ -17,20 +13,12 @@ struct DiskBuffer {
 #[derive(Debug, Clone)]
 pub struct DiskEvent {}
 
-pub(super) fn initialize_device(
-    config: &DiskConfig,
+pub(super) fn initialize_pool(
     memory_pools: &mut Vec<Pool>,
-    _devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
-    if !config.enabled {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: "Configured out.".into(),
-        });
-    }
     if debug_dev {
-        println!("Using dummy backend");
+        println!("Using disk backend");
     }
     let pool = MemoryPool::Disk(DiskMemoryPool {
         free_bytes: 1024 * 1024 * 1024 * 1024 * 1024,
@@ -49,17 +37,8 @@ impl DiskMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
-        if self.free_bytes > bytes {
-            self.free_bytes -= bytes;
-        } else {
-            return Err(BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: "OOM".into(),
-            });
-        }
-        todo!();
-        //Ok((id, Event::Disk(DiskEvent { })))
+    pub fn from_path(&self, path: impl AsRef<std::path::Path>, offset_bytes: u64) -> Result<(Id, Event), BackendError> {
+        todo!()
     }
 
     pub fn deallocate(
@@ -71,18 +50,6 @@ impl DiskMemoryPool {
         let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
         self.free_bytes += buffer.bytes;
         Ok(())
-    }
-
-    pub fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: crate::slab::Id,
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
-        let _ = src;
-        let _ = dst;
-        let _ = event_wait_list;
-        Ok(Event::Disk(DiskEvent { }))
     }
 
     pub fn pool_to_host(
