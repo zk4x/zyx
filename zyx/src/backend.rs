@@ -8,6 +8,7 @@
 
 use crate::{ir::IRKernel, runtime::Pool, shape::Dimension, slab::Id, ZyxError};
 use cuda::{CUDADevice, CUDAMemoryPool};
+use disk::DiskMemoryPool;
 use dummy::{DummyDevice, DummyMemoryPool};
 use nanoserde::DeJson;
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
@@ -15,6 +16,7 @@ use opencl::{OpenCLDevice, OpenCLMemoryPool};
 use wgpu::{WGPUDevice, WGPUMemoryPool};
 use std::fmt::Display;
 
+mod disk;
 mod cuda;
 mod dummy;
 mod opencl;
@@ -63,6 +65,7 @@ pub fn initialize_backends(
 #[derive(Debug, Clone)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum Event {
+    Disk(disk::DiskEvent),
     OpenCL(opencl::OpenCLEvent),
     CUDA(cuda::CUDAEvent),
     #[cfg(feature = "wgpu")]
@@ -147,16 +150,18 @@ pub struct DeviceInfo {
 }
 
 pub(super) enum MemoryPool {
+    Dummy(DummyMemoryPool),
+    Disk(DiskMemoryPool),
     CUDA(CUDAMemoryPool),
     OpenCL(OpenCLMemoryPool),
     #[cfg(feature = "wgpu")]
     WGPU(WGPUMemoryPool),
-    Dummy(DummyMemoryPool),
 }
 
 impl MemoryPool {
     pub fn deinitialize(&mut self) -> Result<(), BackendError> {
         match self {
+            MemoryPool::Disk(pool) => pool.deinitialize(),
             MemoryPool::CUDA(pool) => pool.deinitialize(),
             MemoryPool::OpenCL(pool) => pool.deinitialize(),
             #[cfg(feature = "wgpu")]
@@ -167,6 +172,7 @@ impl MemoryPool {
 
     pub fn free_bytes(&self) -> Dimension {
         match self {
+            MemoryPool::Disk(pool) => pool.free_bytes(),
             MemoryPool::CUDA(pool) => pool.free_bytes(),
             MemoryPool::OpenCL(pool) => pool.free_bytes(),
             #[cfg(feature = "wgpu")]
@@ -177,6 +183,7 @@ impl MemoryPool {
 
     pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
         match self {
+            MemoryPool::Disk(pool) => pool.allocate(bytes),
             MemoryPool::CUDA(pool) => pool.allocate(bytes),
             MemoryPool::OpenCL(pool) => pool.allocate(bytes),
             #[cfg(feature = "wgpu")]
@@ -192,6 +199,7 @@ impl MemoryPool {
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
         match self {
+            MemoryPool::Disk(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::CUDA(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.deallocate(buffer_id, event_wait_list),
             #[cfg(feature = "wgpu")]
@@ -209,6 +217,7 @@ impl MemoryPool {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {
+            MemoryPool::Disk(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::CUDA(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.host_to_pool(src, dst, event_wait_list),
             #[cfg(feature = "wgpu")]
@@ -225,6 +234,7 @@ impl MemoryPool {
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
         match self {
+            MemoryPool::Disk(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::CUDA(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.pool_to_host(src, dst, event_wait_list),
             #[cfg(feature = "wgpu")]
@@ -236,6 +246,7 @@ impl MemoryPool {
     // Synchronize events, blocking, drops those events
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         match self {
+            MemoryPool::Disk(pool) => pool.sync_events(events),
             MemoryPool::CUDA(pool) => pool.sync_events(events),
             MemoryPool::OpenCL(pool) => pool.sync_events(events),
             #[cfg(feature = "wgpu")]
@@ -247,6 +258,7 @@ impl MemoryPool {
     // Drop events without synchronization, non-blocking
     pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         match self {
+            MemoryPool::Disk(pool) => pool.release_events(events),
             MemoryPool::CUDA(pool) => pool.release_events(events),
             MemoryPool::OpenCL(pool) => pool.release_events(events),
             #[cfg(feature = "wgpu")]
