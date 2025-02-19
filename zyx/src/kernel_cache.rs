@@ -50,13 +50,6 @@ impl KernelCache {
         search_iters: usize,
         debug: DebugMask,
     ) -> Result<Option<Event>, BackendError> {
-        //println!("Launch kernel with args {args:?}");
-        //let t = crate::Timer::new("optimizer");
-        // TODO if optimizer is not initialized yet, then first load from disk.
-
-        //println!("Looking for kernel:");
-        //kernel.debug();
-
         let dev_info_id = if let Some(&dev_info_id) = self.device_infos.get(device.info()) {
             dev_info_id
         } else {
@@ -65,75 +58,64 @@ impl KernelCache {
             assert!(self.device_infos.insert(device.info().clone(), dev_info_id).is_none());
             dev_info_id
         };
-        if let Some(&kernel_id) = self.kernels.get(&kernel.ops) {
-            // if kernel was already optimized
+
+        // Launch if it is in cache
+        let kernel_id = if let Some(&kernel_id) = self.kernels.get(&kernel.ops) {
             if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
-                // if it was compiled for the given device
-                //println!("Launch cached, program id: {program_id}");
-                //kernel.debug();
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
-                //pool.pool.sync_events(vec![event]).unwrap();
                 return Ok(Some(event));
-            } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
-                let _ = optimization;
-                todo!()
-                // if it was optimized for similar device, but not compiled for the given device,
-                // or if it was in disk cache.
-                /*let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
-                let program_id = device.compile(&ir_kernel, debug.asm())?;
-                let event = device.launch(program_id, pool.pool.as_mut(), args, event_wait_list)?;
-                pool.events.insert(outputs, event);
-                self.programs.insert((kernel_id, dev_info_id), program_id);*/
-            } else {
-                unreachable!();
             }
+            kernel_id
         } else {
-            // if kernel was not optimized yet
             let kernel_id =
                 self.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
-            //println!("Kernel ids: {:?}", self.kernels.keys());
-            //println!("Program ids: {:?}", self.programs.keys());
             assert!(self.kernels.insert(kernel.ops.clone(), kernel_id).is_none());
-            let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
-            if search_iters == 0 {
-                // if optimizations are not requested, use default optimizations
-                let optimization = Optimization::new(kernel, device.info());
-                let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
+            kernel_id
+        };
+
+        if debug.sched() {
+            kernel.debug();
+        }
+
+        let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
+        if search_iters == 0 {
+            // if optimizations are not requested, use default optimizations
+            let optimization = Optimization::new(kernel, device.info());
+            let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
+            let program_id = device.compile(&ir_kernel, debug.asm())?;
+            let nanos = std::time::Instant::now();
+            let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
+            if debug.perf() {
+                pool.pool.sync_events(vec![event])?;
+                let nanos = nanos.elapsed().as_nanos();
+                print_perf(flop, mem_read, mem_write, nanos);
+            } else {
+                return Ok(Some(event));
+            }
+            assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
+        } else {
+            todo!();
+            /*pool.pool.sync_events(event_wait_list).unwrap();
+
+            let mut optimizer = Optimizer::new(kernel, device.info().clone(), search_iters);
+            // optimization => time taken to run that kernel in nanoseconds
+            let visited: Map<Optimization, u128> = Map::with_hasher(Default::default());
+            while let Some(optimization) = optimizer.next(&visited) {
+                let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let nanos = std::time::Instant::now();
-                let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
+                let event = device.launch(program_id, pool.pool.as_mut(), args, Vec::new())?;
+                pool.pool.sync_events(vec![event])?;
+                let nanos = nanos.elapsed().as_nanos();
                 if debug.perf() {
-                    pool.pool.sync_events(vec![event])?;
-                    let nanos = nanos.elapsed().as_nanos();
                     print_perf(flop, mem_read, mem_write, nanos);
-                } else {
-                    return Ok(Some(event));
                 }
-                assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
-            } else {
-                todo!();
-                /*pool.pool.sync_events(event_wait_list).unwrap();
-
-                let mut optimizer = Optimizer::new(kernel, device.info().clone(), search_iters);
-                // optimization => time taken to run that kernel in nanoseconds
-                let visited: Map<Optimization, u128> = Map::with_hasher(Default::default());
-                while let Some(optimization) = optimizer.next(&visited) {
-                    let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
-                    let program_id = device.compile(&ir_kernel, debug.asm())?;
-                    let nanos = std::time::Instant::now();
-                    let event = device.launch(program_id, pool.pool.as_mut(), args, Vec::new())?;
-                    pool.pool.sync_events(vec![event])?;
-                    let nanos = nanos.elapsed().as_nanos();
-                    if debug.perf() {
-                        print_perf(flop, mem_read, mem_write, nanos);
-                    }
-                }
-                // Get the best optimizations and store both the program and the optimization.
-                let best_optimization = visited.iter().min_by_key(|x| x.1).unwrap().0;
-                self.optimizations.insert((kernel_id, dev_info_id), best_optimization.clone());*/
-
-                //assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
             }
+            // Get the best optimizations and store both the program and the optimization.
+            let best_optimization = visited.iter().min_by_key(|x| x.1).unwrap().0;
+            self.optimizations.insert((kernel_id, dev_info_id), best_optimization.clone());*/
+
+            //assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
         }
         Ok(None)
     }

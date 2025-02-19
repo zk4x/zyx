@@ -170,9 +170,7 @@ fn kernelize(
     // Kernels represented by ops
     let mut kernels: Slab<Kernel> = Slab::with_capacity(10);
 
-    if debug.sched() {
-        println!("To schedule: {} tensors, to eval: {to_eval:?}", order.len());
-    }
+    //if debug.sched() { println!("To schedule: {} tensors, to eval: {to_eval:?}", order.len()); }
 
     let mut rcs = if rcs.is_empty() {
         let mut rcs = Map::with_capacity_and_hasher(100, Default::default());

@@ -848,7 +848,7 @@ impl OpenCLDevice {
                 }
                 IROp::Loop { id, len } => {
                     source += &format!(
-                        "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
+                        "{indent}for (r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
                     );
                     indent += "  ";
                 }
