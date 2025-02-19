@@ -1030,7 +1030,7 @@ impl OpenCLDevice {
         Ok(())
     }
 
-    pub fn compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
 }

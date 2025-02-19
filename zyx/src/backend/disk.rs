@@ -1,13 +1,19 @@
+use std::{fs::File, os::unix::fs::FileExt, path::{Path, PathBuf}};
+
 use crate::{runtime::Pool, shape::Dimension, slab::{Id, Slab}};
 use super::{BackendError, Event, MemoryPool};
 
+#[derive(Debug)]
 pub struct DiskMemoryPool {
     free_bytes: Dimension,
     buffers: Slab<DiskBuffer>,
 }
 
+#[derive(Debug)]
 struct DiskBuffer {
     bytes: Dimension,
+    path: PathBuf,
+    offset_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -21,7 +27,7 @@ pub(super) fn initialize_pool(
         println!("Using disk backend");
     }
     let pool = MemoryPool::Disk(DiskMemoryPool {
-        free_bytes: 1024 * 1024 * 1024 * 1024 * 1024,
+        free_bytes: 0, // Non allocatable
         buffers: Slab::new(),
     });
     memory_pools.push(Pool::new(pool));
@@ -37,8 +43,10 @@ impl DiskMemoryPool {
         self.free_bytes
     }
 
-    pub fn from_path(&self, path: impl AsRef<std::path::Path>, offset_bytes: u64) -> Result<(Id, Event), BackendError> {
-        todo!()
+    pub fn from_path(&mut self, bytes: Dimension, path: &Path, offset_bytes: u64) -> Result<Id, BackendError> {
+        let id = self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes });
+        // TODO perhaps add verification that the file exists and it contains enough bytes at given offset
+        Ok(id)
     }
 
     pub fn deallocate(
@@ -58,9 +66,11 @@ impl DiskMemoryPool {
         dst: &mut [u8],
         event_wait_list: Vec<super::Event>,
     ) -> Result<(), BackendError> {
-        let _ = src;
-        let _ = dst;
         let _ = event_wait_list;
+        let buffer = &self.buffers[src];
+        let f = File::open(&buffer.path).unwrap();
+        f.read_exact_at(dst, buffer.offset_bytes).unwrap();
+        //println!("Read from disk: {buffer:?}, data: {:?}", dst[..50]);
         Ok(())
     }
 

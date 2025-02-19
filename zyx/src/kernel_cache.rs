@@ -1,7 +1,7 @@
 use crate::{
     backend::{BackendError, Device, DeviceInfo, Event}, ir::IRKernel, kernel::{Kernel, Op}, optimizer::Optimization, runtime::Pool, slab::Id, DebugMask
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Debug)]
 pub struct KernelCache {
@@ -46,11 +46,10 @@ impl KernelCache {
         device: &mut Device,
         pool: &mut Pool,
         args: &[Id],
-        outputs: BTreeSet<Id>,
         event_wait_list: Vec<Event>,
         search_iters: usize,
         debug: DebugMask,
-    ) -> Result<(), BackendError> {
+    ) -> Result<Option<Event>, BackendError> {
         //println!("Launch kernel with args {args:?}");
         //let t = crate::Timer::new("optimizer");
         // TODO if optimizer is not initialized yet, then first load from disk.
@@ -74,7 +73,7 @@ impl KernelCache {
                 //kernel.debug();
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 //pool.pool.sync_events(vec![event]).unwrap();
-                pool.events.insert(outputs, event);
+                return Ok(Some(event));
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
                 let _ = optimization;
                 todo!()
@@ -108,7 +107,7 @@ impl KernelCache {
                     let nanos = nanos.elapsed().as_nanos();
                     print_perf(flop, mem_read, mem_write, nanos);
                 } else {
-                    pool.events.insert(outputs, event);
+                    return Ok(Some(event));
                 }
                 assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
             } else {
@@ -136,7 +135,7 @@ impl KernelCache {
                 //assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 

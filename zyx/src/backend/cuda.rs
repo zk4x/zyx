@@ -509,7 +509,7 @@ impl CUDADevice {
         self.memory_pool_id
     }
 
-    pub fn compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
 

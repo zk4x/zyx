@@ -53,6 +53,7 @@ pub fn initialize_backends(
     //let _ = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_dev);
     #[cfg(feature = "wgpu")]
     let _ = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends);
+    //println!("Memory pools: {memory_pools:?}");
 
     if devices.is_empty() || memory_pools.is_empty() {
         return Err(BackendError {
@@ -66,6 +67,7 @@ pub fn initialize_backends(
 #[derive(Debug, Clone)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum Event {
+    #[allow(unused)]
     Disk(disk::DiskEvent),
     OpenCL(opencl::OpenCLEvent),
     CUDA(cuda::CUDAEvent),
@@ -150,6 +152,7 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
 }
 
+#[derive(Debug)]
 pub(super) enum MemoryPool {
     Dummy(DummyMemoryPool),
     Disk(DiskMemoryPool),
@@ -315,13 +318,15 @@ impl Device {
         }
     }
 
-    pub fn compute(&self) -> u128 {
+    /// How much compute is available on the device, this should be multiplied by (1 - device_usage),
+    /// so that we spread the laod across all available devices appropriatelly.
+    pub fn free_compute(&self) -> u128 {
         match self {
-            Device::CUDA(dev) => dev.compute(),
-            Device::OpenCL(dev) => dev.compute(),
+            Device::CUDA(dev) => dev.free_compute(),
+            Device::OpenCL(dev) => dev.free_compute(),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.compute(),
-            Device::Dummy(dev) => dev.compute(),
+            Device::Dummy(dev) => dev.free_compute(),
         }
     }
 

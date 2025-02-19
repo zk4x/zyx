@@ -18,7 +18,6 @@ use std::ops::{
     RangeFull, RangeInclusive, RangeTo, RangeToInclusive, Sub,
 };
 use std::path::Path;
-use std::sync::Arc;
 use crate::{DebugMask, Map, Set, RT};
 
 pub type TensorId = u32;
@@ -28,6 +27,13 @@ pub type TensorId = u32;
 /// The `Tensor` struct contains an internal identifier (`id`) that uniquely identifies each tensor.
 /// Thus tensor is only 4 bytes, but it is reference counted, so it is not Copy. Clones are cheap, but require
 /// locking a mutex.
+/// 
+/// ## Initialization
+/// 
+/// Tensors are initialized using Tensor::from.
+/// This works for initialization from arrays, vectors or scalars. Arrays can be nested.
+/// 
+/// For initialization from various random distributions, check respective associated methods.
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Tensor {
     pub(super) id: TensorId,
@@ -2607,9 +2613,10 @@ impl Tensor {
         todo!()
     }*/
 
+    /// Create new tensor from file on disk.
     fn from_disk(shape: Vec<Dimension>, dtype: DType, path: impl AsRef<Path>, offset: u64) -> Result<Tensor, ZyxError> {
         Ok(Tensor {
-            id: RT.lock().from_disk(shape, dtype, path, offset)?,
+            id: RT.lock().from_disk(shape, dtype, path.as_ref(), offset)?,
         })
     }
 
@@ -2757,71 +2764,8 @@ impl Tensor {
 
     /// Load safetensors module from path
     fn load_safetensors(path: impl AsRef<Path>) -> Result<Map<String, Tensor>, ZyxError> {
-        fn read_into_tensor<T: Scalar>(
-            mmap: Arc<memmap2::Mmap>,
-            //f: &mut std::fs::File,
-            mptr: &mut *const u8,
-            shape: &[usize],
-        ) -> Result<Tensor, ZyxError> {
-            struct MmappedTensorData {
-                #[allow(unused)]
-                mmap: Arc<memmap2::Mmap>,
-                dtype: DType,
-                ptr: *const u8,
-                bytes: usize,
-            }
-            unsafe impl Send for MmappedTensorData {}
-            impl TempData for MmappedTensorData {
-                fn bytes(&self) -> usize {
-                    self.bytes
-                }
-
-                fn dtype(&self) -> DType {
-                    self.dtype
-                }
-
-                fn read(&self) -> &[u8] {
-                    unsafe { std::slice::from_raw_parts(self.ptr, self.bytes) }
-                }
-            }
-
-            // TODO later switch to mmapped memory
-            let dtype = T::dtype();
-            let n: usize = shape.iter().product();
-            let n_bytes = n * dtype.byte_size() as Dimension;
-            let x = if cfg!(target_endian = "big") {
-                let buf: &[u8] = unsafe {
-                    std::slice::from_raw_parts(*mptr, n * dtype.byte_size() as Dimension)
-                };
-                //let mut buf = Vec::with_capacity(n_bytes);
-                //unsafe { buf.set_len(n_bytes) }
-                //let mut buf: Vec<u8> = vec![u8::zero(); n_bytes];
-                //f.read_exact(&mut buf)?;
-                let vec: Vec<T> = buf
-                    .chunks_exact(dtype.byte_size() as Dimension)
-                    .map(Scalar::from_le_bytes)
-                    .collect();
-                Tensor::from(vec).reshape(shape)
-            } else {
-                //let mut buf: Vec<T> = Vec::with_capacity(n);
-                //unsafe { buf.set_len(n) }
-                //let mut buf: Vec<T> = vec![T::zero(); n];
-                //f.read_exact(unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), n_bytes) })?;
-
-                //let buf: &[T] = unsafe { std::slice::from_raw_parts((*mptr).cast(), n) };
-                //Tensor::from(buf).reshape(shape)
-
-                let data =
-                    MmappedTensorData { mmap, ptr: *mptr, bytes: n_bytes, dtype: T::dtype() };
-                let id = RT.lock().variable(shape.into(), Box::new(data))?;
-                Ok(Tensor { id })
-            };
-            //println!("Adding {} bytes", n*dtype.byte_size());
-            *mptr = (*mptr).wrapping_add(n_bytes);
-            x
-        }
         use std::io::Read;
-        let mut f = std::fs::File::open(path)?;
+        let mut f = std::fs::File::open(&path)?;
         //println!("File size is {} bytes", f.metadata()?.len());
         let mut header_len = [0u8; 8];
         f.read_exact(&mut header_len)?;
@@ -2851,9 +2795,10 @@ impl Tensor {
         } else {
             None
         };
-        let mmap = Arc::new(unsafe { memmap2::Mmap::map(&f)? });
-        let mut mptr = mmap.as_ptr();
-        mptr = mptr.wrapping_add(8 + header.len());
+        //let mmap = Arc::new(unsafe { memmap2::Mmap::map(&f)? });
+        //let mut mptr = mmap.as_ptr();
+        //mptr = mptr.wrapping_add(8 + header.len());
+        let mut offset = (8 + header.len()) as u64;
         for x in header.chars() {
             // We skip metadata for now
             if metadata && text.starts_with("__metadata__") {
@@ -2909,50 +2854,9 @@ impl Tensor {
                         if let Some(bar) = &mut progress_bar {
                             bar.inc(1, &format!("{label}, {shape:?}, {dtype:?}"));
                         }
-                        tensors.insert(
-                            label.clone(),
-                            match dtype {
-                                DType::BF16 => {
-                                    read_into_tensor::<bf16>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::F16 => {
-                                    read_into_tensor::<f16>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::F32 => {
-                                    read_into_tensor::<f32>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::F64 => {
-                                    read_into_tensor::<f64>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::U8 => {
-                                    read_into_tensor::<u8>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::I8 => {
-                                    read_into_tensor::<i8>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::I16 => {
-                                    read_into_tensor::<i16>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::I32 => {
-                                    read_into_tensor::<i32>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::U16 => {
-                                    read_into_tensor::<u16>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::U32 => {
-                                    read_into_tensor::<u32>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::U64 => {
-                                    read_into_tensor::<u64>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::I64 => {
-                                    read_into_tensor::<i64>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                                DType::Bool => {
-                                    read_into_tensor::<bool>(mmap.clone(), &mut mptr, &shape)?
-                                }
-                            },
-                        );
+                        let tensor = Tensor::from_disk(shape.clone(), dtype, &path, offset)?;
+                        offset += bytes as u64;
+                        tensors.insert(label.clone(), tensor);
                     }
                     i += 1;
                     text.clear();

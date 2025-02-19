@@ -12,6 +12,7 @@ pub struct DummyConfig {
     enabled: bool,
 }
 
+#[derive(Debug)]
 pub struct DummyMemoryPool {
     free_bytes: Dimension,
     buffers: Slab<Dimension>,
@@ -138,7 +139,7 @@ impl DummyDevice {
         0
     }
 
-    pub fn compute(&self) -> u128 {
+    pub fn free_compute(&self) -> u128 {
         self.device_info.compute
     }
 
