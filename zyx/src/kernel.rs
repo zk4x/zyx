@@ -865,6 +865,7 @@ impl Kernel {
         // Send the kernel to kernel cache.
         if let Some(event) = kernel_cache.launch(
             self,
+            dev_id as u32,
             &mut devices[dev_id],
             &mut memory_pools[mpid],
             &args,
