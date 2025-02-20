@@ -2630,6 +2630,7 @@ impl Tensor {
     pub fn load<Module: FromIterator<(String, Tensor)>>(
         path: impl AsRef<Path>,
     ) -> Result<Module, ZyxError> {
+        RT.lock().initialize_devices()?; // So that we load debug mask
         let e = path.as_ref().extension().and_then(std::ffi::OsStr::to_str).unwrap();
         let res = match e {
             "safetensors" => Self::load_safetensors(path),

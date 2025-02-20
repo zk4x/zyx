@@ -17,9 +17,10 @@ impl ProgressBar {
         let n = 100;
         let k = (self.idx * n) / self.count;
         print!(
-            "\r                                                                                                    \r[{}{}] {message}",
-            repeat('#').take(k as usize).collect::<String>(),
-            repeat('-').take((n - k) as usize).collect::<String>(),
+            "\r{}{}] {message}{}",
+            repeat('=').take(k as usize).collect::<String>(),
+            repeat(' ').take((n - k) as usize).collect::<String>(),
+            repeat(' ').take((n) as usize).collect::<String>(),
         );
         if self.idx == self.count {
             println!();

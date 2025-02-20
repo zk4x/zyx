@@ -21,8 +21,6 @@ maintenance = { status = "experimental" }
 libloading = { version = "0.8.5", default-features = false } # ISC
 
 # To be removed
-# Memory mapped loading of tensors from disk
-memmap2 = { version = "0.9.5" }
 # nanoserde is used to read backend config
 nanoserde = { version = "*", default-features = false }
 # xdg is used to read backend config

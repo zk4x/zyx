@@ -90,7 +90,7 @@ static RT: mutex::Mutex<Runtime, 1_000_000_000> = mutex::Mutex::new(Runtime::new
 //static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
 /// Bitflags for debugging
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct DebugMask(u32);
 
 impl DebugMask {

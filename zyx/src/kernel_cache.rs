@@ -2,7 +2,7 @@ use crate::{
     backend::{BackendError, Device, DeviceInfo, Event},
     ir::IRKernel,
     kernel::{Kernel, Op},
-    optimizer::Optimization,
+    optimizer::{Optimization, Optimizer},
     runtime::Pool,
     slab::Id,
     DebugMask,
@@ -90,63 +90,34 @@ impl KernelCache {
             kernel.debug();
         }
 
-        fn benchmark_optimization(
-            kernel: &Kernel,
-            optimization: &Optimization,
-            device: &mut Device,
-            pool: &mut Pool,
-            args: &[Id],
-            event_wait_list: Vec<Event>,
-            debug: DebugMask,
-        ) -> Result<(u32, u128), BackendError> {
-            let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
+        let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
+        if search_iters == 0 {
+            // if optimizations are not requested, use default optimizations
+            let optimization = Optimization::new(kernel, device.info());
+            let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
             let program_id = device.compile(&ir_kernel, debug.asm())?;
             let nanos = std::time::Instant::now();
             let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
             pool.pool.sync_events(vec![event])?;
             let nanos = nanos.elapsed().as_nanos();
-            Ok((program_id, nanos))
-        }
-
-        let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
-        if search_iters == 0 {
-            // if optimizations are not requested, use default optimizations
-            let optimization = Optimization::new(kernel, device.info());
-            let (program_id, nanos) = benchmark_optimization(
-                kernel,
-                &optimization,
-                device,
-                pool,
-                args,
-                event_wait_list,
-                debug,
-            )?;
             assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
             if debug.perf() {
                 print_perf(flop, mem_read, mem_write, nanos);
             }
-            self.optimizations.insert((kernel_id, dev_info_id), optimization);
+            //self.optimizations.insert((kernel_id, dev_info_id), optimization);
         } else {
-            todo!();
-            /*pool.pool.sync_events(event_wait_list).unwrap();
-            let mut optimizer = Optimizer::new(kernel, device.info().clone(), search_iters);
-            // optimization => time taken to run that kernel in nanoseconds
-            let visited: Map<Optimization, u128> = Map::with_hasher(Default::default());
-            while let Some(optimization) = optimizer.next(&visited) {
-                let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
-                let program_id = device.compile(&ir_kernel, debug.asm())?;
-                let nanos = std::time::Instant::now();
-                let event = device.launch(program_id, pool.pool.as_mut(), args, Vec::new())?;
-                pool.pool.sync_events(vec![event])?;
-                let nanos = nanos.elapsed().as_nanos();
+            let rng = crate::rng::Rng::seed_from_u64(3940239);
+            let mut optimizer = Optimizer::new(rng, kernel, device.info());
+            pool.pool.sync_events(event_wait_list)?;
+
+            'a: for _ in 0..search_iters {
+                let optimization = optimizer.next();
+                let Ok(nanos) = optimizer.bench_optimization(&optimization, pool, device, args) else { continue 'a };
                 if debug.perf() {
                     print_perf(flop, mem_read, mem_write, nanos);
                 }
             }
-            // Get the best optimizations and store both the program and the optimization.
-            let best_optimization = visited.iter().min_by_key(|x| x.1).unwrap().0;
-            self.optimizations.insert((kernel_id, dev_info_id), best_optimization.clone());*/
-            //assert!(self.programs.insert((kernel_id, dev_info_id), program_id).is_none());
+            //self.optimizations.insert((kernel_id, dev_info_id), optimization);
         }
         Ok(None)
     }

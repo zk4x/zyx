@@ -1,11 +1,11 @@
 #![allow(unused)]
 
-use crate::{backend::DeviceInfo, kernel::{Kernel, Op}, rng::Rng, shape::Dimension, Set};
+use crate::{backend::{BackendError, Device, DeviceInfo}, ir::IRKernel, kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dimension, slab::Id, DebugMask, Map, Set};
 
 pub(super) struct Optimizer<'a> {
     rng: Rng,
     kernel: &'a Kernel,
-    visited: Set<Optimization>,
+    visited: Map<Optimization, u128>,
     best_node: Optimization,
 }
 
@@ -81,17 +81,17 @@ impl Optimization {
 }
 
 impl<'a> Optimizer<'a> {
-    fn new(rng: Rng, kernel: &'a Kernel, dev_info: &DeviceInfo) -> Self {
+    pub fn new(rng: Rng, kernel: &'a Kernel, dev_info: &DeviceInfo) -> Self {
         Self {
             kernel,
             rng,
-            visited: Set::with_hasher(Default::default()),
+            visited: Map::with_hasher(Default::default()),
             best_node: Optimization::new(kernel, dev_info),
         }
     }
 
     /// Next tries a new optimization given access to the device and memory, so that it can run it.
-    fn next(&mut self) {
+    pub fn next(&mut self) -> Optimization {
         // I think tinygrad picks an optimization and then finds the best reshape, then adds another optimization and finds the best reshape and so on
         // First list all possible optimizations
         let mut possible_optimizations: Vec<Optimization> = Vec::new();
@@ -99,10 +99,16 @@ impl<'a> Optimizer<'a> {
         // Then delete those optimizations that were already visited
 
         // Then randomly pick n optimizations and test every one of those
+        todo!()
     }
 
-    fn bench_optimization(optimization: &[OptOp]) -> u128 {
-        // tests given optimization, returning time taken in nanoseconds
-        0
+    pub fn bench_optimization(&mut self, optimization: &Optimization, pool: &mut Pool, device: &mut Device, args: &[Id]) -> Result<u128, BackendError> {
+        let ir_kernel = IRKernel::new(self.kernel.clone(), optimization, DebugMask(0));
+        let program_id = device.compile(&ir_kernel, false)?;
+        let nanos = std::time::Instant::now();
+        let event = device.launch(program_id, &mut pool.pool, args, vec![])?;
+        pool.pool.sync_events(vec![event])?;
+        let nanos = nanos.elapsed().as_nanos();
+        Ok(nanos)
     }
 }
