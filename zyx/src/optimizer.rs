@@ -1,21 +1,23 @@
 #![allow(unused)]
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::{backend::{BackendError, Device, DeviceInfo}, ir::IRKernel, kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dimension, slab::Id, DebugMask, Map, Set};
 
 pub(super) struct Optimizer<'a> {
     rng: Rng,
     kernel: &'a Kernel,
-    visited: Map<Optimization, u128>,
-    best_node: Optimization,
+    visited: BTreeMap<Optimization, u128>,
+    pub best_node: Optimization,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Optimization {
     pub shape: [Dimension; 9],
-    pub ops: Set<OptOp>,
+    pub opt_ops: BTreeSet<OptOp>,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum OptOp {
     //MergeLoop {},
     SplitLoop {
@@ -76,7 +78,7 @@ impl Optimization {
 
         // Upcast is only possible if last local dimension (lz) is 1
 
-        Optimization { shape: [gx/lx, gy/ly, gz/lz, lx, ly, lz, 1, 1, 1], ops: Set::default() }
+        Optimization { shape: [gx/lx, gy/ly, gz/lz, lx, ly, lz, 1, 1, 1], opt_ops: BTreeSet::new() }
     }
 }
 
@@ -85,21 +87,51 @@ impl<'a> Optimizer<'a> {
         Self {
             kernel,
             rng,
-            visited: Map::with_hasher(Default::default()),
+            visited: BTreeMap::new(),
             best_node: Optimization::new(kernel, dev_info),
         }
     }
 
     /// Next tries a new optimization given access to the device and memory, so that it can run it.
     pub fn next(&mut self) -> Optimization {
-        // I think tinygrad picks an optimization and then finds the best reshape, then adds another optimization and finds the best reshape and so on
-        // First list all possible optimizations
-        let mut possible_optimizations: Vec<Optimization> = Vec::new();
+        // List all possible optimizations
+        let mut possible_optimizations = Vec::new();
+
+        let mut possible_opt_ops: Vec<OptOp> = Vec::new();
+        // Get a list of all inner loops. Everyone of those can be split, upcasted or downcasted (permutation)
+        let mut loop_map: Map<u16, u16> = Map::default();
+        for op in self.kernel.ops.iter().skip_while(|op| matches!(op, Op::Loop { .. })) {
+            if let &Op::Loop { axis, len } = op {
+                let id = axis as u16;
+                let order = *loop_map.entry(id).and_modify(|x| *x += 1).or_insert(0);
+                possible_opt_ops.push(OptOp::DownCastLoop { id, order });
+                // TODO possibly add other splits too
+                if len % 4 == 0 {
+                    possible_opt_ops.push(OptOp::SplitLoop { id, order, len: 4 });
+                }
+            }
+        }
+
+        // Now make a list of possible reshapes, multiply or divide each dimension by 2
+        // This can be done for local and register dimensions, global dimensions will always have to be changed in opposite direction
+        let shape = self.best_node.shape;
+        if shape[0] % 2 == 0 {
+            let mut shape = shape;
+            shape[0] /= 2;
+            shape[4] *= 2;
+            for op in possible_opt_ops {
+                let mut opt_ops = self.best_node.opt_ops.clone();
+                opt_ops.insert(op);
+                possible_optimizations.push(Optimization { shape, opt_ops });
+            }
+        }
 
         // Then delete those optimizations that were already visited
+        possible_optimizations.retain(|optimization| self.visited.contains_key(optimization));
 
-        // Then randomly pick n optimizations and test every one of those
-        todo!()
+        // Then randomly pick an optimization
+        let i: u32 = self.rng.rand();
+        possible_optimizations.swap_remove(i as usize % possible_optimizations.len())
     }
 
     pub fn bench_optimization(&mut self, optimization: &Optimization, pool: &mut Pool, device: &mut Device, args: &[Id]) -> Result<u128, BackendError> {
@@ -109,6 +141,7 @@ impl<'a> Optimizer<'a> {
         let event = device.launch(program_id, &mut pool.pool, args, vec![])?;
         pool.pool.sync_events(vec![event])?;
         let nanos = nanos.elapsed().as_nanos();
+        self.visited.insert(optimization.clone(), nanos);
         Ok(nanos)
     }
 }

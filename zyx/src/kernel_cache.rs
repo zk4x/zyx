@@ -1,11 +1,5 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event},
-    ir::IRKernel,
-    kernel::{Kernel, Op},
-    optimizer::{Optimization, Optimizer},
-    runtime::Pool,
-    slab::Id,
-    DebugMask,
+    backend::{BackendError, Device, DeviceInfo, Event}, bar::ProgressBar, ir::IRKernel, kernel::{Kernel, Op}, optimizer::{Optimization, Optimizer}, runtime::Pool, slab::Id, DebugMask
 };
 use std::collections::BTreeMap;
 
@@ -110,14 +104,22 @@ impl KernelCache {
             let mut optimizer = Optimizer::new(rng, kernel, device.info());
             pool.pool.sync_events(event_wait_list)?;
 
+            let mut progress_bar = if debug.perf() {
+                Some(ProgressBar::new(search_iters as u64))
+            } else {
+                None
+            };
+
             'a: for _ in 0..search_iters {
                 let optimization = optimizer.next();
                 let Ok(nanos) = optimizer.bench_optimization(&optimization, pool, device, args) else { continue 'a };
-                if debug.perf() {
-                    print_perf(flop, mem_read, mem_write, nanos);
+                if let Some(bar) = &mut progress_bar {
+                    //print_perf(flop, mem_read, mem_write, nanos);
+                    bar.inc(1, &format!("{nanos}"));
                 }
             }
-            //self.optimizations.insert((kernel_id, dev_info_id), optimization);
+
+            self.optimizations.insert((kernel_id, dev_info_id), optimizer.best_node);
         }
         Ok(None)
     }

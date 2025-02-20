@@ -131,7 +131,7 @@ impl Rng {
         }
     }
 
-    /*pub(super) fn range<T: Scalar>(&mut self, range: impl RangeBounds<T>) -> T {
+    /*pub(super) fn range<T: Scalar>(&mut self, range: impl std::ops::RangeBounds<T>) -> T {
         match T::dtype() {
             DType::BF16 | DType::F16 | DType::F32 | DType::F64 => {
                 let mut start: f64 = match range.start_bound() {
