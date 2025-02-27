@@ -55,8 +55,10 @@ impl DiskMemoryPool {
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
         let _ = event_wait_list;
-        let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
-        self.free_bytes += buffer.bytes;
+        if self.buffers.contains_key(buffer_id) {
+            let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
+            self.free_bytes += buffer.bytes;
+        }
         Ok(())
     }
 

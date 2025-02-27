@@ -832,9 +832,12 @@ impl Kernel {
                             dst,
                             vec![event],
                         )?;
-                        //panic!();
+                        // We have to sync here, because byte_slice does not exist any long.
+                        // The other solution would be to put this into temp_data.
+                        // But perhaps we should figure some better async.
+                        memory_pools[mpid].pool.sync_events(vec![event])?;
                         memory_pools[mpid].buffer_map.insert(tid, dst);
-                        memory_pools[mpid].events.insert(BTreeSet::from([dst]), event);
+                        //memory_pools[mpid].events.insert(BTreeSet::from([dst]), event);
                     }
                     args.push(memory_pools[mpid].buffer_map[&tid]);
                 }

@@ -527,7 +527,6 @@ impl OpenCLMemoryPool {
             )
         }
         .check(ErrorStatus::MemoryCopyH2P)?;
-        // Immediattely synchronize because we do not know the lifetime of data
         Ok(Event::OpenCL(OpenCLEvent { event }))
     }
 
