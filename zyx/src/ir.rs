@@ -745,7 +745,7 @@ impl IRCompiler {
         }
     }
 
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity, unused)]
     fn loop_unrolling(&mut self) {
         // TODO after unroll of a loop, constant propagate the accumulator
         let mut op_i = self.ops.len();

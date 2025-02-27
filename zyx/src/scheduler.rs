@@ -164,6 +164,7 @@ fn kernelize(
     to_eval: &Set<TensorId>,
     memory_pools: &mut [Pool],
     realized_nodes: &Set<TensorId>,
+    #[allow(unused)]
     debug: DebugMask,
 ) -> Slab<Kernel> {
     // Unary and binary ops do not require duplication of kernels
@@ -215,7 +216,7 @@ fn kernelize(
     }
 
     for &nid in order {
-        if debug.sched() {
+        /*if debug.sched() {
             println!(
                 "ID({nid}): {:?}, sh: {:?}, rcs: {}, num kernels: {}",
                 graph[nid],
@@ -223,7 +224,7 @@ fn kernelize(
                 rcs.get(&nid).copied().unwrap_or(0),
                 kernels.len(),
             );
-        }
+        }*/
 
         // In case of kernels which delete outputs we need to keep reference count
         // and not delete tensors from outputs if rc > 1

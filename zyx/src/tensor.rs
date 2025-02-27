@@ -503,7 +503,7 @@ impl Tensor {
     /// Returns device error if the device failed to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
     pub unsafe fn bitcast(&self, dtype: DType) -> Result<Tensor, ZyxError> {
-        let id = RT.lock().bitcast(self.id, dtype)?;
+        let id = unsafe { RT.lock().bitcast(self.id, dtype)? };
         let x = Tensor { id };
         Ok(x)
     }

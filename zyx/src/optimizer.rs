@@ -7,6 +7,7 @@ use crate::{backend::{BackendError, Device, DeviceInfo}, ir::IRKernel, kernel::{
 pub(super) struct Optimizer<'a> {
     rng: Rng,
     kernel: &'a Kernel,
+    dev_info: DeviceInfo,
     visited: BTreeMap<Optimization, u128>,
     pub best_node: Optimization,
 }
@@ -83,17 +84,18 @@ impl Optimization {
 }
 
 impl<'a> Optimizer<'a> {
-    pub fn new(rng: Rng, kernel: &'a Kernel, dev_info: &DeviceInfo) -> Self {
+    pub fn new(rng: Rng, kernel: &'a Kernel, dev_info: DeviceInfo) -> Self {
         Self {
             kernel,
             rng,
             visited: BTreeMap::new(),
-            best_node: Optimization::new(kernel, dev_info),
+            best_node: Optimization::new(kernel, &dev_info),
+            dev_info,
         }
     }
 
     /// Next tries a new optimization given access to the device and memory, so that it can run it.
-    pub fn next(&mut self) -> Optimization {
+    pub fn next(&mut self) -> Option<Optimization> {
         // List all possible optimizations
         let mut possible_optimizations = Vec::new();
 
@@ -114,29 +116,115 @@ impl<'a> Optimizer<'a> {
 
         // Now make a list of possible reshapes, multiply or divide each dimension by 2
         // This can be done for local and register dimensions, global dimensions will always have to be changed in opposite direction
+
+        // Decrese global work size, increase local work size
         let shape = self.best_node.shape;
-        if shape[0] % 2 == 0 {
-            let mut shape = shape;
-            shape[0] /= 2;
-            shape[4] *= 2;
-            for op in possible_opt_ops {
-                let mut opt_ops = self.best_node.opt_ops.clone();
-                opt_ops.insert(op);
+        for i in 0..3 {
+            if shape[i] % 2 == 0 && shape[i+3] * 2 <= self.dev_info.max_local_work_dims[i] {
+                let mut shape = shape;
+                shape[i] /= 2;
+                shape[i+3] *= 2;
+                for op in &possible_opt_ops {
+                    let mut opt_ops = self.best_node.opt_ops.clone();
+                    opt_ops.insert(op.clone());
+                    possible_optimizations.push(Optimization { shape, opt_ops });
+                }
+            }
+        }
+        // Decrese global work size, increase register work size
+        let shape = self.best_node.shape;
+        for i in 0..3 {
+            if shape[i] % 2 == 0 && shape[i+6] * 2 <= 32 {
+                let mut shape = shape;
+                shape[i] /= 2;
+                shape[i+6] *= 2;
+                for op in &possible_opt_ops {
+                    let mut opt_ops = self.best_node.opt_ops.clone();
+                    opt_ops.insert(op.clone());
+                    possible_optimizations.push(Optimization { shape, opt_ops });
+                }
+            }
+        }
+
+        // Decrese local work size, increase global work size
+        for i in 0..3 {
+            if shape[i+3] % 2 == 0 {
+                let mut shape = shape;
+                shape[i+3] /= 2;
+                shape[i] *= 2;
+                let opt_ops = self.best_node.opt_ops.clone();
+                for op in &possible_opt_ops {
+                    let mut opt_ops = opt_ops.clone();
+                    opt_ops.insert(op.clone());
+                    possible_optimizations.push(Optimization { shape, opt_ops });
+                }
+                possible_optimizations.push(Optimization { shape, opt_ops });
+            }
+        }
+
+        // Decrese local work size, increase register work size
+        for i in 0..3 {
+            if shape[i+3] % 2 == 0 && shape[i+6] * 2 < 32 {
+                let mut shape = shape;
+                shape[i+3] /= 2;
+                shape[i+6] *= 2;
+                let opt_ops = self.best_node.opt_ops.clone();
+                for op in &possible_opt_ops {
+                    let mut opt_ops = opt_ops.clone();
+                    opt_ops.insert(op.clone());
+                    possible_optimizations.push(Optimization { shape, opt_ops });
+                }
+                possible_optimizations.push(Optimization { shape, opt_ops });
+            }
+        }
+
+        // Decrese register work size, increase global work size
+        let shape = self.best_node.shape;
+        for i in 0..3 {
+            if shape[i+6] % 2 == 0 {
+                let mut shape = shape;
+                shape[i+6] /= 2;
+                shape[i] *= 2;
+                for op in &possible_opt_ops {
+                    let mut opt_ops = self.best_node.opt_ops.clone();
+                    opt_ops.insert(op.clone());
+                    possible_optimizations.push(Optimization { shape, opt_ops });
+                }
+            }
+        }
+
+        // Decrese register work size, increase local work size
+        for i in 0..3 {
+            if shape[i+6] % 2 == 0 && shape[i+3] * 2 < self.dev_info.max_local_work_dims[i] {
+                let mut shape = shape;
+                shape[i+6] /= 2;
+                shape[i+3] *= 2;
+                let opt_ops = self.best_node.opt_ops.clone();
+                for op in &possible_opt_ops {
+                    let mut opt_ops = opt_ops.clone();
+                    opt_ops.insert(op.clone());
+                    possible_optimizations.push(Optimization { shape, opt_ops });
+                }
                 possible_optimizations.push(Optimization { shape, opt_ops });
             }
         }
 
         // Then delete those optimizations that were already visited
-        possible_optimizations.retain(|optimization| self.visited.contains_key(optimization));
+        possible_optimizations.retain(|optimization| !self.visited.contains_key(optimization));
+        //println!("possible opts: {possible_optimizations:?}");
+
+        if possible_optimizations.is_empty() {
+            return None;
+        }
 
         // Then randomly pick an optimization
         let i: u32 = self.rng.rand();
-        possible_optimizations.swap_remove(i as usize % possible_optimizations.len())
+        Some(possible_optimizations.swap_remove(i as usize % possible_optimizations.len()))
     }
 
-    pub fn bench_optimization(&mut self, optimization: &Optimization, pool: &mut Pool, device: &mut Device, args: &[Id]) -> Result<u128, BackendError> {
-        let ir_kernel = IRKernel::new(self.kernel.clone(), optimization, DebugMask(0));
-        let program_id = device.compile(&ir_kernel, false)?;
+    pub fn bench_optimization(&mut self, optimization: &Optimization, pool: &mut Pool, device: &mut Device, args: &[Id], debug: DebugMask) -> Result<u128, BackendError> {
+        let ir_kernel = IRKernel::new(self.kernel.clone(), optimization, debug);
+        let program_id = device.compile(&ir_kernel, debug.asm())?;
         let nanos = std::time::Instant::now();
         let event = device.launch(program_id, &mut pool.pool, args, vec![])?;
         pool.pool.sync_events(vec![event])?;

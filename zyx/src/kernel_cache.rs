@@ -96,12 +96,12 @@ impl KernelCache {
             let nanos = nanos.elapsed().as_nanos();
             assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
             if debug.perf() {
-                print_perf(flop, mem_read, mem_write, nanos);
+                println!("{}", get_perf(flop, mem_read, mem_write, nanos));
             }
             //self.optimizations.insert((kernel_id, dev_info_id), optimization);
         } else {
             let rng = crate::rng::Rng::seed_from_u64(3940239);
-            let mut optimizer = Optimizer::new(rng, kernel, device.info());
+            let mut optimizer = Optimizer::new(rng, kernel, device.info().clone());
             pool.pool.sync_events(event_wait_list)?;
 
             let mut progress_bar = if debug.perf() {
@@ -111,11 +111,10 @@ impl KernelCache {
             };
 
             'a: for _ in 0..search_iters {
-                let optimization = optimizer.next();
-                let Ok(nanos) = optimizer.bench_optimization(&optimization, pool, device, args) else { continue 'a };
+                let Some(optimization) = optimizer.next() else { break };
+                let Ok(nanos) = optimizer.bench_optimization(&optimization, pool, device, args, debug) else { continue 'a };
                 if let Some(bar) = &mut progress_bar {
-                    //print_perf(flop, mem_read, mem_write, nanos);
-                    bar.inc(1, &format!("{nanos}"));
+                    bar.inc(1, &get_perf(flop, mem_read, mem_write, nanos));
                 }
             }
 
@@ -215,7 +214,7 @@ impl KernelCache {
 }*/
 
 #[allow(clippy::similar_names)]
-fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
+fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> String {
     const fn value_unit(x: u128) -> (u128, &'static str) {
         match x {
             0..1000 => (x * 100, ""),
@@ -243,7 +242,7 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
     let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
     let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
 
-    println!("        {}.{} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s read, {}.{} {bw_us}B/s write, {}.{} {f_u}FLOP, {}.{} {br_u}B read, {}.{} {bw_u}B write",
+    format!("{}.{} {t_u} ~ {}.{} {f_us}FLOP/s, {}.{} {br_us}B/s r, {}.{} {bw_us}B/s w, {}.{} {f_u}FLOP, {}.{} {br_u}B r, {}.{} {bw_u}B w",
         t/10,
         t%10,
         fs/100,
@@ -258,5 +257,5 @@ fn print_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) {
         br%100,
         bw/100,
         bw%100,
-    );
+    )
 }
