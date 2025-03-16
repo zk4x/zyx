@@ -1,8 +1,5 @@
-#![allow(unused)]
-
 use std::collections::{BTreeMap, BTreeSet};
-
-use crate::{backend::{BackendError, Device, DeviceInfo}, ir::IRKernel, kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dimension, slab::Id, DebugMask, Map, Set};
+use crate::{backend::{BackendError, Device, DeviceInfo}, ir::IRKernel, kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dimension, slab::Id, DebugMask};
 
 pub(super) struct Optimizer<'a> {
     rng: Rng,
@@ -20,9 +17,8 @@ pub(super) struct Optimization {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum OptOp {
-    RegisterAcc {
-        id: u16,
-    },
+    //RegisterAcc { id: u16, },
+    MatmulRegisterTiling,
 }
 
 impl Optimization {
@@ -68,7 +64,10 @@ impl Optimization {
 
         // Upcast is only possible if last local dimension (lz) is 1
 
-        Optimization { shape: [gx/lx, gy/ly, gz/lz, lx, ly, lz, 1, 1, 1], opt_ops: BTreeSet::new() }
+        let mut opt_ops = BTreeSet::new();
+        opt_ops.insert(OptOp::MatmulRegisterTiling);
+        //Optimization { shape: [gx/lx, gy/ly, gz/lz, lx, ly, lz, 1, 1, 1], opt_ops }
+        Optimization { shape: [gx/lx, gy/ly/4, gz/lz/4, lx, ly, lz, 1, 4, 4], opt_ops }
     }
 }
 
@@ -90,7 +89,7 @@ impl<'a> Optimizer<'a> {
 
         let mut possible_opt_ops: Vec<OptOp> = Vec::new();
         // Get a list of all inner loops. Everyone of those can be split, upcasted or downcasted (permutation)
-        let mut loop_map: Map<u16, u16> = Map::default();
+        //let mut loop_map: Map<u16, u16> = Map::default();
         /*for op in self.kernel.ops.iter().skip_while(|op| matches!(op, Op::Loop { .. })) {
             if let &Op::Loop { axis, len } = op {
                 let id = axis as u16;
@@ -102,6 +101,9 @@ impl<'a> Optimizer<'a> {
                 }
             }
         }*/
+
+        // TODO add check if this is matmul kernel
+        possible_opt_ops.push(OptOp::MatmulRegisterTiling);
 
         // Now make a list of possible reshapes, multiply or divide each dimension by 2
         // This can be done for local and register dimensions, global dimensions will always have to be changed in opposite direction

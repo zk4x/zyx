@@ -4,7 +4,7 @@
 
 use super::{kernel::Op, node::ROp};
 use crate::{
-    dtype::Constant, kernel::Kernel, node::{BOp, UOp}, optimizer::Optimization, shape::Dimension, DType, DebugMask, Set
+    dtype::Constant, kernel::Kernel, node::{BOp, UOp}, optimizer::{OptOp, Optimization}, shape::Dimension, DType, DebugMask, Set
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1619,7 +1619,15 @@ impl IRKernel {
         kernel.reshape(&optimization.shape);
         debug_assert_eq!(kernel.shape().len(), 9);
 
-        //kernel.debug();
+        if optimization.opt_ops.contains(&OptOp::MatmulRegisterTiling) {
+            let reduce_register_dim = 4;
+            for (i, op) in kernel.ops[9..].iter().enumerate() {
+                if let Op::Loop { len, .. } = op {
+                    kernel.split_loop(9 + i, &[len/reduce_register_dim, reduce_register_dim]);
+                    break;
+                }
+            }
+        }
 
         // Returned IRKernel
         let mut addressables: Vec<(Scope, DType, usize, bool)> = Vec::new();
@@ -1629,6 +1637,24 @@ impl IRKernel {
         /*if let Some((axis, len)) = optimization.upcast {
             compiler.upcast(axis, len, &mut addressables);
         }*/
+
+        if optimization.opt_ops.contains(&OptOp::MatmulRegisterTiling) {
+            // split reduce loop, we know there is only one reduce loop
+
+            let mut loop_begin = 0;
+            let mut loop_end = 0;
+            for (i, op) in compiler.ops[9..].iter().enumerate() {
+                if let IROp::Loop { .. } = op {
+                    loop_begin = i + 9;
+                }
+                if let IROp::EndLoop { .. } = op {
+                    loop_end = i + 9;
+                    break;
+                }
+            }
+
+            compiler.debug();
+        }
 
         compiler.global_loop_unrolling();
         //compiler.loop_unrolling();
