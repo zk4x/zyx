@@ -14,7 +14,12 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    dtype::Constant, ir::{IRKernel, IROp, Reg, Scope}, node::{BOp, UOp}, shape::Dimension, slab::{Id, Slab}, DType
+    DType,
+    dtype::Constant,
+    ir::{IRKernel, IROp, Reg, Scope},
+    node::{BOp, UOp},
+    shape::Dimension,
+    slab::{Id, Slab},
 };
 
 use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
@@ -22,6 +27,8 @@ use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Po
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
 pub struct CUDAConfig {
+    /// If set to None, then it will automatically use all CUDA devices,
+    /// otherwise it uses only selected devices
     device_ids: Option<Vec<i32>>,
 }
 
@@ -133,12 +140,30 @@ pub(super) fn initialize_device(
     devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
-    let cuda_paths = ["/lib/x86_64-linux-gnu/libcuda.so", "/lib64/libcuda.so"];
+    if let Some(device_ids) = &config.device_ids {
+        if device_ids.is_empty() {
+            if debug_dev {
+                println!("CUDA won't be used, as it was configured out");
+            }
+            return Ok(());
+        }
+    }
+    let cuda_paths = [
+        "/lib/x86_64-linux-gnu/libcuda.so",
+        "/lib64/x86_64-linux-gnu/libcuda.so",
+        "/lib/libcuda.so",
+        "/lib64/libcuda.so",
+        "/usr/lib/libcuda.so",
+        "/usr/lib64/libcuda.so",
+    ];
     let cuda = cuda_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(cuda) = cuda else {
+        if debug_dev {
+            println!("libcuda.so not found");
+        }
         return Err(BackendError {
             status: ErrorStatus::DyLibNotFound,
-            context: "CUDA runtime not found.".into(),
+            context: "CUDA libcuda.so not found.".into(),
         });
     };
 
@@ -191,7 +216,12 @@ pub(super) fn initialize_device(
     let cuEventDestroy = *unsafe { cuda.get(b"cuEventDestroy\0") }.unwrap();
     //let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }.unwrap();
 
-    unsafe { cuInit(0) }.check(ErrorStatus::Initialization)?;
+    if let Err(err) = unsafe { cuInit(0) }.check(ErrorStatus::Initialization) {
+        if debug_dev {
+            println!("CUDA requested, but cuInit failed. {err:?}");
+        }
+        return Err(err);
+    }
     let mut driver_version = 0;
     unsafe { cuDriverGetVersion(&mut driver_version) }.check(ErrorStatus::DeviceQuery)?;
     let mut num_devices = 0;
@@ -216,7 +246,15 @@ pub(super) fn initialize_device(
     let cuda = Arc::new(cuda);
     for dev_id in device_ids {
         let mut device = 0;
-        unsafe { cuDeviceGet(&mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration)?;
+        if let Err(err) =
+            unsafe { cuDeviceGet(&mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration)
+        {
+            if debug_dev {
+                println!("Device with id {dev_id} requested, but could not be enumerated.");
+            }
+            return Err(err);
+        }
+
         let mut device_name = [0; 100];
         let Ok(()) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }
             .check(ErrorStatus::DeviceQuery)
@@ -245,7 +283,11 @@ pub(super) fn initialize_device(
         if let Err(e) =
             unsafe { cuCtxCreate(&mut context, 0, device) }.check(ErrorStatus::Initialization)
         {
-            println!("{e:?}");
+            if debug_dev {
+                println!(
+                    "Device with id {dev_id} requested, but cuda context initialization failed. {e:?}"
+                );
+            }
             continue;
         }
         /*if let Err(e) = unsafe { cuDevicePrimaryCtxRetain(&mut context, device) }.check("Failed to create CUDA context.") {
@@ -254,8 +296,14 @@ pub(super) fn initialize_device(
         }*/
         //println!("Using context {context:?} and device {device:?}");
         let mut stream = ptr::null_mut();
-        let Ok(()) = unsafe { cuStreamCreate(&mut stream, 0) }.check(ErrorStatus::Initialization)
-        else {
+        if let Err(err) =
+            unsafe { cuStreamCreate(&mut stream, 0) }.check(ErrorStatus::Initialization)
+        {
+            if debug_dev {
+                println!(
+                    "Device with id {dev_id} requested, but cuda stream initialization failed. {err:?}"
+                );
+            }
             continue;
         };
         let pool = MemoryPool::CUDA(CUDAMemoryPool {
@@ -282,13 +330,18 @@ pub(super) fn initialize_device(
             //cuCtxSetCurrent,
             //cuCtxDestroy,
         });
-        memory_pools.push(Pool::new(pool)); 
+        memory_pools.push(Pool::new(pool));
         let mut streams = Vec::new();
         for _ in 0..8 {
             let mut stream = ptr::null_mut();
-            let Ok(()) =
+            if let Err(err) =
                 unsafe { cuStreamCreate(&mut stream, 0) }.check(ErrorStatus::Initialization)
-            else {
+            {
+                if debug_dev {
+                    println!(
+                        "Device with id {dev_id} requested, but cuda stream initialization failed. {err:?}"
+                    );
+                }
                 continue;
             };
             streams.push(CUDAStream { stream, load: 0 });
@@ -518,32 +571,41 @@ impl CUDADevice {
         kernel: &crate::ir::IRKernel,
         debug_asm: bool,
     ) -> Result<crate::slab::Id, BackendError> {
-        let (global_work_size, local_work_size, name, ptx_vec) =
-            self.compile_cuda(kernel, debug_asm)?;
-        //self.compile_ptx(kernel, debug_asm)?;
+        let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
 
         let mut module = ptr::null_mut();
-        unsafe {
+        if let Err(err) = unsafe {
             (self.cuModuleLoadDataEx)(
                 &mut module,
-                ptx_vec.as_ptr().cast(),
+                ptx.as_ptr().cast(),
                 0,
                 ptr::null_mut(),
                 ptr::null_mut(),
             )
         }
-        .check(ErrorStatus::KernelCompilation)?;
+        .check(ErrorStatus::KernelCompilation) {
+            if debug_asm {
+                println!("Failed to compile kernel with err: {err:?}");
+            }
+            return Err(err);
+        }
         let mut function: CUfunction = ptr::null_mut();
         // Don't forget that the name is null terminated string
-        unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
-            .check(ErrorStatus::KernelLaunch)?;
+        if let Err(err) = unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
+            .check(ErrorStatus::KernelLaunch) {
+            if debug_asm {
+                println!("Failed to launch kernel with err: {err:?}\n");
+            }
+            return Err(err);
+        }
 
         let program_id = self.programs.push(CUDAProgram {
             //name,
             module,
             function,
-            global_work_size,
-            local_work_size,
+            global_work_size: gws,
+            local_work_size: lws,
         });
         Ok(program_id)
     }
@@ -642,6 +704,7 @@ impl CUDADevice {
         Ok(v)
     }
 
+    #[allow(unused)]
     #[allow(clippy::type_complexity)]
     fn compile_cuda(
         &self,
@@ -660,7 +723,7 @@ impl CUDADevice {
                 if i < 3 {
                     global_work_size[i] = *len;
                 } else {
-                    local_work_size[i-3] = *len;
+                    local_work_size[i - 3] = *len;
                 }
                 loop_ids[i] = *id;
             } else {
@@ -701,8 +764,7 @@ impl CUDADevice {
 
         // Add indices for global and local loops
         source.push_str(&format!(
-            "{indent}r{} = blockIdx.x;  /* 0..{} */\n{indent}r{} = blockIdx.y;  /* 0..{} */\n{indent}r{} = blockIdx.z;  /* 0..{} */\n
-r{} = threadIdx.x;  /* 0..{} */\n{indent}r{} = threadIdx.y;  /* 0..{} */\n{indent}r{} = threadIdx.z;  /* 0..{} */\n", loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0],
+            "{indent}r{} = blockIdx.x;  /* 0..{} */\n{indent}r{} = blockIdx.y;  /* 0..{} */\n{indent}r{} = blockIdx.z;  /* 0..{} */\n  r{} = threadIdx.x;  /* 0..{} */\n{indent}r{} = threadIdx.y;  /* 0..{} */\n{indent}r{} = threadIdx.z;  /* 0..{} */\n", loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0],
 loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
@@ -824,12 +886,15 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
         let cudartc_paths = [
             "/lib/x86_64-linux-gnu/libnvrtc.so",
             "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
+            "/usr/lib64/x86_64-linux/lib/libnvrtc.so",
+            "/usr/lib/libnvrtc.so",
+            "/usr/lib64/libnvrtc.so",
         ];
         let cudartc = cudartc_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
         let Some(cudartc) = cudartc else {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
-                context: "CUDA runtime not found.".into(),
+                context: "CUDA libnvrtc.so not found.".into(),
             });
         };
         let nvrtcCreateProgram: unsafe extern "C" fn(
@@ -856,8 +921,6 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
         let nvrtcDestroyProgram: unsafe extern "C" fn(*mut nvrtcProgram) -> nvrtcResult =
             *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
 
-        //let include_folders = ["/usr/local/cuda-12.6/targets/x86_64-linux/include/\0".as_ptr().cast()];
-        //let include_files = ["cuda_fp16.h\0".as_ptr().cast()];
         let mut program = ptr::null_mut();
         unsafe {
             nvrtcCreateProgram(
@@ -865,8 +928,8 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
                 source.as_ptr().cast(),
                 name.as_ptr().cast(),
                 0,
-                ptr::null_mut(), //include_folders.as_ptr(),
-                ptr::null_mut(), //include_files.as_ptr(),
+                ptr::null_mut(),
+                ptr::null_mut(),
             )
         }
         .check(ErrorStatus::KernelCompilation)?;
@@ -876,7 +939,7 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
         );
         let opts = [
             df.as_ptr().cast(),
-            c"-I/usr/local/cuda-12.6/targets/x86_64-linux/include".as_ptr().cast(),
+            c"-I/usr/local/cuda-12.8/include".as_ptr().cast(),
         ];
         if let Err(e) = unsafe { nvrtcCompileProgram(program, 2, opts.as_ptr()) }
             .check(ErrorStatus::KernelCompilation)
@@ -901,6 +964,195 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
             .check(ErrorStatus::KernelCompilation)?;
         unsafe { nvrtcDestroyProgram(&mut program) }.check(ErrorStatus::KernelCompilation)?;
         Ok((global_work_size, local_work_size, name, ptx_vec))
+    }
+
+    #[allow(unused)]
+    fn compile_ptx(
+        &mut self,
+        kernel: &IRKernel,
+        debug_asm: bool,
+    ) -> Result<([Dimension; 3], [Dimension; 3], String, Vec<u8>), BackendError> {
+        let mut global_work_size = [0; 3];
+        let mut local_work_size = [0; 3];
+        for op in &kernel.ops[..6] {
+            if let IROp::Loop { id, len } = op {
+                if id % 2 == 0 {
+                    global_work_size[*id as usize / 2] = *len;
+                } else {
+                    local_work_size[*id as usize / 2] = *len;
+                }
+            }
+        }
+        let name = format!(
+            "k__{}_{}__{}_{}__{}_{}",
+            global_work_size[0],
+            local_work_size[0],
+            global_work_size[1],
+            local_work_size[1],
+            global_work_size[2],
+            local_work_size[2],
+        );
+
+        let indent = "    ";
+        let mut source = format!(
+            ".version {0}.{1}
+.target sm_{0}{1}
+.address_size 64
+.visible .entry {name}(\n",
+            self.compute_capability[0], self.compute_capability[1]
+        );
+        // Declare global variables
+        for (id, (scope, _, _, _)) in kernel.addressables.iter().enumerate() {
+            if *scope == Scope::Global {
+                source += &format!("{indent}.param    .u64 g{id},\n");
+            }
+        }
+        source.pop();
+        source.pop();
+        source += "\n) {\n";
+
+        // TOOD declare local variables
+
+        // Temporaries
+        source += &format!("{indent}.reg  .pred    p;\n");
+        source += &format!("{indent}.reg  .s64    a0;\n");
+        source += &format!("{indent}.reg  .s64    a1;\n");
+        // Declare register variables
+        for (id, dtype) in kernel.registers.iter().enumerate() {
+            source += &format!("{indent}.reg  .{}    r{id};\n", dtype.ptx());
+        }
+        // Add indices for global and local loops
+        source += &format!("{indent}mov.u32    r0, %ctaid.x;\n");
+        source += &format!("{indent}mov.u32    r1, %tid.x;\n");
+        source += &format!("{indent}mov.u32    r2, %ctaid.y;\n");
+        source += &format!("{indent}mov.u32    r3, %tid.y;\n");
+        source += &format!("{indent}mov.u32    r4, %ctaid.z;\n");
+        source += &format!("{indent}mov.u32    r5, %tid.z;\n");
+
+        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
+            match op {
+                IROp::Set { z, value } => {
+                    let dtype: DType = value.dtype().into();
+                    source += &format!("{indent}mov.{}  r{z}, {};\n", dtype.ptx(), value.cu());
+                }
+                IROp::Load { z, address, offset } => {
+                    let dtype = kernel.registers[z as usize];
+                    // Get address
+                    source += &format!(
+                        "{indent}ld.param.u64    a0, [a{address}+{}];\n",
+                        offset.cu()
+                    );
+                    // Convert address to global
+                    source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
+                    // Load from global to register
+                    source += &format!("{indent}ld.global.{}    r{}, [a1];\n", dtype.ptx(), z);
+                }
+                IROp::Store { address, offset: _, x } => {
+                    let Reg::Var(id) = x else { panic!() };
+                    let dtype = kernel.registers[id as usize];
+                    // Get address
+                    source += &format!("{indent}ld.param.u64    a0, [a{address}];\n");
+                    // Convert address to global
+                    source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
+                    // Load from global to register
+                    source += &format!("{indent}st.global.{}    [a1], {};\n", dtype.ptx(), x.cu());
+                }
+                IROp::Unary { z, x, uop } => {
+                    let dtype = kernel.registers[z as usize];
+                    source += &match uop {
+                        UOp::ReLU => todo!(),
+                        UOp::Neg => {
+                            format!("{indent}neg.{}   r{z}, r{x};\n", dtype.ptx())
+                        }
+                        UOp::Exp2 => format!("{indent}ex2.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
+                        UOp::Log2 => format!("{indent}lg2.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
+                        UOp::Sqrt => {
+                            format!("{indent}sqrt.approx.{}   r{z}, r{x};\n", dtype.ptx(),)
+                        }
+                        UOp::Sin => format!("{indent}sin.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
+                        UOp::Cos => format!("{indent}cos.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
+                        UOp::Not => {
+                            format!("{indent}not.{}   r{z}, r{x};\n", dtype.ptx())
+                        }
+                        UOp::Reciprocal => todo!(),
+                    };
+                }
+                IROp::Binary { z, x, y, bop } => {
+                    let dtype = kernel.registers[z as usize];
+                    //println!("Adding binary {bop:?}");
+                    source += &format!(
+                        "{indent}{}.{}   r{z}, {}, {};\n",
+                        match bop {
+                            BOp::Add => "add",
+                            BOp::Sub => "sub",
+                            BOp::Mul => "mul",
+                            BOp::Div => "div",
+                            BOp::Pow => todo!(),
+                            BOp::Cmplt => "set.lt",
+                            BOp::Cmpgt => "set.gt",
+                            BOp::NotEq => "set.ne",
+                            BOp::Max => todo!(),
+                            BOp::Or => todo!(),
+                            BOp::And => todo!(),
+                            BOp::BitOr => todo!(),
+                            BOp::BitAnd => todo!(),
+                            BOp::BitXor => todo!(),
+                            BOp::Mod => todo!(),
+                            BOp::BitShiftLeft => todo!(),
+                            BOp::BitShiftRight => todo!(),
+                        },
+                        dtype.ptx(),
+                        x.cu(),
+                        y.cu()
+                    );
+                }
+                IROp::MAdd { z, a, b, c } => {
+                    let dtype = kernel.registers[z as usize];
+                    source += &format!(
+                        "{indent}mad.lo.{}    r{z}, {}, {}, {};\n",
+                        dtype.ptx(),
+                        a.cu(),
+                        b.cu(),
+                        c.cu()
+                    );
+                }
+                IROp::Loop { id, .. } => {
+                    source += &format!("LOOP_{id}:\n");
+                }
+                IROp::EndLoop { id, len } => {
+                    // Increment counter
+                    source += &format!("{indent}add.u32    r{id}, r{id}, 1;\n");
+                    // Set condition
+                    source += &format!("{indent}setp.lt.u32    p, r{id}, {len};\n");
+                    // Branch
+                    source += &format!("@p  bra    LOOP_{id};\n");
+                }
+                IROp::Barrier { scope } => {
+                    source += &format!(
+                        "{};\n",
+                        match scope {
+                            Scope::Global => "__threadfence()",
+                            Scope::Local => "__syncthreads()",
+                            Scope::Register => panic!(),
+                        }
+                    );
+                }
+                IROp::SetLocal { .. } => todo!(),
+                IROp::Cast { z, x, dtype } => {
+                    source += &format!(
+                        "{indent}cvt.{}.{}    r{z}, r{x};\n",
+                        dtype.ptx(),
+                        dtype.ptx(),
+                    )
+                }
+            }
+        }
+        // End kernel
+        source += &format!("{indent}ret;\n}}\0");
+        if debug_asm {
+            println!("Compiling kernel {name}, PTX source:\n{source}");
+        }
+        Ok((global_work_size, local_work_size, name, source.into()))
     }
 }
 
@@ -1115,6 +1367,24 @@ impl DType {
             Self::U16 => "unsigned short",
             Self::U32 => "unsigned int",
             Self::U64 => "unsigned long",
+        }
+    }
+
+    pub(super) fn ptx(&self) -> &str {
+        match self {
+            Self::BF16 => todo!("BF16 is not native to OpenCL, workaround is WIP."),
+            Self::F16 => "f16",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+            Self::I8 => "s8",
+            Self::I16 => "s16",
+            Self::I32 => "s32",
+            Self::I64 => "s64",
+            Self::Bool => "bool",
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
         }
     }
 }

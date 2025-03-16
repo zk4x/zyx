@@ -172,12 +172,23 @@ pub(super) fn initialize_device(
     devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
+    if let Some(device_ids) = &config.platform_ids {
+        if device_ids.is_empty() {
+            if debug_dev {
+                println!("OpenCL won't be used, as it was configured out");
+            }
+            return Ok(());
+        }
+    }
     let opencl_paths = [
         "/lib/libOpenCL.so",
         "/lib64/libOpenCL.so",
         "/lib/x86_64-linux-gnu/libOpenCL.so",
+        "/lib64/x86_64-linux-gnu/libOpenCL.so",
         "/usr/lib/libOpenCL.so",
+        "/usr/lib64/libOpenCL.so",
         "/usr/lib/x86_64-linux-gnu/libOpenCL.so",
+        "/usr/lib64/x86_64-linux-gnu/libOpenCL.so",
     ];
     let opencl = opencl_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
