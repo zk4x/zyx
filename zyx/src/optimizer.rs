@@ -20,20 +20,9 @@ pub(super) struct Optimization {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum OptOp {
-    //MergeLoop {},
-    SplitLoop {
+    RegisterAcc {
         id: u16,
-        order: u16,
-        len: Dimension,
     },
-    DownCastLoop {
-        id: u16,
-        order: u16,
-    },
-    /*UpCastLoop {
-        id: u16,
-        order: u16,
-    },*/
 }
 
 impl Optimization {
@@ -102,17 +91,17 @@ impl<'a> Optimizer<'a> {
         let mut possible_opt_ops: Vec<OptOp> = Vec::new();
         // Get a list of all inner loops. Everyone of those can be split, upcasted or downcasted (permutation)
         let mut loop_map: Map<u16, u16> = Map::default();
-        for op in self.kernel.ops.iter().skip_while(|op| matches!(op, Op::Loop { .. })) {
+        /*for op in self.kernel.ops.iter().skip_while(|op| matches!(op, Op::Loop { .. })) {
             if let &Op::Loop { axis, len } = op {
                 let id = axis as u16;
                 let order = *loop_map.entry(id).and_modify(|x| *x += 1).or_insert(0);
-                possible_opt_ops.push(OptOp::DownCastLoop { id, order });
+                //possible_opt_ops.push(OptOp::DownCastLoop { id, order });
                 // TODO possibly add other splits too
                 if len % 4 == 0 {
                     possible_opt_ops.push(OptOp::SplitLoop { id, order, len: 4 });
                 }
             }
-        }
+        }*/
 
         // Now make a list of possible reshapes, multiply or divide each dimension by 2
         // This can be done for local and register dimensions, global dimensions will always have to be changed in opposite direction
@@ -207,6 +196,11 @@ impl<'a> Optimizer<'a> {
                 }
                 possible_optimizations.push(Optimization { shape, opt_ops });
             }
+        }
+
+        println!("\nbest node: {:?}", self.best_node);
+        for opt in &possible_optimizations {
+            println!("{opt:?}");
         }
 
         // Then delete those optimizations that were already visited

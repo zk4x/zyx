@@ -144,34 +144,26 @@ create a github issue.
 
 ## Features
 
-- **`disk_cache`** - enables saving of searched kernels to disk
-- **wgsl** - enables wgsl backend
+- **wgpu** - enables wgpu backend
 
 ## Warning
 
-Zyx breaks many principles of clean code. There are no dyn (virtual tables), no lifetimes on structs, generics
-are only used to make user API nicer, mostly in impl Scalar or impl `IntoShape` form.
-Since zyx is pretty much a compiler, internally most things are done using enums in loose data-oriented way.
-If you dislike ugly code, please do not use zyx.
-
-Zyx uses some unsafe code, mostly due to FFI access. If you find unsafe code offensive, please do not use zyx.
+Zyx uses some unsafe code, due to FFI/hardware access.
 
 Zyx brings it's own runtime. It is a single global struct behind mutex.
-Tensors are indices into graph stored in this runtime. If runtime wasn't
-global variable, all tensors would have to keep lifetime to it. It was
-tried and it poisoned the whole codebase with lifetimes. If you find global variables
-offensive, please do not use zyx.
-
-Zyx uses some code duplication. If you hate code that is not DRY, please do not use zyx.
+Tensors are indices into graph stored in this runtime.
+The equivavlent solution would be to use Arc everywhere,
+without global struct, but it would be slightly slower.
 
 ## Dependencies
 
 Zyx tries to use 0 dependencies, but we are not reinventing the wheel, so we use json for config
-parsing, libloading to dynamically load backend dynamic library files (i.e. libcuda.so), float8 and half
-for numbers and memmap2 for memory mapped disk reads and writes. All dependencies are carefully considered
-and are used only if deemed absolutely necessary, that is only if they do one thing and do it well.
+parsing, libloading to dynamically load backend dynamic library files (i.e. libcuda.so) and half
+for numbers. All dependencies are carefully considered and are used only if deemed absolutely necessary,
+that is only if they do one thing and do it well.
 
 Optional dependencies do not have size limits, so zyx can bring lot of features with those.
+This is namely WGPU, which has 3 million lines of code.
 
 ## Code of conduct
 

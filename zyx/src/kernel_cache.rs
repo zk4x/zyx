@@ -104,6 +104,10 @@ impl KernelCache {
             let mut optimizer = Optimizer::new(rng, kernel, device.info().clone());
             pool.pool.sync_events(event_wait_list)?;
 
+            // Run the default optimization
+            let optimization = optimizer.best_node.clone();
+            let _ = optimizer.bench_optimization(&optimization, pool, device, args, debug)?;
+
             let mut progress_bar = if debug.perf() {
                 Some(ProgressBar::new(search_iters as u64))
             } else {
@@ -123,95 +127,6 @@ impl KernelCache {
         Ok(None)
     }
 }
-
-// Optimize kernel further, search_iters times
-/*fn optimize_kernel(
-    kernel: &Kernel,
-    device: &dyn Device,
-    memory_pool: &dyn MemoryPool,
-    args: &[Id],
-    search_iters: usize,
-    debug: DebugMask,
-) -> (Optimization, u32) {
-    let _ = kernel;
-    let _ = device;
-    let _ = device;
-    let _ = memory_pool;
-    let _ = args;
-    let _ = search_iters;
-    let _ = debug;
-
-    // First ensure exactly 3 global work dimensions
-    //let mgwd = dev_info.max_global_work_dims;
-    /*let dev_info = device.info();
-    let mlws = dev_info.max_local_threads;
-    let mut mlwd = dev_info.max_local_work_dims;
-
-    let mut reshapes = Vec::new();
-    let num_loops = kernel.ops.iter().position(|op| !matches!(op, Op::Loop { .. })).unwrap();
-    debug_assert_ne!(num_loops, 0);
-    let mut gws = [1; 3];
-    if num_loops < 3 {
-        let dims: Vec<usize> =
-            core::iter::repeat(1).take(3 - num_loops).chain([kernel.shape()[0]]).collect();
-        reshapes.push((0, dims));
-        let mut gws_i = 3 - num_loops;
-        for d in &kernel.shape() {
-            gws[gws_i] = *d;
-            gws_i += 1;
-        }
-    } else {
-        let sh = kernel.shape();
-        for (gws_d, d) in gws.iter_mut().zip(sh[sh.len() - 3..].iter()) {
-            *gws_d = *d;
-        }
-        gws[0] = sh[..sh.len() - 2].iter().product();
-    }
-
-    let mrws = dev_info.num_registers;
-    let max_reg_split = 32;
-
-    // Then find the best local work sizes (later including local tiles)
-
-    // Then find the best register work sizes (loop splitting and unrolling)
-
-    // Then possibly apply other optimizations
-
-    //OptimizerProgress::Optimizing { best: Optimization { splits: Vec::new() }, done: BTreeMap::new(), }
-    // list untried optimizations
-    /*let mut opts = kernel.available_optimizations(device.info());
-    debug_assert!(!opts.is_empty());
-    let mut best_exec_time = Duration::MAX;
-    // pick an optimization
-    for _ in 0..search_iters.min(opts.len()) {
-        if let Some(optimization) = opts.pop() {
-            //println!("{optimization:?}");
-            let ir_kernel = IRKernel::new(&kernel.ops, &optimization, debug.ir());
-            let Ok(program_id) = device.compile(&ir_kernel, debug.asm()) else {
-                done.insert(optimization, Duration::MAX);
-                continue;
-            };
-            // Launch kernel and measure it's performance
-            let begin = std::time::Instant::now();
-            let Ok(_) = device.launch(program_id, memory_pool, args, Vec::new(), true) else {
-                done.insert(optimization, Duration::MAX);
-                continue;
-            };
-            let exec_time = begin.elapsed();
-            done.insert(optimization, exec_time);
-            if exec_time < best_exec_time {
-                best_exec_time = exec_time;
-            } else {
-                let _ = device.release(program_id);
-            }
-        }
-    }
-    (
-        done.iter().min_by_key(|x| x.1).unwrap().0.clone(),
-        opts.is_empty(),
-    )*/*/
-    todo!()
-}*/
 
 #[allow(clippy::similar_names)]
 fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> String {

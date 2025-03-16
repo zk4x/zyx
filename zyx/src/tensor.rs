@@ -246,12 +246,12 @@ impl Tensor {
             let mut rt = RT.lock();
             match dtype {
                 DType::BF16 => {
-                    let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? }.cast(DType::BF16))
+                    let data: Vec<bf16> = (0..n).map(|_| rt.rng.rand()).collect();
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::F16 => {
-                    let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? }.cast(DType::F16))
+                    let data: Vec<f16> = (0..n).map(|_| rt.rng.rand()).collect();
+                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
                 }
                 DType::F32 => {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
