@@ -162,7 +162,7 @@ fn kernelize(
     // RCS are only ref counts from parameters, excluding ref counts from being in to_eval
     rcs: Map<TensorId, u32>,
     to_eval: &Set<TensorId>,
-    memory_pools: &mut [Pool],
+    memory_pools: &[Pool],
     realized_nodes: &Set<TensorId>,
     #[allow(unused)]
     debug: DebugMask,

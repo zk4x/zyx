@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use crate::{backend::{BackendError, Device, DeviceInfo}, ir::IRKernel, kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dimension, slab::Id, DebugMask};
 
-pub(super) struct Optimizer<'a> {
+pub struct Optimizer<'a> {
     rng: Rng,
     kernel: &'a Kernel,
     dev_info: DeviceInfo,
@@ -10,7 +10,7 @@ pub(super) struct Optimizer<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Optimization {
+pub struct Optimization {
     pub shape: [Dimension; 9],
     pub opt_ops: BTreeSet<OptOp>,
 }
@@ -64,10 +64,11 @@ impl Optimization {
 
         // Upcast is only possible if last local dimension (lz) is 1
 
-        let mut opt_ops = BTreeSet::new();
-        opt_ops.insert(OptOp::MatmulRegisterTiling);
+        let opt_ops = BTreeSet::new();
+        //opt_ops.insert(OptOp::MatmulRegisterTiling);
         //Optimization { shape: [gx/lx, gy/ly, gz/lz, lx, ly, lz, 1, 1, 1], opt_ops }
-        Optimization { shape: [gx/lx, gy/ly/4, gz/lz/4, lx, ly, lz, 1, 4, 4], opt_ops }
+        //Optimization { shape: [gx/lx, lx, 1, gz/lz, ly, 1, gy/ly/4, lz, 4], opt_ops }
+        Optimization { shape: [gx/lx, lx, 1, gy/ly, ly, 1, gz/lz, lz, 1], opt_ops }
     }
 }
 

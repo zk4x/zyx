@@ -4,7 +4,12 @@
 
 use super::{kernel::Op, node::ROp};
 use crate::{
-    dtype::Constant, kernel::Kernel, node::{BOp, UOp}, optimizer::{OptOp, Optimization}, shape::Dimension, DType, DebugMask, Set
+    DType, DebugMask, Set,
+    dtype::Constant,
+    kernel::Kernel,
+    node::{BOp, UOp},
+    optimizer::{OptOp, Optimization},
+    shape::Dimension,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -101,16 +106,77 @@ impl Display for IROp {
         const YELLOW: &str = "\x1B[33m";
         const RESET: &str = "\x1B[39m";
         match self {
-            IROp::Load { z, address, offset } => f.write_fmt(format_args!("{MAGENTA}load {z} <- *{address} + {offset:?}{RESET}")),
-            IROp::Store { address, offset, x } => f.write_fmt(format_args!("{RED}store *{address} + {offset:?} <- {x:?}{RESET}")),
-            IROp::SetLocal { address, len, value } => f.write_fmt(format_args!("set.local {address}[{len}] <- {value}")),
-            IROp::Set { z, value } => f.write_fmt(format_args!("{YELLOW}set {z} <- {value}{RESET}")),
+            IROp::Load { z, address, offset } => f.write_fmt(format_args!(
+                "{MAGENTA}load r{z} <- p{address}[{}]{RESET}",
+                match offset {
+                    Reg::Var(x) => format!("r{x}"),
+                    Reg::Const(constant) => format!("{constant}"),
+                }
+            )),
+            IROp::Store { address, offset, x } => f.write_fmt(format_args!(
+                "{RED}store p{address}[{}] <- r{x:?}{RESET}",
+                match offset {
+                    Reg::Var(x) => format!("r{x}"),
+                    Reg::Const(constant) => format!("{constant}"),
+                }
+            )),
+            IROp::SetLocal { address, len, value } => {
+                f.write_fmt(format_args!("set.local p{address}{{{len}}} <- {value}"))
+            }
+            IROp::Set { z, value } => {
+                f.write_fmt(format_args!("{YELLOW}set r{z} <- {value}{RESET}"))
+            }
             IROp::Cast { z, x, dtype } => f.write_fmt(format_args!("cast.{dtype} {z} <- {x}")),
             IROp::Unary { z, x, uop } => f.write_fmt(format_args!("u.{uop:?} {z} <- {x}")),
-            IROp::Binary { z, x, y, bop } => f.write_fmt(format_args!("b.{bop:?} {z} <- {x:?}, {y:?}")),
-            IROp::MAdd { z, a, b, c } => f.write_fmt(format_args!("madd {z} <- {a:?}, {b:?}, {c:?}")),
-            IROp::Loop { id, len } => f.write_fmt(format_args!("{GREEN}for {id} in 0..{len}{RESET}")),
-            IROp::EndLoop { id, .. } => f.write_fmt(format_args!("endloop {id}")),
+            IROp::Binary { z, x, y, bop } => f.write_fmt(format_args!(
+                "r{z} <- {} {} {}",
+                match x {
+                    Reg::Var(x) => format!("r{x}"),
+                    Reg::Const(constant) => format!("{constant}"),
+                },
+                match bop {
+                    BOp::Add => "+",
+                    BOp::Sub => "-",
+                    BOp::Mul => "*",
+                    BOp::Div => "/",
+                    BOp::Pow => "^",
+                    BOp::Mod => "%",
+                    BOp::Cmplt => "<",
+                    BOp::Cmpgt => ">",
+                    BOp::Max => "max",
+                    BOp::Or => "||",
+                    BOp::And => "&&",
+                    BOp::BitXor => "xor",
+                    BOp::BitOr => "|",
+                    BOp::BitAnd => "&",
+                    BOp::BitShiftLeft => "<<",
+                    BOp::BitShiftRight => ">>",
+                    BOp::NotEq => "!=",
+                },
+                match y {
+                    Reg::Var(x) => format!("r{x}"),
+                    Reg::Const(constant) => format!("{constant}"),
+                }
+            )),
+            IROp::MAdd { z, a, b, c } => f.write_fmt(format_args!(
+                "r{z} <- {} * {} + {}",
+                match a {
+                    Reg::Var(x) => format!("r{x}"),
+                    Reg::Const(constant) => format!("{constant}"),
+                },
+                match b {
+                    Reg::Var(x) => format!("r{x}"),
+                    Reg::Const(constant) => format!("{constant}"),
+                },
+                match c {
+                    Reg::Var(x) => format!("r{x}"),
+                    Reg::Const(constant) => format!("{constant}"),
+                }
+            )),
+            IROp::Loop { id, len } => {
+                f.write_fmt(format_args!("{GREEN}for r{id} in 0..{len}{RESET}"))
+            }
+            IROp::EndLoop { id, .. } => f.write_fmt(format_args!("endloop r{id}")),
             IROp::Barrier { scope } => f.write_fmt(format_args!("{BLUE}barrier.{scope}{RESET}")),
         }
     }
@@ -560,9 +626,7 @@ impl IRCompiler {
                     used.push(BTreeSet::new());
                     loop_level += 1;
                 }
-                IROp::SetLocal { .. }
-                | IROp::Set { .. }
-                | IROp::Barrier { .. } => {},
+                IROp::SetLocal { .. } | IROp::Set { .. } | IROp::Barrier { .. } => {}
             }
         }
 
@@ -575,7 +639,12 @@ impl IRCompiler {
             match op {
                 IROp::Load { z, address, offset } => {
                     if let Some(&zrc) = ref_counts.get(&z) {
-                        let zr = new_var(&mut registers, &mut reg_rcs, self.load_dtypes[&address], zrc);
+                        let zr = new_var(
+                            &mut registers,
+                            &mut reg_rcs,
+                            self.load_dtypes[&address],
+                            zrc,
+                        );
                         let offset = if let Reg::Var(offset) = offset {
                             let offset = cmp[&offset];
                             reg_rcs[offset as usize] -= 1;
@@ -708,9 +777,11 @@ impl IRCompiler {
                     let &zrc = ref_counts.get(&id).unwrap();
                     let zr = new_var(&mut registers, &mut reg_rcs, DType::U64, zrc);
                     ops.push(IROp::Loop { id: zr, len });
+                    //println!("loop {id}, len {len}, {cmp:?}");
                     cmp.insert(id, zr);
                 }
                 IROp::EndLoop { id, len } => {
+                    //println!("Endloop {id}, len {len}, {cmp:?}");
                     reg_rcs[cmp[&id] as usize] -= 1;
                     ops.push(IROp::EndLoop { id, len });
                 }
@@ -783,7 +854,7 @@ impl IRCompiler {
                     }) {
                         let ta: u16 = ops2.len().try_into().unwrap();
                         for i in (0..len - 1).rev() {
-                            // First we need to increase ids of all variables past this
+                            // First we need to increase ids of all variables past loop declaration
                             for i in op_i..self.ops.len() - 6 {
                                 #[allow(clippy::match_on_vec_items)]
                                 match self.ops[i] {
@@ -868,11 +939,12 @@ impl IRCompiler {
                                     IROp::Barrier { .. } => {}
                                 }
                             }
-
+                            // Copy ops
                             let mut ops3 = ops2.clone();
                             while let Some(op) = ops3.pop() {
                                 self.ops.insert(op_i, op);
                             }
+                            // Replace loop variable
                             self.replace(id, Reg::Const(Constant::U64(i as u64)), op_i);
                         }
                     }
@@ -882,6 +954,8 @@ impl IRCompiler {
                     for end in &mut last_end_loop {
                         *end = usize::try_from(isize::try_from(*end).unwrap() + x).unwrap();
                     }
+                } else {
+                    let _ = last_end_loop.pop().unwrap();
                 }
             }
         }
@@ -1331,7 +1405,7 @@ impl IRCompiler {
                         self.replace(z, Reg::Const(Constant::binary(x, y, bop)), 0);
                     }
                 },
-                IROp::MAdd { .. } => {},
+                IROp::MAdd { .. } => {}
                 IROp::SetLocal { .. }
                 | IROp::Set { .. }
                 | IROp::Cast { .. }
@@ -1477,8 +1551,10 @@ impl IRCompiler {
             let mut changed = false;
             match self.ops[i] {
                 IROp::Load { z, address, offset } => {
-                    for j in i+1..self.ops.len() {
-                        if let IROp::Load { z: z2, address: address2, offset: offset2 } = self.ops[j] {
+                    for j in i + 1..self.ops.len() {
+                        if let IROp::Load { z: z2, address: address2, offset: offset2 } =
+                            self.ops[j]
+                        {
                             if address == address2 && offset == offset2 {
                                 self.replace(z2, Reg::Var(z), j);
                                 self.ops.remove(j);
@@ -1492,7 +1568,7 @@ impl IRCompiler {
                 }
                 IROp::Cast { z, x, dtype } => {
                     if !accs.contains(&z) {
-                        for j in i+1..self.ops.len() {
+                        for j in i + 1..self.ops.len() {
                             if let IROp::Cast { z: z2, x: x2, dtype: dtype2 } = self.ops[j] {
                                 if x == x2 && dtype == dtype2 && !accs.contains(&z2) {
                                     self.replace(z2, Reg::Var(z), j);
@@ -1508,7 +1584,7 @@ impl IRCompiler {
                 }
                 IROp::Unary { z, x, uop } => {
                     if !accs.contains(&z) {
-                        for j in i+1..self.ops.len() {
+                        for j in i + 1..self.ops.len() {
                             if let IROp::Unary { z: z2, x: x2, uop: uop2 } = self.ops[j] {
                                 if x == x2 && uop == uop2 && !accs.contains(&z2) {
                                     self.replace(z2, Reg::Var(z), j);
@@ -1524,7 +1600,7 @@ impl IRCompiler {
                 }
                 IROp::Binary { z, x, y, bop } => {
                     if !accs.contains(&z) {
-                        for j in i+1..self.ops.len() {
+                        for j in i + 1..self.ops.len() {
                             if let IROp::Binary { z: z2, x: x2, y: y2, bop: bop2 } = self.ops[j] {
                                 if x == x2 && y == y2 && bop == bop2 && !accs.contains(&z2) {
                                     if let Reg::Var(x2) = x2 {
@@ -1540,7 +1616,10 @@ impl IRCompiler {
                                         }
                                     }
                                 }
-                            } else if matches!(self.ops[j], IROp::EndLoop { .. } | IROp::Loop { .. }) {
+                            } else if matches!(
+                                self.ops[j],
+                                IROp::EndLoop { .. } | IROp::Loop { .. }
+                            ) {
                                 break;
                             }
                         }
@@ -1548,7 +1627,7 @@ impl IRCompiler {
                 }
                 IROp::MAdd { z, a, b, c } => {
                     if !accs.contains(&z) {
-                        for j in i+1..self.ops.len() {
+                        for j in i + 1..self.ops.len() {
                             if let IROp::MAdd { z: z2, a: a2, b: b2, c: c2 } = self.ops[j] {
                                 if a == a2 && b == b2 && c == c2 && !accs.contains(&z2) {
                                     self.replace(z2, Reg::Var(z), j);
@@ -1613,17 +1692,16 @@ impl IRKernel {
         optimization: &Optimization,
         debug: DebugMask,
     ) -> IRKernel {
-        if debug.sched() {
-            kernel.debug();
-        }
         kernel.reshape(&optimization.shape);
+        kernel.permute(&[0, 3, 6, 1, 4, 7, 2, 5, 8]);
+
         debug_assert_eq!(kernel.shape().len(), 9);
 
         if optimization.opt_ops.contains(&OptOp::MatmulRegisterTiling) {
             let reduce_register_dim = 4;
             for (i, op) in kernel.ops[9..].iter().enumerate() {
                 if let Op::Loop { len, .. } = op {
-                    kernel.split_loop(9 + i, &[len/reduce_register_dim, reduce_register_dim]);
+                    kernel.split_loop(9 + i, &[len / reduce_register_dim, reduce_register_dim]);
                     break;
                 }
             }
@@ -1639,20 +1717,35 @@ impl IRKernel {
         }*/
 
         if optimization.opt_ops.contains(&OptOp::MatmulRegisterTiling) {
-            // split reduce loop, we know there is only one reduce loop
-
-            let mut loop_begin = 0;
-            let mut loop_end = 0;
-            for (i, op) in compiler.ops[9..].iter().enumerate() {
-                if let IROp::Loop { .. } = op {
-                    loop_begin = i + 9;
-                }
-                if let IROp::EndLoop { .. } = op {
-                    loop_end = i + 9;
-                    break;
+            // Move accumulator before register loops, repeat it for all register loops
+            {
+                // Get number of repetitions
+                let num_accs = compiler.ops[6..9]
+                    .iter()
+                    .map(|op| {
+                        let IROp::Loop { len, .. } = op else { unreachable!() };
+                        len
+                    })
+                    .product();
+                let IROp::Set { z, value } = compiler.ops.remove(9) else { unreachable!() };
+                // Insert acc back, before reduce loops
+                for i in 0..num_accs {
+                    compiler.ops.insert(9, IROp::Set { z: z + i as u16, value });
                 }
             }
 
+
+            // Move register loops into reduce loop
+            {
+                // Finish register loops before reduce loop
+
+                // Begin register loops after reduce loop
+
+                // Insert register loops in reduce loop
+
+                // Resulve accumulator accumulation in reduce loop
+            }
+            
             compiler.debug();
         }
 

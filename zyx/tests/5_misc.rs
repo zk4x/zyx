@@ -881,8 +881,8 @@ fn conv1() -> Result<(), ZyxError> {
 
 #[test]
 fn bench_mm1() -> Result<(), ZyxError> {
-    let x = Tensor::rand([1024, 1024], zyx::DType::F16)?;
-    let y = Tensor::rand([1024, 1024], zyx::DType::F16)?;
+    let x = Tensor::rand([1024, 1024], zyx::DType::F32)?;
+    let y = Tensor::rand([1024, 1024], zyx::DType::F32)?;
     let z = x.matmul(y)?;
     Tensor::realize([&z])?;
     Ok(())

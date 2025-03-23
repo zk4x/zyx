@@ -210,7 +210,10 @@ impl Kernel {
     pub(super) fn reshape(&mut self, shape: &[usize]) {
         debug_assert_eq!(
             self.shape().iter().product::<usize>(),
-            shape.iter().product()
+            shape.iter().product(),
+            "Cannot reshape kernel from {:?} to {:?}",
+            self.shape(),
+            shape,
         );
         // If this is just a reshape of kernel with only unary ops and contiguous loads
         // and stores, we can remove old loops and replace them with new loops.
