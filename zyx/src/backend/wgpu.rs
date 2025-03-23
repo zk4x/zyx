@@ -1,18 +1,18 @@
-use std::sync::Arc;
 use nanoserde::DeJson;
 use pollster::FutureExt;
+use std::sync::Arc;
 use wgpu::{
-    util::DownloadBuffer, BufferDescriptor, BufferUsages, Maintain, ShaderModule,
-    ShaderModuleDescriptor, ShaderSource,
+    BufferDescriptor, BufferUsages, Maintain, ShaderModule, ShaderModuleDescriptor, ShaderSource,
+    util::DownloadBuffer,
 };
 
 use crate::{
+    DType,
     dtype::Constant,
     ir::{IRKernel, IROp, Reg, Scope},
     node::{BOp, UOp},
     runtime::Pool,
     slab::{Id, Slab},
-    DType,
 };
 
 use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
@@ -249,7 +249,7 @@ impl WGPUDevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        let mut loops = [0; 6];
+        let mut loop_ids = [0; 6];
         for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let &IROp::Loop { id, len } = op {
                 if i < 3 {
@@ -257,7 +257,7 @@ impl WGPUDevice {
                 } else {
                     local_work_size[i - 3] = len;
                 }
-                loops[i] = id;
+                loop_ids[i] = id;
             } else {
                 unreachable!()
             }
@@ -296,7 +296,9 @@ impl WGPUDevice {
             local_work_size[1],
             local_work_size[2],
         );
-        source += &format!("fn {name}(\n{indent}@builtin(workgroup_id) gid: vec3<u32>,\n{indent}@builtin(local_invocation_id) lid: vec3<u32>\n) {{\n");
+        source += &format!(
+            "fn {name}(\n{indent}@builtin(workgroup_id) gid: vec3<u32>,\n{indent}@builtin(local_invocation_id) lid: vec3<u32>\n) {{\n"
+        );
 
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
@@ -305,9 +307,8 @@ impl WGPUDevice {
 
         // Add indices for global and local loops
         source.push_str(&format!(
-            "{indent}r{} = u64(gid.x);  /* 0..{} */\n{indent}r{} = u64(gid.y);  /* 0..{} */\n{indent}r{} = u64(gid.z);  /* 0..{} */\n
-r{} = u64(lid.x);  /* 0..{} */\n{indent}r{} = u64(gid.y);  /* 0..{} */\n{indent}r{} = u64(gid.z);  /* 0..{} */\n", loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0],
-loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
+            "{indent}r{} = u64(gid.x);  /* 0..{} */\n{indent}r{} = u64(gid.y);  /* 0..{} */\n{indent}r{} = u64(gid.z);  /* 0..{} */\n  r{} = u64(lid.x);  /* 0..{} */\n{indent}r{} = u64(gid.y);  /* 0..{} */\n{indent}r{} = u64(gid.z);  /* 0..{} */\n",
+            loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0], loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
@@ -439,9 +440,9 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
     }
 
     /*fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError> {
-        let mut indent = String::from("  ");
-        let mut source = String::from(
-            "
+    let mut indent = String::from("  ");
+    let mut source = String::from(
+        "
         OpCapability Addresses
         OpCapability Linkage
         OpCapability Kernel
@@ -449,36 +450,36 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
         OpCapability Float16Buffer
         OpMemoryModel Physical32 OpenCL
         ",
-        );
+    );
 
-        let mut global_work_size = [0; 3];
-        let mut local_work_size = [0; 3];
+    let mut global_work_size = [0; 3];
+    let mut local_work_size = [0; 3];
 
-        let mut loops = [0; 6];
-        for (i, op) in kernel.ops[..6].iter().enumerate() {
-            if let &IROp::Loop { id, len } = op {
-                if i % 2 == 0 {
-                    global_work_size[i / 2] = len;
-                } else {
-                    local_work_size[i / 2] = len;
-                }
-                loops[i] = id;
+    let mut loops = [0; 6];
+    for (i, op) in kernel.ops[..6].iter().enumerate() {
+        if let &IROp::Loop { id, len } = op {
+            if i % 2 == 0 {
+                global_work_size[i / 2] = len;
             } else {
-                unreachable!()
+                local_work_size[i / 2] = len;
             }
+            loops[i] = id;
+        } else {
+            unreachable!()
         }
+    }
 
-        // Function declaration and name
-        let name = format!(
-            "k_{}_{}_{}__{}_{}_{}",
-            global_work_size[0],
-            global_work_size[1],
-            global_work_size[2],
-            local_work_size[0],
-            local_work_size[1],
-            local_work_size[2],
-        );
-        source += &format!("
+    // Function declaration and name
+    let name = format!(
+        "k_{}_{}_{}__{}_{}_{}",
+        global_work_size[0],
+        global_work_size[1],
+        global_work_size[2],
+        local_work_size[0],
+        local_work_size[1],
+        local_work_size[2],
+    );
+    source += &format!("
         OpEntryPoint Kernel %35 \"{name}\" %__spirv_BuiltInGlobalInvocationId
         OpExecutionMode %35 ContractionOff
         OpDecorate %__spirv_BuiltInWorkgroupId LinkageAttributes \"__spirv_BuiltInWorkgroupId\" Import
@@ -490,75 +491,75 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
         OpDecorate %{name} LinkageAttributes \"{name}\" Export
         ");
 
-        // Declare global variables
-        let mut read_only_args = Vec::new();
-        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                source += &format!(
-                    "{indent}OpDecorate %g{id} FuncParamAttr Nocapture\n{}{indent}OpDecorate %g{id} Alignment {}\n",
-                    if *read_only { String::new() } else { format!("  OpDecorate g{id}\n") },
-                    dtype.byte_size(),
-                );
-            }
-            read_only_args.push(*read_only);
+    // Declare global variables
+    let mut read_only_args = Vec::new();
+    for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
+        if *scope == Scope::Global {
+            source += &format!(
+                "{indent}OpDecorate %g{id} FuncParamAttr Nocapture\n{}{indent}OpDecorate %g{id} Alignment {}\n",
+                if *read_only { String::new() } else { format!("  OpDecorate g{id}\n") },
+                dtype.byte_size(),
+            );
         }
-        // Declare local variables
-        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Local {
-                todo!()
-            }
+        read_only_args.push(*read_only);
+    }
+    // Declare local variables
+    for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
+        if *scope == Scope::Local {
+            todo!()
         }
+    }
 
-        // Global ids
-        source += &format!(
-            "
+    // Global ids
+    source += &format!(
+        "
         %u_64 = OpTypeInt 64 0
         %u64 = OpConstant %u_64 64
      %v3u64 = OpTypeVector %u_64 3
 %_ptr_Input_v3u64 = OpTypePointer Input %v3u64
        %void = OpTypeVoid\n"
-        );
+    );
 
-        // Declare types of global parameters
-        for (_, (scope, dtype, _, _)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                source += &format!(
-                    "
+    // Declare types of global parameters
+    for (_, (scope, dtype, _, _)) in kernel.addressables.iter().enumerate() {
+        if *scope == Scope::Global {
+            source += &format!(
+                "
                     %{0} = OpTypeFloat {1}
 %_ptr_CrossWorkgroup_{0} = OpTypePointer CrossWorkgroup %{0}
         ",
-                    dtype.spirv(),
-                    dtype.byte_size() * 4
-                );
-            }
+                dtype.spirv(),
+                dtype.byte_size() * 4
+            );
         }
+    }
 
-        source += &format!("%10 = OpTypeFunction %void");
-        for (_, (scope, dtype, _, _)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                source += &format!(" %_ptr_CrossWorkgroup_{}", dtype.spirv());
-            }
+    source += &format!("%10 = OpTypeFunction %void");
+    for (_, (scope, dtype, _, _)) in kernel.addressables.iter().enumerate() {
+        if *scope == Scope::Global {
+            source += &format!(" %_ptr_CrossWorkgroup_{}", dtype.spirv());
         }
+    }
 
-        source += &format!(
-            "
+    source += &format!(
+        "
 %__spirv_BuiltInWorkgroupId = OpVariable %_ptr_Input_v3u64 Input   
 %__spirv_BuiltInLocalInvocationId = OpVariable %_ptr_Input_v3u64 Input
 %{name} = OpFunction %void None %10            
     "
-        );
+    );
 
-        // Registers for function parameter pointers
-        for (id, (scope, dtype, _, _)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                source += &format!(
-                    "%g{id} = OpFunctionParameter %_ptr_CrossWorkgroup_{}\n",
-                    dtype.spirv()
-                );
-            }
+    // Registers for function parameter pointers
+    for (id, (scope, dtype, _, _)) in kernel.addressables.iter().enumerate() {
+        if *scope == Scope::Global {
+            source += &format!(
+                "%g{id} = OpFunctionParameter %_ptr_CrossWorkgroup_{}\n",
+                dtype.spirv()
+            );
         }
+    }
 
-        source += &format!("%entry = OpLabel
+    source += &format!("%entry = OpLabel
         %23 = OpLoad %v3u64 %__spirv_BuiltInWorkgroupId Aligned 16
        %r{} = OpCompositeExtract %u64 %23 0
        %r{} = OpCompositeExtract %u64 %23 1
@@ -573,34 +574,40 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
 
 
 
-        // Declare register variables
-        for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!("{indent}var r{id}: {};\n", dtype.spirv());
-        }
+    // Declare register variables
+    for (id, dtype) in kernel.registers.iter().enumerate() {
+        source += &format!("{indent}var r{id}: {};\n", dtype.spirv());
+    }
 
-        // Add indices for global and local loops
-        source += &format!(
-            "  r{} = u64(gid.x);   /* 0..{} */\n",
+    // Add indices for global and local loops
+    source += &format!(
+        "  r{} = u64(gid.x);   /* 0..{} */
+\n",
             loops[0], global_work_size[0]
         );
         source += &format!(
-            "  r{} = u64(lid.x);   /* 0..{} */\n",
+    "  r{} = u64(lid.x); /* 0..{} */
+\n",
             loops[1], local_work_size[0]
         );
         source += &format!(
-            "  r{} = u64(gid.y);   /* 0..{} */\n",
+    "  r{} = u64(gid.y); /* 0..{} */
+\n",
             loops[2], global_work_size[1]
         );
         source += &format!(
-            "  r{} = u64(lid.y);   /* 0..{} */\n",
+    "  r{} = u64(lid.y); /* 0..{} */
+\n",
             loops[3], local_work_size[1]
         );
         source += &format!(
-            "  r{} = u64(gid.z);   /* 0..{} */\n",
+    "  r{} = u64(gid.z); /* 0..{} */
+\n",
             loops[4], global_work_size[2]
         );
         source += &format!(
-            "  r{} = u64(lid.z);   /* 0..{} */\n",
+    "  r{} = u64(lid.z); /* 0..{} */
+\n",
             loops[5], local_work_size[2]
         );
 
