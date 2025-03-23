@@ -16,6 +16,13 @@ use std::{
     fmt::{Display, Write},
 };
 
+mod const_folding;
+mod elementwise_opts;
+mod licm;
+mod loop_unrolling;
+mod matmul_opts;
+mod reduce_opts;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Reg {
     // This is id into kernel.registers
@@ -90,6 +97,11 @@ pub enum IROp {
         id: u16,
         len: Dimension,
     },
+    // This will also be needed
+    /*If {
+        condition: u16,
+    },
+    EndIf,*/
     // TODO
     Barrier {
         scope: Scope,
@@ -816,318 +828,9 @@ impl IRCompiler {
         }
     }
 
-    #[allow(clippy::cognitive_complexity, unused)]
-    fn loop_unrolling(&mut self) {
-        // TODO after unroll of a loop, constant propagate the accumulator
-        let mut op_i = self.ops.len();
-        let mut last_end_loop = Vec::new();
-        while op_i > 6 {
-            op_i -= 1;
-            if let IROp::EndLoop { .. } = self.ops[op_i] {
-                last_end_loop.push(op_i);
-            }
-            if let IROp::Loop { id, len } = self.ops[op_i] {
-                if len < 32 {
-                    let end = last_end_loop.pop().unwrap();
-                    self.ops.remove(end);
-                    self.ops.remove(op_i);
-                    let ops2: Vec<IROp> = self.ops[op_i..end - 1].into();
-
-                    self.replace(id, Reg::Const(Constant::U64(len as u64 - 1)), op_i);
-                    /*println!();
-                    for op in &ops {
-                        println!("{op:?}");
-                    }
-                    println!();*/
-                    if let Some(tc) = self.ops[op_i..].iter().find_map(|op| match op {
-                        IROp::Set { z, .. }
-                        | IROp::Cast { z, .. }
-                        | IROp::Unary { z, .. }
-                        | IROp::Binary { z, .. }
-                        | IROp::MAdd { z, .. } => Some(z - 1),
-                        IROp::SetLocal { .. }
-                        | IROp::Loop { .. }
-                        | IROp::EndLoop { .. }
-                        | IROp::Barrier { .. }
-                        | IROp::Store { .. }
-                        | IROp::Load { .. } => None,
-                    }) {
-                        let ta: u16 = ops2.len().try_into().unwrap();
-                        for i in (0..len - 1).rev() {
-                            // First we need to increase ids of all variables past loop declaration
-                            for i in op_i..self.ops.len() - 6 {
-                                #[allow(clippy::match_on_vec_items)]
-                                match self.ops[i] {
-                                    IROp::Load { ref mut z, ref mut offset, .. } => {
-                                        if let Reg::Var(offset) = offset {
-                                            if *offset > tc {
-                                                *offset += ta;
-                                            }
-                                        }
-                                        if *z > tc {
-                                            *z += ta;
-                                        }
-                                    }
-                                    IROp::Store { ref mut offset, ref mut x, .. } => {
-                                        if let Reg::Var(offset) = offset {
-                                            if *offset > tc {
-                                                *offset += ta;
-                                            }
-                                        }
-                                        if let Reg::Var(x) = x {
-                                            if *x > tc {
-                                                *x += ta;
-                                            }
-                                        }
-                                    }
-                                    IROp::Set { ref mut z, .. } => {
-                                        if *z > tc {
-                                            *z += ta;
-                                        }
-                                    }
-                                    IROp::Cast { ref mut z, ref mut x, .. }
-                                    | IROp::Unary { ref mut z, ref mut x, .. } => {
-                                        if *x > tc {
-                                            *x += ta;
-                                        }
-                                        if *z > tc {
-                                            *z += ta;
-                                        }
-                                    }
-                                    IROp::Binary { ref mut z, ref mut x, ref mut y, .. } => {
-                                        if let Reg::Var(x) = x {
-                                            if *x > tc {
-                                                *x += ta;
-                                            }
-                                        }
-                                        if let Reg::Var(y) = y {
-                                            if *y > tc {
-                                                *y += ta;
-                                            }
-                                        }
-                                        if *z > tc {
-                                            *z += ta;
-                                        }
-                                    }
-                                    IROp::MAdd { ref mut z, ref mut a, ref mut b, ref mut c } => {
-                                        if let Reg::Var(a) = a {
-                                            if *a > tc {
-                                                *a += ta;
-                                            }
-                                        }
-                                        if let Reg::Var(b) = b {
-                                            if *b > tc {
-                                                *b += ta;
-                                            }
-                                        }
-                                        if let Reg::Var(c) = c {
-                                            if *c > tc {
-                                                *c += ta;
-                                            }
-                                        }
-                                        if *z > tc {
-                                            *z += ta;
-                                        }
-                                    }
-                                    IROp::Loop { ref mut id, .. }
-                                    | IROp::EndLoop { ref mut id, .. } => {
-                                        if *id > tc {
-                                            *id += ta;
-                                        }
-                                    }
-                                    IROp::SetLocal { .. } => {}
-                                    IROp::Barrier { .. } => {}
-                                }
-                            }
-                            // Copy ops
-                            let mut ops3 = ops2.clone();
-                            while let Some(op) = ops3.pop() {
-                                self.ops.insert(op_i, op);
-                            }
-                            // Replace loop variable
-                            self.replace(id, Reg::Const(Constant::U64(i as u64)), op_i);
-                        }
-                    }
-                    let x = isize::try_from(ops2.len()).unwrap()
-                        * (isize::try_from(len).unwrap() - 1)
-                        - 2;
-                    for end in &mut last_end_loop {
-                        *end = usize::try_from(isize::try_from(*end).unwrap() + x).unwrap();
-                    }
-                } else {
-                    let _ = last_end_loop.pop().unwrap();
-                }
-            }
-        }
-    }
-
-    fn global_loop_unrolling(&mut self) {
-        let mut op_i = 6;
-        while op_i > 0 {
-            op_i -= 1;
-            if let IROp::Loop { id, len } = self.ops[op_i] {
-                if len == 1 {
-                    self.replace(id, Reg::Const(Constant::U64(0)), 0);
-                }
-            }
-        }
-    }
-
     const fn common_subexpression_elimination(&self) {
         let _ = self;
         // TODO
-    }
-
-    // Loop invariant code motion and dependence analysis
-    fn loop_invariant_code_motion(&mut self) {
-        // Make a list of accumulators. These cannot be moved.
-        let accs: BTreeSet<u16> = self
-            .ops
-            .iter()
-            .filter_map(|op| {
-                if let IROp::Set { z, .. } = op {
-                    Some(*z)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        // Go from innermost loop to outermost loop. If there are multiple innermost loops,
-        // they can be processed in parallel.
-        for op_id in (6..self.ops.len()).rev() {
-            if let IROp::Loop { id, .. } = self.ops[op_id] {
-                let mut loop_id = op_id;
-                // which variables can't be eliminated
-                let mut dependents: BTreeSet<u16> = BTreeSet::from([id]);
-                let mut inner_loop_counter = 0;
-                let mut op_id = loop_id + 1;
-                'a: loop {
-                    // if operands are not in dependents, move operation before loop
-                    #[allow(clippy::match_on_vec_items)]
-                    let move_possible: bool = match self.ops[op_id] {
-                        IROp::Load { z, offset, .. } => {
-                            if let Reg::Var(offset) = offset {
-                                if dependents.contains(&offset) {
-                                    dependents.insert(z);
-                                    false
-                                } else {
-                                    true
-                                }
-                            } else {
-                                true
-                            }
-                        }
-                        IROp::Store { offset, x, .. } => {
-                            let a = if let Reg::Var(offset) = offset {
-                                !dependents.contains(&offset)
-                            } else {
-                                true
-                            };
-                            let b = if let Reg::Var(x) = x {
-                                !dependents.contains(&x)
-                            } else {
-                                true
-                            };
-                            a && b
-                        }
-                        IROp::SetLocal { .. } => false,
-                        IROp::Set { z, .. } => {
-                            dependents.insert(z);
-                            false
-                        }
-                        IROp::Barrier { .. } => false,
-                        IROp::Cast { z, x, .. } | IROp::Unary { z, x, .. } => {
-                            if dependents.contains(&x) {
-                                dependents.insert(z);
-                                false
-                            } else {
-                                true
-                            }
-                        }
-                        IROp::Binary { z, x, y, .. } => {
-                            let a = if let Reg::Var(x) = x {
-                                if dependents.contains(&x) {
-                                    dependents.insert(z);
-                                    false
-                                } else {
-                                    true
-                                }
-                            } else {
-                                true
-                            };
-                            let b = if let Reg::Var(y) = y {
-                                if dependents.contains(&y) {
-                                    dependents.insert(z);
-                                    false
-                                } else {
-                                    true
-                                }
-                            } else {
-                                true
-                            };
-                            let c = !accs.contains(&z);
-                            a && b && c
-                        }
-                        IROp::MAdd { z, a, b, c } => {
-                            let a = if let Reg::Var(x) = a {
-                                if dependents.contains(&x) {
-                                    dependents.insert(z);
-                                    false
-                                } else {
-                                    true
-                                }
-                            } else {
-                                true
-                            };
-                            let b = if let Reg::Var(x) = b {
-                                if dependents.contains(&x) {
-                                    dependents.insert(z);
-                                    false
-                                } else {
-                                    true
-                                }
-                            } else {
-                                true
-                            };
-                            let c = if let Reg::Var(x) = c {
-                                if dependents.contains(&x) {
-                                    dependents.insert(z);
-                                    false
-                                } else {
-                                    true
-                                }
-                            } else {
-                                true
-                            };
-                            let z = !accs.contains(&z);
-                            a && b && c && z
-                        }
-                        IROp::Loop { .. } => {
-                            inner_loop_counter += 1;
-                            // This is a bit more complicated. We have to check all values
-                            // in this loop block and move the loop as a whole.
-                            // This is however rarely needed due to way we construct loops,
-                            // so we do not need to hurry implementing this.
-                            false
-                        }
-                        IROp::EndLoop { .. } => {
-                            if inner_loop_counter == 0 {
-                                break 'a;
-                            }
-                            inner_loop_counter -= 1;
-                            false
-                        }
-                    };
-                    //println!("Move possible: {move_possible}");
-                    if move_possible && inner_loop_counter == 0 {
-                        let op = self.ops.remove(op_id);
-                        self.ops.insert(loop_id, op);
-                        loop_id += 1;
-                    }
-                    op_id += 1;
-                }
-            }
-        }
     }
 
     // Replace all occurences of z with register x
@@ -1194,229 +897,6 @@ impl IRCompiler {
                 | IROp::EndLoop { .. }
                 | IROp::Barrier { .. } => {}
             }
-        }
-    }
-
-    /// This includes elimination of useless ops, i.e. y = x*1
-    /// and includes peephole optimizations
-    #[allow(clippy::match_on_vec_items)]
-    #[allow(clippy::single_match)]
-    fn constant_folding_and_propagation(&mut self) {
-        let mut i = 0;
-        while i < self.ops.len() {
-            #[allow(clippy::match_same_arms)]
-            match self.ops[i] {
-                IROp::Binary { z, x, y, bop } => match (x, y) {
-                    (Reg::Var(_), Reg::Var(_)) => {}
-                    (Reg::Var(xv), Reg::Const(yv)) => {
-                        if yv.is_zero() {
-                            match bop {
-                                BOp::Mul | BOp::And | BOp::BitAnd => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Const(yv), 0);
-                                }
-                                BOp::Div | BOp::Mod => panic!("Division by zero constant"),
-                                BOp::Pow | BOp::Or => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Const(yv.dtype().one_constant()), 0);
-                                }
-                                BOp::Add | BOp::Sub | BOp::BitXor | BOp::BitOr => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Var(xv), 0);
-                                }
-                                BOp::Max => self.ops[i] = IROp::Unary { z, x: xv, uop: UOp::ReLU },
-                                BOp::NotEq
-                                | BOp::Cmpgt
-                                | BOp::Cmplt
-                                | BOp::BitShiftLeft
-                                | BOp::BitShiftRight => {}
-                            }
-                        } else if yv.is_one() {
-                            match bop {
-                                BOp::Mul | BOp::Div | BOp::Pow => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Var(xv), 0);
-                                }
-                                BOp::Mod => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Const(yv.dtype().zero_constant()), 0);
-                                }
-                                BOp::BitOr => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Const(yv), 0);
-                                }
-                                BOp::BitXor
-                                | BOp::BitAnd
-                                | BOp::Cmplt
-                                | BOp::And
-                                | BOp::Or
-                                | BOp::Cmpgt
-                                | BOp::Max
-                                | BOp::Add
-                                | BOp::Sub
-                                | BOp::NotEq
-                                | BOp::BitShiftLeft
-                                | BOp::BitShiftRight => {}
-                            }
-                        } else if yv.is_two() {
-                            match bop {
-                                BOp::Mul => {
-                                    if yv.dtype().is_shiftable() {
-                                        self.ops[i] = IROp::Binary {
-                                            z,
-                                            x: Reg::Var(xv),
-                                            y: Reg::Const(yv.dtype().one_constant()),
-                                            bop: BOp::BitShiftLeft,
-                                        };
-                                    }
-                                }
-                                BOp::Div => {
-                                    if yv.dtype().is_shiftable() {
-                                        self.ops[i] = IROp::Binary {
-                                            z,
-                                            x: Reg::Var(xv),
-                                            y: Reg::Const(yv.dtype().one_constant()),
-                                            bop: BOp::BitShiftRight,
-                                        };
-                                    }
-                                }
-                                BOp::Pow => {
-                                    self.ops[i] = IROp::Binary {
-                                        z,
-                                        x: Reg::Var(xv),
-                                        y: Reg::Var(xv),
-                                        bop: BOp::Mul,
-                                    };
-                                }
-                                BOp::Mod => {
-                                    if yv.dtype().is_shiftable() {
-                                        self.ops[i] = IROp::Binary {
-                                            z,
-                                            x: Reg::Var(xv),
-                                            y: Reg::Const(yv.dtype().one_constant()),
-                                            bop: BOp::BitAnd,
-                                        };
-                                    }
-                                }
-                                BOp::Add => {}
-                                BOp::Sub => {}
-                                BOp::Cmplt => {}
-                                BOp::Cmpgt => {}
-                                BOp::Max => todo!(),
-                                BOp::Or => todo!(),
-                                BOp::And => todo!(),
-                                BOp::BitXor => todo!(),
-                                BOp::BitOr => todo!(),
-                                BOp::BitAnd => todo!(),
-                                BOp::NotEq => todo!(),
-                                BOp::BitShiftLeft => {}
-                                BOp::BitShiftRight => {}
-                            }
-                        }
-                    }
-                    (Reg::Const(xv), Reg::Var(yv)) => {
-                        if xv.is_zero() {
-                            match bop {
-                                BOp::Add => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Var(yv), 0);
-                                }
-                                BOp::Sub => self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::Neg },
-                                BOp::Mul | BOp::Div | BOp::Pow | BOp::Mod | BOp::And => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Const(xv), 0);
-                                }
-                                BOp::Cmplt => {}
-                                BOp::Cmpgt => {}
-                                BOp::Max => self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::ReLU },
-                                BOp::Or => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Var(yv), 0);
-                                }
-                                BOp::BitXor => todo!(),
-                                BOp::BitOr => todo!(),
-                                BOp::BitAnd => todo!(),
-                                BOp::NotEq => todo!(),
-                                BOp::BitShiftLeft => todo!(),
-                                BOp::BitShiftRight => todo!(),
-                            }
-                        } else if xv.is_one() {
-                            match bop {
-                                BOp::Add => {}
-                                BOp::Sub => {}
-                                BOp::Mul => {
-                                    self.ops.remove(i);
-                                    i -= 1;
-                                    self.replace(z, Reg::Var(yv), 0);
-                                }
-                                BOp::Div => {
-                                    self.ops[i] = IROp::Unary { z, x: yv, uop: UOp::Reciprocal }
-                                }
-                                BOp::Pow => todo!(),
-                                BOp::Mod => todo!(),
-                                BOp::Cmplt => todo!(),
-                                BOp::Cmpgt => todo!(),
-                                BOp::Max => todo!(),
-                                BOp::Or => todo!(),
-                                BOp::And => todo!(),
-                                BOp::BitXor => todo!(),
-                                BOp::BitOr => todo!(),
-                                BOp::BitAnd => todo!(),
-                                BOp::NotEq => todo!(),
-                                BOp::BitShiftLeft => todo!(),
-                                BOp::BitShiftRight => todo!(),
-                            }
-                        } else if xv.is_two() {
-                            match bop {
-                                BOp::Add => {}
-                                BOp::Sub => todo!(),
-                                BOp::Mul => {
-                                    self.ops[i] = IROp::Binary { z, x: y, y, bop: BOp::Add }
-                                }
-                                BOp::Div => todo!(),
-                                BOp::Pow => todo!(),
-                                BOp::Mod => todo!(),
-                                BOp::Cmplt => todo!(),
-                                BOp::Cmpgt => todo!(),
-                                BOp::Max => todo!(),
-                                BOp::Or => todo!(),
-                                BOp::And => todo!(),
-                                BOp::BitXor => todo!(),
-                                BOp::BitOr => todo!(),
-                                BOp::BitAnd => todo!(),
-                                BOp::BitShiftLeft => todo!(),
-                                BOp::BitShiftRight => todo!(),
-                                BOp::NotEq => todo!(),
-                            }
-                        }
-                    }
-                    (Reg::Const(x), Reg::Const(y)) => {
-                        self.ops.remove(i);
-                        i -= 1;
-                        self.replace(z, Reg::Const(Constant::binary(x, y, bop)), 0);
-                    }
-                },
-                IROp::MAdd { .. } => {}
-                IROp::SetLocal { .. }
-                | IROp::Set { .. }
-                | IROp::Cast { .. }
-                | IROp::Unary { .. }
-                | IROp::Loop { .. }
-                | IROp::EndLoop { .. }
-                | IROp::Load { .. }
-                | IROp::Store { .. }
-                | IROp::Barrier { .. } => {}
-            }
-            i += 1;
         }
     }
 
@@ -1654,16 +1134,6 @@ impl IRCompiler {
             }
         }
     }
-
-    #[allow(unused)]
-    fn upcast_loop(&mut self, loop_id: u16, loop_no: u16) {
-        // move this loop up, before the previous loop
-    }
-
-    #[allow(unused)]
-    fn downcast_loop(&mut self) {
-        // move this loop down, after the following loop
-    }
 }
 
 fn new_var(
@@ -1707,50 +1177,17 @@ impl IRKernel {
             }
         }
 
-        // Returned IRKernel
         let mut addressables: Vec<(Scope, DType, usize, bool)> = Vec::new();
-
         let mut compiler = IRCompiler::vops_to_ssa_ir(&kernel.ops, &mut addressables);
-        // Optimizations
-        /*if let Some((axis, len)) = optimization.upcast {
-            compiler.upcast(axis, len, &mut addressables);
-        }*/
 
-        if optimization.opt_ops.contains(&OptOp::MatmulRegisterTiling) {
-            // Move accumulator before register loops, repeat it for all register loops
-            {
-                // Get number of repetitions
-                let num_accs = compiler.ops[6..9]
-                    .iter()
-                    .map(|op| {
-                        let IROp::Loop { len, .. } = op else { unreachable!() };
-                        len
-                    })
-                    .product();
-                let IROp::Set { z, value } = compiler.ops.remove(9) else { unreachable!() };
-                // Insert acc back, before reduce loops
-                for i in 0..num_accs {
-                    compiler.ops.insert(9, IROp::Set { z: z + i as u16, value });
-                }
+        for opt_op in &optimization.opt_ops {
+            match opt_op {
+                OptOp::MatmulRegisterTiling => compiler.matmul_register_tiling(),
             }
-
-
-            // Move register loops into reduce loop
-            {
-                // Finish register loops before reduce loop
-
-                // Begin register loops after reduce loop
-
-                // Insert register loops in reduce loop
-
-                // Resulve accumulator accumulation in reduce loop
-            }
-            
-            compiler.debug();
         }
 
         compiler.global_loop_unrolling();
-        //compiler.loop_unrolling();
+        compiler.loop_unrolling();
 
         let mut old_compiler = compiler.clone();
         loop {
