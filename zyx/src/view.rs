@@ -1,7 +1,11 @@
 //! View handles movement operations.
 
 use super::ir::{IRCompiler, IROp, Reg};
-use crate::{dtype::Constant, shape::{Axis, Dimension}, DType};
+use crate::{
+    DType,
+    dtype::Constant,
+    shape::{Axis, Dimension},
+};
 use std::{fmt::Display, ops::Range};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -11,8 +15,8 @@ pub struct View(Vec<Vec<RDim>>);
 struct RDim {
     d: Dimension,  // dim
     st: Dimension, // stride
-    lp: isize, // left pad
-    rp: isize, // right pad
+    lp: isize,     // left pad
+    rp: isize,     // right pad
 }
 
 impl View {
@@ -65,18 +69,13 @@ impl View {
     }
 
     pub(crate) fn original_numel(&self) -> usize {
-        self.0.first().map_or(1, |inner| {
-            inner
-                .iter()
-                .map(|dim| {
-                    if dim.st != 0 {
-                        usize::try_from(isize::try_from(dim.d).unwrap() - dim.lp - dim.rp).unwrap()
-                    } else {
-                        1
-                    }
-                })
-                .product()
-        })
+        let mut res = 1;
+        for dim in &self.0[0] {
+            if dim.st != 0 {
+                res *= usize::try_from(isize::try_from(dim.d).unwrap() - dim.lp - dim.rp).unwrap();
+            }
+        }
+        return res;
     }
 
     /*pub(crate) fn numel(&self) -> usize {
@@ -217,8 +216,8 @@ impl View {
         let mut old_shape = self.shape();
         if let Some(inner) = self.0.last_mut() {
             let mut dim = &mut inner[axis];
-            dim.d =
-                Dimension::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
+            dim.d = Dimension::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad)
+                .unwrap();
             if dim.lp < 0 && left_pad > 0 {
                 dim.d = Dimension::try_from(isize::try_from(dim.d).unwrap() - left_pad).unwrap();
                 let mut stride = 1;
@@ -261,7 +260,8 @@ impl View {
                         RDim {
                             st,
                             d: if a == axis {
-                                Dimension::try_from(isize::try_from(d).unwrap() + right_pad).unwrap()
+                                Dimension::try_from(isize::try_from(d).unwrap() + right_pad)
+                                    .unwrap()
                             } else {
                                 d
                             },
@@ -276,7 +276,9 @@ impl View {
                 dim.rp += right_pad;
             }
         }
-        old_shape[axis] = Dimension::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad).unwrap();
+        old_shape[axis] =
+            Dimension::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad)
+                .unwrap();
         debug_assert_eq!(self.shape(), old_shape);
     }
 

@@ -4,8 +4,7 @@
 // is_reshapable more or less cannot be loosened.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    ops::Range,
+    cmp::Ordering, collections::{BTreeMap, BTreeSet}, ops::Range
 };
 
 use crate::{
@@ -228,8 +227,8 @@ impl Kernel {
                     if let Op::Loop { axis, .. } = &mut self.ops[op_i] {
                         //println!("{org_sh:?} -> {sh:?}");
                         match (*axis).cmp(&(org_sh.end - 1)) {
-                            std::cmp::Ordering::Less => {}
-                            std::cmp::Ordering::Equal => {
+                            Ordering::Less => {}
+                            Ordering::Equal => {
                                 // remove org_sh.end - org_sh.start ops from kernel. They should all be loops.
                                 // insert respective loops from new shape
                                 let n = org_sh.end - org_sh.start;
@@ -252,7 +251,7 @@ impl Kernel {
                                 //self.debug();
                                 break 'a;
                             }
-                            std::cmp::Ordering::Greater => {
+                            Ordering::Greater => {
                                 *axis += sh.end - sh.start;
                                 *axis -= org_sh.end - org_sh.start;
                             }
