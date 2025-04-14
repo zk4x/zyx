@@ -220,7 +220,6 @@ impl IRCompiler {
                 | IROp::EndLoop { .. }
                 | IROp::Load { .. }
                 | IROp::Store { .. }
-                | IROp::Tile { .. }
                 | IROp::Barrier { .. } => {}
             }
             i += 1;

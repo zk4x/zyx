@@ -877,7 +877,6 @@ impl OpenCLDevice {
                         }
                     );
                 }
-                _ => { todo!() }
             }
         }
         source += "}\n";

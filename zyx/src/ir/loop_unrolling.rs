@@ -48,7 +48,6 @@ impl IRCompiler {
                         | IROp::EndLoop { .. }
                         | IROp::Barrier { .. }
                         | IROp::Store { .. }
-                        | IROp::Tile { .. }
                         | IROp::Load { .. } => None,
                     }) {
                         let ta: u16 = ops2.len().try_into().unwrap();
@@ -136,7 +135,6 @@ impl IRCompiler {
                                     }
                                     IROp::SetLocal { .. } => {}
                                     IROp::Barrier { .. } => {}
-                                    IROp::Tile { .. } => {}
                                 }
                             }
                             // Copy ops

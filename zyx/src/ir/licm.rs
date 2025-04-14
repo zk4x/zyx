@@ -142,7 +142,6 @@ impl IRCompiler {
                             inner_loop_counter -= 1;
                             false
                         }
-                        IROp::Tile { .. } => false,
                     };
                     //println!("Move possible: {move_possible}");
                     if move_possible && inner_loop_counter == 0 {

@@ -94,7 +94,7 @@ fn cos() -> Result<(), ZyxError> {
     let zdata: Vec<f32> = Tensor::from(data).cos().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         //assert_eq!(x.cos(), y);
-        assert!(x.cos().is_equal(y));
+        assert!(x.cos().is_equal(y), "{} != {y}", x.cos());
     }
     Ok(())
 }

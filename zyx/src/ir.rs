@@ -37,12 +37,6 @@ pub enum Scope {
     Register,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TileScope {
-    Local,
-    Register,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IROp {
     // Loads variable from address to variable z at give offset.
@@ -60,9 +54,6 @@ pub enum IROp {
         // Offset is u32 var that needs to be added to address
         offset: Reg,
         x: Reg,
-    },
-    Tile {
-        scope: TileScope,
     },
     #[allow(unused)]
     SetLocal {
@@ -199,7 +190,6 @@ impl Display for IROp {
             }
             IROp::EndLoop { id, .. } => f.write_fmt(format_args!("endloop r{id}")),
             IROp::Barrier { scope } => f.write_fmt(format_args!("{BLUE}barrier.{scope}{RESET}")),
-            IROp::Tile { scope } => f.write_fmt(format_args!("{BLUE}tile.{scope:?}{RESET}")),
         }
     }
 }
@@ -568,7 +558,6 @@ impl IRCompiler {
                 | IROp::SetLocal { .. }
                 | IROp::Load { offset: Reg::Const(_), .. }
                 | IROp::Barrier { .. } => {}
-                _ => {}
             }
         }
 
@@ -650,7 +639,6 @@ impl IRCompiler {
                     loop_level += 1;
                 }
                 IROp::SetLocal { .. } | IROp::Set { .. } | IROp::Barrier { .. } => {}
-                _ => {}
             }
         }
 
@@ -908,7 +896,6 @@ impl IRCompiler {
                 | IROp::Loop { .. }
                 | IROp::EndLoop { .. }
                 | IROp::Barrier { .. } => {}
-                _ => {}
             }
         }
     }
@@ -1134,14 +1121,12 @@ impl IRCompiler {
                         }
                     }
                 }
-
                 IROp::SetLocal { .. } => {}
                 IROp::Set { .. } => {}
                 IROp::Store { .. } => {}
                 IROp::Loop { .. } => {}
                 IROp::EndLoop { .. } => {}
                 IROp::Barrier { .. } => {}
-                _ => {}
             }
             if !changed {
                 i += 1;

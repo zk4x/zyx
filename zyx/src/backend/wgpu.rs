@@ -307,7 +307,7 @@ impl WGPUDevice {
 
         // Add indices for global and local loops
         source.push_str(&format!(
-            "{indent}r{} = u64(gid.x);  /* 0..{} */\n{indent}r{} = u64(gid.y);  /* 0..{} */\n{indent}r{} = u64(gid.z);  /* 0..{} */\n  r{} = u64(lid.x);  /* 0..{} */\n{indent}r{} = u64(gid.y);  /* 0..{} */\n{indent}r{} = u64(gid.z);  /* 0..{} */\n",
+            "{indent}r{} = u64(gid.x);  /* 0..{} */\n{indent}r{} = u64(gid.y);  /* 0..{} */\n{indent}r{} = u64(gid.z);  /* 0..{} */\n  r{} = u64(lid.x);  /* 0..{} */\n{indent}r{} = u64(lid.y);  /* 0..{} */\n{indent}r{} = u64(lid.z);  /* 0..{} */\n",
             loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0], loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {

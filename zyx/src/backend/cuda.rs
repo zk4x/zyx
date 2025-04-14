@@ -1146,7 +1146,6 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
                         dtype.ptx(),
                     )
                 }
-                _ => { todo!() }
             }
         }
         // End kernel
