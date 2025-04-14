@@ -14,6 +14,7 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::{Display, Write},
+    hash::BuildHasherDefault,
 };
 
 mod const_folding;
@@ -586,15 +587,7 @@ impl IRCompiler {
                         used[loop_level].insert(*x);
                     }
                 }
-                IROp::Cast { z, x, .. } => {
-                    if !used[loop_level].contains(z) {
-                        if let Some(rc) = ref_counts.get_mut(z) {
-                            *rc += 1;
-                        }
-                    }
-                    used[loop_level].insert(*x);
-                }
-                IROp::Unary { z, x, .. } => {
+                IROp::Cast { z, x, .. } | IROp::Unary { z, x, .. } => {
                     if !used[loop_level].contains(z) {
                         if let Some(rc) = ref_counts.get_mut(z) {
                             *rc += 1;
@@ -797,7 +790,7 @@ impl IRCompiler {
                     reg_rcs[cmp[&id] as usize] -= 1;
                     ops.push(IROp::EndLoop { id, len });
                 }
-                op => ops.push(op),
+                op @ IROp::Barrier { .. } => ops.push(op),
             }
         }
         (registers, ops)
@@ -817,7 +810,7 @@ impl IRCompiler {
                                 if Reg::Var(z0) == y {
                                     self.ops[j] = IROp::MAdd { z, a, b, c: x };
                                 }
-                            };
+                            }
                         }
                         if matches!(self.ops[j], IROp::Loop { .. } | IROp::EndLoop { .. }) {
                             break;
@@ -1017,9 +1010,10 @@ impl IRCompiler {
         }
     }*/
 
+    #[allow(clippy::cognitive_complexity)]
     fn deduplicate(&mut self) {
         // Get all accs
-        let mut accs = Set::with_hasher(Default::default());
+        let mut accs = Set::with_hasher(BuildHasherDefault::default());
         for op in &self.ops {
             if let IROp::Set { z, .. } = op {
                 accs.insert(*z);
@@ -1029,6 +1023,7 @@ impl IRCompiler {
         let mut i = 0;
         while i < self.ops.len() {
             let mut changed = false;
+            #[allow(clippy::match_on_vec_items)]
             match self.ops[i] {
                 IROp::Load { z, address, offset } => {
                     for j in i + 1..self.ops.len() {
@@ -1121,12 +1116,12 @@ impl IRCompiler {
                         }
                     }
                 }
-                IROp::SetLocal { .. } => {}
-                IROp::Set { .. } => {}
-                IROp::Store { .. } => {}
-                IROp::Loop { .. } => {}
-                IROp::EndLoop { .. } => {}
-                IROp::Barrier { .. } => {}
+                IROp::SetLocal { .. }
+                | IROp::Set { .. }
+                | IROp::Store { .. }
+                | IROp::Loop { .. }
+                | IROp::EndLoop { .. }
+                | IROp::Barrier { .. } => {}
             }
             if !changed {
                 i += 1;
@@ -1200,9 +1195,8 @@ impl IRKernel {
             compiler.deduplicate();
             if compiler == old_compiler {
                 break;
-            } else {
-                old_compiler = compiler.clone();
             }
+            old_compiler = compiler.clone();
         }
 
         compiler.fuse_ops();

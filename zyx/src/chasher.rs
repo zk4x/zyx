@@ -4,7 +4,7 @@ pub struct CHasher(u64);
 
 impl Default for CHasher {
     fn default() -> CHasher {
-        CHasher(0xcbf29ce484222325)
+        CHasher(0xcbf2_9ce4_8422_2325)
     }
 }
 
@@ -24,8 +24,8 @@ impl std::hash::Hasher for CHasher {
     fn write(&mut self, bytes: &[u8]) {
         let CHasher(mut hash) = *self;
         for byte in bytes.iter() {
-            hash = hash ^ (*byte as u64);
-            hash = hash.wrapping_mul(0x100000001b3);
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100_0000_01b3);
         }
         *self = CHasher(hash);
     }

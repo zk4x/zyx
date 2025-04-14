@@ -116,7 +116,7 @@ impl Rng {
         next_seed as f64 / M as f64
     }
 
-    /// Generates random number, floats in range 0..1, integers in range int::MIN..int::MAX
+    /// Generates random number, floats in range 0..1, integers in range `int::MIN..int::MAX`
     pub(super) fn rand<T: Scalar>(&mut self) -> T {
         match T::dtype() {
             DType::BF16 | DType::F16 | DType::F32 | DType::F64 => self.next_f32().cast(),

@@ -5,7 +5,7 @@ impl IRCompiler {
         // Move accumulator before register loops, repeat it for all register loops
         {
             // Get number of repetitions
-            let num_accs = self.ops[6..9]
+            let num_accs: usize = self.ops[6..9]
                 .iter()
                 .map(|op| {
                     let IROp::Loop { len, .. } = op else { unreachable!() };
@@ -14,8 +14,8 @@ impl IRCompiler {
                 .product();
             let IROp::Set { z, value } = self.ops.remove(9) else { unreachable!() };
             // Insert acc back, before reduce loops
-            for i in 0..num_accs {
-                self.ops.insert(9, IROp::Set { z: z + i as u16, value });
+            for i in 0..u16::try_from(num_accs).unwrap() {
+                self.ops.insert(9, IROp::Set { z: z + i, value });
             }
             // Increase ids of all following variables
         }

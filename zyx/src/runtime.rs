@@ -13,7 +13,8 @@ use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::DeJson;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::hash::BuildHasherDefault;
+use std::path::{Path, PathBuf};
 use std::{vec, vec::Vec};
 
 const NUM_CONSTANTS: usize = 32;
@@ -68,8 +69,8 @@ impl Pool {
     pub(crate) fn new(pool: MemoryPool) -> Self {
         Self {
             pool,
-            events: Map::with_capacity_and_hasher(100, Default::default()),
-            buffer_map: Map::with_capacity_and_hasher(100, Default::default()),
+            events: Map::with_capacity_and_hasher(100, BuildHasherDefault::default()),
+            buffer_map: Map::with_capacity_and_hasher(100, BuildHasherDefault::default()),
         }
     }
 }
@@ -107,13 +108,12 @@ impl Runtime {
         self.graph.retain(x);
     }
 
-    pub(super) fn release(&mut self, x: TensorId) -> Result<(), ZyxError> {
+    pub(super) fn release(&mut self, x: TensorId) {
         let to_remove = self.graph.release(x);
-        self.deallocate_tensors(&to_remove)?;
+        self.deallocate_tensors(&to_remove);
         if self.graph.is_empty() && self.pools.iter().all(|mp| mp.buffer_map.is_empty()) {
-            self.deinitialize()?;
+            self.deinitialize();
         }
-        Ok(())
     }
 
     // Initializes all available devices, creating a device for each compute
@@ -214,7 +214,7 @@ impl Runtime {
 
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
     /// It does not reset the rng and it does not change debug, search, training and `config_dir` fields
-    fn deinitialize(&mut self) -> Result<(), ZyxError> {
+    fn deinitialize(&mut self) {
         //println!("Deinitialize");
         // drop graph
         self.graph = Graph::new();
@@ -222,13 +222,13 @@ impl Runtime {
         self.kernel_cache.deinitialize(&mut self.devices);
         // drop devices
         while let Some(mut dev) = self.devices.pop() {
-            dev.deinitialize()?;
+            dev.deinitialize();
         }
         // drop memory pools
         while let Some(mp) = self.pools.pop() {
             let Pool { mut pool, events, .. } = mp;
-            pool.release_events(events.into_iter().map(|(_, v)| v).collect())?;
-            pool.deinitialize()?;
+            pool.release_events(events.into_values().collect());
+            pool.deinitialize();
         }
         // Timer
         /*for (name, (iters, time)) in crate::ET.lock().iter() {
@@ -241,10 +241,9 @@ impl Runtime {
         self.training
         self.search_iterations
         self.debug*/
-        Ok(())
     }
 
-    pub(super) fn manual_seed(&mut self, seed: u64) {
+    pub(super) const fn manual_seed(&mut self, seed: u64) {
         self.rng = Rng::seed_from_u64(seed);
     }
 
@@ -265,8 +264,7 @@ impl Runtime {
         self.graph.dtype(x)
     }
 
-    #[must_use]
-    pub(super) fn from_disk(&mut self, shape: Vec<Dim>, dtype: DType, path: &std::path::Path, offset_bytes: u64) -> Result<TensorId, ZyxError> {
+    pub(super) fn tensor_from_path(&mut self, shape: Vec<Dim>, dtype: DType, path: &Path, offset_bytes: u64) -> Result<TensorId, ZyxError> {
         let bytes = shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
         self.initialize_devices()?;
         if bytes == dtype.byte_size() as usize {
@@ -284,7 +282,7 @@ impl Runtime {
             todo!();
         }
         if let Some(disk) = self.pools[0].pool.disk_pool() {
-            let buffer_id = disk.from_path(bytes, path, offset_bytes)?;
+            let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
             let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
             self.pools[0].buffer_map.insert(id, buffer_id);
             Ok(id)
@@ -293,7 +291,6 @@ impl Runtime {
         }
     }
 
-    #[must_use]
     pub(super) fn variable(
         &mut self,
         shape: Vec<Dim>,
@@ -370,7 +367,7 @@ impl Runtime {
     pub(super) fn full(&mut self, shape: Vec<Dim>, value: impl Scalar) -> TensorId {
         let x = self.constant(value);
         let expanded = self.expand(x, shape).unwrap();
-        self.release(x).unwrap();
+        self.release(x);
         expanded
     }
 
@@ -378,7 +375,7 @@ impl Runtime {
     pub(super) fn ones(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
         let x = self.graph.push(Node::Const { value: dtype.one_constant() });
         let expanded = self.expand(x, shape).unwrap();
-        self.release(x).unwrap();
+        self.release(x);
         expanded
     }
 
@@ -386,7 +383,7 @@ impl Runtime {
     pub(super) fn zeros(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
         let x = self.graph.push(Node::Const { value: dtype.zero_constant() });
         let expanded = self.expand(x, shape).unwrap();
-        self.release(x).unwrap();
+        self.release(x);
         expanded
     }
 
@@ -402,9 +399,9 @@ impl Runtime {
             self.retain(x);
             return Ok(x);
         }
-        let mut to_eval = Set::with_capacity_and_hasher(10, Default::default());
+        let mut to_eval = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
         to_eval.insert(x);
-        self.realize(to_eval)?;
+        self.realize(&to_eval)?;
         let mut shape = self.shape(x).to_vec();
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
@@ -450,7 +447,6 @@ impl Runtime {
     }
 
     /// Expand verification is so complex, that it may be simpler to just do it here instead of in tensor
-    #[must_use]
     pub(super) fn expand(
         &mut self,
         x: TensorId,
@@ -465,29 +461,31 @@ impl Runtime {
         if shape.len() < sh.len() {
             return Err(ZyxError::ShapeError(format!(
                 "Cannot expand {sh:?} into {shape:?}"
-            )));
+            ).into()));
         }
+        let mut expanded = false;
         let new_shape = if shape.len() > sh.len() {
-            std::iter::repeat(1).take(shape.len() - sh.len()).chain(sh.iter().copied()).collect()
+            expanded = true;
+            std::iter::repeat_n(1, shape.len() - sh.len()).chain(sh.iter().copied()).collect()
         } else {
-            sh.clone()
+            sh
         };
         debug_assert_eq!(shape.len(), new_shape.len());
         for (&s, &d) in new_shape.iter().zip(shape.iter()) {
             if !(s == d || s == 1) {
                 return Err(ZyxError::ShapeError(format!(
-                    "Cannot expand {sh:?} into {shape:?}"
-                )));
+                    "Cannot expand {new_shape:?} into {shape:?}"
+                ).into()));
             }
         }
-        if new_shape != sh {
+        if expanded {
             let x = self.reshape(x, new_shape.clone());
             if shape == new_shape {
                 self.retain(x);
                 return Ok(x);
             }
             let y = self.graph.push_wshape(Node::Expand { x }, shape);
-            self.release(x).unwrap();
+            self.release(x);
             return Ok(y);
         }
         Ok(self.graph.push_wshape(Node::Expand { x }, shape))
@@ -520,7 +518,7 @@ impl Runtime {
         let sh = self.shape(x);
         if axes.is_empty() {
             axes = (0..sh.len()).collect();
-        };
+        }
         let shape = reduce(sh, &axes);
         let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Sum }, shape);
         self.graph.push_axes(id, axes);
@@ -532,7 +530,7 @@ impl Runtime {
         let sh = self.shape(x);
         if axes.is_empty() {
             axes = (0..sh.len()).collect();
-        };
+        }
         let shape = reduce(sh, &axes);
         let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Max }, shape);
         self.graph.push_axes(id, axes);
@@ -583,14 +581,14 @@ impl Runtime {
             return Err(ZyxError::DTypeError(format!(
                 "loading dtype {}, but the data has dtype {dt}",
                 T::dtype()
-            )));
+            ).into()));
         }
         debug_assert!(data.len() <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
-            let mut to_eval = Set::with_capacity_and_hasher(10, Default::default());
+            let mut to_eval = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
             to_eval.insert(x);
-            self.realize(to_eval)?;
+            self.realize(&to_eval)?;
         }
 
         let byte_slice: &mut [u8] = unsafe {
@@ -610,11 +608,12 @@ impl Runtime {
         Ok(())
     }
 
-    pub(super) fn realize(&mut self, to_eval: Set<TensorId>) -> Result<(), ZyxError> {
+    #[allow(clippy::cognitive_complexity)]
+    pub(super) fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let begin = std::time::Instant::now();
 
         let realized_nodes: Set<TensorId> =
-            self.pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+            self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
         let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
         if to_eval.is_empty() {
             return Ok(());
@@ -629,7 +628,7 @@ impl Runtime {
             let (outside_nodes, mut order) = {
                 let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
                 let mut rcs: Map<TensorId, u32> =
-                    Map::with_capacity_and_hasher(100, Default::default());
+                    Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
                 while let Some(nid) = params.pop() {
                     rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                         params.extend(self.graph.nodes[nid].1.parameters());
@@ -639,8 +638,8 @@ impl Runtime {
                 // Order them using rcs reference counts
                 let mut order = Vec::new();
                 let mut internal_rcs: Map<TensorId, u32> =
-                    Map::with_capacity_and_hasher(100, Default::default());
-                let mut outside_nodes = Set::with_capacity_and_hasher(100, Default::default());
+                    Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+                let mut outside_nodes = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
                 let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
                 while let Some(nid) = params.pop() {
                     if let Some(&rc) = rcs.get(&nid) {
@@ -660,8 +659,8 @@ impl Runtime {
             };
             //println!("Outside nodes: {outside_nodes:?}");
             // Constant folding and deleting unused parts of graph
-            let mut new_leafs = Set::with_capacity_and_hasher(100, Default::default());
-            let mut to_delete = Set::with_capacity_and_hasher(100, Default::default());
+            let mut new_leafs = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
             for &nid in &order {
                 let node = &self.graph.nodes[nid].1;
                 match node.num_parameters() {
@@ -713,7 +712,7 @@ impl Runtime {
             //println!("To delete: {to_delete:?}");
             let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
             let mut rcs: Map<TensorId, u32> =
-                Map::with_capacity_and_hasher(100, Default::default());
+                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
             while let Some(nid) = params.pop() {
                 if let Some(rc) = rcs.get_mut(&nid) {
@@ -733,12 +732,12 @@ impl Runtime {
             }*/
             order.retain(|x| rcs.contains_key(x));
             // Currently rcs with gradient tape cannot be used by scheduler, so we give it empty ids
-            (order, to_delete, new_leafs, Map::with_hasher(Default::default()))
+            (order, to_delete, new_leafs, Map::with_hasher(BuildHasherDefault::default()))
         } else {
             let old_to_eval = to_eval.clone();
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
             let mut rcs: Map<TensorId, u32> =
-                Map::with_capacity_and_hasher(100, Default::default());
+                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
             while let Some(nid) = params.pop() {
                 rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                     if !realized_nodes.contains(&nid) {
@@ -748,11 +747,11 @@ impl Runtime {
                 });
             }
             // Order them using rcs reference counts
-            let mut to_delete = Set::with_capacity_and_hasher(100, Default::default());
-            let mut new_leafs = Set::with_capacity_and_hasher(10, Default::default());
+            let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            let mut new_leafs = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
             let mut order = Vec::new();
             let mut internal_rcs: Map<TensorId, u32> =
-                Map::with_capacity_and_hasher(100, Default::default());
+                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
             while let Some(nid) = params.pop() {
                 if let Some(&rc) = rcs.get(&nid) {
@@ -764,12 +763,10 @@ impl Runtime {
                             if !realized_nodes.contains(&nid) {
                                 to_eval.insert(nid);
                             }
+                        } else if !to_eval.contains(&nid) {
+                            to_delete.insert(nid);
                         } else {
-                            if !to_eval.contains(&nid) {
-                                to_delete.insert(nid);
-                            } else {
-                                new_leafs.insert(nid);
-                            }
+                            new_leafs.insert(nid);
                         }
                         if !realized_nodes.contains(&nid) {
                             params.extend(node.1.parameters());
@@ -815,7 +812,7 @@ impl Runtime {
         )?;
 
         // Deallocate them from devices, new_leafs can be deallocated too
-        self.deallocate_tensors(&to_delete)?;
+        self.deallocate_tensors(&to_delete);
 
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {
@@ -829,12 +826,12 @@ impl Runtime {
         Ok(())
     }
 
-    pub(super) fn compile_graph(&mut self, _inputs: &Set<TensorId>, _outputs: &Set<TensorId>) -> Vec<GraphOp> {
-        let ops = Vec::new();
-        ops
+    pub(super) const fn compile_graph(&mut self, _inputs: &Set<TensorId>, _outputs: &Set<TensorId>) -> Vec<GraphOp> {
+        let _ = self;
+        Vec::new()
     }
 
-    fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) -> Result<(), ZyxError> {
+    fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) {
         // This is basically tracing GC, seems faster than reference counting
         // remove all buffers that are not used by any tensors
         // Check which buffers will possibly need to be dropped
@@ -853,16 +850,15 @@ impl Runtime {
                     .any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
                 {
                     let pool = &mut self.pools[pool_id];
+                    let mut events = Vec::new();
                     if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
                         let event = pool.events.remove(&key.clone()).unwrap();
-                        pool.pool.deallocate(buffer_id, vec![event])?;
-                    } else {
-                        pool.pool.deallocate(buffer_id, Vec::new())?;
+                        events.push(event);
                     }
+                    pool.pool.deallocate(buffer_id, events);
                 }
             }
         }
-        Ok(())
     }
 
     pub(super) fn drop_gradient_tape(&mut self) {
@@ -897,8 +893,8 @@ impl Runtime {
                     );
                     // These can never fail as it just decreses ref count,
                     // there is no deallocation.
-                    r.release(prev_grad).unwrap();
-                    r.release(grad).unwrap();
+                    r.release(prev_grad);
+                    r.release(grad);
                 }
             }
         }
@@ -910,7 +906,7 @@ impl Runtime {
         let req_grad: Set<TensorId> = topo.iter().copied().chain(sources.iter().copied()).collect();
         // Node -> Grad
         let mut grads: Map<TensorId, TensorId> =
-            Map::with_capacity_and_hasher(100, Default::default());
+            Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
 
         // Initial gradient of ones
         grads.insert(x, self.ones(self.shape(x).into(), self.dtype(x)));
@@ -965,10 +961,10 @@ impl Runtime {
                             // -(grad*x/(y*y))
                             let grad_neg = self.unary(grad, UOp::Neg);
                             let x_mul = self.binary(grad_neg, x, BOp::Mul);
-                            self.release(grad_neg).unwrap();
+                            self.release(grad_neg);
                             let y_squared = self.binary(y, y, BOp::Mul);
                             let y_grad = self.binary(x_mul, y_squared, BOp::Div);
-                            self.release(y_squared).unwrap();
+                            self.release(y_squared);
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
                     }
@@ -977,13 +973,13 @@ impl Runtime {
                             // grad * y * x.pow(y-1)
                             let ones = self.ones(self.shape(y).into(), self.dtype(y));
                             let y_1 = self.binary(y, ones, BOp::Sub);
-                            self.release(ones).unwrap();
+                            self.release(ones);
                             let pow_y_1 = self.binary(x, y_1, BOp::Pow);
-                            self.release(y_1).unwrap();
+                            self.release(y_1);
                             let y_mul = self.binary(y, pow_y_1, BOp::Mul);
-                            self.release(pow_y_1).unwrap();
+                            self.release(pow_y_1);
                             let x_grad = self.binary(grad, y_mul, BOp::Mul);
-                            self.release(y_mul).unwrap();
+                            self.release(y_mul);
                             insert_or_add_grad(self, &mut grads, x, x_grad);
                         }
                         if req_grad.contains(&y) {
@@ -994,15 +990,15 @@ impl Runtime {
                                 value: Constant::new(1f64 / std::f64::consts::E.log2()).cast(dtype),
                             });
                             let one_elog2_ex = self.expand(one_elog2, sh).unwrap();
-                            self.release(one_elog2).unwrap();
+                            self.release(one_elog2);
                             let log2 = self.unary(x, UOp::Log2);
                             let log2_one_elog2 = self.binary(log2, one_elog2_ex, BOp::Mul);
-                            self.release(log2).unwrap();
-                            self.release(one_elog2_ex).unwrap();
+                            self.release(log2);
+                            self.release(one_elog2_ex);
                             let xpowy_log2_one_elog2 = self.binary(nid, log2_one_elog2, BOp::Mul);
-                            self.release(log2_one_elog2).unwrap();
+                            self.release(log2_one_elog2);
                             let y_grad = self.binary(grad, xpowy_log2_one_elog2, BOp::Mul);
-                            self.release(xpowy_log2_one_elog2).unwrap();
+                            self.release(xpowy_log2_one_elog2);
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
                     }
@@ -1049,58 +1045,58 @@ impl Runtime {
                         // -1/(x*x)
                         let x_2_inv = self.binary(nid, nid, BOp::Mul);
                         let x_grad = self.unary(x_2_inv, UOp::Neg);
-                        self.release(x_2_inv).unwrap();
+                        self.release(x_2_inv);
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
                     UOp::ReLU => {
                         let zeros = self.zeros(self.shape(x).into(), self.dtype(x));
                         let zl = self.binary(zeros, x, BOp::Cmplt);
-                        self.release(zeros).unwrap();
+                        self.release(zeros);
                         let zl_cast = self.cast(zl, self.dtype(x));
-                        self.release(zl).unwrap();
+                        self.release(zl);
                         let x_grad = self.binary(zl_cast, grad, BOp::Mul);
-                        self.release(zl_cast).unwrap();
+                        self.release(zl_cast);
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
                     UOp::Exp2 => {
                         let temp = self.constant(std::f64::consts::E.log2());
                         let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
-                        self.release(temp).unwrap();
+                        self.release(temp);
                         let temp2 = self.binary(nid, temp1, BOp::Mul);
-                        self.release(temp1).unwrap();
+                        self.release(temp1);
                         let grad = self.binary(nid, temp2, BOp::Mul);
-                        self.release(temp2).unwrap();
+                        self.release(temp2);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Log2 => {
                         let temp = self.constant(std::f64::consts::E.log2());
                         let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
-                        self.release(temp).unwrap();
+                        self.release(temp);
                         let temp2 = self.binary(x, temp1, BOp::Mul);
-                        self.release(temp1).unwrap();
+                        self.release(temp1);
                         let grad = self.binary(grad, temp2, BOp::Div);
-                        self.release(temp2).unwrap();
+                        self.release(temp2);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Sin => {
                         let x_temp = self.unary(x, UOp::Cos);
                         let grad = self.binary(x_temp, grad, BOp::Mul);
-                        self.release(x_temp).unwrap();
+                        self.release(x_temp);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Cos => {
                         let x_temp1 = self.unary(x, UOp::Sin);
                         let x_temp = self.unary(x_temp1, UOp::Neg);
-                        self.release(x_temp1).unwrap();
+                        self.release(x_temp1);
                         let grad = self.binary(x_temp, grad, BOp::Mul);
-                        self.release(x_temp).unwrap();
+                        self.release(x_temp);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Sqrt => {
                         // x_grad = grad/(2*sqrt(x))
                         let sqrt_x = self.unary(x, UOp::Sqrt);
                         let sqrtx_2 = self.binary(sqrt_x, sqrt_x, BOp::Add);
-                        self.release(sqrt_x).unwrap();
+                        self.release(sqrt_x);
                         let grad = self.binary(grad, sqrtx_2, BOp::Div);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
@@ -1132,7 +1128,7 @@ impl Runtime {
                     let x_shape: Vec<Dim> = self.shape(x).into();
                     debug_assert_eq!(sh.len(), x_shape.len());
                     let expand_axes: Vec<usize> = sh
-                        .into_iter()
+                        .iter()
                         .zip(&x_shape)
                         .enumerate()
                         .filter_map(|(a, (&d, &e))| if d == e { None } else { Some(a) })
@@ -1141,7 +1137,7 @@ impl Runtime {
                     debug_assert!(!expand_axes.is_empty());
                     let temp = self.sum_reduce(grad, expand_axes);
                     let grad = self.reshape(temp, x_shape);
-                    self.release(temp).unwrap();
+                    self.release(temp);
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Permute { x } => {
@@ -1171,7 +1167,7 @@ impl Runtime {
                         }
                         let temp = self.reshape(grad, z_shape);
                         let grad = self.expand(temp, x_shape).unwrap();
-                        self.release(temp).unwrap();
+                        self.release(temp);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     ROp::Max => {
@@ -1179,25 +1175,25 @@ impl Runtime {
                         let x_shape: Vec<Dim> = self.shape(x).into();
                         let z_temp = self.expand(nid, x_shape.clone()).unwrap();
                         let cmp_t = self.binary(x, z_temp, BOp::Cmplt);
-                        self.release(z_temp).unwrap();
+                        self.release(z_temp);
                         let ones = self.zeros(x_shape, self.dtype(x));
                         let max_1s = self.binary(ones, cmp_t, BOp::Sub);
-                        self.release(ones).unwrap();
-                        self.release(cmp_t).unwrap();
+                        self.release(ones);
+                        self.release(cmp_t);
                         let grad = self.binary(max_1s, grad, BOp::Mul);
-                        self.release(max_1s).unwrap();
+                        self.release(max_1s);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                 },
             }
         }
         //println!("gradients: {grads:?}");
-        let mut res = Map::with_capacity_and_hasher(10, Default::default());
+        let mut res = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
         for (k, v) in grads {
             if sources.contains(&k) {
                 res.insert(k, v);
             } else {
-                self.release(v).unwrap();
+                self.release(v);
             }
         }
         //println!("res: {res:?}");
@@ -1209,15 +1205,15 @@ impl Runtime {
 #[derive(Debug)]
 pub enum ZyxError {
     /// Invalid shapes for operation
-    ShapeError(String),
+    ShapeError(Box<str>),
     /// Wrong dtype for given operation
-    DTypeError(String),
+    DTypeError(Box<str>),
     /// Backend configuration error
     BackendConfig(&'static str),
     /// Error from file operations
     IOError(std::io::Error),
     /// Error parsing some data
-    ParseError(String),
+    ParseError(Box<str>),
     /// Memory allocation error
     AllocationError,
     /// There are no available backends

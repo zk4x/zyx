@@ -3,7 +3,7 @@
 use crate::{
     backend::Device, graph::Graph, ir::Scope, kernel::{Kernel, Op, TId}, kernel_cache::KernelCache, node::Node, runtime::Pool, slab::{Id, Slab}, tensor::TensorId, view::View, DType, DebugMask, Map, Set, ZyxError
 };
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, hash::BuildHasherDefault};
 
 type KernelId = Id;
 
@@ -39,7 +39,7 @@ pub fn schedule(
     let mut max_ops = 0;
     let mut avg_ops = 0;
     for kernel in kernels.values() {
-        let n = kernel.ops.len() as u32;
+        let n = u32::try_from(kernel.ops.len()).unwrap();
         if n > max_ops {
             max_ops = n;
         }
@@ -123,12 +123,12 @@ pub fn schedule(
                             if let Some(event) = &event {
                                 events.push(event.clone());
                             }
-                            pool.pool.deallocate(buffer_id, events)?;
+                            pool.pool.deallocate(buffer_id, events);
                         }
                     }
                 }
             } else {
-                i += 1
+                i += 1;
             }
         }
     }
@@ -156,6 +156,7 @@ pub fn schedule(
 ///
 /// If tensor is used elsewhere (rc > 1), then create rc - 1 copies of the kernel.
 /// Potentially if this is expensive kernel or it requires many ops, then we might evaluate it immediatelly.
+#[allow(clippy::cognitive_complexity)]
 fn kernelize(
     graph: &Graph,
     order: &[TensorId],
@@ -174,7 +175,7 @@ fn kernelize(
     //if debug.sched() { println!("To schedule: {} tensors, to eval: {to_eval:?}", order.len()); }
 
     let mut rcs = if rcs.is_empty() {
-        let mut rcs = Map::with_capacity_and_hasher(100, Default::default());
+        let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
         // to_eval are not in rcs
         for &nid in order {
             if !realized_nodes.contains(&nid) {
@@ -190,7 +191,7 @@ fn kernelize(
 
     #[cfg(debug_assertions)]
     {
-        let mut rcs2 = Map::with_hasher(Default::default());
+        let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
         // to_eval are not in rcs
         for &nid in order {
             if !realized_nodes.contains(&nid) {
@@ -251,8 +252,7 @@ fn kernelize(
                 Node::Leaf { .. } => {
                     let realized_nodes: Set<TensorId> = memory_pools
                         .iter()
-                        .map(|pool| pool.buffer_map.keys())
-                        .flatten()
+                        .flat_map(|pool| pool.buffer_map.keys())
                         .copied()
                         .collect();
                     if !realized_nodes.contains(&nid) {
@@ -505,6 +505,7 @@ fn kernelize(
                     debug_assert_eq!(kernels[kidx].shape(), graph.shape(x));
                     debug_assert_eq!(kernels[kidy].shape(), graph.shape(y));
 
+                    #[allow(clippy::branches_sharing_code)]
                     let kid = if kidx == kidy {
                         kernels[kidx].max_id += 1;
                         let z = kernels[kidx].max_id;
@@ -651,10 +652,8 @@ fn kernelize(
                         if rcs[&y] < 2 {
                             kernels[kidx].outputs.remove(&y);
                         }
-                    } else {
-                        if rcs[&x] < 3 {
-                            kernels[kidx].outputs.remove(&x);
-                        }
+                    } else if rcs[&x] < 3 {
+                        kernels[kidx].outputs.remove(&x);
                     }
 
                     kid
@@ -680,7 +679,7 @@ fn kernelize(
         #[cfg(debug_assertions)]
         {
             if kernels[kid].ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
-                <= kernels[kid].ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count()
+                <= kernels[kid].ops.iter().filter(|op| matches!(op, Op::EndLoop)).count()
             {
                 kernels[kid].debug();
                 panic!();
@@ -688,7 +687,7 @@ fn kernelize(
 
             for kernel in kernels.values() {
                 if kernel.ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
-                    <= kernel.ops.iter().filter(|op| matches!(op, Op::EndLoop { .. })).count()
+                    <= kernel.ops.iter().filter(|op| matches!(op, Op::EndLoop)).count()
                 {
                     kernel.debug();
                     panic!();

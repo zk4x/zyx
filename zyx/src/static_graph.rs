@@ -45,12 +45,14 @@ impl StaticGraph {
     }
 
     /// Launch the graph with given inputs.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn forward(&mut self, inputs: impl IntoIterator<Item = Tensor>) {
+        let _ = inputs;
         todo!()
     }
 }
 
-pub(super) enum GraphOp {
+pub enum GraphOp {
     MemoryAllocate,
     MemoryFree,
     MemoryCopy,

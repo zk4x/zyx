@@ -1,9 +1,11 @@
+use std::hash::BuildHasherDefault;
+
 use crate::{tensor::TensorId, Map, Set, Tensor, RT};
 
 /// Gradient tape
 /// 
 /// Graph is always recorded, but when tensor is realized, it's graph is dropped.
-/// When GradientTape is alive, graph is not dropped until GradientTape is dropped.
+/// When [`GradientTape`] is alive, graph is not dropped until [`GradientTape`] is dropped.
 /// 
 /// Unlike other deep learning frameworks, there is no need to specify which tensors
 /// are differentiable nor is there need to specify multiple gradient tapes to calculate
@@ -21,6 +23,12 @@ use crate::{tensor::TensorId, Map, Set, Tensor, RT};
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct GradientTape {}
 
+impl Default for GradientTape {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GradientTape {
     /// Create new gradient tape. Only one gradient tape can exist at a time.
     pub fn new() -> Self {
@@ -30,13 +38,13 @@ impl GradientTape {
             //panic!("Only one gradient tape can exist at a time.");
             return Self {}
         }
-        rt.graph.gradient_tape = Some(Set::with_capacity_and_hasher(100, Default::default()));
+        rt.graph.gradient_tape = Some(Set::with_capacity_and_hasher(100, BuildHasherDefault::default()));
         Self {}
     }
 
     /// Returns gradients of target derived w.r.t. sources
     /// Any ops following this function will not be traced.
-    /// If you want to keep tracing, use [gradient_persistent](GradientTape::gradient_persistent)
+    /// If you want to keep tracing, use [`gradient_persistent`](GradientTape::gradient_persistent)
     #[must_use]
     pub fn gradient<'a>(
         &self,
@@ -59,7 +67,7 @@ impl GradientTape {
     }
 
     /// Returns gradients of target derived w.r.t. sources
-    /// This persistent version keeps gradient tape alive and new ops will be traced until GradientTape gets destroyed.
+    /// This persistent version keeps gradient tape alive and new ops will be traced until [`GradientTape`] gets destroyed.
     /// This function is useful for higher order derivatives or derivating multiple tensors.
     #[must_use]
     pub fn gradient_persistent<'a>(

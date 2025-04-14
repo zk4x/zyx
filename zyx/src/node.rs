@@ -1,7 +1,7 @@
 //! Graph node, each node is one operation. Nodes
 //! represent the opset that is available on tensors.
 
-use crate::{dtype::Constant, tensor::TensorId, DType, Scalar};
+use crate::{DType, Scalar, dtype::Constant, tensor::TensorId};
 use half::{bf16, f16};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
@@ -135,31 +135,29 @@ impl Node {
 
     pub const fn num_parameters(&self) -> u8 {
         match self {
-            Node::Const { .. } => 0,
-            Node::Leaf { .. } => 0,
-            Node::Expand { .. } => 1,
-            Node::Permute { .. } => 1,
-            Node::Reshape { .. } => 1,
-            Node::Pad { .. } => 1,
-            Node::Reduce { .. } => 1,
-            Node::Cast { .. } => 1,
-            Node::Unary { .. } => 1,
+            Node::Const { .. } | Node::Leaf { .. } => 0,
+            Node::Expand { .. }
+            | Node::Permute { .. }
+            | Node::Reshape { .. }
+            | Node::Pad { .. }
+            | Node::Reduce { .. }
+            | Node::Cast { .. }
+            | Node::Unary { .. } => 1,
             Node::Binary { .. } => 2,
         }
     }
 
     pub const fn param1(&self) -> u32 {
         match *self {
-            Node::Const { .. } => unreachable!(),
-            Node::Leaf { .. } => unreachable!(),
-            Node::Expand { x } => x,
-            Node::Permute { x } => x,
-            Node::Reshape { x } => x,
-            Node::Pad { x } => x,
-            Node::Reduce { x, .. } => x,
-            Node::Cast { x, .. } => x,
-            Node::Unary { x, .. } => x,
-            Node::Binary { x, .. } => x,
+            Node::Const { .. } | Node::Leaf { .. } => unreachable!(),
+            Node::Expand { x }
+            | Node::Permute { x }
+            | Node::Reshape { x }
+            | Node::Pad { x }
+            | Node::Reduce { x, .. }
+            | Node::Cast { x, .. }
+            | Node::Unary { x, .. }
+            | Node::Binary { x, .. } => x,
         }
     }
 
@@ -207,7 +205,7 @@ impl<T: Scalar> CastDType for T {}
 // TODO clean this up
 impl Constant {
     pub(super) fn cast(self, dtype: DType) -> Constant {
-        return match self {
+        match self {
             Constant::BF16(x) => half::bf16::from_bits(x).cast_dtype(dtype),
             Constant::F16(x) => half::f16::from_bits(x).cast_dtype(dtype),
             Constant::F32(x) => f32::from_bits(x).cast_dtype(dtype),
@@ -221,19 +219,16 @@ impl Constant {
             Constant::I32(x) => x.cast_dtype(dtype),
             Constant::I64(x) => x.cast_dtype(dtype),
             Constant::Bool(x) => x.cast_dtype(dtype),
-        };
+        }
     }
 
     pub(super) fn unary(self, uop: UOp) -> Constant {
         use crate::Float;
         fn unary_func<T: Scalar>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Exp2
-                | UOp::Log2
-                | UOp::Reciprocal
-                | UOp::Sqrt
-                | UOp::Sin
-                | UOp::Cos => unreachable!(),
+                UOp::Exp2 | UOp::Log2 | UOp::Reciprocal | UOp::Sqrt | UOp::Sin | UOp::Cos => {
+                    unreachable!()
+                }
                 UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
                 UOp::Not => x.not(),

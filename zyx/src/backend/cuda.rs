@@ -6,6 +6,7 @@
 
 use std::{
     ffi::{c_char, c_int, c_uint, c_void},
+    fmt::Write,
     ptr,
     sync::Arc,
 };
@@ -233,7 +234,7 @@ pub(super) fn initialize_device(
         });
     }
     let device_ids: Vec<i32> = (0..num_devices)
-        .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
+        .filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id)))
         .collect();
     if debug_dev && !device_ids.is_empty() {
         println!(
@@ -305,7 +306,7 @@ pub(super) fn initialize_device(
                 );
             }
             continue;
-        };
+        }
         let pool = MemoryPool::CUDA(CUDAMemoryPool {
             lib: cuda.clone(),
             context,
@@ -343,7 +344,7 @@ pub(super) fn initialize_device(
                     );
                 }
                 continue;
-            };
+            }
             streams.push(CUDAStream { stream, load: 0 });
         }
         let mut dev = CUDADevice {
@@ -428,11 +429,11 @@ pub(super) fn initialize_device(
 }
 
 impl CUDAMemoryPool {
-    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
-        Ok(())
+    pub const fn deinitialize(&mut self) {
+        let _ = self;
     }
 
-    pub fn free_bytes(&self) -> Dim {
+    pub const fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
 
@@ -459,16 +460,13 @@ impl CUDAMemoryPool {
         ))
     }
 
-    pub fn deallocate(
-        &mut self,
-        buffer_id: Id,
-        mut event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError> {
+    pub fn deallocate(&mut self, buffer_id: Id, mut event_wait_list: Vec<Event>) {
         while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
                 unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }
-                    .check(ErrorStatus::MemoryDeallocation)?;
-                unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H)?;
+                    .check(ErrorStatus::MemoryDeallocation)
+                    .unwrap();
+                unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
             }
         }
         let buffer = &mut self.buffers[buffer_id];
@@ -476,7 +474,6 @@ impl CUDAMemoryPool {
         unsafe { (self.cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation).unwrap();
         self.free_bytes += buffer.bytes;
         self.buffers.remove(buffer_id);
-        Ok(())
     }
 
     pub fn host_to_pool(
@@ -540,29 +537,28 @@ impl CUDAMemoryPool {
         Ok(())
     }
 
-    pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    pub fn release_events(&mut self, events: Vec<Event>) {
         for event in events {
             let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
-            unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization)?;
+            unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization).unwrap();
         }
-        Ok(())
     }
 }
 
 impl CUDADevice {
-    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
-        Ok(())
+    pub const fn deinitialize(&mut self) {
+        let _ = self;
     }
 
-    pub fn info(&self) -> &DeviceInfo {
+    pub const fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
-    pub fn memory_pool_id(&self) -> u32 {
+    pub const fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 
-    pub fn free_compute(&self) -> u128 {
+    pub const fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
 
@@ -584,7 +580,8 @@ impl CUDADevice {
                 ptr::null_mut(),
             )
         }
-        .check(ErrorStatus::KernelCompilation) {
+        .check(ErrorStatus::KernelCompilation)
+        {
             if debug_asm {
                 println!("Failed to compile kernel with err: {err:?}");
             }
@@ -592,8 +589,10 @@ impl CUDADevice {
         }
         let mut function: CUfunction = ptr::null_mut();
         // Don't forget that the name is null terminated string
-        if let Err(err) = unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
-            .check(ErrorStatus::KernelLaunch) {
+        if let Err(err) =
+            unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
+                .check(ErrorStatus::KernelLaunch)
+        {
             if debug_asm {
                 println!("Failed to launch kernel with err: {err:?}\n");
             }
@@ -668,12 +667,10 @@ impl CUDADevice {
         Ok(Event::CUDA(CUDAEvent { event }))
     }
 
-    pub fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
-        unsafe { (self.cuModuleUnload)(self.programs[program_id].module) }
-            .check(ErrorStatus::Deinitialization)
-            .unwrap();
+    pub fn release(&mut self, program_id: Id) {
+        let _ = unsafe { (self.cuModuleUnload)(self.programs[program_id].module) }
+            .check(ErrorStatus::Deinitialization);
         self.programs.remove(program_id);
-        Ok(())
     }
 }
 
@@ -734,11 +731,12 @@ impl CUDADevice {
         // Declare global variables
         for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
-                source.push_str(&format!(
-                    "{indent}{}{}* p{id},\n",
+                writeln!(
+                    source,
+                    "{indent}{}{}* p{id},",
                     if *read_only { "const " } else { "" },
                     dtype.cu(),
-                ));
+                );
             }
         }
 
@@ -749,67 +747,81 @@ impl CUDADevice {
         // Declare local variables
         for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Local {
-                source.push_str(&format!(
-                    "{indent}__shared__ {} p{id}[{len}];\n",
+                writeln!(
+                    source,
+                    "{indent}__shared__ {} p{id}[{len}];",
                     //if *read_only { "const " } else { "" },
                     dtype.cu(),
-                ));
+                );
             }
         }
 
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
-            source.push_str(&format!("{indent}{} r{id};\n", dtype.cu()));
+            writeln!(source, "{indent}{} r{id};", dtype.cu());
         }
 
         // Add indices for global and local loops
-        source.push_str(&format!(
-            "{indent}r{} = blockIdx.x;  /* 0..{} */\n{indent}r{} = blockIdx.y;  /* 0..{} */\n{indent}r{} = blockIdx.z;  /* 0..{} */\n  r{} = threadIdx.x;  /* 0..{} */\n{indent}r{} = threadIdx.y;  /* 0..{} */\n{indent}r{} = threadIdx.z;  /* 0..{} */\n", loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0],
-loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
+        writeln!(
+            source,
+            "{indent}r{} = blockIdx.x;  /* 0..{} */\n{indent}r{} = blockIdx.y;  /* 0..{} */\n{indent}r{} = blockIdx.z;  /* 0..{} */\n  r{} = threadIdx.x;  /* 0..{} */\n{indent}r{} = threadIdx.y;  /* 0..{} */\n{indent}r{} = threadIdx.z;  /* 0..{} */",
+            loop_ids[0],
+            global_work_size[0],
+            loop_ids[1],
+            global_work_size[1],
+            loop_ids[2],
+            global_work_size[2],
+            loop_ids[3],
+            local_work_size[0],
+            loop_ids[4],
+            local_work_size[1],
+            loop_ids[5],
+            local_work_size[2]
+        );
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Load { z, address, offset } => {
-                    source.push_str(&format!("{indent}r{z} = p{address}[{}];\n", offset.cu()));
+                    writeln!(source, "{indent}r{z} = p{address}[{}];", offset.cu());
                 }
                 IROp::Store { address, offset, x } => {
-                    source.push_str(&format!(
-                        "{indent}p{address}[{}] = {};\n",
-                        offset.cu(),
-                        x.cu()
-                    ));
+                    writeln!(source, "{indent}p{address}[{}] = {};", offset.cu(), x.cu());
                 }
                 IROp::SetLocal { .. } => todo!(),
                 IROp::Set { z, value } => {
-                    source.push_str(&format!("{indent}r{z} = {};\n", value.cu()));
+                    writeln!(source, "{indent}r{z} = {};", value.cu());
                 }
                 IROp::Cast { z, x, dtype } => {
-                    source.push_str(&format!("{indent}r{} = ({})r{};\n", z, dtype.cu(), x));
+                    writeln!(source, "{indent}r{} = ({})r{};", z, dtype.cu(), x);
                 }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
                     let zero = Constant::new(0).cast(dtype).cu();
-                    source.push_str(&match uop {
+                    match uop {
                         UOp::ReLU => {
                             if dtype == DType::F16 {
-                                format!("{indent}r{z} = r{x} * __float2half(r{x} > {zero});\n")
+                                writeln!(
+                                    source,
+                                    "{indent}r{z} = r{x} * __float2half(r{x} > {zero});"
+                                )
                             } else {
-                                format!("{indent}r{z} = r{x} * (r{x} > {zero});\n")
+                                writeln!(source, "{indent}r{z} = r{x} * (r{x} > {zero});")
                             }
                         }
-                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
-                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
-                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
-                        UOp::Reciprocal => format!("{indent}r{z} = 1/r{x};\n"),
-                        UOp::Sqrt => format!("{indent}r{z} = sqrt(r{x});\n"),
-                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
-                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
-                        UOp::Not => format!("{indent}r{z} = !r{x};\n"),
-                    });
+                        UOp::Neg => writeln!(source, "{indent}r{z} = -r{x};"),
+                        UOp::Exp2 => writeln!(source, "{indent}r{z} = exp2(r{x});"),
+                        UOp::Log2 => writeln!(source, "{indent}r{z} = log2(r{x});"),
+                        UOp::Reciprocal => writeln!(source, "{indent}r{z} = 1/r{x};"),
+                        UOp::Sqrt => writeln!(source, "{indent}r{z} = sqrt(r{x});"),
+                        UOp::Sin => writeln!(source, "{indent}r{z} = sin(r{x});"),
+                        UOp::Cos => writeln!(source, "{indent}r{z} = cos(r{x});"),
+                        UOp::Not => writeln!(source, "{indent}r{z} = !r{x};"),
+                    };
                 }
                 IROp::Binary { z, x, y, bop } => {
-                    source.push_str(&format!(
-                        "{indent}r{z} = {};\n",
+                    writeln!(
+                        source,
+                        "{indent}r{z} = {};",
                         match bop {
                             BOp::Add => format!("{} + {}", x.cu(), y.cu()),
                             BOp::Sub => format!("{} - {}", x.cu(), y.cu()),
@@ -829,38 +841,43 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
                             BOp::BitShiftLeft => format!("{} << {}", x.cu(), y.cu()),
                             BOp::BitShiftRight => format!("{} >> {}", x.cu(), y.cu()),
                         }
-                    ));
+                    );
                 }
                 IROp::MAdd { z, a, b, c } => {
-                    source.push_str(&format!(
-                        "{indent}r{z} = {} * {} + {};\n",
+                    writeln!(
+                        source,
+                        "{indent}r{z} = {} * {} + {};",
                         a.cu(),
                         b.cu(),
                         c.cu()
-                    ));
+                    );
                 }
                 IROp::Loop { id, len } => {
-                    source.push_str(&format!(
-                        "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
-                    ));
+                    writeln!(
+                        source,
+                        "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{"
+                    );
                     indent.push_str("  ");
                 }
                 IROp::EndLoop { .. } => {
                     indent.pop();
                     indent.pop();
-                    source.push_str(&format!("{indent}}}\n"));
+                    writeln!(source, "{indent}}}");
                 }
                 IROp::Barrier { scope } => {
-                    source.push_str(&format!(
-                        "{};\n",
+                    writeln!(
+                        source,
+                        "{};",
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
                             Scope::Register => unreachable!(),
                         }
-                    ));
+                    );
                 }
-                _ => { todo!() }
+                _ => {
+                    todo!()
+                }
             }
         }
         source += "}\n";
@@ -972,7 +989,7 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
         &mut self,
         kernel: &IRKernel,
         debug_asm: bool,
-    ) -> Result<([Dim; 3], [Dim; 3], String, Vec<u8>), BackendError> {
+    ) -> ([Dim; 3], [Dim; 3], Box<str>, Vec<u8>) {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
         for op in &kernel.ops[..6] {
@@ -1005,7 +1022,7 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
         // Declare global variables
         for (id, (scope, _, _, _)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
-                source += &format!("{indent}.param    .u64 g{id},\n");
+                writeln!(source, "{indent}.param    .u64 g{id},");
             }
         }
         source.pop();
@@ -1015,74 +1032,86 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
         // TOOD declare local variables
 
         // Temporaries
-        source += &format!("{indent}.reg  .pred    p;\n");
-        source += &format!("{indent}.reg  .s64    a0;\n");
-        source += &format!("{indent}.reg  .s64    a1;\n");
+        writeln!(source, "{indent}.reg  .pred    p;");
+        writeln!(source, "{indent}.reg  .s64    a0;");
+        writeln!(source, "{indent}.reg  .s64    a1;");
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!("{indent}.reg  .{}    r{id};\n", dtype.ptx());
+            writeln!(source, "{indent}.reg  .{}    r{id};", dtype.ptx());
         }
         // Add indices for global and local loops
-        source += &format!("{indent}mov.u32    r0, %ctaid.x;\n");
-        source += &format!("{indent}mov.u32    r1, %tid.x;\n");
-        source += &format!("{indent}mov.u32    r2, %ctaid.y;\n");
-        source += &format!("{indent}mov.u32    r3, %tid.y;\n");
-        source += &format!("{indent}mov.u32    r4, %ctaid.z;\n");
-        source += &format!("{indent}mov.u32    r5, %tid.z;\n");
+        writeln!(source, "{indent}mov.u32    r0, %ctaid.x;");
+        writeln!(source, "{indent}mov.u32    r1, %tid.x;");
+        writeln!(source, "{indent}mov.u32    r2, %ctaid.y;");
+        writeln!(source, "{indent}mov.u32    r3, %tid.y;");
+        writeln!(source, "{indent}mov.u32    r4, %ctaid.z;");
+        writeln!(source, "{indent}mov.u32    r5, %tid.z;");
 
         for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Set { z, value } => {
-                    let dtype: DType = value.dtype().into();
-                    source += &format!("{indent}mov.{}  r{z}, {};\n", dtype.ptx(), value.cu());
+                    writeln!(source, "{indent}mov.{}  r{z}, {};", value.dtype().ptx(), value.cu());
                 }
                 IROp::Load { z, address, offset } => {
                     let dtype = kernel.registers[z as usize];
                     // Get address
-                    source += &format!(
-                        "{indent}ld.param.u64    a0, [a{address}+{}];\n",
+                    writeln!(
+                        source,
+                        "{indent}ld.param.u64    a0, [a{address}+{}];",
                         offset.cu()
                     );
                     // Convert address to global
-                    source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
+                    writeln!(source, "{indent}cvta.to.global.u64    a1, a0;");
                     // Load from global to register
-                    source += &format!("{indent}ld.global.{}    r{}, [a1];\n", dtype.ptx(), z);
+                    writeln!(source, "{indent}ld.global.{}    r{}, [a1];", dtype.ptx(), z);
                 }
                 IROp::Store { address, offset: _, x } => {
                     let Reg::Var(id) = x else { panic!() };
                     let dtype = kernel.registers[id as usize];
                     // Get address
-                    source += &format!("{indent}ld.param.u64    a0, [a{address}];\n");
+                    writeln!(source, "{indent}ld.param.u64    a0, [a{address}];");
                     // Convert address to global
-                    source += &format!("{indent}cvta.to.global.u64    a1, a0;\n");
+                    writeln!(source, "{indent}cvta.to.global.u64    a1, a0;");
                     // Load from global to register
-                    source += &format!("{indent}st.global.{}    [a1], {};\n", dtype.ptx(), x.cu());
+                    writeln!(
+                        source,
+                        "{indent}st.global.{}    [a1], {};",
+                        dtype.ptx(),
+                        x.cu()
+                    );
                 }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
-                    source += &match uop {
+                    match uop {
                         UOp::ReLU => todo!(),
-                        UOp::Neg => {
-                            format!("{indent}neg.{}   r{z}, r{x};\n", dtype.ptx())
+                        UOp::Neg => _ = writeln!(source, "{indent}neg.{}   r{z}, r{x};", dtype.ptx()),
+                        UOp::Exp2 => {
+                            _ = writeln!(source, "{indent}ex2.approx.{}   r{z}, r{x};", dtype.ptx());
                         }
-                        UOp::Exp2 => format!("{indent}ex2.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
-                        UOp::Log2 => format!("{indent}lg2.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
+                        UOp::Log2 => {
+                            _ = writeln!(source, "{indent}lg2.approx.{}   r{z}, r{x};", dtype.ptx());
+                        }
                         UOp::Sqrt => {
-                            format!("{indent}sqrt.approx.{}   r{z}, r{x};\n", dtype.ptx(),)
+                            _ = writeln!(source, "{indent}sqrt.approx.{}   r{z}, r{x};", dtype.ptx());
                         }
-                        UOp::Sin => format!("{indent}sin.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
-                        UOp::Cos => format!("{indent}cos.approx.{}   r{z}, r{x};\n", dtype.ptx(),),
+                        UOp::Sin => {
+                            _ = writeln!(source, "{indent}sin.approx.{}   r{z}, r{x};", dtype.ptx());
+                        }
+                        UOp::Cos => {
+                            _ = writeln!(source, "{indent}cos.approx.{}   r{z}, r{x};", dtype.ptx());
+                        }
                         UOp::Not => {
-                            format!("{indent}not.{}   r{z}, r{x};\n", dtype.ptx())
+                            _ = writeln!(source, "{indent}not.{}   r{z}, r{x};", dtype.ptx());
                         }
                         UOp::Reciprocal => todo!(),
-                    };
+                    }
                 }
                 IROp::Binary { z, x, y, bop } => {
                     let dtype = kernel.registers[z as usize];
                     //println!("Adding binary {bop:?}");
-                    source += &format!(
-                        "{indent}{}.{}   r{z}, {}, {};\n",
+                    writeln!(
+                        source,
+                        "{indent}{}.{}   r{z}, {}, {};",
                         match bop {
                             BOp::Add => "add",
                             BOp::Sub => "sub",
@@ -1109,8 +1138,9 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
                 }
                 IROp::MAdd { z, a, b, c } => {
                     let dtype = kernel.registers[z as usize];
-                    source += &format!(
-                        "{indent}mad.lo.{}    r{z}, {}, {}, {};\n",
+                    writeln!(
+                        source,
+                        "{indent}mad.lo.{}    r{z}, {}, {}, {};",
                         dtype.ptx(),
                         a.cu(),
                         b.cu(),
@@ -1118,19 +1148,20 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
                     );
                 }
                 IROp::Loop { id, .. } => {
-                    source += &format!("LOOP_{id}:\n");
+                    writeln!(source, "LOOP_{id}:");
                 }
                 IROp::EndLoop { id, len } => {
                     // Increment counter
-                    source += &format!("{indent}add.u32    r{id}, r{id}, 1;\n");
+                    writeln!(source, "{indent}add.u32    r{id}, r{id}, 1;");
                     // Set condition
-                    source += &format!("{indent}setp.lt.u32    p, r{id}, {len};\n");
+                    writeln!(source, "{indent}setp.lt.u32    p, r{id}, {len};");
                     // Branch
-                    source += &format!("@p  bra    LOOP_{id};\n");
+                    writeln!(source, "@p  bra    LOOP_{id};");
                 }
                 IROp::Barrier { scope } => {
-                    source += &format!(
-                        "{};\n",
+                    writeln!(
+                        source,
+                        "{};",
                         match scope {
                             Scope::Global => "__threadfence()",
                             Scope::Local => "__syncthreads()",
@@ -1140,20 +1171,26 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
                 }
                 IROp::SetLocal { .. } => todo!(),
                 IROp::Cast { z, x, dtype } => {
-                    source += &format!(
-                        "{indent}cvt.{}.{}    r{z}, r{x};\n",
+                    _ = writeln!(
+                        source,
+                        "{indent}cvt.{}.{}    r{z}, r{x};",
                         dtype.ptx(),
                         dtype.ptx(),
-                    )
+                    );
                 }
             }
         }
         // End kernel
-        source += &format!("{indent}ret;\n}}\0");
+        writeln!(source, "{indent}ret;\n}}\0");
         if debug_asm {
             println!("Compiling kernel {name}, PTX source:\n{source}");
         }
-        Ok((global_work_size, local_work_size, name, source.into()))
+        (
+            global_work_size,
+            local_work_size,
+            name.into(),
+            source.into(),
+        )
     }
 }
 
@@ -1450,7 +1487,7 @@ impl nvrtcResult {
         if self == Self::NVRTC_SUCCESS {
             Ok(())
         } else {
-            Err(BackendError { status, context: format!("{self:?}") })
+            Err(BackendError { status, context: format!("{self:?}").into() })
         }
     }
 }
@@ -1555,7 +1592,7 @@ impl CUDAStatus {
             let cudaPeek: unsafe extern "C" fn(c_uint) -> CUDAStatus =
             *unsafe { cuda.get(b"cudaPeekAtLastError\0") }.unwrap();*/
 
-            Err(BackendError { status, context: format!("{self:?}") })
+            Err(BackendError { status, context: format!("{self:?}").into() })
         }
     }
 }

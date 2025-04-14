@@ -60,7 +60,7 @@ impl Embedding {
         if xdt != wdt {
             return Err(ZyxError::DTypeError(format!(
                 "Embedding::forward input x has dtype {xdt} but weight has dtype {wdt}"
-            )));
+            ).into()));
         }
         let big_shp: Vec<usize> = x_sh
             .iter()

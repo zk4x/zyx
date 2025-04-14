@@ -55,12 +55,11 @@ impl IRCompiler {
                             };
                             a && b
                         }
-                        IROp::SetLocal { .. } => false,
                         IROp::Set { z, .. } => {
                             dependents.insert(z);
                             false
                         }
-                        IROp::Barrier { .. } => false,
+                        IROp::Barrier { .. } | IROp::SetLocal { .. } => false,
                         IROp::Cast { z, x, .. } | IROp::Unary { z, x, .. } => {
                             if dependents.contains(&x) {
                                 dependents.insert(z);

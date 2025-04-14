@@ -133,8 +133,7 @@ impl IRCompiler {
                                             *id += ta;
                                         }
                                     }
-                                    IROp::SetLocal { .. } => {}
-                                    IROp::Barrier { .. } => {}
+                                    IROp::SetLocal { .. } | IROp::Barrier { .. } => {}
                                 }
                             }
                             // Copy ops

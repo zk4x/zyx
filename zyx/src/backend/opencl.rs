@@ -6,17 +6,18 @@
 
 use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
 use crate::{
+    DType,
     dtype::Constant,
     ir::{IROp, Reg, Scope},
     node::{BOp, UOp},
     shape::Dim,
     slab::{Id, Slab},
-    DType,
 };
 use libloading::Library;
 use nanoserde::DeJson;
 use std::{
-    ffi::{c_void, CString},
+    ffi::{CString, c_void},
+    fmt::Write,
     ptr,
     sync::Arc,
 };
@@ -266,11 +267,11 @@ pub(super) fn initialize_device(
             Vec::new()
         }
     };
-    let mut memory_pool_id = memory_pools.len() as u32;
+    let mut memory_pool_id = u32::try_from(memory_pools.len()).unwrap();
     for (platform_id, platform) in platform_ids
         .iter()
         .enumerate()
-        .filter(|(id, _)| config.platform_ids.as_ref().map_or(true, |ids| ids.contains(id)))
+        .filter(|(id, _)| config.platform_ids.as_ref().is_none_or(|ids| ids.contains(id)))
     {
         let platform = *platform;
         let Ok(device_ids) = {
@@ -426,13 +427,16 @@ pub(super) fn initialize_device(
 }
 
 impl OpenCLMemoryPool {
-    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
-        unsafe { (self.clReleaseContext)(self.context) }.check(ErrorStatus::Deinitialization)?;
-        unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization)?;
-        Ok(())
+    pub fn deinitialize(&mut self) {
+        unsafe { (self.clReleaseContext)(self.context) }
+            .check(ErrorStatus::Deinitialization)
+            .unwrap();
+        unsafe { (self.clReleaseCommandQueue)(self.queue) }
+            .check(ErrorStatus::Deinitialization)
+            .unwrap();
     }
 
-    pub fn free_bytes(&self) -> Dim {
+    pub const fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
 
@@ -463,11 +467,7 @@ impl OpenCLMemoryPool {
         ))
     }
 
-    pub fn deallocate(
-        &mut self,
-        buffer_id: Id,
-        event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError> {
+    pub fn deallocate(&mut self, buffer_id: Id, event_wait_list: Vec<Event>) {
         //println!("Deallocate {:?}", self.buffers[buffer_id].ptr);
         let buffer = &mut self.buffers[buffer_id];
         debug_assert!(
@@ -484,22 +484,22 @@ impl OpenCLMemoryPool {
             .collect();
         if !event_wait_list.is_empty() {
             let event_wait_list_ptr = event_wait_list.as_ptr();
-            unsafe {
+            let _ = unsafe {
                 (self.clWaitForEvents)(
                     event_wait_list.len().try_into().unwrap(),
                     event_wait_list_ptr,
                 )
             }
-            .check(ErrorStatus::Deinitialization)?;
+            .check(ErrorStatus::Deinitialization);
         }
         // This segfaults... AFAIK it shouldn't...
         /*for event in event_wait_list {
             unsafe { (self.clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization)?;
         }*/
-        unsafe { (self.clReleaseMemObject)(buffer.buffer) }.check(ErrorStatus::Deinitialization)?;
+        let _ = unsafe { (self.clReleaseMemObject)(buffer.buffer) }
+            .check(ErrorStatus::Deinitialization);
         self.free_bytes += buffer.bytes;
         self.buffers.remove(buffer_id);
-        Ok(())
     }
 
     pub fn host_to_pool(
@@ -569,7 +569,10 @@ impl OpenCLMemoryPool {
         if !event_wait_list.is_empty() {
             //println!("Syncing events: {event_wait_list:?}");
             unsafe {
-                (self.clWaitForEvents)(event_wait_list.len() as u32, event_wait_list.as_ptr())
+                (self.clWaitForEvents)(
+                    u32::try_from(event_wait_list.len()).unwrap(),
+                    event_wait_list.as_ptr(),
+                )
             }
             .check(ErrorStatus::MemoryCopyP2H)?;
         }
@@ -638,27 +641,28 @@ impl OpenCLMemoryPool {
         Ok(())
     }
 
-    pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn release_events(&mut self, events: Vec<Event>) {
+        let _ = self;
         let _ = events;
         // For whatever reason this segfaults... Buggy opencl implementation?
         /*for event in events {
             let Event::OpenCL(OpenCLEvent { event }) = event else { unreachable!() };
             unsafe { (self.clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization)?;
         }*/
-        Ok(())
     }
 }
 
 impl OpenCLDevice {
-    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
-        Ok(())
+    pub const fn deinitialize(&mut self) {
+        let _ = self;
     }
 
-    pub fn info(&self) -> &DeviceInfo {
+    pub const fn info(&self) -> &DeviceInfo {
         &self.dev_info
     }
 
-    pub fn memory_pool_id(&self) -> u32 {
+    pub const fn memory_pool_id(&self) -> u32 {
         self.memory_pool_id
     }
 
@@ -691,11 +695,12 @@ impl OpenCLDevice {
         // Declare global variables
         for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Global {
-                source += &format!(
-                    "{indent}__global {}{}* p{id},\n",
+                writeln!(
+                    source,
+                    "{indent}__global {}{}* p{id},",
                     if *read_only { "const " } else { "" },
                     dtype.ocl(),
-                );
+                ).unwrap();
             }
         }
 
@@ -706,19 +711,32 @@ impl OpenCLDevice {
         // Declare local variables
         for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
             if *scope == Scope::Local {
-                source += &format!("{indent}__local {} p{id}[{len}];\n", dtype.ocl(),);
+                writeln!(source, "{indent}__local {} p{id}[{len}];", dtype.ocl()).unwrap();
             }
         }
 
         // Declare register variables
         for (id, dtype) in kernel.registers.iter().enumerate() {
-            source += &format!("{indent}{} r{id};\n", dtype.ocl(),);
+            writeln!(source, "{indent}{} r{id};", dtype.ocl()).unwrap();
         }
 
         // Add indices for global and local loops
-        source.push_str(&format!(
-            "{indent}r{} = get_group_id(0);  /* 0..{} */\n{indent}r{} = get_group_id(1);  /* 0..{} */\n{indent}r{} = get_group_id(2);  /* 0..{} */\n{indent}r{} = get_local_id(0);  /* 0..{} */\n{indent}r{} = get_local_id(1);  /* 0..{} */\n{indent}r{} = get_local_id(2);  /* 0..{} */\n",
-            loop_ids[0], global_work_size[0], loop_ids[1], global_work_size[1], loop_ids[2], global_work_size[2], loop_ids[3], local_work_size[0], loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
+        writeln!(
+            source,
+            "{indent}r{} = get_group_id(0);  /* 0..{} */\n{indent}r{} = get_group_id(1);  /* 0..{} */\n{indent}r{} = get_group_id(2);  /* 0..{} */\n{indent}r{} = get_local_id(0);  /* 0..{} */\n{indent}r{} = get_local_id(1);  /* 0..{} */\n{indent}r{} = get_local_id(2);  /* 0..{} */",
+            loop_ids[0],
+            global_work_size[0],
+            loop_ids[1],
+            global_work_size[1],
+            loop_ids[2],
+            global_work_size[2],
+            loop_ids[3],
+            local_work_size[0],
+            loop_ids[4],
+            local_work_size[1],
+            loop_ids[5],
+            local_work_size[2]
+        ).unwrap();
 
         //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
 
@@ -738,7 +756,8 @@ impl OpenCLDevice {
                         todo!()
                     }*/
                     match dtype {
-                        DType::F16
+                        DType::BF16
+                        | DType::F16
                         | DType::F32
                         | DType::F64
                         | DType::U8
@@ -750,20 +769,21 @@ impl OpenCLDevice {
                         | DType::I32
                         | DType::I64
                         | DType::Bool => {
-                            source += &format!(
-                                "{indent}r{z} = *((__global {}*)p{address} + {});\n",
+                            _ = writeln!(
+                                source,
+                                "{indent}r{z} = *((__global {}*)p{address} + {});",
                                 dtype.ocl(),
                                 offset.ocl(),
                             );
                         }
-                        _ => todo!(),
                     }
                 }
                 IROp::Store { address, offset, x } => {
                     //source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
                     let dtype = kernel.addressables[address as usize].1;
                     match dtype {
-                        DType::F16
+                        DType::BF16
+                        | DType::F16
                         | DType::F32
                         | DType::F64
                         | DType::U8
@@ -775,51 +795,54 @@ impl OpenCLDevice {
                         | DType::I32
                         | DType::I64
                         | DType::Bool => {
-                            source += &format!(
-                                "{indent}*((__global {}*)p{address} + {}) = {};\n",
+                            writeln!(
+                                source,
+                                "{indent}*((__global {}*)p{address} + {}) = {};",
                                 dtype.ocl(),
                                 offset.ocl(),
                                 x.ocl(),
-                            );
+                            ).unwrap();
                         }
-                        _ => todo!(),
                     }
                 }
                 IROp::SetLocal { .. } => todo!(),
                 IROp::Set { z, value } => {
-                    source.push_str(&format!("{indent}r{z} = {};\n", value.ocl()));
+                    writeln!(source, "{indent}r{z} = {};", value.ocl()).unwrap();
                 }
                 IROp::Cast { z, x, dtype } => {
-                    source += &format!("{indent}r{z} = ({})r{x};\n", dtype.ocl());
+                    writeln!(source, "{indent}r{z} = ({})r{x};", dtype.ocl()).unwrap();
                 }
                 IROp::Unary { z, x, uop } => {
                     let dtype = kernel.registers[z as usize];
-                    source += &match uop {
-                        UOp::ReLU => format!(
-                            "{indent}r{z} = max(r{x}, {});\n",
+                    match uop {
+                        UOp::ReLU => writeln!(
+                            source,
+                            "{indent}r{z} = max(r{x}, {});",
                             dtype.zero_constant().ocl()
-                        ),
-                        UOp::Neg => format!("{indent}r{z} = -r{x};\n"),
-                        UOp::Exp2 => format!("{indent}r{z} = exp2(r{x});\n"),
-                        UOp::Log2 => format!("{indent}r{z} = log2(r{x});\n"),
-                        UOp::Reciprocal => format!("{indent}r{z} = 1/r{x};\n"),
-                        UOp::Sqrt => format!(
-                            "{indent}r{z} = sqrt({}r{x});\n",
+                        ).unwrap(),
+                        UOp::Neg => writeln!(source, "{indent}r{z} = -r{x};").unwrap(),
+                        UOp::Exp2 => writeln!(source, "{indent}r{z} = exp2(r{x});").unwrap(),
+                        UOp::Log2 => writeln!(source, "{indent}r{z} = log2(r{x});").unwrap(),
+                        UOp::Reciprocal => writeln!(source, "{indent}r{z} = 1/r{x};").unwrap(),
+                        UOp::Sqrt => writeln!(
+                            source,
+                            "{indent}r{z} = sqrt({}r{x});",
                             if matches!(dtype, DType::F16) {
                                 "(float)"
                             } else {
                                 ""
                             }
-                        ),
-                        UOp::Sin => format!("{indent}r{z} = sin(r{x});\n"),
-                        UOp::Cos => format!("{indent}r{z} = cos(r{x});\n"),
-                        UOp::Not => format!("{indent}r{z} = !r{x};\n"),
-                    };
+                        ).unwrap(),
+                        UOp::Sin => writeln!(source, "{indent}r{z} = sin(r{x});").unwrap(),
+                        UOp::Cos => writeln!(source, "{indent}r{z} = cos(r{x});").unwrap(),
+                        UOp::Not => writeln!(source, "{indent}r{z} = !r{x};").unwrap(),
+                    }
                 }
                 IROp::Binary { z, x, y, bop } => {
                     let dtype = kernel.registers[z as usize];
-                    source += &format!(
-                        "{indent}r{z} = {};\n",
+                    writeln!(
+                        source,
+                        "{indent}r{z} = {};",
                         match bop {
                             BOp::Add => format!("{} + {}", x.ocl(), y.ocl()),
                             BOp::Sub => format!("{} - {}", x.ocl(), y.ocl()),
@@ -845,37 +868,42 @@ impl OpenCLDevice {
                             BOp::BitShiftLeft => format!("{} << {}", x.ocl(), y.ocl()),
                             BOp::BitShiftRight => format!("{} >> {}", x.ocl(), y.ocl()),
                         }
-                    );
+                    ).unwrap();
                     //if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
                 }
                 IROp::MAdd { z, a, b, c } => {
                     let dtype = kernel.registers[z as usize];
                     if dtype.is_float() {
-                        source += &format!("{indent}r{z} = mad({}, {}, {});\n", a.ocl(), b.ocl(), c.ocl());
+                        writeln!(
+                            source,
+                            "{indent}r{z} = mad({}, {}, {});\n",
+                            a.ocl(),
+                            b.ocl(),
+                            c.ocl()
+                        ).unwrap();
                     } else {
-                        source += &format!("{indent}r{z} = {} * {} + {};\n", a.ocl(), b.ocl(), c.ocl());
+                        writeln!(source, "{indent}r{z} = {} * {} + {};", a.ocl(), b.ocl(), c.ocl()).unwrap();
                     }
                 }
                 IROp::Loop { id, len } => {
-                    source += &format!(
-                        "{indent}for (r{id} = 0; r{id} < {len}; r{id} += 1) {{\n"
-                    );
+                    writeln!(source, "{indent}for (r{id} = 0; r{id} < {len}; r{id} += 1) {{").unwrap();
                     indent += "  ";
                 }
                 IROp::EndLoop { .. } => {
                     indent.pop();
                     indent.pop();
-                    source += &format!("{indent}}}\n");
+                    writeln!(source, "{indent}}}").unwrap();
                 }
                 IROp::Barrier { scope } => {
-                    source += &format!(
-                        "{indent}barrier(CLK_{}AL_MEM_FENCE);\n",
+                    writeln!(
+                        source,
+                        "{indent}barrier(CLK_{}AL_MEM_FENCE);",
                         match scope {
                             Scope::Global => "GLOB",
                             Scope::Local => "LOC",
                             Scope::Register => unreachable!(),
                         }
-                    );
+                    ).unwrap();
                 }
             }
         }
@@ -1032,15 +1060,14 @@ impl OpenCLDevice {
         Ok(Event::OpenCL(OpenCLEvent { event }))
     }
 
-    pub fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+    pub fn release(&mut self, program_id: Id) {
         //println!("Releasing {:?}", program);
-        unsafe { (self.clReleaseProgram)(self.programs[program_id].program) }
-            .check(ErrorStatus::Deinitialization)?;
+        let _ = unsafe { (self.clReleaseProgram)(self.programs[program_id].program) }
+            .check(ErrorStatus::Deinitialization);
         self.programs.remove(program_id);
-        Ok(())
     }
 
-    pub fn free_compute(&self) -> u128 {
+    pub const fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
 }
@@ -1050,7 +1077,7 @@ impl OpenCLStatus {
         if self == Self::CL_SUCCESS {
             Ok(())
         } else {
-            Err(BackendError { status, context: format!("{self:?}") })
+            Err(BackendError { status, context: format!("{self:?}").into() })
         }
     }
 }
@@ -1096,10 +1123,9 @@ impl OpenCLDevice {
             max_global_work_dims,
             max_local_threads: mlt,
             max_local_work_dims: [mlt, mlt, mlt],
-            preferred_vector_size: u32::from_ne_bytes(
+            preferred_vector_size: u8::try_from(u32::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
-            ) as u8
-                * 4,
+            )).unwrap() * 4,
             local_mem_size: Dim::try_from(u64::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
             ))
@@ -1120,7 +1146,8 @@ impl OpenCLDevice {
             if OpenCLStatus::CL_SUCCESS != ocl_status {
                 return Err(BackendError {
                     status: ErrorStatus::DeviceQuery,
-                    context: format!("Failed to get device info {param_name}, {ocl_status:?}"),
+                    context: format!("Failed to get device info {param_name}, {ocl_status:?}")
+                        .into(),
                 });
             }
             Ok(size)
@@ -1262,8 +1289,8 @@ const CL_PLATFORM_NAME: cl_uint = 0x0902; // 2306
 const CL_DEVICE_NAME: cl_uint = 0x102B; // 4139
 const CL_DEVICE_GLOBAL_MEM_SIZE: cl_uint = 0x101F; // 4127
 const CL_DEVICE_LOCAL_MEM_SIZE: cl_uint = 0x1023; // 4131
-                                                  //const CL_DEVICE_MAX_MEM_ALLOC_SIZE: cl_uint = 0x1010; // 4112
-                                                  //const CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE: cl_uint = 0x101A; // 4122
+//const CL_DEVICE_MAX_MEM_ALLOC_SIZE: cl_uint = 0x1010; // 4112
+//const CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE: cl_uint = 0x101A; // 4122
 const CL_DEVICE_MAX_WORK_GROUP_SIZE: cl_uint = 0x1004; // 4100
 const CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS: cl_uint = 0x1003; // 4099
 const CL_DEVICE_MAX_WORK_ITEM_SIZES: cl_uint = 0x1005; // 4101

@@ -9,6 +9,7 @@ use crate::{
     DType,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::BuildHasherDefault;
 
 #[derive(Debug)]
 pub struct Graph {
@@ -46,7 +47,7 @@ impl Graph {
     pub(super) fn release(&mut self, x: TensorId) -> Set<TensorId> {
         let mut params = Vec::with_capacity(10);
         params.push(x);
-        let mut to_remove = Set::with_capacity_and_hasher(10, Default::default());
+        let mut to_remove = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
         while let Some(x) = params.pop() {
             //println!("Releasing {x}");
             let node = &mut self.nodes[x];
@@ -268,7 +269,7 @@ impl Graph {
         }
         //std::println!("User {:?}", user_rc);
         let realized_nodes: Set<TensorId> =
-            pools.iter().map(|pool| pool.buffer_map.keys()).flatten().copied().collect();
+            pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
         let mut res_dot_graph =
             String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
         let mut add_node = |i: TensorId, text: &str, shape: &str| {
@@ -277,15 +278,11 @@ impl Graph {
                 write!(res, "  {id}[label=\"{}NL{} x {}NL{}NL{}\", shape={}, fillcolor=\"{}\", style=filled]",
                     label, id, rc[id], text, get_shape(NodeId::new(id)), shape, fillcolor).unwrap();
             } else {*/
-            let border_color;
-            let border_width;
-            if realized_nodes.contains(&i) {
-                border_color = "darkred";
-                border_width = 5;
+            let (border_color, border_width) = if realized_nodes.contains(&i) {
+                ("darkred", 5)
             } else {
-                border_color = "black";
-                border_width = 1;
-            }
+                ("black", 1)
+            };
             write!(
                 res_dot_graph,
                 "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled, color=\"{border_color}\", penwidth={border_width}]",
@@ -305,7 +302,7 @@ impl Graph {
             match node {
                 Node::Const { value } => add_node(id, &f!("Const({value:?})"), "box"),
                 Node::Leaf { dtype } => {
-                    add_node(id, &f!("Leaf({:?}, {})", self.shape(id), dtype), "box")
+                    add_node(id, &f!("Leaf({:?}, {})", self.shape(id), dtype), "box");
                 }
                 Node::Cast { x, dtype } => add_node(id, &f!("C-{dtype}({x})"), "oval"),
                 Node::Unary { x, uop } => add_node(id, &f!("{uop:?}({x})"), "oval"),

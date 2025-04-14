@@ -128,7 +128,7 @@ pub enum ErrorStatus {
 #[derive(Debug)]
 pub struct BackendError {
     status: ErrorStatus,
-    context: String,
+    context: Box<str>,
 }
 
 /// Hardware information needed for applying optimizations
@@ -152,8 +152,9 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug)]
-pub(super) enum MemoryPool {
+pub enum MemoryPool {
     Dummy(DummyMemoryPool),
     Disk(DiskMemoryPool),
     CUDA(CUDAMemoryPool),
@@ -163,7 +164,7 @@ pub(super) enum MemoryPool {
 }
 
 impl MemoryPool {
-    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
+    pub fn deinitialize(&mut self) {
         match self {
             MemoryPool::Disk(pool) => pool.deinitialize(),
             MemoryPool::CUDA(pool) => pool.deinitialize(),
@@ -174,14 +175,14 @@ impl MemoryPool {
         }
     }
 
-    pub fn disk_pool(&mut self) -> Option<&mut DiskMemoryPool> {
+    pub const fn disk_pool(&mut self) -> Option<&mut DiskMemoryPool> {
         match self {
             Self::Disk(disk) => Some(disk),
             _ => None,
         }
     }
 
-    pub fn free_bytes(&self) -> Dim {
+    pub const fn free_bytes(&self) -> Dim {
         match self {
             MemoryPool::Disk(pool) => pool.free_bytes(),
             MemoryPool::CUDA(pool) => pool.free_bytes(),
@@ -208,7 +209,7 @@ impl MemoryPool {
         &mut self,
         buffer_id: Id,
         event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError> {
+    ) {
         match self {
             MemoryPool::Disk(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::CUDA(pool) => pool.deallocate(buffer_id, event_wait_list),
@@ -267,7 +268,7 @@ impl MemoryPool {
     }
 
     // Drop events without synchronization, non-blocking
-    pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    pub fn release_events(&mut self, events: Vec<Event>) {
         match self {
             MemoryPool::Disk(pool) => pool.release_events(events),
             MemoryPool::CUDA(pool) => pool.release_events(events),
@@ -279,7 +280,8 @@ impl MemoryPool {
     }
 }
 
-pub(super) enum Device {
+#[allow(clippy::upper_case_acronyms)]
+pub enum Device {
     CUDA(CUDADevice),
     OpenCL(OpenCLDevice),
     #[cfg(feature = "wgpu")]
@@ -288,7 +290,7 @@ pub(super) enum Device {
 }
 
 impl Device {
-    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
+    pub const fn deinitialize(&mut self) {
         match self {
             Device::CUDA(dev) => dev.deinitialize(),
             Device::OpenCL(dev) => dev.deinitialize(),
@@ -298,7 +300,7 @@ impl Device {
         }
     }
 
-    pub fn info(&self) -> &DeviceInfo {
+    pub const fn info(&self) -> &DeviceInfo {
         match self {
             Device::CUDA(dev) => dev.info(),
             Device::OpenCL(dev) => dev.info(),
@@ -308,7 +310,7 @@ impl Device {
         }
     }
 
-    pub fn memory_pool_id(&self) -> u32 {
+    pub const fn memory_pool_id(&self) -> u32 {
         match self {
             Device::CUDA(dev) => dev.memory_pool_id(),
             Device::OpenCL(dev) => dev.memory_pool_id(),
@@ -318,9 +320,9 @@ impl Device {
         }
     }
 
-    /// How much compute is available on the device, this should be multiplied by (1 - device_usage),
+    /// How much compute is available on the device, this should be multiplied by (1 - `device_usage`),
     /// so that we spread the laod across all available devices appropriatelly.
-    pub fn free_compute(&self) -> u128 {
+    pub const fn free_compute(&self) -> u128 {
         match self {
             Device::CUDA(dev) => dev.free_compute(),
             Device::OpenCL(dev) => dev.free_compute(),
@@ -340,7 +342,7 @@ impl Device {
         }
     }
 
-    pub fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+    pub fn release(&mut self, program_id: Id) {
         match self {
             Device::CUDA(dev) => dev.release(program_id),
             Device::OpenCL(dev) => dev.release(program_id),

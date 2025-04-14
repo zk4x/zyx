@@ -105,7 +105,7 @@ impl<T> Slab<T> {
     }
 
     pub(crate) fn contains_key(&self, id: Id) -> bool {
-        id < self.values.len() as Id && !self.empty.contains(&id)
+        id < Id::try_from(self.values.len()).unwrap() && !self.empty.contains(&id)
     }
 
     /*pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
@@ -137,7 +137,7 @@ impl<T> Slab<T> {
     }
 
     pub(crate) fn len(&self) -> u32 {
-        (self.values.len() - self.empty.len()) as u32
+        u32::try_from(self.values.len() - self.empty.len()).unwrap()
     }
 }
 

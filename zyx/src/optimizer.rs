@@ -16,7 +16,7 @@ pub struct Optimization {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) enum OptOp {
+pub enum OptOp {
     //RegisterAcc { id: u16, },
     MatmulRegisterTiling,
 }

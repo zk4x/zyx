@@ -89,14 +89,14 @@ pub fn into_axis(axis: isize, rank: Axis) -> Result<Axis, ZyxError> {
         |_| {
             Err(ZyxError::ShapeError(format!(
                 "Axis {axis} is out of range of rank {rank}"
-            )))
+            ).into()))
         },
         |rank2| {
             TryInto::<Axis>::try_into(axis + rank2).map_or_else(
                 |_| {
                     Err(ZyxError::ShapeError(format!(
                         "Axis {axis} is out of range of rank {rank}"
-                    )))
+                    ).into()))
                 },
                 |a| {
                     if a < 2 * rank {
@@ -104,7 +104,7 @@ pub fn into_axis(axis: isize, rank: Axis) -> Result<Axis, ZyxError> {
                     } else {
                         Err(ZyxError::ShapeError(format!(
                             "Axis {axis} is out of range of rank {rank}"
-                        )))
+                        ).into()))
                     }
                 },
             )

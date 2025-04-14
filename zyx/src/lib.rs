@@ -68,7 +68,7 @@ mod tensor;
 mod view;
 // Constant initializable hasher because apparently noone invented that yet...
 mod chasher;
-mod bar;
+mod prog_bar;
 mod autograd;
 mod static_graph;
 mod optimizer;

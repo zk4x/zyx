@@ -1,5 +1,5 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event}, bar::ProgressBar, ir::IRKernel, kernel::{Kernel, Op}, optimizer::{Optimization, Optimizer}, runtime::Pool, slab::Id, DebugMask
+    backend::{BackendError, Device, DeviceInfo, Event}, prog_bar::ProgressBar, ir::IRKernel, kernel::{Kernel, Op}, optimizer::{Optimization, Optimizer}, runtime::Pool, slab::Id, DebugMask
 };
 use std::collections::BTreeMap;
 
@@ -27,7 +27,7 @@ impl KernelCache {
 
     pub(super) fn deinitialize(&mut self, devices: &mut [Device]) {
         while let Some(((_, device_id), program_id)) = self.programs.pop_last() {
-            let _ = devices[device_id as usize].release(program_id);
+            devices[device_id as usize].release(program_id);
         }
         self.device_infos = BTreeMap::new();
         self.kernels = BTreeMap::new();
@@ -100,7 +100,7 @@ impl KernelCache {
             }
             //self.optimizations.insert((kernel_id, dev_info_id), optimization);
         } else {
-            let rng = crate::rng::Rng::seed_from_u64(3940239);
+            let rng = crate::rng::Rng::seed_from_u64(3_940_239);
             let mut optimizer = Optimizer::new(rng, kernel, device.info().clone());
             pool.pool.sync_events(event_wait_list)?;
 

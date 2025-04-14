@@ -75,7 +75,7 @@ impl View {
                 res *= usize::try_from(isize::try_from(dim.d).unwrap() - dim.lp - dim.rp).unwrap();
             }
         }
-        return res;
+        res
     }
 
     /*pub(crate) fn numel(&self) -> usize {
@@ -110,7 +110,7 @@ impl View {
     // This is used for reshape, merge and split
     pub(crate) fn reshape(&mut self, axes: Range<Axis>, shape: &[Dim]) {
         //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
-        debug_assert!(axes.end <= self.0.last().map_or(1, |x| x.len()));
+        debug_assert!(axes.end <= self.0.last().map_or(1, Vec::len));
         debug_assert_eq!(
             self.0.last().unwrap()[axes.clone()].iter().map(|dim| dim.d).product::<Dim>(),
             shape.iter().product::<Dim>()

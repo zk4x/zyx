@@ -207,7 +207,7 @@ impl DType {
             _ => {
                 return Err(ZyxError::ParseError(format!(
                     "Could not parse dtype {text}"
-                )))
+                ).into()))
             }
         })
     }

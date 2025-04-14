@@ -58,11 +58,11 @@ pub(super) fn initialize_device(
 }
 
 impl DummyMemoryPool {
-    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
-        Ok(())
+    pub const fn deinitialize(&mut self) {
+        let _ = self;
     }
 
-    pub fn free_bytes(&self) -> Dim {
+    pub const fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
 
@@ -79,85 +79,100 @@ impl DummyMemoryPool {
         Ok((id, Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn deallocate(
         &mut self,
         buffer_id: crate::slab::Id,
         event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError> {
+    ) {
         let _ = event_wait_list;
         let bytes = self.buffers[buffer_id];
         self.buffers.remove(buffer_id);
         self.free_bytes += bytes;
-        Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::unnecessary_wraps)]
     pub fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: crate::slab::Id,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        let _ = self;
         let _ = src;
         let _ = dst;
         let _ = event_wait_list;
         Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
     }
 
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::unnecessary_wraps)]
     pub fn pool_to_host(
         &mut self,
         src: crate::slab::Id,
         dst: &mut [u8],
         event_wait_list: Vec<super::Event>,
     ) -> Result<(), BackendError> {
+        let _ = self;
         let _ = src;
         let _ = dst;
         let _ = event_wait_list;
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::unnecessary_wraps)]
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        let _ = self;
         let _ = events;
         Ok(())
     }
 
-    pub fn release_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn release_events(&mut self, events: Vec<Event>) {
+        let _ = self;
         let _ = events;
-        Ok(())
     }
 }
 
 impl DummyDevice {
-    pub fn deinitialize(&mut self) -> Result<(), BackendError> {
-        Ok(())
+    pub const fn deinitialize(&mut self) {
+        let _ = self;
     }
 
-    pub fn info(&self) -> &super::DeviceInfo {
+    pub const fn info(&self) -> &super::DeviceInfo {
         &self.device_info
     }
 
-    pub fn memory_pool_id(&self) -> u32 {
+    pub const fn memory_pool_id(&self) -> u32 {
+        let _ = self;
         0
     }
 
-    pub fn free_compute(&self) -> u128 {
+    pub const fn free_compute(&self) -> u128 {
         self.device_info.compute
     }
 
-    pub fn compile(
+    #[allow(clippy::unnecessary_wraps)]
+    pub const fn compile(
         &mut self,
         kernel: &crate::ir::IRKernel,
         debug_asm: bool,
     ) -> Result<Id, BackendError> {
+        let _ = self;
         let _ = kernel;
         let _ = debug_asm;
         Ok(0)
     }
 
-    pub fn release(&mut self, program_id: Id) -> Result<(), BackendError> {
+    pub const fn release(&mut self, program_id: Id) {
+        let _ = self;
         let _ = program_id;
-        Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn launch(
         &mut self,
         program_id: Id,
@@ -165,10 +180,11 @@ impl DummyDevice {
         args: &[Id],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
+        let _ = self;
         let _ = program_id;
         let _ = event_wait_list;
         for &arg in args {
-            let _dfs = memory_pool.buffers[arg];
+            let _ = memory_pool.buffers[arg];
         }
         Ok(Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }))
     }

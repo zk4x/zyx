@@ -791,6 +791,7 @@ impl Kernel {
             match op {
                 Op::Load { x, .. } => {
                     let tid = self.tensors[x];
+                    #[allow(clippy::map_entry)]
                     if !memory_pools[mpid].buffer_map.contains_key(&tid) {
                         // Check where the tensor is
                         let mut old_mpid = usize::MAX;
@@ -824,7 +825,7 @@ impl Kernel {
                             &mut byte_slice,
                             event_wait_list,
                         )?;
-                        memory_pools[old_mpid].pool.deallocate(src, vec![])?;
+                        memory_pools[old_mpid].pool.deallocate(src, vec![]);
                         memory_pools[old_mpid].buffer_map.remove(&tid);
                         //println!("{byte_slice:?}");
 
@@ -870,7 +871,7 @@ impl Kernel {
         // Send the kernel to kernel cache.
         if let Some(event) = kernel_cache.launch(
             self,
-            dev_id as u32,
+            u32::try_from(dev_id).unwrap(),
             &mut devices[dev_id],
             &mut memory_pools[mpid],
             &args,
@@ -883,167 +884,6 @@ impl Kernel {
         }
         Ok(None)
     }
-
-    /// Store is the only function that evaluates kernels, it just checks if outputs
-    /// are empty after store. Returns ids of evaluated tensors.
-    /*pub(super) fn launch(
-        &mut self,
-        graph: &Graph,
-        devices: &mut [Device],
-        memory_pools: &mut [Pool],
-        optimizer: &mut KernelCache,
-        search_iters: usize,
-        debug: DebugMask,
-    ) -> Result<Option<Event>, ZyxError> {
-        // Pick a device to run program
-        // Find in which memory pool are most of input tensors stored
-        let tensors: BTreeSet<TensorId> = self.tensors.values().copied().collect();
-        // memory pool id => set(buffer_id), total_memory_used
-        let mut used_pools: BTreeMap<usize, (BTreeSet<u32>, usize)> = BTreeMap::new();
-        for (memory_pool_id, pool) in memory_pools.iter().enumerate() {
-            for &tensor_id in &tensors {
-                if pool.buffer_map.contains_key(&tensor_id) {
-                    used_pools
-                        .entry(memory_pool_id)
-                        .and_modify(|(buffers, memory_size)| {
-                            buffers.insert(tensor_id);
-                            *memory_size += graph.shape(tensor_id).iter().product::<usize>();
-                        })
-                        .or_insert_with(|| {
-                            (
-                                BTreeSet::from([tensor_id]),
-                                graph.shape(tensor_id).iter().product::<usize>(),
-                            )
-                        });
-                }
-            }
-        }
-        let mut memory_pool_id = used_pools.iter().max_by_key(|x| x.1 .1).map_or(1, |x| *x.0);
-
-        // If this is disk pool, then we need to load it
-        if memory_pools[memory_pool_id].pool.disk_pool().is_some() {
-            // TODO select fastest available device
-            memory_pool_id = 1;
-        }
-
-        // Move all other tensors to this memory pool
-        // and finish events with this kernel's inputs
-        for (pool_id, (tensors, _)) in used_pools {
-            if pool_id != memory_pool_id {
-                println!("pool id != memory pool id, tensors: {tensors:?}");
-                for tensor_id in tensors {
-                    let bytes = graph.shape(tensor_id).iter().product::<Dimension>()
-                        * graph.dtype(tensor_id).byte_size() as Dimension;
-
-                    // No need to initialize here, other than rust is bad.
-                    let mut byte_slice = vec![0; bytes];
-
-                    let src = memory_pools[pool_id].buffer_map[&tensor_id];
-                    for buffers in memory_pools[pool_id].events.keys() {
-                        if buffers.contains(&memory_pools[pool_id].buffer_map[&tensor_id]) {
-                            // Pool to host blocks on event, so we can remove that event.
-                            let event =
-                                memory_pools[pool_id].events.remove(&buffers.clone()).unwrap();
-                            memory_pools[pool_id].pool.pool_to_host(
-                                src,
-                                &mut byte_slice,
-                                vec![event],
-                            )?;
-                            memory_pools[pool_id].pool.deallocate(src, vec![])?;
-                            memory_pools[memory_pool_id].buffer_map.remove(&tensor_id);
-                            break;
-                        }
-                    }
-
-                    let (dst, event) = memory_pools[memory_pool_id].pool.allocate(bytes)?;
-
-                    let event = memory_pools[memory_pool_id].pool.host_to_pool(
-                        &byte_slice,
-                        dst,
-                        vec![event],
-                    )?;
-                    memory_pools[memory_pool_id].buffer_map.insert(tensor_id, dst);
-                    memory_pools[memory_pool_id].events.insert(BTreeSet::from([dst]), event);
-                }
-            }
-        }
-
-        let pool = &mut memory_pools[memory_pool_id];
-
-        // Get fastest device which is associated with that memory pool
-        let device = devices
-            .iter_mut()
-            .filter(|device| device.memory_pool_id() == u32::try_from(memory_pool_id).unwrap())
-            .max_by_key(|device| device.free_compute())
-            .unwrap();
-
-        let mut outputs = BTreeSet::new();
-        let mut event_wait_list: Vec<Event> = Vec::new();
-        let mut visited_tensors = BTreeMap::new();
-
-        //println!("Pool contains {:?}", pool.buffer_map.keys());
-        //self.debug();
-
-        let mut args: Vec<Id> = Vec::new();
-        for op in &mut self.ops {
-            match op {
-                Op::Load { x, .. } => {
-                    let tensor_id = self.tensors[x];
-                    let buffer_id = pool.buffer_map[&tensor_id];
-                    if let Some(&tx) = visited_tensors.get(&buffer_id) {
-                        *x = tx;
-                    } else {
-                        visited_tensors.insert(buffer_id, *x);
-                        if let Some((_, event)) =
-                            pool.events.iter().find(|(key, _)| key.contains(&buffer_id))
-                        {
-                            event_wait_list.push(event.clone());
-                        }
-                        args.push(buffer_id);
-                    }
-                }
-                Op::Store { z, zview, zdtype, .. } => {
-                    let tensor_id = self.tensors[z];
-                    //println!("Allocating {zview} {}", zview.original_numel());
-                    let (buffer_id, event) = pool
-                        .pool
-                        .allocate(zview.original_numel() * (zdtype.byte_size() as Dimension))?;
-                    debug_assert!(visited_tensors.insert(buffer_id, *z).is_none());
-                    pool.buffer_map.insert(tensor_id, buffer_id);
-                    event_wait_list.push(event);
-                    outputs.insert(tensor_id);
-                    args.push(buffer_id);
-                }
-                _ => (),
-            }
-        }
-
-        //println!("\nArgs: {args:?}");
-        //self.debug();
-        #[cfg(debug_assertions)]
-        {
-            let mut visited = BTreeSet::new();
-            for &arg in &args {
-                debug_assert!(visited.insert(arg));
-            }
-        }
-
-        optimizer.launch(
-            self,
-            device,
-            pool,
-            &args,
-            outputs.clone(),
-            event_wait_list,
-            search_iters,
-            debug,
-        )?;
-        if let Some(event) = pool.events.get(&outputs) {
-            Ok(Some(event.clone()))
-        } else {
-            Ok(None)
-        }
-    }*/
 
     pub(super) fn flop_mem_rw(&self) -> (u128, u128, u128) {
         // TODO This does not yet account for multiple loads from the same buffer.
@@ -1062,20 +902,20 @@ impl Kernel {
                     // is compute bound or memory bound.
                     if xscope == Scope::Global {
                         //mem_read += shape.iter().product::<usize>() as u128;
-                        mem_read += xview.original_numel() as u128 * xdtype.byte_size() as u128;
+                        mem_read += xview.original_numel() as u128 * u128::from(xdtype.byte_size());
                     }
                 }
                 &Op::Store { zscope, ref zview, zdtype, .. } => {
                     if zscope == Scope::Global {
                         //mem_write += shape.iter().product::<usize>() as u128 * zdtype.byte_size();
-                        mem_write += zview.original_numel() as u128 * zdtype.byte_size() as u128;
+                        mem_write += zview.original_numel() as u128 * u128::from(zdtype.byte_size());
                     }
                 }
                 Op::EndLoop => {
                     shape.pop();
                 }
                 Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
-                    flop += shape.iter().product::<usize>() as u128;
+                    flop += shape.iter().product::<Dim>() as u128;
                 }
                 Op::Accumulator { .. } | Op::Const { .. } | Op::Barrier { .. } => {}
             }
