@@ -8,7 +8,7 @@ use crate::dtype::DType;
 use crate::node::{BOp, UOp};
 use crate::runtime::{apply_padding, TempData, ZyxError};
 use crate::scalar::{Float, Scalar};
-use crate::shape::{into_axes, into_axis, Axis, Dimension, IntoShape};
+use crate::shape::{into_axes, into_axis, Axis, Dim, IntoShape};
 use core::cmp::Ordering;
 use half::{bf16, f16};
 use std::fmt::{Debug, Display};
@@ -56,13 +56,13 @@ impl Drop for Tensor {
 impl Tensor {
     /// Shape of tensor
     #[must_use]
-    pub fn shape(&self) -> Vec<Dimension> {
+    pub fn shape(&self) -> Vec<Dim> {
         RT.lock().shape(self.id).to_vec()
     }
 
     /// Number of scalar elements stored in self
     #[must_use]
-    pub fn numel(&self) -> Dimension {
+    pub fn numel(&self) -> Dim {
         self.shape().iter().product()
     }
 
@@ -239,7 +239,7 @@ impl Tensor {
     /// Returns device error if the device fails to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc, reason = "all panics are checked ahead")]
     pub fn rand(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
-        let shape: Vec<Dimension> = shape.into_shape().collect();
+        let shape: Vec<Dim> = shape.into_shape().collect();
         let n = shape.iter().product();
         if dtype.is_float() {
             // TODO later use threefry
@@ -321,7 +321,7 @@ impl Tensor {
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
         let shape: Vec<usize> = shape.into_shape().collect();
-        let nshape: Vec<Dimension> = once(2).chain(shape.clone()).collect();
+        let nshape: Vec<Dim> = once(2).chain(shape.clone()).collect();
         let src = Tensor::rand(nshape, DType::F32)?;
         Ok(src
             .get(0)?
@@ -338,7 +338,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc, reason = "TODO disallow panicking")]
     pub fn multinomial(
         &self,
-        num_samples: Dimension,
+        num_samples: Dim,
         replacement: bool,
     ) -> Result<Tensor, ZyxError> {
         let sh = self.shape();
@@ -400,7 +400,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn kaiming_uniform<T: Float>(shape: impl IntoShape, a: T) -> Result<Tensor, ZyxError> {
         let n = T::from_i64(
-            shape.clone().into_shape().skip(1).product::<Dimension>().try_into().unwrap(),
+            shape.clone().into_shape().skip(1).product::<Dim>().try_into().unwrap(),
         );
         let one = T::one();
         let x = Scalar::add(one, Scalar::mul(a, a));
@@ -417,7 +417,7 @@ impl Tensor {
     #[allow(clippy::cast_precision_loss)]
     pub fn glorot_uniform(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         let shape: Vec<_> = shape.into_shape().collect();
-        let c = 6. / (shape[0] + shape.iter().skip(1).product::<Dimension>()) as f32;
+        let c = 6. / (shape[0] + shape.iter().skip(1).product::<Dim>()) as f32;
         let mut x = Tensor::uniform(shape, -1f32..1f32)?;
         x = x * c.pow(0.5);
         Ok(x.cast(dtype))
@@ -446,7 +446,7 @@ impl Tensor {
     /// Create square tensor with ones on the main diagonal and all other values set to zero.
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
-    pub fn eye(n: Dimension, dtype: DType) -> Tensor {
+    pub fn eye(n: Dim, dtype: DType) -> Tensor {
         Tensor::ones(vec![n, 1], dtype)
             .pad_zeros([(0, isize::try_from(n).unwrap())])
             .unwrap()
@@ -466,7 +466,7 @@ impl Tensor {
         //println!("Arange {start:?}, {stop:?}, {step:?}");
         let n: i64 = stop.sub(start).div(step).cast();
         //println!("Shape {n}");
-        let x = Tensor::full(Dimension::try_from(n).unwrap(), step);
+        let x = Tensor::full(Dim::try_from(n).unwrap(), step);
         //println!("{x}");
         let x = x.cumsum(0)?;
         Ok(x + start - step)
@@ -980,7 +980,7 @@ impl Tensor {
             if r < 0 {
                 total -= r;
             }
-            if Dimension::try_from(total).unwrap() >= shape[rank - i - 1] {
+            if Dim::try_from(total).unwrap() >= shape[rank - i - 1] {
                 return Err(ZyxError::ShapeError(format!(
                     "Invalid padding {padding:?} on shape {shape:?}"
                 )));
@@ -1038,7 +1038,7 @@ impl Tensor {
                 value.dtype()
             )));
         }
-        if !padding.len() <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dimension::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dimension::try_from(-rp).unwrap() <= d } else { true }) {
+        if !padding.len() <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
             return Err(ZyxError::ShapeError(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}")));
         }
         let t0 = self.pad_zeros(padding.clone())?;
@@ -1091,7 +1091,7 @@ impl Tensor {
     /// Returns error if self cannot be reshaped to shape.
     pub fn reshape(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         let shape: Vec<_> = shape.into_shape().collect();
-        if shape.iter().product::<Dimension>() != self.numel() {
+        if shape.iter().product::<Dim>() != self.numel() {
             return Err(ZyxError::ShapeError(format!(
                 "Invalid reshape {:?} into {:?}",
                 self.shape(),
@@ -2028,7 +2028,7 @@ impl Tensor {
         let mut offset2 =
             tensors.iter().fold(0, |acc, t| acc + isize::try_from(t.shape()[dim]).unwrap());
         let mut shape = tensors[0].shape();
-        shape[dim] = Dimension::try_from(offset2).unwrap();
+        shape[dim] = Dim::try_from(offset2).unwrap();
         let mut res = None;
         for tensor in tensors {
             let d = isize::try_from(tensor.shape()[dim]).unwrap();
@@ -2614,7 +2614,7 @@ impl Tensor {
     }*/
 
     /// Create new tensor from file on disk.
-    fn from_disk(shape: Vec<Dimension>, dtype: DType, path: impl AsRef<Path>, offset: u64) -> Result<Tensor, ZyxError> {
+    fn from_disk(shape: Vec<Dim>, dtype: DType, path: impl AsRef<Path>, offset: u64) -> Result<Tensor, ZyxError> {
         Ok(Tensor {
             id: RT.lock().from_disk(shape, dtype, path.as_ref(), offset)?,
         })
@@ -2720,7 +2720,7 @@ impl Tensor {
             // shape (NOTE there is no explicit check for endiannes here)
             let mut shape = vec![0; rank as usize * 8];
             f.read_exact(shape.as_mut_slice())?;
-            let shape: Vec<Dimension> = shape.chunks_exact(8).map(|x| u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]) as usize).collect();
+            let shape: Vec<Dim> = shape.chunks_exact(8).map(|x| u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]) as usize).collect();
 
             // dtype
             let mut dtype = [0; 4];
@@ -2846,7 +2846,7 @@ impl Tensor {
                             .collect::<Result<Vec<_>, ZyxError>>()?;
                         //println!("Offsets: {offsets:?}");
                         let bytes =
-                            shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension;
+                            shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
                         if offsets[1] - offsets[0] != bytes {
                             return Err(ZyxError::ParseError(
                                 "Safetensors shapes and offsets are incorrect.".into(),

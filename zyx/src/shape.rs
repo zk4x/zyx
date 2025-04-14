@@ -3,19 +3,19 @@
 use crate::ZyxError;
 use core::fmt::Debug;
 
-pub type Dimension = usize;
+pub type Dim = usize;
 pub type Axis = usize;
 
 /// `IntoShape` trait
 pub trait IntoShape: Clone + Debug {
     /// Convert value into shape (iterator over dimensions)
-    fn into_shape(self) -> impl Iterator<Item = Dimension>;
+    fn into_shape(self) -> impl Iterator<Item = Dim>;
     /// Get the rank of the shape
     fn rank(&self) -> Axis;
 }
 
-impl IntoShape for Dimension {
-    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+impl IntoShape for Dim {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
         [self].into_iter()
     }
 
@@ -24,8 +24,8 @@ impl IntoShape for Dimension {
     }
 }
 
-impl IntoShape for (Dimension, Dimension) {
-    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+impl IntoShape for (Dim, Dim) {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
         [self.0, self.1].into_iter()
     }
 
@@ -34,8 +34,8 @@ impl IntoShape for (Dimension, Dimension) {
     }
 }
 
-impl IntoShape for (Dimension, Dimension, Dimension) {
-    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+impl IntoShape for (Dim, Dim, Dim) {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
         [self.0, self.1, self.2].into_iter()
     }
 
@@ -44,8 +44,8 @@ impl IntoShape for (Dimension, Dimension, Dimension) {
     }
 }
 
-impl<const N: usize> IntoShape for [Dimension; N] {
-    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+impl<const N: usize> IntoShape for [Dim; N] {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
         self.into_iter()
     }
 
@@ -54,8 +54,8 @@ impl<const N: usize> IntoShape for [Dimension; N] {
     }
 }
 
-impl IntoShape for &[Dimension] {
-    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+impl IntoShape for &[Dim] {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
         self.iter().copied()
     }
 
@@ -64,8 +64,8 @@ impl IntoShape for &[Dimension] {
     }
 }
 
-impl IntoShape for Vec<Dimension> {
-    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+impl IntoShape for Vec<Dim> {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
         self.into_iter()
     }
 
@@ -74,8 +74,8 @@ impl IntoShape for Vec<Dimension> {
     }
 }
 
-impl IntoShape for &Vec<Dimension> {
-    fn into_shape(self) -> impl Iterator<Item = Dimension> {
+impl IntoShape for &Vec<Dim> {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
         self.iter().copied()
     }
 
@@ -115,7 +115,7 @@ pub fn into_axis(axis: isize, rank: Axis) -> Result<Axis, ZyxError> {
 pub fn into_axes(
     axes: impl IntoIterator<Item = isize>,
     rank: Axis,
-) -> Result<Vec<Dimension>, ZyxError> {
+) -> Result<Vec<Dim>, ZyxError> {
     let mut res = Vec::new();
     let mut visited = std::collections::BTreeSet::new();
     for axis in axes {
@@ -130,12 +130,12 @@ pub fn into_axes(
     Ok(res)
 }
 
-pub fn permute(shape: &[Dimension], axes: &[Axis]) -> Vec<Dimension> {
+pub fn permute(shape: &[Dim], axes: &[Axis]) -> Vec<Dim> {
     debug_assert_eq!(shape.len(), axes.len());
     axes.iter().map(|a| shape[*a]).collect()
 }
 
-pub fn reduce(shape: &[Dimension], axes: &[Axis]) -> Vec<Dimension> {
+pub fn reduce(shape: &[Dim], axes: &[Axis]) -> Vec<Dim> {
     let res: Vec<_> = shape
         .iter()
         .copied()

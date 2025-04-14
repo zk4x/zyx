@@ -15,7 +15,7 @@ use crate::{
     kernel_cache::KernelCache,
     node::{BOp, ROp, UOp},
     runtime::Pool,
-    shape::{Axis, Dimension},
+    shape::{Axis, Dim},
     slab::Id,
     tensor::TensorId,
     view::View,
@@ -42,7 +42,7 @@ pub type TId = u16;
 pub enum Op {
     Loop {
         axis: Axis,
-        len: Dimension,
+        len: Dim,
     },
     // End the latest loop
     EndLoop,
@@ -128,7 +128,7 @@ impl Kernel {
 
     pub(super) fn leaf(
         nid: TensorId,
-        shape: &[Dimension],
+        shape: &[Dim],
         dtype: DType,
         depends_on: BTreeSet<Id>,
     ) -> Kernel {
@@ -158,7 +158,7 @@ impl Kernel {
         *self.tensors.iter().find(|(tidx, _)| **tidx == tid).unwrap().0
     }*/
 
-    pub(super) fn shape(&self) -> Vec<Dimension> {
+    pub(super) fn shape(&self) -> Vec<Dim> {
         self.ops
             .iter()
             .map_while(|op| {
@@ -746,12 +746,12 @@ impl Kernel {
         debug: DebugMask,
     ) -> Result<Option<Event>, ZyxError> {
         // First make a list of all memory pools which can hold all tensors, including outputs
-        let total_bytes: Dimension = self
+        let total_bytes: Dim = self
             .tensors
             .values()
             .map(|&tid| {
-                graph.shape(tid).iter().product::<Dimension>()
-                    * graph.dtype(tid).byte_size() as Dimension
+                graph.shape(tid).iter().product::<Dim>()
+                    * graph.dtype(tid).byte_size() as Dim
             })
             .sum();
         let mut free_memory_pools = Map::default();
@@ -802,7 +802,7 @@ impl Kernel {
                         }
                         debug_assert_ne!(old_mpid, usize::MAX);
 
-                        let bytes = graph.shape(tid).iter().product::<Dimension>() * graph.dtype(tid).byte_size() as Dimension;
+                        let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
                         // No need to initialize here, other than rust is bad.
                         let mut byte_slice = vec![0u8; bytes];
                         let src = memory_pools[old_mpid].buffer_map[&tid];
@@ -848,7 +848,7 @@ impl Kernel {
                     let tensor_id = self.tensors[z];
                     let (buffer_id, event) = memory_pools[mpid]
                         .pool
-                        .allocate(zview.original_numel() * (zdtype.byte_size() as Dimension))?;
+                        .allocate(zview.original_numel() * (zdtype.byte_size() as Dim))?;
                     memory_pools[mpid].buffer_map.insert(tensor_id, buffer_id);
                     event_wait_list.push(event);
                     outputs.insert(tensor_id);

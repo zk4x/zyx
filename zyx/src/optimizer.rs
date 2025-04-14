@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use crate::{backend::{BackendError, Device, DeviceInfo}, ir::IRKernel, kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dimension, slab::Id, DebugMask};
+use crate::{backend::{BackendError, Device, DeviceInfo}, ir::IRKernel, kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dim, slab::Id, DebugMask};
 
 pub struct Optimizer<'a> {
     rng: Rng,
@@ -11,7 +11,7 @@ pub struct Optimizer<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Optimization {
-    pub shape: [Dimension; 9],
+    pub shape: [Dim; 9],
     pub opt_ops: BTreeSet<OptOp>,
 }
 

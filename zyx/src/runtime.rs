@@ -6,7 +6,7 @@ use crate::node::{BOp, Node, ROp, UOp};
 use crate::kernel_cache::KernelCache;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
-use crate::shape::{permute, reduce, Axis, Dimension};
+use crate::shape::{permute, reduce, Axis, Dim};
 use crate::slab::Id;
 use crate::static_graph::GraphOp;
 use crate::tensor::TensorId;
@@ -51,7 +51,7 @@ pub struct Runtime {
 
 pub trait TempData: Send {
     fn read(&self) -> &[u8];
-    fn bytes(&self) -> Dimension;
+    fn bytes(&self) -> Dim;
     fn dtype(&self) -> DType;
 }
 
@@ -256,7 +256,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn shape(&self, x: TensorId) -> &[Dimension] {
+    pub(super) fn shape(&self, x: TensorId) -> &[Dim] {
         self.graph.shape(x)
     }
 
@@ -266,8 +266,8 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn from_disk(&mut self, shape: Vec<Dimension>, dtype: DType, path: &std::path::Path, offset_bytes: u64) -> Result<TensorId, ZyxError> {
-        let bytes = shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension;
+    pub(super) fn from_disk(&mut self, shape: Vec<Dim>, dtype: DType, path: &std::path::Path, offset_bytes: u64) -> Result<TensorId, ZyxError> {
+        let bytes = shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
         self.initialize_devices()?;
         if bytes == dtype.byte_size() as usize {
             /*let value = data.read();
@@ -296,13 +296,13 @@ impl Runtime {
     #[must_use]
     pub(super) fn variable(
         &mut self,
-        shape: Vec<Dimension>,
+        shape: Vec<Dim>,
         data: Box<dyn TempData>,
     ) -> Result<TensorId, ZyxError> {
         let bytes = data.bytes();
         let dtype = data.dtype();
         debug_assert_eq!(
-            shape.iter().product::<Dimension>() * dtype.byte_size() as Dimension,
+            shape.iter().product::<Dim>() * dtype.byte_size() as Dim,
             bytes
         );
         if bytes == dtype.byte_size() as usize {
@@ -367,7 +367,7 @@ impl Runtime {
     }
 
     // Initialization
-    pub(super) fn full(&mut self, shape: Vec<Dimension>, value: impl Scalar) -> TensorId {
+    pub(super) fn full(&mut self, shape: Vec<Dim>, value: impl Scalar) -> TensorId {
         let x = self.constant(value);
         let expanded = self.expand(x, shape).unwrap();
         self.release(x).unwrap();
@@ -375,7 +375,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn ones(&mut self, shape: Vec<Dimension>, dtype: DType) -> TensorId {
+    pub(super) fn ones(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
         let x = self.graph.push(Node::Const { value: dtype.one_constant() });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x).unwrap();
@@ -383,7 +383,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn zeros(&mut self, shape: Vec<Dimension>, dtype: DType) -> TensorId {
+    pub(super) fn zeros(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
         let x = self.graph.push(Node::Const { value: dtype.zero_constant() });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x).unwrap();
@@ -409,7 +409,7 @@ impl Runtime {
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
         //self.tensor_buffer_map.find();
-        let cd = dtype.byte_size() as Dimension / self.dtype(x).byte_size() as Dimension;
+        let cd = dtype.byte_size() as Dim / self.dtype(x).byte_size() as Dim;
         if let Some(d) = shape.last_mut() {
             if *d % cd != 0 {
                 return Err(ZyxError::DTypeError(
@@ -430,12 +430,12 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<Dimension>) -> TensorId {
+    pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<Dim>) -> TensorId {
         //println!("reshaping to {shape:?}, {:?}", self.shape(x));
         let sh = self.shape(x);
         debug_assert_eq!(
-            shape.iter().product::<Dimension>(),
-            sh.iter().product::<Dimension>()
+            shape.iter().product::<Dim>(),
+            sh.iter().product::<Dim>()
         );
         if shape == sh {
             self.retain(x);
@@ -454,9 +454,9 @@ impl Runtime {
     pub(super) fn expand(
         &mut self,
         x: TensorId,
-        shape: Vec<Dimension>,
+        shape: Vec<Dim>,
     ) -> Result<TensorId, ZyxError> {
-        let sh: Vec<Dimension> = self.shape(x).into();
+        let sh: Vec<Dim> = self.shape(x).into();
         if shape == sh {
             self.retain(x);
             return Ok(x);
@@ -507,7 +507,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
-        let mut shape: Vec<Dimension> = self.shape(x).into();
+        let mut shape: Vec<Dim> = self.shape(x).into();
         //println!("Self shape: {shape:?}, padding: {padding:?}");
         apply_padding(&mut shape, &padding);
         let id = self.graph.push_wshape(Node::Pad { x }, shape);
@@ -561,10 +561,10 @@ impl Runtime {
     }
 }
 
-pub fn apply_padding(shape: &mut [Dimension], padding: &[(isize, isize)]) {
+pub fn apply_padding(shape: &mut [Dim], padding: &[(isize, isize)]) {
     let mut i = 0;
     for d in shape.iter_mut().rev() {
-        *d = Dimension::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1)
+        *d = Dim::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1)
             .unwrap();
         i += 1;
         if i >= padding.len() {
@@ -577,7 +577,7 @@ impl Runtime {
     /// Loads data with beginning elements of the tensor x.
     /// If `data.len()` == `x.numel()`, then it loads the whole tensor.
     pub(super) fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
-        let n: Dimension = self.shape(x).iter().product();
+        let n: Dim = self.shape(x).iter().product();
         let dt = self.dtype(x);
         if dt != T::dtype() {
             return Err(ZyxError::DTypeError(format!(
@@ -1129,7 +1129,7 @@ impl Runtime {
                 }
                 Node::Expand { x } => {
                     let sh = self.graph.shape(nid);
-                    let x_shape: Vec<Dimension> = self.shape(x).into();
+                    let x_shape: Vec<Dim> = self.shape(x).into();
                     debug_assert_eq!(sh.len(), x_shape.len());
                     let expand_axes: Vec<usize> = sh
                         .into_iter()
@@ -1160,8 +1160,8 @@ impl Runtime {
                 }
                 Node::Reduce { x, rop } => match rop {
                     ROp::Sum => {
-                        let x_shape: Vec<Dimension> = self.shape(x).into();
-                        let mut z_shape: Vec<Dimension> = self.shape(nid).into();
+                        let x_shape: Vec<Dim> = self.shape(x).into();
+                        let mut z_shape: Vec<Dim> = self.shape(nid).into();
                         //println!("Reduce backward, z shape: {z_shape:?}, x shape: {x_shape:?}, reduce axes: {:?}", self.graph.axes(nid));
                         for &axis in self.graph.axes(nid) {
                             z_shape.insert(axis, 1);
@@ -1176,7 +1176,7 @@ impl Runtime {
                     }
                     ROp::Max => {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
-                        let x_shape: Vec<Dimension> = self.shape(x).into();
+                        let x_shape: Vec<Dim> = self.shape(x).into();
                         let z_temp = self.expand(nid, x_shape.clone()).unwrap();
                         let cmp_t = self.binary(x, z_temp, BOp::Cmplt);
                         self.release(z_temp).unwrap();

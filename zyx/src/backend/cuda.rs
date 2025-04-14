@@ -18,7 +18,7 @@ use crate::{
     dtype::Constant,
     ir::{IRKernel, IROp, Reg, Scope},
     node::{BOp, UOp},
-    shape::Dimension,
+    shape::Dim,
     slab::{Id, Slab},
 };
 
@@ -40,7 +40,7 @@ pub struct CUDAMemoryPool {
     #[allow(unused)]
     context: CUcontext,
     device: CUdevice,
-    free_bytes: Dimension,
+    free_bytes: Dim,
     buffers: Slab<CUDABuffer>,
     stream: CUstream,
     //cuMemAllocAsync: unsafe extern "C" fn(*mut CUdeviceptr, usize, CUstream) -> CUDAStatus,
@@ -66,7 +66,7 @@ pub struct CUDAMemoryPool {
 #[derive(Debug)]
 pub(super) struct CUDABuffer {
     ptr: u64,
-    bytes: Dimension,
+    bytes: Dim,
 }
 
 #[derive(Debug)]
@@ -112,8 +112,8 @@ pub(super) struct CUDAProgram {
     //name: String,
     module: CUmodule,
     function: CUfunction,
-    global_work_size: [Dimension; 3],
-    local_work_size: [Dimension; 3],
+    global_work_size: [Dim; 3],
+    local_work_size: [Dim; 3],
 }
 
 #[derive(Debug)]
@@ -375,45 +375,45 @@ pub(super) fn initialize_device(
         dev.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: [
-                Dimension::try_from(dev.get(
+                Dim::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
-                Dimension::try_from(dev.get(
+                Dim::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
-                Dimension::try_from(dev.get(
+                Dim::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
             ],
-            max_local_threads: Dimension::try_from(dev.get(
+            max_local_threads: Dim::try_from(dev.get(
                 CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
                 cuDeviceGetAttribute,
             )?)
             .unwrap(),
             max_local_work_dims: [
-                Dimension::try_from(dev.get(
+                Dim::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
-                Dimension::try_from(dev.get(
+                Dim::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
-                Dimension::try_from(dev.get(
+                Dim::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z,
                     cuDeviceGetAttribute,
                 )?)
                 .unwrap(),
             ],
-            local_mem_size: Dimension::try_from(dev.get(
+            local_mem_size: Dim::try_from(dev.get(
                 CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK,
                 cuDeviceGetAttribute,
             )?)
@@ -432,11 +432,11 @@ impl CUDAMemoryPool {
         Ok(())
     }
 
-    pub fn free_bytes(&self) -> Dimension {
+    pub fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(Id, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError {
                 status: ErrorStatus::MemoryAllocation,
@@ -710,7 +710,7 @@ impl CUDADevice {
         &self,
         kernel: &IRKernel,
         debug_asm: bool,
-    ) -> Result<([Dimension; 3], [Dimension; 3], String, Vec<u8>), BackendError> {
+    ) -> Result<([Dim; 3], [Dim; 3], String, Vec<u8>), BackendError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
@@ -972,7 +972,7 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
         &mut self,
         kernel: &IRKernel,
         debug_asm: bool,
-    ) -> Result<([Dimension; 3], [Dimension; 3], String, Vec<u8>), BackendError> {
+    ) -> Result<([Dim; 3], [Dim; 3], String, Vec<u8>), BackendError> {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
         for op in &kernel.ops[..6] {

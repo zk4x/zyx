@@ -4,7 +4,7 @@ use super::ir::{IRCompiler, IROp, Reg};
 use crate::{
     DType,
     dtype::Constant,
-    shape::{Axis, Dimension},
+    shape::{Axis, Dim},
 };
 use std::{fmt::Display, ops::Range};
 
@@ -13,10 +13,21 @@ pub struct View(Vec<Vec<RDim>>);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct RDim {
-    d: Dimension,  // dim
-    st: Dimension, // stride
+    d: Dim,  // dim
+    st: Dim, // stride
     lp: isize,     // left pad
     rp: isize,     // right pad
+}
+
+fn to_contiguous_rdims(shape: &[Dim]) -> Vec<RDim> {
+    let mut st = 1;
+    let mut res = Vec::with_capacity(shape.len());
+    unsafe { res.set_len(shape.len()); }
+    for (i, &d) in shape.iter().enumerate().rev() {
+        res[i] = RDim { st, d, lp: 0, rp: 0 };
+        st *= d;
+    }
+    res
 }
 
 impl View {
@@ -25,19 +36,8 @@ impl View {
         View(Vec::new())
     }
 
-    pub(crate) fn contiguous(shape: &[Dimension]) -> View {
-        let mut stride = 1;
-        let mut res: Vec<RDim> = shape
-            .iter()
-            .rev()
-            .map(|&d| {
-                let temp = stride;
-                stride *= d;
-                RDim { st: temp, d, lp: 0, rp: 0 }
-            })
-            .collect();
-        res.reverse();
-        View(vec![res])
+    pub(crate) fn contiguous(shape: &[Dim]) -> View {
+        View(vec![to_contiguous_rdims(shape)])
     }
 
     /*pub(crate) fn binded(shape: &[usize], axes: &[usize], rank: usize) -> View {
@@ -64,7 +64,7 @@ impl View {
         self.0.last().map_or(1, Vec::len)
     }
 
-    pub(crate) fn shape(&self) -> Vec<Dimension> {
+    pub(crate) fn shape(&self) -> Vec<Dim> {
         self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
     }
 
@@ -108,12 +108,12 @@ impl View {
     }
 
     // This is used for reshape, merge and split
-    pub(crate) fn reshape(&mut self, axes: Range<Axis>, shape: &[Dimension]) {
+    pub(crate) fn reshape(&mut self, axes: Range<Axis>, shape: &[Dim]) {
         //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
         debug_assert!(axes.end <= self.0.last().map_or(1, |x| x.len()));
         debug_assert_eq!(
-            self.0.last().unwrap()[axes.clone()].iter().map(|dim| dim.d).product::<Dimension>(),
-            shape.iter().product::<Dimension>()
+            self.0.last().unwrap()[axes.clone()].iter().map(|dim| dim.d).product::<Dim>(),
+            shape.iter().product::<Dim>()
         );
         if let Some(inner) = self.0.last_mut() {
             let mut contiguous = true;
@@ -168,18 +168,7 @@ impl View {
                 //println!("Reshape non-contiguous");
                 let mut old_shape = self.shape();
                 old_shape.splice(axes, shape.iter().copied());
-                let mut stride = 1;
-                let mut res: Vec<RDim> = old_shape
-                    .iter()
-                    .rev()
-                    .map(|dim| {
-                        let st = stride;
-                        stride *= dim;
-                        RDim { st, d: *dim, lp: 0, rp: 0 }
-                    })
-                    .collect();
-                res.reverse();
-                self.0.push(res);
+                self.0.push(to_contiguous_rdims(&old_shape));
             }
         }
         //println!("After reshape: {self}\n");
@@ -197,7 +186,7 @@ impl View {
         *inner = new;
     }
 
-    pub(crate) fn expand(&mut self, axis: Axis, ndim: Dimension) {
+    pub(crate) fn expand(&mut self, axis: Axis, ndim: Dim) {
         //println!("View expand {self} axis = {axis} to ndim {ndim}");
         if let Some(inner) = self.0.last_mut() {
             if let Some(dim) = inner.get_mut(axis) {
@@ -216,10 +205,10 @@ impl View {
         let mut old_shape = self.shape();
         if let Some(inner) = self.0.last_mut() {
             let mut dim = &mut inner[axis];
-            dim.d = Dimension::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad)
+            dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad)
                 .unwrap();
             if dim.lp < 0 && left_pad > 0 {
-                dim.d = Dimension::try_from(isize::try_from(dim.d).unwrap() - left_pad).unwrap();
+                dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() - left_pad).unwrap();
                 let mut stride = 1;
                 let mut res: Vec<RDim> = old_shape
                     .iter()
@@ -231,7 +220,7 @@ impl View {
                         RDim {
                             st,
                             d: if a == axis {
-                                Dimension::try_from(isize::try_from(d).unwrap() + left_pad).unwrap()
+                                Dim::try_from(isize::try_from(d).unwrap() + left_pad).unwrap()
                             } else {
                                 d
                             },
@@ -247,7 +236,7 @@ impl View {
                 dim.lp += left_pad;
             }
             if dim.rp < 0 && right_pad > 0 {
-                dim.d = Dimension::try_from(isize::try_from(dim.d).unwrap() - right_pad).unwrap();
+                dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() - right_pad).unwrap();
                 let old_shape = self.shape();
                 let mut stride = 1;
                 let mut res: Vec<RDim> = old_shape
@@ -260,7 +249,7 @@ impl View {
                         RDim {
                             st,
                             d: if a == axis {
-                                Dimension::try_from(isize::try_from(d).unwrap() + right_pad)
+                                Dim::try_from(isize::try_from(d).unwrap() + right_pad)
                                     .unwrap()
                             } else {
                                 d
@@ -277,7 +266,7 @@ impl View {
             }
         }
         old_shape[axis] =
-            Dimension::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad)
+            Dim::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad)
                 .unwrap();
         debug_assert_eq!(self.shape(), old_shape);
     }
@@ -434,26 +423,12 @@ impl Display for View {
         for inner in &self.0 {
             f.write_fmt(format_args!(
                 "V(sh{:?} st{:?} pd{:?})",
-                inner.iter().map(|d| d.d).collect::<Vec<Dimension>>(),
-                inner.iter().map(|d| d.st).collect::<Vec<Dimension>>(),
+                inner.iter().map(|d| d.d).collect::<Vec<Dim>>(),
+                inner.iter().map(|d| d.st).collect::<Vec<Dim>>(),
                 inner.iter().map(|d| (d.lp, d.rp)).collect::<Vec<(isize, isize)>>()
             ))?;
         }
         Ok(())
-        /*if let Some(inner) = self.0.last() {
-            f.write_fmt(format_args!(
-                "V.{}(sh{:?} st{:?} pd{:?})",
-                self.0.len(),
-                inner.iter().map(|d| d.d).collect::<Vec<usize>>(),
-                inner.iter().map(|d| d.st).collect::<Vec<usize>>(),
-                inner
-                    .iter()
-                    .map(|d| (d.lp, d.rp))
-                    .collect::<Vec<(isize, isize)>>()
-            ))
-        } else {
-            f.write_str("none")
-        }*/
     }
 }
 

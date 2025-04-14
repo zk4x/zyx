@@ -1,17 +1,17 @@
 use std::{fs::File, os::unix::fs::FileExt, path::{Path, PathBuf}};
 
-use crate::{runtime::Pool, shape::Dimension, slab::{Id, Slab}};
+use crate::{runtime::Pool, shape::Dim, slab::{Id, Slab}};
 use super::{BackendError, Event, MemoryPool};
 
 #[derive(Debug)]
 pub struct DiskMemoryPool {
-    free_bytes: Dimension,
+    free_bytes: Dim,
     buffers: Slab<DiskBuffer>,
 }
 
 #[derive(Debug)]
 struct DiskBuffer {
-    bytes: Dimension,
+    bytes: Dim,
     path: PathBuf,
     offset_bytes: u64,
 }
@@ -39,11 +39,11 @@ impl DiskMemoryPool {
         Ok(())
     }
 
-    pub fn free_bytes(&self) -> Dimension {
+    pub fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
 
-    pub fn from_path(&mut self, bytes: Dimension, path: &Path, offset_bytes: u64) -> Result<Id, BackendError> {
+    pub fn from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> Result<Id, BackendError> {
         let id = self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes });
         // TODO perhaps add verification that the file exists and it contains enough bytes at given offset
         Ok(id)

@@ -80,7 +80,7 @@ pub(crate) type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHash
 pub use dtype::DType;
 pub use runtime::ZyxError;
 pub use scalar::{Float, Scalar};
-use shape::Dimension;
+use shape::Dim;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
 pub use autograd::GradientTape;
@@ -154,7 +154,7 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
             let mut st_shape = format!("{:?}", tensor.shape());
             st_shape.retain(|c| !c.is_whitespace());
             write!(header, "\"shape\":{st_shape},").unwrap();
-            let size = tensor.numel() * dtype.byte_size() as Dimension;
+            let size = tensor.numel() * dtype.byte_size() as Dim;
             write!(header, "\"data_offsets\":[{},{}]", begin, begin + size).unwrap();
             begin += size;
             write!(header, "}},").unwrap();

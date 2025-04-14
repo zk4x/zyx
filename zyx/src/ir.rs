@@ -9,7 +9,7 @@ use crate::{
     kernel::Kernel,
     node::{BOp, UOp},
     optimizer::{OptOp, Optimization},
-    shape::Dimension,
+    shape::Dim,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -67,7 +67,7 @@ pub enum IROp {
     #[allow(unused)]
     SetLocal {
         address: u16,
-        len: Dimension,
+        len: Dim,
         value: Constant,
     },
     Set {
@@ -100,11 +100,11 @@ pub enum IROp {
     // while id < len
     Loop {
         id: u16,
-        len: Dimension,
+        len: Dim,
     },
     EndLoop {
         id: u16,
-        len: Dimension,
+        len: Dim,
     },
     // This will also be needed
     /*If {

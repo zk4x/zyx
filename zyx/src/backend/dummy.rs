@@ -1,7 +1,7 @@
 use std::ptr;
 use nanoserde::DeJson;
 use crate::{
-    runtime::Pool, shape::Dimension, slab::{Id, Slab}
+    runtime::Pool, shape::Dim, slab::{Id, Slab}
 };
 use super::{
     opencl::OpenCLEvent, BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool,
@@ -14,8 +14,8 @@ pub struct DummyConfig {
 
 #[derive(Debug)]
 pub struct DummyMemoryPool {
-    free_bytes: Dimension,
-    buffers: Slab<Dimension>,
+    free_bytes: Dim,
+    buffers: Slab<Dim>,
 }
 
 pub struct DummyDevice {
@@ -45,7 +45,7 @@ pub(super) fn initialize_device(
     devices.push(Device::Dummy(DummyDevice {
         device_info: DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: [u32::MAX as Dimension, u32::MAX as Dimension, u32::MAX as Dimension],
+            max_global_work_dims: [u32::MAX as Dim, u32::MAX as Dim, u32::MAX as Dim],
             max_local_threads: 256 * 256,
             max_local_work_dims: [1, 256, 256],
             preferred_vector_size: 8,
@@ -62,11 +62,11 @@ impl DummyMemoryPool {
         Ok(())
     }
 
-    pub fn free_bytes(&self) -> Dimension {
+    pub fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(Id, Event), BackendError> {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {

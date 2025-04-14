@@ -4,7 +4,7 @@ use crate::node::{BOp, Node};
 use crate::tensor::TensorId;
 use crate::Set;
 use crate::{
-    shape::{Axis, Dimension},
+    shape::{Axis, Dim},
     slab::Slab,
     DType,
 };
@@ -17,7 +17,7 @@ pub struct Graph {
     pub(super) gradient_tape_ref_count: u32,
     pub(super) gradient_tape: Option<Set<TensorId>>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
-    shapes: BTreeMap<TensorId, Vec<Dimension>>,
+    shapes: BTreeMap<TensorId, Vec<Dim>>,
     paddings: BTreeMap<TensorId, Vec<(isize, isize)>>,
     axes: BTreeMap<TensorId, Vec<Axis>>,
 }
@@ -98,7 +98,7 @@ impl Graph {
         nid
     }
 
-    pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dimension>) -> TensorId {
+    pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dim>) -> TensorId {
         //println!("Pushing wshape {node:?}");
         let id = self.push(node);
         self.shapes.insert(id, shape);
@@ -153,7 +153,7 @@ impl Graph {
         &self.axes[&tensor_id]
     }
 
-    pub(super) fn shape(&self, tensor_id: TensorId) -> &[Dimension] {
+    pub(super) fn shape(&self, tensor_id: TensorId) -> &[Dim] {
         let mut tensor_id = tensor_id;
         for _ in 0..10000 {
             if let Some(shape) = self.shapes.get(&tensor_id) {

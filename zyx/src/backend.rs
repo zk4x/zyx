@@ -6,7 +6,7 @@
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
-use crate::{ir::IRKernel, runtime::Pool, shape::Dimension, slab::Id, ZyxError};
+use crate::{ir::IRKernel, runtime::Pool, shape::Dim, slab::Id, ZyxError};
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
 use dummy::{DummyDevice, DummyMemoryPool};
@@ -137,15 +137,15 @@ pub struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
     /// Biggest kernel dimensions
-    pub max_global_work_dims: [Dimension; 3],
+    pub max_global_work_dims: [Dim; 3],
     /// Maximum local work size threads
-    pub max_local_threads: Dimension,
+    pub max_local_threads: Dim,
     /// Maximum local work size dimensions
-    pub max_local_work_dims: [Dimension; 3],
+    pub max_local_work_dims: [Dim; 3],
     /// Preferred vector size in bytes
     pub preferred_vector_size: u8,
     /// Local memory size in bytes
-    pub local_mem_size: Dimension,
+    pub local_mem_size: Dim,
     /// Number of registers per thread
     pub num_registers: u16,
     /// Does this hardware have tensor cores?
@@ -181,7 +181,7 @@ impl MemoryPool {
         }
     }
 
-    pub fn free_bytes(&self) -> Dimension {
+    pub fn free_bytes(&self) -> Dim {
         match self {
             MemoryPool::Disk(pool) => pool.free_bytes(),
             MemoryPool::CUDA(pool) => pool.free_bytes(),
@@ -192,7 +192,7 @@ impl MemoryPool {
         }
     }
 
-    pub fn allocate(&mut self, bytes: Dimension) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(Id, Event), BackendError> {
         match self {
             MemoryPool::Disk(_) => todo!(),
             MemoryPool::CUDA(pool) => pool.allocate(bytes),
