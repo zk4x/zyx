@@ -210,6 +210,7 @@ impl IRCompiler {
                         i -= 1;
                         self.replace(z, Reg::Const(Constant::binary(x, y, bop)), 0);
                     }
+                    _ => {}
                 },
                 IROp::MAdd { .. } => {}
                 IROp::SetLocal { .. }

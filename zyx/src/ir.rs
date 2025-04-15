@@ -29,6 +29,7 @@ pub enum Reg {
     // This is id into kernel.registers
     Var(u16),
     Const(Constant),
+    Tile(u16),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -124,6 +125,7 @@ impl Display for IROp {
                 match offset {
                     Reg::Var(x) => format!("r{x}"),
                     Reg::Const(constant) => format!("{constant}"),
+                    Reg::Tile(..) => unreachable!(),
                 }
             )),
             IROp::Store { address, offset, x } => f.write_fmt(format_args!(
@@ -131,6 +133,7 @@ impl Display for IROp {
                 match offset {
                     Reg::Var(x) => format!("r{x}"),
                     Reg::Const(constant) => format!("{constant}"),
+                    Reg::Tile(..) => unreachable!(),
                 }
             )),
             IROp::SetLocal { address, len, value } => {
@@ -146,6 +149,7 @@ impl Display for IROp {
                 match x {
                     Reg::Var(x) => format!("r{x}"),
                     Reg::Const(constant) => format!("{constant}"),
+                    Reg::Tile(_) => todo!(),
                 },
                 match bop {
                     BOp::Add => "+",
@@ -169,6 +173,7 @@ impl Display for IROp {
                 match y {
                     Reg::Var(x) => format!("r{x}"),
                     Reg::Const(constant) => format!("{constant}"),
+                    Reg::Tile(x) => format!("r{x}"),
                 }
             )),
             IROp::MAdd { z, a, b, c } => f.write_fmt(format_args!(
@@ -176,14 +181,17 @@ impl Display for IROp {
                 match a {
                     Reg::Var(x) => format!("r{x}"),
                     Reg::Const(constant) => format!("{constant}"),
+                    Reg::Tile(_) => todo!(),
                 },
                 match b {
                     Reg::Var(x) => format!("r{x}"),
                     Reg::Const(constant) => format!("{constant}"),
+                    Reg::Tile(_) => todo!(),
                 },
                 match c {
                     Reg::Var(x) => format!("r{x}"),
                     Reg::Const(constant) => format!("{constant}"),
+                    Reg::Tile(_) => todo!(),
                 }
             )),
             IROp::Loop { id, len } => {
@@ -291,6 +299,12 @@ impl IRCompiler {
                 Reg::Var(z)
             }
             Reg::Const(c) => Reg::Const(c.unary(uop)),
+            Reg::Tile(x) => {
+                self.max_id += 1;
+                let z = self.max_id;
+                self.ops.push(IROp::Unary { z, x, uop });
+                Reg::Tile(z)
+            }
         }
     }
 
@@ -315,6 +329,12 @@ impl IRCompiler {
                 Reg::Var(z)
             }
             Reg::Const(c) => Reg::Const(c.cast(dtype)),
+            Reg::Tile(x) => {
+                self.max_id += 1;
+                let z = self.max_id;
+                self.ops.push(IROp::Cast { z, x, dtype });
+                Reg::Tile(z)
+            }
         }
     }
 
@@ -558,6 +578,7 @@ impl IRCompiler {
                 | IROp::Set { .. }
                 | IROp::SetLocal { .. }
                 | IROp::Load { offset: Reg::Const(_), .. }
+                | IROp::Load { offset: Reg::Tile(_), .. }
                 | IROp::Barrier { .. } => {}
             }
         }
@@ -717,6 +738,7 @@ impl IRCompiler {
                             _ => match x {
                                 Reg::Var(x) => registers[cmp[&x] as usize],
                                 Reg::Const(constant) => constant.dtype(),
+                                Reg::Tile(_) => todo!(),
                             },
                         };
                         let x = if let Reg::Var(x) = x {
@@ -747,6 +769,7 @@ impl IRCompiler {
                         let dtype = match a {
                             Reg::Var(a) => registers[cmp[&a] as usize],
                             Reg::Const(constant) => constant.dtype(),
+                            Reg::Tile(_) => todo!(),
                         };
                         let a = if let Reg::Var(x) = a {
                             let xr = cmp[&x];
@@ -839,6 +862,7 @@ impl IRCompiler {
                             Reg::Const(replace_with) => {
                                 self.replace(z, Reg::Const(replace_with.cast(dtype)), begin);
                             }
+                            Reg::Tile(_) => unreachable!(),
                         }
                     }
                 }
@@ -849,6 +873,7 @@ impl IRCompiler {
                             Reg::Const(replace_with) => {
                                 self.replace(z, Reg::Const(replace_with.unary(uop)), begin);
                             }
+                            Reg::Tile(_) => unreachable!(),
                         }
                     }
                 }
