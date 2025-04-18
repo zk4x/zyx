@@ -95,12 +95,7 @@ pub enum Op {
         x: TId,
         y: TId,
         bop: BOp,
-    },
-    // Synchronization for local and global memory
-    #[allow(unused)]
-    Barrier {
-        scope: Scope,
-    },
+    }
 }
 
 /*#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -274,8 +269,7 @@ impl Kernel {
                     | Op::EndLoop
                     | Op::Cast { .. }
                     | Op::Unary { .. }
-                    | Op::Binary { .. }
-                    | Op::Barrier { .. } => {}
+                    | Op::Binary { .. } => {}
                 }
             }
             //self.debug();
@@ -407,8 +401,7 @@ impl Kernel {
                 | Op::EndLoop
                 | Op::Cast { .. }
                 | Op::Unary { .. }
-                | Op::Binary { .. }
-                | Op::Barrier { .. } => {}
+                | Op::Binary { .. } => {}
             }
         }
         //self.debug();
@@ -917,7 +910,7 @@ impl Kernel {
                 Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
                     flop += shape.iter().product::<Dim>() as u128;
                 }
-                Op::Accumulator { .. } | Op::Const { .. } | Op::Barrier { .. } => {}
+                Op::Accumulator { .. } | Op::Const { .. } => {}
             }
         }
         (flop, mem_read, mem_write)
@@ -975,9 +968,6 @@ impl std::fmt::Display for Op {
             Op::Binary { z, x, y, bop } => f.write_fmt(format_args!(
                 "{C_WHITE}Binary{C_RESET}.{bop:?}  {z} <- {x}, {y}"
             )),
-            Op::Barrier { scope } => {
-                f.write_fmt(format_args!("{C_YELLOW}Barrier{C_RESET}({scope})"))
-            }
         }
     }
 }
