@@ -15,12 +15,7 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    DType,
-    dtype::Constant,
-    ir::{IRKernel, IROp, Reg, Scope},
-    node::{BOp, UOp},
-    shape::Dim,
-    slab::{Id, Slab},
+    dtype::Constant, ir::{IRKernel, IROp, Scope}, node::{BOp, UOp}, shape::Dim, slab::{Id, Slab}, DType
 };
 
 use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
@@ -564,7 +559,7 @@ impl CUDADevice {
 
     pub fn compile(
         &mut self,
-        kernel: &crate::ir::IRKernel,
+        kernel: &IRKernel,
         debug_asm: bool,
     ) -> Result<crate::slab::Id, BackendError> {
         let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
@@ -714,15 +709,13 @@ impl CUDADevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        let mut loop_ids = [0; 6];
         for (i, op) in kernel.ops[..6].iter().enumerate() {
-            if let IROp::Loop { id, len } = op {
+            if let IROp::Loop { len } = op {
                 if i < 3 {
-                    global_work_size[i] = *len;
+                    global_work_size[i] = len;
                 } else {
-                    local_work_size[i - 3] = *len;
+                    local_work_size[i - 3] = len;
                 }
-                loop_ids[i] = *id;
             } else {
                 unreachable!()
             }
@@ -764,18 +757,12 @@ impl CUDADevice {
         // Add indices for global and local loops
         writeln!(
             source,
-            "{indent}r{} = blockIdx.x;  /* 0..{} */\n{indent}r{} = blockIdx.y;  /* 0..{} */\n{indent}r{} = blockIdx.z;  /* 0..{} */\n  r{} = threadIdx.x;  /* 0..{} */\n{indent}r{} = threadIdx.y;  /* 0..{} */\n{indent}r{} = threadIdx.z;  /* 0..{} */",
-            loop_ids[0],
+            "{indent}r0 = blockIdx.x;  /* 0..{} */\n{indent}r1 = blockIdx.y;  /* 0..{} */\n{indent}r2 = blockIdx.z;  /* 0..{} */\n{indent}r3 = threadIdx.x;  /* 0..{} */\n{indent}r4 = threadIdx.y;  /* 0..{} */\n{indent}r5 = threadIdx.z;  /* 0..{} */",
             global_work_size[0],
-            loop_ids[1],
             global_work_size[1],
-            loop_ids[2],
             global_work_size[2],
-            loop_ids[3],
             local_work_size[0],
-            loop_ids[4],
             local_work_size[1],
-            loop_ids[5],
             local_work_size[2]
         );
 

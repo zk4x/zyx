@@ -1,10 +1,13 @@
 use crate::{
-    backend::{BackendError, Device, DeviceInfo, Event}, prog_bar::ProgressBar, ir::IRKernel, kernel::{Kernel, Op}, optimizer::{Optimization, Optimizer}, runtime::Pool, slab::Id, DebugMask
+    backend::{Device, DeviceInfo, Event}, prog_bar::ProgressBar, runtime::Pool, slab::Id, DebugMask
 };
 use std::collections::BTreeMap;
 
+mod optimizer;
+mod ir;
+
 #[derive(Debug)]
-pub struct KernelCache {
+pub struct KernelCompiler {
     device_infos: BTreeMap<DeviceInfo, u32>,
     kernels: BTreeMap<Vec<Op>, u32>,
     // Finished optimizations of kernels for given devices
@@ -15,9 +18,9 @@ pub struct KernelCache {
     programs: BTreeMap<(u32, u32), Id>,
 }
 
-impl KernelCache {
-    pub(super) const fn new() -> KernelCache {
-        KernelCache {
+impl KernelCompiler {
+    pub const fn new() -> KernelCompiler {
+        KernelCompiler {
             device_infos: BTreeMap::new(),
             kernels: BTreeMap::new(),
             optimizations: BTreeMap::new(),
@@ -66,7 +69,7 @@ impl KernelCache {
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 return Ok(Some(event));
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
-                let ir_kernel = IRKernel::new(kernel.clone(), optimization, debug);
+                let ir_kernel = lower_to_ir(&kernel.ops, optimization);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
@@ -88,7 +91,7 @@ impl KernelCache {
         if search_iters == 0 {
             // if optimizations are not requested, use default optimizations
             let optimization = Optimization::new(kernel, device.info());
-            let ir_kernel = IRKernel::new(kernel.clone(), &optimization, debug);
+            let ir_kernel = lower_to_ir(&kernel.ops, &optimization);
             let program_id = device.compile(&ir_kernel, debug.asm())?;
             let nanos = std::time::Instant::now();
             let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;

@@ -26,18 +26,6 @@ mod vulkan;*/
 #[cfg(feature = "wgpu")]
 mod wgpu;
 
-impl From<BackendError> for ZyxError {
-    fn from(value: BackendError) -> Self {
-        ZyxError::BackendError(value)
-    }
-}
-
-impl Display for BackendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{:?}: {}", self.status, self.context))
-    }
-}
-
 pub fn initialize_backends(
     device_config: &DeviceConfig,
     memory_pools: &mut Vec<Pool>,
@@ -93,42 +81,6 @@ pub struct DeviceConfig {
     /// WGSL configuration
     #[cfg(feature = "wgpu")]
     pub wgpu: wgpu::WGPUConfig,
-}
-
-#[derive(Debug)]
-pub enum ErrorStatus {
-    /// Dynamic library was not found on the disk
-    DyLibNotFound,
-    /// Backend initialization failure
-    Initialization,
-    /// Backend deinitialization failure
-    Deinitialization,
-    /// Failed to enumerate devices
-    DeviceEnumeration,
-    /// Failed to query device for information
-    DeviceQuery,
-    /// Failed to allocate memory
-    MemoryAllocation,
-    /// Failed to deallocate memory
-    MemoryDeallocation,
-    /// Failed to copy memory to pool
-    MemoryCopyH2P,
-    /// Failed to copy memory to host
-    MemoryCopyP2H,
-    /// Kernel argument was not correct
-    IncorrectKernelArg,
-    /// Failed to compile kernel
-    KernelCompilation,
-    /// Failed to launch kernel
-    KernelLaunch,
-    /// Failed to synchronize kernel
-    KernelSync,
-}
-
-#[derive(Debug)]
-pub struct BackendError {
-    status: ErrorStatus,
-    context: Box<str>,
 }
 
 /// Hardware information needed for applying optimizations

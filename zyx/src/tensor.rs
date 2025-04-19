@@ -5,8 +5,9 @@
 #![allow(clippy::fallible_impl_from)]
 
 use crate::dtype::DType;
-use crate::node::{BOp, UOp};
-use crate::runtime::{TempData, ZyxError, apply_padding};
+use crate::error::ZyxError;
+use crate::graph::{BOp, UOp};
+use crate::runtime::{TempData, apply_padding};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{Axis, Dim, IntoShape, into_axes, into_axis};
 use crate::{DebugMask, Map, RT, Set};

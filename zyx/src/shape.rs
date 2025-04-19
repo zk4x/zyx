@@ -1,7 +1,8 @@
 //! Few traits that describe shapes, axes, padding, etc.
 
-use crate::ZyxError;
 use core::fmt::Debug;
+
+use crate::error::ZyxError;
 
 pub type Dim = usize;
 pub type Axis = usize;

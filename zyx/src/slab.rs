@@ -9,7 +9,22 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-pub type Id = u32;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Id(u32);
+
+impl Id {
+    const fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    const fn from_usize(id: usize) -> Self {
+        Id(id as u32)
+    }
+
+    const fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
 
 #[derive(Debug)]
 pub struct Slab<T> {
@@ -17,15 +32,59 @@ pub struct Slab<T> {
     empty: BTreeSet<Id>,
 }
 
-impl<T> Drop for Slab<T> {
-    fn drop(&mut self) {
+struct IdIter<'a> {
+    id: Id,
+    max: Id,
+    empty: std::collections::btree_set::Iter<'a, Id>,
+}
+
+impl<'a> IdIter<'a> {
+    fn iterate_ids(empty: &'a BTreeSet<Id>, max: Id) -> Self {
+        let empty = empty.iter();
+        Self {
+            id: Id(0),
+            max,
+            empty,
+        }
+    }
+}
+
+impl Iterator for IdIter<'_> {
+    type Item = Id;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.x > self.id {
+            let id = self.id;
+            self.id.inc();
+            Some(id)
+        } else {
+            match self.empty.next() {
+                Some(x) => todo!(),
+                None => todo!(),
+            }
+        }
+
+
         let mut id = 0;
-        #[allow(clippy::explicit_counter_loop)]
-        for x in self.values.iter_mut() {
-            if !self.empty.contains(&id) {
-                unsafe { x.assume_init_drop() };
+        for x in &self.empty {
+            while x.0 as usize > id {
+                unsafe { self.values[id].assume_init_drop() };
+                id += 1;
             }
             id += 1;
+        }
+        while id < self.values.len() {
+            unsafe { self.values[id].assume_init_drop() };
+            id += 1;
+        }
+    }
+}
+
+impl<T> Drop for Slab<T> {
+    fn drop(&mut self) {
+        // Drops those that are not in self.empty
+        for id in IdIter::new(&self.empty) {
+            unsafe { self.values[id.index()].assume_init_drop() };
         }
     }
 }
@@ -41,27 +100,27 @@ impl<T> Slab<T> {
 
     pub(crate) fn push(&mut self, value: T) -> Id {
         if let Some(id) = self.empty.pop_first() {
-            self.values[id as usize] = MaybeUninit::new(value);
+            self.values[id.index()] = MaybeUninit::new(value);
             //println!("Pushing to empty {id}");
             id
         } else {
             self.values.push(MaybeUninit::new(value));
             //println!("Pushing {}, empty: {:?}", self.values.len() - 1, self.empty);
-            Id::try_from(self.values.len() - 1).unwrap()
+            Id::from_usize(self.values.len() - 1).unwrap()
         }
     }
 
     pub(crate) fn remove(&mut self, id: Id) {
         debug_assert!(!self.empty.contains(&id));
         self.empty.insert(id);
-        unsafe { self.values[id as usize].assume_init_drop() };
+        unsafe { self.values[id.index()].assume_init_drop() };
     }
 
     pub(crate) unsafe fn remove_and_return(&mut self, id: Id) -> T {
         debug_assert!(!self.empty.contains(&id));
         self.empty.insert(id);
         self.values.push(MaybeUninit::uninit());
-        unsafe { self.values.swap_remove(id as usize).assume_init() }
+        unsafe { self.values.swap_remove(id.index()).assume_init() }
     }
 
     /*pub(crate) fn get(&self, id: Id) -> Option<&T> {
@@ -77,7 +136,7 @@ impl<T> Slab<T> {
     }*/
 
     pub(crate) fn ids(&self) -> impl Iterator<Item = Id> + '_ {
-        (0..Id::try_from(self.values.len()).unwrap()).filter(|x| !self.empty.contains(x))
+        (Id(0)..Id::from_usize(self.values.len())).filter(|x| !self.empty.contains(x))
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &T> {

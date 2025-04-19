@@ -51,42 +51,36 @@ mod backend;
 mod dtype;
 mod error;
 mod graph;
-mod ir;
-mod kernel;
 mod mutex;
-mod node;
-mod kernel_cache;
 #[cfg(feature = "py")]
 mod py_bindings;
 mod rng;
 mod runtime;
 mod scalar;
-mod scheduler;
 mod shape;
 mod slab;
+mod kernel_compiler;
 mod tensor;
-mod view;
 // Constant initializable hasher because apparently noone invented that yet...
+mod autograd;
 mod chasher;
 mod prog_bar;
-mod autograd;
-mod static_graph;
-mod optimizer;
 
-pub(crate) type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
-pub(crate) type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
+pub(crate) type Set<T> =
+    std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
+pub(crate) type Map<K, V> =
+    std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 
+pub use autograd::GradientTape;
 pub use dtype::DType;
-pub use runtime::ZyxError;
+use error::ZyxError;
 pub use scalar::{Float, Scalar};
 use shape::Dim;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
-pub use autograd::GradientTape;
 
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
-static RT: mutex::Mutex<Runtime, 1_000_000_000> = mutex::Mutex::new(Runtime::new());
-//static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
+static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
 /// Bitflags for debugging
 #[derive(Debug, Clone, Copy)]
@@ -204,26 +198,6 @@ fn t0() -> Result<(), ZyxError> {
     //let y = x.sum([-1]).unwrap();
     println!("{y}");
     Ok(())
-}*/
-
-/*#[test]
-fn t4() {
-    //let x = Tensor::uniform([16, 8], 0f32..1f32).unwrap();
-    //let y = Tensor::uniform([8, 8], 0f32..1f32).unwrap();
-    let x = Tensor::rand([1024, 1024], DType::F32).unwrap();
-    let y = Tensor::rand([1024, 1024], DType::F32).unwrap();
-    for _ in 0..20 {
-        let z = x.dot(&y).unwrap();
-        //Tensor::plot_graph([], "graph0");
-        Tensor::realize([&z]).unwrap();
-        //Tensor::plot_graph([], &format!("graph0"));
-        //println!("{z}");
-        drop(z);
-        //Tensor::plot_graph([], "graph1");
-        //Tensor::plot_graph([], &format!("graph"));
-    }
-    //Tensor::plot_graph([], "graph0");
-    //Tensor::realize([&z]).unwrap();
 }*/
 
 /*#[test]

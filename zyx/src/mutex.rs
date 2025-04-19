@@ -21,7 +21,7 @@ use std::{
 
 // Standard spinlock, but will panic if it fails to lock after more than N tries
 #[derive(Debug)]
-pub struct Mutex<T, const N: usize> {
+pub struct Mutex<T> {
     data: UnsafeCell<T>,
     lock: AtomicBool,
 }
@@ -32,13 +32,13 @@ pub struct MutexGuard<'a, T: 'a> {
     data: &'a UnsafeCell<T>,
 }
 
-unsafe impl<T: Send, const N: usize> Sync for Mutex<T, N> {}
-unsafe impl<T: Send, const N: usize> Send for Mutex<T, N> {}
+unsafe impl<T: Send> Sync for Mutex<T> {}
+unsafe impl<T: Send> Send for Mutex<T> {}
 
 unsafe impl<T: Sync> Sync for MutexGuard<'_, T> {}
 unsafe impl<T: Send> Send for MutexGuard<'_, T> {}
 
-impl<T, const N: usize> Mutex<T, N> {
+impl<T> Mutex<T> {
     pub(super) const fn new(data: T) -> Self {
         Self {
             data: UnsafeCell::new(data),
@@ -47,6 +47,8 @@ impl<T, const N: usize> Mutex<T, N> {
     }
 
     pub(super) fn lock(&self) -> MutexGuard<'_, T> {
+        const N: usize = 1_000_000_000;
+
         let mut i = 0;
         loop {
             if self
@@ -59,6 +61,7 @@ impl<T, const N: usize> Mutex<T, N> {
                     data: &self.data,
                 };
             }
+
             while self.lock.load(Ordering::Relaxed) {
                 //core::sync::atomic::spin_loop_hint();
                 //std::thread::sleep(std::time::Duration::from_secs(1));

@@ -1,11 +1,6 @@
 //! View handles movement operations.
 
-use super::ir::{IRCompiler, IROp, Reg};
-use crate::{
-    DType,
-    dtype::Constant,
-    shape::{Axis, Dim},
-};
+use crate::shape::{Axis, Dim};
 use std::{fmt::Display, ops::Range};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -13,16 +8,18 @@ pub struct View(Vec<Vec<RDim>>);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct RDim {
-    d: Dim,  // dim
-    st: Dim, // stride
-    lp: isize,     // left pad
-    rp: isize,     // right pad
+    d: Dim,    // dim
+    st: Dim,   // stride
+    lp: isize, // left pad
+    rp: isize, // right pad
 }
 
 fn to_contiguous_rdims(shape: &[Dim]) -> Vec<RDim> {
     let mut st = 1;
     let mut res = Vec::with_capacity(shape.len());
-    unsafe { res.set_len(shape.len()); }
+    unsafe {
+        res.set_len(shape.len());
+    }
     for (i, &d) in shape.iter().enumerate().rev() {
         res[i] = RDim { st, d, lp: 0, rp: 0 };
         st *= d;
@@ -205,8 +202,7 @@ impl View {
         let mut old_shape = self.shape();
         if let Some(inner) = self.0.last_mut() {
             let mut dim = &mut inner[axis];
-            dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad)
-                .unwrap();
+            dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
             if dim.lp < 0 && left_pad > 0 {
                 dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() - left_pad).unwrap();
                 let mut stride = 1;
@@ -249,8 +245,7 @@ impl View {
                         RDim {
                             st,
                             d: if a == axis {
-                                Dim::try_from(isize::try_from(d).unwrap() + right_pad)
-                                    .unwrap()
+                                Dim::try_from(isize::try_from(d).unwrap() + right_pad).unwrap()
                             } else {
                                 d
                             },
@@ -271,6 +266,7 @@ impl View {
         debug_assert_eq!(self.shape(), old_shape);
     }
 
+    /*
     /// Load constant into variable or directly return it if view isn't padded
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn ir_for_constant_load(&self, c: &mut IRCompiler, constant: Constant) -> Reg {
@@ -415,7 +411,7 @@ impl View {
             }
         }
         c.ops.push(IROp::Store { address, x: var, offset });
-    }
+    }*/
 }
 
 impl Display for View {
