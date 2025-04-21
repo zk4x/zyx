@@ -1,24 +1,27 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    dtype::Constant, shape::Dim, DType
+    dtype::Constant, graph::{kernel::{Op, TId}, BOp, UOp}, shape::Dim, DType
 };
+
+use super::optimizer::Optimization;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IRKernel {
-    // read_only, dtype
-    global_variables: Vec<(bool, DType)>,
-    ops: Vec<IROp>,
+    /// read_only, dtype
+    pub global_variables: Vec<(bool, DType)>,
+    /// ops
+    pub ops: Vec<IROp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Scope {
+pub enum IRScope {
     Register,
     Local,
     Global,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IROp {
     Const(Constant),
     Load { address: u16, offset: u16 },
@@ -56,10 +59,10 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
                 t_map.insert(z, ops.len() as u16);
                 ops.push(IROp::Const(value));
             }
-            Op::Load { z, zscope, zview, x, xscope, xview, xdtype } => {
+            Op::Load { z, x, xview, xdtype } => {
                 todo!()
             }
-            Op::Store { z, zscope, zview, zdtype, x, xscope, xview } => {
+            Op::Store { z, zview, zdtype, x } => {
                 todo!()
             }
             Op::Accumulator { z, rop, dtype } => {

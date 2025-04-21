@@ -1,10 +1,10 @@
 use std::ptr;
 use nanoserde::DeJson;
 use crate::{
-    runtime::Pool, shape::Dim, slab::{Id, Slab}
+    error::{BackendError, ErrorStatus}, kernel_compiler::IRKernel, runtime::Pool, shape::Dim, slab::{Slab, SlabId}
 };
 use super::{
-    opencl::OpenCLEvent, BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool,
+    opencl::OpenCLEvent, BufferId, Device, DeviceInfo, Event, MemoryPool, ProgramId
 };
 
 #[derive(Default, Debug, DeJson)]
@@ -15,7 +15,7 @@ pub struct DummyConfig {
 #[derive(Debug)]
 pub struct DummyMemoryPool {
     free_bytes: Dim,
-    buffers: Slab<Dim>,
+    buffers: Slab<BufferId, Dim>,
 }
 
 pub struct DummyDevice {
@@ -66,7 +66,7 @@ impl DummyMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
@@ -82,7 +82,7 @@ impl DummyMemoryPool {
     #[allow(clippy::needless_pass_by_value)]
     pub fn deallocate(
         &mut self,
-        buffer_id: crate::slab::Id,
+        buffer_id: BufferId,
         event_wait_list: Vec<Event>,
     ) {
         let _ = event_wait_list;
@@ -96,7 +96,7 @@ impl DummyMemoryPool {
     pub fn host_to_pool(
         &mut self,
         src: &[u8],
-        dst: crate::slab::Id,
+        dst: BufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = self;
@@ -110,7 +110,7 @@ impl DummyMemoryPool {
     #[allow(clippy::unnecessary_wraps)]
     pub fn pool_to_host(
         &mut self,
-        src: crate::slab::Id,
+        src: BufferId,
         dst: &mut [u8],
         event_wait_list: Vec<super::Event>,
     ) -> Result<(), BackendError> {
@@ -157,16 +157,16 @@ impl DummyDevice {
     #[allow(clippy::unnecessary_wraps)]
     pub const fn compile(
         &mut self,
-        kernel: &crate::ir::IRKernel,
+        kernel: &IRKernel,
         debug_asm: bool,
-    ) -> Result<Id, BackendError> {
+    ) -> Result<ProgramId, BackendError> {
         let _ = self;
         let _ = kernel;
         let _ = debug_asm;
-        Ok(0)
+        Ok(ProgramId::ZERO)
     }
 
-    pub const fn release(&mut self, program_id: Id) {
+    pub const fn release(&mut self, program_id: ProgramId) {
         let _ = self;
         let _ = program_id;
     }
@@ -175,9 +175,9 @@ impl DummyDevice {
     #[allow(clippy::needless_pass_by_value)]
     pub fn launch(
         &mut self,
-        program_id: Id,
+        program_id: ProgramId,
         memory_pool: &mut DummyMemoryPool,
-        args: &[Id],
+        args: &[BufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = self;

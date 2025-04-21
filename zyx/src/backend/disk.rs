@@ -4,17 +4,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{BackendError, ErrorStatus, Event, MemoryPool};
+use super::{BufferId, Event, MemoryPool};
 use crate::{
-    runtime::Pool,
-    shape::Dim,
-    slab::{Id, Slab},
+    error::{BackendError, ErrorStatus}, runtime::Pool, shape::Dim, slab::Slab
 };
 
 #[derive(Debug)]
 pub struct DiskMemoryPool {
     free_bytes: Dim,
-    buffers: Slab<DiskBuffer>,
+    buffers: Slab<BufferId, DiskBuffer>,
 }
 
 #[derive(Debug)]
@@ -52,13 +50,13 @@ impl DiskMemoryPool {
         self.free_bytes
     }
 
-    pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> Id {
+    pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> BufferId {
         // TODO perhaps add verification that the file exists and it contains enough bytes at given offset
         self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes })
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    pub fn deallocate(&mut self, buffer_id: Id, event_wait_list: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
         if self.buffers.contains_key(buffer_id) {
             let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
@@ -69,7 +67,7 @@ impl DiskMemoryPool {
     #[allow(clippy::needless_pass_by_value)]
     pub fn pool_to_host(
         &mut self,
-        src: Id,
+        src: BufferId,
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {

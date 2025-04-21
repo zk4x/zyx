@@ -15,10 +15,10 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    dtype::Constant, ir::{IRKernel, IROp, Scope}, node::{BOp, UOp}, shape::Dim, slab::{Id, Slab}, DType
+    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, UOp}, kernel_compiler::{IRKernel, IROp, IRScope}, shape::Dim, slab::Slab, DType
 };
 
-use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
+use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -37,7 +37,7 @@ pub struct CUDAMemoryPool {
     context: CUcontext,
     device: CUdevice,
     free_bytes: Dim,
-    buffers: Slab<CUDABuffer>,
+    buffers: Slab<BufferId, CUDABuffer>,
     stream: CUstream,
     //cuMemAllocAsync: unsafe extern "C" fn(*mut CUdeviceptr, usize, CUstream) -> CUDAStatus,
     cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
@@ -72,7 +72,7 @@ pub struct CUDADevice {
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
     streams: Vec<CUDAStream>,
-    programs: Slab<CUDAProgram>,
+    programs: Slab<ProgramId, CUDAProgram>,
     cuModuleLoadDataEx: unsafe extern "C" fn(
         *mut CUmodule,
         *const c_void,
@@ -432,7 +432,7 @@ impl CUDAMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError {
                 status: ErrorStatus::MemoryAllocation,
@@ -455,7 +455,7 @@ impl CUDAMemoryPool {
         ))
     }
 
-    pub fn deallocate(&mut self, buffer_id: Id, mut event_wait_list: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: BufferId, mut event_wait_list: Vec<Event>) {
         while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
                 unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }
@@ -474,7 +474,7 @@ impl CUDAMemoryPool {
     pub fn host_to_pool(
         &mut self,
         src: &[u8],
-        dst: Id,
+        dst: BufferId,
         mut event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let dst = &self.buffers[dst];
@@ -497,7 +497,7 @@ impl CUDAMemoryPool {
 
     pub fn pool_to_host(
         &mut self,
-        src: Id,
+        src: BufferId,
         dst: &mut [u8],
         mut event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
@@ -561,7 +561,7 @@ impl CUDADevice {
         &mut self,
         kernel: &IRKernel,
         debug_asm: bool,
-    ) -> Result<crate::slab::Id, BackendError> {
+    ) -> Result<ProgramId, BackendError> {
         let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
 
@@ -606,9 +606,9 @@ impl CUDADevice {
 
     pub fn launch(
         &mut self,
-        program_id: crate::slab::Id,
+        program_id: ProgramId,
         memory_pool: &mut CUDAMemoryPool,
-        args: &[crate::slab::Id],
+        args: &[BufferId],
         // If sync is empty, kernel will be immediatelly synchronized
         mut event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -662,7 +662,7 @@ impl CUDADevice {
         Ok(Event::CUDA(CUDAEvent { event }))
     }
 
-    pub fn release(&mut self, program_id: Id) {
+    pub fn release(&mut self, program_id: ProgramId) {
         let _ = unsafe { (self.cuModuleUnload)(self.programs[program_id].module) }
             .check(ErrorStatus::Deinitialization);
         self.programs.remove(program_id);
@@ -710,7 +710,7 @@ impl CUDADevice {
         let mut local_work_size = [0; 3];
 
         for (i, op) in kernel.ops[..6].iter().enumerate() {
-            if let IROp::Loop { len } = op {
+            if let &IROp::Loop { len } = op {
                 if i < 3 {
                     global_work_size[i] = len;
                 } else {
@@ -722,15 +722,13 @@ impl CUDADevice {
         }
 
         // Declare global variables
-        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                writeln!(
-                    source,
-                    "{indent}{}{}* p{id},",
-                    if *read_only { "const " } else { "" },
-                    dtype.cu(),
-                );
-            }
+        for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
+            writeln!(
+                source,
+                "{indent}{}{}* p{id},",
+                if *read_only { "const " } else { "" },
+                dtype.cu(),
+            );
         }
 
         source.pop();
@@ -738,21 +736,19 @@ impl CUDADevice {
         source.push_str("\n) {\n");
 
         // Declare local variables
-        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Local {
-                writeln!(
-                    source,
-                    "{indent}__shared__ {} p{id}[{len}];",
-                    //if *read_only { "const " } else { "" },
-                    dtype.cu(),
-                );
-            }
-        }
+        /*for (id, (scope, dtype, len, _)) in kernel.local_variables.iter().enumerate() {
+            writeln!(
+                source,
+                "{indent}__shared__ {} p{id}[{len}];",
+                //if *read_only { "const " } else { "" },
+                dtype.cu(),
+            );
+        }*/
 
         // Declare register variables
-        for (id, dtype) in kernel.registers.iter().enumerate() {
+        /*for (id, dtype) in kernel.registers.iter().enumerate() {
             writeln!(source, "{indent}{} r{id};", dtype.cu());
-        }
+        }*/
 
         // Add indices for global and local loops
         writeln!(
@@ -766,7 +762,7 @@ impl CUDADevice {
             local_work_size[2]
         );
 
-        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
+        /*for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Load { z, address, offset } => {
                     writeln!(source, "{indent}r{z} = p{address}[{}];", offset.cu());
@@ -774,7 +770,6 @@ impl CUDADevice {
                 IROp::Store { address, offset, x } => {
                     writeln!(source, "{indent}p{address}[{}] = {};", offset.cu(), x.cu());
                 }
-                IROp::SetLocal { .. } => todo!(),
                 IROp::Set { z, value } => {
                     writeln!(source, "{indent}r{z} = {};", value.cu());
                 }
@@ -851,22 +846,14 @@ impl CUDADevice {
                     indent.pop();
                     writeln!(source, "{indent}}}");
                 }
-                IROp::Barrier { scope } => {
-                    writeln!(
-                        source,
-                        "{};",
-                        match scope {
-                            Scope::Global => "__threadfence()",
-                            Scope::Local => "__syncthreads()",
-                            Scope::Register => unreachable!(),
-                        }
-                    );
+                IROp::LocalBarrier => {
+                    writeln!(source, "__syncthreads()");
                 }
                 _ => {
                     todo!()
                 }
             }
-        }
+        }*/
         source += "}\n";
 
         let mut name = format!(
@@ -979,13 +966,14 @@ impl CUDADevice {
     ) -> ([Dim; 3], [Dim; 3], Box<str>, Vec<u8>) {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
-        for op in &kernel.ops[..6] {
-            if let IROp::Loop { id, len } = op {
-                if id % 2 == 0 {
-                    global_work_size[*id as usize / 2] = *len;
-                } else {
-                    local_work_size[*id as usize / 2] = *len;
-                }
+        for (i, op) in kernel.ops[..3].iter().enumerate() {
+            if let IROp::Loop { len } = op {
+                global_work_size[i] = *len;
+            }
+        }
+        for (i, op) in kernel.ops[3..6].iter().enumerate() {
+            if let IROp::Loop { len } = op {
+                local_work_size[i] = *len;
             }
         }
         let name = format!(
@@ -1007,10 +995,8 @@ impl CUDADevice {
             self.compute_capability[0], self.compute_capability[1]
         );
         // Declare global variables
-        for (id, (scope, _, _, _)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                writeln!(source, "{indent}.param    .u64 g{id},");
-            }
+        for (id, (_, _)) in kernel.global_variables.iter().enumerate() {
+            writeln!(source, "{indent}.param    .u64 g{id},");
         }
         source.pop();
         source.pop();
@@ -1023,9 +1009,9 @@ impl CUDADevice {
         writeln!(source, "{indent}.reg  .s64    a0;");
         writeln!(source, "{indent}.reg  .s64    a1;");
         // Declare register variables
-        for (id, dtype) in kernel.registers.iter().enumerate() {
+        /*for (id, dtype) in kernel.registers.iter().enumerate() {
             writeln!(source, "{indent}.reg  .{}    r{id};", dtype.ptx());
-        }
+        }*/
         // Add indices for global and local loops
         writeln!(source, "{indent}mov.u32    r0, %ctaid.x;");
         writeln!(source, "{indent}mov.u32    r1, %tid.x;");
@@ -1034,7 +1020,8 @@ impl CUDADevice {
         writeln!(source, "{indent}mov.u32    r4, %ctaid.z;");
         writeln!(source, "{indent}mov.u32    r5, %tid.z;");
 
-        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
+        let mut loop_id = 6;
+        /*for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
                 IROp::Set { z, value } => {
                     writeln!(source, "{indent}mov.{}  r{z}, {};", value.dtype().ptx(), value.cu());
@@ -1098,7 +1085,7 @@ impl CUDADevice {
                     //println!("Adding binary {bop:?}");
                     writeln!(
                         source,
-                        "{indent}{}.{}   r{z}, {}, {};",
+                        "{indent}{}.{}   r{z}, r{x}, r{y};",
                         match bop {
                             BOp::Add => "add",
                             BOp::Sub => "sub",
@@ -1119,11 +1106,9 @@ impl CUDADevice {
                             BOp::BitShiftRight => todo!(),
                         },
                         dtype.ptx(),
-                        x.cu(),
-                        y.cu()
                     );
                 }
-                IROp::MAdd { z, a, b, c } => {
+                /*IROp::MAdd { z, a, b, c } => {
                     let dtype = kernel.registers[z as usize];
                     writeln!(
                         source,
@@ -1133,11 +1118,11 @@ impl CUDADevice {
                         b.cu(),
                         c.cu()
                     );
-                }
-                IROp::Loop { id, .. } => {
+                }*/
+                IROp::Loop { .. } => {
                     writeln!(source, "LOOP_{id}:");
                 }
-                IROp::EndLoop { id, len } => {
+                IROp::EndLoop { len } => {
                     // Increment counter
                     writeln!(source, "{indent}add.u32    r{id}, r{id}, 1;");
                     // Set condition
@@ -1145,18 +1130,9 @@ impl CUDADevice {
                     // Branch
                     writeln!(source, "@p  bra    LOOP_{id};");
                 }
-                IROp::Barrier { scope } => {
-                    writeln!(
-                        source,
-                        "{};",
-                        match scope {
-                            Scope::Global => "__threadfence()",
-                            Scope::Local => "__syncthreads()",
-                            Scope::Register => panic!(),
-                        }
-                    );
+                IROp::LocalBarrier => {
+                    writeln!(source, "__syncthreas()");
                 }
-                IROp::SetLocal { .. } => todo!(),
                 IROp::Cast { z, x, dtype } => {
                     _ = writeln!(
                         source,
@@ -1166,7 +1142,7 @@ impl CUDADevice {
                     );
                 }
             }
-        }
+        }*/
         // End kernel
         writeln!(source, "{indent}ret;\n}}\0");
         if debug_asm {
@@ -1410,15 +1386,6 @@ impl DType {
             Self::U16 => "u16",
             Self::U32 => "u32",
             Self::U64 => "u64",
-        }
-    }
-}
-
-impl Reg {
-    fn cu(&self) -> String {
-        match self {
-            Self::Var(id) => format!("r{id}"),
-            Self::Const(value) => value.cu(),
         }
     }
 }

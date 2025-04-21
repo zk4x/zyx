@@ -94,6 +94,14 @@ impl Drop for GradientTape {
 }
 
 impl Runtime {
+    pub(super) fn drop_gradient_tape(&mut self) {
+        self.graph.gradient_tape_ref_count -= 1;
+        if self.graph.gradient_tape_ref_count == 0 {
+            self.graph.gradient_tape = None;
+            // TODO delete all unneeded nodes
+        }
+    }
+
     #[allow(clippy::similar_names)]
     pub(super) fn backward(
         &mut self,

@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
-use crate::{backend::{Device, DeviceInfo}, rng::Rng, runtime::Pool, shape::Dim, slab::Id, DebugMask};
+use crate::{backend::{BufferId, Device, DeviceInfo}, error::BackendError, graph::kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dim, DebugMask};
+
+use super::ir::lower_to_ir;
 
 pub struct Optimizer<'a> {
     rng: Rng,
@@ -219,7 +221,7 @@ impl<'a> Optimizer<'a> {
         Some(possible_optimizations.swap_remove(i as usize % possible_optimizations.len()))
     }
 
-    pub fn bench_optimization(&mut self, optimization: &Optimization, pool: &mut Pool, device: &mut Device, args: &[Id], debug: DebugMask) -> Result<u128, BackendError> {
+    pub fn bench_optimization(&mut self, optimization: &Optimization, pool: &mut Pool, device: &mut Device, args: &[BufferId], debug: DebugMask) -> Result<u128, BackendError> {
         let ir_kernel = lower_to_ir(&self.kernel.ops, optimization);
         let program_id = device.compile(&ir_kernel, debug.asm())?;
         let nanos = std::time::Instant::now();

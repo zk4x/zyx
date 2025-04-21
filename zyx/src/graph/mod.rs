@@ -1,5 +1,6 @@
 //! Graph of tensor operations.
 
+use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::Set;
 use crate::{
@@ -10,14 +11,16 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasherDefault;
 
-mod kernelizer;
+pub use interpreter::interpret;
+
+pub mod kernel;
 mod view;
 mod interpreter;
 
 #[derive(Debug)]
 pub struct Graph {
     // First value is reference count, second is node
-    pub(super) nodes: Slab<(u32, Node)>,
+    pub(super) nodes: Slab<TensorId, (u32, Node)>,
     pub(super) gradient_tape_ref_count: u32,
     pub(super) gradient_tape: Option<Set<TensorId>>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
@@ -146,7 +149,7 @@ impl Graph {
                 }
             }
         }
-        panic!("DType of {tensor_id} could not be found. This is internal bug.")
+        panic!("DType of {tensor_id:?} could not be found. This is internal bug.")
     }
 
     pub(super) fn padding(&self, tensor_id: TensorId) -> &[(isize, isize)] {
@@ -169,7 +172,7 @@ impl Graph {
             //println!("Getting params of id: {tensor_id}, {:?}", self.nodes[tensor_id].1);
             tensor_id = self.nodes[tensor_id].1.param1();
         }
-        panic!("Shape of {tensor_id} could not be found. This is internal bug.")
+        panic!("Shape of {tensor_id:?} could not be found. This is internal bug.")
     }
 
     pub(super) fn build_topo(&self, x: TensorId, sources: &Set<TensorId>) -> Vec<TensorId> {
@@ -456,7 +459,7 @@ impl Node {
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         match self {
             Node::Const { .. } | Node::Leaf { .. } => {
-                NodeParametersIterator { parameters: [0, 0], idx: 0, len: 0 }
+                NodeParametersIterator { parameters: [TensorId::ZERO, TensorId::ZERO], idx: 0, len: 0 }
             }
             Node::Unary { x, .. }
             | Node::Cast { x, .. }
@@ -465,7 +468,7 @@ impl Node {
             | Node::Permute { x, .. }
             | Node::Pad { x, .. }
             | Node::Reduce { x, .. } => {
-                NodeParametersIterator { parameters: [*x, 0], idx: 0, len: 1 }
+                NodeParametersIterator { parameters: [*x, TensorId::ZERO], idx: 0, len: 1 }
             }
             Node::Binary { x, y, .. } => {
                 NodeParametersIterator { parameters: [*x, *y], idx: 0, len: 2 }
@@ -487,7 +490,7 @@ impl Node {
         }
     }
 
-    pub const fn param1(&self) -> u32 {
+    pub const fn param1(&self) -> TensorId {
         match *self {
             Node::Const { .. } | Node::Leaf { .. } => unreachable!(),
             Node::Expand { x }
@@ -501,7 +504,7 @@ impl Node {
         }
     }
 
-    pub const fn param2(&self) -> (u32, u32) {
+    pub const fn param2(&self) -> (TensorId, TensorId) {
         match *self {
             Node::Binary { x, y, .. } => (x, y),
             _ => unreachable!(),

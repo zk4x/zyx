@@ -1,5 +1,5 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
-use crate::backend::{Device, DeviceConfig, Event, MemoryPool};
+use crate::backend::{BufferId, Device, DeviceConfig, Event, MemoryPool};
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{BOp, Graph, Node, ROp, UOp};
@@ -7,7 +7,6 @@ use crate::kernel_compiler::KernelCompiler;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Axis, Dim};
-use crate::slab::Id;
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::DeJson;
@@ -21,23 +20,23 @@ const NUM_CONSTANTS: usize = 32;
 // This is the whole global state of zyx
 pub struct Runtime {
     // Current graph of tensor operations as nodes
-    pub(super) graph: Graph,
+    pub graph: Graph,
     // Physical memory pools
-    pools: Vec<Pool>,
+    pub pools: Vec<Pool>,
     // Physical compute devices, each has their own program cache
-    devices: Vec<Device>,
+    pub devices: Vec<Device>,
     // Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
-    kernel_compiler: KernelCompiler,
+    pub kernel_compiler: KernelCompiler,
     // Zyx configuration directory path
     config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
     // Random number generator
-    pub(super) rng: Rng,
+    pub rng: Rng,
     // Are we in training mode?
-    pub(super) training: bool,
+    pub training: bool,
     /// How many variations of one kernel to try during optimization
-    pub(super) search_iterations: usize,
+    pub search_iterations: usize,
     /// Debug mask
-    pub(super) debug: DebugMask,
+    pub debug: DebugMask,
     /// Temporary storage, TODO limit the number of elements in temporary storage
     temp_data: Vec<Box<dyn TempData>>,
     constants: [Constant; NUM_CONSTANTS],
@@ -46,7 +45,7 @@ pub struct Runtime {
     // and unary operations that are not implemented for the provided dtype.
     // This tries to copy the default behaviour of pytorch, but since rust does not
     // have implicit casting, we do not recommend using this feature.
-    pub(super) implicit_casts: bool,
+    pub implicit_casts: bool,
 }
 
 pub trait TempData: Send {
@@ -59,9 +58,8 @@ pub trait TempData: Send {
 pub struct Pool {
     #[allow(clippy::struct_field_names)]
     pub pool: MemoryPool,
-    pub events: Map<BTreeSet<Id>, Event>,
-    /// tensor id => buffer id
-    pub buffer_map: Map<TensorId, Id>,
+    pub events: Map<BTreeSet<BufferId>, Event>,
+    pub buffer_map: Map<TensorId, BufferId>,
 }
 
 impl Pool {
@@ -74,7 +72,7 @@ impl Pool {
     }
 }
 
-fn get_mut_buffer(pools: &mut [Pool], tensor_id: TensorId) -> Option<(&mut Pool, Id)> {
+fn get_mut_buffer(pools: &mut [Pool], tensor_id: TensorId) -> Option<(&mut Pool, BufferId)> {
     for pool in pools {
         if let Some(&id) = pool.buffer_map.get(&tensor_id) {
             return Some((pool, id));
@@ -556,24 +554,10 @@ impl Runtime {
     pub(super) fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> TensorId {
         self.graph.push(Node::Binary { x, y, bop })
     }
-}
 
-pub fn apply_padding(shape: &mut [Dim], padding: &[(isize, isize)]) {
-    let mut i = 0;
-    for d in shape.iter_mut().rev() {
-        *d = Dim::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1)
-            .unwrap();
-        i += 1;
-        if i >= padding.len() {
-            break;
-        }
-    }
-}
-
-impl Runtime {
     /// Loads data with beginning elements of the tensor x.
     /// If `data.len()` == `x.numel()`, then it loads the whole tensor.
-    pub(super) fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
+    pub fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {
         let n: Dim = self.shape(x).iter().product();
         let dt = self.dtype(x);
         if dt != T::dtype() {
@@ -585,7 +569,7 @@ impl Runtime {
         debug_assert!(data.len() <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
-            let mut to_eval = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
+            let mut to_eval = Set::with_capacity_and_hasher(1, BuildHasherDefault::default());
             to_eval.insert(x);
             self.realize(&to_eval)?;
         }
@@ -595,8 +579,9 @@ impl Runtime {
         };
 
         let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x).unwrap();
+
         for buffers in pool.events.keys() {
-            if buffers.contains(&x) {
+            if buffers.contains(&buffer_id) {
                 let event = pool.events.remove(&buffers.clone()).unwrap();
                 //println!("Loading with event {event:?}");
                 pool.pool.pool_to_host(buffer_id, byte_slice, vec![event])?;
@@ -607,225 +592,7 @@ impl Runtime {
         Ok(())
     }
 
-    #[allow(clippy::cognitive_complexity)]
-    pub(super) fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
-        let begin = std::time::Instant::now();
-
-        let realized_nodes: Set<TensorId> =
-            self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
-        let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
-        if to_eval.is_empty() {
-            return Ok(());
-        }
-        if self.devices.is_empty() {
-            self.initialize_devices()?;
-        }
-
-        let (order, mut to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
-            // Get order for evaluation using DFS with ref counting to resolve
-            // nodes with more than one parent.
-            let (outside_nodes, mut order) = {
-                let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-                let mut rcs: Map<TensorId, u32> =
-                    Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-                while let Some(nid) = params.pop() {
-                    rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                        params.extend(self.graph.nodes[nid].1.parameters());
-                        1
-                    });
-                }
-                // Order them using rcs reference counts
-                let mut order = Vec::new();
-                let mut internal_rcs: Map<TensorId, u32> =
-                    Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-                let mut outside_nodes = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-                let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-                while let Some(nid) = params.pop() {
-                    if let Some(&rc) = rcs.get(&nid) {
-                        if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                            order.push(nid);
-                            let node = &self.graph.nodes[nid];
-                            params.extend(node.1.parameters());
-                            if node.0 > rc {
-                                outside_nodes.insert(nid);
-                            }
-                        }
-                    }
-                }
-                outside_nodes.extend(to_eval.clone());
-                order.reverse();
-                (outside_nodes, order)
-            };
-            //println!("Outside nodes: {outside_nodes:?}");
-            // Constant folding and deleting unused parts of graph
-            let mut new_leafs = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            for &nid in &order {
-                let node = &self.graph.nodes[nid].1;
-                match node.num_parameters() {
-                    0 => {
-                        if !outside_nodes.contains(&nid) {
-                            to_delete.insert(nid);
-                        }
-                    }
-                    1 => {
-                        let x = node.param1();
-                        if to_delete.contains(&x) {
-                            if outside_nodes.contains(&nid) {
-                                to_eval.insert(nid);
-                                new_leafs.insert(nid);
-                            } else {
-                                to_delete.insert(nid);
-                            }
-                        }
-                    }
-                    2 => {
-                        let (x, y) = node.param2();
-                        let xc = to_delete.contains(&x);
-                        let yc = to_delete.contains(&y);
-                        match (xc, yc) {
-                            (true, true) => {
-                                if outside_nodes.contains(&nid) {
-                                    to_eval.insert(nid);
-                                    new_leafs.insert(nid);
-                                } else {
-                                    to_delete.insert(nid);
-                                }
-                            }
-                            (true, false) => {
-                                to_eval.insert(nid);
-                                new_leafs.insert(x);
-                            }
-                            (false, true) => {
-                                to_eval.insert(nid);
-                                new_leafs.insert(y);
-                            }
-                            (false, false) => {}
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            //println!("To eval: {to_eval:?}");
-            //println!("New leafs: {new_leafs:?}");
-            //println!("To delete: {to_delete:?}");
-            let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
-            let mut rcs: Map<TensorId, u32> =
-                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            while let Some(nid) = params.pop() {
-                if let Some(rc) = rcs.get_mut(&nid) {
-                    *rc += 1;
-                } else {
-                    rcs.insert(nid, 1);
-                    if !realized_nodes.contains(&nid) {
-                        params.extend(self.graph.nodes[nid].1.parameters());
-                    }
-                }
-            }
-            /*for x in &to_eval {
-                *rcs.get_mut(x).unwrap() -= 1;
-                if *rcs.get(x).unwrap() == 0 {
-                    rcs.remove(x);
-                }
-            }*/
-            order.retain(|x| rcs.contains_key(x));
-            // Currently rcs with gradient tape cannot be used by scheduler, so we give it empty ids
-            (order, to_delete, new_leafs, Map::with_hasher(BuildHasherDefault::default()))
-        } else {
-            let old_to_eval = to_eval.clone();
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            let mut rcs: Map<TensorId, u32> =
-                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            while let Some(nid) = params.pop() {
-                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                    if !realized_nodes.contains(&nid) {
-                        params.extend(self.graph.nodes[nid].1.parameters());
-                    }
-                    1
-                });
-            }
-            // Order them using rcs reference counts
-            let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            let mut new_leafs = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
-            let mut order = Vec::new();
-            let mut internal_rcs: Map<TensorId, u32> =
-                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            while let Some(nid) = params.pop() {
-                if let Some(&rc) = rcs.get(&nid) {
-                    if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                        order.push(nid);
-                        let node = &self.graph.nodes[nid];
-                        if node.0 > rc {
-                            new_leafs.insert(nid);
-                            if !realized_nodes.contains(&nid) {
-                                to_eval.insert(nid);
-                            }
-                        } else if !to_eval.contains(&nid) {
-                            to_delete.insert(nid);
-                        } else {
-                            new_leafs.insert(nid);
-                        }
-                        if !realized_nodes.contains(&nid) {
-                            params.extend(node.1.parameters());
-                        }
-                    }
-                }
-            }
-            order.reverse();
-            for x in &old_to_eval {
-                *rcs.get_mut(x).unwrap() -= 1;
-                if *rcs.get(x).unwrap() == 0 {
-                    rcs.remove(x);
-                }
-            }
-            //println!("Order {order:?}");
-            //println!("ToEval {to_eval:?}");
-            //println!("ToDelete {to_delete:?}");
-            //println!("NewLeafs {new_leafs:?}");
-            (order, to_delete, new_leafs, rcs)
-        };
-        let elapsed = begin.elapsed();
-        if self.debug.perf() {
-            println!(
-                "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape = {}",
-                elapsed.as_micros(),
-                order.len(),
-                self.graph.nodes.len(),
-                self.graph.gradient_tape.is_some(),
-            );
-        }
-
-        schedule(
-            &self.graph,
-            &order,
-            rcs,
-            &to_eval,
-            &mut self.devices,
-            &mut self.pools,
-            &mut self.kernel_compiler,
-            self.search_iterations,
-            realized_nodes,
-            self.debug,
-        )?;
-
-        // Deallocate them from devices, new_leafs can be deallocated too
-        self.deallocate_tensors(&to_delete);
-
-        // Remove evaluated part of graph unless needed for backpropagation
-        for tensor in new_leafs {
-            self.graph.add_shape(tensor);
-            self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
-            to_delete.remove(&tensor);
-        }
-        // Delete the node, but do not use release function, just remove it from graph.nodes
-        self.graph.delete_tensors(&to_delete);
-
-        Ok(())
-    }
-
-    fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) {
+    pub fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) {
         // This is basically tracing GC, seems faster than reference counting
         // remove all buffers that are not used by any tensors
         // Check which buffers will possibly need to be dropped
@@ -854,12 +621,16 @@ impl Runtime {
             }
         }
     }
+}
 
-    pub(super) fn drop_gradient_tape(&mut self) {
-        self.graph.gradient_tape_ref_count -= 1;
-        if self.graph.gradient_tape_ref_count == 0 {
-            self.graph.gradient_tape = None;
-            // TODO delete all unneeded nodes
+pub fn apply_padding(shape: &mut [Dim], padding: &[(isize, isize)]) {
+    let mut i = 0;
+    for d in shape.iter_mut().rev() {
+        *d = Dim::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1)
+            .unwrap();
+        i += 1;
+        if i >= padding.len() {
+            break;
         }
     }
 }

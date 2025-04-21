@@ -1,10 +1,14 @@
 use crate::{
-    backend::{Device, DeviceInfo, Event}, prog_bar::ProgressBar, runtime::Pool, slab::Id, DebugMask
+    backend::{BufferId, Device, DeviceInfo, Event, ProgramId}, error::BackendError, graph::kernel::{Kernel, Op}, prog_bar::ProgressBar, runtime::Pool, DebugMask
 };
 use std::collections::BTreeMap;
 
 mod optimizer;
 mod ir;
+
+use ir::lower_to_ir;
+pub use ir::{IRKernel, IROp, IRScope};
+use optimizer::{Optimization, Optimizer};
 
 #[derive(Debug)]
 pub struct KernelCompiler {
@@ -12,10 +16,10 @@ pub struct KernelCompiler {
     kernels: BTreeMap<Vec<Op>, u32>,
     // Finished optimizations of kernels for given devices
     // kernel id, device info id => optimization
-    optimizations: BTreeMap<(u32, Id), Optimization>,
+    optimizations: BTreeMap<(u32, u32), Optimization>,
     // This last one is not stored to disk
     // kernel id, device id => program id
-    programs: BTreeMap<(u32, u32), Id>,
+    programs: BTreeMap<(u32, u32), ProgramId>,
 }
 
 impl KernelCompiler {
@@ -49,7 +53,7 @@ impl KernelCompiler {
         device_id: u32,
         device: &mut Device,
         pool: &mut Pool,
-        args: &[Id],
+        args: &[BufferId],
         event_wait_list: Vec<Event>,
         search_iters: usize,
         debug: DebugMask,

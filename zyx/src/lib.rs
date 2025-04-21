@@ -73,10 +73,11 @@ pub(crate) type Map<K, V> =
 
 pub use autograd::GradientTape;
 pub use dtype::DType;
-use error::ZyxError;
+pub use error::ZyxError;
 pub use scalar::{Float, Scalar};
 use shape::Dim;
 pub use shape::IntoShape;
+use slab::SlabId;
 pub use tensor::Tensor;
 
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
@@ -141,7 +142,7 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
             //if let Some(label) = tensor.label() {
             //write!(header, "\"{label}\":{{").unwrap();
             //} else {
-            write!(header, "\"{}\":{{", tensor.id()).unwrap();
+            write!(header, "\"{}\":{{", tensor.id().index()).unwrap();
             //}
             write!(header, "\"dtype\":\"{}\",", dtype.safetensors()).unwrap();
             let mut st_shape = format!("{:?}", tensor.shape());

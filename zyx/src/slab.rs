@@ -4,51 +4,40 @@
 //! and it does not change existing indices.
 
 use std::{
-    collections::BTreeSet,
-    mem::MaybeUninit,
-    ops::{Index, IndexMut},
+    collections::BTreeSet, marker::PhantomData, mem::MaybeUninit, ops::{Index, IndexMut}
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Id(u32);
-
-impl Id {
-    const fn index(self) -> usize {
-        self.0 as usize
-    }
-
-    const fn from_usize(id: usize) -> Self {
-        Id(id as u32)
-    }
-
-    const fn inc(&mut self) {
-        self.0 += 1;
-    }
+pub trait SlabId: Clone + Copy + PartialEq + Eq + PartialOrd + Ord {
+    const ZERO: Self;
+    fn index(self) -> usize;
+    fn from_usize(id: usize) -> Self;
+    fn inc(&mut self);
 }
 
 #[derive(Debug)]
-pub struct Slab<T> {
+pub struct Slab<Id: SlabId, T> {
     values: Vec<MaybeUninit<T>>,
     empty: BTreeSet<Id>,
+    _index: PhantomData<Id>,
 }
 
-struct IdIter<'a> {
+struct IdIter<'a, Id> {
     id: Id,
     max: Id,
     empty: &'a BTreeSet<Id>,
 }
 
-impl<'a> IdIter<'a> {
+impl<'a, Id: SlabId> IdIter<'a, Id> {
     fn new(empty: &'a BTreeSet<Id>, max: Id) -> Self {
         Self {
-            id: Id(0),
+            id: Id::ZERO,
             max,
             empty,
         }
     }
 }
 
-impl Iterator for IdIter<'_> {
+impl<Id: SlabId> Iterator for IdIter<'_, Id> {
     type Item = Id;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -78,7 +67,7 @@ impl Iterator for IdIter<'_> {
     }
 }
 
-impl<T> Drop for Slab<T> {
+impl<Id: SlabId, T> Drop for Slab<Id, T> {
     fn drop(&mut self) {
         // Drops those that are not in self.empty
         for id in IdIter::new(&self.empty, Id::from_usize(self.values.len())) {
@@ -87,13 +76,13 @@ impl<T> Drop for Slab<T> {
     }
 }
 
-impl<T> Slab<T> {
+impl<Id: SlabId, T> Slab<Id, T> {
     pub(crate) const fn new() -> Self {
-        Self { values: Vec::new(), empty: BTreeSet::new() }
+        Self { values: Vec::new(), empty: BTreeSet::new(), _index: PhantomData }
     }
 
     pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self { values: Vec::with_capacity(capacity), empty: BTreeSet::new() }
+        Self { values: Vec::with_capacity(capacity), empty: BTreeSet::new(), _index: PhantomData }
     }
 
     pub(crate) fn push(&mut self, value: T) -> Id {
@@ -195,7 +184,7 @@ impl<T> Slab<T> {
     }
 }
 
-impl<T> Index<Id> for Slab<T> {
+impl<Id: SlabId, T> Index<Id> for Slab<Id, T> {
     type Output = T;
     fn index(&self, index: Id) -> &Self::Output {
         debug_assert!(!self.empty.contains(&index));
@@ -203,18 +192,18 @@ impl<T> Index<Id> for Slab<T> {
     }
 }
 
-impl<T> IndexMut<Id> for Slab<T> {
+impl<Id: SlabId, T> IndexMut<Id> for Slab<Id, T> {
     fn index_mut(&mut self, index: Id) -> &mut Self::Output {
         debug_assert!(!self.empty.contains(&index));
         unsafe { self.values[index.index()].assume_init_mut() }
     }
 }
 
-impl<T> FromIterator<(Id, T)> for Slab<T> {
+impl<Id: SlabId, T> FromIterator<(Id, T)> for Slab<Id, T> {
     fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> Self {
         let mut values = Vec::new();
         let mut empty = BTreeSet::new();
-        let mut i = Id(0);
+        let mut i = Id::ZERO;
         for (id, v) in iter {
             while id != i {
                 values.push(MaybeUninit::uninit());
@@ -224,11 +213,11 @@ impl<T> FromIterator<(Id, T)> for Slab<T> {
             values.push(MaybeUninit::new(v));
             i.inc();
         }
-        Self { values, empty }
+        Self { values, empty, _index: PhantomData }
     }
 }
 
-impl<T: PartialEq> PartialEq for Slab<T> {
+impl<Id: SlabId, T: PartialEq> PartialEq for Slab<Id, T> {
     fn eq(&self, other: &Self) -> bool {
         if self.len() != other.len() {
             return false;
@@ -237,9 +226,9 @@ impl<T: PartialEq> PartialEq for Slab<T> {
     }
 }
 
-impl<T: Eq> Eq for Slab<T> {}
+impl<Id: SlabId, T: Eq> Eq for Slab<Id, T> {}
 
-impl<T: PartialOrd> PartialOrd for Slab<T> {
+impl<Id: SlabId, T: PartialOrd> PartialOrd for Slab<Id, T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let mut iter = self.iter().zip(other.iter());
         // TODO perhaps we can do the comparison over more than one element if the first elements
@@ -252,7 +241,7 @@ impl<T: PartialOrd> PartialOrd for Slab<T> {
     }
 }
 
-impl<T: Ord> Ord for Slab<T> {
+impl<Id: SlabId, T: Ord> Ord for Slab<Id, T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let mut iter = self.iter().zip(other.iter());
         if let Some((x, y)) = iter.next() {
@@ -263,7 +252,7 @@ impl<T: Ord> Ord for Slab<T> {
     }
 }
 
-impl<T: Clone> Clone for Slab<T> {
+impl<T: Clone, Id: SlabId> Clone for Slab<Id, T> {
     fn clone(&self) -> Self {
         Self {
             values: self
@@ -279,6 +268,7 @@ impl<T: Clone> Clone for Slab<T> {
                 })
                 .collect(),
             empty: self.empty.clone(),
+            _index: PhantomData,
         }
     }
 }

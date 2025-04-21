@@ -10,6 +10,7 @@ use crate::graph::{BOp, UOp};
 use crate::runtime::{TempData, apply_padding};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{Axis, Dim, IntoShape, into_axes, into_axis};
+use crate::slab::SlabId;
 use crate::{DebugMask, Map, RT, Set};
 use core::cmp::Ordering;
 use half::{bf16, f16};
@@ -23,7 +24,30 @@ use std::ops::{
 };
 use std::path::Path;
 
-pub type TensorId = u32;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TensorId(u32);
+
+impl SlabId for TensorId {
+    const ZERO: Self = Self(0);
+
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    fn from_usize(id: usize) -> Self {
+        Self(id as u32)
+    }
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+impl Display for TensorId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{self:?}"))
+    }
+}
 
 /// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
 ///

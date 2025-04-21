@@ -6,7 +6,7 @@
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
-use crate::{ir::IRKernel, runtime::Pool, shape::Dim, slab::Id, ZyxError};
+use crate::{error::{BackendError, ErrorStatus}, kernel_compiler::IRKernel, runtime::Pool, shape::Dim, slab::SlabId};
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
 use dummy::{DummyDevice, DummyMemoryPool};
@@ -14,7 +14,6 @@ use nanoserde::DeJson;
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
 #[cfg(feature = "wgpu")]
 use wgpu::{WGPUDevice, WGPUMemoryPool};
-use std::fmt::Display;
 
 mod disk;
 mod cuda;
@@ -25,6 +24,44 @@ mod opencl;
 mod vulkan;*/
 #[cfg(feature = "wgpu")]
 mod wgpu;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BufferId(u32);
+
+impl SlabId for BufferId {
+    const ZERO: Self = Self(0);
+
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    fn from_usize(id: usize) -> Self {
+        Self(id as u32)
+    }
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProgramId(u32);
+
+impl SlabId for ProgramId {
+    const ZERO: Self = Self(0);
+
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    fn from_usize(id: usize) -> Self {
+        Self(id as u32)
+    }
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
 
 pub fn initialize_backends(
     device_config: &DeviceConfig,
@@ -145,7 +182,7 @@ impl MemoryPool {
         }
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         match self {
             MemoryPool::Disk(_) => todo!(),
             MemoryPool::CUDA(pool) => pool.allocate(bytes),
@@ -159,7 +196,7 @@ impl MemoryPool {
     // Deallocate drops events without synchronization
     pub fn deallocate(
         &mut self,
-        buffer_id: Id,
+        buffer_id: BufferId,
         event_wait_list: Vec<Event>,
     ) {
         match self {
@@ -177,7 +214,7 @@ impl MemoryPool {
     pub fn host_to_pool(
         &mut self,
         src: &[u8],
-        dst: Id,
+        dst: BufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {
@@ -193,7 +230,7 @@ impl MemoryPool {
     /// Pool to host is blocking operation, synchronizes events and drops them
     pub fn pool_to_host(
         &mut self,
-        src: Id,
+        src: BufferId,
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
@@ -206,7 +243,7 @@ impl MemoryPool {
             MemoryPool::Dummy(pool) => pool.pool_to_host(src, dst, event_wait_list),
         }
     }
-    
+
     // Synchronize events, blocking, drops those events
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         match self {
@@ -284,7 +321,7 @@ impl Device {
         }
     }
 
-    pub fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<Id, BackendError> {
+    pub fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         match self {
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
             Device::OpenCL(dev) => dev.compile(kernel, debug_asm),
@@ -294,7 +331,7 @@ impl Device {
         }
     }
 
-    pub fn release(&mut self, program_id: Id) {
+    pub fn release(&mut self, program_id: ProgramId) {
         match self {
             Device::CUDA(dev) => dev.release(program_id),
             Device::OpenCL(dev) => dev.release(program_id),
@@ -306,9 +343,9 @@ impl Device {
 
     pub fn launch(
         &mut self,
-        program_id: Id,
+        program_id: ProgramId,
         memory_pool: &mut MemoryPool,
-        args: &[Id],
+        args: &[BufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {

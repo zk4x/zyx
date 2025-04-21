@@ -4,31 +4,47 @@
 // is_reshapable more or less cannot be loosened.
 
 use std::{
-    cmp::Ordering, collections::{BTreeMap, BTreeSet}, ops::Range
+    cmp::Ordering, collections::{BTreeMap, BTreeSet}, hash::BuildHasherDefault, ops::Range
 };
-
 use crate::{
-    backend::{Device, Event}, dtype::Constant, graph::{Graph, Node}, runtime::Pool, shape::{Axis, Dim}, slab::Id, tensor::TensorId, DType, DebugMask, Map, Set, ZyxError
+    dtype::Constant, graph::{Graph, Node}, runtime::Pool, shape::{Axis, Dim}, slab::{Slab, SlabId}, tensor::TensorId, DType, DebugMask, Map, Set
 };
 
 use super::{view::View, BOp, ROp, UOp};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Kernel {
-    pub(super) ops: Vec<Op>,
-    // Mapind from tensors ids to load and store ids
-    pub(super) tensors: BTreeMap<TId, TensorId>,
-    // Outputs of the kernel that are unused (not stored yet)
-    pub(super) outputs: BTreeMap<TensorId, TId>,
-    pub(super) max_id: TId,
-    // Which kernels must be evaluated before this kernel (only direct predecessors)
-    pub(super) depends_on: BTreeSet<u32>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KernelId(u32);
+
+impl SlabId for KernelId {
+    const ZERO: Self = Self(0);
+
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    fn from_usize(id: usize) -> Self {
+        Self(id as u32)
+    }
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
 }
 
 // Tensor id in a kernel
 pub type TId = u16;
 
-type KernelId = Id;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Kernel {
+    pub ops: Vec<Op>,
+    // Mapind from tensors ids to load and store ids
+    pub tensors: BTreeMap<TId, TensorId>,
+    // Outputs of the kernel that are unused (not stored yet)
+    pub outputs: BTreeMap<TensorId, TId>,
+    pub max_id: TId,
+    // Which kernels must be evaluated before this kernel (only direct predecessors)
+    pub depends_on: BTreeSet<KernelId>,
+}
 
 // TODO this needs to be smaller, since it's stored on the disk
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -112,7 +128,7 @@ impl Kernel {
         nid: TensorId,
         shape: &[Dim],
         dtype: DType,
-        depends_on: BTreeSet<Id>,
+        depends_on: BTreeSet<KernelId>,
     ) -> Kernel {
         let mut ops = Vec::with_capacity(50);
         for (axis, dimension) in shape.iter().copied().enumerate() {
@@ -137,7 +153,7 @@ impl Kernel {
         *self.tensors.iter().find(|(tidx, _)| **tidx == tid).unwrap().0
     }*/
 
-    pub(super) fn shape(&self) -> Vec<Dim> {
+    pub fn shape(&self) -> Vec<Dim> {
         self.ops
             .iter()
             .map_while(|op| {
@@ -446,7 +462,7 @@ impl Kernel {
         //self.debug();
     }
 
-    pub(super) fn debug(&self) {
+    pub fn debug(&self) {
         println!(
             "Kernel shape: {:?}, outputs: {:?}, tensors: {:?}, depends on: {:?}",
             self.shape(),
@@ -713,156 +729,7 @@ impl Kernel {
         self.ops.insert(op_id, Op::Loop { axis, len: 1 });
     }
 
-    pub(super) fn launch(
-        &mut self,
-        graph: &Graph,
-        devices: &mut [Device],
-        memory_pools: &mut [Pool],
-        kernel_cache: &mut KernelCache,
-        search_iters: usize,
-        debug: DebugMask,
-    ) -> Result<Option<Event>, ZyxError> {
-        // First make a list of all memory pools which can hold all tensors, including outputs
-        let total_bytes: Dim = self
-            .tensors
-            .values()
-            .map(|&tid| {
-                graph.shape(tid).iter().product::<Dim>()
-                    * graph.dtype(tid).byte_size() as Dim
-            })
-            .sum();
-        let mut free_memory_pools = Map::default();
-        for (mpid, pool) in memory_pools.iter().enumerate() {
-            // TODO subtract tensors stored in that pool from total_bytes
-            if pool.pool.free_bytes() > total_bytes {
-                free_memory_pools.insert(mpid, (0, 0));
-            }
-        }
-
-        // Pick memory pool associated with fastest/least occupied device.
-        for (device_id, device) in devices.iter().enumerate() {
-            let mpid = device.memory_pool_id();
-            if let Some((compute, old_device_id)) = free_memory_pools.get_mut(&(mpid as usize)) {
-                let free_compute = device.free_compute();
-                if free_compute > *compute {
-                    *compute = free_compute;
-                    *old_device_id = device_id;
-                }
-            }
-        }
-        let mpid = free_memory_pools.iter().max_by_key(|x| x.1.0);
-        //println!("{free_memory_pools:?} mpid {mpid:?}");
-        let (mpid, dev_id) = if let Some(mpid) = mpid {
-            (*mpid.0, mpid.1.1)
-        } else {
-            return Err(ZyxError::AllocationError);
-        };
-
-        // Move all tensors to that pool if they are not there already.
-        // Allocate space for all outputs.
-        let mut args = Vec::new();
-        let mut outputs = BTreeSet::new();
-        let mut event_wait_list = Vec::new();
-
-        for op in &self.ops {
-            match op {
-                Op::Load { x, .. } => {
-                    let tid = self.tensors[x];
-                    #[allow(clippy::map_entry)]
-                    if !memory_pools[mpid].buffer_map.contains_key(&tid) {
-                        // Check where the tensor is
-                        let mut old_mpid = usize::MAX;
-                        for (i, pool) in memory_pools.iter().enumerate() {
-                            if pool.buffer_map.contains_key(&tid) {
-                                old_mpid = i;
-                                break;
-                            }
-                        }
-                        debug_assert_ne!(old_mpid, usize::MAX);
-
-                        let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
-                        // No need to initialize here, other than rust is bad.
-                        let mut byte_slice = vec![0u8; bytes];
-                        let src = memory_pools[old_mpid].buffer_map[&tid];
-
-                        // Move the tensor into mpid pool
-                        // Pool to host blocks on event, so we can remove that event.
-                        let mut event_wait_list = Vec::new();
-                        for buffers in memory_pools[old_mpid].events.keys() {
-                            if buffers.contains(&src) {
-                                // Pool to host blocks on event, so we can remove that event.
-                                let event =
-                                    memory_pools[old_mpid].events.remove(&buffers.clone()).unwrap();
-                                event_wait_list.push(event);
-                                break;
-                            }
-                        }
-                        memory_pools[old_mpid].pool.pool_to_host(
-                            src,
-                            &mut byte_slice,
-                            event_wait_list,
-                        )?;
-                        memory_pools[old_mpid].pool.deallocate(src, vec![]);
-                        memory_pools[old_mpid].buffer_map.remove(&tid);
-                        //println!("{byte_slice:?}");
-
-                        let (dst, event) = memory_pools[mpid].pool.allocate(bytes)?;
-                        let event = memory_pools[mpid].pool.host_to_pool(
-                            &byte_slice,
-                            dst,
-                            vec![event],
-                        )?;
-                        // We have to sync here, because byte_slice does not exist any long.
-                        // The other solution would be to put this into temp_data.
-                        // But perhaps we should figure some better async.
-                        memory_pools[mpid].pool.sync_events(vec![event])?;
-                        memory_pools[mpid].buffer_map.insert(tid, dst);
-                        //memory_pools[mpid].events.insert(BTreeSet::from([dst]), event);
-                    }
-                    args.push(memory_pools[mpid].buffer_map[&tid]);
-                }
-                Op::Store { z, zview, zdtype, .. } => {
-                    // Allocate space for output
-                    let tensor_id = self.tensors[z];
-                    let (buffer_id, event) = memory_pools[mpid]
-                        .pool
-                        .allocate(zview.original_numel() * (zdtype.byte_size() as Dim))?;
-                    memory_pools[mpid].buffer_map.insert(tensor_id, buffer_id);
-                    event_wait_list.push(event);
-                    outputs.insert(tensor_id);
-                    args.push(buffer_id);
-                }
-                _ => {}
-            }
-        }
-
-        /*#[cfg(debug_assertions)]
-        {
-            let mut visited = BTreeSet::new();
-            for &arg in &args {
-                debug_assert!(visited.insert(arg));
-            }
-        }*/
-        //println!("args = {args:?}");
-
-        // Send the kernel to kernel cache.
-        if let Some(event) = kernel_cache.launch(
-            self,
-            u32::try_from(dev_id).unwrap(),
-            &mut devices[dev_id],
-            &mut memory_pools[mpid],
-            &args,
-            event_wait_list,
-            search_iters,
-            debug,
-        )? {
-            memory_pools[mpid].events.insert(outputs, event.clone());
-            return Ok(Some(event));
-        }
-        Ok(None)
-    }
-
-    pub(super) fn flop_mem_rw(&self) -> (u128, u128, u128) {
+    pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
         // TODO This does not yet account for multiple loads from the same buffer.
         let mut shape = Vec::new();
         let mut flop = 0;
@@ -873,20 +740,16 @@ impl Kernel {
                 &Op::Loop { len, .. } => {
                     shape.push(len);
                 }
-                &Op::Load { xscope, ref xview, xdtype, .. } => {
+                &Op::Load { ref xview, xdtype, .. } => {
                     // Note that this calculates actual read speed, even if the load accesses the same
                     // value multiple times. This is usefull so that we can see whether the kernel
                     // is compute bound or memory bound.
-                    if xscope == Scope::Global {
-                        //mem_read += shape.iter().product::<usize>() as u128;
-                        mem_read += xview.original_numel() as u128 * u128::from(xdtype.byte_size());
-                    }
+                    //mem_read += shape.iter().product::<usize>() as u128;
+                    mem_read += xview.original_numel() as u128 * u128::from(xdtype.byte_size());
                 }
-                &Op::Store { zscope, ref zview, zdtype, .. } => {
-                    if zscope == Scope::Global {
-                        //mem_write += shape.iter().product::<usize>() as u128 * zdtype.byte_size();
-                        mem_write += zview.original_numel() as u128 * u128::from(zdtype.byte_size());
-                    }
+                &Op::Store { ref zview, zdtype, .. } => {
+                    //mem_write += shape.iter().product::<usize>() as u128 * zdtype.byte_size();
+                    mem_write += zview.original_numel() as u128 * u128::from(zdtype.byte_size());
                 }
                 Op::EndLoop => {
                     shape.pop();
@@ -914,12 +777,12 @@ impl std::fmt::Display for Op {
             Op::Const { z, value, view } => f.write_fmt(format_args!(
                 "{C_WHITE}Const{C_RESET}       {z} <- value: {value}, {view}"
             )),
-            Op::Load { z, zscope, zview: _, x, xscope, xview, xdtype } => f.write_fmt(format_args!(
-                "{C_MAGENTA}Load{C_RESET}        {z}[{zscope:?}] <- {x}[{xscope:?}, {xdtype}], {xview}"
+            Op::Load { z, x, xview, xdtype: _ } => f.write_fmt(format_args!(
+                "{C_MAGENTA}Load{C_RESET}        {z} <- {x}, {xview}"
             )),
-            Op::Store { z, zview, zscope, zdtype, x, xscope, xview: _ } => {
+            Op::Store { z, zview, zdtype: _, x } => {
                 f.write_fmt(format_args!(
-                "{C_RED}Store{C_RESET}        {z}[{zscope:?}] <- {x}[{xscope:?}], {zview}, {zdtype}"
+                "{C_RED}Store{C_RESET}        {z} <- {x}, {zview}"
             ))
             }
             Op::Loop { axis, len } => f.write_fmt(format_args!(
@@ -1084,7 +947,7 @@ fn reshape_pattern() {
 /// If tensor is used elsewhere (rc > 1), then create rc - 1 copies of the kernel.
 /// Potentially if this is expensive kernel or it requires many ops, then we might evaluate it immediatelly.
 #[allow(clippy::cognitive_complexity)]
-fn kernelize(
+pub fn kernelize(
     graph: &Graph,
     order: &[TensorId],
     // RCS are only ref counts from parameters, excluding ref counts from being in to_eval
@@ -1094,10 +957,10 @@ fn kernelize(
     realized_nodes: &Set<TensorId>,
     #[allow(unused)]
     debug: DebugMask,
-) -> Slab<Kernel> {
+) -> Slab<KernelId, Kernel> {
     // Unary and binary ops do not require duplication of kernels
     // Kernels represented by ops
-    let mut kernels: Slab<Kernel> = Slab::with_capacity(10);
+    let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(10);
 
     //if debug.sched() { println!("To schedule: {} tensors, to eval: {to_eval:?}", order.len()); }
 
@@ -1131,7 +994,7 @@ fn kernelize(
             println!("Realized nodes: {realized_nodes:?}");
             for &nid in order {
                 println!(
-                    "ID({nid}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}, num kernels: {}",
+                    "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}, num kernels: {}",
                     graph[nid],
                     graph.shape(nid),
                     rcs.get(&nid).copied().unwrap_or(0),
@@ -1183,7 +1046,7 @@ fn kernelize(
                         .copied()
                         .collect();
                     if !realized_nodes.contains(&nid) {
-                        println!("tensor {nid} not in realized nodes and not in buffers");
+                        println!("tensor {nid:?} not in realized nodes and not in buffers");
                     }
                     unreachable!();
                 }
@@ -1508,33 +1371,24 @@ fn kernelize(
                                 Op::Const { z, value, ref view } => {
                                     Op::Const { z: z + n, value, view: view.clone() }
                                 }
-                                Op::Load { z, zscope, ref zview, x, xscope, ref xview, xdtype } => {
+                                Op::Load { z, x, ref xview, xdtype } => {
                                     Op::Load {
                                         z: z + n,
-                                        zscope,
-                                        zview: zview.clone(),
                                         x: x + n,
-                                        xscope,
                                         xview: xview.clone(),
                                         xdtype,
                                     }
                                 }
                                 Op::Store {
                                     z,
-                                    zscope,
                                     ref zview,
                                     zdtype,
                                     x,
-                                    xscope,
-                                    ref xview,
                                 } => Op::Store {
                                     z: z + n,
-                                    zscope,
                                     zview: zview.clone(),
                                     zdtype,
                                     x: x + n,
-                                    xscope,
-                                    xview: xview.clone(),
                                 },
                                 Op::Accumulator { z, rop, dtype } => {
                                     Op::Accumulator { z: z + n, rop, dtype }
@@ -1638,7 +1492,7 @@ fn kernelize(
 
 // Adds store to kernel and removes nid from outputs of all kernels
 fn store(
-    kernels: &mut Slab<Kernel>,
+    kernels: &mut Slab<KernelId, Kernel>,
     kid: KernelId,
     nid: TensorId,
     nid_shape: &[usize],
@@ -1677,11 +1531,8 @@ fn store(
     let store_op = Op::Store {
         z,
         zview,
-        zscope: Scope::Global,
         zdtype: nid_dtype,
         x,
-        xscope: Scope::Register,
-        xview: View::none(),
     };
     kernels[kid].ops.push(store_op);
     kernels[kid].tensors.insert(z, nid);
@@ -1690,7 +1541,7 @@ fn store(
 // recursive should be faster, since it does not allocate, but in fact the dynamic programming
 // version is much faster, apparently cpus really hate recursion
 /// Check if kidx depends on kidy
-fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
+fn depends_on(kernels: &Slab<KernelId, Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
     let mut depends_on = kernels[kidx].depends_on.clone();
     while let Some(kid) = depends_on.pop_last() {
         if kid == kidy {
@@ -1702,7 +1553,7 @@ fn depends_on(kernels: &Slab<Kernel>, kidx: KernelId, kidy: KernelId) -> bool {
 }
 
 // Choose kernel with most outputs (binary, unary)
-fn get_kernel_max(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {
+fn get_kernel_max(x: TensorId, kernels: &Slab<KernelId, Kernel>) -> (TId, KernelId) {
     // TODO perhaps we can optimize this more?
     kernels
         .iter()
@@ -1723,7 +1574,7 @@ fn get_kernel_max(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {
 }
 
 // Choose kernel with fewest outputs (expand, reshape, pad, permute, reduce)
-fn get_kernel_min(x: TensorId, kernels: &Slab<Kernel>) -> (TId, KernelId) {
+fn get_kernel_min(x: TensorId, kernels: &Slab<KernelId, Kernel>) -> (TId, KernelId) {
     kernels
         .iter()
         .filter(|(_, kernel)| kernel.outputs.contains_key(&x))

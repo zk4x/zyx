@@ -4,14 +4,9 @@
 #![allow(non_snake_case)]
 #![allow(clippy::question_mark)]
 
-use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool, Pool};
+use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
-    DType,
-    dtype::Constant,
-    ir::{IROp, Reg, Scope},
-    node::{BOp, UOp},
-    shape::Dim,
-    slab::{Id, Slab},
+    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, UOp}, kernel_compiler::{IRKernel, IROp}, shape::Dim, slab::Slab, DType
 };
 use libloading::Library;
 use nanoserde::DeJson;
@@ -42,7 +37,7 @@ pub struct OpenCLMemoryPool {
     free_bytes: Dim,
     context: *mut c_void,
     queue: *mut c_void,
-    buffers: Slab<OpenCLBuffer>,
+    buffers: Slab<BufferId, OpenCLBuffer>,
     // Functions
     clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
     clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
@@ -92,7 +87,7 @@ pub struct OpenCLDevice {
     context: *mut c_void,
     dev_info: DeviceInfo,
     memory_pool_id: u32,
-    programs: Slab<OpenCLProgram>,
+    programs: Slab<ProgramId, OpenCLProgram>,
     queues: Vec<OpenCLQueue>,
     // Functions
     clGetProgramBuildInfo: unsafe extern "C" fn(
@@ -440,7 +435,7 @@ impl OpenCLMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(Id, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError {
                 status: ErrorStatus::MemoryAllocation,
@@ -467,7 +462,7 @@ impl OpenCLMemoryPool {
         ))
     }
 
-    pub fn deallocate(&mut self, buffer_id: Id, event_wait_list: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
         //println!("Deallocate {:?}", self.buffers[buffer_id].ptr);
         let buffer = &mut self.buffers[buffer_id];
         debug_assert!(
@@ -505,7 +500,7 @@ impl OpenCLMemoryPool {
     pub fn host_to_pool(
         &mut self,
         src: &[u8],
-        dst: Id,
+        dst: BufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         //println!("Storing {src:?} to {dst:?}");
@@ -543,7 +538,7 @@ impl OpenCLMemoryPool {
 
     pub fn pool_to_host(
         &mut self,
-        src: Id,
+        src: BufferId,
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
@@ -669,39 +664,35 @@ impl OpenCLDevice {
     #[allow(clippy::cognitive_complexity)]
     pub fn compile(
         &mut self,
-        kernel: &crate::ir::IRKernel,
+        kernel: &IRKernel,
         debug_asm: bool,
-    ) -> Result<Id, BackendError> {
+    ) -> Result<ProgramId, BackendError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        let mut loop_ids = [0; 6];
         for (i, op) in kernel.ops[..6].iter().enumerate() {
-            if let IROp::Loop { id, len } = op {
+            if let IROp::Loop { len } = op {
                 if i < 3 {
                     global_work_size[i] = *len;
                 } else {
                     local_work_size[i - 3] = *len;
                 }
-                loop_ids[i] = *id;
             } else {
                 unreachable!()
             }
         }
 
         // Declare global variables
-        for (id, (scope, dtype, _, read_only)) in kernel.addressables.iter().enumerate() {
-            if *scope == Scope::Global {
-                writeln!(
-                    source,
-                    "{indent}__global {}{}* p{id},",
-                    if *read_only { "const " } else { "" },
-                    dtype.ocl(),
-                ).unwrap();
-            }
+        for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
+            writeln!(
+                source,
+                "{indent}__global {}{}* p{id},",
+                if *read_only { "const " } else { "" },
+                dtype.ocl(),
+            ).unwrap();
         }
 
         source.pop();
@@ -709,40 +700,35 @@ impl OpenCLDevice {
         source += "\n) {\n";
 
         // Declare local variables
-        for (id, (scope, dtype, len, _)) in kernel.addressables.iter().enumerate() {
+        /*for (id, (scope, dtype, len, _)) in kernel.local_variables.iter().enumerate() {
             if *scope == Scope::Local {
                 writeln!(source, "{indent}__local {} p{id}[{len}];", dtype.ocl()).unwrap();
             }
-        }
+        }*/
 
         // Declare register variables
-        for (id, dtype) in kernel.registers.iter().enumerate() {
+        /*for (id, dtype) in kernel.registers.iter().enumerate() {
             writeln!(source, "{indent}{} r{id};", dtype.ocl()).unwrap();
-        }
+        }*/
 
         // Add indices for global and local loops
         writeln!(
             source,
-            "{indent}r{} = get_group_id(0);  /* 0..{} */\n{indent}r{} = get_group_id(1);  /* 0..{} */\n{indent}r{} = get_group_id(2);  /* 0..{} */\n{indent}r{} = get_local_id(0);  /* 0..{} */\n{indent}r{} = get_local_id(1);  /* 0..{} */\n{indent}r{} = get_local_id(2);  /* 0..{} */",
-            loop_ids[0],
+            "{indent}r0 = get_group_id(0);  /* 0..{} */\n{indent}r1 = get_group_id(1);  /* 0..{} */\n{indent}r2 = get_group_id(2);  /* 0..{} */\n{indent}r3 = get_local_id(0);  /* 0..{} */\n{indent}r4 = get_local_id(1);  /* 0..{} */\n{indent}r5 = get_local_id(2);  /* 0..{} */",
             global_work_size[0],
-            loop_ids[1],
             global_work_size[1],
-            loop_ids[2],
             global_work_size[2],
-            loop_ids[3],
             local_work_size[0],
-            loop_ids[4],
             local_work_size[1],
-            loop_ids[5],
             local_work_size[2]
         ).unwrap();
 
         //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
 
-        for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
+        let mut loop_id = 6;
+        /*for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
             match op {
-                IROp::Load { z, address, offset } => {
+                IROp::Load { address, offset } => {
                     //source += &format!("{indent}r{z} = p{address}[{}];\n", offset.ocl());
                     let dtype = kernel.addressables[address as usize].1;
                     /*let dt_bits = dtype.bit_size();
@@ -871,7 +857,7 @@ impl OpenCLDevice {
                     ).unwrap();
                     //if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
                 }
-                IROp::MAdd { z, a, b, c } => {
+                /*IROp::MAdd { z, a, b, c } => {
                     let dtype = kernel.registers[z as usize];
                     if dtype.is_float() {
                         writeln!(
@@ -884,29 +870,23 @@ impl OpenCLDevice {
                     } else {
                         writeln!(source, "{indent}r{z} = {} * {} + {};", a.ocl(), b.ocl(), c.ocl()).unwrap();
                     }
-                }
-                IROp::Loop { id, len } => {
-                    writeln!(source, "{indent}for (r{id} = 0; r{id} < {len}; r{id} += 1) {{").unwrap();
+                }*/
+                IROp::Loop { len } => {
+                    writeln!(source, "{indent}for (r{loop_id} = 0; r{loop_id} < {len}; r{loop_id} += 1) {{").unwrap();
                     indent += "  ";
+                    loop_id += 1;
                 }
-                IROp::EndLoop { .. } => {
+                IROp::EndLoop => {
                     indent.pop();
                     indent.pop();
                     writeln!(source, "{indent}}}").unwrap();
+                    loop_id -= 1;
                 }
-                IROp::Barrier { scope } => {
-                    writeln!(
-                        source,
-                        "{indent}barrier(CLK_{}AL_MEM_FENCE);",
-                        match scope {
-                            Scope::Global => "GLOB",
-                            Scope::Local => "LOC",
-                            Scope::Register => unreachable!(),
-                        }
-                    ).unwrap();
+                IROp::LocalBarrier => {
+                    writeln!(source, "{indent}barrier(CLK_LOCAL_MEM_FENCE);");
                 }
             }
-        }
+        }*/
         source += "}\n";
 
         let local_work_size = local_work_size;
@@ -984,9 +964,9 @@ impl OpenCLDevice {
 
     pub fn launch(
         &mut self,
-        program_id: Id,
+        program_id: ProgramId,
         memory_pool: &mut OpenCLMemoryPool,
-        args: &[Id],
+        args: &[BufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         //memory_pool.sync_events(event_wait_list.clone())?;
@@ -1060,7 +1040,7 @@ impl OpenCLDevice {
         Ok(Event::OpenCL(OpenCLEvent { event }))
     }
 
-    pub fn release(&mut self, program_id: Id) {
+    pub fn release(&mut self, program_id: ProgramId) {
         //println!("Releasing {:?}", program);
         let _ = unsafe { (self.clReleaseProgram)(self.programs[program_id].program) }
             .check(ErrorStatus::Deinitialization);
@@ -1268,15 +1248,6 @@ impl Constant {
             Self::I32(x) => format!("{x}"),
             Self::I64(x) => format!("{x}"),
             Self::Bool(x) => format!("{x}"),
-        }
-    }
-}
-
-impl Reg {
-    fn ocl(&self) -> String {
-        match self {
-            Self::Var(id) => format!("r{id}"),
-            Self::Const(value) => value.ocl(),
         }
     }
 }

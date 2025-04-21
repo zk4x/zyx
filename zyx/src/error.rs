@@ -46,8 +46,8 @@ impl From<std::io::Error> for ZyxError {
 
 #[derive(Debug)]
 pub struct BackendError {
-    status: ErrorStatus,
-    context: Box<str>,
+    pub status: ErrorStatus,
+    pub context: Box<str>,
 }
 
 impl From<BackendError> for ZyxError {
