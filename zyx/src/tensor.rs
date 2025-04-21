@@ -95,7 +95,7 @@ impl Tensor {
 
     /// Rank of self. Rank means number of dimensions/axes.
     #[must_use]
-    pub fn rank(&self) -> usize {
+    pub fn rank(&self) -> u64 {
         self.shape().len()
     }
 
@@ -347,7 +347,7 @@ impl Tensor {
     /// Retuns device error if device fails to allocate memory for given tensor.
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
-        let shape: Vec<usize> = shape.into_shape().collect();
+        let shape: Vec<Dim> = shape.into_shape().collect();
         let nshape: Vec<Dim> = once(2).chain(shape.clone()).collect();
         let src = Tensor::rand(nshape, DType::F32)?;
         Ok(src
@@ -972,11 +972,11 @@ impl Tensor {
     ///
     /// # Errors
     /// Returns error if self cannot be permute by axes.
-    pub fn permute(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn permute(&self, axes: impl IntoIterator<Item = i64>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes = into_axes(axes, rank)?;
         //println!("Axes: {axes:?}, rank {rank:?}");
-        if rank != axes.len() {
+        if rank != axes.len() as Axis {
             return Err(ZyxError::ShapeError(
                 format!(
                     "Axes has rank {}, but tensor has rank {}. It must be the same for permute.",
@@ -1084,7 +1084,7 @@ impl Tensor {
                 .into(),
             ));
         }
-        if !padding.len() <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
+        if !padding.len() as u64 <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
             return Err(ZyxError::ShapeError(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}").into()));
         }
         let t0 = self.pad_zeros(padding.clone())?;
@@ -1105,11 +1105,11 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be narrowed.
     #[allow(clippy::missing_panics_doc)]
-    pub fn narrow(&self, axis: isize, start: usize, length: usize) -> Result<Tensor, ZyxError> {
+    pub fn narrow(&self, axis: i64, start: Dim, length: Dim) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
-        let rank = shape.len();
+        let rank = shape.len() as Axis;
         let axis = into_axis(axis, rank)?;
-        let dim = isize::try_from(shape[axis]).unwrap();
+        let dim = isize::try_from(shape[axis as usize]).unwrap();
         let padding: Vec<(isize, isize)> = once((
             -isize::try_from(start).unwrap(),
             -dim + isize::try_from(length).unwrap() + isize::try_from(start).unwrap(),

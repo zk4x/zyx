@@ -257,11 +257,11 @@ pub fn interpret(
     );
 
     let elapsed = begin.elapsed().as_micros();
-    let mut min_ops = u32::MAX;
+    let mut min_ops = usize::MAX;
     let mut max_ops = 0;
     let mut avg_ops = 0;
-    for kernel in kernels.values() {
-        let n = u32::try_from(kernel.ops.len()).unwrap();
+    for kernel in &kernels {
+        let n = kernel.ops.len();
         if n > max_ops {
             max_ops = n;
         }
@@ -296,200 +296,185 @@ pub fn interpret(
     realized_nodes.extend(to_eval);
 
     // Launch all kernels
-    let mut ids: Vec<KernelId> = kernels.ids().collect();
-    while !ids.is_empty() {
-        let mut i = 0;
-        while i < ids.len() {
-            let kid = ids[i];
-            if kernels[kid].depends_on.is_empty() {
-                ids.remove(i);
-                let mut kernel = unsafe { kernels.remove_and_return(kid) };
-                #[cfg(debug_assertions)]
-                if !kernel.has_stores() {
-                    kernel.debug();
-                    panic!("Trying to launch kernel without stores");
+    for kernel in kernels {
+        #[cfg(debug_assertions)]
+        if !kernel.has_stores() {
+            kernel.debug();
+            panic!("Trying to launch kernel without stores");
+        }
+
+        // First make a list of all memory pools which can hold all tensors, including outputs
+        let total_bytes: Dim = kernel
+            .tensors
+            .values()
+            .map(|&tid| {
+                graph.shape(tid).iter().product::<Dim>()
+                    * graph.dtype(tid).byte_size() as Dim
+            })
+            .sum();
+        let mut free_memory_pools = Map::default();
+        for (mpid, pool) in memory_pools.iter().enumerate() {
+            // TODO subtract tensors stored in that pool from total_bytes
+            if pool.pool.free_bytes() > total_bytes {
+                free_memory_pools.insert(mpid, (0, 0));
+            }
+        }
+
+        // Pick memory pool associated with fastest/least occupied device.
+        for (device_id, device) in devices.iter().enumerate() {
+            let mpid = device.memory_pool_id();
+            if let Some((compute, old_device_id)) = free_memory_pools.get_mut(&(mpid as usize)) {
+                let free_compute = device.free_compute();
+                if free_compute > *compute {
+                    *compute = free_compute;
+                    *old_device_id = device_id;
                 }
+            }
+        }
+        let mpid = free_memory_pools.iter().max_by_key(|x| x.1.0);
+        //println!("{free_memory_pools:?} mpid {mpid:?}");
+        let (mpid, dev_id) = if let Some(mpid) = mpid {
+            (*mpid.0, mpid.1.1)
+        } else {
+            return Err(ZyxError::AllocationError);
+        };
 
-                // First make a list of all memory pools which can hold all tensors, including outputs
-                let total_bytes: Dim = kernel
-                    .tensors
-                    .values()
-                    .map(|&tid| {
-                        graph.shape(tid).iter().product::<Dim>()
-                            * graph.dtype(tid).byte_size() as Dim
-                    })
-                    .sum();
-                let mut free_memory_pools = Map::default();
-                for (mpid, pool) in memory_pools.iter().enumerate() {
-                    // TODO subtract tensors stored in that pool from total_bytes
-                    if pool.pool.free_bytes() > total_bytes {
-                        free_memory_pools.insert(mpid, (0, 0));
-                    }
-                }
+        // Move all tensors to that pool if they are not there already.
+        // Allocate space for all outputs.
+        let mut args = Vec::new();
+        let mut outputs: BTreeSet<TensorId> = BTreeSet::new();
+        let mut event_wait_list = Vec::new();
 
-                // Pick memory pool associated with fastest/least occupied device.
-                for (device_id, device) in devices.iter().enumerate() {
-                    let mpid = device.memory_pool_id();
-                    if let Some((compute, old_device_id)) = free_memory_pools.get_mut(&(mpid as usize)) {
-                        let free_compute = device.free_compute();
-                        if free_compute > *compute {
-                            *compute = free_compute;
-                            *old_device_id = device_id;
-                        }
-                    }
-                }
-                let mpid = free_memory_pools.iter().max_by_key(|x| x.1.0);
-                //println!("{free_memory_pools:?} mpid {mpid:?}");
-                let (mpid, dev_id) = if let Some(mpid) = mpid {
-                    (*mpid.0, mpid.1.1)
-                } else {
-                    return Err(ZyxError::AllocationError);
-                };
-
-                // Move all tensors to that pool if they are not there already.
-                // Allocate space for all outputs.
-                let mut args = Vec::new();
-                let mut outputs: BTreeSet<TensorId> = BTreeSet::new();
-                let mut event_wait_list = Vec::new();
-
-                for op in &kernel.ops {
-                    match op {
-                        &Op::Load { x, .. } => {
-                            let tid = kernel.tensors[&x];
-                            #[allow(clippy::map_entry)]
-                            if !memory_pools[mpid].buffer_map.contains_key(&tid) {
-                                // Check where the tensor is
-                                let mut old_mpid = usize::MAX;
-                                for (i, pool) in memory_pools.iter().enumerate() {
-                                    if pool.buffer_map.contains_key(&tid) {
-                                        old_mpid = i;
-                                        break;
-                                    }
-                                }
-                                debug_assert_ne!(old_mpid, usize::MAX);
-
-                                let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
-                                // No need to initialize here, other than rust is bad.
-                                let mut byte_slice = vec![0u8; bytes];
-                                let src = memory_pools[old_mpid].buffer_map[&tid];
-
-                                // Move the tensor into mpid pool
-                                // Pool to host blocks on event, so we can remove that event.
-                                let mut event_wait_list = Vec::new();
-                                for buffers in memory_pools[old_mpid].events.keys() {
-                                    if buffers.contains(&src) {
-                                        // Pool to host blocks on event, so we can remove that event.
-                                        let event =
-                                            memory_pools[old_mpid].events.remove(&buffers.clone()).unwrap();
-                                        event_wait_list.push(event);
-                                        break;
-                                    }
-                                }
-                                memory_pools[old_mpid].pool.pool_to_host(
-                                    src,
-                                    &mut byte_slice,
-                                    event_wait_list,
-                                )?;
-                                memory_pools[old_mpid].pool.deallocate(src, vec![]);
-                                memory_pools[old_mpid].buffer_map.remove(&tid);
-                                //println!("{byte_slice:?}");
-
-                                let (dst, event) = memory_pools[mpid].pool.allocate(bytes)?;
-                                let event = memory_pools[mpid].pool.host_to_pool(
-                                    &byte_slice,
-                                    dst,
-                                    vec![event],
-                                )?;
-                                // We have to sync here, because byte_slice does not exist any long.
-                                // The other solution would be to put this into temp_data.
-                                // But perhaps we should figure some better async.
-                                memory_pools[mpid].pool.sync_events(vec![event])?;
-                                memory_pools[mpid].buffer_map.insert(tid, dst);
-                                //memory_pools[mpid].events.insert(BTreeSet::from([dst]), event);
+        for op in &kernel.ops {
+            match op {
+                &Op::Load { x, .. } => {
+                    let tid = kernel.tensors[&x];
+                    #[allow(clippy::map_entry)]
+                    if !memory_pools[mpid].buffer_map.contains_key(&tid) {
+                        // Check where the tensor is
+                        let mut old_mpid = usize::MAX;
+                        for (i, pool) in memory_pools.iter().enumerate() {
+                            if pool.buffer_map.contains_key(&tid) {
+                                old_mpid = i;
+                                break;
                             }
-                            args.push(memory_pools[mpid].buffer_map[&tid]);
                         }
-                        Op::Store { z, zview, zdtype, .. } => {
-                            // Allocate space for output
-                            let tensor_id = kernel.tensors[z];
-                            let (buffer_id, event) = memory_pools[mpid]
-                                .pool
-                                .allocate(zview.original_numel() * (zdtype.byte_size() as Dim))?;
-                            memory_pools[mpid].buffer_map.insert(tensor_id, buffer_id);
-                            event_wait_list.push(event);
-                            outputs.insert(tensor_id);
-                            args.push(buffer_id);
+                        debug_assert_ne!(old_mpid, usize::MAX);
+
+                        let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
+                        // No need to initialize here, other than rust is bad.
+                        let mut byte_slice = vec![0u8; bytes];
+                        let src = memory_pools[old_mpid].buffer_map[&tid];
+
+                        // Move the tensor into mpid pool
+                        // Pool to host blocks on event, so we can remove that event.
+                        let mut event_wait_list = Vec::new();
+                        for buffers in memory_pools[old_mpid].events.keys() {
+                            if buffers.contains(&src) {
+                                // Pool to host blocks on event, so we can remove that event.
+                                let event =
+                                    memory_pools[old_mpid].events.remove(&buffers.clone()).unwrap();
+                                event_wait_list.push(event);
+                                break;
+                            }
                         }
-                        _ => {}
+                        memory_pools[old_mpid].pool.pool_to_host(
+                            src,
+                            &mut byte_slice,
+                            event_wait_list,
+                        )?;
+                        memory_pools[old_mpid].pool.deallocate(src, vec![]);
+                        memory_pools[old_mpid].buffer_map.remove(&tid);
+                        //println!("{byte_slice:?}");
+
+                        let (dst, event) = memory_pools[mpid].pool.allocate(bytes)?;
+                        let event = memory_pools[mpid].pool.host_to_pool(
+                            &byte_slice,
+                            dst,
+                            vec![event],
+                        )?;
+                        // We have to sync here, because byte_slice does not exist any long.
+                        // The other solution would be to put this into temp_data.
+                        // But perhaps we should figure some better async.
+                        memory_pools[mpid].pool.sync_events(vec![event])?;
+                        memory_pools[mpid].buffer_map.insert(tid, dst);
+                        //memory_pools[mpid].events.insert(BTreeSet::from([dst]), event);
                     }
+                    args.push(memory_pools[mpid].buffer_map[&tid]);
                 }
+                Op::Store { z, zview, zdtype, .. } => {
+                    // Allocate space for output
+                    let tensor_id = kernel.tensors[z];
+                    let (buffer_id, event) = memory_pools[mpid]
+                        .pool
+                        .allocate(zview.original_numel() * (zdtype.byte_size() as Dim))?;
+                    memory_pools[mpid].buffer_map.insert(tensor_id, buffer_id);
+                    event_wait_list.push(event);
+                    outputs.insert(tensor_id);
+                    args.push(buffer_id);
+                }
+                _ => {}
+            }
+        }
 
-                /*#[cfg(debug_assertions)]
-                {
-                    let mut visited = BTreeSet::new();
-                    for &arg in &args {
-                        debug_assert!(visited.insert(arg));
-                    }
-                }*/
-                //println!("args = {args:?}");
+        /*#[cfg(debug_assertions)]
+        {
+            let mut visited = BTreeSet::new();
+            for &arg in &args {
+                debug_assert!(visited.insert(arg));
+            }
+        }*/
+        //println!("args = {args:?}");
 
-                // Send the kernel to kernel cache.
-                let event = if let Some(event) = kernel_compiler.launch(
-                    &kernel,
-                    u32::try_from(dev_id).unwrap(),
-                    &mut devices[dev_id],
-                    &mut memory_pools[mpid],
-                    &args,
-                    event_wait_list,
-                    search_iters,
-                    debug,
-                )? {
-                    memory_pools[mpid].events.insert(outputs, event.clone());
-                    Some(event)
+        // Send the kernel to kernel cache.
+        let event = if let Some(event) = kernel_compiler.launch(
+            &kernel,
+            u32::try_from(dev_id).unwrap(),
+            &mut devices[dev_id],
+            &mut memory_pools[mpid],
+            &args,
+            event_wait_list,
+            search_iters,
+            debug,
+        )? {
+            memory_pools[mpid].events.insert(outputs, event.clone());
+            Some(event)
+        } else {
+            None
+        };
+        let loads: Set<TensorId> = kernel
+            .ops
+            .iter()
+            .filter_map(|op| {
+                if let Op::Load { x, .. } = op {
+                    Some(kernel.tensors[x])
                 } else {
                     None
-                };
-
-                for kernel in kernels.values_mut() {
-                    kernel.depends_on.remove(&kid);
                 }
-                let loads: Set<TensorId> = kernel
-                    .ops
-                    .iter()
-                    .filter_map(|op| {
-                        if let Op::Load { x, .. } = op {
-                            Some(kernel.tensors[x])
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                let mut loads: Set<TensorId> = loads.difference(&realized_nodes).copied().collect();
-                for kernel in kernels.values() {
-                    for tensor in kernel.tensors.values() {
-                        loads.remove(tensor);
-                    }
-                }
-                for tensor in loads {
-                    for pool in &mut *memory_pools {
-                        if let Some(buffer_id) = pool.buffer_map.remove(&tensor) {
-                            let mut events = Vec::new();
-                            for buffers in pool.events.keys() {
-                                if buffers.contains(&buffer_id) {
-                                    events.push(pool.events.remove(&buffers.clone()).unwrap());
-                                    break;
-                                }
-                            }
-                            // Push event from the current kernel
-                            if let Some(event) = &event {
-                                events.push(event.clone());
-                            }
-                            pool.pool.deallocate(buffer_id, events);
+            })
+            .collect();
+        let mut loads: Set<TensorId> = loads.difference(&realized_nodes).copied().collect();
+        for kernel in &kernels {
+            for tensor in kernel.tensors.values() {
+                loads.remove(tensor);
+            }
+        }
+        for tensor in loads {
+            for pool in &mut *memory_pools {
+                if let Some(buffer_id) = pool.buffer_map.remove(&tensor) {
+                    let mut events = Vec::new();
+                    for buffers in pool.events.keys() {
+                        if buffers.contains(&buffer_id) {
+                            events.push(pool.events.remove(&buffers.clone()).unwrap());
+                            break;
                         }
                     }
+                    // Push event from the current kernel
+                    if let Some(event) = &event {
+                        events.push(event.clone());
+                    }
+                    pool.pool.deallocate(buffer_id, events);
                 }
-            } else {
-                i += 1;
             }
         }
     }

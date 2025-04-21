@@ -264,7 +264,7 @@ impl Runtime {
     pub(super) fn tensor_from_path(&mut self, shape: Vec<Dim>, dtype: DType, path: &Path, offset_bytes: u64) -> Result<TensorId, ZyxError> {
         let bytes = shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
         self.initialize_devices()?;
-        if bytes == dtype.byte_size() as usize {
+        if bytes == dtype.byte_size() as Dim {
             /*let value = data.read();
             let value = Constant::from_bytes(value, dtype);
             if self.constants_len < NUM_CONSTANTS {
@@ -299,7 +299,7 @@ impl Runtime {
             shape.iter().product::<Dim>() * dtype.byte_size() as Dim,
             bytes
         );
-        if bytes == dtype.byte_size() as usize {
+        if bytes == dtype.byte_size() as Dim {
             let value = data.read();
             let value = Constant::from_bytes(value, dtype);
             if self.constants_len < NUM_CONSTANTS {
@@ -490,7 +490,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn permute(&mut self, x: TensorId, axes: &[Axis]) -> TensorId {
-        if axes.len() < 2 || axes == (0..axes.len()).collect::<Vec<usize>>() {
+        if axes.len() < 2 || axes == (0..axes.len() as Axis).collect::<Vec<Axis>>() {
             self.retain(x);
             return x;
         }
@@ -511,10 +511,10 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn sum_reduce(&mut self, x: TensorId, mut axes: Vec<usize>) -> TensorId {
+    pub(super) fn sum_reduce(&mut self, x: TensorId, mut axes: Vec<Axis>) -> TensorId {
         let sh = self.shape(x);
         if axes.is_empty() {
-            axes = (0..sh.len()).collect();
+            axes = (0..sh.len() as Axis).collect();
         }
         let shape = reduce(sh, &axes);
         let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Sum }, shape);
@@ -523,10 +523,10 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn max_reduce(&mut self, x: TensorId, mut axes: Vec<usize>) -> TensorId {
+    pub(super) fn max_reduce(&mut self, x: TensorId, mut axes: Vec<Axis>) -> TensorId {
         let sh = self.shape(x);
         if axes.is_empty() {
-            axes = (0..sh.len()).collect();
+            axes = (0..sh.len() as Axis).collect();
         }
         let shape = reduce(sh, &axes);
         let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Max }, shape);
@@ -566,7 +566,7 @@ impl Runtime {
                 T::dtype()
             ).into()));
         }
-        debug_assert!(data.len() <= n, "Return buffer is bigger than tensor");
+        debug_assert!(data.len() as Dim <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
             let mut to_eval = Set::with_capacity_and_hasher(1, BuildHasherDefault::default());

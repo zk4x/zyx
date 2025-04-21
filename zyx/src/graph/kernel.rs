@@ -957,7 +957,7 @@ pub fn kernelize(
     realized_nodes: &Set<TensorId>,
     #[allow(unused)]
     debug: DebugMask,
-) -> Slab<KernelId, Kernel> {
+) -> Vec<Kernel> {
     // Unary and binary ops do not require duplication of kernels
     // Kernels represented by ops
     let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(10);
@@ -1487,7 +1487,29 @@ pub fn kernelize(
             }
         }
     }
-    kernels
+
+    // Sort all kernels
+    let mut sorted_kernels = Vec::new();
+    let mut ids: Vec<KernelId> = kernels.ids().collect();
+    while !ids.is_empty() {
+        let mut i = 0;
+        while i < ids.len() {
+            let kid = ids[i];
+            if kernels[kid].depends_on.is_empty() {
+                ids.remove(i);
+                let kernel = unsafe { kernels.remove_and_return(kid) };
+                sorted_kernels.push(kernel);
+
+                for kernel in kernels.values_mut() {
+                    kernel.depends_on.remove(&kid);
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    sorted_kernels
 }
 
 // Adds store to kernel and removes nid from outputs of all kernels

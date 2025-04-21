@@ -4,8 +4,8 @@ use core::fmt::Debug;
 
 use crate::error::ZyxError;
 
-pub type Dim = usize;
-pub type Axis = usize;
+pub type Dim = u64;
+pub type Axis = u64;
 
 /// `IntoShape` trait
 pub trait IntoShape: Clone + Debug {
@@ -51,7 +51,7 @@ impl<const N: usize> IntoShape for [Dim; N] {
     }
 
     fn rank(&self) -> Axis {
-        N
+        N as Axis
     }
 }
 
@@ -61,7 +61,7 @@ impl IntoShape for &[Dim] {
     }
 
     fn rank(&self) -> Axis {
-        self.len()
+        self.len() as Axis
     }
 }
 
@@ -71,7 +71,7 @@ impl IntoShape for Vec<Dim> {
     }
 
     fn rank(&self) -> Axis {
-        self.len()
+        self.len() as Axis
     }
 }
 
@@ -81,12 +81,12 @@ impl IntoShape for &Vec<Dim> {
     }
 
     fn rank(&self) -> Axis {
-        self.len()
+        self.len() as Axis
     }
 }
 
-pub fn into_axis(axis: isize, rank: Axis) -> Result<Axis, ZyxError> {
-    TryInto::<isize>::try_into(rank).map_or_else(
+pub fn into_axis(axis: i64, rank: Axis) -> Result<Axis, ZyxError> {
+    TryInto::<i64>::try_into(rank).map_or_else(
         |_| {
             Err(ZyxError::ShapeError(format!(
                 "Axis {axis} is out of range of rank {rank}"
@@ -114,7 +114,7 @@ pub fn into_axis(axis: isize, rank: Axis) -> Result<Axis, ZyxError> {
 }
 
 pub fn into_axes(
-    axes: impl IntoIterator<Item = isize>,
+    axes: impl IntoIterator<Item = i64>,
     rank: Axis,
 ) -> Result<Vec<Dim>, ZyxError> {
     let mut res = Vec::new();
@@ -133,7 +133,7 @@ pub fn into_axes(
 
 pub fn permute(shape: &[Dim], axes: &[Axis]) -> Vec<Dim> {
     debug_assert_eq!(shape.len(), axes.len());
-    axes.iter().map(|a| shape[*a]).collect()
+    axes.iter().map(|a| shape[*a as usize]).collect()
 }
 
 pub fn reduce(shape: &[Dim], axes: &[Axis]) -> Vec<Dim> {
@@ -141,7 +141,7 @@ pub fn reduce(shape: &[Dim], axes: &[Axis]) -> Vec<Dim> {
         .iter()
         .copied()
         .enumerate()
-        .filter_map(|(i, d)| if axes.contains(&i) { None } else { Some(d) })
+        .filter_map(|(i, d)| if axes.contains(&(i as Axis)) { None } else { Some(d) })
         .collect();
     if res.is_empty() {
         vec![1]

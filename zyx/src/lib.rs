@@ -11,7 +11,6 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 #![forbid(trivial_casts)]
-#![forbid(trivial_numeric_casts)]
 #![forbid(invalid_reference_casting)]
 #![deny(clippy::cast_possible_truncation)]
 #![deny(clippy::cast_lossless)]
@@ -40,6 +39,7 @@
 #![allow(clippy::self_named_module_files)]
 #![allow(clippy::unseparated_literal_suffix)]
 #![deny(clippy::separated_literal_suffix)]
+#![allow(trivial_numeric_casts)] // why not?, will by optimizad by the compiler anyway
 // Deny later
 #![allow(clippy::single_char_lifetime_names)]
 //#![deny(clippy::cargo)]

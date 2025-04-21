@@ -1,23 +1,23 @@
 use std::hash::BuildHasherDefault;
 
-use crate::{dtype::Constant, graph::{BOp, Node, ROp, UOp}, runtime::Runtime, shape::Dim, tensor::TensorId, Map, Set, Tensor, RT};
+use crate::{dtype::Constant, graph::{BOp, Node, ROp, UOp}, runtime::Runtime, shape::{Axis, Dim}, tensor::TensorId, Map, Set, Tensor, RT};
 
 /// Gradient tape
-/// 
+///
 /// Graph is always recorded, but when tensor is realized, it's graph is dropped.
 /// When [`GradientTape`] is alive, graph is not dropped until [`GradientTape`] is dropped.
-/// 
+///
 /// Unlike other deep learning frameworks, there is no need to specify which tensors
 /// are differentiable nor is there need to specify multiple gradient tapes to calculate
 /// higher order derivatives. In zyx as long as gradient tape is alive, derivatives
 /// of all operations then occured since it's creation can be calculated.
-/// 
+///
 /// Gradient tape is necessary because without it graph would grow
 /// indefinitely with each iteration of training/inference loop.
 /// By creating gradient tape in the beginning of each training loop and dropping
 /// it at the end, the user ensures that graph of tensors is dropped after each
 /// iteration of the training loop.
-/// 
+///
 /// Since tensors are realized lazily, intermediate tensors needed for backpropagation
 /// are not held in memory.
 #[cfg_attr(feature = "py", pyo3::pyclass)]
@@ -360,11 +360,11 @@ impl Runtime {
                     let sh = self.graph.shape(nid);
                     let x_shape: Vec<Dim> = self.shape(x).into();
                     debug_assert_eq!(sh.len(), x_shape.len());
-                    let expand_axes: Vec<usize> = sh
+                    let expand_axes: Vec<Axis> = sh
                         .iter()
                         .zip(&x_shape)
                         .enumerate()
-                        .filter_map(|(a, (&d, &e))| if d == e { None } else { Some(a) })
+                        .filter_map(|(a, (&d, &e))| if d == e { None } else { Some(a as Axis) })
                         .collect();
                     //println!("x shape {:?}, nid shape {:?}, expand_axes: {:?}", x_shape, sh, expand_axes);
                     debug_assert!(!expand_axes.is_empty());
@@ -375,9 +375,9 @@ impl Runtime {
                 }
                 Node::Permute { x } => {
                     let axes = self.graph.axes(nid);
-                    let mut axes: Vec<(usize, usize)> = axes.iter().copied().enumerate().collect();
+                    let mut axes: Vec<(usize, Axis)> = axes.iter().copied().enumerate().collect();
                     axes.sort_by_key(|(_, v)| *v);
-                    let argsort_axes: Vec<usize> = axes.iter().map(|(k, _)| *k).collect();
+                    let argsort_axes: Vec<Axis> = axes.iter().map(|(k, _)| *k as Axis).collect();
                     let grad = self.permute(grad, &argsort_axes);
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
@@ -393,7 +393,7 @@ impl Runtime {
                         let mut z_shape: Vec<Dim> = self.shape(nid).into();
                         //println!("Reduce backward, z shape: {z_shape:?}, x shape: {x_shape:?}, reduce axes: {:?}", self.graph.axes(nid));
                         for &axis in self.graph.axes(nid) {
-                            z_shape.insert(axis, 1);
+                            z_shape.insert(axis as usize, 1);
                         }
                         if self.graph.axes(nid).len() == x_shape.len() {
                             z_shape.remove(0);

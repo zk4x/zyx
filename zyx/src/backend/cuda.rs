@@ -275,6 +275,7 @@ pub(super) fn initialize_device(
         else {
             continue;
         };
+        let free_bytes = free_bytes as Dim;
         let mut context: CUcontext = ptr::null_mut();
         if let Err(e) =
             unsafe { cuCtxCreate(&mut context, 0, device) }.check(ErrorStatus::Initialization)
@@ -446,7 +447,7 @@ impl CUDAMemoryPool {
         unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryAllocation)?;
         debug_assert!(!self.stream.is_null());
         //unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
-        unsafe { (self.cuMemAlloc)(&mut ptr, bytes) }.check(ErrorStatus::MemoryAllocation)?;
+        unsafe { (self.cuMemAlloc)(&mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation)?;
         unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
         Ok((
