@@ -7,7 +7,7 @@ use std::{
     collections::BTreeSet, marker::PhantomData, mem::MaybeUninit, ops::{Index, IndexMut}
 };
 
-pub trait SlabId: Clone + Copy + PartialEq + Eq + PartialOrd + Ord {
+pub trait SlabId: std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord {
     const ZERO: Self;
     fn index(self) -> usize;
     fn from_usize(id: usize) -> Self;
@@ -23,15 +23,15 @@ pub struct Slab<Id: SlabId, T> {
 
 struct IdIter<'a, Id> {
     id: Id,
-    max: Id,
+    max_exclusive: Id,
     empty: &'a BTreeSet<Id>,
 }
 
 impl<'a, Id: SlabId> IdIter<'a, Id> {
-    fn new(empty: &'a BTreeSet<Id>, max: Id) -> Self {
+    fn new(empty: &'a BTreeSet<Id>, max_exclusive: Id) -> Self {
         Self {
             id: Id::ZERO,
-            max,
+            max_exclusive,
             empty,
         }
     }
@@ -55,15 +55,19 @@ impl<Id: SlabId> Iterator for IdIter<'_, Id> {
             id += 1;
         }*/
 
-        if self.id >= self.max {
-            return None;
-        }
-        while self.empty.contains(&self.id) {
+        let mut id;
+        loop {
+            id = self.id;
             self.id.inc();
+            if !self.empty.contains(&id) {
+                break;
+            }
         }
-        let id = self.id;
-        self.id.inc();
-        Some(id)
+        if id >= self.max_exclusive {
+            None
+        } else {
+            Some(id)
+        }
     }
 }
 

@@ -1488,9 +1488,16 @@ pub fn kernelize(
         }
     }
 
+    for (_, kernel) in kernels.iter() {
+        for op in &kernel.ops {
+            println!("{op}")
+        }
+    }
+
     // Sort all kernels
     let mut sorted_kernels = Vec::new();
     let mut ids: Vec<KernelId> = kernels.ids().collect();
+    println!("{ids:?}");
     while !ids.is_empty() {
         let mut i = 0;
         while i < ids.len() {

@@ -12,7 +12,7 @@ use std::hash::BuildHasherDefault;
 
 pub mod kernel;
 mod view;
-mod interpreter;
+mod realize;
 
 #[derive(Debug)]
 pub struct Graph {
