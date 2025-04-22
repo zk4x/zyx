@@ -8,7 +8,7 @@ use super::optimizer::Optimization;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IRKernel {
-    /// read_only, dtype
+    /// `read_only`, dtype
     pub global_variables: Vec<(bool, DType)>,
     /// ops
     pub ops: Vec<IROp>,
@@ -20,10 +20,10 @@ struct RId(u16);
 
 impl RId {
     fn from_usize(id: usize) -> Self {
-        Self(id as u16)
+        Self(u16::try_from(id).unwrap())
     }
 
-    fn index(self) -> usize {
+    const fn index(self) -> usize {
         self.0 as usize
     }
 }
@@ -65,6 +65,8 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
 
     let mut t_map: Map<TId, RId> = Map::with_hasher(BuildHasherDefault::new());
 
+    // set of global vairables for deduplication
+    let mut global_vars_map = Map::with_hasher(BuildHasherDefault::new());
     for op in kernel_ops {
         match op {
             &Op::Loop { len, .. } => ops.push(IROp::Loop { len }),
@@ -74,9 +76,19 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
                 ops.push(IROp::Const(value));
             }
             &Op::Load { z, x, ref xview, xdtype } => {
-                global_variables.push();
+                let address = if let Some(&address) = global_vars_map.get(&x) {
+                    address
+                } else {
+                    let address = global_variables.len() as u16;
+                    global_variables.push((true, xdtype));
+                    global_vars_map.insert(x, address);
+                    address
+                };
                 t_map.insert(z, RId::from_usize(ops.len()));
-                ops.push(IROp::Load { address: , offset: todo!() });
+
+                //ops.push(IROp::Load { address, offset: todo!() });
+                //let zreg = ir_for_indexed_load(ops, address);
+                todo!()
             }
             Op::Store { z, zview, zdtype, x } => {
                 todo!()

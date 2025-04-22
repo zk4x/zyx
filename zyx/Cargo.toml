@@ -20,7 +20,7 @@ maintenance = { status = "experimental" }
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.8.6", default-features = false } # ISC
 # nanoserde is used to read backend config
-nanoserde = { version = "*", default-features = false, features = ["json"] }
+nanoserde = { version = "0.2.1", default-features = false, features = ["json"] }
 
 # To be removed
 # xdg is used to read backend config

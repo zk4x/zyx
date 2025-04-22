@@ -23,7 +23,7 @@ impl SlabId for KernelId {
     }
 
     fn from_usize(id: usize) -> Self {
-        Self(id as u32)
+        Self(u32::try_from(id).unwrap())
     }
 
     fn inc(&mut self) {
@@ -1490,7 +1490,7 @@ pub fn kernelize(
 
     for (_, kernel) in kernels.iter() {
         for op in &kernel.ops {
-            println!("{op}")
+            println!("{op}");
         }
     }
 

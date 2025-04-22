@@ -53,7 +53,7 @@ impl Runtime {
             &order,
             rcs,
             &to_eval,
-            &mut self.pools,
+            &self.pools,
             &realized_nodes,
             self.debug,
         );
@@ -234,7 +234,7 @@ impl Runtime {
 
             // Send the kernel to kernel cache.
             let event = if let Some(event) = self.kernel_compiler.launch(
-                &kernel,
+                kernel,
                 u32::try_from(dev_id).unwrap(),
                 &mut self.devices[dev_id],
                 &mut self.pools[mpid],

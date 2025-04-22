@@ -35,14 +35,15 @@
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::multiple_inherent_impl)]
 //#![deny(clippy::restriction)]
-#![deny(clippy::mod_module_files)]
+#![deny(clippy::self_named_module_files)]
 #![allow(clippy::self_named_module_files)]
 #![allow(clippy::unseparated_literal_suffix)]
 #![deny(clippy::separated_literal_suffix)]
+#![allow(clippy::unnecessary_cast)]
 #![allow(trivial_numeric_casts)] // why not?, will by optimizad by the compiler anyway
 // Deny later
 #![allow(clippy::single_char_lifetime_names)]
-//#![deny(clippy::cargo)]
+#![deny(clippy::cargo)]
 
 use crate::runtime::Runtime;
 use std::{fs::File, path::Path};
@@ -62,7 +63,6 @@ mod slab;
 mod kernel_compiler;
 mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
-mod autograd;
 mod chasher;
 mod prog_bar;
 
@@ -71,7 +71,7 @@ pub(crate) type Set<T> =
 pub(crate) type Map<K, V> =
     std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 
-pub use autograd::GradientTape;
+pub use graph::autograd::GradientTape;
 pub use dtype::DType;
 pub use error::ZyxError;
 pub use scalar::{Float, Scalar};

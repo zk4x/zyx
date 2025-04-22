@@ -36,7 +36,7 @@ impl SlabId for BufferId {
     }
 
     fn from_usize(id: usize) -> Self {
-        Self(id as u32)
+        Self(u32::try_from(id).unwrap())
     }
 
     fn inc(&mut self) {
@@ -55,7 +55,7 @@ impl SlabId for ProgramId {
     }
 
     fn from_usize(id: usize) -> Self {
-        Self(id as u32)
+        Self(u32::try_from(id).unwrap())
     }
 
     fn inc(&mut self) {

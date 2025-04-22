@@ -13,13 +13,14 @@ use std::hash::BuildHasherDefault;
 pub mod kernel;
 mod view;
 mod realize;
+pub mod autograd;
 
 #[derive(Debug)]
 pub struct Graph {
     // First value is reference count, second is node
-    pub(super) nodes: Slab<TensorId, (u32, Node)>,
-    pub(super) gradient_tape_ref_count: u32,
-    pub(super) gradient_tape: Option<Set<TensorId>>,
+    nodes: Slab<TensorId, (u32, Node)>,
+    gradient_tape_ref_count: u32,
+    gradient_tape: Option<Set<TensorId>>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: Map<TensorId, Vec<Dim>>,
     paddings: Map<TensorId, Vec<(isize, isize)>>,

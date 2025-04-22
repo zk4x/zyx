@@ -16,10 +16,7 @@ struct RDim {
 
 fn to_contiguous_rdims(shape: &[Dim]) -> Vec<RDim> {
     let mut st = 1;
-    let mut res = Vec::with_capacity(shape.len());
-    unsafe {
-        res.set_len(shape.len());
-    }
+    let mut res = vec![RDim { st: 0, d: 0, lp: 0, rp: 0 }; shape.len()];
     for (i, &d) in shape.iter().enumerate().rev() {
         res[i] = RDim { st, d, lp: 0, rp: 0 };
         st *= d;

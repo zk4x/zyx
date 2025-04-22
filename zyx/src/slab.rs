@@ -28,7 +28,7 @@ struct IdIter<'a, Id> {
 }
 
 impl<'a, Id: SlabId> IdIter<'a, Id> {
-    fn new(empty: &'a BTreeSet<Id>, max_exclusive: Id) -> Self {
+    const fn new(empty: &'a BTreeSet<Id>, max_exclusive: Id) -> Self {
         Self {
             id: Id::ZERO,
             max_exclusive,
