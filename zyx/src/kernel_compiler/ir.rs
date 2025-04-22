@@ -14,6 +14,20 @@ pub struct IRKernel {
     pub ops: Vec<IROp>,
 }
 
+// IR register id
+#[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct RId(u16);
+
+impl RId {
+    fn from_usize(id: usize) -> Self {
+        Self(id as u16)
+    }
+
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IRScope {
     Register,
@@ -49,18 +63,20 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
     // 4. local accumulators
     // Other optimizations are far less important.
 
-    let mut t_map: Map<TId, u16> = Map::with_hasher(BuildHasherDefault::new());
+    let mut t_map: Map<TId, RId> = Map::with_hasher(BuildHasherDefault::new());
 
     for op in kernel_ops {
         match op {
             &Op::Loop { len, .. } => ops.push(IROp::Loop { len }),
             Op::EndLoop => ops.push(IROp::EndLoop),
             &Op::Const { z, value, ref view } => {
-                t_map.insert(z, ops.len() as u16);
+                t_map.insert(z, RId::from_usize(ops.len()));
                 ops.push(IROp::Const(value));
             }
-            Op::Load { z, x, xview, xdtype } => {
-                todo!()
+            &Op::Load { z, x, ref xview, xdtype } => {
+                global_variables.push();
+                t_map.insert(z, RId::from_usize(ops.len()));
+                ops.push(IROp::Load { address: , offset: todo!() });
             }
             Op::Store { z, zview, zdtype, x } => {
                 todo!()

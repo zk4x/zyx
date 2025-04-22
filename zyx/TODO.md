@@ -81,11 +81,6 @@
   - [x] fix event handling
   - [x] fix node deallocation after realization
   - [ ] static graphs - unfortunately necessary for very high performance networks to achieve millions of tensor ops/second
-- [ ] node
-  - [ ] increase the size of nodes, by adding more complex ops, e.g. tanh. These should still only be unary, binary, or reduce ops, not new types of ops. It will keep the graph smaller and faster to kernelize and in IR we can split them into smaller ops again to keep backends simple. But we will have to see if that is actually a good idea.
-  - [ ] implement lowerer in the beginning of IRKernel
-  - [ ] add tanh
-  - [ ] add dot
 - [ ] backward
   - [x] fix t6 test
   - [ ] more backpropagation tests
@@ -95,7 +90,7 @@
     - [x] unary ops
     - [ ] movemnt ops
     - [ ] binary ops
-- [ ] make Dim a separate unit struct Dim(u64), not just type alias
+- [x] make Dim usize, but easily changeable to u64
 - [ ] autograd
   - [ ] drop unneded nodes when gradient tape is released
   - [ ] proper realize function with gradient tape
