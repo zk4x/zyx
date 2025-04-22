@@ -3,10 +3,10 @@
 use std::{collections::BTreeSet, hash::BuildHasherDefault};
 
 use crate::{
-    backend::Device, graph::{kernel::Op, Graph}, kernel_compiler::KernelCompiler, runtime::{Pool, Runtime}, shape::Dim, tensor::TensorId, DebugMask, Map, Set, ZyxError
+    backend::{BufferId, Device}, graph::{kernel::Op, Graph}, kernel_compiler::KernelCompiler, runtime::{Pool, Runtime}, shape::Dim, tensor::TensorId, DebugMask, Map, Set, ZyxError
 };
 
-use super::{kernel::{kernelize, KernelId}, Node};
+use super::{kernel::kernelize, Node};
 
 impl Runtime {
     #[allow(clippy::cognitive_complexity)]
@@ -246,7 +246,7 @@ pub fn interpret(
 ) -> Result<(), ZyxError> {
     //let t = crate::Timer::new("realize_graph");
     let begin = std::time::Instant::now();
-    let mut kernels = kernelize(
+    let kernels = kernelize(
         graph,
         order,
         rcs,
@@ -296,7 +296,7 @@ pub fn interpret(
     realized_nodes.extend(to_eval);
 
     // Launch all kernels
-    for kernel in kernels {
+    for kernel in &kernels {
         #[cfg(debug_assertions)]
         if !kernel.has_stores() {
             kernel.debug();
@@ -342,7 +342,7 @@ pub fn interpret(
         // Move all tensors to that pool if they are not there already.
         // Allocate space for all outputs.
         let mut args = Vec::new();
-        let mut outputs: BTreeSet<TensorId> = BTreeSet::new();
+        let mut outputs: BTreeSet<BufferId> = BTreeSet::new();
         let mut event_wait_list = Vec::new();
 
         for op in &kernel.ops {
@@ -363,7 +363,7 @@ pub fn interpret(
 
                         let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
                         // No need to initialize here, other than rust is bad.
-                        let mut byte_slice = vec![0u8; bytes];
+                        let mut byte_slice = vec![0u8; bytes as usize];
                         let src = memory_pools[old_mpid].buffer_map[&tid];
 
                         // Move the tensor into mpid pool
@@ -407,10 +407,10 @@ pub fn interpret(
                     let tensor_id = kernel.tensors[z];
                     let (buffer_id, event) = memory_pools[mpid]
                         .pool
-                        .allocate(zview.original_numel() * (zdtype.byte_size() as Dim))?;
+                        .allocate(zview.original_numel() as Dim * zdtype.byte_size() as Dim)?;
                     memory_pools[mpid].buffer_map.insert(tensor_id, buffer_id);
                     event_wait_list.push(event);
-                    outputs.insert(tensor_id);
+                    outputs.insert(buffer_id);
                     args.push(buffer_id);
                 }
                 _ => {}

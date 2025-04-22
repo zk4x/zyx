@@ -24,6 +24,9 @@ use std::ops::{
 };
 use std::path::Path;
 
+/// Signed axis, when we need negative axes for indexing, reduces and so on...
+pub type SAxis = i32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TensorId(u32);
 
@@ -95,8 +98,8 @@ impl Tensor {
 
     /// Rank of self. Rank means number of dimensions/axes.
     #[must_use]
-    pub fn rank(&self) -> u64 {
-        self.shape().len()
+    pub fn rank(&self) -> Dim {
+        self.shape().len() as Dim
     }
 
     /// Datatype of self. See [`DType`](crate::DType) for available datatypes.
@@ -972,7 +975,7 @@ impl Tensor {
     ///
     /// # Errors
     /// Returns error if self cannot be permute by axes.
-    pub fn permute(&self, axes: impl IntoIterator<Item = i64>) -> Result<Tensor, ZyxError> {
+    pub fn permute(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes = into_axes(axes, rank)?;
         //println!("Axes: {axes:?}, rank {rank:?}");
@@ -1084,7 +1087,7 @@ impl Tensor {
                 .into(),
             ));
         }
-        if !padding.len() as u64 <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
+        if !padding.len() as Axis <= sh.rank() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
             return Err(ZyxError::ShapeError(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}").into()));
         }
         let t0 = self.pad_zeros(padding.clone())?;
@@ -1105,7 +1108,7 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be narrowed.
     #[allow(clippy::missing_panics_doc)]
-    pub fn narrow(&self, axis: i64, start: Dim, length: Dim) -> Result<Tensor, ZyxError> {
+    pub fn narrow(&self, axis: SAxis, start: Dim, length: Dim) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let rank = shape.len() as Axis;
         let axis = into_axis(axis, rank)?;
@@ -1114,7 +1117,7 @@ impl Tensor {
             -isize::try_from(start).unwrap(),
             -dim + isize::try_from(length).unwrap() + isize::try_from(start).unwrap(),
         ))
-        .chain(repeat_n((0, 0), rank - axis - 1))
+        .chain(repeat_n((0, 0), (rank - axis - 1) as usize))
         .collect::<Vec<(isize, isize)>>()
         .into_iter()
         .rev()
@@ -1158,8 +1161,8 @@ impl Tensor {
         } else {
             self
         };
-        let mut axes: Vec<isize> = (0..isize::try_from(rank).unwrap()).collect();
-        axes.swap(rank - 1, rank - 2);
+        let mut axes: Vec<SAxis> = (0..SAxis::try_from(rank).unwrap()).collect();
+        axes.swap((rank - 1) as usize, (rank - 2) as usize);
         x.permute(axes).unwrap()
     }
 
@@ -1174,24 +1177,27 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be transposed by dim0 and dim1.
     #[allow(clippy::missing_panics_doc)]
-    pub fn transpose(&self, dim0: isize, dim1: isize) -> Result<Tensor, ZyxError> {
+    pub fn transpose(&self, dim0: SAxis, dim1: SAxis) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
-        if (dim0 < 0 && usize::try_from(-dim0).unwrap() > rank)
-            || (dim0 >= 0 && usize::try_from(dim0).unwrap() >= rank)
+        if (dim0 < 0 && Dim::try_from(-dim0).unwrap() > rank)
+            || (dim0 >= 0 && Dim::try_from(dim0).unwrap() >= rank)
         {
             return Err(ZyxError::ShapeError(format!(
                 "Cannot transpose dimensions {dim0} and {dim1}, {dim0} is greater than rank {rank}"
             ).into()));
         }
-        if (dim1 < 0 && usize::try_from(-dim1).unwrap() > rank)
-            || (dim1 >= 0 && usize::try_from(dim1).unwrap() >= rank)
+        if (dim1 < 0 && Dim::try_from(-dim1).unwrap() > rank)
+            || (dim1 >= 0 && Dim::try_from(dim1).unwrap() >= rank)
         {
             return Err(ZyxError::ShapeError(format!(
                 "Cannot transpose dimensions {dim0} and {dim1}, {dim1} is greater than rank {rank}"
             ).into()));
         }
-        let mut axes: Vec<isize> = (0..isize::try_from(rank).unwrap()).collect();
-        axes.swap(into_axis(dim0, rank)?, into_axis(dim1, rank)?);
+        let mut axes: Vec<SAxis> = (0..SAxis::try_from(rank).unwrap()).collect();
+        axes.swap(
+            into_axis(dim0, rank)? as usize,
+            into_axis(dim1, rank)? as usize,
+        );
         self.permute(axes)
     }
 
@@ -1223,7 +1229,7 @@ impl Tensor {
     ///
     /// Returns error if any of the specified axes are out-of-bounds for the input tensor.
     #[allow(clippy::missing_panics_doc)]
-    pub fn ln_softmax(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn ln_softmax(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         let m = self - self.max_kd(axes.clone())?;
         Ok(&m - m.exp().sum_kd(axes)?.ln())
@@ -1247,7 +1253,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if the axes contain duplicates or are out of bounds.
-    pub fn max(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn max(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let axes = into_axes(axes, rank)?;
         let mut unique = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
@@ -1278,7 +1284,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if self cannot be reduced by axes.
-    pub fn max_kd(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn max_kd(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         self.max(axes.clone())?.reshape(self.reduce_kd_shape(axes))
     }
@@ -1301,13 +1307,16 @@ impl Tensor {
     ///
     /// Returns error if self cannot be reduced by axes.
     #[allow(clippy::missing_panics_doc)]
-    pub fn mean(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn mean(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         let shape = self.shape();
         Ok(self.sum(axes.clone())?
             / Tensor::from(
-                i64::try_from(
-                    into_axes(axes, shape.rank())?.into_iter().map(|a| shape[a]).product::<usize>(),
+                SAxis::try_from(
+                    into_axes(axes, shape.rank())?
+                        .into_iter()
+                        .map(|a| shape[a as usize])
+                        .product::<Dim>(),
                 )
                 .unwrap(),
             )
@@ -1333,7 +1342,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if self cannot be reduced by axes.
-    pub fn mean_kd(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn mean_kd(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         self.mean(axes.clone())?.reshape(self.reduce_kd_shape(axes))
     }
@@ -1356,7 +1365,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if self cannot be reduced by axes.
-    pub fn product(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn product(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         Ok(self.ln().sum(axes)?.exp())
     }
 
@@ -1382,7 +1391,7 @@ impl Tensor {
     /// Returns error if self cannot be reduced by axes.
     pub fn std(
         &self,
-        axes: impl IntoIterator<Item = isize>,
+        axes: impl IntoIterator<Item = SAxis>,
         correction: usize,
     ) -> Result<Tensor, ZyxError> {
         Ok(self.var(axes, correction)?.sqrt())
@@ -1409,7 +1418,7 @@ impl Tensor {
     /// Returns error if self cannot be reduced by axes.
     pub fn std_kd(
         &self,
-        axes: impl IntoIterator<Item = isize>,
+        axes: impl IntoIterator<Item = SAxis>,
         correction: usize,
     ) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
@@ -1424,7 +1433,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if self cannot be reduced by axes.
-    pub fn sum(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn sum(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         // TODO handle axes out of range error
         let rank = self.rank();
         let axes = into_axes(axes, rank)?;
@@ -1438,7 +1447,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if self cannot be reduced by axes.
-    pub fn sum_kd(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn sum_kd(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         self.sum(axes.clone())?.reshape(self.reduce_kd_shape(axes))
     }
@@ -1449,12 +1458,12 @@ impl Tensor {
     ///
     /// Returns error if axis is out of range.
     #[allow(clippy::missing_panics_doc)]
-    pub fn cumsum(&self, axis: isize) -> Result<Tensor, ZyxError> {
+    pub fn cumsum(&self, axis: SAxis) -> Result<Tensor, ZyxError> {
         let axis = into_axis(axis, self.rank())?;
         //println!("Cumsum, shape: {:?}", self.shape());
-        let pl_sz = isize::try_from(self.shape()[axis] - 1).unwrap();
-        let k = self.shape()[axis];
-        let axis = isize::try_from(axis).unwrap();
+        let pl_sz = isize::try_from(self.shape()[axis as usize] - 1).unwrap();
+        let k = self.shape()[axis as usize];
+        let axis = SAxis::try_from(axis).unwrap();
         let mut x = self.transpose(axis, -1)?;
         x = x.pad_zeros([(pl_sz, 0)])?;
         //println!("{x:?} padded");
@@ -1491,7 +1500,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if self cannot be reduced by axes.
-    pub fn softmax(&self, axes: impl IntoIterator<Item = isize>) -> Result<Tensor, ZyxError> {
+    pub fn softmax(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         let e = (self - self.max_kd(axes.clone())?).exp();
         Ok(&e / e.sum_kd(axes)?)
@@ -1531,17 +1540,17 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn var(
         &self,
-        axes: impl IntoIterator<Item = isize>,
+        axes: impl IntoIterator<Item = SAxis>,
         correction: usize,
     ) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         let shape = self.shape();
         let x = self - self.mean_kd(axes.clone())?;
-        let d = i64::try_from(
-            into_axes(axes.clone(), shape.rank())?.into_iter().map(|a| shape[a]).product::<usize>(),
+        let d = SAxis::try_from(
+            into_axes(axes.clone(), shape.rank())?.into_iter().map(|a| shape[a as usize]).product::<usize>(),
         )
         .unwrap()
-            - i64::try_from(correction).unwrap();
+            - SAxis::try_from(correction).unwrap();
         Ok((x.clone() * x.clone()).sum(axes)? / Tensor::from(d).cast(x.dtype()))
     }
 
@@ -1575,7 +1584,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn var_kd(
         &self,
-        axes: impl IntoIterator<Item = isize>,
+        axes: impl IntoIterator<Item = SAxis>,
         correction: usize,
     ) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
@@ -1875,7 +1884,7 @@ impl Tensor {
     pub fn cross_entropy_loss(
         &self,
         target: impl Into<Tensor>,
-        axes: impl IntoIterator<Item = isize>,
+        axes: impl IntoIterator<Item = SAxis>,
     ) -> Result<Tensor, ZyxError> {
         Ok(self.ln_softmax(axes)? * target)
     }
@@ -1979,7 +1988,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if self cannot be flattened by axes.
-    pub fn flatten(&self, axes: impl RangeBounds<isize>) -> Result<Tensor, ZyxError> {
+    pub fn flatten(&self, axes: impl RangeBounds<SAxis>) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let rank = shape.len();
         let start_dim = into_axis(
@@ -2441,10 +2450,10 @@ impl Tensor {
         xup = xup.reshape(sh)?;
 
         // xup.permute(*range(len(noop_)), *[len(noop_)+i*2+1 for i in range(len(i_))], *[len(noop_)+i*2 for i in range(len(i_))])
-        let axes: Vec<isize> = (0..rank - k_.len())
+        let axes: Vec<SAxis> = (0..rank - k_.len())
             .chain((0..i_.len()).map(|i| rank - k_.len() + i * 2 + 1))
             .chain((0..i_.len()).map(|i| rank - k_.len() + i * 2))
-            .map(|i| isize::try_from(i).unwrap())
+            .map(|i| SAxis::try_from(i).unwrap())
             .collect();
         xup = xup.permute(axes)?;
 
@@ -2541,7 +2550,7 @@ impl Tensor {
         for i in 0..hw.len() {
             axes.push(4 + oyx.len() + i);
         }
-        let x = x.permute(axes.iter().map(|&a| isize::try_from(a).unwrap())).unwrap();
+        let x = x.permute(axes.iter().map(|&a| SAxis::try_from(a).unwrap())).unwrap();
 
         let shape: Vec<usize> = [1, groups, rcout]
             .iter()
@@ -2551,11 +2560,11 @@ impl Tensor {
             .copied()
             .collect();
         let weight = weight.reshape(shape).unwrap();
-        let mut axes = Vec::new();
+        let mut axes: Vec<SAxis> = Vec::new();
         for i in 0..=oyx.len() {
-            axes.push(-1 - isize::try_from(i).unwrap());
+            axes.push(-1 - SAxis::try_from(i).unwrap());
         }
-        let shape: Vec<usize> = [bs, cout].iter().chain(oyx).copied().collect();
+        let shape: Vec<Dim> = [bs, cout].iter().chain(oyx).copied().collect();
         let mut ret = (x * weight).sum_kd(axes).unwrap().reshape(shape).unwrap();
 
         if let Some(bias) = bias {
@@ -2802,7 +2811,10 @@ impl Tensor {
             let shape: Vec<Dim> = shape
                 .chunks_exact(8)
                 .map(|x| {
-                    usize::try_from(u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]])).unwrap()
+                    usize::try_from(u64::from_le_bytes([
+                        x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7],
+                    ]))
+                    .unwrap()
                 })
                 .collect();
 
@@ -3218,10 +3230,10 @@ impl Tensor {
     }
 
     // Calculate shape for reduce which keeps reduced dims set to 1
-    fn reduce_kd_shape(&self, axes: impl IntoIterator<Item = isize>) -> Vec<Axis> {
+    fn reduce_kd_shape(&self, axes: impl IntoIterator<Item = SAxis>) -> Vec<Axis> {
         let mut shape = self.shape();
-        for a in into_axes(axes, shape.len()).unwrap() {
-            shape[a] = 1;
+        for a in into_axes(axes, shape.len() as Axis).unwrap() {
+            shape[a as usize] = 1;
         }
         shape
     }
@@ -3777,8 +3789,8 @@ impl<T: Scalar> From<T> for Tensor {
 }
 
 impl<T: Scalar> TempData for T {
-    fn bytes(&self) -> usize {
-        T::byte_size()
+    fn bytes(&self) -> Dim {
+        T::byte_size() as Dim
     }
 
     fn dtype(&self) -> DType {
@@ -3788,18 +3800,18 @@ impl<T: Scalar> TempData for T {
     fn read(&self) -> &[u8] {
         let ptr: *const T = self;
         let ptr: *const u8 = ptr.cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
     }
 }
 
 impl<T: Scalar> From<Vec<T>> for Tensor {
     fn from(data: Vec<T>) -> Self {
-        Tensor { id: RT.lock().variable(vec![data.len()], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().variable(vec![data.len() as Dim], Box::new(data)).unwrap() }
     }
 }
 
 impl<T: Scalar> TempData for Vec<T> {
-    fn bytes(&self) -> usize {
+    fn bytes(&self) -> Dim {
         self.len() * T::byte_size()
     }
 
@@ -3809,19 +3821,19 @@ impl<T: Scalar> TempData for Vec<T> {
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
     }
 }
 
 impl<T: Scalar> From<&'static [T]> for Tensor {
     fn from(data: &'static [T]) -> Self {
-        let n = data.len();
+        let n = data.len() as Dim;
         Tensor { id: RT.lock().variable(vec![n], Box::new(data)).unwrap() }
     }
 }
 
 impl<T: Scalar> TempData for &'static [T] {
-    fn bytes(&self) -> usize {
+    fn bytes(&self) -> Dim {
         self.len() * T::byte_size()
     }
 
@@ -3831,18 +3843,18 @@ impl<T: Scalar> TempData for &'static [T] {
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
     }
 }
 
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
     fn from(data: [T; D0]) -> Self {
-        Tensor { id: RT.lock().variable(vec![D0], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().variable(vec![D0 as Dim], Box::new(data)).unwrap() }
     }
 }
 
 impl<T: Scalar, const D0: usize> TempData for [T; D0] {
-    fn bytes(&self) -> usize {
+    fn bytes(&self) -> Dim {
         D0 * T::byte_size()
     }
 
@@ -3852,19 +3864,19 @@ impl<T: Scalar, const D0: usize> TempData for [T; D0] {
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
-        Tensor { id: RT.lock().variable(vec![D0, D1], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().variable(vec![D0 as Dim, D1 as Dim], Box::new(data)).unwrap() }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
-    fn bytes(&self) -> usize {
+    fn bytes(&self) -> Dim {
         D0 * D1 * T::byte_size()
     }
 
@@ -3874,7 +3886,7 @@ impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
     }
 }
 
@@ -3883,14 +3895,16 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
 {
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
-        Tensor { id: RT.lock().variable(vec![D0, D1, D2], Box::new(data)).unwrap() }
+        Tensor {
+            id: RT.lock().variable(vec![D0 as Dim, D1 as Dim, D2 as Dim], Box::new(data)).unwrap(),
+        }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData
     for [[[T; D2]; D1]; D0]
 {
-    fn bytes(&self) -> usize {
+    fn bytes(&self) -> Dim {
         D0 * D1 * D2 * T::byte_size()
     }
 
@@ -3900,7 +3914,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
     }
 }
 
@@ -3910,14 +3924,22 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     fn from(data: [[[[T; D3]; D2]; D1]; D0]) -> Self {
         let data =
             unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
-        Tensor { id: RT.lock().variable(vec![D0, D1, D2, D3], Box::new(data)).unwrap() }
+        Tensor {
+            id: RT
+                .lock()
+                .variable(
+                    vec![D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim],
+                    Box::new(data),
+                )
+                .unwrap(),
+        }
     }
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> TempData
     for [[[[T; D3]; D2]; D1]; D0]
 {
-    fn bytes(&self) -> usize {
+    fn bytes(&self) -> Dim {
         D0 * D1 * D2 * D3 * T::byte_size()
     }
 
@@ -3927,7 +3949,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
     }
 }
 
@@ -3951,7 +3973,7 @@ impl PartialEq<i32> for Tensor {
 
 impl<T: Scalar, const D0: usize> PartialEq<[T; D0]> for Tensor {
     fn eq(&self, other: &[T; D0]) -> bool {
-        if self.shape() != [D0] {
+        if self.shape() != [D0 as Dim] {
             return false;
         }
         if let Ok(data) = self.clone().try_into() {
@@ -3970,7 +3992,7 @@ impl<T: Scalar, const D0: usize> PartialEq<[T; D0]> for Tensor {
 
 impl<T: Scalar, const D0: usize, const D1: usize> PartialEq<[[T; D1]; D0]> for Tensor {
     fn eq(&self, other: &[[T; D1]; D0]) -> bool {
-        if self.shape() != [D0, D1] {
+        if self.shape() != [D0 as Dim, D1 as Dim] {
             return false;
         }
         if let Ok(data) = self.clone().try_into() {
@@ -3991,7 +4013,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> PartialEq<[[[
     for Tensor
 {
     fn eq(&self, other: &[[[T; D2]; D1]; D0]) -> bool {
-        if self.shape() != [D0, D1, D2] {
+        if self.shape() != [D0 as Dim, D1 as Dim, D2 as Dim] {
             return false;
         }
         if let Ok(data) = self.clone().try_into() {
@@ -4013,7 +4035,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     PartialEq<[[[[T; D3]; D2]; D1]; D0]> for Tensor
 {
     fn eq(&self, other: &[[[[T; D3]; D2]; D1]; D0]) -> bool {
-        if self.shape() != [D0, D1, D2, D3] {
+        if self.shape() != [D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim] {
             return false;
         }
         if let Ok(data) = self.clone().try_into() {
@@ -4040,7 +4062,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     PartialEq<[[[[[T; D4]; D3]; D2]; D1]; D0]> for Tensor
 {
     fn eq(&self, other: &[[[[[T; D4]; D3]; D2]; D1]; D0]) -> bool {
-        if self.shape() != [D0, D1, D2, D3, D4] {
+        if self.shape() != [D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim, D4 as Dim] {
             return false;
         }
         if let Ok(data) = self.clone().try_into() {

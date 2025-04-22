@@ -107,19 +107,19 @@ impl View {
     // This is used for reshape, merge and split
     pub(crate) fn reshape(&mut self, axes: Range<Axis>, shape: &[Dim]) {
         //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
-        debug_assert!(axes.end <= self.0.last().map_or(1, Vec::len));
+        debug_assert!(axes.end <= self.0.last().map_or(1, Vec::len) as Dim);
         debug_assert_eq!(
-            self.0.last().unwrap()[axes.clone()].iter().map(|dim| dim.d).product::<Dim>(),
+            self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
             shape.iter().product::<Dim>()
         );
         if let Some(inner) = self.0.last_mut() {
             let mut contiguous = true;
-            let mut a = inner.len();
+            let mut a = inner.len() as Dim;
             let mut stride = 1;
             let mut ost = 1;
             while a > axes.start {
                 a -= 1;
-                let dim = &inner[a];
+                let dim = &inner[a as usize];
                 if a >= axes.end - 1 {
                     if dim.st != 0 {
                         stride = dim.st * dim.d;
@@ -135,17 +135,17 @@ impl View {
                     }
                 }
             }
-            if axes.clone().any(|a| inner[a].st == 0) {
+            if axes.clone().any(|a| inner[a as usize].st == 0) {
                 contiguous = false;
             }
             // If all reshaped axes are expanded
-            let expanded_reshape = if axes.clone().all(|a| inner[a].st == 0) {
+            let expanded_reshape = if axes.clone().all(|a| inner[a as usize].st == 0) {
                 contiguous = true;
                 true
             } else {
                 false
             };
-            if axes.clone().any(|a| inner[a].lp != 0 || inner[a].rp != 0) {
+            if axes.clone().any(|a| inner[a as usize].lp != 0 || inner[a as usize].rp != 0) {
                 contiguous = false;
             }
 

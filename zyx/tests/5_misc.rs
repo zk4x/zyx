@@ -629,7 +629,7 @@ fn layer_norm() -> Result<(), ZyxError> {
 
     let x = Tensor::from([[3, 5, 2, 1], [6, 1, 4, 2]]).cast(DType::F32);
 
-    let axes = -(d_dims as isize)..=-1;
+    let axes = -(d_dims as i32)..=-1;
     let eps = Tensor::from(eps).cast(x.dtype());
     let a = &x - x.mean_kd(axes.clone())?;
     //println!("{a}");

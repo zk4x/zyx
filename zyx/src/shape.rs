@@ -2,10 +2,10 @@
 
 use core::fmt::Debug;
 
-use crate::error::ZyxError;
+use crate::{error::ZyxError, tensor::SAxis};
 
-pub type Dim = u64;
-pub type Axis = u64;
+pub type Dim = usize;
+pub type Axis = usize;
 
 /// `IntoShape` trait
 pub trait IntoShape: Clone + Debug {
@@ -85,8 +85,8 @@ impl IntoShape for &Vec<Dim> {
     }
 }
 
-pub fn into_axis(axis: i64, rank: Axis) -> Result<Axis, ZyxError> {
-    TryInto::<i64>::try_into(rank).map_or_else(
+pub fn into_axis(axis: SAxis, rank: Axis) -> Result<Axis, ZyxError> {
+    TryInto::<SAxis>::try_into(rank).map_or_else(
         |_| {
             Err(ZyxError::ShapeError(format!(
                 "Axis {axis} is out of range of rank {rank}"
@@ -114,7 +114,7 @@ pub fn into_axis(axis: i64, rank: Axis) -> Result<Axis, ZyxError> {
 }
 
 pub fn into_axes(
-    axes: impl IntoIterator<Item = i64>,
+    axes: impl IntoIterator<Item = SAxis>,
     rank: Axis,
 ) -> Result<Vec<Dim>, ZyxError> {
     let mut res = Vec::new();

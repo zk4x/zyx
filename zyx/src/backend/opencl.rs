@@ -448,7 +448,7 @@ impl OpenCLMemoryPool {
             (self.clCreateBuffer)(
                 self.context,
                 CL_MEM_READ_WRITE,
-                bytes,
+                bytes as usize,
                 ptr::null_mut(),
                 &mut status,
             )
@@ -1093,11 +1093,11 @@ impl OpenCLDevice {
                     mwis[i * 8 + 7],
                 ])
             };
-            max_global_work_dims[i] = max_dim_size;
+            max_global_work_dims[i] = max_dim_size as Dim;
         }
         let mlt = usize::from_ne_bytes(
             self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?.try_into().unwrap(),
-        );
+        ) as Dim;
         self.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims,
