@@ -1,10 +1,15 @@
 use crate::{
-    backend::{BufferId, Device, DeviceInfo, Event, ProgramId}, error::BackendError, graph::kernel::{Kernel, Op}, prog_bar::ProgressBar, runtime::Pool, DebugMask
+    DebugMask, Map,
+    backend::{BufferId, Device, DeviceInfo, Event, ProgramId},
+    error::BackendError,
+    graph::kernel::{Kernel, Op},
+    prog_bar::ProgressBar,
+    runtime::Pool,
 };
-use std::collections::BTreeMap;
+use std::hash::BuildHasherDefault;
 
-mod optimizer;
 mod ir;
+mod optimizer;
 
 use ir::lower_to_ir;
 pub use ir::{IRKernel, IROp, IRScope};
@@ -12,33 +17,33 @@ use optimizer::{Optimization, Optimizer};
 
 #[derive(Debug)]
 pub struct KernelCompiler {
-    device_infos: BTreeMap<DeviceInfo, u32>,
-    kernels: BTreeMap<Vec<Op>, u32>,
+    device_infos: Map<DeviceInfo, u32>,
+    kernels: Map<Vec<Op>, u32>,
     // Finished optimizations of kernels for given devices
     // kernel id, device info id => optimization
-    optimizations: BTreeMap<(u32, u32), Optimization>,
+    optimizations: Map<(u32, u32), Optimization>,
     // This last one is not stored to disk
     // kernel id, device id => program id
-    programs: BTreeMap<(u32, u32), ProgramId>,
+    programs: Map<(u32, u32), ProgramId>,
 }
 
 impl KernelCompiler {
     pub const fn new() -> KernelCompiler {
         KernelCompiler {
-            device_infos: BTreeMap::new(),
-            kernels: BTreeMap::new(),
-            optimizations: BTreeMap::new(),
-            programs: BTreeMap::new(),
+            device_infos: Map::with_hasher(BuildHasherDefault::new()),
+            kernels: Map::with_hasher(BuildHasherDefault::new()),
+            optimizations: Map::with_hasher(BuildHasherDefault::new()),
+            programs: Map::with_hasher(BuildHasherDefault::new()),
         }
     }
 
     pub(super) fn deinitialize(&mut self, devices: &mut [Device]) {
-        while let Some(((_, device_id), program_id)) = self.programs.pop_last() {
-            devices[device_id as usize].release(program_id);
+        for (&(_, device_id), program_id) in &mut self.programs {
+            devices[device_id as usize].release(*program_id);
         }
-        self.device_infos = BTreeMap::new();
-        self.kernels = BTreeMap::new();
-        self.optimizations = BTreeMap::new();
+        self.device_infos = Map::with_hasher(BuildHasherDefault::new());
+        self.kernels = Map::with_hasher(BuildHasherDefault::new());
+        self.optimizations = Map::with_hasher(BuildHasherDefault::new());
     }
 
     // If the kernel is cached, then launches kernel, otherwise if search_iters is zero,
@@ -62,7 +67,7 @@ impl KernelCompiler {
             dev_info_id
         } else {
             let dev_info_id =
-                self.device_infos.last_key_value().map_or(0, |(_, x)| x.checked_add(1).unwrap());
+                self.device_infos.values().max().map_or(0, |id| id.checked_add(1).unwrap());
             assert!(self.device_infos.insert(device.info().clone(), dev_info_id).is_none());
             dev_info_id
         };
@@ -123,7 +128,11 @@ impl KernelCompiler {
 
             'a: for _ in 0..search_iters {
                 let Some(optimization) = optimizer.next() else { break };
-                let Ok(nanos) = optimizer.bench_optimization(&optimization, pool, device, args, debug) else { continue 'a };
+                let Ok(nanos) =
+                    optimizer.bench_optimization(&optimization, pool, device, args, debug)
+                else {
+                    continue 'a;
+                };
                 if let Some(bar) = &mut progress_bar {
                     bar.inc(1, &get_perf(flop, mem_read, mem_write, nanos));
                 }
@@ -164,20 +173,21 @@ fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> S
     let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
     let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
 
-    format!("{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w, {}.{:02} {f_u}FLOP, {}.{:02} {br_u}B r, {}.{:02} {bw_u}B w",
-        t/10,
-        t%10,
-        fs/100,
-        fs%100,
-        brs/100,
-        brs%100,
-        bws/100,
-        bws%100,
-        f/100,
-        f%100,
-        br/100,
-        br%100,
-        bw/100,
-        bw%100,
+    format!(
+        "{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w, {}.{:02} {f_u}FLOP, {}.{:02} {br_u}B r, {}.{:02} {bw_u}B w",
+        t / 10,
+        t % 10,
+        fs / 100,
+        fs % 100,
+        brs / 100,
+        brs % 100,
+        bws / 100,
+        bws % 100,
+        f / 100,
+        f % 100,
+        br / 100,
+        br % 100,
+        bw / 100,
+        bw % 100,
     )
 }

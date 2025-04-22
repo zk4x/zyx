@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::hash::BuildHasherDefault;
 
 use crate::{
-    dtype::Constant, graph::{kernel::{Op, TId}, BOp, UOp}, shape::Dim, DType
+    dtype::Constant, graph::{kernel::{Op, TId}, BOp, UOp}, shape::Dim, DType, Map
 };
 
 use super::optimizer::Optimization;
@@ -49,7 +49,7 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
     // 4. local accumulators
     // Other optimizations are far less important.
 
-    let mut t_map: BTreeMap<TId, u16> = BTreeMap::new();
+    let mut t_map: Map<TId, u16> = Map::with_hasher(BuildHasherDefault::new());
 
     for op in kernel_ops {
         match op {

@@ -2,16 +2,13 @@
 
 use crate::slab::SlabId;
 use crate::tensor::TensorId;
-use crate::Set;
+use crate::{Map, Set};
 use crate::{
     shape::{Axis, Dim},
     slab::Slab,
     DType,
 };
-use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasherDefault;
-
-pub use interpreter::interpret;
 
 pub mod kernel;
 mod view;
@@ -24,9 +21,9 @@ pub struct Graph {
     pub(super) gradient_tape_ref_count: u32,
     pub(super) gradient_tape: Option<Set<TensorId>>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
-    shapes: BTreeMap<TensorId, Vec<Dim>>,
-    paddings: BTreeMap<TensorId, Vec<(isize, isize)>>,
-    axes: BTreeMap<TensorId, Vec<Axis>>,
+    shapes: Map<TensorId, Vec<Dim>>,
+    paddings: Map<TensorId, Vec<(isize, isize)>>,
+    axes: Map<TensorId, Vec<Axis>>,
 }
 
 impl Graph {
@@ -35,9 +32,9 @@ impl Graph {
             nodes: Slab::new(),
             gradient_tape_ref_count: 0,
             gradient_tape: None,
-            shapes: BTreeMap::new(),
-            paddings: BTreeMap::new(),
-            axes: BTreeMap::new(),
+            shapes: Map::with_hasher(BuildHasherDefault::new()),
+            paddings: Map::with_hasher(BuildHasherDefault::new()),
+            axes: Map::with_hasher(BuildHasherDefault::new()),
         }
     }
 
@@ -181,7 +178,7 @@ impl Graph {
         //println!("Gradient tape: {tape:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = vec![x];
-        let mut rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 if !sources.contains(&nid)
@@ -195,7 +192,7 @@ impl Graph {
         }
         // Order them using rcs reference counts
         let mut order = Vec::new();
-        let mut internal_rcs: BTreeMap<TensorId, u32> = BTreeMap::new();
+        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut params: Vec<TensorId> = vec![x];
         while let Some(nid) = params.pop() {
             if let Some(&rc) = rcs.get(&nid) {
@@ -210,7 +207,7 @@ impl Graph {
         // before it was insert_or_add by all parents.
         let mut topo = Vec::new();
         let mut req_grad = sources.clone();
-        let mut visited = BTreeSet::new();
+        let mut visited = Set::with_capacity_and_hasher(100, BuildHasherDefault::new());
         for nid in order.into_iter().rev() {
             for p in self.nodes[nid].1.parameters() {
                 if req_grad.contains(&p) && visited.insert(nid) {
@@ -237,7 +234,7 @@ impl Graph {
         //println!("{ids:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
-        let mut rcs: BTreeMap<TensorId, u8> = BTreeMap::new();
+        let mut rcs: Map<TensorId, u8> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 //println!("Access {nid:?}");
@@ -247,7 +244,7 @@ impl Graph {
         }
         // Order them using rcs reference counts
         let mut order = Vec::new();
-        let mut internal_rcs: BTreeMap<TensorId, u8> = BTreeMap::new();
+        let mut internal_rcs: Map<TensorId, u8> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
@@ -257,7 +254,7 @@ impl Graph {
                 }
             }
         }
-        let mut topo: BTreeSet<TensorId> = ids.iter().copied().collect();
+        let mut topo: Set<TensorId> = ids.iter().copied().collect();
         for nid in order.into_iter().rev() {
             for p in self.nodes[nid].1.parameters() {
                 if topo.contains(&p) {
@@ -266,7 +263,7 @@ impl Graph {
             }
         }
         // Puts graph of nodes into dot language for visualization
-        let mut user_rc: BTreeMap<TensorId, u32> =
+        let mut user_rc: Map<TensorId, u32> =
             self.nodes.iter().map(|(k, (rc, _))| (k, *rc)).collect();
         for (_, node) in self.nodes.values() {
             for param in node.parameters() {

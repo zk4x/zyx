@@ -24,115 +24,7 @@ impl Runtime {
         }
 
         let (order, mut to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
-            // Get order for evaluation using DFS with ref counting to resolve
-            // nodes with more than one parent.
-            let (outside_nodes, mut order) = {
-                let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-                let mut rcs: Map<TensorId, u32> =
-                    Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-                while let Some(nid) = params.pop() {
-                    rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                        params.extend(self.graph.nodes[nid].1.parameters());
-                        1
-                    });
-                }
-                // Order them using rcs reference counts
-                let mut order = Vec::new();
-                let mut internal_rcs: Map<TensorId, u32> =
-                    Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-                let mut outside_nodes = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-                let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-                while let Some(nid) = params.pop() {
-                    if let Some(&rc) = rcs.get(&nid) {
-                        if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                            order.push(nid);
-                            let node = &self.graph.nodes[nid];
-                            params.extend(node.1.parameters());
-                            if node.0 > rc {
-                                outside_nodes.insert(nid);
-                            }
-                        }
-                    }
-                }
-                outside_nodes.extend(to_eval.clone());
-                order.reverse();
-                (outside_nodes, order)
-            };
-            //println!("Outside nodes: {outside_nodes:?}");
-            // Constant folding and deleting unused parts of graph
-            let mut new_leafs = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            for &nid in &order {
-                let node = &self.graph.nodes[nid].1;
-                match node.num_parameters() {
-                    0 => {
-                        if !outside_nodes.contains(&nid) {
-                            to_delete.insert(nid);
-                        }
-                    }
-                    1 => {
-                        let x = node.param1();
-                        if to_delete.contains(&x) {
-                            if outside_nodes.contains(&nid) {
-                                to_eval.insert(nid);
-                                new_leafs.insert(nid);
-                            } else {
-                                to_delete.insert(nid);
-                            }
-                        }
-                    }
-                    2 => {
-                        let (x, y) = node.param2();
-                        let xc = to_delete.contains(&x);
-                        let yc = to_delete.contains(&y);
-                        match (xc, yc) {
-                            (true, true) => {
-                                if outside_nodes.contains(&nid) {
-                                    to_eval.insert(nid);
-                                    new_leafs.insert(nid);
-                                } else {
-                                    to_delete.insert(nid);
-                                }
-                            }
-                            (true, false) => {
-                                to_eval.insert(nid);
-                                new_leafs.insert(x);
-                            }
-                            (false, true) => {
-                                to_eval.insert(nid);
-                                new_leafs.insert(y);
-                            }
-                            (false, false) => {}
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            //println!("To eval: {to_eval:?}");
-            //println!("New leafs: {new_leafs:?}");
-            //println!("To delete: {to_delete:?}");
-            let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
-            let mut rcs: Map<TensorId, u32> =
-                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            while let Some(nid) = params.pop() {
-                if let Some(rc) = rcs.get_mut(&nid) {
-                    *rc += 1;
-                } else {
-                    rcs.insert(nid, 1);
-                    if !realized_nodes.contains(&nid) {
-                        params.extend(self.graph.nodes[nid].1.parameters());
-                    }
-                }
-            }
-            /*for x in &to_eval {
-                *rcs.get_mut(x).unwrap() -= 1;
-                if *rcs.get(x).unwrap() == 0 {
-                    rcs.remove(x);
-                }
-            }*/
-            order.retain(|x| rcs.contains_key(x));
-            // Currently rcs with gradient tape cannot be used by scheduler, so we give it empty ids
+            let (order, new_leafs, to_delete) = self.fun_name(&realized_nodes, &mut to_eval);
             (order, to_delete, new_leafs, Map::with_hasher(BuildHasherDefault::default()))
         } else {
             let old_to_eval = to_eval.clone();
@@ -225,6 +117,119 @@ impl Runtime {
         self.graph.delete_tensors(&to_delete);
 
         Ok(())
+    }
+
+    fn fun_name(&mut self, realized_nodes: &Set<TensorId>, to_eval: &mut Set<TensorId>) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>) {
+        // Get order for evaluation using DFS with ref counting to resolve
+        // nodes with more than one parent.
+        let (outside_nodes, mut order) = {
+            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+            let mut rcs: Map<TensorId, u32> =
+                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            while let Some(nid) = params.pop() {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                    params.extend(self.graph.nodes[nid].1.parameters());
+                    1
+                });
+            }
+            // Order them using rcs reference counts
+            let mut order = Vec::new();
+            let mut internal_rcs: Map<TensorId, u32> =
+                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            let mut outside_nodes = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+            while let Some(nid) = params.pop() {
+                if let Some(&rc) = rcs.get(&nid) {
+                    if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                        order.push(nid);
+                        let node = &self.graph.nodes[nid];
+                        params.extend(node.1.parameters());
+                        if node.0 > rc {
+                            outside_nodes.insert(nid);
+                        }
+                    }
+                }
+            }
+            outside_nodes.extend(to_eval.clone());
+            order.reverse();
+            (outside_nodes, order)
+        };
+        //println!("Outside nodes: {outside_nodes:?}");
+        // Constant folding and deleting unused parts of graph
+        let mut new_leafs = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        for &nid in &order {
+            let node = &self.graph.nodes[nid].1;
+            match node.num_parameters() {
+                0 => {
+                    if !outside_nodes.contains(&nid) {
+                        to_delete.insert(nid);
+                    }
+                }
+                1 => {
+                    let x = node.param1();
+                    if to_delete.contains(&x) {
+                        if outside_nodes.contains(&nid) {
+                            to_eval.insert(nid);
+                            new_leafs.insert(nid);
+                        } else {
+                            to_delete.insert(nid);
+                        }
+                    }
+                }
+                2 => {
+                    let (x, y) = node.param2();
+                    let xc = to_delete.contains(&x);
+                    let yc = to_delete.contains(&y);
+                    match (xc, yc) {
+                        (true, true) => {
+                            if outside_nodes.contains(&nid) {
+                                to_eval.insert(nid);
+                                new_leafs.insert(nid);
+                            } else {
+                                to_delete.insert(nid);
+                            }
+                        }
+                        (true, false) => {
+                            to_eval.insert(nid);
+                            new_leafs.insert(x);
+                        }
+                        (false, true) => {
+                            to_eval.insert(nid);
+                            new_leafs.insert(y);
+                        }
+                        (false, false) => {}
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        //println!("To eval: {to_eval:?}");
+        //println!("New leafs: {new_leafs:?}");
+        //println!("To delete: {to_delete:?}");
+        let to_eval: Set<TensorId> = to_eval.difference(realized_nodes).copied().collect();
+        let mut rcs: Map<TensorId, u32> =
+            Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if let Some(rc) = rcs.get_mut(&nid) {
+                *rc += 1;
+            } else {
+                rcs.insert(nid, 1);
+                if !realized_nodes.contains(&nid) {
+                    params.extend(self.graph.nodes[nid].1.parameters());
+                }
+            }
+        }
+        /*for x in &to_eval {
+                *rcs.get_mut(x).unwrap() -= 1;
+                if *rcs.get(x).unwrap() == 0 {
+                    rcs.remove(x);
+                }
+            }*/
+        order.retain(|x| rcs.contains_key(x));
+        // Currently rcs with gradient tape cannot be used by scheduler, so we give it empty ids
+        (order, new_leafs, to_delete)
     }
 }
 

@@ -1,17 +1,16 @@
-use std::collections::{BTreeMap, BTreeSet};
-use crate::{backend::{BufferId, Device, DeviceInfo}, error::BackendError, graph::kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dim, DebugMask};
-
+use std::{collections::BTreeSet, hash::BuildHasherDefault};
+use crate::{backend::{BufferId, Device, DeviceInfo}, error::BackendError, graph::kernel::{Kernel, Op}, rng::Rng, runtime::Pool, shape::Dim, DebugMask, Map};
 use super::ir::lower_to_ir;
 
 pub struct Optimizer<'a> {
     rng: Rng,
     kernel: &'a Kernel,
     dev_info: DeviceInfo,
-    visited: BTreeMap<Optimization, u128>,
+    visited: Map<Optimization, u128>,
     pub best_node: Optimization,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Optimization {
     pub shape: [Dim; 9],
     pub opt_ops: BTreeSet<OptOp>,
@@ -79,7 +78,7 @@ impl<'a> Optimizer<'a> {
         Self {
             kernel,
             rng,
-            visited: BTreeMap::new(),
+            visited: Map::with_hasher(BuildHasherDefault::new()),
             best_node: Optimization::new(kernel, &dev_info),
             dev_info,
         }
