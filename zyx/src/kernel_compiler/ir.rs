@@ -75,7 +75,7 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
                 t_map.insert(z, RId::from_usize(ops.len()));
                 ops.push(IROp::Const(value));
             }
-            &Op::Load { z, x, ref xview, xdtype } => {
+            &Op::Load { z, x, view: ref xview, dtype: xdtype } => {
                 let address = if let Some(&address) = global_vars_map.get(&x) {
                     address
                 } else {
@@ -90,7 +90,7 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
                 //let zreg = ir_for_indexed_load(ops, address);
                 todo!()
             }
-            Op::Store { z, zview, zdtype, x } => {
+            Op::Store { z, view: zview, dtype: zdtype, x } => {
                 todo!()
             }
             Op::Accumulator { z, rop, dtype } => {

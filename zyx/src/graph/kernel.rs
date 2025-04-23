@@ -50,51 +50,45 @@ pub struct Kernel {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
     Loop {
-        axis: Axis,
+        axis: Axis, // TODO remove
         len: Dim,
     },
     // End the latest loop
-    EndLoop,
+    EndLoop, // TODO remove
     Const {
-        z: TId,
+        z: TId, // TODO remove
         value: Constant,
         view: View,
     },
     Load {
-        z: TId,
-        x: TId,
-        xview: View,
-        xdtype: DType,
+        z: TId, // TODO remove
+        x: TId, // TODO remove
+        view: View,
+        dtype: DType,
     },
     Store {
-        z: TId,
-        zview: View,
-        zdtype: DType,
-        x: TId,
+        z: TId, // TODO remove
+        x: TId, // TODO remove
+        view: View,
+        dtype: DType,
     },
     Accumulator {
-        z: TId,
+        z: TId, // TODO remove
         rop: ROp,
         dtype: DType,
     },
-    // Move is noop, just a marker for easy debugging
-    /*Move {
-        z: TId,
-        x: TId,
-        mop: MOp,
-    },*/
     Cast {
-        z: TId,
+        z: TId, // TODO remove
         x: TId,
         dtype: DType,
     },
     Unary {
-        z: TId,
+        z: TId, // TODO remove
         x: TId,
         uop: UOp,
     },
     Binary {
-        z: TId,
+        z: TId, // TODO remove
         x: TId,
         y: TId,
         bop: BOp,
@@ -137,8 +131,8 @@ impl Kernel {
         ops.push(Op::Load {
             z: 0,
             x: 0,
-            xview: View::contiguous(shape),
-            xdtype: dtype,
+            view: View::contiguous(shape),
+            dtype,
         });
         Kernel {
             max_id: 0,
@@ -258,8 +252,8 @@ impl Kernel {
             for op in &mut self.ops {
                 match op {
                     Op::Const { view, .. }
-                    | Op::Load { xview: view, .. }
-                    | Op::Store { zview: view, .. } => {
+                    | Op::Load { view, .. }
+                    | Op::Store { view, .. } => {
                         for (org_sh, sh) in reshapes.iter().rev() {
                             view.reshape(org_sh.clone(), &shape[sh.clone()]);
                         }
@@ -390,8 +384,8 @@ impl Kernel {
         for op in &mut self.ops {
             match op {
                 Op::Const { view, .. }
-                | Op::Load { xview: view, .. }
-                | Op::Store { zview: view, .. } => {
+                | Op::Load { view, .. }
+                | Op::Store { view, .. } => {
                     for (org_sh, sh) in reshapes.iter().rev() {
                         view.reshape(org_sh.clone(), &nshape[sh.clone()]);
                     }
@@ -448,8 +442,8 @@ impl Kernel {
                     num_loops += 1;
                 }
                 // Then change all load and store operations in this loop in the same way.
-                Op::Load { xview: view, .. }
-                | Op::Store { zview: view, .. }
+                Op::Load { view, .. }
+                | Op::Store { view, .. }
                 | Op::Const { view, .. } => {
                     #[allow(clippy::range_plus_one)]
                     {
@@ -549,7 +543,7 @@ impl Kernel {
                         *dimension = shape[*axis];
                     }
                 }
-                Op::Load { xview: view, .. } | Op::Const { view, .. } => {
+                Op::Load { view, .. } | Op::Const { view, .. } => {
                     // Done expanding marks which loops are behind us,
                     // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
                     for a in expand_axes.difference(&done_expanding) {
@@ -582,8 +576,8 @@ impl Kernel {
                         last_axis = last_axis.saturating_sub(1);
                     }
                 }
-                Op::Load { xview: view, .. }
-                | Op::Store { zview: view, .. }
+                Op::Load { view, .. }
+                | Op::Store { view, .. }
                 | Op::Const { view, .. } => {
                     //| VOp::Accumulator { view, .. } => {
                     let n = view.rank();
@@ -640,8 +634,8 @@ impl Kernel {
                     }
                 }
                 Op::Const { view, .. }
-                | Op::Load { xview: view, .. }
-                | Op::Store { zview: view, .. } => {
+                | Op::Load { view, .. }
+                | Op::Store { view, .. } => {
                     for (&axis, &(lp, rp)) in &padded_axes {
                         view.pad(axis, lp, rp);
                     }
@@ -716,8 +710,8 @@ impl Kernel {
         for op in &mut self.ops {
             match op {
                 Op::Const { view, .. }
-                | Op::Store { zview: view, .. }
-                | Op::Load { xview: view, .. } => view.insert_loop(naxis),
+                | Op::Store { view, .. }
+                | Op::Load { view, .. } => view.insert_loop(naxis),
                 Op::Loop { axis, .. } => {
                     if *axis >= naxis {
                         *axis += 1;
@@ -740,14 +734,14 @@ impl Kernel {
                 &Op::Loop { len, .. } => {
                     shape.push(len);
                 }
-                &Op::Load { ref xview, xdtype, .. } => {
+                &Op::Load { view: ref xview, dtype: xdtype, .. } => {
                     // Note that this calculates actual read speed, even if the load accesses the same
                     // value multiple times. This is usefull so that we can see whether the kernel
                     // is compute bound or memory bound.
                     //mem_read += shape.iter().product::<usize>() as u128;
                     mem_read += xview.original_numel() as u128 * u128::from(xdtype.byte_size());
                 }
-                &Op::Store { ref zview, zdtype, .. } => {
+                &Op::Store { view: ref zview, dtype: zdtype, .. } => {
                     //mem_write += shape.iter().product::<usize>() as u128 * zdtype.byte_size();
                     mem_write += zview.original_numel() as u128 * u128::from(zdtype.byte_size());
                 }
@@ -777,10 +771,10 @@ impl std::fmt::Display for Op {
             Op::Const { z, value, view } => f.write_fmt(format_args!(
                 "{C_WHITE}Const{C_RESET}       {z} <- value: {value}, {view}"
             )),
-            Op::Load { z, x, xview, xdtype: _ } => f.write_fmt(format_args!(
+            Op::Load { z, x, view: xview, dtype: _ } => f.write_fmt(format_args!(
                 "{C_MAGENTA}Load{C_RESET}        {z} <- {x}, {xview}"
             )),
-            Op::Store { z, zview, zdtype: _, x } => {
+            Op::Store { z, view: zview, dtype: _, x } => {
                 f.write_fmt(format_args!(
                 "{C_RED}Store{C_RESET}        {z} <- {x}, {zview}"
             ))
@@ -1371,23 +1365,23 @@ pub fn kernelize(
                                 Op::Const { z, value, ref view } => {
                                     Op::Const { z: z + n, value, view: view.clone() }
                                 }
-                                Op::Load { z, x, ref xview, xdtype } => {
+                                Op::Load { z, x, view: ref xview, dtype: xdtype } => {
                                     Op::Load {
                                         z: z + n,
                                         x: x + n,
-                                        xview: xview.clone(),
-                                        xdtype,
+                                        view: xview.clone(),
+                                        dtype: xdtype,
                                     }
                                 }
                                 Op::Store {
                                     z,
-                                    ref zview,
-                                    zdtype,
+                                    view: ref zview,
+                                    dtype: zdtype,
                                     x,
                                 } => Op::Store {
                                     z: z + n,
-                                    zview: zview.clone(),
-                                    zdtype,
+                                    view: zview.clone(),
+                                    dtype: zdtype,
                                     x: x + n,
                                 },
                                 Op::Accumulator { z, rop, dtype } => {
@@ -1549,7 +1543,7 @@ fn store(
     let zview = View::contiguous(nid_shape);
 
     #[cfg(debug_assertions)]
-    if let Some(&Op::Store { z: nz, zview: ref nzview, .. }) = kernels[kid].ops.last() {
+    if let Some(&Op::Store { z: nz, view: ref nzview, .. }) = kernels[kid].ops.last() {
         if x == nz && &zview == nzview {
             unreachable!();
         }
@@ -1559,8 +1553,8 @@ fn store(
     let z = kernels[kid].max_id;
     let store_op = Op::Store {
         z,
-        zview,
-        zdtype: nid_dtype,
+        view: zview,
+        dtype: nid_dtype,
         x,
     };
     kernels[kid].ops.push(store_op);

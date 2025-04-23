@@ -208,12 +208,12 @@ impl Runtime {
                         }
                         args.push(self.pools[mpid].buffer_map[&tid]);
                     }
-                    Op::Store { z, zview, zdtype, .. } => {
+                    Op::Store { z, view, dtype, .. } => {
                         // Allocate space for output
                         let tensor_id = kernel.tensors[z];
                         let (buffer_id, event) = self.pools[mpid]
                             .pool
-                            .allocate(zview.original_numel() as Dim * zdtype.byte_size() as Dim)?;
+                            .allocate(view.original_numel() as Dim * dtype.byte_size() as Dim)?;
                         self.pools[mpid].buffer_map.insert(tensor_id, buffer_id);
                         event_wait_list.push(event);
                         outputs.insert(buffer_id);
