@@ -22,9 +22,9 @@ pub struct Graph {
     gradient_tape_ref_count: u32,
     gradient_tape: Option<Set<TensorId>>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
-    shapes: Map<TensorId, Vec<Dim>>,
-    paddings: Map<TensorId, Vec<(isize, isize)>>,
-    axes: Map<TensorId, Vec<Axis>>,
+    shapes: Map<TensorId, Box<[Dim]>>,
+    paddings: Map<TensorId, Box<[(isize, isize)]>>,
+    axes: Map<TensorId, Box<[Axis]>>,
 }
 
 impl Graph {
@@ -106,16 +106,16 @@ impl Graph {
     pub(super) fn push_wshape(&mut self, node: Node, shape: Vec<Dim>) -> TensorId {
         //println!("Pushing wshape {node:?}");
         let id = self.push(node);
-        self.shapes.insert(id, shape);
+        self.shapes.insert(id, shape.into_boxed_slice());
         id
     }
 
     pub(super) fn push_padding(&mut self, id: TensorId, padding: Vec<(isize, isize)>) {
-        self.paddings.insert(id, padding);
+        self.paddings.insert(id, padding.into_boxed_slice());
     }
 
     pub(super) fn push_axes(&mut self, id: TensorId, axes: Vec<Axis>) {
-        self.axes.insert(id, axes);
+        self.axes.insert(id, axes.into_boxed_slice());
     }
 
     pub(super) fn add_shape(&mut self, id: TensorId) {

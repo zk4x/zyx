@@ -26,6 +26,7 @@
   - [x] realization while tracing gradients
   - [x] realization while not tracing gradients
   - [x] gradient tape
+  - [ ] switch shape, paddings and axes in graph from Vec to Box<[]>
 - [x] scheduler
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
   - [ ] improve reshape node
@@ -77,10 +78,10 @@
   - [x] dead store elimination
   - [ ] vectorization, vector dtypes
   - [x] ops fusion, merges
-- [ ] runtime
+- [x] runtime
   - [x] fix event handling
   - [x] fix node deallocation after realization
-  - [ ] static graphs - unfortunately necessary for very high performance networks to achieve millions of tensor ops/second
+  - [x] static graphs - unfortunately necessary for very high performance networks to achieve millions of tensor ops/second
 - [ ] backward
   - [x] fix t6 test
   - [ ] more backpropagation tests
