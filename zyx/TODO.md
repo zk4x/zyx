@@ -26,7 +26,7 @@
   - [x] realization while tracing gradients
   - [x] realization while not tracing gradients
   - [x] gradient tape
-  - [ ] switch shape, paddings and axes in graph from Vec to Box<[]>
+  - [x] switch shape, paddings and axes in graph from Vec to Box<[]>
 - [x] scheduler
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
   - [ ] improve reshape node
@@ -107,6 +107,16 @@
 - examples
   - [x] get phi working
     - [ ] fix tensor memory leak
+
+- tests
+  - [ ] padding on elementwise kernel
+  - [ ] expand on elementwise kernel
+  - [ ] reshape on elementwise kernel
+  - [ ] permute on elementwise kernel
+  - [ ] padding on reduce kernel
+  - [ ] expand on reduce kernel
+  - [ ] reshape on reduce kernel
+  - [ ] permute on reduce kernel
 
 
 ## Architecture

@@ -5,7 +5,7 @@ use crate::{
     Map, Set, ZyxError,
     backend::BufferId,
     graph::kernel::Op,
-    runtime::{Pool, Runtime},
+    runtime::Runtime,
     shape::Dim,
     tensor::TensorId,
 };
@@ -55,7 +55,6 @@ impl Runtime {
             &to_eval,
             &self.pools,
             &realized_nodes,
-            self.debug,
         );
 
         let elapsed = begin.elapsed().as_micros();

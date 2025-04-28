@@ -4,7 +4,7 @@ use crate::shape::{Axis, Dim};
 use std::{fmt::Display, ops::Range};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct View(Vec<Vec<RDim>>);
+pub struct View(Vec<Vec<RDim>>); // TODO switch to Box<[]> instead of Vec and perhaps immutable View?
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct RDim {

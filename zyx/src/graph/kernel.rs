@@ -3,14 +3,22 @@
 // Posdsibly remove requirements for is_paddable
 // is_reshapable more or less cannot be loosened.
 
-use std::{
-    cmp::Ordering, collections::{BTreeMap, BTreeSet}, hash::BuildHasherDefault, ops::Range
-};
 use crate::{
-    dtype::Constant, graph::{Graph, Node}, runtime::Pool, shape::{Axis, Dim}, slab::{Slab, SlabId}, tensor::TensorId, DType, DebugMask, Map, Set
+    DType, Map, Set,
+    dtype::Constant,
+    graph::{Graph, Node},
+    runtime::Pool,
+    shape::{Axis, Dim},
+    slab::{Slab, SlabId},
+    tensor::TensorId,
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    hash::BuildHasherDefault,
+    ops::Range,
 };
 
-use super::{view::View, BOp, ROp, UOp};
+use super::{BOp, ROp, UOp, view::View};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KernelId(u32);
@@ -50,7 +58,6 @@ pub struct Kernel {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
     Loop {
-        axis: Axis, // TODO remove
         len: Dim,
     },
     // End the latest loop
@@ -92,7 +99,7 @@ pub enum Op {
         x: TId,
         y: TId,
         bop: BOp,
-    }
+    },
 }
 
 /*#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -107,7 +114,7 @@ pub enum MOp {
 impl Kernel {
     pub(super) fn constant(nid: TensorId, value: Constant) -> Kernel {
         let mut ops = Vec::with_capacity(50);
-        ops.push(Op::Loop { axis: 0, len: 1 });
+        ops.push(Op::Loop { len: 1 });
         ops.push(Op::Const { z: 0, value, view: View::contiguous(&[1]) });
         Kernel {
             max_id: 0,
@@ -125,15 +132,10 @@ impl Kernel {
         depends_on: BTreeSet<KernelId>,
     ) -> Kernel {
         let mut ops = Vec::with_capacity(50);
-        for (axis, dimension) in shape.iter().copied().enumerate() {
-            ops.push(Op::Loop { axis, len: dimension });
+        for len in shape.iter().copied() {
+            ops.push(Op::Loop { len });
         }
-        ops.push(Op::Load {
-            z: 0,
-            x: 0,
-            view: View::contiguous(shape),
-            dtype,
-        });
+        ops.push(Op::Load { z: 0, x: 0, view: View::contiguous(shape), dtype });
         Kernel {
             max_id: 0,
             ops,
@@ -148,16 +150,25 @@ impl Kernel {
     }*/
 
     pub fn shape(&self) -> Vec<Dim> {
-        self.ops
-            .iter()
-            .map_while(|op| {
-                if let Op::Loop { len, .. } = op {
-                    Some(*len)
-                } else {
-                    None
+        let mut res = Vec::new();
+        let mut num_endloops = 0;
+        for op in self.ops.iter().rev() {
+            match op {
+                &Op::Loop { len } => {
+                    if num_endloops > 0 {
+                        num_endloops -= 1;
+                    } else {
+                        res.push(len);
+                    }
                 }
-            })
-            .collect()
+                Op::EndLoop => {
+                    num_endloops += 1;
+                }
+                _ => {}
+            }
+        }
+        res.reverse();
+        res
     }
 
     // Returns true if it is cheaper to evaluate this kernel twice as inlined into bigger kernel
@@ -208,54 +219,36 @@ impl Kernel {
         //println!("Reshape");
         if let Some((new_loops, reshapes)) = self.get_reshape_pattern(shape) {
             let _ = new_loops; // TODO get new_loops working
-                               //println!("Reshapes: {reshapes:?}");
-            for (org_sh, sh) in reshapes.iter().rev() {
-                let mut op_i = self.ops.len();
-                'a: loop {
-                    op_i -= 1;
-                    if let Op::Loop { axis, .. } = &mut self.ops[op_i] {
-                        //println!("{org_sh:?} -> {sh:?}");
-                        match (*axis).cmp(&(org_sh.end - 1)) {
-                            Ordering::Less => {}
-                            Ordering::Equal => {
-                                // remove org_sh.end - org_sh.start ops from kernel. They should all be loops.
-                                // insert respective loops from new shape
-                                let n = org_sh.end - org_sh.start;
-                                let i = (op_i + 1) - n;
-                                //println!("Removing {i}");
-                                for _ in 0..n {
-                                    self.ops.remove(i);
-                                }
-                                //self.debug();
-                                for a in sh.clone().rev() {
-                                    //println!("Axis {a}, shape {shape:?}");
-                                    self.ops.insert(
-                                        i,
-                                        Op::Loop {
-                                            axis: a + org_sh.start - sh.start,
-                                            len: shape[a],
-                                        },
-                                    );
-                                }
-                                //self.debug();
-                                break 'a;
+            //println!("Reshapes: {reshapes:?}");
+
+            for (org_sh_range, new_len) in &reshapes {
+                let mut axis = 0;
+                let mut op_i = 0;
+                'single_reshape_loop: loop {
+                    if let Op::Loop { .. } = &self.ops[op_i] {
+                        if axis == org_sh_range.start {
+                            let n = org_sh_range.len();
+                            for _ in 0..n {
+                                self.ops.remove(op_i);
                             }
-                            Ordering::Greater => {
-                                *axis += sh.end - sh.start;
-                                *axis -= org_sh.end - org_sh.start;
+                            for a in 0..*new_len {
+                                self.ops.insert(op_i, Op::Loop { len: shape[a] });
                             }
+                            break 'single_reshape_loop;
                         }
+                        axis += 1;
                     }
+                    op_i += 1;
                 }
-                //self.debug();
             }
+
+            // TODO write code for inserting endloops
+
             for op in &mut self.ops {
                 match op {
-                    Op::Const { view, .. }
-                    | Op::Load { view, .. }
-                    | Op::Store { view, .. } => {
-                        for (org_sh, sh) in reshapes.iter().rev() {
-                            view.reshape(org_sh.clone(), &shape[sh.clone()]);
+                    Op::Const { view, .. } | Op::Load { view, .. } | Op::Store { view, .. } => {
+                        for (org_sh, new_len) in reshapes.iter().rev() {
+                            view.reshape(org_sh.clone(), &shape[0..*new_len]);
                         }
                     }
                     Op::Accumulator { .. }
@@ -280,22 +273,25 @@ impl Kernel {
         &self,
         nshape: &[usize],
     ) -> Option<(
-        usize,                             // number of new loops to be inserted
-        Vec<(Range<usize>, Range<usize>)>, // range and new shape for reshapes
+        usize,                      // number of new loops to be inserted
+        Vec<(Range<usize>, usize)>, // range and new shape for reshapes
     )> {
         let mut unmergeable_axes = Vec::new();
         let mut last_op_i = 0;
+        let mut axis = 0;
         for (i, op) in self.ops.iter().enumerate() {
-            if let &Op::Loop { axis, .. } = op {
+            if let &Op::Loop { .. } = op {
                 if last_op_i != 0 && i != last_op_i + 1 {
                     unmergeable_axes.push(axis);
                 }
                 last_op_i = i;
+                axis += 1;
             }
         }
         get_reshape_pattern(&self.shape(), nshape, &unmergeable_axes)
     }
 
+    // TODO why does this function exits??
     pub(super) fn reshape_unchecked(&mut self, nshape: &[usize]) {
         let shape: &[usize] = &self.shape();
         // reshape
@@ -344,48 +340,29 @@ impl Kernel {
                 }
             }
         }
-        for (org_sh, sh) in reshapes.iter().rev() {
-            let mut op_i = self.ops.len();
-            'a: loop {
-                op_i -= 1;
-                if let Op::Loop { axis, .. } = &mut self.ops[op_i] {
-                    //println!("{org_sh:?} -> {sh:?}");
-                    match (*axis).cmp(&(org_sh.end - 1)) {
-                        std::cmp::Ordering::Less => {}
-                        std::cmp::Ordering::Equal => {
-                            // remove org_sh.end - org_sh.start ops from kernel. They should all be loops.
-                            // insert respective loops from new shape
-                            let n = org_sh.end - org_sh.start;
-                            let i = (op_i + 1) - n;
-                            //println!("Removing {i}");
-                            for _ in 0..n {
-                                self.ops.remove(i);
-                            }
-                            //self.debug();
-                            for a in sh.clone().rev() {
-                                //println!("Axis {a}, nshape {nshape:?}");
-                                self.ops.insert(
-                                    i,
-                                    Op::Loop { axis: a + org_sh.start - sh.start, len: nshape[a] },
-                                );
-                            }
-                            //self.debug();
-                            break 'a;
+        for (org_sh_range, new_sh_range) in &reshapes {
+            let mut axis = 0;
+            let mut op_i = 0;
+            'single_reshape_loop: loop {
+                if let Op::Loop { .. } = &self.ops[op_i] {
+                    if axis == org_sh_range.start {
+                        let n = org_sh_range.len();
+                        for _ in 0..n {
+                            self.ops.remove(op_i);
                         }
-                        std::cmp::Ordering::Greater => {
-                            *axis += sh.end - sh.start;
-                            *axis -= org_sh.end - org_sh.start;
+                        for a in new_sh_range.clone() {
+                            self.ops.insert(op_i, Op::Loop { len: shape[a] });
                         }
+                        break 'single_reshape_loop;
                     }
+                    axis += 1;
                 }
+                op_i += 1;
             }
-            //self.debug();
         }
         for op in &mut self.ops {
             match op {
-                Op::Const { view, .. }
-                | Op::Load { view, .. }
-                | Op::Store { view, .. } => {
+                Op::Const { view, .. } | Op::Load { view, .. } | Op::Store { view, .. } => {
                     for (org_sh, sh) in reshapes.iter().rev() {
                         view.reshape(org_sh.clone(), &nshape[sh.clone()]);
                     }
@@ -412,39 +389,33 @@ impl Kernel {
         //self.debug();
         //println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id
-        let Op::Loop { axis, len: dimension } = &mut self.ops[op_id] else { unreachable!() };
+        let Op::Loop { len: dimension } = &mut self.ops[op_id] else { unreachable!() };
         *dimension = dimensions[0];
         let new_dim_count = dimensions.len() - 1;
-        let axis = *axis;
-        let mut temp_axis = axis;
         let mut id = op_id;
-        for dim in &dimensions[1..] {
+        for &len in &dimensions[1..] {
             id += 1;
-            temp_axis += 1;
-            self.ops.insert(id, Op::Loop { axis: temp_axis, len: *dim });
+            self.ops.insert(id, Op::Loop { len });
         }
-        let mut num_loops = 0;
+        let mut axis = 0;
         // Update loops, loads and stores
         for i in id + 1..self.ops.len() {
             if self.ops[i] == Op::EndLoop {
-                if num_loops == 0 {
+                if axis == 0 {
                     for _ in 0..new_dim_count {
                         self.ops.insert(i, Op::EndLoop);
                     }
                     break;
                 }
-                num_loops -= 1;
+                axis -= 1;
             }
             match &mut self.ops[i] {
                 // Then change axis ids for all following loops
-                Op::Loop { axis, .. } => {
-                    *axis += new_dim_count;
-                    num_loops += 1;
+                Op::Loop { .. } => {
+                    axis += 1;
                 }
                 // Then change all load and store operations in this loop in the same way.
-                Op::Load { view, .. }
-                | Op::Store { view, .. }
-                | Op::Const { view, .. } => {
+                Op::Load { view, .. } | Op::Store { view, .. } | Op::Const { view, .. } => {
                     #[allow(clippy::range_plus_one)]
                     {
                         view.reshape(axis..axis + 1, dimensions);
@@ -524,28 +495,30 @@ impl Kernel {
     pub(super) fn expand(&mut self, shape: &[usize]) {
         //println!("Expanding");
         //kernel.debug();
-        debug_assert_eq!(shape.len(), self.shape().len());
-        let mut expand_axes = BTreeSet::new();
-        for (a, d) in self.shape().into_iter().enumerate() {
-            if d != shape[a] {
-                debug_assert_eq!(d, 1);
+        let org_shape = self.shape();
+        let mut axis = org_shape.len();
+        debug_assert_eq!(shape.len(), axis);
+        let mut expand_axes = Set::with_hasher(BuildHasherDefault::new());
+        for (a, (s, d)) in org_shape.iter().zip(shape).enumerate() {
+            if d != s {
+                debug_assert_eq!(*s, 1);
                 expand_axes.insert(a);
             }
         }
-        // We go over ops in reverse, increasing last loops dimension
-        //println!("expand_axes = {expand_axes:?}");
-        let mut done_expanding = BTreeSet::new();
+        let mut done_expanding = Set::with_hasher(BuildHasherDefault::new());
         for op in self.ops.iter_mut().rev() {
             match op {
-                Op::Loop { axis, len: dimension } => {
-                    if expand_axes.contains(axis) && done_expanding.insert(*axis) {
-                        debug_assert_eq!(*dimension, 1);
-                        *dimension = shape[*axis];
+                Op::Loop { len } => {
+                    axis -= 1;
+                    if *len != shape[axis] {
+                        if done_expanding.insert(axis) {
+                            debug_assert_eq!(*len, 1);
+                            *len = shape[axis];
+                        }
                     }
                 }
-                Op::Load { view, .. } | Op::Const { view, .. } => {
-                    // Done expanding marks which loops are behind us,
-                    // so we need to only adjust strides to 0 in axes for those axes that are not behind us yet.
+                Op::EndLoop => axis += 1,
+                Op::Const { view, .. } | Op::Load { view, .. } => {
                     for a in expand_axes.difference(&done_expanding) {
                         view.expand(*a, shape[*a]);
                     }
@@ -576,9 +549,7 @@ impl Kernel {
                         last_axis = last_axis.saturating_sub(1);
                     }
                 }
-                Op::Load { view, .. }
-                | Op::Store { view, .. }
-                | Op::Const { view, .. } => {
+                Op::Load { view, .. } | Op::Store { view, .. } | Op::Const { view, .. } => {
                     //| VOp::Accumulator { view, .. } => {
                     let n = view.rank();
                     let permute_axes: Vec<usize> = if last_axis > n {
@@ -609,12 +580,29 @@ impl Kernel {
     }
 
     pub(super) fn pad(&mut self, padding: &[(isize, isize)]) {
+        for op in self.ops.iter_mut().rev() {
+            match op {
+                Op::Loop { len } => todo!(),
+                Op::EndLoop => todo!(),
+                Op::Const { view, .. } |
+                Op::Load { view, .. } |
+                Op::Store { view, .. } => todo!(),
+                _ => {}
+            }
+        }
+
+
+
+
+
+
+
         //kernel.debug();
         let rank = self.shape().len();
         // Get which axes are padded
         let mut padded_axes = BTreeMap::new();
         for (op, &p) in self.ops[..rank].iter().rev().zip(padding) {
-            let &Op::Loop { axis, .. } = op else { unreachable!() };
+            let &Op::Loop { .. } = op else { unreachable!() };
             padded_axes.insert(axis, p);
         }
         // Apply padding
@@ -622,7 +610,7 @@ impl Kernel {
         //println!("Padded axes: {padded_axes:?}");
         for op in &mut self.ops {
             match op {
-                Op::Loop { axis, len } => {
+                Op::Loop { len } => {
                     if let Some((lp, rp)) = padded_axes.get(axis) {
                         *len = usize::try_from(isize::try_from(*len).unwrap() + lp + rp).unwrap();
                     }
@@ -633,9 +621,7 @@ impl Kernel {
                         break;
                     }
                 }
-                Op::Const { view, .. }
-                | Op::Load { view, .. }
-                | Op::Store { view, .. } => {
+                Op::Const { view, .. } | Op::Load { view, .. } | Op::Store { view, .. } => {
                     for (&axis, &(lp, rp)) in &padded_axes {
                         view.pad(axis, lp, rp);
                     }
@@ -672,7 +658,7 @@ impl Kernel {
                 .iter()
                 .rev()
                 .position(|op| {
-                    if let Op::Loop { axis, .. } = op {
+                    if let Op::Loop { .. } = op {
                         looped_axes.remove(axis);
                     }
                     looped_axes.is_empty()
@@ -705,22 +691,26 @@ impl Kernel {
     /// All loops and views axis equal or greater then axis are increased by 1
     /// Does not change reduce op's `num_axes`
     /// This function also does not change kernel's shape!
-    pub(super) fn insert_loop(&mut self, op_id: usize, axis: Axis) {
-        let naxis = axis;
+    pub(super) fn insert_loop(&mut self, op_id: usize, naxis: Axis) {
+        let mut axis: u32 = 0;
         for op in &mut self.ops {
             match op {
-                Op::Const { view, .. }
-                | Op::Store { view, .. }
-                | Op::Load { view, .. } => view.insert_loop(naxis),
-                Op::Loop { axis, .. } => {
-                    if *axis >= naxis {
-                        *axis += 1;
+                Op::Const { view, .. } | Op::Store { view, .. } | Op::Load { view, .. } => {
+                    view.insert_loop(naxis)
+                }
+                Op::Loop { .. } => {
+                    axis += 1
+                }
+                Op::EndLoop => {
+                    if axis == 0 {
+                        break;
                     }
+                    axis -= 1;
                 }
                 _ => {}
             }
         }
-        self.ops.insert(op_id, Op::Loop { axis, len: 1 });
+        self.ops.insert(op_id, Op::Loop { len: 1 });
     }
 
     pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
@@ -765,7 +755,7 @@ impl std::fmt::Display for Op {
         const C_MAGENTA: &str = "\x1B[35m";
         const C_RED: &str = "\x1B[31m";
         const C_WHITE: &str = "\x1B[37m";
-        const C_YELLOW: &str = "\x1B[33m";
+        //const C_YELLOW: &str = "\x1B[33m";
         const C_RESET: &str = "\x1B[39m";
         match self {
             Op::Const { z, value, view } => f.write_fmt(format_args!(
@@ -774,13 +764,11 @@ impl std::fmt::Display for Op {
             Op::Load { z, x, view: xview, dtype: _ } => f.write_fmt(format_args!(
                 "{C_MAGENTA}Load{C_RESET}        {z} <- {x}, {xview}"
             )),
-            Op::Store { z, view: zview, dtype: _, x } => {
-                f.write_fmt(format_args!(
+            Op::Store { z, view: zview, dtype: _, x } => f.write_fmt(format_args!(
                 "{C_RED}Store{C_RESET}        {z} <- {x}, {zview}"
-            ))
-            }
-            Op::Loop { axis, len } => f.write_fmt(format_args!(
-                "{C_GREEN}Loop{C_RESET}        axis: {axis}, len: {len}"
+            )),
+            Op::Loop { len } => f.write_fmt(format_args!(
+                "{C_GREEN}Loop{C_RESET}        len: {len}"
             )),
             Op::Accumulator { z, rop, dtype } => f.write_fmt(format_args!(
                 "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, {dtype}",
@@ -833,41 +821,41 @@ fn get_reshape_pattern(
     // number of new loops to be inserted
     usize,
     // range and new shape for reshapes
-    Vec<(Range<usize>, Range<usize>)>,
+    Vec<(Range<usize>, usize)>,
 )> {
     // reshape
     // 2, 4, 1, 3, 1,    4, 5, 2
     //       8, 3, 1, 2, 2, 2, 5
     let mut reshapes = Vec::new();
 
-    let mut split_axes = 0..1;
+    let mut split_axes = 0;
     let mut merge_axes = 0..1;
-    'a: while merge_axes.end <= shape.len() && split_axes.end <= nshape.len() {
+    'a: while merge_axes.end <= shape.len() && split_axes <= nshape.len() {
         match shape[merge_axes.clone()]
             .iter()
             .product::<usize>()
-            .cmp(&nshape[split_axes.clone()].iter().product())
+            .cmp(&nshape[merge_axes.start..split_axes.clone()].iter().product())
         {
             std::cmp::Ordering::Less => {
                 merge_axes.end += 1;
             }
             std::cmp::Ordering::Greater => {
-                split_axes.end += 1;
+                split_axes += 1;
             }
             std::cmp::Ordering::Equal => {
                 if let Some(d) = shape.get(merge_axes.end) {
-                    if *d == 1 && split_axes.end == nshape.len() {
+                    if *d == 1 && split_axes == nshape.len() {
                         merge_axes.end += 1;
                         continue 'a;
                     }
                 }
-                if let Some(d) = nshape.get(split_axes.end) {
+                if let Some(d) = nshape.get(split_axes) {
                     if *d == 1 && merge_axes.end == shape.len() {
-                        split_axes.end += 1;
+                        split_axes += 1;
                         continue 'a;
                     }
                 }
-                if (merge_axes.len(), split_axes.len()) != (1, 1) {
+                if (merge_axes.len(), split_axes) != (1, 1) {
                     // reshape
                     // If merge range contains unmergeable axes, return None
                     // Axes are not mergeable if there is some ops between those axes
@@ -882,7 +870,7 @@ fn get_reshape_pattern(
                 #[allow(clippy::range_plus_one)]
                 {
                     merge_axes = merge_axes.end..merge_axes.end + 1;
-                    split_axes = split_axes.end..split_axes.end + 1;
+                    split_axes += 1;
                 }
             }
         }
@@ -905,19 +893,16 @@ fn reshape_pattern() {
     let r = get_reshape_pattern(&shape, &nshape, &[]);
     debug_assert_eq!(
         r,
-        Some((
-            0,
-            vec![(0..2, 0..1), (2..4, 1..2), (5..6, 3..5), (6..8, 5..7)]
-        ))
+        Some((0, vec![(0..2, 1), (2..4, 1), (5..6, 2), (6..8, 2)]))
     );
     let shape = [2, 2, 1, 2, 2];
     let nshape = [2, 2, 1, 2, 2, 1];
     let r = get_reshape_pattern(&shape, &nshape, &[]);
-    debug_assert_eq!(r, Some((0, vec![(4..5, 4..6)])));
+    debug_assert_eq!(r, Some((0, vec![(4..5, 2)])));
     let shape = [1, 3, 4, 5];
     let nshape = [3, 20];
     let r = get_reshape_pattern(&shape, &nshape, &[]);
-    debug_assert_eq!(r, Some((0, vec![(0..2, 0..1), (2..4, 1..2)])));
+    debug_assert_eq!(r, Some((0, vec![(0..2, 1), (2..4, 1)])));
 }
 
 /// Convert graph into kernels and schedule them to devices.
@@ -949,8 +934,6 @@ pub fn kernelize(
     to_eval: &Set<TensorId>,
     memory_pools: &[Pool],
     realized_nodes: &Set<TensorId>,
-    #[allow(unused)]
-    debug: DebugMask,
 ) -> Vec<Kernel> {
     // Unary and binary ops do not require duplication of kernels
     // Kernels represented by ops
@@ -1353,32 +1336,23 @@ pub fn kernelize(
                         let n = kernels[kidx].max_id + 1;
 
                         let mut i = 0;
-                        while matches!(ops[i], Op::Loop { .. })
-                            && ops[i] == kernels[kidx].ops[i]
-                        {
+                        while matches!(ops[i], Op::Loop { .. }) && ops[i] == kernels[kidx].ops[i] {
                             i += 1;
                         }
                         for op in ops.into_iter().skip(i) {
                             let new_op = match op {
-                                Op::Loop { axis, len } => Op::Loop { axis, len },
+                                Op::Loop { len } => Op::Loop { len },
                                 Op::EndLoop => Op::EndLoop,
                                 Op::Const { z, value, ref view } => {
                                     Op::Const { z: z + n, value, view: view.clone() }
                                 }
-                                Op::Load { z, x, view: ref xview, dtype: xdtype } => {
-                                    Op::Load {
-                                        z: z + n,
-                                        x: x + n,
-                                        view: xview.clone(),
-                                        dtype: xdtype,
-                                    }
-                                }
-                                Op::Store {
-                                    z,
-                                    view: ref zview,
-                                    dtype: zdtype,
-                                    x,
-                                } => Op::Store {
+                                Op::Load { z, x, view: ref xview, dtype: xdtype } => Op::Load {
+                                    z: z + n,
+                                    x: x + n,
+                                    view: xview.clone(),
+                                    dtype: xdtype,
+                                },
+                                Op::Store { z, view: ref zview, dtype: zdtype, x } => Op::Store {
                                     z: z + n,
                                     view: zview.clone(),
                                     dtype: zdtype,
@@ -1551,12 +1525,7 @@ fn store(
     //debug_assert!(zview.numel() < 1024 * 1024 * 1024 * 1024, "Too big store.");
     kernels[kid].max_id += 1;
     let z = kernels[kid].max_id;
-    let store_op = Op::Store {
-        z,
-        view: zview,
-        dtype: nid_dtype,
-        x,
-    };
+    let store_op = Op::Store { z, view: zview, dtype: nid_dtype, x };
     kernels[kid].ops.push(store_op);
     kernels[kid].tensors.insert(z, nid);
 }
