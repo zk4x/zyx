@@ -70,7 +70,6 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
     for op in kernel_ops {
         match op {
             &Op::Loop { len, .. } => ops.push(IROp::Loop { len }),
-            Op::EndLoop => ops.push(IROp::EndLoop),
             &Op::Const { z, value, ref view } => {
                 t_map.insert(z, RId::from_usize(ops.len()));
                 ops.push(IROp::Const(value));
@@ -94,6 +93,9 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
                 todo!()
             }
             Op::Accumulator { z, rop, dtype } => {
+                todo!()
+            }
+            Op::AccAssign { rop, num_loops } => {
                 todo!()
             }
             Op::Cast { z, x, dtype } => {

@@ -61,7 +61,8 @@ pub enum Op {
         len: Dim,
     },
     // End the latest loop
-    EndLoop, // TODO remove
+    //EndLoop, // TODO remove
+    AccAssign { rop: ROp, num_loops: u32 },
     Const {
         z: TId, // TODO remove
         value: Constant,
@@ -161,8 +162,8 @@ impl Kernel {
                         res.push(len);
                     }
                 }
-                Op::EndLoop => {
-                    num_endloops += 1;
+                Op::AccAssign { num_loops, .. } => {
+                    num_endloops += num_loops;
                 }
                 _ => {}
             }
@@ -242,7 +243,7 @@ impl Kernel {
                 }
             }
 
-            // TODO write code for inserting endloops
+            // TODO write code for incrementing accassign num_loops
 
             for op in &mut self.ops {
                 match op {
@@ -253,7 +254,7 @@ impl Kernel {
                     }
                     Op::Accumulator { .. }
                     | Op::Loop { .. }
-                    | Op::EndLoop
+                    | Op::AccAssign { .. }
                     | Op::Cast { .. }
                     | Op::Unary { .. }
                     | Op::Binary { .. } => {}
@@ -369,7 +370,7 @@ impl Kernel {
                 }
                 Op::Accumulator { .. }
                 | Op::Loop { .. }
-                | Op::EndLoop
+                | Op::AccAssign { .. }
                 | Op::Cast { .. }
                 | Op::Unary { .. }
                 | Op::Binary { .. } => {}
@@ -384,8 +385,7 @@ impl Kernel {
         );
     }
 
-    #[allow(unused)]
-    pub(super) fn split_loop(&mut self, op_id: usize, dimensions: &[usize]) {
+    /*pub(super) fn split_loop(&mut self, op_id: usize, dimensions: &[usize]) {
         //self.debug();
         //println!("Splitting {op_id} into {dimensions:?}");
         // First split loop at op_id
@@ -425,7 +425,7 @@ impl Kernel {
             }
         }
         //self.debug();
-    }
+    }*/
 
     pub fn debug(&self) {
         println!(
@@ -445,9 +445,11 @@ impl Kernel {
                         indent += "  ";
                     }
                 }
-                Op::EndLoop => {
-                    indent.pop();
-                    indent.pop();
+                &Op::AccAssign { num_loops, .. } => {
+                    for _ in 0..num_loops {
+                        indent.pop();
+                        indent.pop();
+                    }
                     println!("{indent}{vop}");
                 }
                 _ => {
@@ -517,7 +519,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::EndLoop => axis += 1,
+                Op::AccAssign { num_loops, .. } => axis += *num_loops as usize,
                 Op::Const { view, .. } | Op::Load { view, .. } => {
                     for a in expand_axes.difference(&done_expanding) {
                         view.expand(*a, shape[*a]);
@@ -561,8 +563,8 @@ impl Kernel {
                     };
                     view.permute(&permute_axes);
                 }
-                Op::EndLoop => {
-                    skip_loops += 1;
+                Op::AccAssign { num_loops, .. } => {
+                    skip_loops += *num_loops as usize;
                 }
                 _ => {}
             }
@@ -580,21 +582,17 @@ impl Kernel {
     }
 
     pub(super) fn pad(&mut self, padding: &[(isize, isize)]) {
-        for op in self.ops.iter_mut().rev() {
+        todo!();
+        /*for op in self.ops.iter_mut().rev() {
             match op {
                 Op::Loop { len } => todo!(),
-                Op::EndLoop => todo!(),
+                Op::AccAssign { rop, num_loops } => todo!(),
                 Op::Const { view, .. } |
                 Op::Load { view, .. } |
                 Op::Store { view, .. } => todo!(),
                 _ => {}
             }
         }
-
-
-
-
-
 
 
         //kernel.debug();
@@ -628,7 +626,7 @@ impl Kernel {
                 }
                 _ => {}
             }
-        }
+        }*/
     }
 
     pub(super) fn reduce(
@@ -640,7 +638,8 @@ impl Kernel {
         dtype: DType,
         rop: ROp,
     ) {
-        let permute_axes: Vec<usize> =
+        todo!();
+        /*let permute_axes: Vec<usize> =
             (0..shape.len()).filter(|a| !axes.contains(a)).chain(axes.iter().copied()).collect();
         //println!("Permute axes in reduce: {permute_axes:?}");
         self.permute(&permute_axes);
@@ -684,14 +683,14 @@ impl Kernel {
             self.insert_loop(0, 0);
         }
         self.outputs.clear();
-        self.outputs.insert(nid, self.max_id);
+        self.outputs.insert(nid, self.max_id);*/
     }
 
     /// Inserts loop at `op_id`, giving it axis id and dimension 1.
     /// All loops and views axis equal or greater then axis are increased by 1
     /// Does not change reduce op's `num_axes`
     /// This function also does not change kernel's shape!
-    pub(super) fn insert_loop(&mut self, op_id: usize, naxis: Axis) {
+    /*pub(super) fn insert_loop(&mut self, op_id: usize, naxis: Axis) {
         let mut axis: u32 = 0;
         for op in &mut self.ops {
             match op {
@@ -711,7 +710,7 @@ impl Kernel {
             }
         }
         self.ops.insert(op_id, Op::Loop { len: 1 });
-    }
+    }*/
 
     pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
         // TODO This does not yet account for multiple loads from the same buffer.
@@ -735,8 +734,10 @@ impl Kernel {
                     //mem_write += shape.iter().product::<usize>() as u128 * zdtype.byte_size();
                     mem_write += zview.original_numel() as u128 * u128::from(zdtype.byte_size());
                 }
-                Op::EndLoop => {
-                    shape.pop();
+                Op::AccAssign { num_loops, .. } => {
+                    for _ in 0..*num_loops {
+                        shape.pop();
+                    }
                 }
                 Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
                     flop += shape.iter().product::<Dim>() as u128;
@@ -773,7 +774,7 @@ impl std::fmt::Display for Op {
             Op::Accumulator { z, rop, dtype } => f.write_fmt(format_args!(
                 "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, {dtype}",
             )),
-            Op::EndLoop => f.write_fmt(format_args!("{C_BLUE}EndLoop{C_RESET} ")),
+            Op::AccAssign { rop, num_loops } => f.write_fmt(format_args!("{C_BLUE}AccAssign{C_RESET} {rop:?}, {num_loops}")),
             Op::Cast { z, x, dtype } => {
                 let mut len = format!("C-{dtype}").len();
                 if len > 5 {
@@ -1342,7 +1343,7 @@ pub fn kernelize(
                         for op in ops.into_iter().skip(i) {
                             let new_op = match op {
                                 Op::Loop { len } => Op::Loop { len },
-                                Op::EndLoop => Op::EndLoop,
+                                Op::AccAssign { rop, num_loops } => Op::AccAssign { rop, num_loops },
                                 Op::Const { z, value, ref view } => {
                                     Op::Const { z: z + n, value, view: view.clone() }
                                 }
@@ -1424,7 +1425,7 @@ pub fn kernelize(
 
         debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
 
-        #[cfg(debug_assertions)]
+        /*#[cfg(debug_assertions)]
         {
             if kernels[kid].ops.iter().filter(|op| matches!(op, Op::Loop { .. })).count()
                 <= kernels[kid].ops.iter().filter(|op| matches!(op, Op::EndLoop)).count()
@@ -1441,7 +1442,7 @@ pub fn kernelize(
                     panic!();
                 }
             }
-        }
+        }*/
 
         if to_eval.contains(&nid) {
             let nid_shape = graph.shape(nid);
