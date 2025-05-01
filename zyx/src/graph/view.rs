@@ -3,6 +3,7 @@
 use crate::shape::{Axis, Dim};
 use std::{fmt::Display, ops::Range};
 
+/// .0[0] is original shape, further shapes are additional reshapes
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct View(Vec<Vec<RDim>>); // TODO switch to Box<[]> instead of Vec and perhaps immutable View?
 
@@ -72,9 +73,9 @@ impl View {
         res
     }
 
-    /*pub(crate) fn numel(&self) -> usize {
+    pub(crate) fn numel(&self) -> usize {
         self.0.last().map_or(1, |inner| inner.iter().map(|dim| dim.d).product())
-    }*/
+    }
 
     /*#[cfg(debug_assertions)]
     pub(crate) fn is_contiguous(&self) -> bool {

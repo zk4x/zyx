@@ -351,7 +351,7 @@ impl Runtime {
         )?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.pools[mpid].buffer_map.insert(id, buffer_id);
-        self.pools[mpid].events.insert(BTreeSet::from([buffer_id]), event);
+        self.pools[mpid].events.insert([buffer_id].into(), event);
         Ok(id)
     }
 

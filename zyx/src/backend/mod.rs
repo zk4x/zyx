@@ -309,7 +309,8 @@ impl Device {
         }
     }
 
-    /// How much compute is available on the device, this should be multiplied by (1 - `device_usage`),
+    /// How much compute is available on the device,
+    /// Internally this should be adjusted for current `device_usage`,
     /// so that we spread the laod across all available devices appropriatelly.
     pub const fn free_compute(&self) -> u128 {
         match self {

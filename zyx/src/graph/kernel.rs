@@ -20,6 +20,8 @@ use std::{
 
 use super::{BOp, ROp, UOp, view::View};
 
+pub type TId = usize;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KernelId(u32);
 
@@ -39,68 +41,30 @@ impl SlabId for KernelId {
     }
 }
 
-// Tensor id in a kernel
-pub type TId = u16;
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Kernel {
+    /// Ops on tensors
     pub ops: Vec<Op>,
-    // Mapind from tensors ids to load and store ids
-    pub tensors: BTreeMap<TId, TensorId>,
-    // Outputs of the kernel that are unused (not stored yet)
+    pub loads: BTreeMap<TId, TensorId>,
+    pub stores: BTreeMap<TensorId, TId>,
+    /// Outputs of the kernel that are unused (not stored yet)
     pub outputs: BTreeMap<TensorId, TId>,
-    pub max_id: TId,
-    // Which kernels must be evaluated before this kernel (only direct predecessors)
+    /// Which kernels must be evaluated before this kernel (only direct predecessors)
     pub depends_on: BTreeSet<KernelId>,
 }
 
 // TODO this needs to be smaller, since it's stored on the disk
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
-    Loop {
-        len: Dim,
-    },
-    // End the latest loop
-    //EndLoop, // TODO remove
+    Const { value: Constant, view: View },
+    Load { view: View, dtype: DType },
+    Store { view: View, dtype: DType },
+    Cast { x: TId, dtype: DType },
+    Unary { x: TId, uop: UOp },
+    Binary { x: TId, y: TId, bop: BOp },
+    Loop { len: Dim },
     AccAssign { rop: ROp, num_loops: u32 },
-    Const {
-        z: TId, // TODO remove
-        value: Constant,
-        view: View,
-    },
-    Load {
-        z: TId, // TODO remove
-        x: TId, // TODO remove
-        view: View,
-        dtype: DType,
-    },
-    Store {
-        z: TId, // TODO remove
-        x: TId, // TODO remove
-        view: View,
-        dtype: DType,
-    },
-    Accumulator {
-        z: TId, // TODO remove
-        rop: ROp,
-        dtype: DType,
-    },
-    Cast {
-        z: TId, // TODO remove
-        x: TId,
-        dtype: DType,
-    },
-    Unary {
-        z: TId, // TODO remove
-        x: TId,
-        uop: UOp,
-    },
-    Binary {
-        z: TId, // TODO remove
-        x: TId,
-        y: TId,
-        bop: BOp,
-    },
+    Accumulator { rop: ROp, dtype: DType },
 }
 
 /*#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -116,11 +80,11 @@ impl Kernel {
     pub(super) fn constant(nid: TensorId, value: Constant) -> Kernel {
         let mut ops = Vec::with_capacity(50);
         ops.push(Op::Loop { len: 1 });
-        ops.push(Op::Const { z: 0, value, view: View::contiguous(&[1]) });
+        ops.push(Op::Const { value, view: View::contiguous(&[1]) });
         Kernel {
-            max_id: 0,
             ops,
-            tensors: BTreeMap::new(),
+            loads: BTreeMap::new(),
+            stores: BTreeMap::new(),
             outputs: BTreeMap::from([(nid, 0)]),
             depends_on: BTreeSet::new(),
         }
@@ -136,12 +100,12 @@ impl Kernel {
         for len in shape.iter().copied() {
             ops.push(Op::Loop { len });
         }
-        ops.push(Op::Load { z: 0, x: 0, view: View::contiguous(shape), dtype });
+        ops.push(Op::Load { view: View::contiguous(shape), dtype });
         Kernel {
-            max_id: 0,
             ops,
+            loads: BTreeMap::from([(0, nid)]),
+            stores: BTreeMap::from([(nid, 0)]),
             outputs: BTreeMap::from([(nid, 0)]),
-            tensors: BTreeMap::from([(0, nid)]),
             depends_on,
         }
     }
@@ -191,7 +155,8 @@ impl Kernel {
     }
 
     pub(super) fn has_stores(&self) -> bool {
-        self.ops.iter().any(|op| matches!(op, Op::Store { .. }))
+        //self.ops.iter().any(|op| matches!(op, Op::Store { .. }))
+        self.stores.is_empty()
     }
 
     /*#[cfg(debug_assertions)]
@@ -429,10 +394,11 @@ impl Kernel {
 
     pub fn debug(&self) {
         println!(
-            "Kernel shape: {:?}, outputs: {:?}, tensors: {:?}, depends on: {:?}",
+            "Kernel shape: {:?}, outputs: {:?}, loads: {:?}, stores: {:?}, depends on: {:?}",
             self.shape(),
             self.outputs,
-            self.tensors,
+            self.loads,
+            self.stores,
             self.depends_on,
         );
         let mut first_loops = true;
@@ -759,44 +725,46 @@ impl std::fmt::Display for Op {
         //const C_YELLOW: &str = "\x1B[33m";
         const C_RESET: &str = "\x1B[39m";
         match self {
-            Op::Const { z, value, view } => f.write_fmt(format_args!(
-                "{C_WHITE}Const{C_RESET}       {z} <- value: {value}, {view}"
+            Op::Const { value, view } => f.write_fmt(format_args!(
+                "{C_WHITE}Const{C_RESET}       value: {value}, {view}"
             )),
-            Op::Load { z, x, view: xview, dtype: _ } => f.write_fmt(format_args!(
-                "{C_MAGENTA}Load{C_RESET}        {z} <- {x}, {xview}"
+            Op::Load { view: xview, dtype: _ } => f.write_fmt(format_args!(
+                "{C_MAGENTA}Load{C_RESET}        {xview}"
             )),
-            Op::Store { z, view: zview, dtype: _, x } => f.write_fmt(format_args!(
-                "{C_RED}Store{C_RESET}        {z} <- {x}, {zview}"
+            Op::Store { view, dtype: _ } => f.write_fmt(format_args!(
+                "{C_RED}Store{C_RESET}        {view}"
             )),
-            Op::Loop { len } => f.write_fmt(format_args!(
-                "{C_GREEN}Loop{C_RESET}        len: {len}"
+            Op::Loop { len } => {
+                f.write_fmt(format_args!("{C_GREEN}Loop{C_RESET}        len: {len}"))
+            }
+            Op::Accumulator { rop, dtype } => f.write_fmt(format_args!(
+                "{C_BLUE}Accum{C_RESET}.{rop:?}   {dtype}",
             )),
-            Op::Accumulator { z, rop, dtype } => f.write_fmt(format_args!(
-                "{C_BLUE}Accum{C_RESET}.{rop:?}   {z}, {dtype}",
+            Op::AccAssign { rop, num_loops } => f.write_fmt(format_args!(
+                "{C_BLUE}AccAssign{C_RESET} {rop:?}, {num_loops}"
             )),
-            Op::AccAssign { rop, num_loops } => f.write_fmt(format_args!("{C_BLUE}AccAssign{C_RESET} {rop:?}, {num_loops}")),
-            Op::Cast { z, x, dtype } => {
+            Op::Cast { x, dtype } => {
                 let mut len = format!("C-{dtype}").len();
                 if len > 5 {
                     len = 5;
                 }
                 f.write_fmt(format_args!(
-                    "{C_WHITE}Unary{C_RESET}.C-{dtype}{} {z} <- {x}",
+                    "{C_WHITE}Unary{C_RESET}.C-{dtype}{} {x}",
                     " ".repeat(5 - len)
                 ))
             }
-            Op::Unary { z, x, uop } => {
+            Op::Unary { x, uop } => {
                 let mut len = format!("{uop:?}").len();
                 if len > 5 {
                     len = 5;
                 }
                 f.write_fmt(format_args!(
-                    "{C_WHITE}Unary{C_RESET}.{uop:?}{} {z} <- {x}",
+                    "{C_WHITE}Unary{C_RESET}.{uop:?}{} {x}",
                     " ".repeat(5 - len)
                 ))
             }
-            Op::Binary { z, x, y, bop } => f.write_fmt(format_args!(
-                "{C_WHITE}Binary{C_RESET}.{bop:?}  {z} <- {x}, {y}"
+            Op::Binary { x, y, bop } => f.write_fmt(format_args!(
+                "{C_WHITE}Binary{C_RESET}.{bop:?}  {x}, {y}"
             )),
         }
     }
@@ -1239,26 +1207,24 @@ pub fn kernelize(
                     //let _timer = Timer::new("unary");
                     let (xt, kid) = get_kernel_max(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
-                    kernels[kid].max_id += 1;
-                    let z = kernels[kid].max_id;
-                    kernels[kid].ops.push(Op::Cast { z, x: xt, dtype });
+                    let z = kernels[kid].ops.len();
+                    kernels[kid].outputs.insert(nid, z);
+                    kernels[kid].ops.push(Op::Cast { x: xt, dtype });
                     if rcs[&x] < 2 {
                         kernels[kid].outputs.remove(&x);
                     }
-                    kernels[kid].outputs.insert(nid, z);
                     kid
                 }
                 Node::Unary { x, uop } => {
                     //let _timer = Timer::new("unary");
                     let (xt, kid) = get_kernel_max(x, &kernels);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(x));
-                    kernels[kid].max_id += 1;
-                    let z = kernels[kid].max_id;
-                    kernels[kid].ops.push(Op::Unary { z, x: xt, uop });
+                    let z = kernels[kid].ops.len();
+                    kernels[kid].outputs.insert(nid, z);
+                    kernels[kid].ops.push(Op::Unary { x: xt, uop });
                     if rcs[&x] < 2 {
                         kernels[kid].outputs.remove(&x);
                     }
-                    kernels[kid].outputs.insert(nid, z);
                     kid
                 }
                 Node::Binary { x, y, bop } => {
@@ -1275,10 +1241,9 @@ pub fn kernelize(
 
                     #[allow(clippy::branches_sharing_code)]
                     let kid = if kidx == kidy {
-                        kernels[kidx].max_id += 1;
-                        let z = kernels[kidx].max_id;
-                        kernels[kidx].ops.push(Op::Binary { z, x: xt, y: yt, bop });
+                        let z = kernels[kidx].ops.len();
                         kernels[kidx].outputs.insert(nid, z);
+                        kernels[kidx].ops.push(Op::Binary { x: xt, y: yt, bop });
                         kidx
                     } else {
                         // can't remove kidy if any kernel depends on kidy
@@ -1330,11 +1295,11 @@ pub fn kernelize(
                             debug_assert_ne!(kidx, old_kidx);
                         }
 
-                        let Kernel { ops, tensors, outputs, max_id, depends_on } =
+                        let Kernel { ops, loads, stores, outputs, depends_on } =
                             unsafe { kernels.remove_and_return(kidy) };
 
                         // we delete kidy (could by also kidx) and put everything in kidx
-                        let n = kernels[kidx].max_id + 1;
+                        let n = kernels[kidx].ops.len();
 
                         let mut i = 0;
                         while matches!(ops[i], Op::Loop { .. }) && ops[i] == kernels[kidx].ops[i] {
@@ -1343,42 +1308,42 @@ pub fn kernelize(
                         for op in ops.into_iter().skip(i) {
                             let new_op = match op {
                                 Op::Loop { len } => Op::Loop { len },
-                                Op::AccAssign { rop, num_loops } => Op::AccAssign { rop, num_loops },
-                                Op::Const { z, value, ref view } => {
-                                    Op::Const { z: z + n, value, view: view.clone() }
+                                Op::AccAssign { rop, num_loops } => {
+                                    Op::AccAssign { rop, num_loops }
                                 }
-                                Op::Load { z, x, view: ref xview, dtype: xdtype } => Op::Load {
-                                    z: z + n,
-                                    x: x + n,
-                                    view: xview.clone(),
-                                    dtype: xdtype,
-                                },
-                                Op::Store { z, view: ref zview, dtype: zdtype, x } => Op::Store {
-                                    z: z + n,
-                                    view: zview.clone(),
-                                    dtype: zdtype,
-                                    x: x + n,
-                                },
-                                Op::Accumulator { z, rop, dtype } => {
-                                    Op::Accumulator { z: z + n, rop, dtype }
+                                Op::Const { value, ref view } => {
+                                    Op::Const { value, view: view.clone() }
                                 }
-                                Op::Cast { z, x, dtype } => Op::Cast { z: z + n, x: x + n, dtype },
-                                Op::Unary { z, x, uop } => Op::Unary { z: z + n, x: x + n, uop },
-                                Op::Binary { z, x, y, bop } => {
-                                    Op::Binary { z: z + n, x: x + n, y: y + n, bop }
+                                Op::Load { ref view, dtype } => Op::Load {
+                                    view: view.clone(),
+                                    dtype,
+                                },
+                                Op::Store { ref view, dtype } => Op::Store {
+                                    view: view.clone(),
+                                    dtype,
+                                },
+                                Op::Accumulator { rop, dtype } => {
+                                    Op::Accumulator { rop, dtype }
+                                }
+                                Op::Cast { x, dtype } => Op::Cast { x: x + n, dtype },
+                                Op::Unary { x, uop } => Op::Unary { x: x + n, uop },
+                                Op::Binary { x, y, bop } => {
+                                    Op::Binary { x: x + n, y: y + n, bop }
                                 }
                             };
                             kernels[kidx].ops.push(new_op);
                         }
-                        kernels[kidx].max_id += max_id + 2;
                         kernels[kidx]
-                            .tensors
-                            .extend(tensors.into_iter().map(|(tid, t)| (tid + n, t)));
+                            .loads
+                            .extend(loads.into_iter().map(|(tid, t)| (tid + n, t)));
+                        kernels[kidx]
+                            .stores
+                            .extend(stores.into_iter().map(|(t, tid)| (t, tid + n)));
                         kernels[kidx].outputs.extend(outputs.iter().map(|(t, tid)| (*t, tid + n)));
                         kernels[kidx].depends_on.extend(depends_on);
-                        let z = kernels[kidx].max_id;
-                        kernels[kidx].ops.push(Op::Binary { z, x: xt, y: yt + n, bop });
+                        let z = kernels[kidx].ops.len();
                         kernels[kidx].outputs.insert(nid, z);
+                        kernels[kidx].ops.push(Op::Binary { x: xt, y: yt + n, bop });
                         kidx
                     };
 
@@ -1444,15 +1409,10 @@ pub fn kernelize(
             }
         }*/
 
+        // If this tensor should be evaluated and it is not in stores, then store it
         if to_eval.contains(&nid) {
-            let nid_shape = graph.shape(nid);
-            let nid_dtype = graph.dtype(nid);
-            if let Some(&x) = kernels[kid].tensors.get(&0) {
-                if x != nid {
-                    store(&mut kernels, kid, nid, nid_shape, nid_dtype);
-                }
-            } else {
-                store(&mut kernels, kid, nid, nid_shape, nid_dtype);
+            if !kernels[kid].loads.values().any(|&x| x == nid) {
+                store(&mut kernels, kid, nid, graph.shape(nid), graph.dtype(nid));
             }
         }
     }
@@ -1497,38 +1457,23 @@ fn store(
     nid_dtype: DType,
 ) {
     //let _timer = Timer::new("scheduler store");
-    if kernels[kid].tensors.values().any(|id| *id == nid) {
-        // This check can fail in binary op depends_on stores
-        /*#[cfg(debug_assertions)]
-        {
-            for op in kernels[kid].ops.iter() {
-                if let Op::Load { x, .. } = op {
-                    if kernels[kid].tensors[x] == nid {
-                        kernels[kid].debug();
-                        panic!("Trying to store tensor that is used as a load in a kernel.");
-                    }
-                }
-            }
-        }*/
+    if kernels[kid].stores.contains_key(&nid) || kernels[kid].loads.values().any(|id| *id == nid) {
         return;
     }
 
     // Add store op to kernel
-    let x = kernels[kid].outputs[&nid];
     let zview = View::contiguous(nid_shape);
 
     #[cfg(debug_assertions)]
-    if let Some(&Op::Store { z: nz, view: ref nzview, .. }) = kernels[kid].ops.last() {
-        if x == nz && &zview == nzview {
+    if let Some(&Op::Store { view: ref nzview, .. }) = kernels[kid].ops.last() {
+        if &zview == nzview {
             unreachable!();
         }
     }
-    //debug_assert!(zview.numel() < 1024 * 1024 * 1024 * 1024, "Too big store.");
-    kernels[kid].max_id += 1;
-    let z = kernels[kid].max_id;
-    let store_op = Op::Store { z, view: zview, dtype: nid_dtype, x };
-    kernels[kid].ops.push(store_op);
-    kernels[kid].tensors.insert(z, nid);
+    debug_assert!(zview.numel() < 1024 * 1024 * 1024 * 1024, "Too big store.");
+    let z = kernels[kid].ops.len();
+    kernels[kid].stores.insert(nid, z);
+    kernels[kid].ops.push(Op::Store { view: zview, dtype: nid_dtype });
 }
 
 // recursive should be faster, since it does not allocate, but in fact the dynamic programming

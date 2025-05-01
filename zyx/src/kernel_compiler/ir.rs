@@ -66,16 +66,18 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
     let mut t_map: Map<TId, RId> = Map::with_hasher(BuildHasherDefault::new());
 
     // set of global vairables for deduplication
-    let mut global_vars_map = Map::with_hasher(BuildHasherDefault::new());
+    //let mut global_vars_map = Map::with_hasher(BuildHasherDefault::new());
     for op in kernel_ops {
         match op {
             &Op::Loop { len, .. } => ops.push(IROp::Loop { len }),
-            &Op::Const { z, value, ref view } => {
-                t_map.insert(z, RId::from_usize(ops.len()));
-                ops.push(IROp::Const(value));
+            &Op::Const { value, ref view } => {
+                //t_map.insert(z, RId::from_usize(ops.len()));
+                //ops.push(IROp::Const(value));
+                todo!();
             }
-            &Op::Load { z, x, view: ref xview, dtype: xdtype } => {
-                let address = if let Some(&address) = global_vars_map.get(&x) {
+            &Op::Load { view: ref xview, dtype: xdtype } => {
+                todo!();
+                /*let address = if let Some(&address) = global_vars_map.get(&x) {
                     address
                 } else {
                     let address = global_variables.len() as u16;
@@ -83,28 +85,28 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
                     global_vars_map.insert(x, address);
                     address
                 };
-                t_map.insert(z, RId::from_usize(ops.len()));
+                t_map.insert(z, RId::from_usize(ops.len()));*/
 
                 //ops.push(IROp::Load { address, offset: todo!() });
                 //let zreg = ir_for_indexed_load(ops, address);
                 todo!()
             }
-            Op::Store { z, view: zview, dtype: zdtype, x } => {
+            Op::Store { view, dtype } => {
                 todo!()
             }
-            Op::Accumulator { z, rop, dtype } => {
+            Op::Accumulator { rop, dtype } => {
                 todo!()
             }
             Op::AccAssign { rop, num_loops } => {
                 todo!()
             }
-            Op::Cast { z, x, dtype } => {
+            Op::Cast { x, dtype } => {
                 todo!()
             }
-            Op::Unary { z, x, uop } => {
+            Op::Unary { x, uop } => {
                 todo!()
             }
-            Op::Binary { z, x, y, bop } => {
+            Op::Binary { x, y, bop } => {
                 todo!()
             }
         }
