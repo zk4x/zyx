@@ -1,7 +1,13 @@
 use std::hash::BuildHasherDefault;
 
 use crate::{
-    dtype::Constant, graph::{kernel::{Op, TId}, BOp, UOp}, shape::Dim, DType, Map
+    DType, Map,
+    dtype::Constant,
+    graph::{
+        BOp, UOp,
+        kernel::{Op, TId},
+    },
+    shape::Dim,
 };
 
 use super::optimizer::Optimization;
@@ -91,7 +97,7 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
                 //let zreg = ir_for_indexed_load(ops, address);
                 todo!()
             }
-            Op::Store { view, dtype } => {
+            Op::Store { x, view, dtype } => {
                 todo!()
             }
             Op::Accumulator { rop, dtype } => {

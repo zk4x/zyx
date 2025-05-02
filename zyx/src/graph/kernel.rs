@@ -59,7 +59,7 @@ pub struct Kernel {
 pub enum Op {
     Const { value: Constant, view: View },
     Load { view: View, dtype: DType },
-    Store { view: View, dtype: DType },
+    Store { x: TId, view: View, dtype: DType },
     Cast { x: TId, dtype: DType },
     Unary { x: TId, uop: UOp },
     Binary { x: TId, y: TId, bop: BOp },
@@ -101,12 +101,13 @@ impl Kernel {
         for len in shape.iter().copied() {
             ops.push(Op::Loop { len });
         }
+        let x = ops.len();
         ops.push(Op::Load { view: View::contiguous(shape), dtype });
         Kernel {
             ops,
-            loads: BTreeMap::from([(0, nid)]),
-            stores: BTreeMap::from([(nid, 0)]),
-            outputs: BTreeMap::from([(nid, 0)]),
+            loads: BTreeMap::from([(x, nid)]),
+            stores: BTreeMap::new(),
+            outputs: BTreeMap::from([(nid, x)]),
             depends_on,
         }
     }
@@ -404,10 +405,10 @@ impl Kernel {
         );
         let mut first_loops = true;
         let mut indent = String::new();
-        for vop in &self.ops {
+        for (i, vop) in self.ops.iter().enumerate() {
             match vop {
                 Op::Loop { .. } => {
-                    println!("{indent}{vop}");
+                    println!("{indent}{i} {vop}");
                     if !first_loops {
                         indent += "  ";
                     }
@@ -417,10 +418,10 @@ impl Kernel {
                         indent.pop();
                         indent.pop();
                     }
-                    println!("{indent}{vop}");
+                    println!("{indent}{i} {vop}");
                 }
                 _ => {
-                    println!("{indent}{vop}");
+                    println!("{indent}{i} {vop}");
                     first_loops = false;
                 }
             }
@@ -729,12 +730,12 @@ impl std::fmt::Display for Op {
             Op::Const { value, view } => f.write_fmt(format_args!(
                 "{C_WHITE}Const{C_RESET}       value: {value}, {view}"
             )),
-            Op::Load { view: xview, dtype: _ } => {
-                f.write_fmt(format_args!("{C_MAGENTA}Load{C_RESET}        {xview}"))
-            }
-            Op::Store { view, dtype: _ } => {
-                f.write_fmt(format_args!("{C_RED}Store{C_RESET}        {view}"))
-            }
+            Op::Load { view, dtype } => f.write_fmt(format_args!(
+                "{C_MAGENTA}Load{C_RESET}        {dtype} {view}"
+            )),
+            Op::Store { x, view, dtype } => f.write_fmt(format_args!(
+                "{C_RED}Store{C_RESET}       {x}, {dtype} {view}"
+            )),
             Op::Loop { len } => {
                 f.write_fmt(format_args!("{C_GREEN}Loop{C_RESET}        len: {len}"))
             }
@@ -1352,8 +1353,8 @@ pub fn kernelize(
                                 Op::Load { ref view, dtype } => {
                                     Op::Load { view: view.clone(), dtype }
                                 }
-                                Op::Store { ref view, dtype } => {
-                                    Op::Store { view: view.clone(), dtype }
+                                Op::Store { x, ref view, dtype } => {
+                                    Op::Store { x, view: view.clone(), dtype }
                                 }
                                 Op::Accumulator { rop, dtype } => Op::Accumulator { rop, dtype },
                                 Op::Cast { x, dtype } => Op::Cast { x: x + n, dtype },
@@ -1444,12 +1445,6 @@ pub fn kernelize(
         }
     }
 
-    for (_, kernel) in kernels.iter() {
-        for op in &kernel.ops {
-            println!("{op}");
-        }
-    }
-
     // Sort all kernels
     let mut sorted_kernels = Vec::new();
     let mut ids: Vec<KernelId> = kernels.ids().collect();
@@ -1471,7 +1466,6 @@ pub fn kernelize(
             }
         }
     }
-
     sorted_kernels
 }
 
@@ -1487,20 +1481,22 @@ fn store(
     if kernels[kid].stores.contains_key(&nid) || kernels[kid].loads.values().any(|id| *id == nid) {
         return;
     }
-
-    // Add store op to kernel
-    let zview = View::contiguous(nid_shape);
-
     #[cfg(debug_assertions)]
-    if let Some(&Op::Store { view: ref nzview, .. }) = kernels[kid].ops.last() {
-        if &zview == nzview {
-            unreachable!();
+    {
+        let view = View::contiguous(nid_shape);
+        if let Some(&Op::Store { view: ref nzview, .. }) = kernels[kid].ops.last() {
+            if &view == nzview {
+                unreachable!();
+            }
         }
+        debug_assert!(view.numel() < 1024 * 1024 * 1024 * 1024, "Too big store.");
     }
-    debug_assert!(zview.numel() < 1024 * 1024 * 1024 * 1024, "Too big store.");
+    // Add store op to kernel
+    let view = View::contiguous(nid_shape);
     let z = kernels[kid].ops.len();
     kernels[kid].stores.insert(nid, z);
-    kernels[kid].ops.push(Op::Store { view: zview, dtype: nid_dtype });
+    let x = kernels[kid].outputs[&nid];
+    kernels[kid].ops.push(Op::Store { x, view, dtype: nid_dtype });
 }
 
 // recursive should be faster, since it does not allocate, but in fact the dynamic programming
