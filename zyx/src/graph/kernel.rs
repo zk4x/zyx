@@ -13,6 +13,7 @@ use crate::{
     tensor::TensorId,
 };
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     hash::BuildHasherDefault,
     ops::Range,
@@ -156,7 +157,7 @@ impl Kernel {
 
     pub(super) fn has_stores(&self) -> bool {
         //self.ops.iter().any(|op| matches!(op, Op::Store { .. }))
-        self.stores.is_empty()
+        !self.stores.is_empty()
     }
 
     /*#[cfg(debug_assertions)]
@@ -728,18 +729,18 @@ impl std::fmt::Display for Op {
             Op::Const { value, view } => f.write_fmt(format_args!(
                 "{C_WHITE}Const{C_RESET}       value: {value}, {view}"
             )),
-            Op::Load { view: xview, dtype: _ } => f.write_fmt(format_args!(
-                "{C_MAGENTA}Load{C_RESET}        {xview}"
-            )),
-            Op::Store { view, dtype: _ } => f.write_fmt(format_args!(
-                "{C_RED}Store{C_RESET}        {view}"
-            )),
+            Op::Load { view: xview, dtype: _ } => {
+                f.write_fmt(format_args!("{C_MAGENTA}Load{C_RESET}        {xview}"))
+            }
+            Op::Store { view, dtype: _ } => {
+                f.write_fmt(format_args!("{C_RED}Store{C_RESET}        {view}"))
+            }
             Op::Loop { len } => {
                 f.write_fmt(format_args!("{C_GREEN}Loop{C_RESET}        len: {len}"))
             }
-            Op::Accumulator { rop, dtype } => f.write_fmt(format_args!(
-                "{C_BLUE}Accum{C_RESET}.{rop:?}   {dtype}",
-            )),
+            Op::Accumulator { rop, dtype } => {
+                f.write_fmt(format_args!("{C_BLUE}Accum{C_RESET}.{rop:?}   {dtype}",))
+            }
             Op::AccAssign { rop, num_loops } => f.write_fmt(format_args!(
                 "{C_BLUE}AccAssign{C_RESET} {rop:?}, {num_loops}"
             )),
@@ -763,9 +764,9 @@ impl std::fmt::Display for Op {
                     " ".repeat(5 - len)
                 ))
             }
-            Op::Binary { x, y, bop } => f.write_fmt(format_args!(
-                "{C_WHITE}Binary{C_RESET}.{bop:?}  {x}, {y}"
-            )),
+            Op::Binary { x, y, bop } => {
+                f.write_fmt(format_args!("{C_WHITE}Binary{C_RESET}.{bop:?}  {x}, {y}"))
+            }
         }
     }
 }
@@ -797,73 +798,107 @@ fn get_reshape_pattern(
     //       8, 3, 1, 2, 2, 2, 5
     let mut reshapes = Vec::new();
 
-    let mut split_axes = 0;
-    let mut merge_axes = 0..1;
-    'a: while merge_axes.end <= shape.len() && split_axes <= nshape.len() {
-        match shape[merge_axes.clone()]
-            .iter()
-            .product::<usize>()
-            .cmp(&nshape[merge_axes.start..split_axes.clone()].iter().product())
+    fn push_reshape(
+        unmergeable_axes: &[usize],
+        reshapes: &mut Vec<(Range<usize>, usize)>,
+        sb: usize,
+        si: usize,
+        ni: usize,
+        nb: usize,
+    ) -> bool {
+        let merge_axes = sb..si;
+        if unmergeable_axes.iter().any(|a| merge_axes.contains(a) && merge_axes.contains(&(a - 1)))
         {
-            std::cmp::Ordering::Less => {
-                merge_axes.end += 1;
+            false
+        } else {
+            reshapes.push((merge_axes, ni - nb));
+            true
+        }
+    }
+
+    let mut sb = 0;
+    let mut nb = 0;
+    let mut si = 1;
+    let mut ni = 1;
+    let mut sp = shape[0];
+    let mut np = nshape[0];
+    'a: loop {
+        /*println!(
+            "{:?}, {:?}, prod: {}, {}, si={si}, ni={ni}",
+            &shape[sb..si],
+            &nshape[nb..ni],
+            sp,
+            np
+        );*/
+        match sp.cmp(&np) {
+            Ordering::Less => {
+                sp *= shape[si];
+                si += 1;
             }
-            std::cmp::Ordering::Greater => {
-                split_axes += 1;
+            Ordering::Greater => {
+                np *= nshape[ni];
+                ni += 1;
             }
-            std::cmp::Ordering::Equal => {
-                if let Some(d) = shape.get(merge_axes.end) {
-                    if *d == 1 && split_axes == nshape.len() {
-                        merge_axes.end += 1;
+            Ordering::Equal => {
+                if si - sb > 1 || ni - nb > 1 {
+                    if si < shape.len() && shape[si] == 1 {
+                        si += 1;
                         continue 'a;
                     }
-                }
-                if let Some(d) = nshape.get(split_axes) {
-                    if *d == 1 && merge_axes.end == shape.len() {
-                        split_axes += 1;
+                    if ni < nshape.len() && nshape[ni] == 1 {
+                        ni += 1;
                         continue 'a;
                     }
-                }
-                if (merge_axes.len(), split_axes) != (1, 1) {
-                    // reshape
-                    // If merge range contains unmergeable axes, return None
-                    // Axes are not mergeable if there is some ops between those axes
-                    if unmergeable_axes
-                        .iter()
-                        .any(|a| merge_axes.contains(a) && merge_axes.contains(&(a - 1)))
-                    {
+                    if !push_reshape(&unmergeable_axes, &mut reshapes, sb, si, ni, nb) {
                         return None;
                     }
-                    reshapes.push((merge_axes.clone(), split_axes.clone()));
                 }
-                #[allow(clippy::range_plus_one)]
-                {
-                    merge_axes = merge_axes.end..merge_axes.end + 1;
-                    split_axes += 1;
+
+                if si >= shape.len() {
+                    break 'a;
                 }
+                if ni >= nshape.len() {
+                    break 'a;
+                }
+
+                sp = shape[si];
+                si += 1;
+                np = nshape[ni];
+                ni += 1;
+
+                sb = si - 1;
+                nb = ni - 1;
+            }
+        }
+    }
+    while si < shape.len() {
+        si += 1;
+    }
+    while ni < nshape.len() {
+        ni += 1;
+    }
+    if si - sb > 1 || ni - nb > 1 {
+        if let Some(x) = reshapes.last() {
+            if *x != (sb..si, ni - nb) {
+                if !push_reshape(&unmergeable_axes, &mut reshapes, sb, si, ni, nb) {
+                    return None;
+                }
+            }
+        } else {
+            if !push_reshape(&unmergeable_axes, &mut reshapes, sb, si, ni, nb) {
+                return None;
             }
         }
     }
     Some((0, reshapes))
 }
 
-/*fn shape_to_loops(shape: &[usize]) -> Vec<Op> {
-    let mut res = Vec::with_capacity(20);
-    for (axis, dimension) in shape.iter().copied().enumerate() {
-        res.push(Op::Loop { axis, len: dimension });
-    }
-    res
-}*/
-
 #[test]
 fn reshape_pattern() {
     let shape = [2, 4, 1, 3, 1, 4, 5, 2];
     let nshape = [8, 3, 1, 2, 2, 2, 5];
     let r = get_reshape_pattern(&shape, &nshape, &[]);
-    debug_assert_eq!(
-        r,
-        Some((0, vec![(0..2, 1), (2..4, 1), (5..6, 2), (6..8, 2)]))
-    );
+    debug_assert_eq!(r, Some((0, vec![(0..3, 1), (5..6, 2), (6..8, 2)])));
     let shape = [2, 2, 1, 2, 2];
     let nshape = [2, 2, 1, 2, 2, 1];
     let r = get_reshape_pattern(&shape, &nshape, &[]);
@@ -1314,28 +1349,20 @@ pub fn kernelize(
                                 Op::Const { value, ref view } => {
                                     Op::Const { value, view: view.clone() }
                                 }
-                                Op::Load { ref view, dtype } => Op::Load {
-                                    view: view.clone(),
-                                    dtype,
-                                },
-                                Op::Store { ref view, dtype } => Op::Store {
-                                    view: view.clone(),
-                                    dtype,
-                                },
-                                Op::Accumulator { rop, dtype } => {
-                                    Op::Accumulator { rop, dtype }
+                                Op::Load { ref view, dtype } => {
+                                    Op::Load { view: view.clone(), dtype }
                                 }
+                                Op::Store { ref view, dtype } => {
+                                    Op::Store { view: view.clone(), dtype }
+                                }
+                                Op::Accumulator { rop, dtype } => Op::Accumulator { rop, dtype },
                                 Op::Cast { x, dtype } => Op::Cast { x: x + n, dtype },
                                 Op::Unary { x, uop } => Op::Unary { x: x + n, uop },
-                                Op::Binary { x, y, bop } => {
-                                    Op::Binary { x: x + n, y: y + n, bop }
-                                }
+                                Op::Binary { x, y, bop } => Op::Binary { x: x + n, y: y + n, bop },
                             };
                             kernels[kidx].ops.push(new_op);
                         }
-                        kernels[kidx]
-                            .loads
-                            .extend(loads.into_iter().map(|(tid, t)| (tid + n, t)));
+                        kernels[kidx].loads.extend(loads.into_iter().map(|(tid, t)| (tid + n, t)));
                         kernels[kidx]
                             .stores
                             .extend(stores.into_iter().map(|(t, tid)| (t, tid + n)));
