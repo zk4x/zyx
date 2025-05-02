@@ -8,7 +8,7 @@ use crate::{
     dtype::Constant,
     graph::{Graph, Node},
     runtime::Pool,
-    shape::{Axis, Dim},
+    shape::Dim,
     slab::{Slab, SlabId},
     tensor::TensorId,
 };
@@ -26,16 +26,20 @@ pub type TId = usize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KernelId(u32);
 
+impl From<usize> for KernelId {
+    fn from(value: usize) -> Self {
+        KernelId(value as u32)
+    }
+}
+
+impl From<KernelId> for usize {
+    fn from(value: KernelId) -> Self {
+        value.0 as usize
+    }
+}
+
 impl SlabId for KernelId {
     const ZERO: Self = Self(0);
-
-    fn index(self) -> usize {
-        self.0 as usize
-    }
-
-    fn from_usize(id: usize) -> Self {
-        Self(u32::try_from(id).unwrap())
-    }
 
     fn inc(&mut self) {
         self.0 += 1;
@@ -64,8 +68,8 @@ pub enum Op {
     Unary { x: TId, uop: UOp },
     Binary { x: TId, y: TId, bop: BOp },
     Loop { len: Dim },
-    AccAssign { rop: ROp, num_loops: u32 },
     Accumulator { rop: ROp, dtype: DType },
+    AccAssign { rop: ROp, num_loops: u32 },
 }
 
 /*#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -981,7 +985,7 @@ pub fn kernelize(
                     graph.shape(nid),
                     rcs.get(&nid).copied().unwrap_or(0),
                     rcs2.get(&nid).copied().unwrap_or(0),
-                    kernels.len(),
+                    usize::from(kernels.len()),
                 );
             }
             panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");

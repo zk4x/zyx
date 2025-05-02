@@ -6,7 +6,13 @@
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
-    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, UOp}, kernel_compiler::{IRKernel, IROp}, shape::Dim, slab::Slab, DType
+    DType,
+    dtype::Constant,
+    error::{BackendError, ErrorStatus},
+    graph::{BOp, UOp},
+    kernel_compiler::{IRKernel, IROp},
+    shape::Dim,
+    slab::Slab,
 };
 use libloading::Library;
 use nanoserde::DeJson;
@@ -673,7 +679,7 @@ impl OpenCLDevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        for (i, op) in kernel.ops[..6].iter().enumerate() {
+        /*for (i, op) in kernel.ops.iter() {
             if let IROp::Loop { len } = op {
                 if i < 3 {
                     global_work_size[i] = *len;
@@ -683,7 +689,7 @@ impl OpenCLDevice {
             } else {
                 unreachable!()
             }
-        }
+        }*/
 
         // Declare global variables
         for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
@@ -692,7 +698,8 @@ impl OpenCLDevice {
                 "{indent}__global {}{}* p{id},",
                 if *read_only { "const " } else { "" },
                 dtype.ocl(),
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         source.pop();
@@ -1105,7 +1112,9 @@ impl OpenCLDevice {
             max_local_work_dims: [mlt, mlt, mlt],
             preferred_vector_size: u8::try_from(u32::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
-            )).unwrap() * 4,
+            ))
+            .unwrap()
+                * 4,
             local_mem_size: Dim::try_from(u64::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
             ))

@@ -15,7 +15,13 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, UOp}, kernel_compiler::{IRKernel, IROp, IRScope}, shape::Dim, slab::Slab, DType
+    DType,
+    dtype::Constant,
+    error::{BackendError, ErrorStatus},
+    graph::{BOp, UOp},
+    kernel_compiler::{IRKernel, IROp, IRScope},
+    shape::Dim,
+    slab::Slab,
 };
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
@@ -447,7 +453,8 @@ impl CUDAMemoryPool {
         unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryAllocation)?;
         debug_assert!(!self.stream.is_null());
         //unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
-        unsafe { (self.cuMemAlloc)(&mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation)?;
+        unsafe { (self.cuMemAlloc)(&mut ptr, bytes as usize) }
+            .check(ErrorStatus::MemoryAllocation)?;
         unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
         Ok((
@@ -710,7 +717,7 @@ impl CUDADevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        for (i, op) in kernel.ops[..6].iter().enumerate() {
+        /*for (i, op) in kernel.ops[..6].iter().enumerate() {
             if let &IROp::Loop { len } = op {
                 if i < 3 {
                     global_work_size[i] = len;
@@ -720,7 +727,7 @@ impl CUDADevice {
             } else {
                 unreachable!()
             }
-        }
+        }*/
 
         // Declare global variables
         for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
@@ -967,7 +974,7 @@ impl CUDADevice {
     ) -> ([Dim; 3], [Dim; 3], Box<str>, Vec<u8>) {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
-        for (i, op) in kernel.ops[..3].iter().enumerate() {
+        /*for (i, op) in kernel.ops[..3].iter().enumerate() {
             if let IROp::Loop { len } = op {
                 global_work_size[i] = *len;
             }
@@ -976,7 +983,7 @@ impl CUDADevice {
             if let IROp::Loop { len } = op {
                 local_work_size[i] = *len;
             }
-        }
+        }*/
         let name = format!(
             "k__{}_{}__{}_{}__{}_{}",
             global_work_size[0],

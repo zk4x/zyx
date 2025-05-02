@@ -52,6 +52,7 @@ mod backend;
 mod dtype;
 mod error;
 mod graph;
+mod kernel_compiler;
 mod mutex;
 #[cfg(feature = "py")]
 mod py_bindings;
@@ -60,7 +61,6 @@ mod runtime;
 mod scalar;
 mod shape;
 mod slab;
-mod kernel_compiler;
 mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 mod chasher;
@@ -71,13 +71,12 @@ pub(crate) type Set<T> =
 pub(crate) type Map<K, V> =
     std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 
-pub use graph::autograd::GradientTape;
 pub use dtype::DType;
 pub use error::ZyxError;
+pub use graph::autograd::GradientTape;
 pub use scalar::{Float, Scalar};
 use shape::Dim;
 pub use shape::IntoShape;
-use slab::SlabId;
 pub use tensor::Tensor;
 
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
@@ -142,7 +141,7 @@ impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
             //if let Some(label) = tensor.label() {
             //write!(header, "\"{label}\":{{").unwrap();
             //} else {
-            write!(header, "\"{}\":{{", tensor.id().index()).unwrap();
+            write!(header, "\"{}\":{{", Into::<usize>::into(tensor.id())).unwrap();
             //}
             write!(header, "\"dtype\":\"{}\",", dtype.safetensors()).unwrap();
             let mut st_shape = format!("{:?}", tensor.shape());

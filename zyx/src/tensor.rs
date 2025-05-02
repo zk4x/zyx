@@ -30,16 +30,20 @@ pub type SAxis = i32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TensorId(u32);
 
-impl SlabId for TensorId {
-    const ZERO: Self = Self(0);
+impl From<usize> for TensorId {
+    fn from(value: usize) -> Self {
+        TensorId(value as u32)
+    }
+}
 
-    fn index(self) -> usize {
+impl Into<usize> for TensorId {
+    fn into(self) -> usize {
         self.0 as usize
     }
+}
 
-    fn from_usize(id: usize) -> Self {
-        Self(id as u32)
-    }
+impl SlabId for TensorId {
+    const ZERO: Self = Self(0);
 
     fn inc(&mut self) {
         self.0 += 1;
@@ -1547,7 +1551,10 @@ impl Tensor {
         let shape = self.shape();
         let x = self - self.mean_kd(axes.clone())?;
         let d = SAxis::try_from(
-            into_axes(axes.clone(), shape.rank())?.into_iter().map(|a| shape[a as usize]).product::<usize>(),
+            into_axes(axes.clone(), shape.rank())?
+                .into_iter()
+                .map(|a| shape[a as usize])
+                .product::<usize>(),
         )
         .unwrap()
             - SAxis::try_from(correction).unwrap();

@@ -2,18 +2,18 @@
 
 use crate::slab::SlabId;
 use crate::tensor::TensorId;
-use crate::{Map, Set};
 use crate::{
+    DType,
     shape::{Axis, Dim},
     slab::Slab,
-    DType,
 };
+use crate::{Map, Set};
 use std::hash::BuildHasherDefault;
 
-pub mod kernel;
-mod view;
-mod realize;
 pub mod autograd;
+pub mod kernel;
+mod realize;
+pub mod view;
 
 #[derive(Debug)]
 pub struct Graph {
@@ -40,7 +40,7 @@ impl Graph {
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.nodes.len() == 0
+        self.nodes.len() == TensorId::ZERO
     }
 
     pub(super) fn retain(&mut self, x: TensorId) {
@@ -179,7 +179,8 @@ impl Graph {
         //println!("Gradient tape: {tape:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = vec![x];
-        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut rcs: Map<TensorId, u32> =
+            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 if !sources.contains(&nid)
@@ -193,7 +194,8 @@ impl Graph {
         }
         // Order them using rcs reference counts
         let mut order = Vec::new();
-        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut internal_rcs: Map<TensorId, u32> =
+            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut params: Vec<TensorId> = vec![x];
         while let Some(nid) = params.pop() {
             if let Some(&rc) = rcs.get(&nid) {
@@ -235,7 +237,8 @@ impl Graph {
         //println!("{ids:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
-        let mut rcs: Map<TensorId, u8> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut rcs: Map<TensorId, u8> =
+            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 //println!("Access {nid:?}");
@@ -245,7 +248,8 @@ impl Graph {
         }
         // Order them using rcs reference counts
         let mut order = Vec::new();
-        let mut internal_rcs: Map<TensorId, u8> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut internal_rcs: Map<TensorId, u8> =
+            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
@@ -456,9 +460,11 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         match self {
-            Node::Const { .. } | Node::Leaf { .. } => {
-                NodeParametersIterator { parameters: [TensorId::ZERO, TensorId::ZERO], idx: 0, len: 0 }
-            }
+            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
+                parameters: [TensorId::ZERO, TensorId::ZERO],
+                idx: 0,
+                len: 0,
+            },
             Node::Unary { x, .. }
             | Node::Cast { x, .. }
             | Node::Reshape { x, .. }

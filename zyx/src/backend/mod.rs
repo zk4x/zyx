@@ -6,7 +6,13 @@
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
-use crate::{error::{BackendError, ErrorStatus}, kernel_compiler::IRKernel, runtime::Pool, shape::Dim, slab::SlabId};
+use crate::{
+    error::{BackendError, ErrorStatus},
+    kernel_compiler::IRKernel,
+    runtime::Pool,
+    shape::Dim,
+    slab::SlabId,
+};
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
 use dummy::{DummyDevice, DummyMemoryPool};
@@ -15,8 +21,8 @@ use opencl::{OpenCLDevice, OpenCLMemoryPool};
 #[cfg(feature = "wgpu")]
 use wgpu::{WGPUDevice, WGPUMemoryPool};
 
-mod disk;
 mod cuda;
+mod disk;
 mod dummy;
 mod opencl;
 /*mod hip;
@@ -28,16 +34,20 @@ mod wgpu;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferId(u32);
 
-impl SlabId for BufferId {
-    const ZERO: Self = Self(0);
+impl From<usize> for BufferId {
+    fn from(value: usize) -> Self {
+        BufferId(value as u32)
+    }
+}
 
-    fn index(self) -> usize {
+impl Into<usize> for BufferId {
+    fn into(self) -> usize {
         self.0 as usize
     }
+}
 
-    fn from_usize(id: usize) -> Self {
-        Self(u32::try_from(id).unwrap())
-    }
+impl SlabId for BufferId {
+    const ZERO: Self = Self(0);
 
     fn inc(&mut self) {
         self.0 += 1;
@@ -47,16 +57,20 @@ impl SlabId for BufferId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProgramId(u32);
 
-impl SlabId for ProgramId {
-    const ZERO: Self = Self(0);
+impl From<usize> for ProgramId {
+    fn from(value: usize) -> Self {
+        ProgramId(value as u32)
+    }
+}
 
-    fn index(self) -> usize {
+impl Into<usize> for ProgramId {
+    fn into(self) -> usize {
         self.0 as usize
     }
+}
 
-    fn from_usize(id: usize) -> Self {
-        Self(u32::try_from(id).unwrap())
-    }
+impl SlabId for ProgramId {
+    const ZERO: Self = Self(0);
 
     fn inc(&mut self) {
         self.0 += 1;
@@ -194,11 +208,7 @@ impl MemoryPool {
     }
 
     // Deallocate drops events without synchronization
-    pub fn deallocate(
-        &mut self,
-        buffer_id: BufferId,
-        event_wait_list: Vec<Event>,
-    ) {
+    pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
         match self {
             MemoryPool::Disk(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::CUDA(pool) => pool.deallocate(buffer_id, event_wait_list),
@@ -322,7 +332,11 @@ impl Device {
         }
     }
 
-    pub fn compile(&mut self, kernel: &IRKernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+    pub fn compile(
+        &mut self,
+        kernel: &IRKernel,
+        debug_asm: bool,
+    ) -> Result<ProgramId, BackendError> {
         match self {
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
             Device::OpenCL(dev) => dev.compile(kernel, debug_asm),

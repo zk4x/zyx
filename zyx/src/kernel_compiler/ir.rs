@@ -1,36 +1,53 @@
-use std::hash::BuildHasherDefault;
-
 use crate::{
     DType, Map,
     dtype::Constant,
     graph::{
         BOp, UOp,
         kernel::{Op, TId},
+        view::RDim,
     },
     shape::Dim,
+    slab::{Slab, SlabId},
 };
+use std::{collections::BTreeMap, fmt::Display, hash::BuildHasherDefault};
 
 use super::optimizer::Optimization;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IRKernel {
     /// `read_only`, dtype
     pub global_variables: Vec<(bool, DType)>,
     /// ops
-    pub ops: Vec<IROp>,
+    pub ops: Slab<RId, IROp>,
 }
 
 // IR register id
-#[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct RId(u16);
 
-impl RId {
-    fn from_usize(id: usize) -> Self {
-        Self(u16::try_from(id).unwrap())
+impl From<usize> for RId {
+    fn from(value: usize) -> Self {
+        RId(value as u16)
     }
+}
 
-    const fn index(self) -> usize {
-        self.0 as usize
+impl From<RId> for usize {
+    fn from(value: RId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl SlabId for RId {
+    const ZERO: Self = RId(0);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+impl Display for RId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("r{}", self.0))
     }
 }
 
@@ -44,12 +61,13 @@ pub enum IRScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IROp {
     Const(Constant),
-    Load { address: u16, offset: u16 },
+    Load { address: u16, offset: RId },
     //LoadTile { address, tile specs }
-    Store { address: u16, offset: u16 },
-    Unary { x: u16, op: UOp },
-    Cast { x: u16, dtype: DType },
-    Binary { x: u16, y: u16, op: BOp },
+    Store { x: RId, address: u16, offset: RId },
+    Unary { x: RId, uop: UOp },
+    Cast { x: RId, dtype: DType },
+    Binary { x: RId, y: RId, bop: BOp },
+    MAdd { x: RId, y: RId, c: RId },
     Loop { len: Dim },
     EndLoop,
     Accumulator { init: Constant },
@@ -57,10 +75,53 @@ pub enum IROp {
     LocalBarrier,
 }
 
+impl IRKernel {
+    pub fn debug(&self) {
+        print!("fn IRKernel(");
+        for (i, (read_only, dtype)) in self.global_variables.iter().enumerate() {
+            print!("{}g{i} {dtype}, ", if *read_only { "" } else { "&" });
+        }
+        println!(")");
+        let mut indent = String::new();
+        for (rid, op) in self.ops.iter() {
+            match op {
+                IROp::Const(constant) => {
+                    println!("{rid} const {constant}");
+                }
+                IROp::Load { address, offset } => {
+                    println!("{rid} load g{address} at offset {offset}");
+                }
+                IROp::Store { x, address, offset } => {
+                    println!("{rid} store {x} into g{address} at offset {offset}");
+                }
+                IROp::Unary { x, uop: op } => {
+                    println!("{rid} uop.{op:?} {x}");
+                }
+                IROp::Cast { x, dtype } => {
+                    println!("{rid} cast {x} -> {dtype}");
+                }
+                IROp::Binary { x, y, bop: op } => {
+                    println!("{rid} bop.{op:?} {x}, {y}");
+                }
+                IROp::MAdd { x, y, c } => {
+                    println!("{rid} madd {x} * {y} + {c}");
+                }
+                IROp::Loop { len } => {
+                    println!("{rid} for 0..{len}");
+                    indent.push_str("  ");
+                }
+                IROp::EndLoop => todo!(),
+                IROp::Accumulator { init } => todo!(),
+                IROp::LocalBarrier => todo!(),
+            }
+        }
+    }
+}
+
 // convert graph kernel to IR ops
 pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
     let mut global_variables = Vec::new();
-    let mut ops = Vec::new();
+    let mut ops: Slab<RId, IROp> = Slab::new();
 
     // opts contains information about:
     // 1. which loops should be split
@@ -69,50 +130,64 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
     // 4. local accumulators
     // Other optimizations are far less important.
 
-    let mut t_map: Map<TId, RId> = Map::with_hasher(BuildHasherDefault::new());
+    // Register map
+    let mut reg_map: Map<TId, RId> = Map::with_hasher(BuildHasherDefault::new());
+
+    // Must be ordered, so BTreeMap
+    let mut loop_map: BTreeMap<usize, RId> = BTreeMap::new();
 
     // set of global vairables for deduplication
     //let mut global_vars_map = Map::with_hasher(BuildHasherDefault::new());
-    for op in kernel_ops {
+    for (op_id, op) in kernel_ops.iter().enumerate() {
         match op {
-            &Op::Loop { len, .. } => ops.push(IROp::Loop { len }),
-            &Op::Const { value, ref view } => {
-                //t_map.insert(z, RId::from_usize(ops.len()));
-                //ops.push(IROp::Const(value));
+            &Op::Loop { len, .. } => {
+                let loop_id = loop_map.len();
+                loop_map.insert(loop_id, ops.len().into());
+                ops.push(IROp::Loop { len });
+            }
+            &Op::Const { ref view, value } => {
                 todo!();
             }
-            &Op::Load { view: ref xview, dtype: xdtype } => {
-                todo!();
-                /*let address = if let Some(&address) = global_vars_map.get(&x) {
-                    address
-                } else {
-                    let address = global_variables.len() as u16;
-                    global_variables.push((true, xdtype));
-                    global_vars_map.insert(x, address);
-                    address
-                };
-                t_map.insert(z, RId::from_usize(ops.len()));*/
+            &Op::Load { ref view, dtype } => {
+                let address = global_variables.len() as u16;
+                global_variables.push((true, dtype));
 
-                //ops.push(IROp::Load { address, offset: todo!() });
-                //let zreg = ir_for_indexed_load(ops, address);
-                todo!()
+                let mut offset = ops.len().into();
+                // Calculate the offset
+                {
+                    ops.push(IROp::Const(Constant::U64(0)));
+                    for (i, &RDim { d, st, lp, rp }) in view.0[0].iter().enumerate() {
+                        ops.push(IROp::Const(Constant::U64(st as u64)));
+                        let y = RId(ops.len().0 - 1);
+                        ops.push(IROp::MAdd { x: loop_map[&i], y, c: offset });
+                        offset = RId(ops.len().0 - 1);
+                    }
+                }
+
+                ops.push(IROp::Load { address, offset });
+
+                reg_map.insert(op_id, RId(ops.len().0 - 1));
             }
-            Op::Store { x, view, dtype } => {
-                todo!()
+            Op::Store { x, view, dtype } => {}
+            &Op::Unary { x, uop } => {
+                ops.push(IROp::Unary { x: reg_map[&x], uop });
+                reg_map.insert(op_id, RId(ops.len().0 - 1));
+            }
+            &Op::Cast { x, dtype } => {
+                ops.push(IROp::Cast { x: reg_map[&x], dtype });
+                reg_map.insert(op_id, RId(ops.len().0 - 1));
+            }
+            &Op::Binary { x, y, bop } => {
+                ops.push(IROp::Binary { x: reg_map[&x], y: reg_map[&y], bop });
+                reg_map.insert(op_id, RId(ops.len().0 - 1));
             }
             Op::Accumulator { rop, dtype } => {
                 todo!()
             }
-            Op::AccAssign { rop, num_loops } => {
-                todo!()
-            }
-            Op::Cast { x, dtype } => {
-                todo!()
-            }
-            Op::Unary { x, uop } => {
-                todo!()
-            }
-            Op::Binary { x, y, bop } => {
+            &Op::AccAssign { rop, num_loops } => {
+                for _ in 0..num_loops {
+                    loop_map.pop_last();
+                }
                 todo!()
             }
         }

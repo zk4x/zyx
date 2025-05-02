@@ -5,14 +5,14 @@ use std::{fmt::Display, ops::Range};
 
 /// .0[0] is original shape, further shapes are additional reshapes
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct View(Vec<Vec<RDim>>); // TODO switch to Box<[]> instead of Vec and perhaps immutable View?
+pub struct View(pub Vec<Vec<RDim>>); // TODO switch to Box<[]> instead of Vec and perhaps immutable View?
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct RDim {
-    d: Dim,    // dim
-    st: Dim,   // stride
-    lp: isize, // left pad
-    rp: isize, // right pad
+pub struct RDim {
+    pub d: Dim,    // dim
+    pub st: Dim,   // stride
+    pub lp: isize, // left pad
+    pub rp: isize, // right pad
 }
 
 fn to_contiguous_rdims(shape: &[Dim]) -> Vec<RDim> {
@@ -26,11 +26,6 @@ fn to_contiguous_rdims(shape: &[Dim]) -> Vec<RDim> {
 }
 
 impl View {
-    /// Create empty view for scalars
-    pub(crate) const fn none() -> View {
-        View(Vec::new())
-    }
-
     pub(crate) fn contiguous(shape: &[Dim]) -> View {
         View(vec![to_contiguous_rdims(shape)])
     }
@@ -107,7 +102,10 @@ impl View {
         //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
         debug_assert!(axes.end <= self.0.last().map_or(1, Vec::len) as Dim);
         debug_assert_eq!(
-            self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
+            self.0.last().unwrap()[axes.start as usize..axes.end as usize]
+                .iter()
+                .map(|dim| dim.d)
+                .product::<Dim>(),
             shape.iter().product::<Dim>()
         );
         if let Some(inner) = self.0.last_mut() {

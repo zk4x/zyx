@@ -4,13 +4,16 @@
 //! and it does not change existing indices.
 
 use std::{
-    collections::BTreeSet, marker::PhantomData, mem::MaybeUninit, ops::{Index, IndexMut}
+    collections::BTreeSet,
+    marker::PhantomData,
+    mem::MaybeUninit,
+    ops::{Index, IndexMut},
 };
 
-pub trait SlabId: std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord {
+pub trait SlabId:
+    std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize>
+{
     const ZERO: Self;
-    fn index(self) -> usize;
-    fn from_usize(id: usize) -> Self;
     fn inc(&mut self);
 }
 
@@ -29,11 +32,7 @@ struct IdIter<'a, Id> {
 
 impl<'a, Id: SlabId> IdIter<'a, Id> {
     const fn new(empty: &'a BTreeSet<Id>, max_exclusive: Id) -> Self {
-        Self {
-            id: Id::ZERO,
-            max_exclusive,
-            empty,
-        }
+        Self { id: Id::ZERO, max_exclusive, empty }
     }
 }
 
@@ -74,8 +73,8 @@ impl<Id: SlabId> Iterator for IdIter<'_, Id> {
 impl<Id: SlabId, T> Drop for Slab<Id, T> {
     fn drop(&mut self) {
         // Drops those that are not in self.empty
-        for id in IdIter::new(&self.empty, Id::from_usize(self.values.len())) {
-            unsafe { self.values[id.index()].assume_init_drop() };
+        for id in IdIter::new(&self.empty, Id::from(self.values.len())) {
+            unsafe { self.values[id.into()].assume_init_drop() };
         }
     }
 }
@@ -91,27 +90,27 @@ impl<Id: SlabId, T> Slab<Id, T> {
 
     pub(crate) fn push(&mut self, value: T) -> Id {
         if let Some(id) = self.empty.pop_first() {
-            self.values[id.index()] = MaybeUninit::new(value);
+            self.values[id.into()] = MaybeUninit::new(value);
             //println!("Pushing to empty {id}");
             id
         } else {
             self.values.push(MaybeUninit::new(value));
             //println!("Pushing {}, empty: {:?}", self.values.len() - 1, self.empty);
-            Id::from_usize(self.values.len() - 1)
+            Id::from(self.values.len() - 1)
         }
     }
 
     pub(crate) fn remove(&mut self, id: Id) {
         debug_assert!(!self.empty.contains(&id));
         self.empty.insert(id);
-        unsafe { self.values[id.index()].assume_init_drop() };
+        unsafe { self.values[id.into()].assume_init_drop() };
     }
 
     pub(crate) unsafe fn remove_and_return(&mut self, id: Id) -> T {
         debug_assert!(!self.empty.contains(&id));
         self.empty.insert(id);
         self.values.push(MaybeUninit::uninit());
-        unsafe { self.values.swap_remove(id.index()).assume_init() }
+        unsafe { self.values.swap_remove(id.into()).assume_init() }
     }
 
     /*pub(crate) fn get(&self, id: Id) -> Option<&T> {
@@ -127,19 +126,19 @@ impl<Id: SlabId, T> Slab<Id, T> {
     }*/
 
     pub(crate) fn ids(&self) -> impl Iterator<Item = Id> + '_ {
-        IdIter::new(&self.empty, Id::from_usize(self.values.len()))
+        IdIter::new(&self.empty, Id::from(self.values.len()))
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
-        IdIter::new(&self.empty, Id::from_usize(self.values.len()))
-            .map(|id| unsafe { self.values[id.index()].assume_init_ref() })
+        IdIter::new(&self.empty, Id::from(self.values.len()))
+            .map(|id| unsafe { self.values[id.into()].assume_init_ref() })
     }
 
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.values
             .iter_mut()
             .enumerate()
-            .filter(|(id, _)| !self.empty.contains(&(Id::from_usize(*id))))
+            .filter(|(id, _)| !self.empty.contains(&(Id::from(*id))))
             .map(|(_, x)| unsafe { x.assume_init_mut() })
     }
 
@@ -147,12 +146,12 @@ impl<Id: SlabId, T> Slab<Id, T> {
         self.values
             .iter()
             .enumerate()
-            .filter(|(id, _)| !self.empty.contains(&(Id::from_usize(*id))))
-            .map(|(id, x)| (Id::from_usize(id), unsafe { x.assume_init_ref() }))
+            .filter(|(id, _)| !self.empty.contains(&(Id::from(*id))))
+            .map(|(id, x)| (Id::from(id), unsafe { x.assume_init_ref() }))
     }
 
     pub(crate) fn contains_key(&self, id: Id) -> bool {
-        id < Id::from_usize(self.values.len()) && !self.empty.contains(&id)
+        id < Id::from(self.values.len()) && !self.empty.contains(&id)
     }
 
     /*pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
@@ -180,11 +179,11 @@ impl<Id: SlabId, T> Slab<Id, T> {
     // TODO lower max id by searching for it in self.empty
     #[allow(unused)]
     pub(crate) fn max_id(&self) -> Id {
-        Id::from_usize(self.values.len())
+        Id::from(self.values.len())
     }
 
-    pub(crate) fn len(&self) -> u32 {
-        u32::try_from(self.values.len() - self.empty.len()).unwrap()
+    pub(crate) fn len(&self) -> Id {
+        Id::from(self.values.len() - self.empty.len())
     }
 }
 
@@ -192,14 +191,14 @@ impl<Id: SlabId, T> Index<Id> for Slab<Id, T> {
     type Output = T;
     fn index(&self, index: Id) -> &Self::Output {
         debug_assert!(!self.empty.contains(&index));
-        unsafe { self.values[index.index()].assume_init_ref() }
+        unsafe { self.values[index.into()].assume_init_ref() }
     }
 }
 
 impl<Id: SlabId, T> IndexMut<Id> for Slab<Id, T> {
     fn index_mut(&mut self, index: Id) -> &mut Self::Output {
         debug_assert!(!self.empty.contains(&index));
-        unsafe { self.values[index.index()].assume_init_mut() }
+        unsafe { self.values[index.into()].assume_init_mut() }
     }
 }
 
@@ -264,7 +263,7 @@ impl<T: Clone, Id: SlabId> Clone for Slab<Id, T> {
                 .iter()
                 .enumerate()
                 .map(|(id, x)| {
-                    if self.empty.contains(&(Id::from_usize(id))) {
+                    if self.empty.contains(&(Id::from(id))) {
                         MaybeUninit::uninit()
                     } else {
                         MaybeUninit::new(unsafe { x.assume_init_ref() }.clone())

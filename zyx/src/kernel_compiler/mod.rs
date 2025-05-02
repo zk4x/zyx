@@ -74,9 +74,11 @@ impl KernelCompiler {
 
         // Launch if it is in cache
         let kernel_id = if let Some(&kernel_id) = self.kernels.get(&kernel.ops) {
+            // If it has been compiled for the device
             if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 return Ok(Some(event));
+            // If we know the best optimization, but it has not been compiled yet
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
                 let ir_kernel = lower_to_ir(&kernel.ops, optimization);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
@@ -97,10 +99,14 @@ impl KernelCompiler {
         }
 
         let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
+        // If the kernel has not be optimized yet, optimize it
         if search_iters == 0 {
             // if optimizations are not requested, use default optimizations
             let optimization = Optimization::new(kernel, device.info());
             let ir_kernel = lower_to_ir(&kernel.ops, &optimization);
+            if debug.ir() {
+                ir_kernel.debug();
+            }
             let program_id = device.compile(&ir_kernel, debug.asm())?;
             let nanos = std::time::Instant::now();
             let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
@@ -112,6 +118,8 @@ impl KernelCompiler {
             }
             //self.optimizations.insert((kernel_id, dev_info_id), optimization);
         } else {
+            // If number of search iterations is more than zero, then do the full optimization pass
+            // with multiple iterations
             let rng = crate::rng::Rng::seed_from_u64(3_940_239);
             let mut optimizer = Optimizer::new(rng, kernel, device.info().clone());
             pool.pool.sync_events(event_wait_list)?;
