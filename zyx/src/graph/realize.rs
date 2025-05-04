@@ -103,10 +103,10 @@ impl Runtime {
             // Iterate over all memory pools ordered by device speed.
             // Then select first fastest device that has associated memory pool which fits all tensors used
             // as arguments for the kernel that are not yet allocated on that memory pool.
-            let loads: Set<TensorId> = kernel.loads.values().copied().collect();
+            let loads: Set<TensorId> = kernel.loads.iter().copied().collect();
             let required_kernel_memory: Dim = kernel
                 .stores
-                .keys()
+                .iter()
                 .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid) as Dim)
                 .sum::<Dim>()
                 + loads
@@ -201,7 +201,7 @@ impl Runtime {
 
             // Allocate space for all stores (outputs)
             let mut output_buffers = BTreeSet::new();
-            for &tid in kernel.stores.keys() {
+            for &tid in &kernel.stores {
                 let bytes =
                     self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim;
                 let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
@@ -212,17 +212,11 @@ impl Runtime {
 
             // Get a list of all args. These must be specifically in order as they are mentioned in kernel ops
             let mut args = Vec::new();
-            for (i, op) in kernel.ops.iter().enumerate() {
-                if let Op::Load { .. } = op {
-                    let tid = kernel.loads[&i];
-                    args.push(self.pools[mpid].buffer_map[&tid]);
-                }
+            for tid in &kernel.loads {
+                args.push(self.pools[mpid].buffer_map[tid]);
             }
-            for (i, op) in kernel.ops.iter().enumerate() {
-                if let Op::Store { .. } = op {
-                    let tid = kernel.stores.iter().find(|(_, x)| **x == i).unwrap().0;
-                    args.push(self.pools[mpid].buffer_map[tid]);
-                }
+            for tid in &kernel.stores {
+                args.push(self.pools[mpid].buffer_map[tid]);
             }
 
             // Send the kernel to kernel cache.
@@ -244,10 +238,10 @@ impl Runtime {
 
             // Deallocate loads that are not used by any other kernel
             let mut loads: Set<TensorId> = loads.difference(&realized_nodes).copied().collect();
-            realized_nodes.extend(kernel.stores.keys());
+            realized_nodes.extend(kernel.stores.iter());
             if kid < kernels.len() - 1 {
-                for kid in kid+1..kernels.len() {
-                    for tid in kernels[kid].loads.values() {
+                for kid in kid + 1..kernels.len() {
+                    for tid in &kernels[kid].loads {
                         loads.remove(tid);
                     }
                 }

@@ -184,7 +184,7 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
             Op::Accumulator { rop, dtype } => {
                 todo!()
             }
-            &Op::AccAssign { rop, num_loops } => {
+            &Op::AccAssign { x, rop, num_loops } => {
                 for _ in 0..num_loops {
                     loop_map.pop_last();
                 }

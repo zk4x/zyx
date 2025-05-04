@@ -8,7 +8,7 @@ use crate::{
     dtype::Constant,
     graph::{Graph, Node},
     runtime::Pool,
-    shape::Dim,
+    shape::{Axis, Dim},
     slab::{Slab, SlabId},
     tensor::TensorId,
 };
@@ -17,6 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     hash::BuildHasherDefault,
     ops::Range,
+    usize,
 };
 
 use super::{BOp, ROp, UOp, view::View};
@@ -50,8 +51,8 @@ impl SlabId for KernelId {
 pub struct Kernel {
     /// Ops on tensors
     pub ops: Vec<Op>,
-    pub loads: BTreeMap<TId, TensorId>,
-    pub stores: BTreeMap<TensorId, TId>,
+    pub loads: Vec<TensorId>,
+    pub stores: Vec<TensorId>,
     /// Outputs of the kernel that are unused (not stored yet)
     pub outputs: BTreeMap<TensorId, TId>,
     /// Which kernels must be evaluated before this kernel (only direct predecessors)
@@ -69,7 +70,7 @@ pub enum Op {
     Binary { x: TId, y: TId, bop: BOp },
     Loop { len: Dim },
     Accumulator { rop: ROp, dtype: DType },
-    AccAssign { rop: ROp, num_loops: u32 },
+    AccAssign { x: TId, rop: ROp, num_loops: u32 },
 }
 
 /*#[cfg_attr(feature = "disk_cache", derive(bitcode::Encode, bitcode::Decode))]
@@ -88,8 +89,8 @@ impl Kernel {
         ops.push(Op::Const { value, view: View::contiguous(&[1]) });
         Kernel {
             ops,
-            loads: BTreeMap::new(),
-            stores: BTreeMap::new(),
+            loads: Vec::new(),
+            stores: Vec::new(),
             outputs: BTreeMap::from([(nid, 0)]),
             depends_on: BTreeSet::new(),
         }
@@ -109,8 +110,8 @@ impl Kernel {
         ops.push(Op::Load { view: View::contiguous(shape), dtype });
         Kernel {
             ops,
-            loads: BTreeMap::from([(x, nid)]),
-            stores: BTreeMap::new(),
+            loads: vec![nid],
+            stores: Vec::new(),
             outputs: BTreeMap::from([(nid, x)]),
             depends_on,
         }
@@ -122,7 +123,7 @@ impl Kernel {
 
     pub fn shape(&self) -> Vec<Dim> {
         let mut res = Vec::new();
-        let mut num_endloops = 0;
+        /*let mut num_endloops = 0;
         for op in self.ops.iter().rev() {
             match op {
                 &Op::Loop { len } => {
@@ -138,7 +139,14 @@ impl Kernel {
                 _ => {}
             }
         }
-        res.reverse();
+        res.reverse();*/
+        'a: for op in &self.ops {
+            match op {
+                &Op::Loop { len } => res.push(len),
+                Op::Accumulator { .. } => break 'a,
+                _ => {}
+            }
+        }
         res
     }
 
@@ -610,8 +618,7 @@ impl Kernel {
         dtype: DType,
         rop: ROp,
     ) {
-        todo!();
-        /*let permute_axes: Vec<usize> =
+        let permute_axes: Vec<usize> =
             (0..shape.len()).filter(|a| !axes.contains(a)).chain(axes.iter().copied()).collect();
         //println!("Permute axes in reduce: {permute_axes:?}");
         self.permute(&permute_axes);
@@ -620,69 +627,71 @@ impl Kernel {
         // from the resulting shape either way, but only if there are no ops between those loops.
 
         // Add accumulator
-        let num_axes = shape.len();
-        let mut looped_axes: BTreeSet<usize> = (num_axes - axes.len()..num_axes).collect();
-        //println!("Looped axes: {looped_axes:?}");
-        let acc_id = self.ops.len()
-            - self
-                .ops
-                .iter()
-                .rev()
-                .position(|op| {
-                    if let Op::Loop { .. } = op {
-                        looped_axes.remove(axis);
-                    }
-                    looped_axes.is_empty()
-                })
-                .unwrap()
-            - 1;
-        //println!("Acc id: {acc_id}");
-        self.max_id += 1;
-        self.ops.insert(acc_id, Op::Accumulator { z: self.max_id, rop, dtype });
-        self.ops.push(Op::Binary {
-            z: self.max_id,
-            x: xt,
-            y: self.max_id,
-            bop: match rop {
-                ROp::Sum => BOp::Add,
-                ROp::Max => BOp::Max,
-            },
-        });
-        for _ in 0..axes.len() {
-            self.ops.push(Op::EndLoop);
+        let mut acc_id = usize::MAX;
+        let mut rem_reduce_loops = axes.len();
+        for (op_id, op) in self.ops.iter().enumerate().rev() {
+            if matches!(op, Op::Loop { .. }) {
+                rem_reduce_loops -= 1;
+                if rem_reduce_loops == 0 {
+                    acc_id = op_id;
+                    break;
+                }
+            }
         }
+        debug_assert_ne!(acc_id, usize::MAX);
+        self.ops.insert(acc_id, Op::Accumulator { rop, dtype });
+        // Increase ids in ops following theh accumulator
+        self.inc_ids_since(acc_id);
+        self.ops.push(Op::AccAssign { x: xt + 1, rop, num_loops: axes.len() as u32 });
         if !matches!(self.ops[0], Op::Loop { .. }) {
             self.insert_loop(0, 0);
         }
         self.outputs.clear();
-        self.outputs.insert(nid, self.max_id);*/
+        self.outputs.insert(nid, self.ops.len() - 1);
+    }
+
+    fn inc_ids_since(&mut self, op_id: usize) {
+        for op in &mut self.ops[op_id..] {
+            match op {
+                Op::Store { x, .. }
+                | Op::Cast { x, .. }
+                | Op::Unary { x, .. }
+                | Op::Binary { x, .. }
+                | Op::AccAssign { x, .. } => *x += 1,
+                _ => {}
+            }
+        }
+        for (_, id) in &mut self.outputs {
+            if *id > op_id {
+                *id += 1;
+            }
+        }
     }
 
     /// Inserts loop at `op_id`, giving it axis id and dimension 1.
     /// All loops and views axis equal or greater then axis are increased by 1
     /// Does not change reduce op's `num_axes`
     /// This function also does not change kernel's shape!
-    /*pub(super) fn insert_loop(&mut self, op_id: usize, naxis: Axis) {
+    pub fn insert_loop(&mut self, op_id: usize, naxis: Axis) {
         let mut axis: u32 = 0;
         for op in &mut self.ops {
             match op {
                 Op::Const { view, .. } | Op::Store { view, .. } | Op::Load { view, .. } => {
                     view.insert_loop(naxis)
                 }
-                Op::Loop { .. } => {
-                    axis += 1
-                }
-                Op::EndLoop => {
+                Op::Loop { .. } => axis += 1,
+                &mut Op::AccAssign { num_loops, .. } => {
                     if axis == 0 {
                         break;
                     }
-                    axis -= 1;
+                    axis -= num_loops;
                 }
                 _ => {}
             }
         }
+        self.inc_ids_since(op_id);
         self.ops.insert(op_id, Op::Loop { len: 1 });
-    }*/
+    }
 
     pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
         // TODO This does not yet account for multiple loads from the same buffer.
@@ -746,8 +755,8 @@ impl std::fmt::Display for Op {
             Op::Accumulator { rop, dtype } => {
                 f.write_fmt(format_args!("{C_BLUE}Accum{C_RESET}.{rop:?}   {dtype}",))
             }
-            Op::AccAssign { rop, num_loops } => f.write_fmt(format_args!(
-                "{C_BLUE}AccAssign{C_RESET} {rop:?}, {num_loops}"
+            Op::AccAssign { x, rop, num_loops } => f.write_fmt(format_args!(
+                "{C_BLUE}AccAssign{C_RESET} {x}, {rop:?}, {num_loops}"
             )),
             Op::Cast { x, dtype } => {
                 let mut len = format!("C-{dtype}").len();
@@ -1347,10 +1356,6 @@ pub fn kernelize(
                         }
                         for op in ops.into_iter().skip(i) {
                             let new_op = match op {
-                                Op::Loop { len } => Op::Loop { len },
-                                Op::AccAssign { rop, num_loops } => {
-                                    Op::AccAssign { rop, num_loops }
-                                }
                                 Op::Const { value, ref view } => {
                                     Op::Const { value, view: view.clone() }
                                 }
@@ -1364,13 +1369,15 @@ pub fn kernelize(
                                 Op::Cast { x, dtype } => Op::Cast { x: x + n, dtype },
                                 Op::Unary { x, uop } => Op::Unary { x: x + n, uop },
                                 Op::Binary { x, y, bop } => Op::Binary { x: x + n, y: y + n, bop },
+                                Op::Loop { len } => Op::Loop { len },
+                                Op::AccAssign { x, rop, num_loops } => {
+                                    Op::AccAssign { x: x + n, rop, num_loops }
+                                }
                             };
                             kernels[kidx].ops.push(new_op);
                         }
-                        kernels[kidx].loads.extend(loads.into_iter().map(|(tid, t)| (tid + n, t)));
-                        kernels[kidx]
-                            .stores
-                            .extend(stores.into_iter().map(|(t, tid)| (t, tid + n)));
+                        kernels[kidx].loads.extend(loads);
+                        kernels[kidx].stores.extend(stores);
                         kernels[kidx].outputs.extend(outputs.iter().map(|(t, tid)| (*t, tid + n)));
                         kernels[kidx].depends_on.extend(depends_on);
                         let z = kernels[kidx].ops.len();
@@ -1420,7 +1427,10 @@ pub fn kernelize(
             }
         }
 
-        debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
+        #[cfg(debug_assertions)]
+        if kernels[kid].shape() != graph.shape(nid) {
+            kernels[kid].debug();
+        }
 
         /*#[cfg(debug_assertions)]
         {
@@ -1443,7 +1453,7 @@ pub fn kernelize(
 
         // If this tensor should be evaluated and it is not in stores, then store it
         if to_eval.contains(&nid) {
-            if !kernels[kid].loads.values().any(|&x| x == nid) {
+            if !kernels[kid].loads.iter().any(|&x| x == nid) {
                 store(&mut kernels, kid, nid, graph.shape(nid), graph.dtype(nid));
             }
         }
@@ -1482,7 +1492,7 @@ fn store(
     nid_dtype: DType,
 ) {
     //let _timer = Timer::new("scheduler store");
-    if kernels[kid].stores.contains_key(&nid) || kernels[kid].loads.values().any(|id| *id == nid) {
+    if kernels[kid].stores.contains(&nid) || kernels[kid].loads.contains(&nid) {
         return;
     }
     #[cfg(debug_assertions)]
@@ -1497,8 +1507,7 @@ fn store(
     }
     // Add store op to kernel
     let view = View::contiguous(nid_shape);
-    let z = kernels[kid].ops.len();
-    kernels[kid].stores.insert(nid, z);
+    kernels[kid].stores.push(nid);
     let x = kernels[kid].outputs[&nid];
     kernels[kid].ops.push(Op::Store { x, view, dtype: nid_dtype });
 }
