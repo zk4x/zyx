@@ -44,15 +44,35 @@ pub fn initialize_backends(
     devices: &mut Vec<Device>,
     debug_backends: bool,
 ) -> Result<(), BackendError> {
-    let _ = disk::initialize_pool(memory_pools, debug_backends);
-    let _ = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends);
-    let _ = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends);
+    if let Err(err) = disk::initialize_pool(memory_pools, debug_backends) {
+        if debug_backends {
+            println!("Disk init error: {err}");
+        }
+    }
+    if let Err(err) = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends) {
+        if debug_backends {
+            println!("dummy init error: {err}");
+        }
+    }
+    if let Err(err) = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends) {
+        if debug_backends {
+            println!("cuda init error: {err}");
+        }
+    }
     //let _ = hip::initialize_device(&device_config.hip, memory_pools, devices, debug_dev);
-    let _ = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends);
+    if let Err(err) = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends) {
+        if debug_backends {
+            println!("opencl init error: {err}");
+        }
+    }
     //#[cfg(feature = "vulkan")]
     //let _ = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_dev);
     #[cfg(feature = "wgpu")]
-    let _ = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends);
+    if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends) {
+        if debug_backends {
+            println!("wgpu init error: {err}");
+        }
+    }
     //println!("Memory pools: {memory_pools:?}");
 
     if devices.is_empty() || memory_pools.is_empty() {
@@ -253,7 +273,7 @@ impl MemoryPool {
             MemoryPool::Dummy(pool) => pool.pool_to_host(src, dst, event_wait_list),
         }
     }
-    
+
     // Synchronize events, blocking, drops those events
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         match self {

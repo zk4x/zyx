@@ -189,6 +189,14 @@ pub(super) fn initialize_device(
         "/usr/lib64/libOpenCL.so",
         "/usr/lib/x86_64-linux-gnu/libOpenCL.so",
         "/usr/lib64/x86_64-linux-gnu/libOpenCL.so",
+        "/lib/libOpenCL.so.1",
+        "/lib64/libOpenCL.so.1",
+        "/lib/x86_64-linux-gnu/libOpenCL.so.1",
+        "/lib64/x86_64-linux-gnu/libOpenCL.so.1",
+        "/usr/lib/libOpenCL.so.1",
+        "/usr/lib64/libOpenCL.so.1",
+        "/usr/lib/x86_64-linux-gnu/libOpenCL.so.1",
+        "/usr/lib64/x86_64-linux-gnu/libOpenCL.so.1",
     ];
     let opencl = opencl_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
