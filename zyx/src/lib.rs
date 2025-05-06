@@ -12,7 +12,6 @@
 #![forbid(rustdoc::redundant_explicit_links)]
 #![forbid(trivial_casts)]
 #![forbid(trivial_numeric_casts)]
-#![forbid(cenum_impl_drop_cast)]
 #![forbid(invalid_reference_casting)]
 #![deny(clippy::cast_possible_truncation)]
 #![deny(clippy::cast_lossless)]

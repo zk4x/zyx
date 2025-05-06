@@ -887,6 +887,7 @@ loop_ids[4], local_work_size[1], loop_ids[5], local_work_size[2]));
             "/lib/x86_64-linux-gnu/libnvrtc.so",
             "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
             "/usr/lib64/x86_64-linux/lib/libnvrtc.so",
+            "/usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvrtc.so",
             "/usr/lib/libnvrtc.so",
             "/usr/lib64/libnvrtc.so",
         ];
