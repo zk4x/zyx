@@ -551,7 +551,7 @@ impl Kernel {
 
     pub fn reshape(&mut self, nshape: &[Dim]) {
         let shape: Vec<Dim> = self.shape();
-        println!("Reshape from {shape:?} to {nshape:?}");
+        //println!("Reshape from {shape:?} to {nshape:?}");
         // reshape
         // 2, 4, 1, 3, 1,    4, 5, 2
         //       8, 3, 1, 2, 2, 2, 5
@@ -559,6 +559,7 @@ impl Kernel {
 
         let mut split_axes = 0..1;
         let mut merge_axes = 0..1;
+        // TODO speed this up, one idea is to use temporary instead of calling product every time
         'a: while merge_axes.end <= shape.len() && split_axes.end <= nshape.len() {
             match shape[merge_axes.clone()]
                 .iter()
@@ -616,6 +617,38 @@ impl Kernel {
                     axis += 1;
                 }
                 op_i += 1;
+            }
+            // Update ids for all ops
+            if new_sh_range.len() > org_sh_range.len() {
+                let len = new_sh_range.len() - org_sh_range.len();
+                for op in &mut self.ops[op_i..] {
+                    match op {
+                        Op::Store { x, .. }
+                        | Op::Cast { x, .. }
+                        | Op::Unary { x, .. }
+                        | Op::AccAssign { x, .. } => *x += len,
+                        Op::Binary { x, y, .. } => {
+                            *x += len;
+                            *y += len;
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                let len = org_sh_range.len() - new_sh_range.len();
+                for op in &mut self.ops[op_i..] {
+                    match op {
+                        Op::Store { x, .. }
+                        | Op::Cast { x, .. }
+                        | Op::Unary { x, .. }
+                        | Op::AccAssign { x, .. } => *x -= len,
+                        Op::Binary { x, y, .. } => {
+                            *x -= len;
+                            *y -= len;
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         for op in &mut self.ops {
