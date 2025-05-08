@@ -426,11 +426,11 @@ impl Kernel {
                     }
                 }
                 &Op::AccAssign { num_loops, .. } => {
+                    println!("{indent}{i} {vop}");
                     for _ in 0..num_loops {
                         indent.pop();
                         indent.pop();
                     }
-                    println!("{indent}{i} {vop}");
                 }
                 _ => {
                     println!("{indent}{i} {vop}");
@@ -647,7 +647,7 @@ impl Kernel {
             self.insert_loop(0, 0);
         }
         self.outputs.clear();
-        self.outputs.insert(nid, self.ops.len() - 1);
+        self.outputs.insert(nid, acc_id);
     }
 
     fn inc_ids_since(&mut self, op_id: usize) {
@@ -756,7 +756,7 @@ impl std::fmt::Display for Op {
                 f.write_fmt(format_args!("{C_BLUE}Accum{C_RESET}.{rop:?}   {dtype}",))
             }
             Op::AccAssign { x, rop, num_loops } => f.write_fmt(format_args!(
-                "{C_BLUE}AccAssign{C_RESET} {x}, {rop:?}, {num_loops}"
+                "{C_BLUE}AccAssign{C_RESET} {x}, {rop:?}, loops: {num_loops}"
             )),
             Op::Cast { x, dtype } => {
                 let mut len = format!("C-{dtype}").len();
