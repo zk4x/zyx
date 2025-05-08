@@ -235,7 +235,7 @@ impl<'a> Optimizer<'a> {
         args: &[BufferId],
         debug: DebugMask,
     ) -> Result<u128, BackendError> {
-        let ir_kernel = lower_to_ir(&self.kernel.ops, optimization);
+        let ir_kernel = lower_to_ir(self.kernel.ops.clone(), optimization);
         let program_id = device.compile(&ir_kernel, debug.asm())?;
         let nanos = std::time::Instant::now();
         let event = device.launch(program_id, &mut pool.pool, args, vec![])?;

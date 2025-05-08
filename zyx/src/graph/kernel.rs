@@ -13,10 +13,8 @@ use crate::{
     tensor::TensorId,
 };
 use std::{
-    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     hash::BuildHasherDefault,
-    ops::Range,
     usize,
 };
 
@@ -185,99 +183,6 @@ impl Kernel {
             Op::Accumulator { .. } | Op::EndLoop => false,
         }) | self.get_reshape_pattern(shape).is_some()
     }*/
-
-    // TODO why does this function exits??
-    pub(super) fn reshape_unchecked(&mut self, nshape: &[usize]) {
-        let shape: &[usize] = &self.shape();
-        // reshape
-        // 2, 4, 1, 3, 1,    4, 5, 2
-        //       8, 3, 1, 2, 2, 2, 5
-        let mut reshapes = Vec::new();
-
-        let mut split_axes = 0..1;
-        let mut merge_axes = 0..1;
-        'a: while merge_axes.end <= shape.len() && split_axes.end <= nshape.len() {
-            match shape[merge_axes.clone()]
-                .iter()
-                .product::<usize>()
-                .cmp(&nshape[split_axes.clone()].iter().product())
-            {
-                std::cmp::Ordering::Less => {
-                    merge_axes.end += 1;
-                }
-                std::cmp::Ordering::Greater => {
-                    split_axes.end += 1;
-                }
-                std::cmp::Ordering::Equal => {
-                    if let Some(d) = shape.get(merge_axes.end) {
-                        if *d == 1 && split_axes.end == nshape.len() {
-                            merge_axes.end += 1;
-                            continue 'a;
-                        }
-                    }
-                    if let Some(d) = nshape.get(split_axes.end) {
-                        if *d == 1 && merge_axes.end == shape.len() {
-                            split_axes.end += 1;
-                            continue 'a;
-                        }
-                    }
-                    if (merge_axes.len(), split_axes.len()) != (1, 1) {
-                        // reshape
-                        // If merge range contains unmergeable axes, return None
-                        // Axes are not mergeable if there is some ops between those axes
-                        reshapes.push((merge_axes.clone(), split_axes.clone()));
-                    }
-                    #[allow(clippy::range_plus_one)]
-                    {
-                        merge_axes = merge_axes.end..merge_axes.end + 1;
-                        split_axes = split_axes.end..split_axes.end + 1;
-                    }
-                }
-            }
-        }
-        for (org_sh_range, new_sh_range) in &reshapes {
-            let mut axis = 0;
-            let mut op_i = 0;
-            'single_reshape_loop: loop {
-                if let Op::Loop { .. } = &self.ops[op_i] {
-                    if axis == org_sh_range.start {
-                        let n = org_sh_range.len();
-                        for _ in 0..n {
-                            self.ops.remove(op_i);
-                        }
-                        for a in new_sh_range.clone() {
-                            self.ops.insert(op_i, Op::Loop { len: shape[a] });
-                        }
-                        break 'single_reshape_loop;
-                    }
-                    axis += 1;
-                }
-                op_i += 1;
-            }
-        }
-        for op in &mut self.ops {
-            match op {
-                Op::Const { view, .. } | Op::Load { view, .. } | Op::Store { view, .. } => {
-                    for (org_sh, sh) in reshapes.iter().rev() {
-                        view.reshape(org_sh.clone(), &nshape[sh.clone()]);
-                    }
-                }
-                Op::Accumulator { .. }
-                | Op::Loop { .. }
-                | Op::AccAssign { .. }
-                | Op::Cast { .. }
-                | Op::Unary { .. }
-                | Op::Binary { .. } => {}
-            }
-        }
-        //self.debug();
-        // TODO deal with loop inserts
-        debug_assert_eq!(
-            self.shape(),
-            nshape,
-            "Shape after reshape split is incorrect."
-        );
-    }
 
     /*pub(super) fn split_loop(&mut self, op_id: usize, dimensions: &[usize]) {
         //self.debug();
@@ -643,6 +548,99 @@ impl Kernel {
         }
         (flop, mem_read, mem_write)
     }
+
+    pub fn reshape(&mut self, nshape: &[Dim]) {
+        let shape: Vec<Dim> = self.shape();
+        println!("Reshape from {shape:?} to {nshape:?}");
+        // reshape
+        // 2, 4, 1, 3, 1,    4, 5, 2
+        //       8, 3, 1, 2, 2, 2, 5
+        let mut reshapes = Vec::new();
+
+        let mut split_axes = 0..1;
+        let mut merge_axes = 0..1;
+        'a: while merge_axes.end <= shape.len() && split_axes.end <= nshape.len() {
+            match shape[merge_axes.clone()]
+                .iter()
+                .product::<Dim>()
+                .cmp(&nshape[split_axes.clone()].iter().product())
+            {
+                std::cmp::Ordering::Less => {
+                    merge_axes.end += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    split_axes.end += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if let Some(d) = shape.get(merge_axes.end) {
+                        if *d == 1 && split_axes.end == nshape.len() {
+                            merge_axes.end += 1;
+                            continue 'a;
+                        }
+                    }
+                    if let Some(d) = nshape.get(split_axes.end) {
+                        if *d == 1 && merge_axes.end == shape.len() {
+                            split_axes.end += 1;
+                            continue 'a;
+                        }
+                    }
+                    if (merge_axes.len(), split_axes.len()) != (1, 1) {
+                        // reshape
+                        // If merge range contains unmergeable axes, return None
+                        // Axes are not mergeable if there is some ops between those axes
+                        reshapes.push((merge_axes.clone(), split_axes.clone()));
+                    }
+                    #[allow(clippy::range_plus_one)]
+                    {
+                        merge_axes = merge_axes.end..merge_axes.end + 1;
+                        split_axes = split_axes.end..split_axes.end + 1;
+                    }
+                }
+            }
+        }
+        for (org_sh_range, new_sh_range) in &reshapes {
+            let mut axis = 0;
+            let mut op_i = 0;
+            'single_reshape_loop: loop {
+                if let Op::Loop { .. } = &self.ops[op_i] {
+                    if axis == org_sh_range.start {
+                        let n = org_sh_range.len();
+                        for _ in 0..n {
+                            self.ops.remove(op_i);
+                        }
+                        for a in new_sh_range.clone().rev() {
+                            self.ops.insert(op_i, Op::Loop { len: nshape[a] });
+                        }
+                        break 'single_reshape_loop;
+                    }
+                    axis += 1;
+                }
+                op_i += 1;
+            }
+        }
+        for op in &mut self.ops {
+            match op {
+                Op::Const { view, .. } | Op::Load { view, .. } | Op::Store { view, .. } => {
+                    for (org_sh, sh) in reshapes.iter().rev() {
+                        view.reshape(org_sh.clone(), &nshape[sh.clone()]);
+                    }
+                }
+                Op::Accumulator { .. }
+                | Op::Loop { .. }
+                | Op::AccAssign { .. }
+                | Op::Cast { .. }
+                | Op::Unary { .. }
+                | Op::Binary { .. } => {}
+            }
+        }
+        //self.debug();
+        // TODO deal with loop inserts
+        debug_assert_eq!(
+            self.shape(),
+            nshape,
+            "Shape after reshape split is incorrect."
+        );
+    }
 }
 
 impl std::fmt::Display for Op {
@@ -948,7 +946,7 @@ pub fn kernelize(
                         }
                     }
 
-                    kernels[kid].reshape_unchecked(shape);
+                    kernels[kid].reshape(shape);
                     debug_assert_eq!(kernels[kid].shape(), graph.shape(nid));
                     kernels[kid].outputs.clear();
                     kernels[kid].outputs.insert(nid, xt);

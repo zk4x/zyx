@@ -3,13 +3,13 @@ use crate::{
     dtype::Constant,
     graph::{
         BOp, ROp, UOp,
-        kernel::{Op, TId},
+        kernel::{self, Kernel, Op, TId},
         view::RDim,
     },
     shape::Dim,
     slab::{Slab, SlabId},
 };
-use std::{collections::BTreeMap, fmt::Display, hash::BuildHasherDefault};
+use std::{collections::{BTreeMap, BTreeSet}, fmt::Display, hash::BuildHasherDefault};
 
 use super::optimizer::Optimization;
 
@@ -140,12 +140,16 @@ impl IRKernel {
 }
 
 // convert graph kernel to IR ops
-pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
-    let mut global_variables = Vec::new();
-    let mut ops: Vec<IROp> = Vec::new();
+pub fn lower_to_ir(kernel_ops: Vec<Op>, opts: &Optimization) -> IRKernel {
+    let mut kernel = crate::graph::kernel::Kernel {
+        ops: kernel_ops,
+        loads: Vec::new(),
+        stores: Vec::new(),
+        outputs: BTreeMap::new(),
+        depends_on: BTreeSet::new(),
+    };
 
-    // reshape
-    //kernel_ops.reshape();
+    kernel.reshape(&opts.shape);
 
     // opts contains information about:
     // 1. which loops should be split
@@ -154,15 +158,18 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
     // 4. local accumulators
     // Other optimizations are far less important.
 
-    // Register map
-    let mut reg_map: Map<TId, RId> = Map::with_hasher(BuildHasherDefault::new());
+    println!("Kernel after reshape");
+    kernel.debug();
 
+    let mut global_variables = Vec::new();
+    let mut ops: Vec<IROp> = Vec::new();
+    let mut reg_map: Map<TId, RId> = Map::with_hasher(BuildHasherDefault::new());
     // Must be ordered, so BTreeMap
     let mut loop_map: BTreeMap<usize, RId> = BTreeMap::new();
 
     // set of global vairables for deduplication
     //let mut global_vars_map = Map::with_hasher(BuildHasherDefault::new());
-    for (op_id, op) in kernel_ops.iter().enumerate() {
+    for (op_id, op) in kernel.ops.iter().enumerate() {
         match op {
             &Op::Loop { len, .. } => {
                 let loop_id = loop_map.len();

@@ -80,7 +80,7 @@ impl KernelCompiler {
                 return Ok(Some(event));
             // If we know the best optimization, but it has not been compiled yet
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
-                let ir_kernel = lower_to_ir(&kernel.ops, optimization);
+                let ir_kernel = lower_to_ir(kernel.ops.clone(), optimization);
                 let program_id = device.compile(&ir_kernel, debug.asm())?;
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
@@ -103,7 +103,7 @@ impl KernelCompiler {
         if search_iters == 0 {
             // if optimizations are not requested, use default optimizations
             let optimization = Optimization::new(kernel, device.info());
-            let ir_kernel = lower_to_ir(&kernel.ops, &optimization);
+            let ir_kernel = lower_to_ir(kernel.ops.clone(), &optimization);
             if debug.ir() {
                 ir_kernel.debug();
             }
