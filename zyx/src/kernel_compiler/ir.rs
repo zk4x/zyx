@@ -2,7 +2,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     graph::{
-        BOp, UOp,
+        BOp, ROp, UOp,
         kernel::{Op, TId},
         view::RDim,
     },
@@ -18,12 +18,12 @@ pub struct IRKernel {
     /// `read_only`, dtype
     pub global_variables: Vec<(bool, DType)>,
     /// ops
-    pub ops: Slab<RId, IROp>,
+    pub ops: Vec<IROp>,
 }
 
 // IR register id
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct RId(u16);
+pub struct RId(u16);
 
 impl From<usize> for RId {
     fn from(value: usize) -> Self {
@@ -69,8 +69,8 @@ pub enum IROp {
     Binary { x: RId, y: RId, bop: BOp },
     MAdd { x: RId, y: RId, c: RId },
     Loop { len: Dim },
-    EndLoop,
     Accumulator { init: Constant },
+    AccAssign { x: RId, rop: ROp, num_loops: u32 },
     //LocalAccumulator {  },
     LocalBarrier,
 }
@@ -82,50 +82,70 @@ impl IRKernel {
             print!("{}g{i} {dtype}, ", if *read_only { "" } else { "&" });
         }
         println!(")");
+        let mut rid = 0;
+        for op in self.ops.iter().take_while(|op| matches!(op, IROp::Loop { .. })) {
+            if let IROp::Loop { len } = op {
+                println!("{rid} for 0..{len}");
+                rid += 1;
+            } else {
+                break;
+            }
+        }
         let mut indent = String::new();
-        for (rid, op) in self.ops.iter() {
+        for op in self.ops.iter().skip(rid) {
             match op {
                 IROp::Const(constant) => {
-                    println!("{rid} const {constant}");
+                    println!("{indent}{rid} const {constant}");
                 }
                 IROp::Load { address, offset } => {
-                    println!("{rid} load g{address} at offset {offset}");
+                    println!("{indent}{rid} load g{address} at offset {offset}");
                 }
                 IROp::Store { x, address, offset } => {
-                    println!("{rid} store {x} into g{address} at offset {offset}");
+                    println!("{indent}{rid} store {x} into g{address} at offset {offset}");
                 }
                 IROp::Unary { x, uop: op } => {
-                    println!("{rid} uop.{op:?} {x}");
+                    println!("{indent}{rid} uop.{op:?} {x}");
                 }
                 IROp::Cast { x, dtype } => {
-                    println!("{rid} cast {x} -> {dtype}");
+                    println!("{indent}{rid} cast {x} -> {dtype}");
                 }
                 IROp::Binary { x, y, bop: op } => {
-                    println!("{rid} bop.{op:?} {x}, {y}");
+                    println!("{indent}{rid} bop.{op:?} {x}, {y}");
                 }
                 IROp::MAdd { x, y, c } => {
-                    println!("{rid} madd {x} * {y} + {c}");
+                    println!("{indent}{rid} madd {x} * {y} + {c}");
                 }
                 IROp::Loop { len } => {
-                    println!("{rid} for 0..{len}");
+                    println!("{indent}{rid} for 0..{len}");
                     indent.push_str("  ");
                 }
                 IROp::AccAssign { x, rop, num_loops } => {
-                    println!();
-                    for _ in 0..num_loops*2 {
+                    match rop {
+                        ROp::Sum => println!("{indent}{rid} += {x}"),
+                        ROp::Max => println!("{indent}{rid} max= {x}"),
+                    }
+                    for _ in 0..num_loops * 2 {
+                        indent.pop();
                     }
                 }
-                IROp::Accumulator { init } => todo!(),
+                IROp::Accumulator { init } => {
+                    println!("{indent}{rid} acc = {init}");
+                }
                 IROp::LocalBarrier => todo!(),
             }
+            rid += 1;
         }
+        println!();
     }
 }
 
 // convert graph kernel to IR ops
 pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
     let mut global_variables = Vec::new();
-    let mut ops: Slab<RId, IROp> = Slab::new();
+    let mut ops: Vec<IROp> = Vec::new();
+
+    // reshape
+    //kernel_ops.reshape();
 
     // opts contains information about:
     // 1. which loops should be split
@@ -162,37 +182,59 @@ pub fn lower_to_ir(kernel_ops: &[Op], opts: &Optimization) -> IRKernel {
                     ops.push(IROp::Const(Constant::U64(0)));
                     for (i, &RDim { d, st, lp, rp }) in view.0[0].iter().enumerate() {
                         ops.push(IROp::Const(Constant::U64(st as u64)));
-                        let y = RId(ops.len().0 - 1);
+                        let y = (ops.len() - 1).into();
                         ops.push(IROp::MAdd { x: loop_map[&i], y, c: offset });
-                        offset = RId(ops.len().0 - 1);
+                        offset = (ops.len() - 1).into();
                     }
                 }
 
                 ops.push(IROp::Load { address, offset });
 
-                reg_map.insert(op_id, RId(ops.len().0 - 1));
+                reg_map.insert(op_id, (ops.len() - 1).into());
             }
-            Op::Store { x, view, dtype } => {}
+            &Op::Store { x, ref view, dtype } => {
+                let address = global_variables.len() as u16;
+                global_variables.push((false, dtype));
+
+                let mut offset = ops.len().into();
+                // Calculate the offset
+                {
+                    ops.push(IROp::Const(Constant::U64(0)));
+                    for (i, &RDim { d, st, lp, rp }) in view.0[0].iter().enumerate() {
+                        ops.push(IROp::Const(Constant::U64(st as u64)));
+                        let y = (ops.len() - 1).into();
+                        ops.push(IROp::MAdd { x: loop_map[&i], y, c: offset });
+                        offset = (ops.len() - 1).into();
+                    }
+                }
+
+                ops.push(IROp::Store { x: reg_map[&x], address, offset });
+            }
             &Op::Unary { x, uop } => {
                 ops.push(IROp::Unary { x: reg_map[&x], uop });
-                reg_map.insert(op_id, RId(ops.len().0 - 1));
+                reg_map.insert(op_id, (ops.len() - 1).into());
             }
             &Op::Cast { x, dtype } => {
                 ops.push(IROp::Cast { x: reg_map[&x], dtype });
-                reg_map.insert(op_id, RId(ops.len().0 - 1));
+                reg_map.insert(op_id, (ops.len() - 1).into());
             }
             &Op::Binary { x, y, bop } => {
                 ops.push(IROp::Binary { x: reg_map[&x], y: reg_map[&y], bop });
-                reg_map.insert(op_id, RId(ops.len().0 - 1));
+                reg_map.insert(op_id, (ops.len() - 1).into());
             }
             Op::Accumulator { rop, dtype } => {
-                todo!()
+                let init = match rop {
+                    ROp::Sum => dtype.zero_constant(),
+                    ROp::Max => dtype.min_constant(),
+                };
+                ops.push(IROp::Accumulator { init });
+                reg_map.insert(op_id, (ops.len() - 1).into());
             }
             &Op::AccAssign { x, rop, num_loops } => {
                 for _ in 0..num_loops {
                     loop_map.pop_last();
                 }
-                todo!()
+                ops.push(IROp::AccAssign { x: reg_map[&x], rop, num_loops });
             }
         }
     }
