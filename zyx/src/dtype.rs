@@ -75,7 +75,7 @@ impl DType {
         }
     }
 
-    #[must_use]
+    /*#[must_use]
     pub(super) const fn is_shiftable(self) -> bool {
         match self {
             Self::BF16
@@ -89,7 +89,7 @@ impl DType {
             | Self::I64 => false,
             Self::U8 | Self::U16 | Self::U32 | Self::U64 => true,
         }
-    }
+    }*/
 
     // TODO remove this in favor of bit_size, since we need to support quantized dtypes
     /// Get the size of this dtype in bytes
@@ -205,9 +205,9 @@ impl DType {
             "U64" => Self::U64,
             "BOOL" => Self::Bool,
             _ => {
-                return Err(ZyxError::ParseError(format!(
-                    "Could not parse dtype {text}"
-                ).into()))
+                return Err(ZyxError::ParseError(
+                    format!("Could not parse dtype {text}").into(),
+                ));
             }
         })
     }
@@ -254,16 +254,27 @@ impl Constant {
         match dtype {
             DType::BF16 => Self::BF16(bf16::from_ne_bytes([bytes[0], bytes[1]]).to_bits()),
             DType::F16 => Self::F16(f16::from_ne_bytes([bytes[0], bytes[1]]).to_bits()),
-            DType::F32 => Self::F32(f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]).to_bits()),
-            DType::F64 => Self::F64(f64::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]).to_bits()),
+            DType::F32 => {
+                Self::F32(f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]).to_bits())
+            }
+            DType::F64 => Self::F64(
+                f64::from_ne_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                ])
+                .to_bits(),
+            ),
             DType::U8 => Self::U8(u8::from_ne_bytes([bytes[0]])),
             DType::U16 => Self::U16(u16::from_ne_bytes([bytes[0], bytes[1]])),
             DType::U32 => Self::U32(u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
-            DType::U64 => Self::U64(u64::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]])),
+            DType::U64 => Self::U64(u64::from_ne_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ])),
             DType::I8 => Self::I8(i8::from_ne_bytes([bytes[0]])),
             DType::I16 => Self::I16(i16::from_ne_bytes([bytes[0], bytes[1]])),
             DType::I32 => Self::I32(i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
-            DType::I64 => Self::I64(i64::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]])),
+            DType::I64 => Self::I64(i64::from_ne_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ])),
             DType::Bool => Self::Bool(bytes[0] != 0),
         }
     }
@@ -286,7 +297,7 @@ impl Constant {
         }
     }
 
-    pub(crate) fn is_zero(&self) -> bool {
+    /*pub(crate) fn is_zero(&self) -> bool {
         match *self {
             Constant::BF16(x) => bf16::from_bits(x) == bf16::ZERO,
             Constant::F16(x) => f16::from_bits(x) == f16::ZERO,
@@ -340,7 +351,7 @@ impl Constant {
             Constant::I64(x) => x == 2,
             Constant::Bool(_) => false,
         }
-    }
+    }*/
 }
 
 impl Display for Constant {
