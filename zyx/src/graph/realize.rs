@@ -1,8 +1,6 @@
 //! Converts graph to kernels and schedules them to devices
 
-use crate::{
-    Map, Set, ZyxError, graph::kernel::Op, runtime::Runtime, shape::Dim, tensor::TensorId,
-};
+use crate::{Map, Set, ZyxError, runtime::Runtime, shape::Dim, tensor::TensorId};
 use std::{collections::BTreeSet, hash::BuildHasherDefault};
 
 use super::{Node, kernel::kernelize};
@@ -43,7 +41,7 @@ impl Runtime {
 
         //let t = crate::Timer::new("realize_graph");
         let begin = std::time::Instant::now();
-        let mut kernels = kernelize(
+        let kernels = kernelize(
             &self.graph,
             &order,
             rcs,
