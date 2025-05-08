@@ -182,16 +182,25 @@ pub(super) fn initialize_device(
             return Ok(());
         }
     }
-    let opencl_paths = [
-        "/lib/libOpenCL.so",
-        "/lib64/libOpenCL.so",
-        "/lib/x86_64-linux-gnu/libOpenCL.so",
-        "/lib64/x86_64-linux-gnu/libOpenCL.so",
-        "/usr/lib/libOpenCL.so",
-        "/usr/lib64/libOpenCL.so",
-        "/usr/lib/x86_64-linux-gnu/libOpenCL.so",
-        "/usr/lib64/x86_64-linux-gnu/libOpenCL.so",
-    ];
+
+    // Search for opencl dynamic library path, kinda primitive, but fast and mostly works
+    let mut opencl_paths = Vec::new();
+    for lib_folder in ["/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu"] {
+        if let Ok(lib_folder) = std::fs::read_dir(lib_folder) {
+            for entry in lib_folder {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let name = path.file_name().unwrap().to_str().unwrap();
+                        if name.contains("libOpenCL.so") {
+                            opencl_paths.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let opencl = opencl_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
         return Err(BackendError {
