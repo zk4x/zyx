@@ -110,7 +110,11 @@ impl IRKernel {
                     println!("{rid} for 0..{len}");
                     indent.push_str("  ");
                 }
-                IROp::EndLoop => todo!(),
+                IROp::AccAssign { x, rop, num_loops } => {
+                    println!();
+                    for _ in 0..num_loops*2 {
+                    }
+                }
                 IROp::Accumulator { init } => todo!(),
                 IROp::LocalBarrier => todo!(),
             }
