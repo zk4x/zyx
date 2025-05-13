@@ -27,12 +27,12 @@ pub type TensorId = u32;
 /// The `Tensor` struct contains an internal identifier (`id`) that uniquely identifies each tensor.
 /// Thus tensor is only 4 bytes, but it is reference counted, so it is not Copy. Clones are cheap, but require
 /// locking a mutex.
-/// 
+///
 /// ## Initialization
-/// 
+///
 /// Tensors are initialized using Tensor::from.
 /// This works for initialization from arrays, vectors or scalars. Arrays can be nested.
-/// 
+///
 /// For initialization from various random distributions, check respective associated methods.
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Tensor {
@@ -2670,7 +2670,7 @@ impl Tensor {
 
         let mut metadata = Map::default();
         for _ in 0..metadata_kv_count {
-            // First string key, (len u64, chars), 
+            // First string key, (len u64, chars),
             let mut metadata_key_len = [0; 8];
             f.read_exact(&mut metadata_key_len)?;
             let metadata_key_len = u64::from_le_bytes(metadata_key_len);
@@ -3723,6 +3723,27 @@ impl<T: Scalar> From<Vec<T>> for Tensor {
 impl<T: Scalar> TempData for Vec<T> {
     fn bytes(&self) -> usize {
         self.len() * T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> &[u8] {
+        let ptr: *const u8 = self.as_ptr().cast();
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+    }
+}
+
+impl<T: Scalar> From<Vec<Vec<T>>> for Tensor {
+    fn from(data: Vec<Vec<T>>) -> Self {
+        Tensor { id: RT.lock().variable(vec![data.len(), data[0].len()], Box::new(data)).unwrap() }
+    }
+}
+
+impl<T: Scalar> TempData for Vec<Vec<T>> {
+    fn bytes(&self) -> usize {
+        self.len() * self[0].len() * T::byte_size()
     }
 
     fn dtype(&self) -> DType {
