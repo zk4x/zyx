@@ -245,18 +245,19 @@ impl Tensor {
         name: &str,
     ) -> Result<(), std::io::Error> {
         use std::format;
+        let path = format!("{name}.dot");
         let graph = RT.lock().plot_dot_graph(&tensors.into_iter().map(|t| t.id).collect());
-        std::fs::write(format!("{name}.dot"), graph)?;
+        std::fs::write(&path, graph)?;
         let output = std::process::Command::new("dot")
             .arg("-Tsvg")
-            .arg(format!("{name}.dot"))
+            .arg(&path)
             .arg("-o")
             .arg(format!("{name}.svg"))
             .output();
         if let Err(err) = output {
             println!("Graph png could not be created: {err}");
         } else {
-            let _ = std::fs::remove_file(format!("{name}.dot"));
+            let _ = std::fs::remove_file(path);
         }
         Ok(())
     }

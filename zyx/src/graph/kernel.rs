@@ -551,7 +551,7 @@ impl Kernel {
 
     pub fn reshape(&mut self, nshape: &[Dim]) {
         let shape: Vec<Dim> = self.shape();
-        //println!("Reshape from {shape:?} to {nshape:?}");
+        println!("Reshape from {shape:?} to {nshape:?}");
         // reshape
         // 2, 4, 1, 3, 1,    4, 5, 2
         //       8, 3, 1, 2, 2, 2, 5
@@ -668,6 +668,7 @@ impl Kernel {
         }
         //self.debug();
         // TODO deal with loop inserts
+        self.debug();
         debug_assert_eq!(
             self.shape(),
             nshape,

@@ -6,13 +6,7 @@
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
-    DType,
-    dtype::Constant,
-    error::{BackendError, ErrorStatus},
-    graph::{BOp, UOp},
-    kernel_compiler::{IRKernel, IROp},
-    shape::Dim,
-    slab::Slab,
+    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, ROp, UOp}, kernel_compiler::{IRKernel, IROp}, shape::Dim, slab::Slab, DType
 };
 use libloading::Library;
 use nanoserde::DeJson;
@@ -688,17 +682,17 @@ impl OpenCLDevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        /*for (i, op) in kernel.ops.iter() {
+        for (i, op) in kernel.ops.iter().enumerate() {
             if let IROp::Loop { len } = op {
-                if i < 3 {
-                    global_work_size[i] = *len;
-                } else {
-                    local_work_size[i - 3] = *len;
+                match i {
+                    0..3 => global_work_size[i] = *len,
+                    3..6 => local_work_size[i-3] = *len,
+                    6.. => break,
                 }
             } else {
                 unreachable!()
             }
-        }*/
+        }
 
         // Declare global variables
         for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
@@ -728,7 +722,8 @@ impl OpenCLDevice {
         }*/
 
         // Add indices for global and local loops
-        writeln!(
+        _ = writeln!(source, "{indent}unsigned long r0, r1, r2, r3, r4, r5;");
+        _ = writeln!(
             source,
             "{indent}r0 = get_group_id(0);  /* 0..{} */\n{indent}r1 = get_group_id(1);  /* 0..{} */\n{indent}r2 = get_group_id(2);  /* 0..{} */\n{indent}r3 = get_local_id(0);  /* 0..{} */\n{indent}r4 = get_local_id(1);  /* 0..{} */\n{indent}r5 = get_local_id(2);  /* 0..{} */",
             global_work_size[0],
@@ -737,172 +732,69 @@ impl OpenCLDevice {
             local_work_size[0],
             local_work_size[1],
             local_work_size[2]
-        ).unwrap();
+        );
 
         //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
 
         let mut loop_id = 6;
-        /*for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
+        let mut acc_id = 0;
+        let mut id = 6;
+        for op in &kernel.ops[6..kernel.ops.len()] {
             match op {
+                IROp::Const(constant) => _ = writeln!(source, "{indent}{} r{id} = {constant};", constant.dtype().ocl()),
                 IROp::Load { address, offset } => {
-                    //source += &format!("{indent}r{z} = p{address}[{}];\n", offset.ocl());
-                    let dtype = kernel.addressables[address as usize].1;
-                    /*let dt_bits = dtype.bit_size();
-                    if dt_bits <= 64 {
-                        source += &format!(
-                            "{indent}r{z} = p{address}[{0}/{1}] >> (({0} % {1}) * {dt_bits});\n",
-                            offset.ocl(),
-                            64 / dt_bits
-                        );
-                    } else {
-                        todo!()
-                    }*/
-                    match dtype {
-                        DType::BF16
-                        | DType::F16
-                        | DType::F32
-                        | DType::F64
-                        | DType::U8
-                        | DType::U16
-                        | DType::U32
-                        | DType::U64
-                        | DType::I8
-                        | DType::I16
-                        | DType::I32
-                        | DType::I64
-                        | DType::Bool => {
-                            _ = writeln!(
-                                source,
-                                "{indent}r{z} = *((__global {}*)p{address} + {});",
-                                dtype.ocl(),
-                                offset.ocl(),
-                            );
-                        }
-                    }
+                    _ = writeln!(source, "{indent}{} r{id} = p{address}[{offset}];", kernel.global_variables[*address as usize].1.ocl());
                 }
-                IROp::Store { address, offset, x } => {
-                    //source += &format!("{indent}p{address}[{}] = {};\n", offset.ocl(), x.ocl());
-                    let dtype = kernel.addressables[address as usize].1;
-                    match dtype {
-                        DType::BF16
-                        | DType::F16
-                        | DType::F32
-                        | DType::F64
-                        | DType::U8
-                        | DType::U16
-                        | DType::U32
-                        | DType::U64
-                        | DType::I8
-                        | DType::I16
-                        | DType::I32
-                        | DType::I64
-                        | DType::Bool => {
-                            writeln!(
-                                source,
-                                "{indent}*((__global {}*)p{address} + {}) = {};",
-                                dtype.ocl(),
-                                offset.ocl(),
-                                x.ocl(),
-                            ).unwrap();
-                        }
-                    }
+                IROp::Store { x, address, offset } => {
+                    _ = writeln!(source, "{indent}p{address}[{offset}] = {x};");
                 }
-                IROp::SetLocal { .. } => todo!(),
-                IROp::Set { z, value } => {
-                    writeln!(source, "{indent}r{z} = {};", value.ocl()).unwrap();
-                }
-                IROp::Cast { z, x, dtype } => {
-                    writeln!(source, "{indent}r{z} = ({})r{x};", dtype.ocl()).unwrap();
-                }
-                IROp::Unary { z, x, uop } => {
-                    let dtype = kernel.registers[z as usize];
+                IROp::Unary { x, uop } => {
                     match uop {
-                        UOp::ReLU => writeln!(
-                            source,
-                            "{indent}r{z} = max(r{x}, {});",
-                            dtype.zero_constant().ocl()
-                        ).unwrap(),
-                        UOp::Neg => writeln!(source, "{indent}r{z} = -r{x};").unwrap(),
-                        UOp::Exp2 => writeln!(source, "{indent}r{z} = exp2(r{x});").unwrap(),
-                        UOp::Log2 => writeln!(source, "{indent}r{z} = log2(r{x});").unwrap(),
-                        UOp::Reciprocal => writeln!(source, "{indent}r{z} = 1/r{x};").unwrap(),
-                        UOp::Sqrt => writeln!(
-                            source,
-                            "{indent}r{z} = sqrt({}r{x});",
-                            if matches!(dtype, DType::F16) {
-                                "(float)"
-                            } else {
-                                ""
-                            }
-                        ).unwrap(),
-                        UOp::Sin => writeln!(source, "{indent}r{z} = sin(r{x});").unwrap(),
-                        UOp::Cos => writeln!(source, "{indent}r{z} = cos(r{x});").unwrap(),
-                        UOp::Not => writeln!(source, "{indent}r{z} = !r{x};").unwrap(),
+                        UOp::ReLU => todo!(),
+                        UOp::Neg => todo!(),
+                        UOp::Exp2 => _ = writeln!(source, "{indent}float r{id} = exp2({x});"),
+                        UOp::Log2 => todo!(),
+                        UOp::Reciprocal => todo!(),
+                        UOp::Sqrt => todo!(),
+                        UOp::Sin => todo!(),
+                        UOp::Cos => todo!(),
+                        UOp::Not => todo!(),
                     }
                 }
-                IROp::Binary { z, x, y, bop } => {
-                    let dtype = kernel.registers[z as usize];
-                    writeln!(
-                        source,
-                        "{indent}r{z} = {};",
-                        match bop {
-                            BOp::Add => format!("{} + {}", x.ocl(), y.ocl()),
-                            BOp::Sub => format!("{} - {}", x.ocl(), y.ocl()),
-                            BOp::Mul => format!("{} * {}", x.ocl(), y.ocl()),
-                            BOp::Div => format!("{} / {}", x.ocl(), y.ocl()),
-                            BOp::Mod => format!("{} % {}", x.ocl(), y.ocl()),
-                            BOp::Pow => format!(
-                                "{}({}, {})",
-                                if dtype.is_float() { "pow" } else { "pown" },
-                                x.ocl(),
-                                y.ocl()
-                            ),
-                            //BOp::Pow => format!("exp2({} * log2(abs({})))", y.ocl(), x.ocl()),
-                            BOp::Cmplt => format!("{} < {}", x.ocl(), y.ocl()),
-                            BOp::Cmpgt => format!("{} > {}", x.ocl(), y.ocl()),
-                            BOp::NotEq => format!("{} != {}", x.ocl(), y.ocl()),
-                            BOp::Max => format!("max({}, {})", x.ocl(), y.ocl()),
-                            BOp::Or => format!("{} || {}", x.ocl(), y.ocl()),
-                            BOp::And => format!("{} && {}", x.ocl(), y.ocl()),
-                            BOp::BitOr => format!("{} | {}", x.ocl(), y.ocl()),
-                            BOp::BitAnd => format!("{} & {}", x.ocl(), y.ocl()),
-                            BOp::BitXor => format!("{} ^ {}", x.ocl(), y.ocl()),
-                            BOp::BitShiftLeft => format!("{} << {}", x.ocl(), y.ocl()),
-                            BOp::BitShiftRight => format!("{} >> {}", x.ocl(), y.ocl()),
-                        }
-                    ).unwrap();
-                    //if z == 24 && bop == BOp::Sub { source += "  printf(\"r24: %f i2; %u i4: %u\\n\", r24, r2, r4);\n"; }
-                }
-                /*IROp::MAdd { z, a, b, c } => {
-                    let dtype = kernel.registers[z as usize];
-                    if dtype.is_float() {
-                        writeln!(
-                            source,
-                            "{indent}r{z} = mad({}, {}, {});\n",
-                            a.ocl(),
-                            b.ocl(),
-                            c.ocl()
-                        ).unwrap();
-                    } else {
-                        writeln!(source, "{indent}r{z} = {} * {} + {};", a.ocl(), b.ocl(), c.ocl()).unwrap();
-                    }
-                }*/
+                IROp::Cast { x, dtype } => todo!(),
+                IROp::Binary { x, y, bop } => todo!(),
+                IROp::MAdd { x, y, c } => _ = writeln!(source, "{indent}unsigned long r{id} = {x} * {y} + {c};"),
                 IROp::Loop { len } => {
-                    writeln!(source, "{indent}for (r{loop_id} = 0; r{loop_id} < {len}; r{loop_id} += 1) {{").unwrap();
+                    _ = writeln!(source, "{indent}for (unsigned long r{loop_id} = 0; r{loop_id} < {len}; r{loop_id}++) {{");
                     indent += "  ";
                     loop_id += 1;
                 }
-                IROp::EndLoop => {
-                    indent.pop();
-                    indent.pop();
-                    writeln!(source, "{indent}}}").unwrap();
-                    loop_id -= 1;
+                IROp::Accumulator { init } => {
+                    _ = writeln!(source, "{indent}{} acc{acc_id} = {init};", init.dtype().ocl());
+                    acc_id += 1;
                 }
-                IROp::LocalBarrier => {
-                    writeln!(source, "{indent}barrier(CLK_LOCAL_MEM_FENCE);");
+                IROp::AccAssign { x, rop, num_loops } => {
+                    acc_id -= 1;
+                    match rop {
+                        ROp::Sum =>  _ = writeln!(source, "{indent}acc{acc_id} = {x} + acc{acc_id};"),
+                        ROp::Max =>  _ = writeln!(source, "{indent}acc{acc_id} = max({x}, acc{acc_id});"),
+                    }
+                    loop_id -= num_loops;
+                    for _ in 0..*num_loops {
+                        indent.pop();
+                        indent.pop();
+                        _ = writeln!(source, "{indent}}}");
+                    }
                 }
+                IROp::LocalBarrier => todo!(),
             }
-        }*/
+            id += 1;
+        }
+        for _ in 0..loop_id-6 {
+            indent.pop();
+            indent.pop();
+            _ = writeln!(source, "{indent}}}");
+        }
         source += "}\n";
 
         let local_work_size = local_work_size;
