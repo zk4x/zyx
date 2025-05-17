@@ -27,6 +27,8 @@
   - [x] realization while not tracing gradients
   - [x] gradient tape
   - [x] switch shape, paddings and axes in graph from Vec to Box<[]>
+- [ ] kernelizer
+  - [ ] fix kernel reshape with shape that contains AccAssign ops and new loops after those
 - [x] scheduler
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
   - [ ] improve reshape node

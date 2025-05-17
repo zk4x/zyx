@@ -599,6 +599,7 @@ impl Kernel {
                 }
             }
         }
+        println!("reshapes: {reshapes:?}");
         for (org_sh_range, new_sh_range) in &reshapes {
             let mut axis = 0;
             let mut op_i = 0;
@@ -618,6 +619,7 @@ impl Kernel {
                 }
                 op_i += 1;
             }
+            self.debug();
             // Update ids for all ops
             if new_sh_range.len() > org_sh_range.len() {
                 let len = new_sh_range.len() - org_sh_range.len();
