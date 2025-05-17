@@ -12,6 +12,7 @@ use zyx_core::{
 };
 
 /// Variable in IR
+#[derive(Debug)]
 pub enum Var {
     Local { id: u8, index: String },
     Register { id: u8, index: Option<String> },
@@ -41,6 +42,7 @@ impl Display for Var {
 }
 
 /// Unary op
+#[derive(Debug)]
 pub enum UOp {
     Noop, // Just assign
     Cast(DType),
@@ -54,6 +56,7 @@ pub enum UOp {
 }
 
 /// Binary op
+#[derive(Debug)]
 pub enum BOp {
     Add,
     Sub,
@@ -65,6 +68,7 @@ pub enum BOp {
 }
 
 /// Op for the compilers
+#[derive(Debug)]
 pub enum Op {
     /// Load into res from arg at index
     LoadGlobal { res: Var, arg: u8, index: Index },
@@ -119,6 +123,7 @@ pub enum Op {
 }
 
 /// Intermediate representation for compilers
+#[derive(Debug)]
 pub struct IR {
     pub global_work_size: Vec<usize>,
     pub local_work_size: Vec<usize>,

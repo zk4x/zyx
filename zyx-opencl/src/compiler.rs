@@ -1,6 +1,7 @@
 use alloc::{
     boxed::Box, collections::BTreeSet, ffi::CString, format as f, string::String, vec::Vec,
 };
+use opencl_sys::cl_icd::clBuildProgram_fn;
 use core::{ffi::c_void, ptr};
 use opencl_sys::{clBuildProgram, clCreateBuffer, clCreateCommandQueue, clCreateContext, clCreateKernel, clCreateProgramWithSource, clEnqueueNDRangeKernel, clEnqueueReadBuffer, clEnqueueWriteBuffer, clGetDeviceIDs, clGetPlatformIDs, clGetProgramBuildInfo, clReleaseEvent, clReleaseMemObject, clReleaseProgram, clSetKernelArg, clWaitForEvents, cl_device_id, cl_device_type, cl_int, cl_platform_id, cl_program_info, cl_uint, CL_DEVICE_NOT_FOUND, CL_DEVICE_TYPE_ALL, CL_MEM_HOST_READ_ONLY, CL_MEM_READ_ONLY, CL_MEM_READ_WRITE, CL_NON_BLOCKING, CL_PROGRAM_BUILD_LOG, CL_SUCCESS, clFinish};
 use zyx_compiler::{BOp, Op, UOp};
@@ -837,6 +838,7 @@ impl zyx_compiler::Compiler for Compiler {
     }
 
     fn compile(&mut self, ir: &zyx_compiler::IR) -> Result<Self::Program, ZyxError> {
+        std::println!("{ir:#?}");
         let id_t = "unsigned int";
         let mut source = f!("(\n");
 
