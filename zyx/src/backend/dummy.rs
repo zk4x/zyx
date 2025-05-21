@@ -1,7 +1,7 @@
 use std::ptr;
 use nanoserde::DeJson;
 use crate::{
-    error::{BackendError, ErrorStatus}, kernel_compiler::IRKernel, runtime::Pool, shape::Dim, slab::{Slab, SlabId}
+    error::{BackendError, ErrorStatus}, graph::kernel::Op, runtime::Pool, shape::Dim, slab::{Slab, SlabId}
 };
 use super::{
     opencl::OpenCLEvent, BufferId, Device, DeviceInfo, Event, MemoryPool, ProgramId
@@ -157,7 +157,7 @@ impl DummyDevice {
     #[allow(clippy::unnecessary_wraps)]
     pub const fn compile(
         &mut self,
-        kernel: &IRKernel,
+        kernel: &[Op],
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
         let _ = self;

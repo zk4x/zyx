@@ -1,9 +1,8 @@
 //! Converts graph to kernels and schedules them to devices
 
-use crate::{Map, Set, ZyxError, runtime::Runtime, shape::Dim, tensor::TensorId};
-use std::{collections::BTreeSet, hash::BuildHasherDefault};
-
-use super::{Node, kernel::kernelize};
+use crate::{graph::kernel::Op, runtime::Runtime, tensor::TensorId, Map, Set, ZyxError};
+use std::hash::BuildHasherDefault;
+use super::Node;
 
 impl Runtime {
     /// 1. gets a set of tensors which need to be processed and in which order
@@ -41,16 +40,115 @@ impl Runtime {
 
         //let t = crate::Timer::new("realize_graph");
         let begin = std::time::Instant::now();
-        let kernels = kernelize(
-            &self.graph,
-            &order,
-            rcs,
-            &to_eval,
-            &self.pools,
-            &realized_nodes,
-        );
+        {
+            let graph = &self.graph;
+            let order: &[TensorId] = &order;
+            let to_eval: &Set<TensorId> = &to_eval;
+            let memory_pools = &self.pools;
+            let realized_nodes: &Set<TensorId> = &realized_nodes;
+            let mut rcs = if rcs.is_empty() {
+                let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+                // to_eval are not in rcs
+                for &nid in order {
+                    if !realized_nodes.contains(&nid) {
+                        for nid in graph[nid].parameters() {
+                            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                        }
+                    }
+                }
+                rcs
+            } else {
+                rcs
+            };
 
-        let elapsed = begin.elapsed().as_micros();
+            #[cfg(debug_assertions)]
+            {
+                let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
+                // to_eval are not in rcs
+                for &nid in order {
+                    if !realized_nodes.contains(&nid) {
+                        for nid in graph[nid].parameters() {
+                            rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                        }
+                    }
+                }
+                if rcs2 != rcs {
+                    println!("Realized nodes: {realized_nodes:?}");
+                    for &nid in order {
+                        println!(
+                            "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}",
+                            graph[nid],
+                            graph.shape(nid),
+                            rcs.get(&nid).copied().unwrap_or(0),
+                            rcs2.get(&nid).copied().unwrap_or(0),
+                        );
+                    }
+                    panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
+                }
+            }
+
+            // All tensors from loads
+            // When a tensor needs load that is not yet in realized tensors, we can immediatelly send it for execution
+            let mut ops: Map<TensorId, Op> = Map::with_hasher(Default::default());
+            // Loads
+            let mut loads: Map<TensorId, Vec<TensorId>> = Map::with_hasher(Default::default());
+
+            for &nid in order {
+                match graph[nid] {
+                    Node::Const { value } => {
+                        ops.insert(nid, Op::constant(value));
+                    }
+                    Node::Leaf { dtype } => {
+                        let shape = graph.shape(nid);
+                        ops.insert(nid, Op::load(&shape, dtype));
+                    }
+                    Node::Expand { x } => {
+                        //let shape = graph.shape(nid);
+                        //ops.get_mut(&x).unwrap().movement(|view| view.expand(shape));
+                        todo!();
+                    }
+                    Node::Permute { x } => {
+                        let axes = graph.axes(nid);
+                        ops.get_mut(&x).unwrap().movement(|view| view.permute(axes));
+                    }
+                    Node::Reshape { x } => {
+                        //let shape = graph.shape(nid);
+                        //ops.get_mut(&x).unwrap().movement(|view| view.reshape(shape));
+                        todo!();
+                    }
+                    Node::Pad { x } => {
+                        //let padding = graph.padding(nid);
+                        //ops.get_mut(&x).unwrap().movement(|view| view.pad(padding));
+                        todo!();
+                    }
+                    Node::Reduce { x, rop } => todo!(),
+                    Node::Cast { x, dtype } => {
+                        if let Some(op) = ops.remove(&x) {
+                            ops.insert(nid, Op::cast(op, dtype));
+                        }
+                    }
+                    Node::Unary { x, uop } => {
+                        if let Some(op) = ops.remove(&x) {
+                            ops.insert(nid, Op::unary(op, uop));
+                        }
+                    }
+                    Node::Binary { x, y, bop } => {
+                        if let Some(opx) = ops.remove(&x) {
+                            if let Some(opy) = ops.remove(&y) {
+                                ops.insert(nid, Op::binary(opx, opy, bop));
+                            }
+                        }
+                    }
+                }
+            }
+            for (id, op) in ops {
+                println!("{id} -> {op:?}");
+            }
+
+            todo!()
+        }
+
+        /*let elapsed = begin.elapsed().as_micros();
         let mut min_ops = usize::MAX;
         let mut max_ops = 0;
         let mut avg_ops = 0;
@@ -274,7 +372,7 @@ impl Runtime {
             to_delete.remove(&tensor);
         }
         // Delete the node, but do not use release function, just remove it from graph.nodes
-        self.graph.delete_tensors(&to_delete);
+        self.graph.delete_tensors(&to_delete);*/
 
         Ok(())
     }

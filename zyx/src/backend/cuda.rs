@@ -15,13 +15,7 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    DType,
-    dtype::Constant,
-    error::{BackendError, ErrorStatus},
-    graph::{BOp, UOp},
-    kernel_compiler::{IRKernel, IROp, IRScope},
-    shape::Dim,
-    slab::Slab,
+    dtype::Constant, error::{BackendError, ErrorStatus}, graph::kernel::Op, shape::Dim, slab::Slab, DType
 };
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
@@ -567,7 +561,7 @@ impl CUDADevice {
 
     pub fn compile(
         &mut self,
-        kernel: &IRKernel,
+        kernel: &[Op],
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
         let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
@@ -708,7 +702,7 @@ impl CUDADevice {
     #[allow(clippy::type_complexity)]
     fn compile_cuda(
         &self,
-        kernel: &IRKernel,
+        kernel: &[Op],
         debug_asm: bool,
     ) -> Result<([Dim; 3], [Dim; 3], String, Vec<u8>), BackendError> {
         let mut source = String::from("(\n");
@@ -730,14 +724,14 @@ impl CUDADevice {
         }*/
 
         // Declare global variables
-        for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
+        /*for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
             writeln!(
                 source,
                 "{indent}{}{}* p{id},",
                 if *read_only { "const " } else { "" },
                 dtype.cu(),
             );
-        }
+        }*/
 
         source.pop();
         source.pop();
@@ -969,7 +963,7 @@ impl CUDADevice {
     #[allow(unused)]
     fn compile_ptx(
         &mut self,
-        kernel: &IRKernel,
+        kernel: &[Op],
         debug_asm: bool,
     ) -> ([Dim; 3], [Dim; 3], Box<str>, Vec<u8>) {
         let mut global_work_size = [0; 3];
@@ -1003,9 +997,9 @@ impl CUDADevice {
             self.compute_capability[0], self.compute_capability[1]
         );
         // Declare global variables
-        for (id, (_, _)) in kernel.global_variables.iter().enumerate() {
+        /*for (id, (_, _)) in kernel.global_variables.iter().enumerate() {
             writeln!(source, "{indent}.param    .u64 g{id},");
-        }
+        }*/
         source.pop();
         source.pop();
         source += "\n) {\n";

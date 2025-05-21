@@ -1,22 +1,16 @@
+
 use crate::{
     DebugMask, Map,
     backend::{BufferId, Device, DeviceInfo, Event, ProgramId},
     error::BackendError,
-    graph::kernel::{Kernel, Op},
+    graph::kernel::Op,
     prog_bar::ProgressBar,
     runtime::Pool,
 };
 use std::hash::BuildHasherDefault;
 
-mod ir;
-mod optimizer;
-
-use ir::lower_to_ir;
-pub use ir::{IRKernel, IROp, IRScope};
-use optimizer::{Optimization, Optimizer};
-
 #[derive(Debug)]
-pub struct KernelCompiler {
+pub struct Optimizer {
     device_infos: Map<DeviceInfo, u32>,
     kernels: Map<Vec<Op>, u32>,
     // Finished optimizations of kernels for given devices
@@ -27,9 +21,12 @@ pub struct KernelCompiler {
     programs: Map<(u32, u32), ProgramId>,
 }
 
-impl KernelCompiler {
-    pub const fn new() -> KernelCompiler {
-        KernelCompiler {
+#[derive(Debug)]
+enum Optimization {}
+
+impl Optimizer {
+    pub const fn new() -> Optimizer {
+        Optimizer {
             device_infos: Map::with_hasher(BuildHasherDefault::new()),
             kernels: Map::with_hasher(BuildHasherDefault::new()),
             optimizations: Map::with_hasher(BuildHasherDefault::new()),
@@ -54,7 +51,7 @@ impl KernelCompiler {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn launch(
         &mut self,
-        kernel: &Kernel,
+        kernel: &[Op],
         device_id: u32,
         device: &mut Device,
         pool: &mut Pool,
@@ -63,7 +60,7 @@ impl KernelCompiler {
         search_iters: usize,
         debug: DebugMask,
     ) -> Result<Option<Event>, BackendError> {
-        let dev_info_id = if let Some(&dev_info_id) = self.device_infos.get(device.info()) {
+        /*let dev_info_id = if let Some(&dev_info_id) = self.device_infos.get(device.info()) {
             dev_info_id
         } else {
             let dev_info_id =
@@ -121,7 +118,7 @@ impl KernelCompiler {
             // If number of search iterations is more than zero, then do the full optimization pass
             // with multiple iterations
             let rng = crate::rng::Rng::seed_from_u64(3_940_239);
-            let mut optimizer = Optimizer::new(rng, kernel, device.info().clone());
+            let mut optimizer = KernelOptimizer::new(rng, kernel, device.info().clone());
             pool.pool.sync_events(event_wait_list)?;
 
             // Run the default optimization
@@ -148,7 +145,8 @@ impl KernelCompiler {
 
             self.optimizations.insert((kernel_id, dev_info_id), optimizer.best_node);
         }
-        Ok(None)
+        Ok(None)*/
+        todo!()
     }
 }
 

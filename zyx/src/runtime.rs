@@ -3,7 +3,7 @@ use crate::backend::{BufferId, Device, DeviceConfig, Event, MemoryPool};
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{BOp, Graph, Node, ROp, UOp};
-use crate::kernel_compiler::KernelCompiler;
+use crate::optimizer::Optimizer;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{permute, reduce, Axis, Dim};
@@ -26,7 +26,7 @@ pub struct Runtime {
     // Physical compute devices, each has their own program cache
     pub devices: Vec<Device>,
     // Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
-    pub kernel_compiler: KernelCompiler,
+    pub kernel_compiler: Optimizer,
     // Zyx configuration directory path
     config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
     // Random number generator
@@ -90,7 +90,7 @@ impl Runtime {
             pools: Vec::new(),
             rng: Rng::seed_from_u64(42069),
             config_dir: None,
-            kernel_compiler: KernelCompiler::new(),
+            kernel_compiler: Optimizer::new(),
             training: false,
             search_iterations: 0,
             debug: DebugMask(0),

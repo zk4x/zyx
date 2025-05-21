@@ -6,7 +6,7 @@
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
-    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, ROp, UOp}, kernel_compiler::{IRKernel, IROp}, shape::Dim, slab::Slab, DType
+    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{kernel::Op, BOp, ROp, UOp}, shape::Dim, slab::Slab, DType
 };
 use libloading::Library;
 use nanoserde::DeJson;
@@ -673,7 +673,7 @@ impl OpenCLDevice {
     #[allow(clippy::cognitive_complexity)]
     pub fn compile(
         &mut self,
-        kernel: &IRKernel,
+        kernel: &[Op],
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
         let mut source = String::from("(\n");
@@ -682,7 +682,7 @@ impl OpenCLDevice {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
 
-        for (i, op) in kernel.ops.iter().enumerate() {
+        /*for (i, op) in kernel.ops.iter().enumerate() {
             if let IROp::Loop { len } = op {
                 match i {
                     0..3 => global_work_size[i] = *len,
@@ -692,10 +692,10 @@ impl OpenCLDevice {
             } else {
                 unreachable!()
             }
-        }
+        }*/
 
         // Declare global variables
-        for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
+        /*for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
             writeln!(
                 source,
                 "{indent}__global {}{}* p{id},",
@@ -703,7 +703,7 @@ impl OpenCLDevice {
                 dtype.ocl(),
             )
             .unwrap();
-        }
+        }*/
 
         source.pop();
         source.pop();
@@ -739,7 +739,7 @@ impl OpenCLDevice {
         let mut loop_id = 6;
         let mut acc_id = 0;
         let mut id = 6;
-        for op in &kernel.ops[6..kernel.ops.len()] {
+        /*for op in &kernel.ops[6..kernel.ops.len()] {
             match op {
                 IROp::Const(constant) => _ = writeln!(source, "{indent}{} r{id} = {constant};", constant.dtype().ocl()),
                 IROp::Load { address, offset } => {
@@ -789,7 +789,7 @@ impl OpenCLDevice {
                 IROp::LocalBarrier => todo!(),
             }
             id += 1;
-        }
+        }*/
         for _ in 0..loop_id-6 {
             indent.pop();
             indent.pop();

@@ -52,7 +52,7 @@ mod backend;
 mod dtype;
 mod error;
 mod graph;
-mod kernel_compiler;
+mod optimizer;
 mod mutex;
 #[cfg(feature = "py")]
 mod py_bindings;
