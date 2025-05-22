@@ -82,11 +82,11 @@ impl TinyNet {
 let mut net = TinyNet {
     l0: Linear::init(3, 1024, true, DType::F16)?,
     l1: Linear::init(1024, 2, true, DType::F16)?,
-    lr: 0.0,
+    lr: 0.01,
 };
 
 let mut optim = SGD {
-    learning_rate: 0.01,
+    learning_rate: net.lr,
     momentum: 0.9,
     nesterov: true,
     ..Default::default()
