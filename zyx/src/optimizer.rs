@@ -3,7 +3,7 @@ use crate::{
     DebugMask, Map,
     backend::{BufferId, Device, DeviceInfo, Event, ProgramId},
     error::BackendError,
-    graph::kernel::Op,
+    kernel::Op,
     prog_bar::ProgressBar,
     runtime::Pool,
 };

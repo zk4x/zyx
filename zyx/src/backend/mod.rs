@@ -7,7 +7,7 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
 use crate::{
-    error::{BackendError, ErrorStatus}, graph::kernel::Op, runtime::Pool, shape::Dim, slab::SlabId
+    error::{BackendError, ErrorStatus}, runtime::Pool, shape::Dim, slab::SlabId
 };
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
@@ -353,7 +353,7 @@ impl Device {
 
     pub fn compile(
         &mut self,
-        kernel: &[Op],
+        kernel: &[crate::kernel::Op],
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
         match self {

@@ -65,6 +65,10 @@ mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 mod chasher;
 mod prog_bar;
+mod autograd;
+mod view;
+mod kernel;
+mod realize;
 
 pub(crate) type Set<T> =
     std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
@@ -73,7 +77,7 @@ pub(crate) type Map<K, V> =
 
 pub use dtype::DType;
 pub use error::ZyxError;
-pub use graph::autograd::GradientTape;
+pub use autograd::GradientTape;
 pub use scalar::{Float, Scalar};
 use shape::Dim;
 pub use shape::IntoShape;

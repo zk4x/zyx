@@ -1,18 +1,19 @@
 use crate::{
-    DType, dtype::Constant, shape::Dim,
+    dtype::Constant, graph::{BOp, ROp, UOp}, shape::{Axis, Dim}, DType
 };
 
-use super::{BOp, ROp, UOp, view::View};
+use super::view::View;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OpKind {
     Const { value: Constant, view: View },
     Load { view: View, dtype: DType },
-    Store { x: Op, view: View, dtype: DType },
+    Store { x: Op, view: View },
     Cast { x: Op, dtype: DType },
     Unary { x: Op, uop: UOp },
     Binary { x: Op, y: Op, bop: BOp },
     Reduce { x: Op, rop: ROp, num_loops: u32 },
+    // Sink { ops: Set<Op> } - will be just a way to put multiple ops/stores into one kernel
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -35,6 +36,20 @@ impl Op {
 
     pub fn cast(x: Self, dtype: DType) -> Self {
         Self(Box::new(OpKind::Cast { x, dtype }))
+    }
+
+    pub fn store(x: Self, shape: &[Dim]) -> Self {
+        let view = View::contiguous(shape);
+        Self(Box::new(OpKind::Store { x, view }))
+    }
+
+    pub fn reduce(mut x: Self, rop: ROp, axes: &[Axis], n: usize) -> Self {
+        // Permute so that reduce axes are last
+        let permute_axes: Vec<Axis> =
+            (0..n).filter(|a| !axes.contains(a)).chain(axes.iter().copied()).collect();
+        x.movement(|view| view.permute(&permute_axes));
+        let num_loops = axes.len() as u32;
+        Self(Box::new(OpKind::Reduce { x, rop, num_loops }))
     }
 
     pub fn binary(x: Self, y: Self, bop: BOp) -> Self {

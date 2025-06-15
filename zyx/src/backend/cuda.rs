@@ -15,7 +15,7 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    dtype::Constant, error::{BackendError, ErrorStatus}, graph::kernel::Op, shape::Dim, slab::Slab, DType
+    dtype::Constant, error::{BackendError, ErrorStatus}, kernel::Op, shape::Dim, slab::Slab, DType
 };
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};

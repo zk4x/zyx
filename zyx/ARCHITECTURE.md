@@ -17,6 +17,12 @@ is to immediately stop execution. One other option when panic happens is in case
 Zyx already detects hardware devices at runtime and disallows explicit programming for cpu or gpu only.
 However zyx currently assumes that hardware configuration stays constant as long as at least one tensor exists.
 
+# Single global mutable state
+
+All tensors are part of single global mutable struct. It is preferable to have decentralized systems, but zyx ultimately
+has to run the graph on physical devices, which are global state. Zyx tracks their performance, compute load
+and memory usage, so having it all in single global mutable struct is the obvious choice.
+
 ## How does it actually work?
 
 Zyx creates graph of nodes at runtime. No calculations are performend until explicit realization. This ensures

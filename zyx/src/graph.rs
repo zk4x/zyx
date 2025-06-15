@@ -10,17 +10,12 @@ use crate::{
 use crate::{Map, Set};
 use std::hash::BuildHasherDefault;
 
-pub mod autograd;
-pub mod kernel;
-mod realize;
-pub mod view;
-
 #[derive(Debug)]
 pub struct Graph {
     // First value is reference count, second is node
-    nodes: Slab<TensorId, (u32, Node)>,
-    gradient_tape_ref_count: u32,
-    gradient_tape: Option<Set<TensorId>>,
+    pub nodes: Slab<TensorId, (u32, Node)>,
+    pub gradient_tape_ref_count: u32,
+    pub gradient_tape: Option<Set<TensorId>>,
     // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: Map<TensorId, Box<[Dim]>>,
     paddings: Map<TensorId, Box<[(isize, isize)]>>,
