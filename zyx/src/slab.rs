@@ -11,8 +11,7 @@ use std::{
 };
 
 pub trait SlabId:
-    std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize>
-{
+    std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize> {
     const ZERO: Self;
     fn inc(&mut self);
 }

@@ -53,15 +53,9 @@ that can be applied for each kernel. This search tries it's best to find the bes
 tries as possible, but if you want to really want to push your hardware from 80% to 90%, it will take some time,
 especially for large kernels.
 
-### 5. IR generation
+### 5. Kernel compilation
 
-Each optimization is aplied in this step which converts high level kernel into IR kernel. IR kernel is also
-optimized using standard methods like loop invariant code motion, vectorization, constant evaluation, loop
-unrolling, algebraic tricks, ...
-
-### 6. Kernel compilation
-
-Finally kernels are compiled from IR into respective backends - CUDA, OpenCL, WGPU, ...
+Finally kernels are compiled into respective backends - CUDA, OpenCL, WGPU, ...
 Compilation from IR into backends is straightforward and usually the whole function is about 100 lines of code
 per backend.
 

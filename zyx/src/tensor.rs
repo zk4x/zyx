@@ -36,9 +36,9 @@ impl From<usize> for TensorId {
     }
 }
 
-impl Into<usize> for TensorId {
-    fn into(self) -> usize {
-        self.0 as usize
+impl From<TensorId> for usize {
+    fn from(value: TensorId) -> usize {
+        value.0 as usize
     }
 }
 

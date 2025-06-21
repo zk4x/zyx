@@ -36,9 +36,9 @@ impl From<usize> for BufferId {
     }
 }
 
-impl Into<usize> for BufferId {
-    fn into(self) -> usize {
-        self.0 as usize
+impl From<BufferId> for usize {
+    fn from(value: BufferId) -> Self {
+        value.0 as usize
     }
 }
 
@@ -59,9 +59,9 @@ impl From<usize> for ProgramId {
     }
 }
 
-impl Into<usize> for ProgramId {
-    fn into(self) -> usize {
-        self.0 as usize
+impl From<ProgramId> for usize {
+    fn from(value: ProgramId) -> Self {
+        value.0 as usize
     }
 }
 

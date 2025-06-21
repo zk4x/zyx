@@ -29,10 +29,10 @@ impl Runtime {
         let elapsed = begin.elapsed();
         if self.debug.perf() {
             println!(
-                "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape = {}",
+                "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape={}",
                 elapsed.as_micros(),
                 order.len(),
-                self.graph.nodes.len(),
+                usize::from(self.graph.nodes.len()),
                 self.graph.gradient_tape.is_some(),
             );
         }
@@ -92,6 +92,7 @@ impl Runtime {
                 match graph[nid] {
                     Node::Const { value } => {
                         ops.insert(nid, Op::constant(value));
+                        loads.insert(nid, vec![]);
                     }
                     Node::Leaf { dtype } => {
                         let shape = graph.shape(nid);
@@ -101,10 +102,12 @@ impl Runtime {
                     Node::Permute { x } => {
                         let axes = graph.axes(nid);
                         ops.get_mut(&x).unwrap().movement(|view| view.permute(axes));
+                        loads.insert(nid, loads.get(&x).unwrap().clone());
                     }
                     Node::Reshape { x } => {
                         let shape = graph.shape(nid);
                         ops.get_mut(&x).unwrap().movement(|view| view.reshape(0..shape.len(), shape));
+                        loads.insert(nid, loads.get(&x).unwrap().clone());
                     }
                     Node::Reduce { x, rop } => {
                         // First permute
@@ -113,14 +116,17 @@ impl Runtime {
                         let axes = graph.axes(nid);
                         let shape = graph.shape(nid);
                         ops.insert(nid, Op::reduce(op, rop, axes, shape.len()));
+                        loads.insert(nid, loads.get(&x).unwrap().clone());
                     }
                     Node::Cast { x, dtype } => {
                         let op = ops.remove(&x).unwrap();
                         ops.insert(nid, Op::cast(op, dtype));
+                        loads.insert(nid, loads.get(&x).unwrap().clone());
                     }
                     Node::Unary { x, uop } => {
                         let op = ops.remove(&x).unwrap();
                         ops.insert(nid, Op::unary(op, uop));
+                        loads.insert(nid, loads.get(&x).unwrap().clone());
                     }
                     Node::Binary { x, y, bop } => {
                         let opx = ops.remove(&x).unwrap();
@@ -161,9 +167,10 @@ impl Runtime {
             // Iterate over all memory pools ordered by device speed.
             // Then select first fastest device that has associated memory pool which fits all tensors used
             // as arguments for the kernel that are not yet allocated on that memory pool.
-            let loads: Set<TensorId> = loads[&nid].iter().copied().collect();
-            let required_kernel_memory: Dim = kernel
-                .stores
+            let loads: Vec<TensorId> = loads[&nid].iter().copied().collect();
+
+            // For NOW there is only one store
+            let required_kernel_memory: Dim = [nid]
                 .iter()
                 .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid) as Dim)
                 .sum::<Dim>()
@@ -259,7 +266,7 @@ impl Runtime {
 
             // Allocate space for all stores (outputs)
             let mut output_buffers = BTreeSet::new();
-            for &tid in &kernel.stores {
+            for &tid in &[nid] {
                 let bytes =
                     self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim;
                 let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
@@ -270,16 +277,16 @@ impl Runtime {
 
             // Get a list of all args. These must be specifically in order as they are mentioned in kernel ops
             let mut args = Vec::new();
-            for tid in &kernel.loads {
+            for tid in &loads {
                 args.push(self.pools[mpid].buffer_map[tid]);
             }
-            for tid in &kernel.stores {
+            for tid in &[nid] {
                 args.push(self.pools[mpid].buffer_map[tid]);
             }
 
             // Send the kernel to kernel cache.
             let event = if let Some(event) = self.kernel_compiler.launch(
-                &kernel,
+                &[op],
                 u32::try_from(dev_id).unwrap(),
                 &mut self.devices[dev_id],
                 &mut self.pools[mpid],
