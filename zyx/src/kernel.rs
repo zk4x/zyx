@@ -4,7 +4,7 @@ use crate::{
 
 use super::view::View;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OpKind {
     Const { value: Constant, view: View },
     Load { view: View, dtype: DType },
@@ -16,7 +16,7 @@ pub enum OpKind {
     // Sink { ops: Set<Op> } - will be just a way to put multiple ops/stores into one kernel
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Op(Box<OpKind>);
 
 impl Op {

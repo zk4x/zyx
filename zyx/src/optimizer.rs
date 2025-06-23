@@ -1,4 +1,3 @@
-
 use crate::{
     DebugMask, Map,
     backend::{BufferId, Device, DeviceInfo, Event, ProgramId},
@@ -60,7 +59,7 @@ impl Optimizer {
         search_iters: usize,
         debug: DebugMask,
     ) -> Result<Option<Event>, BackendError> {
-        /*let dev_info_id = if let Some(&dev_info_id) = self.device_infos.get(device.info()) {
+        let dev_info_id = if let Some(&dev_info_id) = self.device_infos.get(device.info()) {
             dev_info_id
         } else {
             let dev_info_id =
@@ -70,83 +69,82 @@ impl Optimizer {
         };
 
         // Launch if it is in cache
-        let kernel_id = if let Some(&kernel_id) = self.kernels.get(&kernel.ops) {
+        if let Some(&kernel_id) = self.kernels.get(kernel) {
             // If it has been compiled for the device
             if let Some(&program_id) = self.programs.get(&(kernel_id, dev_info_id)) {
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 return Ok(Some(event));
             // If we know the best optimization, but it has not been compiled yet
+            // (the best optimization was in disk cache)
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
-                let ir_kernel = lower_to_ir(kernel.ops.clone(), optimization);
-                let program_id = device.compile(&ir_kernel, debug.asm())?;
+                let optimized_kernel = kernel.apply_optimization(optimization);
+                let program_id = device.compile(&optimized_kernel, debug.asm())?;
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
                 return Ok(Some(event));
+            // If the kernel has not been compiled and we do not know the best optimization
+            // then it cannot be in kernels
+            } else {
+                unreachable!();
             }
-            kernel_id
-        } else {
-            let kernel_id =
-                self.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
-            assert!(self.kernels.insert(kernel.ops.clone(), kernel_id).is_none());
-            kernel_id
-        };
-
-        if debug.sched() {
-            kernel.debug();
         }
 
-        let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
-        // If the kernel has not be optimized yet, optimize it
+        // If it is not in cache, we just get new empty kernel id where we insert the kernel
+        let kernel_id = self.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
+        assert!(self.kernels.insert(kernel.into(), kernel_id).is_none());
+
+        //if debug.sched() { kernel.debug(); }
+
+        // If search_iters == 0, we use default optimizations
         if search_iters == 0 {
-            // if optimizations are not requested, use default optimizations
-            let optimization = Optimization::new(kernel, device.info());
-            let ir_kernel = lower_to_ir(kernel.ops.clone(), &optimization);
-            if debug.ir() {
-                ir_kernel.debug();
-            }
-            let program_id = device.compile(&ir_kernel, debug.asm())?;
+            let optimization = Optimization::default(kernel, device.info());
+            let optimized_kernel = kernel.apply_optimization(&optimization);
+            let program_id = device.compile(&optimized_kernel, debug.asm())?;
             let nanos = std::time::Instant::now();
             let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
             pool.pool.sync_events(vec![event])?;
             let nanos = nanos.elapsed().as_nanos();
             assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
             if debug.perf() {
+                let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 println!("{}", get_perf(flop, mem_read, mem_write, nanos));
             }
             //self.optimizations.insert((kernel_id, dev_info_id), optimization);
-        } else {
-            // If number of search iterations is more than zero, then do the full optimization pass
-            // with multiple iterations
-            let rng = crate::rng::Rng::seed_from_u64(3_940_239);
-            let mut optimizer = KernelOptimizer::new(rng, kernel, device.info().clone());
-            pool.pool.sync_events(event_wait_list)?;
-
-            // Run the default optimization
-            let optimization = optimizer.best_node.clone();
-            let _ = optimizer.bench_optimization(&optimization, pool, device, args, debug)?;
-
-            let mut progress_bar = if debug.perf() {
-                Some(ProgressBar::new(search_iters as u64))
-            } else {
-                None
-            };
-
-            'a: for _ in 0..search_iters {
-                let Some(optimization) = optimizer.next() else { break };
-                let Ok(nanos) =
-                    optimizer.bench_optimization(&optimization, pool, device, args, debug)
-                else {
-                    continue 'a;
-                };
-                if let Some(bar) = &mut progress_bar {
-                    bar.inc(1, &get_perf(flop, mem_read, mem_write, nanos));
-                }
-            }
-
-            self.optimizations.insert((kernel_id, dev_info_id), optimizer.best_node);
+            return Ok(None);
         }
-        Ok(None)*/
+
+        // Otherwise try search_iters optimizations (kernels), record and put the best in the cache
         todo!()
+
+        /*let rng = crate::rng::Rng::seed_from_u64(3_940_239);
+        let mut optimizer = KernelOptimizer::new(rng, kernel, device.info().clone());
+        pool.pool.sync_events(event_wait_list)?;
+
+        // Run the default optimization
+        let optimization = optimizer.best_node.clone();
+        let nanos = optimizer.bench_optimization(&optimization, pool, device, args, debug)?;
+
+        let mut progress_bar = if debug.perf() {
+            let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
+            Some((ProgressBar::new(search_iters as u64), flop, mem_read, mem_write))
+        } else {
+            None
+        };
+
+        'a: for _ in 1..search_iters {
+            let Some(optimization) = optimizer.next() else { break };
+            let Ok(nanos) =
+                optimizer.bench_optimization(&optimization, pool, device, args, debug)
+            else {
+                continue 'a;
+            };
+            if let Some((bar, &flop, &mem_read, &mem_write)) = &mut progress_bar {
+                bar.inc(1, &get_perf(flop, mem_read, mem_write, nanos));
+            }
+        }
+
+        self.optimizations.insert((kernel_id, dev_info_id), optimizer.best_node);
+        Ok(None)*/
     }
 }
 
