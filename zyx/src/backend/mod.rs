@@ -356,6 +356,7 @@ impl Device {
         kernel: &crate::kernel::Op,
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
+        kernel.debug();
         match self {
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
             Device::OpenCL(dev) => dev.compile(kernel, debug_asm),

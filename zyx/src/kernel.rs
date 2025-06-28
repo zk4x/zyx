@@ -107,8 +107,39 @@ impl Op {
             }
         }
     }
+
+    pub fn debug(&self) {
+        fn debug_op(op: &Op, indent: u8) {
+            match op.0.as_ref() {
+                OpKind::Const { value, view } => println!("{}CONST {value} {view}", " ".repeat(indent as usize)),
+                OpKind::Load { view, dtype } => println!("{}LOAD {dtype} {view}", " ".repeat(indent as usize)),
+                OpKind::Store { x, view } => {
+                    println!("{}STORE {view}", " ".repeat(indent as usize));
+                    debug_op(x, indent+2);
+                }
+                OpKind::Cast { x, dtype } => {
+                    println!("{}CAST {dtype}", " ".repeat(indent as usize));
+                    debug_op(x, indent+2);
+                }
+                OpKind::Unary { x, uop } => {
+                    println!("{}{uop:?}", " ".repeat(indent as usize));
+                    debug_op(x, indent+2);
+                }
+                OpKind::Binary { x, y, bop } => todo!(),
+                OpKind::Reduce { x, rop, num_loops } => todo!(),
+            }
+        }
+        println!();
+        debug_op(self, 0);
+        println!();
+    }
     
     pub fn apply_optimization(&mut self, opt: &Optimization) {
+        // TODO
+        self.resolve_views();
+    }
+
+    pub fn resolve_views(&mut self) {
         // TODO
     }
 }
