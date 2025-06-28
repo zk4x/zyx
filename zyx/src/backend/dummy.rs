@@ -157,7 +157,7 @@ impl DummyDevice {
     #[allow(clippy::unnecessary_wraps)]
     pub const fn compile(
         &mut self,
-        kernel: &[Op],
+        kernel: &Op,
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
         let _ = self;

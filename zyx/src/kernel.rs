@@ -1,5 +1,5 @@
 use crate::{
-    dtype::Constant, graph::{BOp, ROp, UOp}, shape::{Axis, Dim}, DType
+    dtype::Constant, graph::{BOp, ROp, UOp}, optimizer::Optimization, shape::{Axis, Dim}, DType
 };
 
 use super::view::View;
@@ -69,5 +69,46 @@ impl Op {
             }
             OpKind::Reduce { x, .. } => x.movement(func),
         }
+    }
+    
+    fn shape_numel(&self) -> Dim {
+        match self.0.as_ref() {
+            OpKind::Const { view, .. } |
+            OpKind::Load { view, .. } |
+            OpKind::Store { view, .. } => view.numel(),
+            OpKind::Cast { x, .. } |
+            OpKind::Unary { x, .. } |
+            OpKind::Binary { x, .. } |
+            OpKind::Reduce { x, .. } => x.shape_numel(),
+        }
+    }
+
+    pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
+        match self.0.as_ref() {
+            OpKind::Const { .. } => (0, 0, 0),
+            OpKind::Load { view, .. } => (0, view.original_numel() as u128, 0),
+            OpKind::Store { x, view } => {
+                let (f, mr, mw) = x.flop_mem_rw();
+                (f, mr, mw + view.original_numel() as u128)
+            }
+            OpKind::Cast { x, .. } |
+            OpKind::Unary { x, .. } => {
+                let (f, mr, mw) = x.flop_mem_rw();
+                (f + self.shape_numel() as u128, mr, mw)
+            }
+            OpKind::Binary { x, y, .. } => {
+                let (xf, xmr, xmw) = x.flop_mem_rw();
+                let (yf, ymr, ymw) = y.flop_mem_rw();
+                (xf + yf + self.shape_numel() as u128, xmr + ymr, xmw + ymw)
+            }
+            OpKind::Reduce { x, .. } => {
+                let (f, mr, mw) = x.flop_mem_rw();
+                (f + self.shape_numel() as u128 - 1, mr, mw)
+            }
+        }
+    }
+    
+    pub fn apply_optimization(&mut self, opt: &Optimization) {
+        // TODO
     }
 }

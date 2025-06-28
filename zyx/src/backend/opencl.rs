@@ -6,7 +6,7 @@
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
-    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, ROp, UOp}, shape::Dim, slab::Slab, DType
+    dtype::Constant, error::{BackendError, ErrorStatus}, shape::Dim, slab::Slab, DType
 };
 use libloading::Library;
 use nanoserde::DeJson;
@@ -673,7 +673,7 @@ impl OpenCLDevice {
     #[allow(clippy::cognitive_complexity)]
     pub fn compile(
         &mut self,
-        kernel: &[crate::kernel::Op],
+        kernel: &crate::kernel::Op,
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
         let mut source = String::from("(\n");

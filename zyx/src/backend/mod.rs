@@ -353,7 +353,7 @@ impl Device {
 
     pub fn compile(
         &mut self,
-        kernel: &[crate::kernel::Op],
+        kernel: &crate::kernel::Op,
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
         match self {

@@ -3,7 +3,6 @@ use crate::{
     backend::{BufferId, Device, DeviceInfo, Event, ProgramId},
     error::BackendError,
     kernel::Op,
-    prog_bar::ProgressBar,
     runtime::Pool,
 };
 use std::hash::BuildHasherDefault;
@@ -11,7 +10,7 @@ use std::hash::BuildHasherDefault;
 #[derive(Debug)]
 pub struct Optimizer {
     device_infos: Map<DeviceInfo, u32>,
-    kernels: Map<Vec<Op>, u32>,
+    kernels: Map<Op, u32>,
     // Finished optimizations of kernels for given devices
     // kernel id, device info id => optimization
     optimizations: Map<(u32, u32), Optimization>,
@@ -21,7 +20,9 @@ pub struct Optimizer {
 }
 
 #[derive(Debug)]
-enum Optimization {}
+pub enum Optimization {
+    None,
+}
 
 impl Optimizer {
     pub const fn new() -> Optimizer {
@@ -50,7 +51,7 @@ impl Optimizer {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn launch(
         &mut self,
-        kernel: &[Op],
+        kernel: &Op,
         device_id: u32,
         device: &mut Device,
         pool: &mut Pool,
@@ -77,8 +78,9 @@ impl Optimizer {
             // If we know the best optimization, but it has not been compiled yet
             // (the best optimization was in disk cache)
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
-                let optimized_kernel = kernel.apply_optimization(optimization);
-                let program_id = device.compile(&optimized_kernel, debug.asm())?;
+                let mut kernel = kernel.clone();
+                kernel.apply_optimization(optimization);
+                let program_id = device.compile(&kernel, debug.asm())?;
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
                 return Ok(Some(event));
@@ -91,15 +93,16 @@ impl Optimizer {
 
         // If it is not in cache, we just get new empty kernel id where we insert the kernel
         let kernel_id = self.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
-        assert!(self.kernels.insert(kernel.into(), kernel_id).is_none());
+        assert!(self.kernels.insert(kernel.clone(), kernel_id).is_none());
 
         //if debug.sched() { kernel.debug(); }
 
         // If search_iters == 0, we use default optimizations
         if search_iters == 0 {
-            let optimization = Optimization::default(kernel, device.info());
-            let optimized_kernel = kernel.apply_optimization(&optimization);
-            let program_id = device.compile(&optimized_kernel, debug.asm())?;
+            let mut kernel = kernel.clone();
+            let optimization = Optimization::default(&kernel, device.info());
+            kernel.apply_optimization(&optimization);
+            let program_id = device.compile(&kernel, debug.asm())?;
             let nanos = std::time::Instant::now();
             let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
             pool.pool.sync_events(vec![event])?;
@@ -145,6 +148,12 @@ impl Optimizer {
 
         self.optimizations.insert((kernel_id, dev_info_id), optimizer.best_node);
         Ok(None)*/
+    }
+}
+
+impl Optimization {
+    fn default(kernel: &Op, dev_info: &DeviceInfo) -> Self {
+        Self::None
     }
 }
 

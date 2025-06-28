@@ -561,7 +561,7 @@ impl CUDADevice {
 
     pub fn compile(
         &mut self,
-        kernel: &[Op],
+        kernel: &Op,
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
         let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
@@ -702,7 +702,7 @@ impl CUDADevice {
     #[allow(clippy::type_complexity)]
     fn compile_cuda(
         &self,
-        kernel: &[Op],
+        kernel: &Op,
         debug_asm: bool,
     ) -> Result<([Dim; 3], [Dim; 3], String, Vec<u8>), BackendError> {
         let mut source = String::from("(\n");

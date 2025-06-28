@@ -286,7 +286,7 @@ impl Runtime {
 
             // Send the kernel to kernel cache.
             let event = if let Some(event) = self.kernel_compiler.launch(
-                &[op],
+                &op,
                 u32::try_from(dev_id).unwrap(),
                 &mut self.devices[dev_id],
                 &mut self.pools[mpid],
