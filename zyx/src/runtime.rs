@@ -6,11 +6,13 @@ use crate::graph::{BOp, Graph, Node, ROp, UOp};
 use crate::optimizer::Optimizer;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
-use crate::shape::{permute, reduce, Axis, Dim};
+use crate::shape::{Axis, Dim, permute, reduce};
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::DeJson;
 use std::collections::BTreeSet;
+use std::env;
+use std::ffi::OsString;
 use std::hash::BuildHasherDefault;
 use std::path::{Path, PathBuf};
 use std::{vec, vec::Vec};
@@ -141,30 +143,27 @@ impl Runtime {
 
         // Search through config directories and find zyx/backend_config.json
         // If not found or failed to parse, use defaults.
-        let device_config = xdg::BaseDirectories::new()
-            .map_err(|e| {
-                if self.debug.dev() {
-                    println!("Failed to find config directories for device_config.json, {e}");
-                }
-            })
-            .ok()
-            .map(|bd| {
-                let mut dirs = bd.get_config_dirs();
-                dirs.push(bd.get_config_home());
-                dirs
-            })
-            .and_then(|paths| {
-                paths.into_iter().find_map(|mut path| {
-                    path.push("zyx/device_config.json");
-                    if let Ok(file) = std::fs::read_to_string(&path) {
-                        path.pop();
-                        self.config_dir = Some(path);
-                        Some(file)
-                    } else {
-                        None
-                    }
-                })
-            })
+        fn abspath(path: OsString) -> Option<PathBuf> {
+            let path = PathBuf::from(path);
+            if path.is_absolute() { Some(path) } else { None }
+        }
+
+        let home_path =
+            std::env::home_dir().ok_or(ZyxError::BackendConfig("Home directory not found."))?;
+
+        let mut config_path =
+            env::var_os("XDG_CONFIG_HOME").and_then(abspath).unwrap_or(home_path.join(".config"));
+        config_path.push("zyx/device_config.json");
+
+        let config_file = if let Ok(file) = std::fs::read_to_string(&config_path) {
+            config_path.pop();
+            self.config_dir = Some(config_path);
+            Some(file)
+        } else {
+            None
+        };
+
+        let device_config = config_file
             .and_then(|file| {
                 DeJson::deserialize_json(&file)
                     .map_err(|e| {
@@ -261,7 +260,13 @@ impl Runtime {
         self.graph.dtype(x)
     }
 
-    pub(super) fn tensor_from_path(&mut self, shape: Vec<Dim>, dtype: DType, path: &Path, offset_bytes: u64) -> Result<TensorId, ZyxError> {
+    pub(super) fn tensor_from_path(
+        &mut self,
+        shape: Vec<Dim>,
+        dtype: DType,
+        path: &Path,
+        offset_bytes: u64,
+    ) -> Result<TensorId, ZyxError> {
         let bytes = shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
         self.initialize_devices()?;
         if bytes == dtype.byte_size() as Dim {
@@ -427,10 +432,7 @@ impl Runtime {
     pub(super) fn reshape(&mut self, x: TensorId, shape: Vec<Dim>) -> TensorId {
         //println!("reshaping to {shape:?}, {:?}", self.shape(x));
         let sh = self.shape(x);
-        debug_assert_eq!(
-            shape.iter().product::<Dim>(),
-            sh.iter().product::<Dim>()
-        );
+        debug_assert_eq!(shape.iter().product::<Dim>(), sh.iter().product::<Dim>());
         if shape == sh {
             self.retain(x);
             return x;
@@ -444,11 +446,7 @@ impl Runtime {
     }
 
     /// Expand verification is so complex, that it may be simpler to just do it here instead of in tensor
-    pub(super) fn expand(
-        &mut self,
-        x: TensorId,
-        shape: Vec<Dim>,
-    ) -> Result<TensorId, ZyxError> {
+    pub(super) fn expand(&mut self, x: TensorId, shape: Vec<Dim>) -> Result<TensorId, ZyxError> {
         let sh: Vec<Dim> = self.shape(x).into();
         if shape == sh {
             self.retain(x);
@@ -456,9 +454,9 @@ impl Runtime {
         }
         //println!("Expanding {x} from {sh:?} to {shape:?}");
         if shape.len() < sh.len() {
-            return Err(ZyxError::ShapeError(format!(
-                "Cannot expand {sh:?} into {shape:?}"
-            ).into()));
+            return Err(ZyxError::ShapeError(
+                format!("Cannot expand {sh:?} into {shape:?}").into(),
+            ));
         }
         let mut expanded = false;
         let new_shape = if shape.len() > sh.len() {
@@ -470,9 +468,9 @@ impl Runtime {
         debug_assert_eq!(shape.len(), new_shape.len());
         for (&s, &d) in new_shape.iter().zip(shape.iter()) {
             if !(s == d || s == 1) {
-                return Err(ZyxError::ShapeError(format!(
-                    "Cannot expand {new_shape:?} into {shape:?}"
-                ).into()));
+                return Err(ZyxError::ShapeError(
+                    format!("Cannot expand {new_shape:?} into {shape:?}").into(),
+                ));
             }
         }
         if expanded {
@@ -561,12 +559,14 @@ impl Runtime {
         let n: Dim = self.shape(x).iter().product();
         let dt = self.dtype(x);
         if dt != T::dtype() {
-            return Err(ZyxError::DTypeError(format!(
-                "loading dtype {}, but the data has dtype {dt}",
-                T::dtype()
-            ).into()));
+            return Err(ZyxError::DTypeError(
+                format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into(),
+            ));
         }
-        debug_assert!(data.len() as Dim <= n, "Return buffer is bigger than tensor");
+        debug_assert!(
+            data.len() as Dim <= n,
+            "Return buffer is bigger than tensor"
+        );
         // Check if tensor is evaluated
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
             let mut to_eval = Set::with_capacity_and_hasher(1, BuildHasherDefault::default());
@@ -626,8 +626,7 @@ impl Runtime {
 pub fn apply_padding(shape: &mut [Dim], padding: &[(isize, isize)]) {
     let mut i = 0;
     for d in shape.iter_mut().rev() {
-        *d = Dim::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1)
-            .unwrap();
+        *d = Dim::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
         i += 1;
         if i >= padding.len() {
             break;

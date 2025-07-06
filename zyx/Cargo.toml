@@ -23,8 +23,6 @@ libloading = { version = "0.8.6", default-features = false } # ISC
 nanoserde = { version = "0.2.1", default-features = false, features = ["json"] }
 
 # To be removed
-# xdg is used to read backend config
-xdg = { version = "2.5.2", default-features = false } # MIT or Apache 2.0
 # Support for f16 and bf16 dtypes
 half = { version = "2.6.0", default-features = false } # MIT or Apache 2.0
 
