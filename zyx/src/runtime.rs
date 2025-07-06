@@ -141,27 +141,25 @@ impl Runtime {
             }
         }
 
-        // Search through config directories and find zyx/backend_config.json
+        // Search through config directory and find zyx/backend_config.json
         // If not found or failed to parse, use defaults.
-        fn abspath(path: OsString) -> Option<PathBuf> {
-            let path = PathBuf::from(path);
-            if path.is_absolute() { Some(path) } else { None }
-        }
 
-        let home_path =
-            std::env::home_dir().ok_or(ZyxError::BackendConfig("Home directory not found."))?;
-
-        let mut config_path =
-            env::var_os("XDG_CONFIG_HOME").and_then(abspath).unwrap_or(home_path.join(".config"));
-        config_path.push("zyx/device_config.json");
-
-        let config_file = if let Ok(file) = std::fs::read_to_string(&config_path) {
-            config_path.pop();
-            self.config_dir = Some(config_path);
-            Some(file)
-        } else {
-            None
-        };
+        let config_file = env::var_os("XDG_CONFIG_HOME")
+            .and_then(|path| {
+                let path = PathBuf::from(path);
+                if path.is_absolute() { Some(path) } else { None }
+            })
+            .or_else(|| env::home_dir().and_then(|home| Some(home.join(".config"))))
+            .and_then(|path| Some(path.join("zyx/device_config.json")))
+            .and_then(|mut path| {
+                if let Ok(file) = std::fs::read_to_string(&path) {
+                    path.pop();
+                    self.config_dir = Some(path);
+                    Some(file)
+                } else {
+                    None
+                }
+            });
 
         let device_config = config_file
             .and_then(|file| {

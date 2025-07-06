@@ -6,7 +6,11 @@
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
-    dtype::Constant, error::{BackendError, ErrorStatus}, shape::Dim, slab::Slab, DType
+    DType,
+    dtype::Constant,
+    error::{BackendError, ErrorStatus},
+    shape::Dim,
+    slab::Slab,
 };
 use libloading::Library;
 use nanoserde::DeJson;
@@ -179,7 +183,13 @@ pub(super) fn initialize_device(
 
     // Search for opencl dynamic library path, kinda primitive, but fast and mostly works
     let mut opencl_paths = Vec::new();
-    for lib_folder in ["/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu"] {
+    for lib_folder in [
+        "/lib",
+        "/lib64",
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/lib/x86_64-linux-gnu",
+    ] {
         if let Ok(lib_folder) = std::fs::read_dir(lib_folder) {
             for entry in lib_folder {
                 if let Ok(entry) = entry {
@@ -790,7 +800,7 @@ impl OpenCLDevice {
             }
             id += 1;
         }*/
-        for _ in 0..loop_id-6 {
+        for _ in 0..loop_id - 6 {
             indent.pop();
             indent.pop();
             _ = writeln!(source, "{indent}}}");
@@ -810,6 +820,7 @@ impl OpenCLDevice {
         for (i, lwd) in local_work_size.iter().enumerate() {
             global_work_size[i] *= lwd;
         }
+
         let mut pragma = String::new();
         if source.contains("half") {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
@@ -821,6 +832,8 @@ impl OpenCLDevice {
         if debug_asm {
             println!("{source}");
         }
+        todo!();
+
         let context = self.context;
         let device = self.ptr;
         let sources: &[&str] = &[source.as_str()];
