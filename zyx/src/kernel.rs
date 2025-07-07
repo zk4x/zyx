@@ -25,7 +25,7 @@ pub enum OpKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Op(Box<OpKind>);
+pub struct Op(pub(crate) Box<OpKind>);
 
 impl Op {
     pub fn constant_view(value: Constant) -> Self {
