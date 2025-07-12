@@ -52,7 +52,8 @@ mod backend;
 mod dtype;
 mod error;
 mod graph;
-mod optimizer;
+mod libload;
+mod cache;
 mod mutex;
 #[cfg(feature = "py")]
 mod py_bindings;

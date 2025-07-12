@@ -1,12 +1,16 @@
 use crate::{
     DType,
+    cache::Optimization,
     dtype::Constant,
     graph::{BOp, ROp, UOp},
-    optimizer::Optimization,
     shape::{Axis, Dim},
+    view::View,
 };
 
-use super::view::View;
+pub struct Kernel {
+    shape: [Dim; 6],
+    op: Op,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OpKind {
@@ -21,7 +25,7 @@ pub enum OpKind {
     Unary { x: Op, uop: UOp },
     Binary { x: Op, y: Op, bop: BOp },
     Reduce { x: Op, rop: ROp, num_loops: u32 },
-    // Sink { ops: Set<Op> } - will be just a way to put multiple ops/stores into one kernel
+    // Sink { ops: Vec<Op> } - will be just a way to put multiple ops/stores into one kernel
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -88,6 +92,22 @@ impl Op {
             OpKind::Reduce { x, .. } => x.movement(func),
             OpKind::Load { .. } | OpKind::Store { .. } => unreachable!(),
             OpKind::Const { .. } => unreachable!(),
+        }
+    }
+
+    pub fn shape(&self) -> Vec<Dim> {
+        match self.0.as_ref() {
+            OpKind::ConstView { view, .. }
+            | OpKind::LoadView { view, .. }
+            | OpKind::StoreView { view, .. } => view.shape(),
+            OpKind::Cast { x, .. }
+            | OpKind::Unary { x, .. }
+            | OpKind::Binary { x, .. }
+            | OpKind::Reduce { x, .. } => x.shape(),
+            OpKind::Const { .. }
+            | OpKind::LoopIndex { .. }
+            | OpKind::Load { .. }
+            | OpKind::Store { .. } => unreachable!(),
         }
     }
 
@@ -188,7 +208,13 @@ impl Op {
     }
 
     pub fn apply_optimization(&mut self, opt: &Optimization) {
-        // TODO
+        let n = self.shape().len();
+        match opt {
+            Optimization::Basic { shape } => {
+                self.movement(|view| view.reshape(0..n, &shape));
+            }
+        }
+
         self.resolve_views();
     }
 

@@ -3,7 +3,7 @@ use crate::backend::{BufferId, Device, DeviceConfig, Event, MemoryPool};
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{BOp, Graph, Node, ROp, UOp};
-use crate::optimizer::Optimizer;
+use crate::cache::Cache;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{Axis, Dim, permute, reduce};
@@ -16,23 +16,25 @@ use std::hash::BuildHasherDefault;
 use std::path::{Path, PathBuf};
 use std::{vec, vec::Vec};
 
+// Maximum number of constants to cache. Too high number will cause lot of specialized kernels to be generated,
+// which is unnecessary.
 const NUM_CONSTANTS: usize = 32;
 
-// This is the whole global state of zyx
+/// This is the whole global state of zyx
 pub struct Runtime {
-    // Current graph of tensor operations as nodes
+    /// Current graph of tensor operations as nodes
     pub graph: Graph,
-    // Physical memory pools
+    /// Physical memory pools
     pub pools: Vec<Pool>,
-    // Physical compute devices, each has their own program cache
+    /// Physical compute devices, each has their own program cache
     pub devices: Vec<Device>,
-    // Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
-    pub kernel_compiler: Optimizer,
-    // Zyx configuration directory path
+    /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
+    pub cache: Cache,
+    /// Zyx configuration directory path
     config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
-    // Random number generator
+    /// Random number generator
     pub rng: Rng,
-    // Are we in training mode?
+    /// Are we in training mode?
     pub training: bool,
     /// How many variations of one kernel to try during optimization
     pub search_iterations: usize,
@@ -40,12 +42,14 @@ pub struct Runtime {
     pub debug: DebugMask,
     /// Temporary storage, TODO limit the number of elements in temporary storage
     temp_data: Vec<Box<dyn TempData>>,
+    /// Cache for constants
     constants: [Constant; NUM_CONSTANTS],
+    /// Current number of constants
     constants_len: usize,
-    // Enables implicit casting to different dtype in binary operations with different dtypes
-    // and unary operations that are not implemented for the provided dtype.
-    // This tries to copy the default behaviour of pytorch, but since rust does not
-    // have implicit casting, we do not recommend using this feature.
+    /// Enables implicit casting to different dtype in binary operations with different dtypes
+    /// and unary operations that are not implemented for the provided dtype.
+    /// This tries to copy the default behaviour of pytorch, but since rust does not
+    /// have implicit casting, we do not recommend using this feature.
     pub implicit_casts: bool,
 }
 
@@ -91,7 +95,7 @@ impl Runtime {
             pools: Vec::new(),
             rng: Rng::seed_from_u64(42069),
             config_dir: None,
-            kernel_compiler: Optimizer::new(),
+            cache: Cache::new(),
             training: false,
             search_iterations: 0,
             debug: DebugMask(0),
@@ -212,7 +216,7 @@ impl Runtime {
         // drop graph
         self.graph = Graph::new();
         // Drop programs
-        self.kernel_compiler.deinitialize(&mut self.devices);
+        self.cache.deinitialize(&mut self.devices);
         // drop devices
         while let Some(mut dev) = self.devices.pop() {
             dev.deinitialize();

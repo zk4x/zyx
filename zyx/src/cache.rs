@@ -4,11 +4,12 @@ use crate::{
     error::BackendError,
     kernel::Op,
     runtime::Pool,
+    shape::Dim,
 };
 use std::hash::BuildHasherDefault;
 
 #[derive(Debug)]
-pub struct Optimizer {
+pub struct Cache {
     device_infos: Map<DeviceInfo, u32>,
     kernels: Map<Op, u32>,
     // Finished optimizations of kernels for given devices
@@ -21,12 +22,12 @@ pub struct Optimizer {
 
 #[derive(Debug)]
 pub enum Optimization {
-    None,
+    Basic { shape: Vec<Dim> },
 }
 
-impl Optimizer {
-    pub const fn new() -> Optimizer {
-        Optimizer {
+impl Cache {
+    pub const fn new() -> Cache {
+        Cache {
             device_infos: Map::with_hasher(BuildHasherDefault::new()),
             kernels: Map::with_hasher(BuildHasherDefault::new()),
             optimizations: Map::with_hasher(BuildHasherDefault::new()),
@@ -153,7 +154,56 @@ impl Optimizer {
 
 impl Optimization {
     fn default(kernel: &Op, dev_info: &DeviceInfo) -> Self {
-        Self::None
+        fn get_equal_factors(x: Dim) -> [Dim; 3] {
+            fn get_factors(n: Dim) -> Vec<Dim> {
+                let mut factors = Vec::new();
+                for i in 1..=n.isqrt() {
+                    if n % i == 0 {
+                        factors.insert(0, i);
+                        factors.push(n / i);
+                    }
+                }
+                factors
+            }
+            let f = get_factors(x);
+            let mut res = [1, 1, 1];
+            let mut min_dist = x as isize;
+            for i in 0..f.len() {
+                for j in i..f.len() {
+                    for k in j..f.len() {
+                        if f[i] * f[j] * f[k] == x {
+                            let r = (f[i] as isize - f[j] as isize).abs()
+                                + (f[i] as isize - f[k] as isize).abs();
+                            if r < min_dist {
+                                min_dist = r;
+                                res = [f[i], f[j], f[k]];
+                            }
+                        }
+                    }
+                }
+            }
+            res
+        }
+
+        let shape = kernel.shape();
+        let n = shape.iter().product();
+        let mut global_work_size = get_equal_factors(n);
+
+        let mut d = dev_info.max_local_threads;
+        while n % d != 0 {
+            d -= 1;
+        }
+        let local_work_size = get_equal_factors(n/d);
+        global_work_size[0] /= local_work_size[0];
+        global_work_size[1] /= local_work_size[1];
+        global_work_size[2] /= local_work_size[2];
+
+        // Concatenate global and local work sizes to get the final 6D shape
+        let mut shape = vec![];
+        shape.extend(global_work_size);
+        shape.extend(local_work_size);
+
+        Self::Basic { shape }
     }
 }
 

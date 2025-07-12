@@ -1,6 +1,12 @@
 use std::hash::BuildHasherDefault;
-
-use crate::{dtype::Constant, graph::{BOp, Node, ROp, UOp}, runtime::Runtime, shape::{Axis, Dim}, tensor::TensorId, Map, Set, Tensor, RT};
+use crate::{
+    Map, RT, Set, Tensor,
+    dtype::Constant,
+    graph::{BOp, Node, ROp, UOp},
+    runtime::Runtime,
+    shape::{Axis, Dim},
+    tensor::TensorId,
+};
 
 /// Gradient tape
 ///
@@ -36,9 +42,12 @@ impl GradientTape {
         rt.graph.gradient_tape_ref_count += 1;
         if rt.graph.gradient_tape.is_some() {
             //panic!("Only one gradient tape can exist at a time.");
-            return Self {}
+            return Self {};
         }
-        rt.graph.gradient_tape = Some(Set::with_capacity_and_hasher(100, BuildHasherDefault::default()));
+        rt.graph.gradient_tape = Some(Set::with_capacity_and_hasher(
+            100,
+            BuildHasherDefault::default(),
+        ));
         Self {}
     }
 

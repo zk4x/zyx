@@ -749,8 +749,6 @@ impl OpenCLDevice {
         //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
 
         let mut loop_id = 6;
-        let mut acc_id = 0;
-        let mut id = 6;
 
         _ = writeln!(source, "  {}", process_op(kernel));
 
