@@ -63,6 +63,7 @@ impl Op {
         // Permute so that reduce axes are last
         let permute_axes: Vec<Axis> =
             (0..n).filter(|a| !axes.contains(a)).chain(axes.iter().copied()).collect();
+        println!("n = {n}, axes: {axes:?}, permute axes: {:?}", permute_axes);
         x.movement(|view| view.permute(&permute_axes));
         let num_loops = axes.len() as u32;
         Self(Box::new(OpKind::Reduce { x, rop, num_loops }))
@@ -172,7 +173,7 @@ impl Op {
                     debug_op(index, indent + 2);
                 }
                 OpKind::Store { x, index } => {
-                    println!("{}LOAD x with index:", " ".repeat(indent as usize));
+                    println!("{}STORE x with index:", " ".repeat(indent as usize));
                     debug_op(x, indent + 2);
                     debug_op(index, indent + 2);
                 }

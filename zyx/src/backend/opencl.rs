@@ -9,7 +9,7 @@ use crate::{
     DType,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{BOp, UOp},
+    graph::{BOp, ROp, UOp},
     kernel::{Op, OpKind},
     shape::Dim,
     slab::Slab,
@@ -751,64 +751,14 @@ impl OpenCLDevice {
         let mut loop_id = 6;
         let mut acc_id = 0;
         let mut id = 6;
-        /*for op in &kernel.ops[6..kernel.ops.len()] {
-            match op {
-                IROp::Const(constant) => _ = writeln!(source, "{indent}{} r{id} = {constant};", constant.dtype().ocl()),
-                IROp::Load { address, offset } => {
-                    _ = writeln!(source, "{indent}{} r{id} = p{address}[{offset}];", kernel.global_variables[*address as usize].1.ocl());
-                }
-                IROp::Store { x, address, offset } => {
-                    _ = writeln!(source, "{indent}p{address}[{offset}] = {x};");
-                }
-                IROp::Unary { x, uop } => {
-                    match uop {
-                        UOp::ReLU => todo!(),
-                        UOp::Neg => todo!(),
-                        UOp::Exp2 => _ = writeln!(source, "{indent}float r{id} = exp2({x});"),
-                        UOp::Log2 => todo!(),
-                        UOp::Reciprocal => todo!(),
-                        UOp::Sqrt => todo!(),
-                        UOp::Sin => todo!(),
-                        UOp::Cos => todo!(),
-                        UOp::Not => todo!(),
-                    }
-                }
-                IROp::Cast { x, dtype } => todo!(),
-                IROp::Binary { x, y, bop } => todo!(),
-                IROp::MAdd { x, y, c } => _ = writeln!(source, "{indent}unsigned long r{id} = {x} * {y} + {c};"),
-                IROp::Loop { len } => {
-                    _ = writeln!(source, "{indent}for (unsigned long r{loop_id} = 0; r{loop_id} < {len}; r{loop_id}++) {{");
-                    indent += "  ";
-                    loop_id += 1;
-                }
-                IROp::Accumulator { init } => {
-                    _ = writeln!(source, "{indent}{} acc{acc_id} = {init};", init.dtype().ocl());
-                    acc_id += 1;
-                }
-                IROp::AccAssign { x, rop, num_loops } => {
-                    acc_id -= 1;
-                    match rop {
-                        ROp::Sum =>  _ = writeln!(source, "{indent}acc{acc_id} = {x} + acc{acc_id};"),
-                        ROp::Max =>  _ = writeln!(source, "{indent}acc{acc_id} = max({x}, acc{acc_id});"),
-                    }
-                    loop_id -= num_loops;
-                    for _ in 0..*num_loops {
-                        indent.pop();
-                        indent.pop();
-                        _ = writeln!(source, "{indent}}}");
-                    }
-                }
-                IROp::LocalBarrier => todo!(),
-            }
-            id += 1;
-        }*/
+
+        _ = writeln!(source, "  {}", process_op(kernel));
+
         for _ in 0..loop_id - 6 {
             indent.pop();
             indent.pop();
             _ = writeln!(source, "{indent}}}");
         }
-
-        _ = writeln!(source, "  {}", process_op(kernel));
 
         source += "}\n";
 
@@ -878,7 +828,16 @@ impl OpenCLDevice {
                         process_op(y)
                     )
                 }
-                OpKind::Reduce { x, rop, num_loops } => todo!(),
+                OpKind::Reduce { x, rop, num_loops } => {
+                    format!(
+                        "acc = {};\n  for () {{\n    acc = {} + acc;\n  }}",
+                        match rop {
+                            ROp::Sum => "0.0",
+                            ROp::Max => todo!(),
+                        },
+                        process_op(x)
+                    )
+                }
                 OpKind::StoreView { x, view } => unreachable!(),
                 OpKind::ConstView { value, view } => unreachable!(),
                 OpKind::LoadView { view, dtype } => unreachable!(),

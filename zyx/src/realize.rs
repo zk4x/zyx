@@ -118,7 +118,7 @@ impl Runtime {
                         // Then apply reduce
                         let op = ops.remove(&x).unwrap();
                         let axes = graph.axes(nid);
-                        let shape = graph.shape(nid);
+                        let shape = graph.shape(x);
                         ops.insert(nid, Op::reduce(op, rop, axes, shape.len()));
                         loads.insert(nid, loads.get(&x).unwrap().clone());
                     }
@@ -289,7 +289,7 @@ impl Runtime {
             }
 
             // Send the kernel to kernel cache.
-            let event = if let Some(event) = self.kernel_compiler.launch(
+            if let Some(event) = self.kernel_compiler.launch(
                 &op,
                 u32::try_from(dev_id).unwrap(),
                 &mut self.devices[dev_id],
@@ -300,10 +300,7 @@ impl Runtime {
                 self.debug,
             )? {
                 self.pools[mpid].events.insert(output_buffers, event.clone());
-                Some(event)
-            } else {
-                None
-            };
+            }
 
             // TODO Deallocate loads that are not used by any other kernel
         }

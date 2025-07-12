@@ -33,6 +33,7 @@ fn boolean_buffer() -> Result<(), ZyxError> {
 #[test]
 fn sum1() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
+    println!("{x}");
     assert_eq!(x.sum([0])?, [3, 9, 4]);
     assert_eq!(x.sum([1])?, [9, 7]);
     assert_eq!(x.sum([])?, 16);

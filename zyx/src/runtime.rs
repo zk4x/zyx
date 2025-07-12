@@ -12,7 +12,6 @@ use crate::{DebugMask, Map, Set};
 use nanoserde::DeJson;
 use std::collections::BTreeSet;
 use std::env;
-use std::ffi::OsString;
 use std::hash::BuildHasherDefault;
 use std::path::{Path, PathBuf};
 use std::{vec, vec::Vec};

@@ -16,7 +16,6 @@ pub struct Graph {
     pub nodes: Slab<TensorId, (u32, Node)>,
     pub gradient_tape_ref_count: u32,
     pub gradient_tape: Option<Set<TensorId>>,
-    // TODO instead of btreemap use data structure that uses single allocation for all shapes, just Vec<u32>
     shapes: Map<TensorId, Box<[Dim]>>,
     paddings: Map<TensorId, Box<[(isize, isize)]>>,
     axes: Map<TensorId, Box<[Axis]>>,
