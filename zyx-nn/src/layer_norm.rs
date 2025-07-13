@@ -28,7 +28,7 @@ impl LayerNorm {
     /// Forward function for layer_norm.
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
-        let axes = -(self.d_dims as isize)..=-1;
+        let axes = -(self.d_dims as i32)..=-1;
         let eps = Tensor::from(self.eps).cast(x.dtype());
         let a = &x - x.mean_kd(axes.clone()).unwrap();
         let b = (x.var_kd(axes, 1).unwrap() + eps).sqrt();
