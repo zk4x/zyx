@@ -1020,18 +1020,16 @@ impl OpenCLDevice {
             max_work_item_dims = 3;
         }
         for i in 0..max_work_item_dims {
-            let max_dim_size: usize = unsafe {
-                core::mem::transmute([
-                    mwis[i * 8],
-                    mwis[i * 8 + 1],
-                    mwis[i * 8 + 2],
-                    mwis[i * 8 + 3],
-                    mwis[i * 8 + 4],
-                    mwis[i * 8 + 5],
-                    mwis[i * 8 + 6],
-                    mwis[i * 8 + 7],
-                ])
-            };
+            let max_dim_size: usize = usize::from_ne_bytes([
+                mwis[i * 8],
+                mwis[i * 8 + 1],
+                mwis[i * 8 + 2],
+                mwis[i * 8 + 3],
+                mwis[i * 8 + 4],
+                mwis[i * 8 + 5],
+                mwis[i * 8 + 6],
+                mwis[i * 8 + 7],
+            ]);
             max_global_work_dims[i] = max_dim_size as Dim;
         }
         let mlt = usize::from_ne_bytes(

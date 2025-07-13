@@ -511,7 +511,7 @@ use clap::Parser;
 //use tokenizers::Tokenizer;
 //use hf_hub::{api::sync::Api, Repo, RepoType};
 
-use rand::{distributions::Distribution, SeedableRng};
+use rand::{distr::Distribution, SeedableRng};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Sampling {
@@ -557,7 +557,7 @@ impl LogitsProcessor {
     }
 
     fn sample_multinomial(&mut self, prs: &Vec<f32>) -> Result<u32, ZyxError> {
-        let distr = rand::distributions::WeightedIndex::new(prs).unwrap();
+        let distr = rand::distr::weighted::WeightedIndex::new(prs).unwrap();
         let next_token = distr.sample(&mut self.rng) as u32;
         Ok(next_token)
     }
@@ -943,12 +943,12 @@ fn main() -> Result<(), ZyxError> {
         args.repeat_penalty,
         args.repeat_last_n
     );
-    let tokenizer = Tokenizer::from_file("../tokenizer.json").unwrap();
+    let tokenizer = Tokenizer::from_file("phi1_5-tokenizer.json").unwrap();
 
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
         let mut vb: HashMap<String, Tensor> =
-            Tensor::load("/home/x/Dev/rust/zyx/model.safetensors").unwrap();
+            Tensor::load("phi1_5-model.safetensors").unwrap();
         //let mut keys: Vec<String> = vb.keys().cloned().collect();
         //keys.sort();
         //println!("{:?}", keys);

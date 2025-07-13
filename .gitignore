@@ -5,3 +5,5 @@ zyx/Cargo.lock
 Cargo.lock
 model.safetensors
 tokenizer.json
+zyx-examples/phi1_5-model.safetensors
+zyx-examples/phi1_5-tokenizer.json

@@ -1,9 +1,38 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    Map, Set, ZyxError, graph::Node, kernel::Op, runtime::Runtime, shape::Dim, tensor::TensorId,
+    Map, Set, ZyxError,
+    graph::Node,
+    kernel::Op,
+    runtime::Runtime,
+    shape::Dim,
+    slab::{Slab, SlabId},
+    tensor::TensorId,
 };
 use std::{collections::BTreeSet, hash::BuildHasherDefault};
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
+struct KernelId(u32);
+
+impl SlabId for KernelId {
+    const ZERO: KernelId = KernelId(0);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+impl From<usize> for KernelId {
+    fn from(value: usize) -> Self {
+        Self(value as u32)
+    }
+}
+
+impl From<KernelId> for usize {
+    fn from(value: KernelId) -> Self {
+        value.0 as usize
+    }
+}
 
 impl Runtime {
     /// 1. gets a set of tensors which need to be processed and in which order
@@ -11,33 +40,35 @@ impl Runtime {
     /// 3. assigns those kernels to devices, compiles and launches them
     #[allow(clippy::cognitive_complexity)]
     pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
-        let begin = std::time::Instant::now();
+        let (realized_nodes, order, rcs, new_leafs, mut to_delete) = {
+            let begin = std::time::Instant::now();
+            let realized_nodes: Set<TensorId> =
+                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+            if to_eval.is_empty() {
+                return Ok(());
+            }
+            if self.devices.is_empty() {
+                self.initialize_devices()?;
+            }
 
-        let realized_nodes: Set<TensorId> =
-            self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
-        let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
-        if to_eval.is_empty() {
-            return Ok(());
-        }
-        if self.devices.is_empty() {
-            self.initialize_devices()?;
-        }
-
-        let (order, mut to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
-            self.graph_order_with_gradient(&realized_nodes, &mut to_eval)
-        } else {
-            self.graph_order(&realized_nodes, &mut to_eval)
+            let (order, to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
+                self.graph_order_with_gradient(&realized_nodes, &mut to_eval)
+            } else {
+                self.graph_order(&realized_nodes, &mut to_eval)
+            };
+            let elapsed = begin.elapsed();
+            if self.debug.perf() {
+                println!(
+                    "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape={}",
+                    elapsed.as_micros(),
+                    order.len(),
+                    usize::from(self.graph.nodes.len()),
+                    self.graph.gradient_tape.is_some(),
+                );
+            }
+            (realized_nodes, order, rcs, new_leafs, to_delete)
         };
-        let elapsed = begin.elapsed();
-        if self.debug.perf() {
-            println!(
-                "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape={}",
-                elapsed.as_micros(),
-                order.len(),
-                usize::from(self.graph.nodes.len()),
-                self.graph.gradient_tape.is_some(),
-            );
-        }
 
         let begin = std::time::Instant::now();
         // All tensors from loads
@@ -46,13 +77,10 @@ impl Runtime {
         let mut loads: Map<TensorId, Vec<TensorId>> = Map::with_hasher(Default::default());
         {
             let graph = &self.graph;
-            let order: &[TensorId] = &order;
-            let to_eval: &Set<TensorId> = &to_eval;
-            let realized_nodes: &Set<TensorId> = &realized_nodes;
             let rcs = if rcs.is_empty() {
                 let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
                 // to_eval are not in rcs
-                for &nid in order {
+                for &nid in &order {
                     if !realized_nodes.contains(&nid) {
                         for nid in graph[nid].parameters() {
                             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
@@ -68,7 +96,7 @@ impl Runtime {
             {
                 let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
                 // to_eval are not in rcs
-                for &nid in order {
+                for &nid in &order {
                     if !realized_nodes.contains(&nid) {
                         for nid in graph[nid].parameters() {
                             rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
@@ -77,7 +105,7 @@ impl Runtime {
                 }
                 if rcs2 != rcs {
                     println!("Realized nodes: {realized_nodes:?}");
-                    for &nid in order {
+                    for &nid in &order {
                         println!(
                             "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}",
                             graph[nid],
@@ -90,7 +118,11 @@ impl Runtime {
                 }
             }
 
-            for &nid in order {
+            let mut kernels: Slab<KernelId, Op> = Slab::new();
+            let mut outputs: Map<TensorId, KernelId> =
+                Map::with_hasher(BuildHasherDefault::default());
+
+            for &nid in &order {
                 match graph[nid] {
                     Node::Const { value } => {
                         ops.insert(nid, Op::constant_view(value));
@@ -104,15 +136,17 @@ impl Runtime {
                     Node::Permute { x } => {
                         let axes = graph.axes(nid);
                         ops.get_mut(&x).unwrap().movement(|view| view.permute(axes));
-                        loads.insert(nid, loads.get(&x).unwrap().clone());
+                        let loadsx = loads.remove(&x).unwrap();
+                        loads.insert(nid, loadsx);
                     }
                     Node::Reshape { x } => {
                         let xshape = graph.shape(x);
                         let shape = graph.shape(nid);
-                        ops.get_mut(&x)
-                            .unwrap()
-                            .movement(|view| view.reshape(0..xshape.len(), shape));
-                        loads.insert(nid, loads.get(&x).unwrap().clone());
+                        let mut op = ops.get(&x).unwrap().clone();
+                        op.movement(|view| view.reshape(0..xshape.len(), shape));
+                        ops.insert(nid, op);
+                        let loadsx = loads.remove(&x).unwrap();
+                        loads.insert(nid, loadsx);
                     }
                     Node::Reduce { x, rop } => {
                         // First permute
@@ -121,12 +155,14 @@ impl Runtime {
                         let axes = graph.axes(nid);
                         let shape = graph.shape(x);
                         ops.insert(nid, Op::reduce(op, rop, axes, shape.len()));
-                        loads.insert(nid, loads.get(&x).unwrap().clone());
+                        let loadsx = loads.remove(&x).unwrap();
+                        loads.insert(nid, loadsx);
                     }
                     Node::Cast { x, dtype } => {
                         let op = ops.remove(&x).unwrap();
                         ops.insert(nid, Op::cast(op, dtype));
-                        loads.insert(nid, loads.get(&x).unwrap().clone());
+                        let loadsx = loads.remove(&x).unwrap();
+                        loads.insert(nid, loadsx);
                     }
                     Node::Unary { x, uop } => {
                         let op = ops.remove(&x).unwrap();
@@ -146,13 +182,27 @@ impl Runtime {
                     // thus these separate kernels.
                     Node::Expand { x } => {
                         //let shape = graph.shape(nid);
-                        //ops.get_mut(&x).unwrap().movement(|view| view.expand(shape));
-                        todo!();
+                        let xshape = graph.shape(x);
+                        let shape = graph.shape(nid);
+                        let mut op = ops.remove(&x).unwrap();
+                        for i in 0..xshape.len() {
+                            op.movement(|view| view.expand(i, shape[i]));
+                        }
+                        ops.insert(nid, op);
+                        let loadsx = loads.remove(&x).unwrap();
+                        loads.insert(nid, loadsx);
                     }
                     Node::Pad { x } => {
                         //let padding = graph.padding(nid);
-                        //ops.get_mut(&x).unwrap().movement(|view| view.pad(padding));
-                        todo!();
+                        let xshape = graph.shape(x);
+                        let padding = graph.padding(nid);
+                        let mut op = ops.remove(&x).unwrap();
+                        for i in 0..xshape.len() {
+                            op.movement(|view| view.pad(i, padding[i].0, padding[i].1));
+                        }
+                        ops.insert(nid, op);
+                        let loadsx = loads.remove(&x).unwrap();
+                        loads.insert(nid, loadsx);
                     }
                 }
                 if to_eval.contains(&nid) {
