@@ -15,7 +15,12 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    dtype::Constant, error::{BackendError, ErrorStatus}, kernel::Op, shape::Dim, slab::Slab, DType
+    DType,
+    dtype::Constant,
+    error::{BackendError, ErrorStatus},
+    kernel::{Kernel, Op},
+    shape::Dim,
+    slab::Slab,
 };
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
@@ -559,11 +564,7 @@ impl CUDADevice {
         self.dev_info.compute
     }
 
-    pub fn compile(
-        &mut self,
-        kernel: &Op,
-        debug_asm: bool,
-    ) -> Result<ProgramId, BackendError> {
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
 
@@ -702,7 +703,7 @@ impl CUDADevice {
     #[allow(clippy::type_complexity)]
     fn compile_cuda(
         &self,
-        kernel: &Op,
+        kernel: &Kernel,
         debug_asm: bool,
     ) -> Result<([Dim; 3], [Dim; 3], String, Vec<u8>), BackendError> {
         let mut source = String::from("(\n");

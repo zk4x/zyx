@@ -7,7 +7,11 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
 use crate::{
-    error::{BackendError, ErrorStatus}, runtime::Pool, shape::Dim, slab::SlabId
+    error::{BackendError, ErrorStatus},
+    kernel::Kernel,
+    runtime::Pool,
+    shape::Dim,
+    slab::SlabId,
 };
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
@@ -84,12 +88,16 @@ pub fn initialize_backends(
             println!("{err}")
         }
     }
-    if let Err(err) = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends) {
+    if let Err(err) =
+        dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends)
+    {
         if debug_backends {
             println!("{err}");
         }
     }
-    if let Err(err) = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends) {
+    if let Err(err) =
+        cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends)
+    {
         if debug_backends {
             println!("{err}");
         }
@@ -99,7 +107,9 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }*/
-    if let Err(err) = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends) {
+    if let Err(err) =
+        opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends)
+    {
         if debug_backends {
             println!("{err}");
         }
@@ -107,7 +117,9 @@ pub fn initialize_backends(
     //#[cfg(feature = "vulkan")]
     //let _ = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_dev);
     #[cfg(feature = "wgpu")]
-    if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends) {
+    if let Err(err) =
+        wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends)
+    {
         if debug_backends {
             println!("{err}");
         }
@@ -351,12 +363,8 @@ impl Device {
         }
     }
 
-    pub fn compile(
-        &mut self,
-        kernel: &crate::kernel::Op,
-        debug_asm: bool,
-    ) -> Result<ProgramId, BackendError> {
-        kernel.debug();
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+        kernel.op.debug();
         match self {
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
             Device::OpenCL(dev) => dev.compile(kernel, debug_asm),

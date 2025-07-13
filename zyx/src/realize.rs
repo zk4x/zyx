@@ -13,7 +13,7 @@ impl Runtime {
     pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let begin = std::time::Instant::now();
 
-        let mut realized_nodes: Set<TensorId> =
+        let realized_nodes: Set<TensorId> =
             self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
         let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
         if to_eval.is_empty() {
@@ -39,6 +39,7 @@ impl Runtime {
             );
         }
 
+        let begin = std::time::Instant::now();
         // All tensors from loads
         // When a tensor needs load that is not yet in realized tensors, we can immediatelly send it for execution
         let mut ops: Map<TensorId, Op> = Map::with_hasher(Default::default());
@@ -47,9 +48,8 @@ impl Runtime {
             let graph = &self.graph;
             let order: &[TensorId] = &order;
             let to_eval: &Set<TensorId> = &to_eval;
-            let memory_pools = &self.pools;
             let realized_nodes: &Set<TensorId> = &realized_nodes;
-            let mut rcs = if rcs.is_empty() {
+            let rcs = if rcs.is_empty() {
                 let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
                 // to_eval are not in rcs
                 for &nid in order {
@@ -107,10 +107,11 @@ impl Runtime {
                         loads.insert(nid, loads.get(&x).unwrap().clone());
                     }
                     Node::Reshape { x } => {
+                        let xshape = graph.shape(x);
                         let shape = graph.shape(nid);
                         ops.get_mut(&x)
                             .unwrap()
-                            .movement(|view| view.reshape(0..shape.len(), shape));
+                            .movement(|view| view.reshape(0..xshape.len(), shape));
                         loads.insert(nid, loads.get(&x).unwrap().clone());
                     }
                     Node::Reduce { x, rop } => {
@@ -159,6 +160,10 @@ impl Runtime {
                     ops.insert(nid, Op::store(op, graph.shape(nid)));
                 }
             }
+        }
+        let elapsed = begin.elapsed();
+        if self.debug.perf() {
+            println!("Kernelizer took {} us", elapsed.as_micros(),);
         }
 
         // All ops that have not been evaluated yet will be evaluated here

@@ -1,5 +1,7 @@
+use std::hash::BuildHasherDefault;
+
 use crate::{
-    DType,
+    DType, Set,
     cache::Optimization,
     dtype::Constant,
     graph::{BOp, ROp, UOp},
@@ -8,12 +10,13 @@ use crate::{
 };
 
 pub struct Kernel {
-    shape: [Dim; 6],
-    op: Op,
+    pub shape: [Dim; 6],
+    pub op: Op,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OpKind {
+    //Sink { stores: Vec<Op> }, // A way to put multiple stores in one kernel
     ConstView { value: Constant, view: View },
     Const { value: Constant },
     LoopIndex { i: u32 },
@@ -25,7 +28,8 @@ pub enum OpKind {
     Unary { x: Op, uop: UOp },
     Binary { x: Op, y: Op, bop: BOp },
     Reduce { x: Op, rop: ROp, num_loops: u32 },
-    // Sink { ops: Vec<Op> } - will be just a way to put multiple ops/stores into one kernel
+    Block { op: Op, vars: Vec<Op> }, // deduplication block
+    Ref { id: usize },               // Reference to variable in deduplication block
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -92,6 +96,7 @@ impl Op {
             OpKind::Reduce { x, .. } => x.movement(func),
             OpKind::Load { .. } | OpKind::Store { .. } => unreachable!(),
             OpKind::Const { .. } => unreachable!(),
+            _ => unreachable!(),
         }
     }
 
@@ -108,6 +113,7 @@ impl Op {
             | OpKind::LoopIndex { .. }
             | OpKind::Load { .. }
             | OpKind::Store { .. } => unreachable!(),
+            _ => unreachable!(),
         }
     }
 
@@ -124,6 +130,7 @@ impl Op {
             | OpKind::LoopIndex { .. }
             | OpKind::Load { .. }
             | OpKind::Store { .. } => unreachable!(),
+            _ => unreachable!(),
         }
     }
 
@@ -152,6 +159,7 @@ impl Op {
             | OpKind::LoopIndex { .. }
             | OpKind::Load { .. }
             | OpKind::Store { .. } => unreachable!(),
+            _ => unreachable!(),
         }
     }
 
@@ -198,7 +206,18 @@ impl Op {
                     debug_op(index, indent + 2);
                 }
                 OpKind::Const { value } => {
-                    println!("{}CONST {value}", " ".repeat(indent as usize))
+                    println!("{}CONST {value}", " ".repeat(indent as usize));
+                }
+                OpKind::Block { op, vars } => {
+                    println!("{}BLOCK VARS", " ".repeat(indent as usize));
+                    for x in vars {
+                        debug_op(x, indent + 2);
+                    }
+                    println!("{}BLOCK OP", " ".repeat(indent as usize));
+                    debug_op(op, indent + 2);
+                }
+                OpKind::Ref { id } => {
+                    println!("{}REF {id}", " ".repeat(indent as usize));
                 }
             }
         }
@@ -207,15 +226,142 @@ impl Op {
         println!();
     }
 
-    pub fn apply_optimization(&mut self, opt: &Optimization) {
+    fn is_constant(&self) -> bool {
+        match self.0.as_ref() {
+            OpKind::Const { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub fn apply_optimization(mut self, opt: &Optimization) -> Kernel {
         let n = self.shape().len();
         match opt {
             Optimization::Basic { shape } => {
                 self.movement(|view| view.reshape(0..n, &shape));
+                self.resolve_views();
+                self.constant_fold();
+                self.deduplicate();
+                Kernel {
+                    shape: [shape[0], shape[1], shape[2], shape[3], shape[4], shape[5]],
+                    op: self,
+                }
             }
         }
+    }
 
-        self.resolve_views();
+    pub fn deduplicate(&mut self) {
+        // deduplication block is created in every scope, that is kernel scope and within every reduce op
+        // this function also does loop invariant code motion
+        fn dedup(cache: &mut Set<Op>, op: &mut Op) {
+            cache.insert(op.clone());
+            match op.0.as_mut() {
+                OpKind::ConstView { value, view } => {}
+                OpKind::Const { value } => todo!(),
+                OpKind::LoopIndex { i } => todo!(),
+                OpKind::LoadView { view, dtype } => todo!(),
+                OpKind::Load { dtype, index } => todo!(),
+                OpKind::StoreView { x, view } => todo!(),
+                OpKind::Store { x, index } => todo!(),
+                OpKind::Cast { x, dtype } => todo!(),
+                OpKind::Unary { x, uop } => todo!(),
+                OpKind::Binary { x, y, bop } => todo!(),
+                OpKind::Reduce { x, rop, num_loops } => todo!(),
+                OpKind::Block { .. } => unreachable!(),
+                OpKind::Ref { .. } => unreachable!(),
+            }
+        }
+        let mut cache = Set::with_hasher(BuildHasherDefault::default());
+        dedup(&mut cache, self);
+    }
+
+    pub fn constant_fold(&mut self) {
+        match self.0.as_mut() {
+            OpKind::Const { .. } | OpKind::LoopIndex { .. } => {}
+            OpKind::Load { index, .. } => {
+                index.constant_fold();
+            }
+            OpKind::Store { x, index } => {
+                x.constant_fold();
+                index.constant_fold();
+            }
+            OpKind::Cast { x, dtype } => {
+                x.constant_fold();
+                if let OpKind::Const { value } = x.0.as_mut() {
+                    *self.0 = OpKind::Const { value: value.cast(*dtype) };
+                }
+            }
+            OpKind::Unary { x, uop } => {
+                x.constant_fold();
+                if let OpKind::Const { value } = x.0.as_mut() {
+                    *self.0 = OpKind::Const { value: value.unary(*uop) };
+                }
+            }
+            OpKind::Binary { x, y, bop } => {
+                x.constant_fold();
+                y.constant_fold();
+                if let OpKind::Const { value: x_value } = *x.0
+                    && let OpKind::Const { value: y_value } = *y.0
+                {
+                    *self.0 = OpKind::Const { value: Constant::binary(x_value, y_value, *bop) };
+                    return;
+                }
+                match bop {
+                    BOp::Add => {
+                        if let OpKind::Const { value: x_value } = *x.0 {
+                            if x_value.is_zero() {
+                                *self.0 = (*y.0).clone();
+                                return;
+                            }
+                        }
+                        if let OpKind::Const { value: y_value } = *y.0 {
+                            if y_value.is_zero() {
+                                *self.0 = (*x.0).clone();
+                                return;
+                            }
+                        }
+                    }
+                    BOp::Sub => {
+                        if let OpKind::Const { value: x_value } = *x.0 {
+                            if x_value.is_zero() {
+                                *self.0 = OpKind::Unary { x: y.clone(), uop: UOp::Not };
+                                return;
+                            }
+                        }
+                        if let OpKind::Const { value: x_value } = *x.0 {
+                            if x_value.is_zero() {
+                                *self.0 = (*x.0).clone();
+                                return;
+                            }
+                        }
+                    }
+                    BOp::Mul => todo!(),
+                    BOp::Div => todo!(),
+                    BOp::Pow => todo!(),
+                    BOp::Mod => todo!(),
+                    BOp::Cmplt => todo!(),
+                    BOp::Cmpgt => todo!(),
+                    BOp::Max => todo!(),
+                    BOp::Or => todo!(),
+                    BOp::And => todo!(),
+                    BOp::BitXor => todo!(),
+                    BOp::BitOr => todo!(),
+                    BOp::BitAnd => todo!(),
+                    BOp::BitShiftLeft => todo!(),
+                    BOp::BitShiftRight => todo!(),
+                    BOp::NotEq => todo!(),
+                }
+            }
+            OpKind::Reduce { x, rop, num_loops } => {
+                // TODO if num_loops is small enough
+            }
+            OpKind::Block { .. }
+            | OpKind::Ref { .. }
+            | OpKind::ConstView { .. }
+            | OpKind::LoadView { .. }
+            | OpKind::StoreView { .. } => {
+                unreachable!()
+            }
+        }
     }
 
     pub fn resolve_views(&mut self) {
@@ -223,12 +369,12 @@ impl Op {
             OpKind::ConstView { value, view } => todo!(),
             OpKind::LoadView { view, dtype } => {
                 let index = view_index(view);
-                self.0 = Box::new(OpKind::Load { dtype: *dtype, index });
+                *self.0 = OpKind::Load { dtype: *dtype, index };
             }
             OpKind::StoreView { x, view } => {
                 let index = view_index(view);
                 x.resolve_views();
-                self.0 = Box::new(OpKind::Store { x: x.clone(), index });
+                *self.0 = OpKind::Store { x: x.clone(), index };
             }
             OpKind::Cast { x, .. } | OpKind::Unary { x, .. } | OpKind::Reduce { x, .. } => {
                 x.resolve_views();
@@ -241,6 +387,7 @@ impl Op {
             | OpKind::LoopIndex { .. }
             | OpKind::Load { .. }
             | OpKind::Store { .. } => unreachable!(),
+            _ => unreachable!(),
         }
 
         fn view_index(view: &View) -> Op {

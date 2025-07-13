@@ -80,7 +80,7 @@ impl Cache {
             // (the best optimization was in disk cache)
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
                 let mut kernel = kernel.clone();
-                kernel.apply_optimization(optimization);
+                let kernel = kernel.apply_optimization(optimization);
                 let program_id = device.compile(&kernel, debug.asm())?;
                 let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
                 assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
@@ -100,9 +100,9 @@ impl Cache {
 
         // If search_iters == 0, we use default optimizations
         if search_iters == 0 {
-            let mut kernel = kernel.clone();
+            let kernel = kernel.clone();
             let optimization = Optimization::default(&kernel, device.info());
-            kernel.apply_optimization(&optimization);
+            let kernel = kernel.apply_optimization(&optimization);
             let program_id = device.compile(&kernel, debug.asm())?;
             let nanos = std::time::Instant::now();
             let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
@@ -110,7 +110,7 @@ impl Cache {
             let nanos = nanos.elapsed().as_nanos();
             assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
             if debug.perf() {
-                let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
+                let (flop, mem_read, mem_write) = kernel.op.flop_mem_rw();
                 println!("{}", get_perf(flop, mem_read, mem_write, nanos));
             }
             //self.optimizations.insert((kernel_id, dev_info_id), optimization);
@@ -193,7 +193,7 @@ impl Optimization {
         while n % d != 0 {
             d -= 1;
         }
-        let local_work_size = get_equal_factors(n/d);
+        let local_work_size = get_equal_factors(n / d);
         global_work_size[0] /= local_work_size[0];
         global_work_size[1] /= local_work_size[1];
         global_work_size[2] /= local_work_size[2];

@@ -10,7 +10,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{BOp, ROp, UOp},
-    kernel::{Op, OpKind},
+    kernel::{Kernel, Op, OpKind},
     shape::Dim,
     slab::Slab,
 };
@@ -683,11 +683,7 @@ impl OpenCLDevice {
     }
 
     #[allow(clippy::cognitive_complexity)]
-    pub fn compile(
-        &mut self,
-        kernel: &crate::kernel::Op,
-        debug_asm: bool,
-    ) -> Result<ProgramId, BackendError> {
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         let mut source = String::from("(\n");
         let mut indent = String::from("  ");
 
@@ -750,7 +746,7 @@ impl OpenCLDevice {
 
         let mut loop_id = 6;
 
-        _ = writeln!(source, "  {}", process_op(kernel));
+        _ = writeln!(source, "  {}", process_op(&kernel.op));
 
         for _ in 0..loop_id - 6 {
             indent.pop();
@@ -839,6 +835,7 @@ impl OpenCLDevice {
                 OpKind::StoreView { x, view } => unreachable!(),
                 OpKind::ConstView { value, view } => unreachable!(),
                 OpKind::LoadView { view, dtype } => unreachable!(),
+                _ => todo!(),
             }
         }
 

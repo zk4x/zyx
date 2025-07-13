@@ -1,11 +1,13 @@
-use std::ptr;
-use nanoserde::DeJson;
+use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, ProgramId, opencl::OpenCLEvent};
 use crate::{
-    error::{BackendError, ErrorStatus}, kernel::Op, runtime::Pool, shape::Dim, slab::{Slab, SlabId}
+    error::{BackendError, ErrorStatus},
+    kernel::Kernel,
+    runtime::Pool,
+    shape::Dim,
+    slab::{Slab, SlabId},
 };
-use super::{
-    opencl::OpenCLEvent, BufferId, Device, DeviceInfo, Event, MemoryPool, ProgramId
-};
+use nanoserde::DeJson;
+use std::ptr;
 
 #[derive(Default, Debug, DeJson)]
 pub struct DummyConfig {
@@ -80,11 +82,7 @@ impl DummyMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    pub fn deallocate(
-        &mut self,
-        buffer_id: BufferId,
-        event_wait_list: Vec<Event>,
-    ) {
+    pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
         let bytes = self.buffers[buffer_id];
         self.buffers.remove(buffer_id);
@@ -157,7 +155,7 @@ impl DummyDevice {
     #[allow(clippy::unnecessary_wraps)]
     pub const fn compile(
         &mut self,
-        kernel: &Op,
+        kernel: &Kernel,
         debug_asm: bool,
     ) -> Result<ProgramId, BackendError> {
         let _ = self;
