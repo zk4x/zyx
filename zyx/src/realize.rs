@@ -1,38 +1,10 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    Map, Set, ZyxError,
-    graph::Node,
-    kernel::Op,
-    runtime::Runtime,
-    shape::Dim,
-    slab::{Slab, SlabId},
-    tensor::TensorId,
+    Map, Set, ZyxError, cache::Op, graph::Node, runtime::Runtime, shape::Dim, tensor::TensorId,
+    view::View,
 };
 use std::{collections::BTreeSet, hash::BuildHasherDefault};
-
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
-struct KernelId(u32);
-
-impl SlabId for KernelId {
-    const ZERO: KernelId = KernelId(0);
-
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
-}
-
-impl From<usize> for KernelId {
-    fn from(value: usize) -> Self {
-        Self(value as u32)
-    }
-}
-
-impl From<KernelId> for usize {
-    fn from(value: KernelId) -> Self {
-        value.0 as usize
-    }
-}
 
 impl Runtime {
     /// 1. gets a set of tensors which need to be processed and in which order
@@ -70,19 +42,13 @@ impl Runtime {
             (realized_nodes, order, rcs, new_leafs, to_delete)
         };
 
-        let begin = std::time::Instant::now();
-        // All tensors from loads
-        // When a tensor needs load that is not yet in realized tensors, we can immediatelly send it for execution
-        let mut ops: Map<TensorId, Op> = Map::with_hasher(Default::default());
-        let mut loads: Map<TensorId, Vec<TensorId>> = Map::with_hasher(Default::default());
         {
-            let graph = &self.graph;
             let rcs = if rcs.is_empty() {
                 let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
                 // to_eval are not in rcs
                 for &nid in &order {
                     if !realized_nodes.contains(&nid) {
-                        for nid in graph[nid].parameters() {
+                        for nid in self.graph[nid].parameters() {
                             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
                         }
                     }
@@ -98,7 +64,7 @@ impl Runtime {
                 // to_eval are not in rcs
                 for &nid in &order {
                     if !realized_nodes.contains(&nid) {
-                        for nid in graph[nid].parameters() {
+                        for nid in self.graph[nid].parameters() {
                             rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
                         }
                     }
@@ -108,8 +74,8 @@ impl Runtime {
                     for &nid in &order {
                         println!(
                             "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}",
-                            graph[nid],
-                            graph.shape(nid),
+                            self.graph[nid],
+                            self.graph.shape(nid),
                             rcs.get(&nid).copied().unwrap_or(0),
                             rcs2.get(&nid).copied().unwrap_or(0),
                         );
@@ -118,109 +84,108 @@ impl Runtime {
                 }
             }
 
-            let mut kernels: Slab<KernelId, Op> = Slab::new();
-            let mut outputs: Map<TensorId, KernelId> =
-                Map::with_hasher(BuildHasherDefault::default());
-
+            let begin = std::time::Instant::now();
             for &nid in &order {
-                match graph[nid] {
-                    Node::Const { value } => {
-                        ops.insert(nid, Op::constant_view(value));
-                        loads.insert(nid, vec![]);
-                    }
-                    Node::Leaf { dtype } => {
-                        let shape = graph.shape(nid);
-                        ops.insert(nid, Op::load(&shape, dtype));
-                        loads.insert(nid, vec![nid]);
-                    }
-                    Node::Permute { x } => {
-                        let axes = graph.axes(nid);
-                        ops.get_mut(&x).unwrap().movement(|view| view.permute(axes));
-                        let loadsx = loads.remove(&x).unwrap();
-                        loads.insert(nid, loadsx);
-                    }
-                    Node::Reshape { x } => {
-                        let xshape = graph.shape(x);
-                        let shape = graph.shape(nid);
-                        let mut op = ops.get(&x).unwrap().clone();
-                        op.movement(|view| view.reshape(0..xshape.len(), shape));
-                        ops.insert(nid, op);
-                        let loadsx = loads.remove(&x).unwrap();
-                        loads.insert(nid, loadsx);
-                    }
-                    Node::Reduce { x, rop } => {
-                        // First permute
-                        // Then apply reduce
-                        let op = ops.remove(&x).unwrap();
-                        let axes = graph.axes(nid);
-                        let shape = graph.shape(x);
-                        ops.insert(nid, Op::reduce(op, rop, axes, shape.len()));
-                        let loadsx = loads.remove(&x).unwrap();
-                        loads.insert(nid, loadsx);
-                    }
-                    Node::Cast { x, dtype } => {
-                        let op = ops.remove(&x).unwrap();
-                        ops.insert(nid, Op::cast(op, dtype));
-                        let loadsx = loads.remove(&x).unwrap();
-                        loads.insert(nid, loadsx);
-                    }
-                    Node::Unary { x, uop } => {
-                        let op = ops.remove(&x).unwrap();
-                        ops.insert(nid, Op::unary(op, uop));
-                        loads.insert(nid, loads.get(&x).unwrap().clone());
-                    }
-                    Node::Binary { x, y, bop } => {
-                        let opx = ops.remove(&x).unwrap();
-                        let opy = ops.remove(&y).unwrap();
-                        ops.insert(nid, Op::binary(opx, opy, bop));
-                        let mut loadsx = loads.remove(&x).unwrap();
-                        let loadsy = loads.remove(&x).unwrap();
-                        loadsx.extend(loadsy);
-                        loads.insert(nid, loadsx);
-                    }
-                    // Padding and Expand are only nodes that are better not fused under specific conditions,
-                    // thus these separate kernels.
-                    Node::Expand { x } => {
-                        //let shape = graph.shape(nid);
-                        let xshape = graph.shape(x);
-                        let shape = graph.shape(nid);
-                        let mut op = ops.remove(&x).unwrap();
-                        for i in 0..xshape.len() {
-                            op.movement(|view| view.expand(i, shape[i]));
+                let kid = if realized_nodes.contains(&nid) {
+                    let shape = self.graph.shape(nid);
+                    let view = View::contiguous(shape);
+                    let dtype = self.graph.dtype(nid);
+                    let op = Op::LoadView { view, dtype };
+                    self.cache.push_op(op)
+                } else {
+                    match self.graph[nid] {
+                        Node::Leaf { .. } => {
+                            unreachable!();
                         }
-                        ops.insert(nid, op);
-                        let loadsx = loads.remove(&x).unwrap();
-                        loads.insert(nid, loadsx);
-                    }
-                    Node::Pad { x } => {
-                        //let padding = graph.padding(nid);
-                        let xshape = graph.shape(x);
-                        let padding = graph.padding(nid);
-                        let mut op = ops.remove(&x).unwrap();
-                        for i in 0..xshape.len() {
-                            op.movement(|view| view.pad(i, padding[i].0, padding[i].1));
+                        Node::Const { value } => {
+                            let view = View::contiguous(&[]);
+                            let op = Op::ConstView { value, view };
+                            self.cache.push_op(op)
                         }
-                        ops.insert(nid, op);
-                        let loadsx = loads.remove(&x).unwrap();
-                        loads.insert(nid, loadsx);
+                        Node::Cast { x, dtype } => {
+                            let op = Op::Cast { x: outputs[&x], dtype };
+                            self.cache.push_op(op)
+                        }
+                        Node::Unary { x, uop } => {
+                            let op = Op::Unary { x: outputs[&x], uop };
+                            self.cache.push_op(op)
+                        }
+                        Node::Binary { x, y, bop } => {
+                            let x = outputs[&x];
+                            let y = outputs[&y];
+                            // TODO check if x or y are dependent on each other.
+                            // If yes, then we have to store and load them.
+                            let op = Op::Binary { x, y, bop };
+                            self.cache.push_op(op)
+                        }
+                        Node::Reduce { x, rop } => {
+                            // First permute
+                            // Then apply reduce
+                            let axes = self.graph.axes(nid);
+                            //let shape = self.graph.shape(x);
+                            let x = outputs[&x];
+                            // TODO also permute before this
+                            let op = Op::Reduce { x, rop, num_loops: axes.len() as u32 };
+                            let id = ops.len();
+                            ops.push(op);
+                            id
+                        }
+                        Node::Permute { x } => {
+                            let x = outputs[&x];
+                            let axes = self.graph.axes(nid);
+                            //movement(x, &mut ops, |view| view.permute(axes));
+                            x
+                        }
+                        Node::Reshape { x } => {
+                            let xshape = self.graph.shape(x);
+                            let shape = self.graph.shape(nid);
+                            let x = outputs[&x];
+                            //movement(x, &mut ops, |view| view.reshape(0..xshape.len(), shape));
+                            x
+                        }
+                        // Padding and Expand are only nodes that are better not fused under specific conditions,
+                        // thus these separate kernels.
+                        Node::Expand { x } => {
+                            let xshape = self.graph.shape(x);
+                            let shape = self.graph.shape(nid);
+                            let x = outputs[&x];
+                            /*for i in 0..xshape.len() {
+                                movement(x, &mut ops, |view| view.expand(i, shape[i]));
+                            }*/
+                            x
+                        }
+                        Node::Pad { x } => {
+                            //let padding = graph.padding(nid);
+                            let xshape = self.graph.shape(x);
+                            let padding = self.graph.padding(nid);
+                            let x = outputs[&x];
+                            /*for i in 0..xshape.len() {
+                                movement(x, &mut ops, |view| {
+                                    view.pad(i, padding[i].0, padding[i].1)
+                                });
+                            }*/
+                            x
+                        }
                     }
-                }
-                if to_eval.contains(&nid) {
-                    let op = ops.remove(&nid).unwrap();
-                    ops.insert(nid, Op::store(op, graph.shape(nid)));
-                }
+                };
+                outputs.insert(nid, kid);
+                // if this kernel
+                let user_requires_evaluation = to_eval.contains(&nid);
+                //let big_and_used_in_multiple_places = rcs[&nid] > 1 && is_big(kid, &ops);
+                //if user_requires_evaluation || big_and_used_in_multiple_places {}
+            }
+            let elapsed = begin.elapsed();
+            if self.debug.perf() {
+                println!("Kernelizer took {} us", elapsed.as_micros(),);
             }
         }
-        let elapsed = begin.elapsed();
-        if self.debug.perf() {
-            println!("Kernelizer took {} us", elapsed.as_micros(),);
-        }
+        todo!();
 
         // All ops that have not been evaluated yet will be evaluated here
         // All kernels with the same or sufficiently similar shapes should be merged,
         // with possibly some heuristics later to determine which kernels should not be merged.
         // For now we won't merge any kernels.
-        for (nid, op) in ops {
+        /*for (nid, op) in ops {
             println!("{nid} -> {op:?}");
 
             // Iterate over all memory pools ordered by device speed.
@@ -358,7 +323,7 @@ impl Runtime {
             }
 
             // TODO Deallocate loads that are not used by any other kernel
-        }
+        }*/
 
         // Deallocate tensors from devices, new_leafs can be deallocated too
         self.deallocate_tensors(&to_delete);

@@ -10,7 +10,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{BOp, ROp, UOp},
-    kernel::{Kernel, Op, OpKind},
+    kernel::{Kernel, Op},
     shape::Dim,
     slab::Slab,
 };
@@ -746,7 +746,7 @@ impl OpenCLDevice {
 
         let mut loop_id = 6;
 
-        _ = writeln!(source, "  {}", process_op(&kernel.op));
+        //_ = writeln!(source, "  {}", process_op(&kernel.op));
 
         for _ in 0..loop_id - 6 {
             indent.pop();
@@ -768,75 +768,6 @@ impl OpenCLDevice {
         );
         for (i, lwd) in local_work_size.iter().enumerate() {
             global_work_size[i] *= lwd;
-        }
-
-        fn process_op(op: &Op) -> String {
-            match op.0.as_ref() {
-                OpKind::Const { value } => format!("{value}"),
-                OpKind::LoopIndex { i } => format!("id{i}"),
-                OpKind::Load { dtype, index } => format!("g[{}]", process_op(index)),
-                OpKind::Store { x, index } => {
-                    format!("g[{}] = {};", process_op(index), process_op(x))
-                }
-                OpKind::Cast { x, dtype } => todo!(),
-                OpKind::Unary { x, uop } => {
-                    format!(
-                        "{}({})",
-                        match uop {
-                            UOp::ReLU => todo!(),
-                            UOp::Neg => "-",
-                            UOp::Exp2 => "exp2",
-                            UOp::Log2 => "log2",
-                            UOp::Reciprocal => "1/",
-                            UOp::Sqrt => "sqrt",
-                            UOp::Sin => "sin",
-                            UOp::Cos => "cos",
-                            UOp::Not => "!",
-                        },
-                        process_op(x)
-                    )
-                }
-                OpKind::Binary { x, y, bop } => {
-                    format!(
-                        "{}{}{}",
-                        process_op(x),
-                        match bop {
-                            BOp::Add => "+",
-                            BOp::Sub => "-",
-                            BOp::Mul => "*",
-                            BOp::Div => "/",
-                            BOp::Pow => todo!(),
-                            BOp::Mod => todo!(),
-                            BOp::Cmplt => todo!(),
-                            BOp::Cmpgt => todo!(),
-                            BOp::Max => todo!(),
-                            BOp::Or => todo!(),
-                            BOp::And => todo!(),
-                            BOp::BitXor => todo!(),
-                            BOp::BitOr => todo!(),
-                            BOp::BitAnd => todo!(),
-                            BOp::BitShiftLeft => todo!(),
-                            BOp::BitShiftRight => todo!(),
-                            BOp::NotEq => todo!(),
-                        },
-                        process_op(y)
-                    )
-                }
-                OpKind::Reduce { x, rop, num_loops } => {
-                    format!(
-                        "acc = {};\n  for () {{\n    acc = {} + acc;\n  }}",
-                        match rop {
-                            ROp::Sum => "0.0",
-                            ROp::Max => todo!(),
-                        },
-                        process_op(x)
-                    )
-                }
-                OpKind::StoreView { x, view } => unreachable!(),
-                OpKind::ConstView { value, view } => unreachable!(),
-                OpKind::LoadView { view, dtype } => unreachable!(),
-                _ => todo!(),
-            }
         }
 
         let mut pragma = String::new();

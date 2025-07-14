@@ -124,14 +124,14 @@ impl Rng {
             DType::U16 => self.next_u16().cast(),
             DType::U32 => self.next_u32().cast(),
             DType::U64 => self.next_u64().cast(),
-            DType::I8 => unsafe { std::mem::transmute::<u8, i8>(self.next_u8()) }.cast(),
-            DType::I16 => unsafe { std::mem::transmute::<u16, i16>(self.next_u16()) }.cast(),
-            DType::I32 => unsafe { std::mem::transmute::<u32, i32>(self.next_u32()) }.cast(),
-            DType::I64 => unsafe { std::mem::transmute::<u64, i64>(self.next_u64()) }.cast(),
+            DType::I8 => u8::cast_signed(self.next_u8()).cast(),
+            DType::I16 => u16::cast_signed(self.next_u16()).cast(),
+            DType::I32 => u32::cast_signed(self.next_u32()).cast(),
+            DType::I64 => u64::cast_signed(self.next_u64()).cast(),
         }
     }
 
-    /*pub(super) fn range<T: Scalar>(&mut self, range: impl std::ops::RangeBounds<T>) -> T {
+    /*pub(super) fn range<T: Scalar>(&mut self, range: impl RangeBounds<T>) -> T {
         match T::dtype() {
             DType::BF16 | DType::F16 | DType::F32 | DType::F64 => {
                 let mut start: f64 = match range.start_bound() {

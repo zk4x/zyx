@@ -1,17 +1,38 @@
 use crate::{
-    DebugMask, Map,
+    DType, DebugMask, Map,
     backend::{BufferId, Device, DeviceInfo, Event, ProgramId},
+    dtype::Constant,
     error::BackendError,
-    kernel::Op,
+    graph::{BOp, ROp, UOp},
     runtime::Pool,
     shape::Dim,
+    view::View,
 };
 use std::hash::BuildHasherDefault;
 
+pub type OpId = usize;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Op {
+    //Sink { stores: Vec<Op> }, // A way to put multiple stores in one kernel
+    ConstView { value: Constant, view: View },
+    Const { value: Constant },
+    LoopIndex { i: u32 },
+    LoadView { view: View, dtype: DType },
+    Load { dtype: DType, index: OpId },
+    StoreView { x: OpId, view: View },
+    Store { x: OpId, index: OpId },
+    Cast { x: OpId, dtype: DType },
+    Unary { x: OpId, uop: UOp },
+    Binary { x: OpId, y: OpId, bop: BOp },
+    Reduce { x: OpId, rop: ROp, num_loops: u32 },
+}
+
 #[derive(Debug)]
 pub struct Cache {
+    ops: Vec<Op>,
     device_infos: Map<DeviceInfo, u32>,
-    kernels: Map<Op, u32>,
+    kernels: Map<OpId, u32>,
     // Finished optimizations of kernels for given devices
     // kernel id, device info id => optimization
     optimizations: Map<(u32, u32), Optimization>,
@@ -28,6 +49,7 @@ pub enum Optimization {
 impl Cache {
     pub const fn new() -> Cache {
         Cache {
+            ops: Vec::new(),
             device_infos: Map::with_hasher(BuildHasherDefault::new()),
             kernels: Map::with_hasher(BuildHasherDefault::new()),
             optimizations: Map::with_hasher(BuildHasherDefault::new()),
@@ -50,7 +72,7 @@ impl Cache {
     // and saves the best optimization. The kernel is run at most search_iter.min(1) times.
     // Kernel is optimized on original data, so all buffers must be read only or write only.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn launch(
+    pub(super) fn launch_kernel(
         &mut self,
         kernel: &Op,
         device_id: u32,
@@ -79,14 +101,15 @@ impl Cache {
             // If we know the best optimization, but it has not been compiled yet
             // (the best optimization was in disk cache)
             } else if let Some(optimization) = self.optimizations.get(&(kernel_id, dev_info_id)) {
-                let mut kernel = kernel.clone();
-                let kernel = kernel.apply_optimization(optimization);
-                let program_id = device.compile(&kernel, debug.asm())?;
-                let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
-                assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
-                return Ok(Some(event));
-            // If the kernel has not been compiled and we do not know the best optimization
-            // then it cannot be in kernels
+                todo!()
+                //let mut kernel = kernel.clone();
+                //let kernel = kernel.apply_optimization(optimization);
+                //let program_id = device.compile(&kernel, debug.asm())?;
+                //let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
+                //assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
+                //return Ok(Some(event));
+                // If the kernel has not been compiled and we do not know the best optimization
+                // then it cannot be in kernels
             } else {
                 unreachable!();
             }
@@ -100,7 +123,7 @@ impl Cache {
 
         // If search_iters == 0, we use default optimizations
         if search_iters == 0 {
-            let kernel = kernel.clone();
+            /*let kernel = kernel.clone();
             let optimization = Optimization::default(&kernel, device.info());
             let kernel = kernel.apply_optimization(&optimization);
             let program_id = device.compile(&kernel, debug.asm())?;
@@ -112,7 +135,7 @@ impl Cache {
             if debug.perf() {
                 let (flop, mem_read, mem_write) = kernel.op.flop_mem_rw();
                 println!("{}", get_perf(flop, mem_read, mem_write, nanos));
-            }
+            }*/
             //self.optimizations.insert((kernel_id, dev_info_id), optimization);
             return Ok(None);
         }
@@ -152,6 +175,18 @@ impl Cache {
     }
 }
 
+impl Cache {
+    pub fn reserve_capacity(&mut self, n: usize) {
+        self.ops.reserve(n);
+    }
+
+    pub fn push_op(&mut self, op: Op) -> OpId {
+        let id = self.ops.len();
+        self.ops.push(op);
+        id
+    }
+}
+
 impl Optimization {
     fn default(kernel: &Op, dev_info: &DeviceInfo) -> Self {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {
@@ -185,8 +220,10 @@ impl Optimization {
             res
         }
 
-        let shape = kernel.shape();
-        let n = shape.iter().product();
+        // TODO
+        /*let shape = kernel.shape();
+        let n = shape.iter().product();*/
+        let n = 3;
         let mut global_work_size = get_equal_factors(n);
 
         let mut d = dev_info.max_local_threads;
