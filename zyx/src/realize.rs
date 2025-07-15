@@ -1,17 +1,131 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    Map, Set, ZyxError, cache::Op, graph::Node, runtime::Runtime, shape::Dim, tensor::TensorId,
+    Set, ZyxError,
+    cache::{Kernel, Op},
+    graph::Node,
+    runtime::Runtime,
+    slab::{Slab, SlabId},
+    tensor::TensorId,
     view::View,
 };
-use std::{collections::BTreeSet, hash::BuildHasherDefault};
+use std::collections::VecDeque;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KernelId(u32);
+
+impl SlabId for KernelId {
+    const ZERO: Self = Self(0);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+impl From<usize> for KernelId {
+    fn from(value: usize) -> Self {
+        KernelId(value as u32)
+    }
+}
+
+impl From<KernelId> for usize {
+    fn from(value: KernelId) -> Self {
+        value.0 as usize
+    }
+}
 
 impl Runtime {
-    /// 1. gets a set of tensors which need to be processed and in which order
-    /// 2. generates kernels from them
-    /// 3. assigns those kernels to devices, compiles and launches them
-    #[allow(clippy::cognitive_complexity)]
     pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+        let begin = std::time::Instant::now();
+        let mut realized_nodes: Set<TensorId> =
+            self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+
+        // DFS search over the whole graph
+        let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(300);
+
+        // each store starts a new kernel
+        // Then we need a way to remember kid for given tensor
+        let mut kids: VecDeque<(TensorId, KernelId, View)> = VecDeque::with_capacity(500);
+
+        for &nid in to_eval {
+            let shape = self.graph.shape(nid);
+            let view = View::contiguous(shape);
+            let op = Op::StoreView { x: 1, view: view.clone() };
+            let kid = kernels.len();
+            kernels.push(Kernel { ops: vec![op], next_id: 0 });
+            kids.push_back((nid, kid, view));
+        }
+
+        while let Some((nid, kid, mut view)) = kids.pop_front() {
+            if realized_nodes.contains(&nid) {
+                let shape = self.graph.shape(nid);
+                let view = View::contiguous(shape);
+                let dtype = self.graph.dtype(nid);
+                let op = Op::LoadView { view, dtype };
+                kernels[kid].ops.push(op);
+            } else {
+                match self.graph[nid] {
+                    Node::Leaf { .. } => unreachable!(),
+                    Node::Const { value } => {
+                        let shape = self.graph.shape(nid);
+                        let view = View::contiguous(shape);
+                        let op = Op::ConstView { value, view };
+                        kernels[kid].ops.push(op);
+                    }
+                    Node::Cast { x, dtype } => {
+                        kids.push_back((x, kid, view));
+                        let x = kernels[kid].next_op_id();
+                        let op = Op::Cast { x, dtype };
+                        kernels[kid].ops.push(op);
+                    }
+                    Node::Unary { x, uop } => {
+                        kids.push_back((x, kid, view));
+                        let x = kernels[kid].next_op_id();
+                        let op = Op::Unary { x, uop };
+                        kernels[kid].ops.push(op);
+                    }
+                    Node::Binary { x, y, bop } => {
+                        kids.push_back((x, kid, view.clone()));
+                        kids.push_back((y, kid, view));
+                        // With BFS, we can just do x + 1 for y
+                        let x = kernels[kid].next_op_id();
+                        let y = kernels[kid].next_op_id();
+                        let op = Op::Binary { x, y, bop };
+                        kernels[kid].ops.push(op);
+                    }
+                    Node::Reduce { x, rop } => {
+                        kids.push_back((x, kid, view));
+                        let x = kernels[kid].next_op_id();
+                        // TODO permute
+                        let axes = self.graph.axes(nid);
+                        let op = Op::Reduce { x, rop, num_loops: axes.len() as u32 };
+                        kernels[kid].ops.push(op);
+                    }
+                    Node::Permute { x } => {
+                        let axes = self.graph.axes(nid);
+                        view.reverse_permute(axes);
+                        kids.push_back((x, kid, view));
+                    }
+                    Node::Reshape { x } => todo!(),
+                    Node::Pad { x } => todo!(),
+                    Node::Expand { x } => todo!(),
+                }
+            }
+        }
+
+        let elapsed = begin.elapsed();
+        if self.debug.perf() {
+            println!("Kernelizer took {} us", elapsed.as_micros(),);
+        }
+        todo!();
+        Ok(())
+    }
+
+    // 1. gets a set of tensors which need to be processed and in which order
+    // 2. generates kernels from them
+    // 3. assigns those kernels to devices, compiles and launches them
+    /*#[allow(clippy::cognitive_complexity)]
+    pub fn realize2(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let (realized_nodes, order, rcs, new_leafs, mut to_delete) = {
             let begin = std::time::Instant::now();
             let realized_nodes: Set<TensorId> =
@@ -82,101 +196,6 @@ impl Runtime {
                     }
                     panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
                 }
-            }
-
-            let begin = std::time::Instant::now();
-            for &nid in &order {
-                let kid = if realized_nodes.contains(&nid) {
-                    let shape = self.graph.shape(nid);
-                    let view = View::contiguous(shape);
-                    let dtype = self.graph.dtype(nid);
-                    let op = Op::LoadView { view, dtype };
-                    self.cache.push_op(op)
-                } else {
-                    match self.graph[nid] {
-                        Node::Leaf { .. } => {
-                            unreachable!();
-                        }
-                        Node::Const { value } => {
-                            let view = View::contiguous(&[]);
-                            let op = Op::ConstView { value, view };
-                            self.cache.push_op(op)
-                        }
-                        Node::Cast { x, dtype } => {
-                            let op = Op::Cast { x: outputs[&x], dtype };
-                            self.cache.push_op(op)
-                        }
-                        Node::Unary { x, uop } => {
-                            let op = Op::Unary { x: outputs[&x], uop };
-                            self.cache.push_op(op)
-                        }
-                        Node::Binary { x, y, bop } => {
-                            let x = outputs[&x];
-                            let y = outputs[&y];
-                            // TODO check if x or y are dependent on each other.
-                            // If yes, then we have to store and load them.
-                            let op = Op::Binary { x, y, bop };
-                            self.cache.push_op(op)
-                        }
-                        Node::Reduce { x, rop } => {
-                            // First permute
-                            // Then apply reduce
-                            let axes = self.graph.axes(nid);
-                            //let shape = self.graph.shape(x);
-                            let x = outputs[&x];
-                            // TODO also permute before this
-                            let op = Op::Reduce { x, rop, num_loops: axes.len() as u32 };
-                            let id = ops.len();
-                            ops.push(op);
-                            id
-                        }
-                        Node::Permute { x } => {
-                            let x = outputs[&x];
-                            let axes = self.graph.axes(nid);
-                            //movement(x, &mut ops, |view| view.permute(axes));
-                            x
-                        }
-                        Node::Reshape { x } => {
-                            let xshape = self.graph.shape(x);
-                            let shape = self.graph.shape(nid);
-                            let x = outputs[&x];
-                            //movement(x, &mut ops, |view| view.reshape(0..xshape.len(), shape));
-                            x
-                        }
-                        // Padding and Expand are only nodes that are better not fused under specific conditions,
-                        // thus these separate kernels.
-                        Node::Expand { x } => {
-                            let xshape = self.graph.shape(x);
-                            let shape = self.graph.shape(nid);
-                            let x = outputs[&x];
-                            /*for i in 0..xshape.len() {
-                                movement(x, &mut ops, |view| view.expand(i, shape[i]));
-                            }*/
-                            x
-                        }
-                        Node::Pad { x } => {
-                            //let padding = graph.padding(nid);
-                            let xshape = self.graph.shape(x);
-                            let padding = self.graph.padding(nid);
-                            let x = outputs[&x];
-                            /*for i in 0..xshape.len() {
-                                movement(x, &mut ops, |view| {
-                                    view.pad(i, padding[i].0, padding[i].1)
-                                });
-                            }*/
-                            x
-                        }
-                    }
-                };
-                outputs.insert(nid, kid);
-                // if this kernel
-                let user_requires_evaluation = to_eval.contains(&nid);
-                //let big_and_used_in_multiple_places = rcs[&nid] > 1 && is_big(kid, &ops);
-                //if user_requires_evaluation || big_and_used_in_multiple_places {}
-            }
-            let elapsed = begin.elapsed();
-            if self.debug.perf() {
-                println!("Kernelizer took {} us", elapsed.as_micros(),);
             }
         }
         todo!();
@@ -530,5 +549,5 @@ impl Runtime {
             new_leafs,
             Map::with_hasher(BuildHasherDefault::default()),
         )
-    }
+    }*/
 }

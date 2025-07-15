@@ -1,7 +1,7 @@
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, ProgramId, opencl::OpenCLEvent};
 use crate::{
+    cache::Kernel,
     error::{BackendError, ErrorStatus},
-    kernel::Kernel,
     runtime::Pool,
     shape::Dim,
     slab::{Slab, SlabId},

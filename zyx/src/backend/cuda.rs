@@ -16,9 +16,9 @@ use nanoserde::DeJson;
 
 use crate::{
     DType,
+    cache::Kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{Kernel, Op},
     shape::Dim,
     slab::Slab,
 };
@@ -964,7 +964,7 @@ impl CUDADevice {
     #[allow(unused)]
     fn compile_ptx(
         &mut self,
-        kernel: &[Op],
+        kernel: Kernel,
         debug_asm: bool,
     ) -> ([Dim; 3], [Dim; 3], Box<str>, Vec<u8>) {
         let mut global_work_size = [0; 3];

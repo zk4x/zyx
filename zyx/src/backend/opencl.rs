@@ -7,10 +7,9 @@
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
     DType,
+    cache::Kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{BOp, ROp, UOp},
-    kernel::{Kernel, Op},
     shape::Dim,
     slab::Slab,
 };

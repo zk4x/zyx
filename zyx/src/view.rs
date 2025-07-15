@@ -179,6 +179,18 @@ impl View {
         *inner = new;
     }
 
+    pub(crate) fn reverse_permute(&mut self, axes: &[usize]) {
+        // Move around strides, dim, rp and lp
+        let inner = self.0.last_mut().unwrap();
+        debug_assert_eq!(inner.len(), axes.len());
+        let mut new = Vec::with_capacity(axes.len());
+        for &a in axes {
+            let dim = inner[a].clone();
+            new.push(dim);
+        }
+        *inner = new;
+    }
+
     pub(crate) fn expand(&mut self, axis: Axis, ndim: Dim) {
         //println!("View expand {self} axis = {axis} to ndim {ndim}");
         if let Some(inner) = self.0.last_mut() {

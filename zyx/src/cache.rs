@@ -1,16 +1,27 @@
 use crate::{
-    DType, DebugMask, Map,
-    backend::{BufferId, Device, DeviceInfo, Event, ProgramId},
+    DType, Map,
+    backend::{Device, DeviceInfo, ProgramId},
     dtype::Constant,
-    error::BackendError,
     graph::{BOp, ROp, UOp},
-    runtime::Pool,
     shape::Dim,
     view::View,
 };
 use std::hash::BuildHasherDefault;
 
 pub type OpId = usize;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Kernel {
+    pub ops: Vec<Op>,
+    pub next_id: OpId,
+}
+
+impl Kernel {
+    pub fn next_op_id(&mut self) -> OpId {
+        self.next_id += 1;
+        self.next_id
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
@@ -30,9 +41,8 @@ pub enum Op {
 
 #[derive(Debug)]
 pub struct Cache {
-    ops: Vec<Op>,
     device_infos: Map<DeviceInfo, u32>,
-    kernels: Map<OpId, u32>,
+    kernels: Map<Kernel, u32>,
     // Finished optimizations of kernels for given devices
     // kernel id, device info id => optimization
     optimizations: Map<(u32, u32), Optimization>,
@@ -49,7 +59,6 @@ pub enum Optimization {
 impl Cache {
     pub const fn new() -> Cache {
         Cache {
-            ops: Vec::new(),
             device_infos: Map::with_hasher(BuildHasherDefault::new()),
             kernels: Map::with_hasher(BuildHasherDefault::new()),
             optimizations: Map::with_hasher(BuildHasherDefault::new()),
@@ -65,7 +74,9 @@ impl Cache {
         self.kernels = Map::with_hasher(BuildHasherDefault::new());
         self.optimizations = Map::with_hasher(BuildHasherDefault::new());
     }
+}
 
+/*impl Cache {
     // If the kernel is cached, then launches kernel, otherwise if search_iters is zero,
     // compiles kernel with default optimizations and launches it, otherwise
     // searches over search_iters iterations, compiling and running each optimization
@@ -173,21 +184,9 @@ impl Cache {
         self.optimizations.insert((kernel_id, dev_info_id), optimizer.best_node);
         Ok(None)*/
     }
-}
+}*/
 
-impl Cache {
-    pub fn reserve_capacity(&mut self, n: usize) {
-        self.ops.reserve(n);
-    }
-
-    pub fn push_op(&mut self, op: Op) -> OpId {
-        let id = self.ops.len();
-        self.ops.push(op);
-        id
-    }
-}
-
-impl Optimization {
+/*impl Optimization {
     fn default(kernel: &Op, dev_info: &DeviceInfo) -> Self {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {
             fn get_factors(n: Dim) -> Vec<Dim> {
@@ -242,7 +241,7 @@ impl Optimization {
 
         Self::Basic { shape }
     }
-}
+}*/
 
 #[allow(clippy::similar_names)]
 fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> String {

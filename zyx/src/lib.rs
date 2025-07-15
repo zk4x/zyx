@@ -49,11 +49,11 @@ use crate::runtime::Runtime;
 use std::{fs::File, path::Path};
 
 mod backend;
+mod cache;
 mod dtype;
 mod error;
 mod graph;
 mod libload;
-mod cache;
 mod mutex;
 #[cfg(feature = "py")]
 mod py_bindings;
@@ -64,21 +64,20 @@ mod shape;
 mod slab;
 mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
+mod autograd;
 mod chasher;
 mod prog_bar;
-mod autograd;
-mod view;
-mod kernel;
 mod realize;
+mod view;
 
 pub(crate) type Set<T> =
     std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 pub(crate) type Map<K, V> =
     std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 
+pub use autograd::GradientTape;
 pub use dtype::DType;
 pub use error::ZyxError;
-pub use autograd::GradientTape;
 pub use scalar::{Float, Scalar};
 use shape::Dim;
 pub use shape::IntoShape;
