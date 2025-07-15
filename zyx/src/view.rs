@@ -180,6 +180,7 @@ impl View {
     }
 
     pub(crate) fn reverse_permute(&mut self, axes: &[usize]) {
+        todo!();
         // Move around strides, dim, rp and lp
         let inner = self.0.last_mut().unwrap();
         debug_assert_eq!(inner.len(), axes.len());
@@ -189,6 +190,10 @@ impl View {
             new.push(dim);
         }
         *inner = new;
+    }
+
+    pub(crate) fn reverse_reshape(&mut self, shape: &[Dim]) {
+        todo!()
     }
 
     pub(crate) fn expand(&mut self, axis: Axis, ndim: Dim) {

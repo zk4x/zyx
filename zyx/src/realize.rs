@@ -37,14 +37,10 @@ impl From<KernelId> for usize {
 impl Runtime {
     pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let begin = std::time::Instant::now();
-        let mut realized_nodes: Set<TensorId> =
+        let realized_nodes: Set<TensorId> =
             self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
 
-        // DFS search over the whole graph
         let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(300);
-
-        // each store starts a new kernel
-        // Then we need a way to remember kid for given tensor
         let mut kids: VecDeque<(TensorId, KernelId, View)> = VecDeque::with_capacity(500);
 
         for &nid in to_eval {
@@ -57,6 +53,8 @@ impl Runtime {
         }
 
         while let Some((nid, kid, mut view)) = kids.pop_front() {
+            // TODO if the nid is already processed in other kernel, then either merge kernels
+            // or put there a load in this current kernel and store in the other kernel.
             if realized_nodes.contains(&nid) {
                 let shape = self.graph.shape(nid);
                 let view = View::contiguous(shape);
@@ -106,9 +104,17 @@ impl Runtime {
                         view.reverse_permute(axes);
                         kids.push_back((x, kid, view));
                     }
-                    Node::Reshape { x } => todo!(),
-                    Node::Pad { x } => todo!(),
-                    Node::Expand { x } => todo!(),
+                    Node::Reshape { x } => {
+                        let axes = self.graph.axes(nid);
+                        view.reverse_reshape(axes);
+                        kids.push_back((x, kid, view));
+                    }
+                    Node::Pad { .. } => {
+                        todo!()
+                    }
+                    Node::Expand { .. } => {
+                        todo!()
+                    }
                 }
             }
         }
