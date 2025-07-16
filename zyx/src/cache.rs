@@ -1,10 +1,5 @@
 use crate::{
-    DType, Map,
-    backend::{Device, DeviceInfo, ProgramId},
-    dtype::Constant,
-    graph::{BOp, ROp, UOp},
-    shape::Dim,
-    view::View,
+    backend::{Device, DeviceInfo, ProgramId}, dtype::Constant, graph::{BOp, ROp, UOp}, shape::{Axis, Dim}, view::View, DType, Map
 };
 use std::hash::BuildHasherDefault;
 
@@ -26,17 +21,17 @@ impl Kernel {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
     //Sink { stores: Vec<Op> }, // A way to put multiple stores in one kernel
-    ConstView { value: Constant, view: View },
     Const { value: Constant },
-    LoopIndex { i: u32 },
-    LoadView { view: View, dtype: DType },
-    Load { dtype: DType, index: OpId },
-    StoreView { x: OpId, view: View },
-    Store { x: OpId, index: OpId },
+    Load { dtype: DType, shape: Box<[Dim]> },
+    Store { x: OpId },
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    Reduce { x: OpId, rop: ROp, num_loops: u32 },
+    Reduce { x: OpId, rop: ROp, axes: Box<[Axis]> },
+    Reshape { x: OpId, shape: Box<[Dim]> },
+    Expand { x: OpId, shape: Box<[Dim]> },
+    Permute { x: OpId, axes: Box<[Axis]> },
+    Pad { x: OpId, padding: Box<[(isize, isize)]> },
 }
 
 #[derive(Debug)]

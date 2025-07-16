@@ -307,7 +307,7 @@ impl Runtime {
         );
         if bytes == dtype.byte_size() as Dim {
             let value = data.read();
-            let value = Constant::from_bytes(value, dtype);
+            let value = Constant::from_le_bytes(value, dtype);
             if self.constants_len < NUM_CONSTANTS {
                 if !self.constants.contains(&value) {
                     self.constants[self.constants_len] = value;

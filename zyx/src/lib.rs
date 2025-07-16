@@ -53,7 +53,6 @@ mod cache;
 mod dtype;
 mod error;
 mod graph;
-mod libload;
 mod mutex;
 #[cfg(feature = "py")]
 mod py_bindings;

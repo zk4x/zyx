@@ -45,29 +45,26 @@ impl Runtime {
 
         for &nid in to_eval {
             let shape = self.graph.shape(nid);
-            let view = View::contiguous(shape);
-            let op = Op::StoreView { x: 1, view: view.clone() };
+            let op = Op::Store { x: 1 };
             let kid = kernels.len();
             kernels.push(Kernel { ops: vec![op], next_id: 0 });
-            kids.push_back((nid, kid, view));
+            kids.push_back((nid, kid));
         }
 
         while let Some((nid, kid, mut view)) = kids.pop_front() {
             // TODO if the nid is already processed in other kernel, then either merge kernels
             // or put there a load in this current kernel and store in the other kernel.
             if realized_nodes.contains(&nid) {
-                let shape = self.graph.shape(nid);
-                let view = View::contiguous(shape);
+                let shape = self.graph.shape(nid).to_vec().into_boxed_slice();
                 let dtype = self.graph.dtype(nid);
-                let op = Op::LoadView { view, dtype };
+                let op = Op::Load { dtype, shape };
                 kernels[kid].ops.push(op);
             } else {
                 match self.graph[nid] {
                     Node::Leaf { .. } => unreachable!(),
                     Node::Const { value } => {
                         let shape = self.graph.shape(nid);
-                        let view = View::contiguous(shape);
-                        let op = Op::ConstView { value, view };
+                        let op = Op::Const { value };
                         kernels[kid].ops.push(op);
                     }
                     Node::Cast { x, dtype } => {
@@ -96,7 +93,7 @@ impl Runtime {
                         let x = kernels[kid].next_op_id();
                         // TODO permute
                         let axes = self.graph.axes(nid);
-                        let op = Op::Reduce { x, rop, num_loops: axes.len() as u32 };
+                        let op = Op::Reduce { x, rop, axes: axes.to_vec().into_boxed_slice() };
                         kernels[kid].ops.push(op);
                     }
                     Node::Permute { x } => {

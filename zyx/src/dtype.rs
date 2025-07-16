@@ -40,6 +40,23 @@ pub enum DType {
     Bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Constant {
+    BF16([u8; 2]), // le bytes
+    F16([u8; 2]),  // le bytes
+    F32([u8; 4]),  // le bytes
+    F64([u8; 8]),  // le bytes
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64([u8; 8]), // le bytes
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64([u8; 8]), // le bytes
+    Bool(bool),
+}
+
 impl Display for DType {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
@@ -120,18 +137,18 @@ impl DType {
     #[must_use]
     pub(super) const fn zero_constant(self) -> Constant {
         match self {
-            Self::BF16 => Constant::BF16(bf16::ZERO.to_bits()),
-            Self::F16 => Constant::F16(f16::ZERO.to_bits()),
-            Self::F32 => Constant::F32(0f32.to_bits()),
-            Self::F64 => Constant::F64(0f64.to_bits()),
+            Self::BF16 => Constant::BF16(bf16::ZERO.to_le_bytes()),
+            Self::F16 => Constant::F16(f16::ZERO.to_le_bytes()),
+            Self::F32 => Constant::F32(0f32.to_le_bytes()),
+            Self::F64 => Constant::F64(0f64.to_le_bytes()),
             Self::U8 => Constant::U8(0),
             Self::U16 => Constant::U16(0),
             Self::U32 => Constant::U32(0),
             Self::I8 => Constant::I8(0),
             Self::I16 => Constant::I16(0),
             Self::I32 => Constant::I32(0),
-            Self::I64 => Constant::I64(0),
-            Self::U64 => Constant::U64(0),
+            Self::I64 => Constant::I64(0i64.to_le_bytes()),
+            Self::U64 => Constant::U64(0u64.to_le_bytes()),
             Self::Bool => Constant::Bool(false),
         }
     }
@@ -139,18 +156,18 @@ impl DType {
     #[must_use]
     pub(super) const fn one_constant(self) -> Constant {
         match self {
-            Self::BF16 => Constant::BF16(bf16::ONE.to_bits()),
-            Self::F16 => Constant::F16(f16::ONE.to_bits()),
-            Self::F32 => Constant::F32(1f32.to_bits()),
-            Self::F64 => Constant::F64(1f64.to_bits()),
+            Self::BF16 => Constant::BF16(bf16::ONE.to_le_bytes()),
+            Self::F16 => Constant::F16(f16::ONE.to_le_bytes()),
+            Self::F32 => Constant::F32(1f32.to_le_bytes()),
+            Self::F64 => Constant::F64(1f64.to_le_bytes()),
             Self::U8 => Constant::U8(1),
             Self::U16 => Constant::U16(1),
             Self::U32 => Constant::U32(1),
             Self::I8 => Constant::I8(1),
             Self::I16 => Constant::I16(1),
             Self::I32 => Constant::I32(1),
-            Self::I64 => Constant::I64(1),
-            Self::U64 => Constant::U64(1),
+            Self::I64 => Constant::I64(1i64.to_le_bytes()),
+            Self::U64 => Constant::U64(1u64.to_le_bytes()),
             Self::Bool => Constant::Bool(true),
         }
     }
@@ -158,18 +175,18 @@ impl DType {
     #[must_use]
     pub(super) const fn min_constant(self) -> Constant {
         match self {
-            Self::BF16 => Constant::BF16(bf16::MIN.to_bits()),
-            Self::F16 => Constant::F16(f16::MIN.to_bits()),
-            Self::F32 => Constant::F32(f32::MIN.to_bits()),
-            Self::F64 => Constant::F64(f64::MIN.to_bits()),
+            Self::BF16 => Constant::BF16(bf16::MIN.to_le_bytes()),
+            Self::F16 => Constant::F16(f16::MIN.to_le_bytes()),
+            Self::F32 => Constant::F32(f32::MIN.to_le_bytes()),
+            Self::F64 => Constant::F64(f64::MIN.to_le_bytes()),
             Self::U8 => Constant::U8(u8::MIN),
             Self::U16 => Constant::U16(u16::MIN),
             Self::U32 => Constant::U32(u32::MIN),
             Self::I8 => Constant::I8(i8::MIN),
             Self::I16 => Constant::I16(i16::MIN),
             Self::I32 => Constant::I32(i32::MIN),
-            Self::I64 => Constant::I64(i64::MIN),
-            Self::U64 => Constant::U64(u64::MIN),
+            Self::I64 => Constant::I64(i64::MIN.to_le_bytes()),
+            Self::U64 => Constant::U64(u64::MIN.to_le_bytes()),
             Self::Bool => Constant::Bool(false),
         }
     }
@@ -216,23 +233,6 @@ impl DType {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Constant {
-    BF16(u16),
-    F16(u16),
-    F32(u32),
-    F64(u64),
-    U8(u8),
-    U16(u16),
-    U32(u32),
-    U64(u64),
-    I8(i8),
-    I16(i16),
-    I32(i32),
-    I64(i64),
-    Bool(bool),
-}
-
 impl Constant {
     pub(crate) fn new<T: Scalar>(x: T) -> Self {
         use core::mem::transmute_copy as t;
@@ -253,31 +253,26 @@ impl Constant {
         }
     }
 
-    pub(crate) fn from_bytes(bytes: &[u8], dtype: DType) -> Self {
+    pub(crate) fn from_le_bytes(bytes: &[u8], dtype: DType) -> Self {
         match dtype {
-            DType::BF16 => Self::BF16(bf16::from_ne_bytes([bytes[0], bytes[1]]).to_bits()),
-            DType::F16 => Self::F16(f16::from_ne_bytes([bytes[0], bytes[1]]).to_bits()),
-            DType::F32 => {
-                Self::F32(f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]).to_bits())
-            }
-            DType::F64 => Self::F64(
-                f64::from_ne_bytes([
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                ])
-                .to_bits(),
-            ),
-            DType::U8 => Self::U8(u8::from_ne_bytes([bytes[0]])),
-            DType::U16 => Self::U16(u16::from_ne_bytes([bytes[0], bytes[1]])),
-            DType::U32 => Self::U32(u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
-            DType::U64 => Self::U64(u64::from_ne_bytes([
+            DType::BF16 => Self::BF16([bytes[0], bytes[1]]),
+            DType::F16 => Self::F16([bytes[0], bytes[1]]),
+            DType::F32 => Self::F32([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            DType::F64 => Self::F64([
                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            ])),
-            DType::I8 => Self::I8(i8::from_ne_bytes([bytes[0]])),
-            DType::I16 => Self::I16(i16::from_ne_bytes([bytes[0], bytes[1]])),
-            DType::I32 => Self::I32(i32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
-            DType::I64 => Self::I64(i64::from_ne_bytes([
+            ]),
+            DType::U8 => Self::U8(u8::from_le_bytes([bytes[0]])),
+            DType::U16 => Self::U16(u16::from_le_bytes([bytes[0], bytes[1]])),
+            DType::U32 => Self::U32(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+            DType::U64 => Self::U64([
                 bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            ])),
+            ]),
+            DType::I8 => Self::I8(i8::from_le_bytes([bytes[0]])),
+            DType::I16 => Self::I16(i16::from_le_bytes([bytes[0], bytes[1]])),
+            DType::I32 => Self::I32(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+            DType::I64 => Self::I64([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]),
             DType::Bool => Self::Bool(bytes[0] != 0),
         }
     }
@@ -302,18 +297,18 @@ impl Constant {
 
     pub(crate) fn is_zero(&self) -> bool {
         match *self {
-            Constant::BF16(x) => bf16::from_bits(x) == bf16::ZERO,
-            Constant::F16(x) => f16::from_bits(x) == f16::ZERO,
-            Constant::F32(x) => f32::from_bits(x) == 0f32,
-            Constant::F64(x) => f64::from_bits(x) == 0f64,
+            Constant::BF16(x) => bf16::from_le_bytes(x) == bf16::ZERO,
+            Constant::F16(x) => f16::from_le_bytes(x) == f16::ZERO,
+            Constant::F32(x) => f32::from_le_bytes(x) == 0f32,
+            Constant::F64(x) => f64::from_le_bytes(x) == 0f64,
             Constant::U8(x) => x == 0,
             Constant::U16(x) => x == 0,
             Constant::U32(x) => x == 0,
-            Constant::U64(x) => x == 0,
+            Constant::U64(x) => u64::from_le_bytes(x) == 0,
             Constant::I8(x) => x == 0,
             Constant::I16(x) => x == 0,
             Constant::I32(x) => x == 0,
-            Constant::I64(x) => x == 0,
+            Constant::I64(x) => i64::from_le_bytes(x) == 0,
             Constant::Bool(x) => !x,
         }
     }
@@ -321,18 +316,18 @@ impl Constant {
     #[allow(clippy::float_cmp)]
     pub(crate) fn is_one(&self) -> bool {
         match *self {
-            Constant::BF16(x) => bf16::from_bits(x) == bf16::ONE,
-            Constant::F16(x) => f16::from_bits(x) == f16::ONE,
-            Constant::F32(x) => f32::from_bits(x) == 1f32,
-            Constant::F64(x) => f64::from_bits(x) == 1f64,
+            Constant::BF16(x) => bf16::from_le_bytes(x) == bf16::ONE,
+            Constant::F16(x) => f16::from_le_bytes(x) == f16::ONE,
+            Constant::F32(x) => f32::from_le_bytes(x) == 1f32,
+            Constant::F64(x) => f64::from_le_bytes(x) == 1f64,
             Constant::U8(x) => x == 1,
             Constant::U16(x) => x == 1,
             Constant::U32(x) => x == 1,
-            Constant::U64(x) => x == 1,
+            Constant::U64(x) => u64::from_le_bytes(x) == 1,
             Constant::I8(x) => x == 1,
             Constant::I16(x) => x == 1,
             Constant::I32(x) => x == 1,
-            Constant::I64(x) => x == 1,
+            Constant::I64(x) => i64::from_le_bytes(x) == 1,
             Constant::Bool(x) => x,
         }
     }
@@ -340,36 +335,36 @@ impl Constant {
     #[allow(clippy::float_cmp)]
     pub(crate) fn is_two(&self) -> bool {
         match *self {
-            Constant::BF16(x) => bf16::from_bits(x) == bf16::ONE + bf16::ONE,
-            Constant::F16(x) => f16::from_bits(x) == f16::ONE + f16::ONE,
-            Constant::F32(x) => f32::from_bits(x) == 2f32,
-            Constant::F64(x) => f64::from_bits(x) == 2f64,
+            Constant::BF16(x) => bf16::from_le_bytes(x) == bf16::ONE + bf16::ONE,
+            Constant::F16(x) => f16::from_le_bytes(x) == f16::ONE + f16::ONE,
+            Constant::F32(x) => f32::from_le_bytes(x) == 2f32,
+            Constant::F64(x) => f64::from_le_bytes(x) == 2f64,
             Constant::U8(x) => x == 2,
             Constant::U16(x) => x == 2,
             Constant::U32(x) => x == 2,
-            Constant::U64(x) => x == 2,
+            Constant::U64(x) => u64::from_le_bytes(x) == 2,
             Constant::I8(x) => x == 2,
             Constant::I16(x) => x == 2,
             Constant::I32(x) => x == 2,
-            Constant::I64(x) => x == 2,
+            Constant::I64(x) => i64::from_le_bytes(x) == 2,
             Constant::Bool(_) => false,
         }
     }
 
     pub(super) fn cast(self, dtype: DType) -> Constant {
         match self {
-            Constant::BF16(x) => half::bf16::from_bits(x).cast_dtype(dtype),
-            Constant::F16(x) => half::f16::from_bits(x).cast_dtype(dtype),
-            Constant::F32(x) => f32::from_bits(x).cast_dtype(dtype),
-            Constant::F64(x) => f64::from_bits(x).cast_dtype(dtype),
+            Constant::BF16(x) => half::bf16::from_le_bytes(x).cast_dtype(dtype),
+            Constant::F16(x) => half::f16::from_le_bytes(x).cast_dtype(dtype),
+            Constant::F32(x) => f32::from_le_bytes(x).cast_dtype(dtype),
+            Constant::F64(x) => f64::from_le_bytes(x).cast_dtype(dtype),
             Constant::U8(x) => x.cast_dtype(dtype),
             Constant::I8(x) => x.cast_dtype(dtype),
             Constant::I16(x) => x.cast_dtype(dtype),
             Constant::U16(x) => x.cast_dtype(dtype),
             Constant::U32(x) => x.cast_dtype(dtype),
-            Constant::U64(x) => x.cast_dtype(dtype),
+            Constant::U64(x) => u64::from_le_bytes(x).cast_dtype(dtype),
             Constant::I32(x) => x.cast_dtype(dtype),
-            Constant::I64(x) => x.cast_dtype(dtype),
+            Constant::I64(x) => i64::from_le_bytes(x).cast_dtype(dtype),
             Constant::Bool(x) => x.cast_dtype(dtype),
         }
     }
@@ -401,21 +396,21 @@ impl Constant {
         }
         match self {
             Constant::BF16(x) => {
-                Constant::BF16(unary_func_float(half::bf16::from_bits(x), uop).to_bits())
+                Constant::BF16(unary_func_float(half::bf16::from_le_bytes(x), uop).to_le_bytes())
             }
             Constant::F16(x) => {
-                Constant::F16(unary_func_float(half::f16::from_bits(x), uop).to_bits())
+                Constant::F16(unary_func_float(half::f16::from_le_bytes(x), uop).to_le_bytes())
             }
-            Constant::F32(x) => Constant::F32(unary_func_float(f32::from_bits(x), uop).to_bits()),
-            Constant::F64(x) => Constant::F64(unary_func_float(f64::from_bits(x), uop).to_bits()),
+            Constant::F32(x) => Constant::F32(unary_func_float(f32::from_le_bytes(x), uop).to_le_bytes()),
+            Constant::F64(x) => Constant::F64(unary_func_float(f64::from_le_bytes(x), uop).to_le_bytes()),
             Constant::U8(x) => Constant::U8(unary_func(x, uop)),
             Constant::U16(x) => Constant::U16(unary_func(x, uop)),
             Constant::U32(x) => Constant::U32(unary_func(x, uop)),
-            Constant::U64(x) => Constant::U64(unary_func(x, uop)),
+            Constant::U64(x) => Constant::U64(unary_func(u64::from_le_bytes(x), uop).to_le_bytes()),
             Constant::I8(x) => Constant::I8(unary_func(x, uop)),
             Constant::I16(x) => Constant::I16(unary_func(x, uop)),
             Constant::I32(x) => Constant::I32(unary_func(x, uop)),
-            Constant::I64(x) => Constant::I64(unary_func(x, uop)),
+            Constant::I64(x) => Constant::I64(unary_func(i64::from_le_bytes(x), uop).to_le_bytes()),
             Constant::Bool(x) => Constant::Bool(unary_func(x, uop)),
         }
     }
@@ -448,19 +443,19 @@ impl Constant {
         match x {
             Constant::BF16(x) => {
                 let Constant::BF16(y) = y else { unreachable!() };
-                binary_func(bf16::from_bits(x), bf16::from_bits(y), bop)
+                binary_func(bf16::from_le_bytes(x), bf16::from_le_bytes(y), bop)
             }
             Constant::F16(x) => {
                 let Constant::F16(y) = y else { unreachable!() };
-                binary_func(f16::from_bits(x), f16::from_bits(y), bop)
+                binary_func(f16::from_le_bytes(x), f16::from_le_bytes(y), bop)
             }
             Constant::F32(x) => {
                 let Constant::F32(y) = y else { unreachable!() };
-                binary_func(f32::from_bits(x), f32::from_bits(y), bop)
+                binary_func(f32::from_le_bytes(x), f32::from_le_bytes(y), bop)
             }
             Constant::F64(x) => {
                 let Constant::F64(y) = y else { unreachable!() };
-                binary_func(f64::from_bits(x), f64::from_bits(y), bop)
+                binary_func(f64::from_le_bytes(x), f64::from_le_bytes(y), bop)
             }
             Constant::U8(x) => {
                 let Constant::U8(y) = y else { unreachable!() };
@@ -476,7 +471,7 @@ impl Constant {
             }
             Constant::U64(x) => {
                 let Constant::U64(y) = y else { unreachable!() };
-                binary_func(x, y, bop)
+                binary_func(u64::from_le_bytes(x), u64::from_le_bytes(y), bop)
             }
             Constant::I8(x) => {
                 let Constant::I8(y) = y else { unreachable!() };
@@ -492,7 +487,7 @@ impl Constant {
             }
             Constant::I64(x) => {
                 let Constant::I64(y) = y else { unreachable!() };
-                binary_func(x, y, bop)
+                binary_func(i64::from_le_bytes(x), i64::from_le_bytes(y), bop)
             }
             Constant::Bool(x) => {
                 let Constant::Bool(y) = y else { unreachable!() };
@@ -505,18 +500,18 @@ impl Constant {
 trait CastDType: Scalar {
     fn cast_dtype(self, dtype: DType) -> Constant {
         match dtype {
-            DType::BF16 => Constant::BF16(self.cast::<half::bf16>().to_bits()),
-            DType::F16 => Constant::F16(self.cast::<half::f16>().to_bits()),
-            DType::F32 => Constant::F32(self.cast::<f32>().to_bits()),
-            DType::F64 => Constant::F64(self.cast::<f64>().to_bits()),
+            DType::BF16 => Constant::BF16(self.cast::<half::bf16>().to_le_bytes()),
+            DType::F16 => Constant::F16(self.cast::<half::f16>().to_le_bytes()),
+            DType::F32 => Constant::F32(self.cast::<f32>().to_le_bytes()),
+            DType::F64 => Constant::F64(self.cast::<f64>().to_le_bytes()),
             DType::U8 => Constant::U8(self.cast()),
             DType::U16 => Constant::U16(self.cast()),
             DType::U32 => Constant::U32(self.cast()),
-            DType::U64 => Constant::U64(self.cast()),
+            DType::U64 => Constant::U64(self.cast::<u64>().to_le_bytes()),
             DType::I8 => Constant::I8(self.cast()),
             DType::I16 => Constant::I16(self.cast()),
             DType::I32 => Constant::I32(self.cast()),
-            DType::I64 => Constant::I64(self.cast()),
+            DType::I64 => Constant::I64(self.cast::<i64>().to_le_bytes()),
             DType::Bool => Constant::Bool(self.cast()),
         }
     }
@@ -527,18 +522,18 @@ impl<T: Scalar> CastDType for T {}
 impl Display for Constant {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::BF16(value) => f.write_fmt(format_args!("{}", bf16::from_bits(*value))),
-            Self::F16(value) => f.write_fmt(format_args!("{}", f16::from_bits(*value))),
-            Self::F32(value) => f.write_fmt(format_args!("{}", f32::from_bits(*value))),
-            Self::F64(value) => f.write_fmt(format_args!("{}", f64::from_bits(*value))),
+            Self::BF16(value) => f.write_fmt(format_args!("{}", bf16::from_le_bytes(*value))),
+            Self::F16(value) => f.write_fmt(format_args!("{}", f16::from_le_bytes(*value))),
+            Self::F32(value) => f.write_fmt(format_args!("{}", f32::from_le_bytes(*value))),
+            Self::F64(value) => f.write_fmt(format_args!("{}", f64::from_le_bytes(*value))),
             Self::U8(value) => f.write_fmt(format_args!("{value}")),
             Self::U16(value) => f.write_fmt(format_args!("{value}")),
-            Self::U64(value) => f.write_fmt(format_args!("{value}")),
+            &Self::U64(value) => f.write_fmt(format_args!("{}", u64::from_le_bytes(value))),
             Self::U32(value) => f.write_fmt(format_args!("{value}")),
             Self::I8(value) => f.write_fmt(format_args!("{value}")),
             Self::I16(value) => f.write_fmt(format_args!("{value}")),
             Self::I32(value) => f.write_fmt(format_args!("{value}")),
-            Self::I64(value) => f.write_fmt(format_args!("{value}")),
+            &Self::I64(value) => f.write_fmt(format_args!("{}", i64::from_le_bytes(value))),
             Self::Bool(value) => f.write_fmt(format_args!("{value}")),
         }
     }

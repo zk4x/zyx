@@ -1104,18 +1104,18 @@ impl DType {
 impl Constant {
     fn ocl(&self) -> String {
         match self {
-            &Self::BF16(x) => format!("{:.16}f", half::bf16::from_bits(x)),
-            &Self::F16(x) => format!("(half){:.16}", half::f16::from_bits(x)),
-            &Self::F32(x) => format!("{:.16}f", f32::from_bits(x)),
-            &Self::F64(x) => format!("{:.16}", f64::from_bits(x)),
+            &Self::BF16(x) => format!("{:.16}f", half::bf16::from_le_bytes(x)),
+            &Self::F16(x) => format!("(half){:.16}", half::f16::from_le_bytes(x)),
+            &Self::F32(x) => format!("{:.16}f", f32::from_le_bytes(x)),
+            &Self::F64(x) => format!("{:.16}", f64::from_le_bytes(x)),
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),
             Self::U16(x) => format!("{x}"),
             Self::U32(x) => format!("{x}"),
-            Self::U64(x) => format!("{x}"),
+            &Self::U64(x) => format!("{}", u64::from_ne_bytes(x)),
             Self::I32(x) => format!("{x}"),
-            Self::I64(x) => format!("{x}"),
+            &Self::I64(x) => format!("{}", i64::from_le_bytes(x)),
             Self::Bool(x) => format!("{x}"),
         }
     }
