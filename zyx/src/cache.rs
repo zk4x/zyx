@@ -1,5 +1,10 @@
 use crate::{
-    backend::{Device, DeviceInfo, ProgramId}, dtype::Constant, graph::{BOp, ROp, UOp}, shape::{Axis, Dim}, view::View, DType, Map
+    DType, Map,
+    backend::{Device, DeviceInfo, ProgramId},
+    dtype::Constant,
+    graph::{BOp, ROp, UOp},
+    shape::{Axis, Dim},
+    view::View,
 };
 use std::hash::BuildHasherDefault;
 
@@ -284,4 +289,30 @@ fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> S
         bw / 100,
         bw % 100,
     )
+}
+
+impl Kernel {
+    pub fn debug(&self) {
+        for (id, op) in self.ops.iter().enumerate() {
+            match op {
+                Op::Const { value } => println!("{id:>3} CONST {value}"),
+                Op::Load { dtype, shape } => println!("{id:>3} LOAD {dtype} {shape:?}"),
+                Op::Store { x } => println!("{id:>3} STORE {x}"),
+                Op::Cast { x, dtype } => println!("{id:>3} CAST {x} {dtype:?}"),
+                Op::Unary { x, uop } => println!("{id:>3} UNARY {uop:?} {x}"),
+                Op::Binary { x, y, bop } => println!("{id:>3} BINARY {bop:?} {x} {y}"),
+                Op::Reduce { x, rop, axes } => println!(
+                    "{id:>3} {} {x} axes={axes:?}",
+                    match rop {
+                        ROp::Sum => "SUM",
+                        ROp::Max => "MAX",
+                    }
+                ),
+                Op::Reshape { x, shape } => println!("{id:>3} RESHAPE {x} {shape:?}"),
+                Op::Expand { x, shape } => println!("{id:>3} EXPAND {x} {shape:?}"),
+                Op::Permute { x, axes } => println!("{id:>3} PERMUTE {x} axes={axes:?}"),
+                Op::Pad { x, padding } => println!("{id:>3} PAD {x} padding={padding:?}"),
+            }
+        }
+    }
 }

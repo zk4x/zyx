@@ -425,9 +425,9 @@ pub enum Node {
         uop: UOp,
     },
     Binary {
+        bop: BOp,
         x: TensorId,
         y: TensorId,
-        bop: BOp,
     },
 }
 

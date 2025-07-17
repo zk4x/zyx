@@ -1,9 +1,9 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
 use crate::backend::{BufferId, Device, DeviceConfig, Event, MemoryPool};
+use crate::cache::Cache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{BOp, Graph, Node, ROp, UOp};
-use crate::cache::Cache;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{Axis, Dim, permute, reduce};

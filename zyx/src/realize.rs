@@ -1,15 +1,14 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    Set, ZyxError,
+    Map, Set, ZyxError,
     cache::{Kernel, Op},
     graph::Node,
     runtime::Runtime,
     slab::{Slab, SlabId},
     tensor::TensorId,
-    view::View,
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, hash::BuildHasherDefault};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct KernelId(u32);
@@ -41,84 +40,100 @@ impl Runtime {
             self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
 
         let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(300);
-        let mut kids: VecDeque<(TensorId, KernelId, View)> = VecDeque::with_capacity(500);
+        let mut kids: VecDeque<(TensorId, KernelId)> = VecDeque::with_capacity(500);
+
+        let mut visited = Map::with_capacity_and_hasher(
+            self.graph.nodes.len().into(),
+            BuildHasherDefault::default(),
+        );
 
         for &nid in to_eval {
-            let shape = self.graph.shape(nid);
             let op = Op::Store { x: 1 };
             let kid = kernels.len();
-            kernels.push(Kernel { ops: vec![op], next_id: 0 });
+            kernels.push(Kernel { ops: vec![op], next_id: 1 });
             kids.push_back((nid, kid));
         }
 
-        while let Some((nid, kid, mut view)) = kids.pop_front() {
+        while let Some((nid, kid)) = kids.pop_front() {
             // TODO if the nid is already processed in other kernel, then either merge kernels
             // or put there a load in this current kernel and store in the other kernel.
-            if realized_nodes.contains(&nid) {
+            if let Some((kidy, op_id)) = visited.get(&nid) {
+                if kid == *kidy {
+                    continue;
+                }
+                // merge kernels
+                //kernels[kid].ops.push();
+                continue;
+            }
+            let op = if realized_nodes.contains(&nid) {
                 let shape = self.graph.shape(nid).to_vec().into_boxed_slice();
                 let dtype = self.graph.dtype(nid);
-                let op = Op::Load { dtype, shape };
-                kernels[kid].ops.push(op);
+                Op::Load { dtype, shape }
             } else {
                 match self.graph[nid] {
                     Node::Leaf { .. } => unreachable!(),
-                    Node::Const { value } => {
-                        let shape = self.graph.shape(nid);
-                        let op = Op::Const { value };
-                        kernels[kid].ops.push(op);
-                    }
+                    Node::Const { value } => Op::Const { value },
                     Node::Cast { x, dtype } => {
-                        kids.push_back((x, kid, view));
+                        kids.push_back((x, kid));
                         let x = kernels[kid].next_op_id();
-                        let op = Op::Cast { x, dtype };
-                        kernels[kid].ops.push(op);
+                        Op::Cast { x, dtype }
                     }
                     Node::Unary { x, uop } => {
-                        kids.push_back((x, kid, view));
+                        kids.push_back((x, kid));
                         let x = kernels[kid].next_op_id();
-                        let op = Op::Unary { x, uop };
-                        kernels[kid].ops.push(op);
+                        Op::Unary { x, uop }
                     }
                     Node::Binary { x, y, bop } => {
-                        kids.push_back((x, kid, view.clone()));
-                        kids.push_back((y, kid, view));
+                        kids.push_back((x, kid));
+                        kids.push_back((y, kid));
                         // With BFS, we can just do x + 1 for y
                         let x = kernels[kid].next_op_id();
                         let y = kernels[kid].next_op_id();
-                        let op = Op::Binary { x, y, bop };
-                        kernels[kid].ops.push(op);
+                        Op::Binary { x, y, bop }
                     }
                     Node::Reduce { x, rop } => {
-                        kids.push_back((x, kid, view));
+                        kids.push_back((x, kid));
                         let x = kernels[kid].next_op_id();
                         // TODO permute
                         let axes = self.graph.axes(nid);
-                        let op = Op::Reduce { x, rop, axes: axes.to_vec().into_boxed_slice() };
-                        kernels[kid].ops.push(op);
+                        Op::Reduce { x, rop, axes: axes.to_vec().into_boxed_slice() }
                     }
                     Node::Permute { x } => {
+                        kids.push_back((x, kid));
+                        let x = kernels[kid].next_op_id();
                         let axes = self.graph.axes(nid);
-                        view.reverse_permute(axes);
-                        kids.push_back((x, kid, view));
+                        Op::Permute { x, axes: axes.to_vec().into_boxed_slice() }
                     }
                     Node::Reshape { x } => {
-                        let axes = self.graph.axes(nid);
-                        view.reverse_reshape(axes);
-                        kids.push_back((x, kid, view));
+                        kids.push_back((x, kid));
+                        let x = kernels[kid].next_op_id();
+                        let shape = self.graph.shape(nid);
+                        Op::Reshape { x, shape: shape.to_vec().into_boxed_slice() }
                     }
-                    Node::Pad { .. } => {
-                        todo!()
+                    Node::Pad { x } => {
+                        kids.push_back((x, kid));
+                        let x = kernels[kid].next_op_id();
+                        let padding = self.graph.padding(nid);
+                        Op::Pad { x, padding: padding.to_vec().into_boxed_slice() }
                     }
-                    Node::Expand { .. } => {
-                        todo!()
+                    Node::Expand { x } => {
+                        kids.push_back((x, kid));
+                        let x = kernels[kid].next_op_id();
+                        let shape = self.graph.shape(nid);
+                        Op::Expand { x, shape: shape.to_vec().into_boxed_slice() }
                     }
                 }
-            }
+            };
+            visited.insert(nid, (kid, kernels[kid].ops.len()));
+            kernels[kid].ops.push(op);
         }
 
         let elapsed = begin.elapsed();
         if self.debug.perf() {
             println!("Kernelizer took {} us", elapsed.as_micros(),);
+        }
+        for kernel in kernels.values() {
+            kernel.debug();
         }
         todo!();
         Ok(())
