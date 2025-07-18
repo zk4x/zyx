@@ -55,17 +55,6 @@ impl Runtime {
         }
 
         while let Some((nid, kid)) = kids.pop_front() {
-            // TODO if the nid is already processed in other kernel, then either merge kernels
-            // or put there a load in this current kernel and store in the other kernel.
-            if let Some((kidy, op_id)) = visited.get(&nid) {
-                if kid == *kidy {
-                    continue;
-                }
-                // merge kernels
-                //kernels[kid].ops.push();
-                continue;
-            }
-
             // Let's say for now if we find reduce on a later expanded kernel,
             // that is our kernel split, so no expand on reduced kernels.
 
@@ -78,50 +67,41 @@ impl Runtime {
                     Node::Leaf { .. } => unreachable!(),
                     Node::Const { value } => Op::Const { value },
                     Node::Cast { x, dtype } => {
-                        kids.push_back((x, kid));
-                        let x = kernels[kid].next_op_id();
+                        let x = get_next_id(&mut kernels, &mut kids, &mut visited, x, kid);
                         Op::Cast { x, dtype }
                     }
                     Node::Unary { x, uop } => {
-                        kids.push_back((x, kid));
-                        let x = kernels[kid].next_op_id();
+                        let x = get_next_id(&mut kernels, &mut kids, &mut visited, x, kid);
                         Op::Unary { x, uop }
                     }
                     Node::Binary { x, y, bop } => {
-                        kids.push_back((x, kid));
-                        kids.push_back((y, kid));
                         // With BFS, we can just do x + 1 for y
-                        let x = kernels[kid].next_op_id();
-                        let y = kernels[kid].next_op_id();
+                        let x = get_next_id(&mut kernels, &mut kids, &mut visited, x, kid);
+                        let y = get_next_id(&mut kernels, &mut kids, &mut visited, y, kid);
                         Op::Binary { x, y, bop }
                     }
                     Node::Reduce { x, rop } => {
                         // TODO permute, but not unnecessary
-                        kids.push_back((x, kid));
-                        let x = kernels[kid].next_op_id();
+                        let x = get_next_id(&mut kernels, &mut kids, &mut visited, x, kid);
                         let axes = self.graph.axes(nid);
                         Op::Reduce { x, rop, axes: axes.to_vec().into_boxed_slice() }
                     }
                     Node::Permute { x } => {
-                        kids.push_back((x, kid));
-                        let x = kernels[kid].next_op_id();
+                        let x = get_next_id(&mut kernels, &mut kids, &mut visited, x, kid);
                         let axes = self.graph.axes(nid);
                         Op::Permute { x, axes: axes.to_vec().into_boxed_slice() }
                     }
                     Node::Reshape { x } => {
-                        kids.push_back((x, kid));
-                        let x = kernels[kid].next_op_id();
+                        let x = get_next_id(&mut kernels, &mut kids, &mut visited, x, kid);
                         let shape = self.graph.shape(nid);
                         Op::Reshape { x, shape: shape.to_vec().into_boxed_slice() }
                     }
                     Node::Pad { x } => {
-                        kids.push_back((x, kid));
-                        let x = kernels[kid].next_op_id();
+                        let x = get_next_id(&mut kernels, &mut kids, &mut visited, x, kid);
                         let padding = self.graph.padding(nid);
                         Op::Pad { x, padding: padding.to_vec().into_boxed_slice() }
                     }
                     Node::Expand { x } => {
-                        kids.push_back((x, kid));
                         // Look ahead if sooner there is another expand or reduce.
                         // If it is reduce, split kernels
                         /*{
@@ -131,13 +111,12 @@ impl Runtime {
                                 param
                             }
                         }*/
-                        let x = kernels[kid].next_op_id();
+                        let x = get_next_id(&mut kernels, &mut kids, &mut visited, x, kid);
                         let shape = self.graph.shape(nid);
                         Op::Expand { x, shape: shape.to_vec().into_boxed_slice() }
                     }
                 }
             };
-            visited.insert(nid, (kid, kernels[kid].ops.len()));
             kernels[kid].ops.push(op);
         }
 
@@ -145,8 +124,10 @@ impl Runtime {
         if self.debug.perf() {
             println!("Kernelizer took {} us", elapsed.as_micros(),);
         }
-        for kernel in kernels.values() {
-            kernel.debug();
+        if self.debug.sched() {
+            for kernel in kernels.values() {
+                kernel.debug();
+            }
         }
         todo!();
         Ok(())
@@ -581,4 +562,26 @@ impl Runtime {
             Map::with_hasher(BuildHasherDefault::default()),
         )
     }*/
+}
+
+fn get_next_id(
+    kernels: &mut Slab<KernelId, Kernel>,
+    kids: &mut VecDeque<(TensorId, KernelId)>,
+    visited: &mut Map<TensorId, (KernelId, usize)>,
+    x: TensorId,
+    kid: KernelId,
+) -> usize {
+    let xt = if let Some((kidy, op_id)) = visited.get(&x) {
+        if kid == *kidy {
+            *op_id
+        } else {
+            // merge kernels
+            todo!()
+        }
+    } else {
+        kids.push_back((x, kid));
+        kernels[kid].next_op_id()
+    };
+    visited.insert(x, (kid, xt));
+    xt
 }

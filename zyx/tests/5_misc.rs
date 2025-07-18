@@ -15,9 +15,25 @@ fn memory2() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn comb_1() -> Result<(), ZyxError> {
+fn fuse_1() -> Result<(), ZyxError> {
     let x = Tensor::from([[2f32, 4., 3.], [1., 5., 1.]]);
     let z = x.exp2() + x;
+    assert_eq!(z, [[2f32, 4., 3.], [1., 5., 1.]]);
+    Ok(())
+}
+
+#[test]
+fn fuse_2() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2f32, 4., 3.], [1., 5., 1.]]);
+    let z = x.expand([2, 2, 3])? + x;
+    assert_eq!(z, [[2f32, 4., 3.], [1., 5., 1.]]);
+    Ok(())
+}
+
+#[test]
+fn fuse_3() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2f32, 4., 3.], [1., 5., 1.]]);
+    let z = x.sum([0])?.expand([2, 3])? + x;
     assert_eq!(z, [[2f32, 4., 3.], [1., 5., 1.]]);
     Ok(())
 }
