@@ -4,7 +4,6 @@ use crate::{
     dtype::Constant,
     graph::{BOp, ROp, UOp},
     shape::{Axis, Dim},
-    view::View,
 };
 use std::hash::BuildHasherDefault;
 

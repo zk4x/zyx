@@ -346,8 +346,6 @@ pub enum BOp {
     Sub,
     Mul,
     Div,
-    // Perhaps we will eventually remove this, but for now I am not certain
-    #[allow(unused)]
     Pow,
     Mod,
     Cmplt,

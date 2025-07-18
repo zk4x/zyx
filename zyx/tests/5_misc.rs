@@ -15,6 +15,14 @@ fn memory2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn comb_1() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2f32, 4., 3.], [1., 5., 1.]]);
+    let z = x.exp2() + x;
+    assert_eq!(z, [[2f32, 4., 3.], [1., 5., 1.]]);
+    Ok(())
+}
+
+#[test]
 fn matmul_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     let y = Tensor::from([[2, 4], [3, 1], [5, 1]]);

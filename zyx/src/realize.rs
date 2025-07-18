@@ -65,6 +65,10 @@ impl Runtime {
                 //kernels[kid].ops.push();
                 continue;
             }
+
+            // Let's say for now if we find reduce on a later expanded kernel,
+            // that is our kernel split, so no expand on reduced kernels.
+
             let op = if realized_nodes.contains(&nid) {
                 let shape = self.graph.shape(nid).to_vec().into_boxed_slice();
                 let dtype = self.graph.dtype(nid);
@@ -92,9 +96,9 @@ impl Runtime {
                         Op::Binary { x, y, bop }
                     }
                     Node::Reduce { x, rop } => {
+                        // TODO permute, but not unnecessary
                         kids.push_back((x, kid));
                         let x = kernels[kid].next_op_id();
-                        // TODO permute
                         let axes = self.graph.axes(nid);
                         Op::Reduce { x, rop, axes: axes.to_vec().into_boxed_slice() }
                     }
@@ -118,6 +122,15 @@ impl Runtime {
                     }
                     Node::Expand { x } => {
                         kids.push_back((x, kid));
+                        // Look ahead if sooner there is another expand or reduce.
+                        // If it is reduce, split kernels
+                        /*{
+                            let mut params = Vec::with_capacity(20);
+                            params.push(x);
+                            while let Some(param) = params.pop() {
+                                param
+                            }
+                        }*/
                         let x = kernels[kid].next_op_id();
                         let shape = self.graph.shape(nid);
                         Op::Expand { x, shape: shape.to_vec().into_boxed_slice() }
