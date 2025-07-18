@@ -692,6 +692,12 @@ impl Tensor {
         x.log2() * c.cast(x.dtype())
     }
 
+    /// Compute logarithm with any base
+    #[must_use]
+    pub fn log(&self, base: impl Into<Tensor>) -> Tensor {
+        self.log2() / base.into().log2()
+    }
+
     /// Computes the Mish activation function for each element in the input tensor.
     ///
     /// The Mish activation function is a continuous, non-monotonic function that behaves like `ReLU` for positive inputs and like sigmoid for negative inputs. It is defined as `x * tanh(softplus(x))`.
