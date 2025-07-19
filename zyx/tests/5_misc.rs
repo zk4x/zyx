@@ -39,6 +39,14 @@ fn fuse_3() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn fuse_4() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2f32, 4., 3.], [1., 5., 1.]]);
+    let z = x.sum([0])?.expand([2, 3])? + x;
+    assert_eq!(z, [[2f32, 4., 3.], [1., 5., 1.]]);
+    Ok(())
+}
+
+#[test]
 fn matmul_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     let y = Tensor::from([[2, 4], [3, 1], [5, 1]]);
