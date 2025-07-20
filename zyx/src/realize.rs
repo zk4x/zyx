@@ -54,7 +54,9 @@ impl Runtime {
             kids.push_back((nid, kid));
         }
 
+        let mut mx = 0;
         while let Some((nid, kid)) = kids.pop_front() {
+            mx = mx.max(kids.len());
             // Let's say for now if we find reduce on a later expanded kernel,
             // that is our kernel split, so no expand on reduced kernels.
 
@@ -172,6 +174,7 @@ impl Runtime {
                 real_nd.insert(nid);
             }
         }
+        println!("mx={mx}");
 
         let elapsed = begin.elapsed();
         if self.debug.perf() {
@@ -626,9 +629,9 @@ fn get_next_id(
     x: TensorId,
     kid: KernelId,
 ) -> usize {
-    let xt = if let Some((kidy, op_id)) = visited.get(&x) {
-        if kid == *kidy {
-            *op_id
+    let xt = if let Some((kidy, op_id)) = visited.get(&x).cloned() {
+        if kid == kidy {
+            op_id
         } else {
             // TODO merge kernels
             //*op_id
@@ -636,7 +639,42 @@ fn get_next_id(
                 kids.push_back((x, kid));
                 kernels[kid].next_op_id()
             } else {
-                todo!()
+                // remove kidy kernel from kernels
+                let kernely = unsafe { kernels.remove_and_return(kidy) };
+                // Move all kidy ops into kid, increase ids by kid ops len
+                let n = kernels[kid].ops.len() + 1;
+                for mut op in kernely.ops {
+                    match &mut op {
+                        Op::Const { .. } | Op::Load { .. } => {}
+                        Op::Store { x }
+                        | Op::Cast { x, .. }
+                        | Op::Unary { x, .. }
+                        | Op::Reduce { x, .. }
+                        | Op::Reshape { x, .. }
+                        | Op::Expand { x, .. }
+                        | Op::Permute { x, .. }
+                        | Op::Pad { x, .. } => *x += n,
+                        Op::Binary { x, y, .. } => {
+                            *x += n;
+                            *y += n;
+                        }
+                    }
+                    kernels[kid].ops.push(op);
+                }
+                // remove kidy from kids< replace with kid
+                for (_, kernel_id) in kids {
+                    if *kernel_id == kidy {
+                        *kernel_id = kid;
+                    }
+                }
+                // remove kidy from visited, replace with kid
+                for (kernel_id, op_id) in visited.values_mut() {
+                    if *kernel_id == kidy {
+                        *kernel_id = kid;
+                        *op_id += n;
+                    }
+                }
+                op_id + n
             }
         }
     } else {
