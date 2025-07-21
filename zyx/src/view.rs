@@ -5,7 +5,7 @@ use std::{fmt::Display, ops::Range};
 
 /// .0[0] is original shape, further shapes are additional reshapes
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct View(pub Vec<Vec<RDim>>); // TODO switch to Box<[]> instead of Vec and perhaps immutable View?
+pub struct View(pub Vec<Vec<RDim>>); // TODO switch to Box<[]> instead of Vec?
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RDim {
@@ -89,11 +89,10 @@ impl View {
     /// Inserts new loop, shifts all axes greater than axis up by one
     pub(crate) fn insert_loop(&mut self, axis: usize) {
         //println!("Inserting loop at axis {axis}");
-        if let Some(inner) = self.0.last_mut() {
-            debug_assert!(axis < inner.len());
-            let st = inner[axis].st;
-            inner.insert(axis, RDim { d: 1, st, lp: 0, rp: 0 });
-        }
+        let inner = self.0.last_mut().unwrap();
+        debug_assert!(axis < inner.len());
+        let st = inner[axis].st;
+        inner.insert(axis, RDim { d: 1, st, lp: 0, rp: 0 });
         //println!("After insert loop {self:?}");
     }
 
@@ -108,61 +107,60 @@ impl View {
                 .product::<Dim>(),
             shape.iter().product::<Dim>()
         );
-        if let Some(inner) = self.0.last_mut() {
-            let mut contiguous = true;
-            let mut a = inner.len() as Dim;
-            let mut stride = 1;
-            let mut ost = 1;
-            while a > axes.start {
-                a -= 1;
-                let dim = &inner[a as usize];
-                if a >= axes.end - 1 {
-                    if dim.st != 0 {
-                        stride = dim.st * dim.d;
-                        ost = dim.st;
-                    }
-                } else {
-                    let st = stride;
-                    stride *= dim.d;
-                    //println!("a = {a} stride = {stride} dim = {dim:?}");
-                    if dim.st != st || dim.lp != 0 || dim.rp != 0 {
-                        contiguous = false;
-                        break;
-                    }
+        let inner = self.0.last_mut().unwrap();
+        let mut contiguous = true;
+        let mut a = inner.len() as Dim;
+        let mut stride = 1;
+        let mut ost = 1;
+        while a > axes.start {
+            a -= 1;
+            let dim = &inner[a as usize];
+            if a >= axes.end - 1 {
+                if dim.st != 0 {
+                    stride = dim.st * dim.d;
+                    ost = dim.st;
+                }
+            } else {
+                let st = stride;
+                stride *= dim.d;
+                //println!("a = {a} stride = {stride} dim = {dim:?}");
+                if dim.st != st || dim.lp != 0 || dim.rp != 0 {
+                    contiguous = false;
+                    break;
                 }
             }
-            if axes.clone().any(|a| inner[a as usize].st == 0) {
-                contiguous = false;
-            }
-            // If all reshaped axes are expanded
-            let expanded_reshape = if axes.clone().all(|a| inner[a as usize].st == 0) {
-                contiguous = true;
-                true
-            } else {
-                false
-            };
-            if axes.clone().any(|a| inner[a as usize].lp != 0 || inner[a as usize].rp != 0) {
-                contiguous = false;
-            }
+        }
+        if axes.clone().any(|a| inner[a as usize].st == 0) {
+            contiguous = false;
+        }
+        // If all reshaped axes are expanded
+        let expanded_reshape = if axes.clone().all(|a| inner[a as usize].st == 0) {
+            contiguous = true;
+            true
+        } else {
+            false
+        };
+        if axes.clone().any(|a| inner[a as usize].lp != 0 || inner[a as usize].rp != 0) {
+            contiguous = false;
+        }
 
-            if contiguous {
-                //println!("Reshape contiguous");
-                for a in axes.clone().rev() {
-                    let dim = inner.remove(a);
-                    debug_assert_eq!(dim.lp, 0);
-                    debug_assert_eq!(dim.rp, 0);
-                }
-                for &d in shape.iter().rev() {
-                    let st = if expanded_reshape { 0 } else { ost };
-                    ost *= d;
-                    inner.insert(axes.start, RDim { d, st, lp: 0, rp: 0 });
-                }
-            } else {
-                //println!("Reshape non-contiguous");
-                let mut old_shape = self.shape();
-                old_shape.splice(axes, shape.iter().copied());
-                self.0.push(to_contiguous_rdims(&old_shape));
+        if contiguous {
+            //println!("Reshape contiguous");
+            for a in axes.clone().rev() {
+                let dim = inner.remove(a);
+                debug_assert_eq!(dim.lp, 0);
+                debug_assert_eq!(dim.rp, 0);
             }
+            for &d in shape.iter().rev() {
+                let st = if expanded_reshape { 0 } else { ost };
+                ost *= d;
+                inner.insert(axes.start, RDim { d, st, lp: 0, rp: 0 });
+            }
+        } else {
+            //println!("Reshape non-contiguous");
+            let mut old_shape = self.shape();
+            old_shape.splice(axes, shape.iter().copied());
+            self.0.push(to_contiguous_rdims(&old_shape));
         }
         //println!("After reshape: {self}\n");
     }
@@ -179,99 +177,100 @@ impl View {
         *inner = new;
     }
 
-    pub(crate) fn reverse_permute(&mut self, axes: &[usize]) {
-        todo!();
-        // Move around strides, dim, rp and lp
+    pub(crate) fn expand(&mut self, shape: &[Dim]) {
+        // Expands first shape.len() dims
+        debug_assert!(self.rank() >= shape.len());
         let inner = self.0.last_mut().unwrap();
-        debug_assert_eq!(inner.len(), axes.len());
-        let mut new = Vec::with_capacity(axes.len());
-        for &a in axes {
-            let dim = inner[a].clone();
-            new.push(dim);
-        }
-        *inner = new;
-    }
-
-    pub(crate) fn reverse_reshape(&mut self, shape: &[Dim]) {
-        todo!()
-    }
-
-    pub(crate) fn expand(&mut self, axis: Axis, ndim: Dim) {
-        //println!("View expand {self} axis = {axis} to ndim {ndim}");
-        if let Some(inner) = self.0.last_mut() {
-            if let Some(dim) = inner.get_mut(axis) {
-                debug_assert!(dim.d == ndim || dim.d == 1);
+        for (dim, &d) in inner.iter_mut().zip(shape) {
+            if d != dim.d {
+                debug_assert_eq!(dim.d, 1);
                 debug_assert_eq!(dim.lp, 0);
                 debug_assert_eq!(dim.rp, 0);
-                dim.d = ndim;
+                dim.d = d;
                 dim.st = 0;
-            } else {
-                unreachable!("Expand on nonexistent axis.");
             }
         }
     }
 
-    pub(crate) fn pad(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
+    pub(crate) fn expand_axis(&mut self, axis: Axis, ndim: Dim) {
+        //println!("View expand {self} axis = {axis} to ndim {ndim}");
+        let inner = self.0.last_mut().unwrap();
+        let dim = &mut inner[axis];
+        debug_assert!(dim.d == ndim || dim.d == 1);
+        debug_assert_eq!(dim.lp, 0);
+        debug_assert_eq!(dim.rp, 0);
+        dim.d = ndim;
+        dim.st = 0;
+    }
+
+    pub fn pad(&mut self, padding: &[(isize, isize)]) {
+        for (axis, (lp, rp)) in padding.iter().copied().enumerate() {
+            if lp != 0 || rp != 0 {
+                self.pad_axis(axis, lp, rp);
+            }
+        }
+    }
+
+    pub fn pad_axis(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
         let mut old_shape = self.shape();
-        if let Some(inner) = self.0.last_mut() {
-            let mut dim = &mut inner[axis];
-            dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
-            if dim.lp < 0 && left_pad > 0 {
-                dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() - left_pad).unwrap();
-                let mut stride = 1;
-                let mut res: Vec<RDim> = old_shape
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .map(|(a, &d)| {
-                        let st = stride;
-                        stride *= d;
-                        RDim {
-                            st,
-                            d: if a == axis {
-                                Dim::try_from(isize::try_from(d).unwrap() + left_pad).unwrap()
-                            } else {
-                                d
-                            },
-                            lp: if a == axis { left_pad } else { 0 },
-                            rp: 0,
-                        }
-                    })
-                    .collect();
-                res.reverse();
-                self.0.push(res);
-                dim = &mut self.0.last_mut().unwrap()[axis];
-            } else {
-                dim.lp += left_pad;
-            }
-            if dim.rp < 0 && right_pad > 0 {
-                dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() - right_pad).unwrap();
-                let old_shape = self.shape();
-                let mut stride = 1;
-                let mut res: Vec<RDim> = old_shape
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .map(|(a, &d)| {
-                        let st = stride;
-                        stride *= d;
-                        RDim {
-                            st,
-                            d: if a == axis {
-                                Dim::try_from(isize::try_from(d).unwrap() + right_pad).unwrap()
-                            } else {
-                                d
-                            },
-                            lp: 0,
-                            rp: if a == axis { right_pad } else { 0 },
-                        }
-                    })
-                    .collect();
-                res.reverse();
-                self.0.push(res);
-            } else {
-                dim.rp += right_pad;
-            }
+        let inner = self.0.last_mut().unwrap();
+        let mut dim = &mut inner[axis];
+        dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
+        if dim.lp < 0 && left_pad > 0 {
+            dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() - left_pad).unwrap();
+            let mut stride = 1;
+            let mut res: Vec<RDim> = old_shape
+                .iter()
+                .enumerate()
+                .rev()
+                .map(|(a, &d)| {
+                    let st = stride;
+                    stride *= d;
+                    RDim {
+                        st,
+                        d: if a == axis {
+                            Dim::try_from(isize::try_from(d).unwrap() + left_pad).unwrap()
+                        } else {
+                            d
+                        },
+                        lp: if a == axis { left_pad } else { 0 },
+                        rp: 0,
+                    }
+                })
+                .collect();
+            res.reverse();
+            self.0.push(res);
+            dim = &mut self.0.last_mut().unwrap()[axis];
+        } else {
+            dim.lp += left_pad;
+        }
+        if dim.rp < 0 && right_pad > 0 {
+            dim.d = Dim::try_from(isize::try_from(dim.d).unwrap() - right_pad).unwrap();
+            let old_shape = self.shape();
+            let mut stride = 1;
+            let mut res: Vec<RDim> = old_shape
+                .iter()
+                .enumerate()
+                .rev()
+                .map(|(a, &d)| {
+                    let st = stride;
+                    stride *= d;
+                    RDim {
+                        st,
+                        d: if a == axis {
+                            Dim::try_from(isize::try_from(d).unwrap() + right_pad).unwrap()
+                        } else {
+                            d
+                        },
+                        lp: 0,
+                        rp: if a == axis { right_pad } else { 0 },
+                    }
+                })
+                .collect();
+            res.reverse();
+            self.0.push(res);
+        } else {
+            dim.rp += right_pad;
         }
         old_shape[axis] =
             Dim::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad)
@@ -486,7 +485,7 @@ fn view_reshape2() {
     let mut view = View::contiguous(&[3, 1, 5]);
     view.reshape(0..1, &[1, 3]);
     assert_eq!(view.shape(), [1, 3, 1, 5]);
-    view.expand(2, 4);
+    view.expand_axis(2, 4);
     assert_eq!(view.shape(), [1, 3, 4, 5]);
     assert_eq!(view.0.len(), 1);
 }
@@ -496,8 +495,8 @@ fn view_pad2() {
     // Pad view twice in with opposite sings
     //todo!()
     let mut view = View::contiguous(&[1, 1, 2, 6]);
-    view.pad(3, -3, 0);
-    view.pad(3, 2, 0);
+    view.pad_axis(3, -3, 0);
+    view.pad_axis(3, 2, 0);
     assert_eq!(
         view,
         View(vec![

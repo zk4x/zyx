@@ -4,6 +4,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, ROp, UOp},
     shape::{Axis, Dim},
+    view::View,
 };
 use std::hash::BuildHasherDefault;
 
@@ -12,30 +13,19 @@ pub type OpId = usize;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Kernel {
     pub ops: Vec<Op>,
-    pub next_id: OpId,
-}
-
-impl Kernel {
-    pub fn next_op_id(&mut self) -> OpId {
-        self.next_id += 1;
-        self.next_id
-    }
+    pub n_outputs: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
     //Sink { stores: Vec<Op> }, // A way to put multiple stores in one kernel
-    Const { value: Constant },
-    Load { dtype: DType, shape: Box<[Dim]> },
+    ConstView { value: Constant, view: View },
+    LoadView { dtype: DType, view: View },
     Store { x: OpId },
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    Reduce { x: OpId, rop: ROp, axes: Box<[Axis]> },
-    Reshape { x: OpId, shape: Box<[Dim]> },
-    Expand { x: OpId, shape: Box<[Dim]> },
-    Permute { x: OpId, axes: Box<[Axis]> },
-    Pad { x: OpId, padding: Box<[(isize, isize)]> },
+    Reduce { x: OpId, rop: ROp, num_axes: usize },
 }
 
 #[derive(Debug)]
@@ -291,26 +281,33 @@ fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> S
 }
 
 impl Kernel {
+    pub fn apply_movement(&mut self, func: impl Fn(&mut View)) {
+        for op in &mut self.ops {
+            match op {
+                Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
+                    func(view);
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn debug(&self) {
         for (id, op) in self.ops.iter().enumerate() {
             match op {
-                Op::Const { value } => println!("{id:>3} CONST {value}"),
-                Op::Load { dtype, shape } => println!("{id:>3} LOAD {dtype} {shape:?}"),
+                Op::ConstView { value, view } => println!("{id:>3} CONST {value} {view}"),
+                Op::LoadView { dtype, view } => println!("{id:>3} LOAD {dtype} {view}"),
                 Op::Store { x } => println!("{id:>3} STORE {x}"),
                 Op::Cast { x, dtype } => println!("{id:>3} CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{id:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{id:>3} BINARY {bop:?} {x} {y}"),
-                Op::Reduce { x, rop, axes } => println!(
-                    "{id:>3} {} {x} axes={axes:?}",
+                Op::Reduce { x, rop, num_axes } => println!(
+                    "{id:>3} {} {x} num_axes={num_axes:?}",
                     match rop {
                         ROp::Sum => "SUM",
                         ROp::Max => "MAX",
                     }
                 ),
-                Op::Reshape { x, shape } => println!("{id:>3} RESHAPE {x} {shape:?}"),
-                Op::Expand { x, shape } => println!("{id:>3} EXPAND {x} {shape:?}"),
-                Op::Permute { x, axes } => println!("{id:>3} PERMUTE {x} axes={axes:?}"),
-                Op::Pad { x, padding } => println!("{id:>3} PAD {x} padding={padding:?}"),
             }
         }
     }

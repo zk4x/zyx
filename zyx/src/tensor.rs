@@ -97,13 +97,13 @@ impl Tensor {
     /// Number of scalar elements stored in self
     #[must_use]
     pub fn numel(&self) -> Dim {
-        self.shape().iter().product()
+        RT.lock().shape(self.id).iter().product()
     }
 
     /// Rank of self. Rank means number of dimensions/axes.
     #[must_use]
     pub fn rank(&self) -> Dim {
-        self.shape().len() as Dim
+        RT.lock().shape(self.id).len()
     }
 
     /// Datatype of self. See [`DType`](crate::DType) for available datatypes.
