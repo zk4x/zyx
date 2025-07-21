@@ -9,7 +9,7 @@ use crate::{
     tensor::TensorId,
     view::View,
 };
-use std::{collections::VecDeque, hash::BuildHasherDefault};
+use std::hash::BuildHasherDefault;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KernelId(u32);
@@ -69,13 +69,14 @@ impl Runtime {
             }
             (realized_nodes, order, rcs, new_leafs, to_delete)
         };
+        let mut virt_realized_nodes = realized_nodes.clone();
 
         {
             let mut rcs = if rcs.is_empty() {
                 let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
                 // to_eval are not in rcs
                 for &nid in &order {
-                    if !realized_nodes.contains(&nid) {
+                    if !virt_realized_nodes.contains(&nid) {
                         for nid in self.graph[nid].parameters() {
                             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
                         }
@@ -91,14 +92,14 @@ impl Runtime {
                 let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
                 // to_eval are not in rcs
                 for &nid in &order {
-                    if !realized_nodes.contains(&nid) {
+                    if !virt_realized_nodes.contains(&nid) {
                         for nid in self.graph[nid].parameters() {
                             rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
                         }
                     }
                 }
                 if rcs2 != rcs {
-                    println!("Realized nodes: {realized_nodes:?}");
+                    println!("Realized nodes: {virt_realized_nodes:?}");
                     for &nid in &order {
                         println!(
                             "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}",
@@ -128,7 +129,7 @@ impl Runtime {
 
             for nid in order {
                 println!("{nid} -> {:?}", self.graph[nid]);
-                let (kid, op_id) = if realized_nodes.contains(&nid) {
+                let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
                     let dtype = self.graph.dtype(nid);
                     let shape = self.graph.shape(nid);
                     let view = View::contiguous(shape);
@@ -190,7 +191,7 @@ impl Runtime {
 
                             duplicate_if_used_elsewhere(
                                 &self.graph,
-                                &mut realized_nodes,
+                                &mut virt_realized_nodes,
                                 &rcs,
                                 &mut kernels,
                                 x,
@@ -211,7 +212,7 @@ impl Runtime {
 
                             duplicate_if_used_elsewhere(
                                 &self.graph,
-                                &mut realized_nodes,
+                                &mut virt_realized_nodes,
                                 &rcs,
                                 &mut kernels,
                                 x,
@@ -232,7 +233,7 @@ impl Runtime {
 
                             duplicate_if_used_elsewhere(
                                 &self.graph,
-                                &mut realized_nodes,
+                                &mut virt_realized_nodes,
                                 &rcs,
                                 &mut kernels,
                                 x,
@@ -254,7 +255,7 @@ impl Runtime {
 
                             duplicate_if_used_elsewhere(
                                 &self.graph,
-                                &mut realized_nodes,
+                                &mut virt_realized_nodes,
                                 &rcs,
                                 &mut kernels,
                                 x,
@@ -277,7 +278,7 @@ impl Runtime {
 
                             duplicate_if_used_elsewhere(
                                 &self.graph,
-                                &mut realized_nodes,
+                                &mut virt_realized_nodes,
                                 &rcs,
                                 &mut kernels,
                                 x,
@@ -385,10 +386,26 @@ impl Runtime {
                 };
                 visited.insert(nid, (kid, op_id));
                 if to_eval.contains(&nid) {
-                    realized_nodes.insert(nid);
+                    virt_realized_nodes.insert(nid);
                     let op = Op::Store { x: op_id };
                     stores.entry(kid).and_modify(|vec| vec.push(nid)).or_insert_with(|| vec![nid]);
                     kernels[kid].ops.push(op);
+                }
+
+                // Order kernels
+                let mut trkid = None;
+                for kid in kernels.ids() {
+                    if kernels[kid].n_outputs == 0
+                        && loads[&kid].iter().all(|x| realized_nodes.contains(x))
+                    {
+                        trkid = Some(kid);
+                        break;
+                    }
+                }
+                if let Some(kid) = trkid {
+                    let kernel = unsafe { kernels.remove_and_return(kid) };
+                    realized_nodes.extend(&stores[&kid]);
+                    self.launch_kernel(kernel)?;
                 }
             }
 
@@ -402,7 +419,6 @@ impl Runtime {
             }
         }
 
-        // Order kernels
         todo!();
 
         // All ops that have not been evaluated yet will be evaluated here
@@ -754,5 +770,9 @@ impl Runtime {
             new_leafs,
             Map::with_hasher(BuildHasherDefault::default()),
         )
+    }
+
+    fn launch_kernel(&mut self, kernel: Kernel) -> Result<(), ZyxError> {
+        Ok(())
     }
 }
