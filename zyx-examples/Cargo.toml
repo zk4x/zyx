@@ -19,14 +19,15 @@ zyx = { version = "*", path = "../zyx" }
 zyx-nn = { version = "*", path = "../zyx-nn" }
 zyx-optim = { version = "*", path = "../zyx-optim" }
 serde = { version = "*" }
-tokenizers = { version = "*" }
-clap = { version = "4.5.21", features = ["derive"] }
+tokenizers = { version = "0.21.2" }
+clap = { version = "*", features = ["derive"] }
 rand = { version = "*" }
-csv = { version = "1.3.1" }
+csv = { version = "*" }
 half = { version = "*" }
 
 [profile.dev]
 opt-level = 2
+lto = "off"
 
 [profile.release]
 opt-level = 2

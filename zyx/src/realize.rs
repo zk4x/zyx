@@ -71,7 +71,7 @@ impl Runtime {
         };
 
         {
-            let rcs = if rcs.is_empty() {
+            let mut rcs = if rcs.is_empty() {
                 let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
                 // to_eval are not in rcs
                 for &nid in &order {
@@ -112,6 +112,10 @@ impl Runtime {
                 }
             }
 
+            for &nid in to_eval {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+
             let begin = std::time::Instant::now();
 
             let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(100);
@@ -127,42 +131,36 @@ impl Runtime {
                     let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid] };
                     (kernels.push(kernel), 0)
                 } else {
-                    fn check_for_other_usage(
+                    fn duplicate_if_used_elsewhere(
                         graph: &Graph,
-                        realized_nodes: &mut std::collections::HashSet<
-                            TensorId,
-                            BuildHasherDefault<crate::chasher::CHasher>,
-                        >,
-                        rcs: &std::collections::HashMap<
-                            TensorId,
-                            u32,
-                            BuildHasherDefault<crate::chasher::CHasher>,
-                        >,
+                        realized_nodes: &mut Set<TensorId>,
+                        rcs: &Map<TensorId, u32>,
                         kernels: &mut Slab<KernelId, Kernel>,
                         nid: TensorId,
                         x: TensorId,
                         kid: &mut KernelId,
-                        op_id: usize,
+                        op_id: &mut usize,
                     ) {
                         if kernels[*kid].n_outputs > 1 || rcs[&x] > 1 {
                             let kernel_is_small = true;
-                            if kernel_is_small {
+                            let kernel = if kernel_is_small {
                                 let mut kernel = kernels[*kid].clone();
                                 kernel.n_outputs -= 1;
-                                *kid = kernels.len();
-                                kernels.push(kernel);
+                                kernel
                             } else {
                                 let dtype = graph.dtype(x);
                                 let shape = graph.shape(x);
 
                                 realized_nodes.insert(x);
-                                kernels[*kid].ops.push(Op::Store { x: op_id });
+                                kernels[*kid].ops.push(Op::Store { x: *op_id });
 
                                 let view = View::contiguous(shape);
                                 let op = Op::LoadView { dtype, view };
-                                let kernel = Kernel { ops: vec![op], n_outputs: 1 };
-                                kernels.push(kernel);
-                            }
+                                *op_id = 1;
+                                Kernel { ops: vec![op], n_outputs: 1 }
+                            };
+                            *kid = kernels.len();
+                            kernels.push(kernel);
                         }
                         kernels[*kid].n_outputs = rcs[&nid];
                     }
@@ -176,10 +174,9 @@ impl Runtime {
                             (kernels.push(kernel), 0)
                         }
                         Node::Expand { x } => {
-                            let (mut kid, op_id) = visited[&x];
-                            let shape = self.graph.shape(nid);
+                            let (mut kid, mut op_id) = visited[&x];
 
-                            check_for_other_usage(
+                            duplicate_if_used_elsewhere(
                                 &self.graph,
                                 &mut realized_nodes,
                                 &rcs,
@@ -187,27 +184,64 @@ impl Runtime {
                                 nid,
                                 x,
                                 &mut kid,
-                                op_id,
+                                &mut op_id,
                             );
 
+                            let shape = self.graph.shape(nid);
                             kernels[kid].apply_movement(|view| view.expand(shape));
                             (kid, op_id)
                         }
                         Node::Permute { x } => {
-                            let (kid, op_id) = visited[&x];
+                            let (mut kid, mut op_id) = visited[&x];
+
+                            duplicate_if_used_elsewhere(
+                                &self.graph,
+                                &mut realized_nodes,
+                                &rcs,
+                                &mut kernels,
+                                nid,
+                                x,
+                                &mut kid,
+                                &mut op_id,
+                            );
+
                             let axes = self.graph.axes(nid);
                             kernels[kid].apply_movement(|view| view.permute(axes));
                             (kid, op_id)
                         }
                         Node::Reshape { x } => {
-                            let (kid, op_id) = visited[&x];
+                            let (mut kid, mut op_id) = visited[&x];
+
+                            duplicate_if_used_elsewhere(
+                                &self.graph,
+                                &mut realized_nodes,
+                                &rcs,
+                                &mut kernels,
+                                nid,
+                                x,
+                                &mut kid,
+                                &mut op_id,
+                            );
+
                             let n = self.graph.shape(x).len();
                             let shape = self.graph.shape(nid);
                             kernels[kid].apply_movement(|view| view.reshape(0..n, shape));
                             (kid, op_id)
                         }
                         Node::Pad { x } => {
-                            let (kid, op_id) = visited[&x];
+                            let (mut kid, mut op_id) = visited[&x];
+
+                            duplicate_if_used_elsewhere(
+                                &self.graph,
+                                &mut realized_nodes,
+                                &rcs,
+                                &mut kernels,
+                                nid,
+                                x,
+                                &mut kid,
+                                &mut op_id,
+                            );
+
                             let padding = self.graph.padding(nid);
                             kernels[kid].apply_movement(|view| view.pad(padding));
                             (kid, op_id)
@@ -215,7 +249,19 @@ impl Runtime {
                         Node::Reduce { x, rop } => {
                             // Don't apply reduce if the kernel already contains reduce
                             // and the resulting shape's dimension is less than 256
-                            let (kid, op_id) = visited[&x];
+                            let (mut kid, mut op_id) = visited[&x];
+
+                            duplicate_if_used_elsewhere(
+                                &self.graph,
+                                &mut realized_nodes,
+                                &rcs,
+                                &mut kernels,
+                                nid,
+                                x,
+                                &mut kid,
+                                &mut op_id,
+                            );
+
                             let axes = self.graph.axes(nid);
                             #[cfg(debug_assertions)]
                             {
@@ -266,7 +312,7 @@ impl Runtime {
                             let (kid, op_id) = visited[&x];
                             let (kidy, op_idy) = visited[&y];
                             if kid == kidy {
-                                kernels[kid].n_outputs += rcs[&nid] - 2;
+                                kernels[kid].n_outputs = kernels[kid].n_outputs + rcs[&nid] - 2;
                                 let op = Op::Binary { x: op_id, y: op_idy, bop };
                                 kernels[kid].ops.push(op);
                             } else if true {
