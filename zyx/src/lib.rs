@@ -49,10 +49,10 @@ use crate::runtime::Runtime;
 use std::{fs::File, path::Path};
 
 mod backend;
-mod cache;
 mod dtype;
 mod error;
 mod graph;
+mod kernel;
 mod mutex;
 #[cfg(feature = "py")]
 mod py_bindings;
@@ -69,9 +69,8 @@ mod prog_bar;
 mod realize;
 mod view;
 
-pub(crate) type Set<T> =
-    std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
-pub(crate) type Map<K, V> =
+type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
+type Map<K, V> =
     std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 
 pub use autograd::GradientTape;
@@ -192,15 +191,6 @@ impl Drop for Timer {
         x.1 += 1;
         //println!("Timer took {}us", self.begin.elapsed().as_micros());
     }
-}*/
-
-/*#[test]
-fn t0() -> Result<(), ZyxError> {
-    let x = Tensor::rand([4, 2, 3], DType::F32).unwrap();
-    let y = x.exp2();
-    //let y = x.sum([-1]).unwrap();
-    println!("{y}");
-    Ok(())
 }*/
 
 /*#[test]

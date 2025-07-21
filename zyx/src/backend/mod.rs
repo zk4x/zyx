@@ -7,8 +7,8 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
 use crate::{
-    cache::Kernel,
     error::{BackendError, ErrorStatus},
+    kernel::Kernel,
     runtime::Pool,
     shape::Dim,
     slab::SlabId,

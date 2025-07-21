@@ -16,9 +16,9 @@ use nanoserde::DeJson;
 
 use crate::{
     DType,
-    cache::Kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
+    kernel::Kernel,
     shape::Dim,
     slab::Slab,
 };
