@@ -3,7 +3,7 @@ use crate::{
     backend::{Device, DeviceInfo, ProgramId},
     dtype::Constant,
     graph::{BOp, ROp, UOp},
-    shape::{Axis, Dim},
+    shape::Dim,
     view::View,
 };
 use std::hash::BuildHasherDefault;
@@ -13,6 +13,7 @@ pub type OpId = usize;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Kernel {
     pub ops: Vec<Op>,
+    pub shape: Vec<Dim>,
     pub n_outputs: u32,
 }
 
@@ -20,8 +21,11 @@ pub struct Kernel {
 pub enum Op {
     //Sink { stores: Vec<Op> }, // A way to put multiple stores in one kernel
     ConstView { value: Constant, view: View },
+    Const { value: Constant },
+    Index { id: u8 },
     LoadView { dtype: DType, view: View },
-    Store { x: OpId },
+    Load { dtype: DType, index: OpId },
+    Store { x: OpId, index: OpId },
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
@@ -33,8 +37,8 @@ pub struct Cache {
     pub device_infos: Map<DeviceInfo, u32>,
     pub kernels: Map<Kernel, u32>,
     // Finished optimizations of kernels for given devices
-    // kernel id, device info id => optimization
-    pub optimizations: Map<(u32, u32), Optimization>,
+    // kernel id, device info id => optimization, time to run in nanos
+    pub optimizations: Map<(u32, u32), (Optimization, u64)>,
     // This last one is not stored to disk
     // kernel id, device id => program id
     pub programs: Map<(u32, u32), ProgramId>,
@@ -65,65 +69,8 @@ impl Cache {
     }
 }
 
-/*impl Optimization {
-    fn default(kernel: &Op, dev_info: &DeviceInfo) -> Self {
-        fn get_equal_factors(x: Dim) -> [Dim; 3] {
-            fn get_factors(n: Dim) -> Vec<Dim> {
-                let mut factors = Vec::new();
-                for i in 1..=n.isqrt() {
-                    if n % i == 0 {
-                        factors.insert(0, i);
-                        factors.push(n / i);
-                    }
-                }
-                factors
-            }
-            let f = get_factors(x);
-            let mut res = [1, 1, 1];
-            let mut min_dist = x as isize;
-            for i in 0..f.len() {
-                for j in i..f.len() {
-                    for k in j..f.len() {
-                        if f[i] * f[j] * f[k] == x {
-                            let r = (f[i] as isize - f[j] as isize).abs()
-                                + (f[i] as isize - f[k] as isize).abs();
-                            if r < min_dist {
-                                min_dist = r;
-                                res = [f[i], f[j], f[k]];
-                            }
-                        }
-                    }
-                }
-            }
-            res
-        }
-
-        // TODO
-        /*let shape = kernel.shape();
-        let n = shape.iter().product();*/
-        let n = 3;
-        let mut global_work_size = get_equal_factors(n);
-
-        let mut d = dev_info.max_local_threads;
-        while n % d != 0 {
-            d -= 1;
-        }
-        let local_work_size = get_equal_factors(n / d);
-        global_work_size[0] /= local_work_size[0];
-        global_work_size[1] /= local_work_size[1];
-        global_work_size[2] /= local_work_size[2];
-
-        // Concatenate global and local work sizes to get the final 6D shape
-        let mut shape = vec![];
-        shape.extend(global_work_size);
-        shape.extend(local_work_size);
-
-        Self::Basic { shape }
-    }
-}*/
-
 #[allow(clippy::similar_names)]
-fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> String {
+pub fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> String {
     const fn value_unit(x: u128) -> (u128, &'static str) {
         match x {
             0..1000 => (x * 100, ""),
@@ -183,11 +130,14 @@ impl Kernel {
     }
 
     pub fn debug(&self) {
+        println!("Kernel shape {:?}", self.shape);
         for (id, op) in self.ops.iter().enumerate() {
             match op {
-                Op::ConstView { value, view } => println!("{id:>3} CONST {value} {view}"),
-                Op::LoadView { dtype, view } => println!("{id:>3} LOAD {dtype} {view}"),
-                Op::Store { x } => println!("{id:>3} STORE {x}"),
+                Op::Index { id  } => println!("{id:>3} INDEX {id}"),
+                Op::ConstView { value, view } => println!("{id:>3} CONST VIEW {value} {view}"),
+                Op::LoadView { dtype, view } => println!("{id:>3} LOAD VIEW {dtype} {view}"),
+                Op::Load { dtype, index } => println!("{id:>3} LOAD {dtype} at {index}"),
+                Op::Store { x, index } => println!("{id:>3} STORE {x} at {index}"),
                 Op::Cast { x, dtype } => println!("{id:>3} CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{id:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{id:>3} BINARY {bop:?} {x} {y}"),
@@ -200,5 +150,104 @@ impl Kernel {
                 ),
             }
         }
+    }
+
+    pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
+        (0, 0, 0)
+    }
+
+    pub fn new_op(&mut self, op: Op) -> OpId {
+        let op_id = self.ops.len();
+        self.ops.push(op);
+        op_id
+    }
+
+    pub(super) fn default_optimization(&self, dev_info: &DeviceInfo) -> Optimization {
+        fn get_equal_factors(x: Dim) -> [Dim; 3] {
+            fn get_factors(n: Dim) -> Vec<Dim> {
+                let mut factors = Vec::new();
+                for i in 1..=n.isqrt() {
+                    if n % i == 0 {
+                        factors.insert(0, i);
+                        factors.push(n / i);
+                    }
+                }
+                factors
+            }
+            let f = get_factors(x);
+            let mut res = [1, 1, 1];
+            let mut min_dist = x as isize;
+            for i in 0..f.len() {
+                for j in i..f.len() {
+                    for k in j..f.len() {
+                        if f[i] * f[j] * f[k] == x {
+                            let r = (f[i] as isize - f[j] as isize).abs()
+                                + (f[i] as isize - f[k] as isize).abs();
+                            if r < min_dist {
+                                min_dist = r;
+                                res = [f[i], f[j], f[k]];
+                            }
+                        }
+                    }
+                }
+            }
+            res
+        }
+
+        let n = self.shape.iter().product();
+        let mut global_work_size = get_equal_factors(n);
+
+        let mut d = dev_info.max_local_threads;
+        while n % d != 0 {
+            d -= 1;
+        }
+        let local_work_size = get_equal_factors(d);
+        global_work_size[0] /= local_work_size[0];
+        global_work_size[1] /= local_work_size[1];
+        global_work_size[2] /= local_work_size[2];
+
+        // Concatenate global and local work sizes to get the final 6D shape
+        let mut shape = vec![];
+        shape.extend(global_work_size);
+        shape.extend(local_work_size);
+
+        Optimization::Basic { shape }
+    }
+
+    pub fn apply_optimization(&mut self, optimization: &Optimization) {
+        match optimization {
+            Optimization::Basic { shape } => {
+                let n = self.shape.len();
+                self.apply_movement(|view| view.reshape(0..n, &shape));
+                self.shape = shape.clone();
+            }
+        }
+
+        // Convert view
+        for op_id in 0..self.ops.len() {
+            match self.ops[op_id] {
+                Op::ConstView { value, ref view } => {
+                    self.ops[op_id] = Op::Const { value };
+                }
+                Op::LoadView { dtype, ref view } => {
+                    let view = view.clone();
+                    let index = self.new_op(Op::Const { value: Constant::U32(0) });
+                    for (id, dim) in view.0.last().unwrap().iter().enumerate() {
+                        let stride = Constant::U32(dim.st as u32);
+                        let x = self.new_op(Op::Index { id: id as u8 });
+                        let y = self.new_op(Op::Const { value: stride });
+                        let x = self.new_op(Op::Binary { x, y, bop: BOp::Mul });
+                        let op = Op::Binary { x, y: index, bop: BOp::Add };
+                        let index = self.new_op(op);
+                    }
+                    self.ops[op_id] = Op::Load { dtype, index };
+                }
+                _ => {}
+            }
+        }
+
+        // Constant folding
+
+        // Reorder ops so that there are no forward references and delete unnecessary ops
     }
 }

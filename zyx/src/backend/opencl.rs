@@ -462,7 +462,7 @@ impl OpenCLMemoryPool {
                 context: "Allocation failure".into(),
             });
         }
-        //println!("Allocating bytes {bytes}");
+        //println!("OpenCL allocating bytes {bytes}");
         let mut status = OpenCLStatus::CL_SUCCESS;
         let buffer = unsafe {
             (self.clCreateBuffer)(

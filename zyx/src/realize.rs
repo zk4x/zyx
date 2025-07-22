@@ -1,9 +1,9 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    Map, Set, ZyxError,
+    DebugMask, Map, Set, ZyxError,
     graph::{Graph, Node},
-    kernel::{Kernel, Op, OpId},
+    kernel::{Kernel, Op, OpId, get_perf},
     runtime::Runtime,
     shape::Dim,
     slab::{Slab, SlabId},
@@ -135,7 +135,8 @@ impl Runtime {
                     let shape = self.graph.shape(nid);
                     let view = View::contiguous(shape);
                     let op = Op::LoadView { dtype, view };
-                    let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid] };
+                    let kernel =
+                        Kernel { ops: vec![op], n_outputs: rcs[&nid], shape: shape.to_vec() };
                     let kid = kernels.push(kernel);
                     loads.insert(kid, vec![nid]);
                     (kid, 0)
@@ -162,7 +163,7 @@ impl Runtime {
                                 let shape = graph.shape(x);
 
                                 realized_nodes.insert(x);
-                                kernels[*kid].ops.push(Op::Store { x: *op_id });
+                                kernels[*kid].ops.push(Op::Store { x: *op_id, index: 0 });
                                 stores
                                     .entry(*kid)
                                     .and_modify(|vec| vec.push(x))
@@ -172,7 +173,7 @@ impl Runtime {
                                 let op = Op::LoadView { dtype, view };
                                 loads.insert(kernels.len(), vec![x]);
                                 *op_id = 1;
-                                Kernel { ops: vec![op], n_outputs: 1 }
+                                Kernel { ops: vec![op], n_outputs: 1, shape: shape.to_vec() }
                             };
                             *kid = kernels.len();
                             kernels.push(kernel);
@@ -182,9 +183,10 @@ impl Runtime {
                     match self.graph[nid] {
                         Node::Leaf { .. } => unreachable!(),
                         Node::Const { value } => {
-                            let view = View::contiguous(&[]);
+                            let view = View::contiguous(&[1]);
                             let op = Op::ConstView { value, view };
-                            let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid] };
+                            let kernel =
+                                Kernel { ops: vec![op], n_outputs: rcs[&nid], shape: vec![1] };
                             (kernels.push(kernel), 0)
                         }
                         Node::Expand { x } => {
@@ -206,6 +208,7 @@ impl Runtime {
 
                             let shape = self.graph.shape(nid);
                             kernels[kid].apply_movement(|view| view.expand(shape));
+                            kernels[kid].shape = shape.to_vec();
                             (kid, op_id)
                         }
                         Node::Permute { x } => {
@@ -227,6 +230,7 @@ impl Runtime {
 
                             let axes = self.graph.axes(nid);
                             kernels[kid].apply_movement(|view| view.permute(axes));
+                            kernels[kid].shape = self.graph.shape(nid).to_vec();
                             (kid, op_id)
                         }
                         Node::Reshape { x } => {
@@ -249,6 +253,7 @@ impl Runtime {
                             let n = self.graph.shape(x).len();
                             let shape = self.graph.shape(nid);
                             kernels[kid].apply_movement(|view| view.reshape(0..n, shape));
+                            kernels[kid].shape = shape.to_vec();
                             (kid, op_id)
                         }
                         Node::Pad { x } => {
@@ -270,6 +275,7 @@ impl Runtime {
 
                             let padding = self.graph.padding(nid);
                             kernels[kid].apply_movement(|view| view.pad(padding));
+                            kernels[kid].shape = self.graph.shape(nid).to_vec();
                             (kid, op_id)
                         }
                         Node::Reduce { x, rop } => {
@@ -321,6 +327,8 @@ impl Runtime {
                                 kernels[kid].apply_movement(|view| view.permute(&permute_axes));
                             }
 
+                            kernels[kid].shape = self.graph.shape(nid).to_vec();
+
                             let op = Op::Reduce { x: op_id, rop, num_axes: axes.len() };
                             kernels[kid].ops.push(op);
                             (kid, kernels[kid].ops.len() - 1)
@@ -360,7 +368,7 @@ impl Runtime {
                                 for op in &mut kernely.ops {
                                     match op {
                                         Op::ConstView { .. } | Op::LoadView { .. } => {}
-                                        Op::Store { x }
+                                        Op::Store { x, .. }
                                         | Op::Cast { x, .. }
                                         | Op::Unary { x, .. }
                                         | Op::Reduce { x, .. } => *x += n,
@@ -368,6 +376,7 @@ impl Runtime {
                                             *x += n;
                                             *y += n;
                                         }
+                                        _ => unreachable!(),
                                     }
                                 }
                                 kernels[kid].ops.extend(kernely.ops);
@@ -388,14 +397,17 @@ impl Runtime {
                 visited.insert(nid, (kid, op_id));
                 if to_eval.contains(&nid) {
                     virt_realized_nodes.insert(nid);
-                    let op = Op::Store { x: op_id };
+                    let op = Op::Store { x: op_id, index: 0 };
                     stores.entry(kid).and_modify(|vec| vec.push(nid)).or_insert_with(|| vec![nid]);
+                    kernels[kid].n_outputs -= 1;
                     kernels[kid].ops.push(op);
                 }
 
                 // Order kernels
                 let mut trkid = None;
                 for kid in kernels.ids() {
+                    //kernels[kid].debug();
+                    //println!("{}", kernels[kid].n_outputs);
                     if kernels[kid].n_outputs == 0
                         && loads[&kid].iter().all(|x| realized_nodes.contains(x))
                     {
@@ -625,12 +637,13 @@ impl Runtime {
 
     fn launch_kernel(
         &mut self,
-        kernel: Kernel,
+        mut kernel: Kernel,
         loads: &[TensorId],
         stores: &[TensorId],
     ) -> Result<(), ZyxError> {
         println!("Kernel launch");
         kernel.debug();
+        println!();
 
         // Iterate over all memory pools ordered by device speed.
         // Then select first fastest device that has associated memory pool which fits all tensors used
@@ -665,6 +678,7 @@ impl Runtime {
         }
         // else
         let Some(dev_id) = device_id else { return Err(ZyxError::AllocationError) };
+        let _ = device_id;
         let mpid = self.devices[dev_id].memory_pool_id() as usize;
 
         let mut event_wait_list = Vec::new();
@@ -786,62 +800,71 @@ impl Runtime {
             } else {
                 unreachable!();
             }
-        }
-
-        // If it is not in cache, we just get new empty kernel id where we insert the kernel
-        let kernel_id =
-            self.cache.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
-        assert!(self.cache.kernels.insert(kernel.clone(), kernel_id).is_none());
-
-        //if debug.sched() { kernel.debug(); }
-
-        // If search_iters == 0, we use default optimizations
-        if self.search_iterations == 0 {
-            /*let kernel = kernel.clone();
-            let optimization = Optimization::default(&kernel, device.info());
-            let kernel = kernel.apply_optimization(&optimization);
-            let program_id = device.compile(&kernel, debug.asm())?;
-            let nanos = std::time::Instant::now();
-            let event = device.launch(program_id, &mut pool.pool, args, event_wait_list)?;
-            pool.pool.sync_events(vec![event])?;
-            let nanos = nanos.elapsed().as_nanos();
-            assert!(self.programs.insert((kernel_id, device_id), program_id).is_none());
-            if debug.perf() {
-                let (flop, mem_read, mem_write) = kernel.op.flop_mem_rw();
-                println!("{}", get_perf(flop, mem_read, mem_write, nanos));
-            }*/
-            //self.optimizations.insert((kernel_id, dev_info_id), optimization);
-        }
-
-        // Otherwise try search_iters optimizations (kernels), record and put the best in the cache
-
-        /*let rng = crate::rng::Rng::seed_from_u64(3_940_239);
-        let mut optimizer = KernelOptimizer::new(rng, kernel, device.info().clone());
-        pool.pool.sync_events(event_wait_list)?;
-
-        // Run the default optimization
-        let optimization = optimizer.best_node.clone();
-        let nanos = optimizer.bench_optimization(&optimization, pool, device, args, debug)?;
-
-        let mut progress_bar = if debug.perf() {
-            let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
-            Some((ProgressBar::new(search_iters as u64), flop, mem_read, mem_write))
         } else {
-            None
-        };
+            // If it is not in cache, we just get new empty kernel id where we insert the kernel
+            let kernel_id =
+                self.cache.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
+            assert!(self.cache.kernels.insert(kernel.clone(), kernel_id).is_none());
 
-        'a: for _ in 1..search_iters {
-            let Some(optimization) = optimizer.next() else { break };
-            let Ok(nanos) =
-                optimizer.bench_optimization(&optimization, pool, device, args, debug)
-            else {
-                continue 'a;
-            };
-            if let Some((bar, &flop, &mem_read, &mem_write)) = &mut progress_bar {
-                bar.inc(1, &get_perf(flop, mem_read, mem_write, nanos));
+            //if debug.sched() { kernel.debug(); }
+
+            // If search_iters == 0, we use default optimizations
+            if self.search_iterations == 0 {
+                let optimization = kernel.default_optimization(device.info());
+                kernel.apply_optimization(&optimization);
+                if self.debug.ir() {
+                    println!("Optimized kernel");
+                    kernel.debug();
+                    println!();
+                }
+                let program_id = device.compile(&kernel, self.debug.asm())?;
+                let nanos = std::time::Instant::now();
+                let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
+                pool.pool.sync_events(vec![event])?;
+                let nanos = nanos.elapsed().as_nanos();
+                assert!(
+                    self.cache.programs.insert((kernel_id, dev_id as u32), program_id).is_none()
+                );
+                if self.debug.perf() {
+                    let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
+                    println!("{}", get_perf(flop, mem_read, mem_write, nanos));
+                }
+                self.cache
+                    .optimizations
+                    .insert((kernel_id, dev_info_id), (optimization, nanos as u64));
+            } else {
+                // Otherwise try search_iters optimizations (kernels), record and put the best in the cache
+
+                /*let rng = crate::rng::Rng::seed_from_u64(3_940_239);
+                let mut optimizer = KernelOptimizer::new(rng, kernel, device.info().clone());
+                pool.pool.sync_events(event_wait_list)?;
+
+                // Run the default optimization
+                let optimization = optimizer.best_node.clone();
+                let nanos = optimizer.bench_optimization(&optimization, pool, device, args, debug)?;
+
+                let mut progress_bar = if debug.perf() {
+                    let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
+                    Some((ProgressBar::new(search_iters as u64), flop, mem_read, mem_write))
+                } else {
+                    None
+                };
+
+                'a: for _ in 1..search_iters {
+                    let Some(optimization) = optimizer.next() else { break };
+                    let Ok(nanos) =
+                        optimizer.bench_optimization(&optimization, pool, device, args, debug)
+                    else {
+                        continue 'a;
+                    };
+                    if let Some((bar, &flop, &mem_read, &mem_write)) = &mut progress_bar {
+                        bar.inc(1, &get_perf(flop, mem_read, mem_write, nanos));
+                    }
+                }*/
+                //self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer.best_node);
+                todo!()
             }
-        }*/
-        //self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer.best_node);
+        }
 
         if let Some(event) = event {
             self.pools[mpid].events.insert(output_buffers, event);
