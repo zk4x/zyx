@@ -282,6 +282,7 @@ impl Runtime {
                             // Don't apply reduce if the kernel already contains reduce
                             // and the resulting shape's dimension is less than 256
                             let (mut kid, mut op_id) = visited[&x];
+                            let shape = self.graph.shape(x);
 
                             duplicate_if_used_elsewhere(
                                 &self.graph,
@@ -311,7 +312,7 @@ impl Runtime {
 
                             {
                                 // Permute before reduce so that reduce axes are last
-                                let n = self.graph.shape(x).len();
+                                let n = shape.len();
                                 let mut permute_axes = Vec::with_capacity(n);
                                 let max_axis = *axes.last().unwrap();
                                 let mut ai = 0;
@@ -329,7 +330,11 @@ impl Runtime {
 
                             kernels[kid].shape = self.graph.shape(nid).to_vec();
 
-                            let op = Op::Reduce { x: op_id, rop, num_axes: axes.len() };
+                            let op = Op::Reduce {
+                                x: op_id,
+                                rop,
+                                dims: axes.iter().map(|&a| shape[a]).collect(),
+                            };
                             kernels[kid].ops.push(op);
                             (kid, kernels[kid].ops.len() - 1)
                         }
@@ -367,7 +372,9 @@ impl Runtime {
                                 let n = kernels[kid].ops.len();
                                 for op in &mut kernely.ops {
                                     match op {
-                                        Op::ConstView { .. } | Op::LoadView { .. } => {}
+                                        Op::ConstView { .. }
+                                        | Op::LoadView { .. }
+                                        | Op::Loop { .. } => {}
                                         Op::Store { x, .. }
                                         | Op::Cast { x, .. }
                                         | Op::Unary { x, .. }

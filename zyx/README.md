@@ -11,7 +11,8 @@ but thanks to lazyness all unnecessary memory allocations are optimized away.
 ## Install
 
 Zyx is under lot of development and breaking changes are expected.
-Please use latest github version.
+Please use latest github version for testing. The version on crates.io
+will be updated only with more stable releases.
 
 ```toml
 # Only tensors (includes autograd)

@@ -29,7 +29,8 @@ pub enum Op {
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    Reduce { x: OpId, rop: ROp, num_axes: usize },
+    Loop { rop: ROp, dims: Vec<Dim> },
+    Reduce { x: OpId, rop: ROp, dims: Vec<Dim> }, // Loops are always reduce loops
 }
 
 #[derive(Debug)]
@@ -142,8 +143,15 @@ impl Kernel {
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
-                Op::Reduce { x, rop, num_axes } => println!(
-                    "{i:>3} {} {x} num_axes={num_axes:?}",
+                Op::Loop { rop, dims } => println!(
+                    "{i:>3} LOOP {} dims={dims:?}",
+                    match rop {
+                        ROp::Sum => "SUM",
+                        ROp::Max => "MAX",
+                    }
+                ),
+                Op::Reduce { x, rop, dims } => println!(
+                    "{i:>3} ENDLOOP {} {x}, dims={dims:?}",
                     match rop {
                         ROp::Sum => "SUM",
                         ROp::Max => "MAX",
@@ -266,20 +274,77 @@ impl Kernel {
 
     /// Constant folding
     fn constant_folding(&mut self) {
-        fn const_fold(kernel: &mut Kernel, op_id: OpId) -> Option<OpId> {
-            todo!()
-        }
-        for i in 0..self.ops.len() {
-            if let Op::Store { x, index } = self.ops[i] {
-                if let Some(op_id) = const_fold(self, x) {
-                    self.ops[i] = Op::Store { x: op_id, index };
+        let mut change = true;
+        while change {
+            change = false;
+            for op_id in 0..self.ops.len() {
+                match self.ops[op_id] {
+                    Op::ConstView { .. } | Op::LoadView { .. } => unreachable!(),
+                    Op::Const { .. }
+                    | Op::Index { .. }
+                    | Op::Load { .. }
+                    | Op::Store { .. }
+                    | Op::Loop { .. }
+                    | Op::Reduce { .. } => {}
+                    Op::Cast { x, dtype } => {
+                        if let Op::Const { value } = self.ops[x] {
+                            self.ops[op_id] = Op::Const { value: value.cast(dtype) };
+                            change = true;
+                        }
+                    }
+                    Op::Unary { x, uop } => {
+                        if let Op::Const { value } = self.ops[x] {
+                            self.ops[op_id] = Op::Const { value: value.unary(uop) };
+                            change = true;
+                        }
+                    }
+                    Op::Binary { x, y, bop } => match (&self.ops[x], &self.ops[y]) {
+                        (&Op::Const { value: cx }, &Op::Const { value: cy }) => {
+                            self.ops[op_id] = Op::Const { value: Constant::binary(cx, cy, bop) };
+                            change = true;
+                        }
+                        (&Op::Const { value: cx }, _) => {
+                            todo!()
+                        }
+                        (x, &Op::Const { value: cy }) => match bop {
+                            BOp::Add => {
+                                if cy.is_zero() {
+                                    self.ops[op_id] = x.clone();
+                                    change = true;
+                                }
+                            }
+                            BOp::Sub => todo!(),
+                            BOp::Mul => {
+                                if cy.is_zero() {
+                                    self.ops[op_id] = Op::Const { value: cy };
+                                    change = true;
+                                } else if cy.is_one() {
+                                    self.ops[op_id] = x.clone();
+                                    change = true;
+                                }
+                            }
+                            BOp::Div => todo!(),
+                            BOp::Pow => todo!(),
+                            BOp::Mod => todo!(),
+                            BOp::Cmplt => todo!(),
+                            BOp::Cmpgt => todo!(),
+                            BOp::Max => todo!(),
+                            BOp::Or => todo!(),
+                            BOp::And => todo!(),
+                            BOp::BitXor => todo!(),
+                            BOp::BitOr => todo!(),
+                            BOp::BitAnd => todo!(),
+                            BOp::BitShiftLeft => todo!(),
+                            BOp::BitShiftRight => todo!(),
+                            BOp::NotEq => todo!(),
+                        },
+                        _ => {}
+                    },
                 }
             }
         }
     }
 
     /// Reorder ops so that there are no forward references and delete unnecessary ops
-    fn reorder(&mut self) {
-        todo!()
-    }
+    fn reorder(&mut self) {}
 }
