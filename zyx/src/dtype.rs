@@ -1,12 +1,11 @@
 //! `DType` and constant
 
-use half::{bf16, f16};
-use std::fmt::{Debug, Display};
-
 use crate::{
     Scalar, ZyxError,
     graph::{BOp, UOp},
 };
+use half::{bf16, f16};
+use std::fmt::{Debug, Display};
 
 /// Represents the data type used for operations.
 #[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
@@ -401,8 +400,12 @@ impl Constant {
             Constant::F16(x) => {
                 Constant::F16(unary_func_float(half::f16::from_le_bytes(x), uop).to_le_bytes())
             }
-            Constant::F32(x) => Constant::F32(unary_func_float(f32::from_le_bytes(x), uop).to_le_bytes()),
-            Constant::F64(x) => Constant::F64(unary_func_float(f64::from_le_bytes(x), uop).to_le_bytes()),
+            Constant::F32(x) => {
+                Constant::F32(unary_func_float(f32::from_le_bytes(x), uop).to_le_bytes())
+            }
+            Constant::F64(x) => {
+                Constant::F64(unary_func_float(f64::from_le_bytes(x), uop).to_le_bytes())
+            }
             Constant::U8(x) => Constant::U8(unary_func(x, uop)),
             Constant::U16(x) => Constant::U16(unary_func(x, uop)),
             Constant::U32(x) => Constant::U32(unary_func(x, uop)),

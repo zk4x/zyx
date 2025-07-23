@@ -131,18 +131,19 @@ impl Kernel {
 
     pub fn debug(&self) {
         println!("Kernel shape {:?}", self.shape);
-        for (id, op) in self.ops.iter().enumerate() {
+        for (i, op) in self.ops.iter().enumerate() {
             match op {
-                Op::Index { id  } => println!("{id:>3} INDEX {id}"),
-                Op::ConstView { value, view } => println!("{id:>3} CONST VIEW {value} {view}"),
-                Op::LoadView { dtype, view } => println!("{id:>3} LOAD VIEW {dtype} {view}"),
-                Op::Load { dtype, index } => println!("{id:>3} LOAD {dtype} at {index}"),
-                Op::Store { x, index } => println!("{id:>3} STORE {x} at {index}"),
-                Op::Cast { x, dtype } => println!("{id:>3} CAST {x} {dtype:?}"),
-                Op::Unary { x, uop } => println!("{id:>3} UNARY {uop:?} {x}"),
-                Op::Binary { x, y, bop } => println!("{id:>3} BINARY {bop:?} {x} {y}"),
+                Op::Const { value } => println!("{i:>3} CONST {value}"),
+                Op::Index { id } => println!("{i:>3} INDEX {id}"),
+                Op::ConstView { value, view } => println!("{i:>3} CONST VIEW {value} {view}"),
+                Op::LoadView { dtype, view } => println!("{i:>3} LOAD VIEW {dtype} {view}"),
+                Op::Load { dtype, index } => println!("{i:>3} LOAD {dtype} at {index}"),
+                Op::Store { x, index } => println!("{i:>3} STORE {x} at {index}"),
+                Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
+                Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
+                Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
                 Op::Reduce { x, rop, num_axes } => println!(
-                    "{id:>3} {} {x} num_axes={num_axes:?}",
+                    "{i:>3} {} {x} num_axes={num_axes:?}",
                     match rop {
                         ROp::Sum => "SUM",
                         ROp::Max => "MAX",
@@ -231,23 +232,54 @@ impl Kernel {
                 }
                 Op::LoadView { dtype, ref view } => {
                     let view = view.clone();
-                    let index = self.new_op(Op::Const { value: Constant::U32(0) });
+                    let mut index = self.new_op(Op::Const { value: Constant::U32(0) });
                     for (id, dim) in view.0.last().unwrap().iter().enumerate() {
                         let stride = Constant::U32(dim.st as u32);
                         let x = self.new_op(Op::Index { id: id as u8 });
                         let y = self.new_op(Op::Const { value: stride });
                         let x = self.new_op(Op::Binary { x, y, bop: BOp::Mul });
-                        let op = Op::Binary { x, y: index, bop: BOp::Add };
-                        let index = self.new_op(op);
+                        index = self.new_op(Op::Binary { x, y: index, bop: BOp::Add });
                     }
                     self.ops[op_id] = Op::Load { dtype, index };
+                }
+                Op::Store { x, .. } => {
+                    let mut index = self.new_op(Op::Const { value: Constant::U32(0) });
+                    let mut st = 1;
+                    let shape = self.shape.clone();
+                    for (id, d) in shape.iter().enumerate().rev() {
+                        let stride = Constant::U32(st as u32);
+                        let x = self.new_op(Op::Index { id: id as u8 });
+                        let y = self.new_op(Op::Const { value: stride });
+                        let x = self.new_op(Op::Binary { x, y, bop: BOp::Mul });
+                        index = self.new_op(Op::Binary { x, y: index, bop: BOp::Add });
+                        st *= d;
+                    }
+                    self.ops[op_id] = Op::Store { x, index };
                 }
                 _ => {}
             }
         }
 
-        // Constant folding
+        self.constant_folding();
+        self.reorder();
+    }
 
-        // Reorder ops so that there are no forward references and delete unnecessary ops
+    /// Constant folding
+    fn constant_folding(&mut self) {
+        fn const_fold(kernel: &mut Kernel, op_id: OpId) -> Option<OpId> {
+            todo!()
+        }
+        for i in 0..self.ops.len() {
+            if let Op::Store { x, index } = self.ops[i] {
+                if let Some(op_id) = const_fold(self, x) {
+                    self.ops[i] = Op::Store { x: op_id, index };
+                }
+            }
+        }
+    }
+
+    /// Reorder ops so that there are no forward references and delete unnecessary ops
+    fn reorder(&mut self) {
+        todo!()
     }
 }
