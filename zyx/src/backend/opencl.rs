@@ -6,10 +6,11 @@
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
-    DType,
+    DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::Kernel,
+    graph::{BOp, UOp},
+    kernel::{Kernel, Op, OpId},
     shape::Dim,
     slab::Slab,
 };
@@ -18,6 +19,7 @@ use nanoserde::DeJson;
 use std::{
     ffi::{CString, c_void},
     fmt::Write,
+    hash::BuildHasherDefault,
     ptr,
     sync::Arc,
 };
@@ -144,8 +146,8 @@ pub struct OpenCLDevice {
 pub(super) struct OpenCLProgram {
     program: *mut c_void,
     kernel: *mut c_void,
-    global_work_size: [Dim; 3],
-    local_work_size: [Dim; 3],
+    gws: [Dim; 3],
+    lws: [Dim; 3],
 }
 
 #[derive(Debug)]
@@ -681,92 +683,239 @@ impl OpenCLDevice {
         self.memory_pool_id
     }
 
-    #[allow(clippy::cognitive_complexity)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        let mut source = String::from("(\n");
-        let mut indent = String::from("  ");
+        // TODO just do a full SSA to opencl by calculating register usage based on reference counts
+        // first we will calculate those reference counts.
+        let mut gws = [0; 3];
+        let mut lws = [0; 3];
+        gws[0] = kernel.shape[0];
+        gws[1] = kernel.shape[1];
+        gws[2] = kernel.shape[2];
+        lws[0] = kernel.shape[0];
+        lws[1] = kernel.shape[1];
+        lws[2] = kernel.shape[2];
 
-        let mut global_work_size = [0; 3];
-        let mut local_work_size = [0; 3];
+        let mut global_loads = Vec::new();
+        let mut rcs: Map<OpId, u32> =
+            Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
+        let mut max_loop_id = 5;
 
-        /*for (i, op) in kernel.ops.iter().enumerate() {
-            if let IROp::Loop { len } = op {
-                match i {
-                    0..3 => global_work_size[i] = *len,
-                    3..6 => local_work_size[i-3] = *len,
-                    6.. => break,
+        for (i, op) in kernel.ops.iter().enumerate() {
+            match op {
+                Op::ConstView { .. } => unreachable!(),
+                Op::Const { .. } => {}
+                &Op::Index { id } => {
+                    max_loop_id = max_loop_id.max(id);
                 }
+                Op::LoadView { dtype, view } => unreachable!(),
+                &Op::Load { dtype, index } => {
+                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    global_loads.push(dtype);
+                }
+                &Op::Store { x, index } => {
+                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                &Op::Cast { x, .. } => {
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                &Op::Unary { x, .. } => {
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                &Op::Binary { x, y, .. } => {
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                Op::Loop { .. } => {}
+                &Op::Reduce { x, .. } => {
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+            }
+        }
+
+        let mut reg_map: Map<OpId, usize> =
+            Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
+        let mut registers: Vec<(DType, u32)> = Vec::new();
+
+        let mut constants: Map<OpId, Constant> =
+            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut indices: Map<OpId, u8> =
+            Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
+
+        fn new_reg(
+            op_id: OpId,
+            reg_map: &mut Map<OpId, usize>,
+            registers: &mut Vec<(DType, u32)>,
+            dtype: DType,
+            rc: u32,
+        ) -> usize {
+            for (i, (dt, rc)) in registers.iter_mut().enumerate() {
+                if *rc == 0 && *dt == dtype {
+                    reg_map.insert(op_id, i);
+                    return i;
+                }
+            }
+            let i = registers.len();
+            registers.push((dtype, rc));
+            reg_map.insert(op_id, i);
+            i
+        }
+
+        fn get_var(
+            op_id: OpId,
+            constants: &Map<OpId, Constant>,
+            indices: &Map<OpId, u8>,
+            reg_map: &Map<OpId, usize>,
+            registers: &mut [(DType, u32)],
+        ) -> String {
+            if let Some(c) = constants.get(&op_id) {
+                format!("{}", c.ocl())
+            } else if let Some(id) = indices.get(&op_id) {
+                format!("idx{id}")
+            } else if let Some(reg) = reg_map.get(&op_id) {
+                registers[*reg].1 -= 1;
+                format!("r{reg}")
             } else {
                 unreachable!()
             }
-        }*/
-
-        // Declare global variables
-        /*for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
-            writeln!(
-                source,
-                "{indent}__global {}{}* p{id},",
-                if *read_only { "const " } else { "" },
-                dtype.ocl(),
-            )
-            .unwrap();
-        }*/
-
-        source.pop();
-        source.pop();
-        source += "\n) {\n";
-
-        // Declare local variables
-        /*for (id, (scope, dtype, len, _)) in kernel.local_variables.iter().enumerate() {
-            if *scope == Scope::Local {
-                writeln!(source, "{indent}__local {} p{id}[{len}];", dtype.ocl()).unwrap();
-            }
-        }*/
-
-        // Declare register variables
-        /*for (id, dtype) in kernel.registers.iter().enumerate() {
-            writeln!(source, "{indent}{} r{id};", dtype.ocl()).unwrap();
-        }*/
-
-        // Add indices for global and local loops
-        _ = writeln!(source, "{indent}unsigned long r0, r1, r2, r3, r4, r5;");
-        _ = writeln!(
-            source,
-            "{indent}r0 = get_group_id(0);  /* 0..{} */\n{indent}r1 = get_group_id(1);  /* 0..{} */\n{indent}r2 = get_group_id(2);  /* 0..{} */\n{indent}r3 = get_local_id(0);  /* 0..{} */\n{indent}r4 = get_local_id(1);  /* 0..{} */\n{indent}r5 = get_local_id(2);  /* 0..{} */",
-            global_work_size[0],
-            global_work_size[1],
-            global_work_size[2],
-            local_work_size[0],
-            local_work_size[1],
-            local_work_size[2]
-        );
-
-        //source += &format!("{indent}printf(\"%f, %f, %f, %f\", p0[0], p0[1], p0[2], p0[3]);\n");
-
-        let mut loop_id = 6;
-
-        //_ = writeln!(source, "  {}", process_op(&kernel.op));
-
-        for _ in 0..loop_id - 6 {
-            indent.pop();
-            indent.pop();
-            _ = writeln!(source, "{indent}}}");
         }
 
-        source += "}\n";
+        fn get_dtype(
+            x: OpId,
+            constants: &Map<OpId, Constant>,
+            indices: &Map<OpId, u8>,
+            registers: &[(DType, u32)],
+            reg_map: &Map<OpId, usize>,
+        ) -> DType {
+            if let Some(c) = constants.get(&x) {
+                c.dtype()
+            } else if indices.contains_key(&x) {
+                DType::U32
+            } else if let Some(&reg) = reg_map.get(&x) {
+                registers[reg].0
+            } else {
+                unreachable!()
+            }
+        }
 
-        let local_work_size = local_work_size;
+        let mut indent = String::from("  ");
+        let mut global_load_id = 0;
+        let mut global_store_id = 0;
+
+        let mut source = String::with_capacity(1000);
+        let mut global_stores = Vec::new();
+
+        for (i, op) in kernel.ops.iter().enumerate() {
+            println!("{i} -> {op:?}");
+            match op {
+                Op::ConstView { .. } => unreachable!(),
+                Op::LoadView { .. } => unreachable!(),
+                &Op::Const { value } => {
+                    constants.insert(i, value);
+                }
+                &Op::Index { id } => {
+                    indices.insert(i, id);
+                }
+                &Op::Load { dtype, index } => {
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    writeln!(
+                        source,
+                        "{indent}r{reg} = g{global_load_id}[{}];",
+                        get_var(index, &constants, &indices, &reg_map, &mut registers)
+                    )
+                    .unwrap();
+                    global_load_id += 1;
+                }
+                &Op::Store { x, index } => {
+                    writeln!(
+                        source,
+                        "{indent}g{global_store_id}[{}] = {};",
+                        get_var(index, &constants, &indices, &reg_map, &mut registers),
+                        get_var(x, &constants, &indices, &reg_map, &mut registers)
+                    )
+                    .unwrap();
+                    global_store_id += 1;
+                    global_stores.push(get_dtype(x, &constants, &indices, &registers, &reg_map));
+                }
+                &Op::Cast { x, dtype } => {
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    writeln!(
+                        source,
+                        "{indent}r{reg} = ({dtype}){};",
+                        get_var(x, &constants, &indices, &reg_map, &mut registers)
+                    )
+                    .unwrap();
+                }
+                &Op::Unary { x, uop } => {
+                    let dtype = get_dtype(x, &constants, &indices, &registers, &reg_map);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    match uop {
+                        UOp::ReLU => writeln!(source, "{indent}r{reg} = max({x}, 0);",).unwrap(),
+                        UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};",).unwrap(),
+                        UOp::Exp2 => writeln!(source, "{indent}r{reg} = exp2({x});",).unwrap(),
+                        UOp::Log2 => todo!(),
+                        UOp::Reciprocal => todo!(),
+                        UOp::Sqrt => todo!(),
+                        UOp::Sin => todo!(),
+                        UOp::Cos => todo!(),
+                        UOp::Not => todo!(),
+                    }
+                }
+                &Op::Binary { x, y, bop } => {
+                    let dtype = get_dtype(x, &constants, &indices, &registers, &reg_map);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
+                    match bop {
+                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};",).unwrap(),
+                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};",).unwrap(),
+                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};",).unwrap(),
+                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};",).unwrap(),
+                        BOp::Pow => todo!(),
+                        BOp::Mod => todo!(),
+                        BOp::Cmplt => todo!(),
+                        BOp::Cmpgt => todo!(),
+                        BOp::Max => todo!(),
+                        BOp::Or => todo!(),
+                        BOp::And => todo!(),
+                        BOp::BitXor => todo!(),
+                        BOp::BitOr => todo!(),
+                        BOp::BitAnd => todo!(),
+                        BOp::BitShiftLeft => todo!(),
+                        BOp::BitShiftRight => todo!(),
+                        BOp::NotEq => todo!(),
+                    }
+                }
+                Op::Loop { rop, dims } => todo!(),
+                Op::Reduce { x, rop, dims } => todo!(),
+            }
+        }
+
+        let mut global_args = String::new();
+        for (i, dtype) in global_loads.into_iter().enumerate() {
+            writeln!(global_args, "  const {dtype}* {i},\n").unwrap();
+        }
+        for (i, dtype) in global_stores.into_iter().enumerate() {
+            writeln!(global_args, "  {dtype}* {i},\n").unwrap();
+        }
+
+        let source = format!(
+            "__kernel void k_{}_{}_{}__{}_{}_{}(\n{global_args})\n{{\n{source}}}\n",
+            gws[0], gws[1], gws[2], lws[0], lws[1], lws[2]
+        );
+
+        if debug_asm {
+            println!("{source}");
+        }
+        todo!();
+
         let name = format!(
             "k_{}_{}_{}__{}_{}_{}",
-            global_work_size[0],
-            global_work_size[1],
-            global_work_size[2],
-            local_work_size[0],
-            local_work_size[1],
-            local_work_size[2],
+            gws[0], gws[1], gws[2], lws[0], lws[1], lws[2],
         );
-        for (i, lwd) in local_work_size.iter().enumerate() {
-            global_work_size[i] *= lwd;
+        for (i, lwd) in lws.iter().enumerate() {
+            gws[i] *= lwd;
         }
 
         let mut pragma = String::new();
@@ -821,14 +970,7 @@ impl OpenCLDevice {
         let kernel =
             unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
-        Ok(
-            self.programs.push(OpenCLProgram {
-                program,
-                kernel,
-                global_work_size,
-                local_work_size,
-            }),
-        )
+        Ok(self.programs.push(OpenCLProgram { program, kernel, gws, lws }))
     }
 
     pub fn launch(
@@ -893,10 +1035,10 @@ impl OpenCLDevice {
             (self.clEnqueueNDRangeKernel)(
                 self.queues[queue_id].queue,
                 program.kernel,
-                u32::try_from(program.global_work_size.len()).unwrap(),
+                u32::try_from(program.gws.len()).unwrap(),
                 ptr::null(),
-                program.global_work_size.as_ptr().cast(),
-                program.local_work_size.as_ptr().cast(),
+                program.gws.as_ptr().cast(),
+                program.lws.as_ptr().cast(),
                 event_wait_list.len().try_into().unwrap(),
                 event_wait_list_ptr,
                 &mut event,

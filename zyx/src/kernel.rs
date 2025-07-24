@@ -218,15 +218,15 @@ impl Kernel {
     }
 
     pub fn apply_optimization(&mut self, optimization: &Optimization) {
-        /*match optimization {
+        match optimization {
             Optimization::Basic { shape } => {
                 let n = self.shape.len();
                 self.apply_movement(|view| view.reshape(0..n, &shape));
                 self.shape = shape.clone();
             }
-        }*/
+        }
 
-        let loop_unroll_size = 8;
+        //let loop_unroll_size = 8;
 
         self.insert_loops_for_reduces();
         self.unfold_views();
