@@ -6,7 +6,7 @@ use crate::{
     shape::Dim,
     view::View,
 };
-use std::{collections::VecDeque, hash::BuildHasherDefault};
+use std::{hash::BuildHasherDefault, ops::{Range, RangeBounds}};
 
 pub type OpId = usize;
 
@@ -165,12 +165,6 @@ impl Kernel {
         (0, 0, 0)
     }
 
-    pub fn new_op(&mut self, op: Op) -> OpId {
-        let op_id = self.ops.len();
-        self.ops.push(op);
-        op_id
-    }
-
     pub(super) fn default_optimization(&self, dev_info: &DeviceInfo) -> Optimization {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {
             fn get_factors(n: Dim) -> Vec<Dim> {
@@ -224,57 +218,31 @@ impl Kernel {
     }
 
     pub fn apply_optimization(&mut self, optimization: &Optimization) {
-        match optimization {
+        /*match optimization {
             Optimization::Basic { shape } => {
                 let n = self.shape.len();
                 self.apply_movement(|view| view.reshape(0..n, &shape));
                 self.shape = shape.clone();
             }
-        }
+        }*/
+
+        let loop_unroll_size = 8;
 
         self.insert_loops_for_reduces();
+        self.unfold_views();
 
-        // Convert view
-        for op_id in 0..self.ops.len() {
-            match self.ops[op_id] {
-                Op::ConstView { value, ref view } => {
-                    self.ops[op_id] = Op::Const { value };
-                }
-                Op::LoadView { dtype, ref view } => {
-                    let view = view.clone();
-                    let mut index = self.new_op(Op::Const { value: Constant::U32(0) });
-                    for (id, dim) in view.0.last().unwrap().iter().enumerate() {
-                        let stride = Constant::U32(dim.st as u32);
-                        let x = self.new_op(Op::Index { id: id as u8 });
-                        let y = self.new_op(Op::Const { value: stride });
-                        let x = self.new_op(Op::Binary { x, y, bop: BOp::Mul });
-                        index = self.new_op(Op::Binary { x, y: index, bop: BOp::Add });
-                    }
-                    self.ops[op_id] = Op::Load { dtype, index };
-                }
-                Op::Store { x, .. } => {
-                    let mut index = self.new_op(Op::Const { value: Constant::U32(0) });
-                    let mut st = 1;
-                    let shape = self.shape.clone();
-                    for (id, d) in shape.iter().enumerate().rev() {
-                        let stride = Constant::U32(st as u32);
-                        let x = self.new_op(Op::Index { id: id as u8 });
-                        let y = self.new_op(Op::Const { value: stride });
-                        let x = self.new_op(Op::Binary { x, y, bop: BOp::Mul });
-                        index = self.new_op(Op::Binary { x, y: index, bop: BOp::Add });
-                        st *= d;
-                    }
-                    self.ops[op_id] = Op::Store { x, index };
-                }
-                _ => {}
+        /*let mut kernel = self.clone();
+        loop {
+            self.constant_folding();
+            self.loop_unrolling(loop_unroll_size);
+            self.deduplicate();
+            self.dead_code_elimination();
+            self.loop_invariant_code_motion();
+            if *self == kernel {
+                break;
             }
-        }
-
-        self.constant_folding();
-        //self.reorder();
-        self.deduplicate();
-        self.dead_code_elimination();
-        self.loop_invariant_code_motion();
+            kernel = self.clone();
+        }*/
     }
 
     fn insert_loops_for_reduces(&mut self) {
@@ -367,7 +335,105 @@ impl Kernel {
                             *y += 1;
                         }
                     }
-                    Op::Loop { .. } => {},
+                    Op::Loop { .. } => {}
+                }
+            }
+        }
+    }
+
+    fn unfold_views(&mut self) {
+        // First we generate the whole view into a new vec,
+        // then we insert the vec into existing ops
+        // Convert view
+        fn new_op(ops: &mut Vec<Op>, op: Op) -> OpId {
+            let op_id = ops.len();
+            ops.push(op);
+            op_id
+        }
+
+        let mut op_id = 0;
+        while op_id < self.ops.len() {
+            match self.ops[op_id] {
+                Op::ConstView { value, ref view } => {
+                    self.ops[op_id] = Op::Const { value };
+                }
+                Op::LoadView { dtype, ref view } => {
+                    let mut ops = Vec::new();
+                    let view = view.clone();
+                    let mut index = new_op(&mut ops, Op::Const { value: Constant::U32(0) });
+                    for (id, dim) in view.0.last().unwrap().iter().enumerate() {
+                        let stride = Constant::U32(dim.st as u32);
+                        let x = new_op(&mut ops, Op::Index { id: id as u8 });
+                        let y = new_op(&mut ops, Op::Const { value: stride });
+                        let x = new_op(&mut ops, Op::Binary { x, y, bop: BOp::Mul });
+                        index = new_op(&mut ops, Op::Binary { x, y: index, bop: BOp::Add });
+                    }
+                    let n1 = self.ops.len() - 1;
+                    let n = ops.len() - 1;
+                    self.ops[op_id] = Op::Load { dtype, index: op_id + n };
+                    for op in ops.into_iter().rev() {
+                        self.ops.insert(op_id, op);
+                    }
+                    self.increment_range(op_id..op_id + n + 1, n1);
+                    self.increment_range(op_id + n + 2..self.ops.len(), n + 1);
+                    op_id += n + 1;
+                }
+                Op::Store { x, .. } => {
+                    let mut ops = Vec::new();
+                    let mut index = new_op(&mut ops, Op::Const { value: Constant::U32(0) });
+                    let mut st = 1;
+                    let shape = self.shape.clone();
+                    for (id, d) in shape.iter().enumerate().rev() {
+                        let stride = Constant::U32(st as u32);
+                        let x = new_op(&mut ops, Op::Index { id: id as u8 });
+                        let y = new_op(&mut ops, Op::Const { value: stride });
+                        let x = new_op(&mut ops, Op::Binary { x, y, bop: BOp::Mul });
+                        index = new_op(&mut ops, Op::Binary { x, y: index, bop: BOp::Add });
+                        st *= d;
+                    }
+                    let n1 = self.ops.len() - 1;
+                    let n = ops.len() - 1;
+                    self.ops[op_id] = Op::Store { x, index: op_id + n };
+                    for op in ops.into_iter().rev() {
+                        self.ops.insert(op_id, op);
+                    }
+                    self.increment_range(op_id..op_id + n + 1, n1);
+                    self.increment_range(op_id + n + 2..self.ops.len(), n + 1);
+                    op_id += n + 1;
+                }
+                _ => {}
+            }
+            op_id += 1;
+        }
+    }
+
+    fn increment_range(&mut self, range: Range<usize>, n: usize) {
+        for op in &mut self.ops[range] {
+            match op {
+                Op::ConstView { .. } |
+                Op::Const { .. } |
+                Op::Index { .. } |
+                Op::LoadView { .. } |
+                Op::Loop { .. } => {},
+                Op::Load { index, .. } => {
+                    *index += n;
+                }
+                Op::Store { x, index } => {
+                    *index += n;
+                    *x += n;
+                }
+                Op::Cast { x, .. } => {
+                    *x += n;
+                }
+                Op::Reduce { x, .. } => {
+                    *x += n;
+                }
+                Op::Unary { x, .. } => {
+                    *x += n;
+                }
+                Op::Binary { x, y, .. } => {
+                    *x += n;
+                    *y += n;
                 }
             }
         }
@@ -452,112 +518,6 @@ impl Kernel {
         }
     }
 
-    /// Reorder ops so that there are no forward references and delete unnecessary ops
-    fn reorder(&mut self) {
-        // Get rcs
-        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(300, BuildHasherDefault::new());
-        let mut params: Vec<OpId> = self
-            .ops
-            .iter()
-            .enumerate()
-            .filter(|(_, op)| matches!(op, Op::Store { .. }))
-            .map(|(i, _)| i)
-            .collect();
-        while let Some(param) = params.pop() {
-            match self.ops[param] {
-                Op::ConstView { .. } => {}
-                Op::Const { .. } => {}
-                Op::Index { .. } => {}
-                Op::LoadView { .. } => {}
-                Op::Loop { .. } => {}
-                Op::Store { x, index } => {
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(x);
-                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(index);
-                }
-                Op::Load { index, .. } => {
-                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(index);
-                }
-                Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(x);
-                }
-                Op::Binary { x, y, .. } => {
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(x);
-                    rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(y);
-                }
-            }
-        }
-
-        let mut nrcs: Map<OpId, u32> =
-            Map::with_capacity_and_hasher(300, BuildHasherDefault::new());
-        let mut params: Vec<OpId> = self
-            .ops
-            .iter()
-            .enumerate()
-            .filter(|(_, op)| matches!(op, Op::Store { .. }))
-            .map(|(i, _)| i)
-            .collect();
-        let mut res = Vec::new();
-        for &param in &params {
-            res.push(param);
-        }
-        while let Some(param) = params.pop() {
-            match self.ops[param] {
-                Op::ConstView { .. } => {}
-                Op::Const { .. } => {}
-                Op::Index { .. } => {}
-                Op::LoadView { .. } => {}
-                Op::Loop { .. } => {}
-                Op::Store { x, index } => {
-                    nrcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(x);
-                    if nrcs[&x] == rcs[&x] {
-                        res.push(x);
-                    }
-                    nrcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(index);
-                    if nrcs[&index] == rcs[&index] {
-                        res.push(index);
-                    }
-                }
-                Op::Load { index, .. } => {
-                    nrcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(index);
-                    if nrcs[&index] == rcs[&index] {
-                        res.push(index);
-                    }
-                }
-                Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
-                    nrcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(x);
-                    if nrcs[&x] == rcs[&x] {
-                        res.push(x);
-                    }
-                }
-                Op::Binary { x, y, .. } => {
-                    nrcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(x);
-                    if nrcs[&x] == rcs[&x] {
-                        res.push(x);
-                    }
-                    nrcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
-                    params.push(y);
-                    if nrcs[&y] == rcs[&y] {
-                        res.push(y);
-                    }
-                }
-            }
-        }
-
-        let mut res2 = Vec::new();
-        for op_id in res.into_iter().rev() {
-            res2.push(self.ops[op_id].clone());
-        }
-        self.ops = res2;
-    }
+    // Unroll all loops with dimension <= loop_unroll_size
+    fn loop_unrolling(&mut self, loop_unroll_size: usize) {}
 }
