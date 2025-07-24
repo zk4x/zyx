@@ -6,7 +6,7 @@ use crate::{
     shape::Dim,
     view::View,
 };
-use std::hash::BuildHasherDefault;
+use std::{collections::VecDeque, hash::BuildHasherDefault};
 
 pub type OpId = usize;
 
@@ -232,6 +232,8 @@ impl Kernel {
             }
         }
 
+        self.insert_loops_for_reduces();
+
         // Convert view
         for op_id in 0..self.ops.len() {
             match self.ops[op_id] {
@@ -269,8 +271,113 @@ impl Kernel {
         }
 
         self.constant_folding();
-        self.reorder();
+        //self.reorder();
+        self.deduplicate();
+        self.dead_code_elimination();
+        self.loop_invariant_code_motion();
     }
+
+    fn insert_loops_for_reduces(&mut self) {
+        // Check the reduce op, trace all of it's dependencies,
+        // put Loop op before dependency with lowest ID
+        // increase all ids higher than that by one
+
+        let reduce_ops: Vec<OpId> = self
+            .ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op, Op::Reduce { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        for op_id in reduce_ops.into_iter().rev() {
+            let Op::Reduce { x, rop, dims } = self.ops[op_id].clone() else { unreachable!() };
+            let mut min_param = x;
+            let mut params = vec![x];
+            while let Some(param) = params.pop() {
+                match self.ops[param] {
+                    Op::ConstView { .. } => {}
+                    Op::Const { .. } => {}
+                    Op::Index { .. } => {}
+                    Op::LoadView { .. } => {}
+                    Op::Load { index, .. } => {
+                        params.push(index);
+                        if index < min_param {
+                            min_param = index;
+                        }
+                    }
+                    Op::Store { x, index } => {
+                        params.push(index);
+                        if index < min_param {
+                            min_param = index;
+                        }
+                        params.push(x);
+                        if x < min_param {
+                            min_param = x;
+                        }
+                    }
+                    Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
+                        params.push(x);
+                        if x < min_param {
+                            min_param = x;
+                        }
+                    }
+                    Op::Binary { x, y, .. } => {
+                        params.push(x);
+                        if x < min_param {
+                            min_param = x;
+                        }
+                        params.push(y);
+                        if y < min_param {
+                            min_param = y;
+                        }
+                    }
+                    Op::Loop { .. } => unreachable!(),
+                }
+            }
+            self.ops.insert(min_param, Op::Loop { rop, dims });
+            for op_id in min_param + 1..self.ops.len() {
+                match &mut self.ops[op_id] {
+                    Op::ConstView { .. } => {}
+                    Op::Const { .. } => {}
+                    Op::Index { .. } => {}
+                    Op::LoadView { .. } => {}
+                    Op::Load { index, .. } => {
+                        if *index > min_param {
+                            *index += 1;
+                        }
+                    }
+                    Op::Store { x, index } => {
+                        if *index > min_param {
+                            *index += 1;
+                        }
+                        if *x > min_param {
+                            *x += 1;
+                        }
+                    }
+                    Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
+                        if *x > min_param {
+                            *x += 1;
+                        }
+                    }
+                    Op::Binary { x, y, .. } => {
+                        if *x > min_param {
+                            *x += 1;
+                        }
+                        if *y > min_param {
+                            *y += 1;
+                        }
+                    }
+                    Op::Loop { .. } => {},
+                }
+            }
+        }
+    }
+
+    fn dead_code_elimination(&mut self) {}
+
+    fn loop_invariant_code_motion(&mut self) {}
+
+    fn deduplicate(&mut self) {}
 
     /// Constant folding
     fn constant_folding(&mut self) {
@@ -346,5 +453,111 @@ impl Kernel {
     }
 
     /// Reorder ops so that there are no forward references and delete unnecessary ops
-    fn reorder(&mut self) {}
+    fn reorder(&mut self) {
+        // Get rcs
+        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(300, BuildHasherDefault::new());
+        let mut params: Vec<OpId> = self
+            .ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op, Op::Store { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        while let Some(param) = params.pop() {
+            match self.ops[param] {
+                Op::ConstView { .. } => {}
+                Op::Const { .. } => {}
+                Op::Index { .. } => {}
+                Op::LoadView { .. } => {}
+                Op::Loop { .. } => {}
+                Op::Store { x, index } => {
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(x);
+                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(index);
+                }
+                Op::Load { index, .. } => {
+                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(index);
+                }
+                Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(x);
+                }
+                Op::Binary { x, y, .. } => {
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(x);
+                    rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(y);
+                }
+            }
+        }
+
+        let mut nrcs: Map<OpId, u32> =
+            Map::with_capacity_and_hasher(300, BuildHasherDefault::new());
+        let mut params: Vec<OpId> = self
+            .ops
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op, Op::Store { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let mut res = Vec::new();
+        for &param in &params {
+            res.push(param);
+        }
+        while let Some(param) = params.pop() {
+            match self.ops[param] {
+                Op::ConstView { .. } => {}
+                Op::Const { .. } => {}
+                Op::Index { .. } => {}
+                Op::LoadView { .. } => {}
+                Op::Loop { .. } => {}
+                Op::Store { x, index } => {
+                    nrcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(x);
+                    if nrcs[&x] == rcs[&x] {
+                        res.push(x);
+                    }
+                    nrcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(index);
+                    if nrcs[&index] == rcs[&index] {
+                        res.push(index);
+                    }
+                }
+                Op::Load { index, .. } => {
+                    nrcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(index);
+                    if nrcs[&index] == rcs[&index] {
+                        res.push(index);
+                    }
+                }
+                Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
+                    nrcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(x);
+                    if nrcs[&x] == rcs[&x] {
+                        res.push(x);
+                    }
+                }
+                Op::Binary { x, y, .. } => {
+                    nrcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(x);
+                    if nrcs[&x] == rcs[&x] {
+                        res.push(x);
+                    }
+                    nrcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
+                    params.push(y);
+                    if nrcs[&y] == rcs[&y] {
+                        res.push(y);
+                    }
+                }
+            }
+        }
+
+        let mut res2 = Vec::new();
+        for op_id in res.into_iter().rev() {
+            res2.push(self.ops[op_id].clone());
+        }
+        self.ops = res2;
+    }
 }
