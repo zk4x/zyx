@@ -171,14 +171,22 @@ impl View {
 
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
+        // Version without allocation
         let inner = self.0.last_mut().unwrap();
         debug_assert_eq!(inner.len(), axes.len());
-        let mut new = Vec::with_capacity(axes.len());
-        for &a in axes {
-            let dim = inner[a].clone();
-            new.push(dim);
+
+        let mut temp = inner[axes[0]].clone();
+        let mut a = 0;
+        std::mem::swap(&mut inner[a], &mut temp);
+
+        for _ in 1..axes.len() {
+            let mut i = 0;
+            while a != axes[i] {
+                i += 1;
+            }
+            std::mem::swap(&mut inner[i], &mut temp);
+            a = i;
         }
-        *inner = new;
     }
 
     pub(crate) fn expand(&mut self, shape: &[Dim]) {
@@ -443,6 +451,27 @@ impl Display for View {
         Ok(())
     }
 }
+
+#[test]
+fn view_permute() {
+    let mut view = View::contiguous(&[3, 1, 4, 2]);
+    view.permute(&[3, 1, 0, 2]);
+    assert_eq!(view.shape(), [2, 1, 3, 4]);
+    view.permute(&[2, 0, 3, 1]);
+    assert_eq!(view.shape(), [3, 2, 4, 1]);
+}
+
+// Permute test, no alloc is ~25% faster
+/*#[test]
+fn view_permute2() {
+    let mut view = View::contiguous(&[3, 1, 4, 2]);
+    let begin = std::time::Instant::now();
+    for _ in 0..10000000 {
+        view.permute(&[3, 1, 0, 2]);
+    }
+    let micros = begin.elapsed().as_micros();
+    println!("Took {micros}us");
+}*/
 
 #[test]
 fn view_split() {

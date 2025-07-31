@@ -1,7 +1,7 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    DebugMask, Map, Set, ZyxError,
+    Map, Set, ZyxError,
     graph::{Graph, Node},
     kernel::{Kernel, Op, OpId, get_perf},
     runtime::Runtime,

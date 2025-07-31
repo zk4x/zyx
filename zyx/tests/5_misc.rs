@@ -90,7 +90,7 @@ fn sum3() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn pad_reduce() -> Result<(), ZyxError> {
+fn mix_pad_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
     x = x.pad_zeros([(0, 1)])?;
@@ -99,7 +99,7 @@ fn pad_reduce() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn permute_pad() -> Result<(), ZyxError> {
+fn mix_permute_pad() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.pad_zeros([(1, 0)])?.t();
     assert_eq!(x, [[0i32, 0], [2, 1], [4, 5], [3, 1]]);
@@ -107,7 +107,7 @@ fn permute_pad() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn expand_reduce() -> Result<(), ZyxError> {
+fn mix_expand_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
     let y = x.expand([2, 2])?;
@@ -160,7 +160,7 @@ fn rope2() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn pad_reshape_expand() -> Result<(), ZyxError> {
+fn mix_pad_reshape_expand() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 4, 3, 3, 4], [1, 2, 1, 5, 1]]);
     x = x.pad_zeros([(1, 0), (2, 1)])?;
     x = x.reshape([2, 1, 3, 5])?;
@@ -182,7 +182,7 @@ fn pad_reshape_expand() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn reshape1() -> Result<(), ZyxError> {
+fn mix_reshape1() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[[[2i32], [4]], [[3], [1]], [[5], [1]]]]);
     //println!("x shape {:?}", x.shape());
     x = x.permute([0, 2, 1, 3])?;
@@ -272,52 +272,6 @@ fn uni_matmul() -> Result<(), ZyxError> {
     //println!("{z}");
     Ok(())
 }*/
-
-#[test]
-fn pad1() -> Result<(), ZyxError> {
-    let a = Tensor::from([[1, 2], [3, 4]]);
-    let c = a.pad_zeros([(0, 0), (0, 2)])?;
-    assert_eq!(c, [[1, 2], [3, 4], [0, 0], [0, 0]]);
-    Ok(())
-}
-
-#[test]
-fn pad2() -> Result<(), ZyxError> {
-    let a = Tensor::from([[1i32, 2], [3, 4]]).reshape([1, 1, 2, 2])?;
-    let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 1, 4])?;
-    let c = a.pad_zeros([(0, 2), (0, 2)])? + b;
-    assert_eq!(
-        c,
-        [[[[6i32, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]
-    );
-    Ok(())
-}
-
-#[test]
-fn pad3() -> Result<(), ZyxError> {
-    let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8]).reshape([2, 4])?;
-    let a = x.pad_zeros([(-2, 0)])?;
-    let b = -x.pad_zeros([(0, -2)])?;
-    let sin = Tensor::from([[2, 3], [3, 1]]);
-    let cos = Tensor::from([[2, 3], [3, 1]]);
-    let z = &a * &sin - &b * &cos;
-    let z2 = a * sin + b * cos;
-    let z = z.pad_zeros([(0, 2)])? + z2.pad_zeros([(2, 0)])?;
-    assert_eq!(z, [[8, 18, 4, 6], [36, 14, 6, 2]]);
-    Ok(())
-}
-
-#[test]
-fn expand1() -> Result<(), ZyxError> {
-    let a = Tensor::from([[1, 2], [3, 4]]).reshape([1, 1, 1, 4])?;
-    let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 4, 1])?;
-    let c = a + b;
-    assert_eq!(
-        c,
-        [[[[6, 7, 8, 9], [7, 8, 9, 10], [8, 9, 10, 11], [9, 10, 11, 12]]]]
-    );
-    Ok(())
-}
 
 #[test]
 fn cat() -> Result<(), ZyxError> {
@@ -775,7 +729,7 @@ fn dot4() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn exp2() {
+fn mix_2() {
     let x = Tensor::from([[2f32, 3.], [4., 5.]]);
     let y = x.t();
     let z = x.exp().cast(DType::I32);

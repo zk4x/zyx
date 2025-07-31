@@ -6,7 +6,7 @@ use crate::{
     shape::Dim,
     view::View,
 };
-use std::{hash::BuildHasherDefault, ops::{Range, RangeBounds}};
+use std::{hash::BuildHasherDefault, ops::Range};
 
 pub type OpId = usize;
 
@@ -29,7 +29,7 @@ pub enum Op {
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    Loop { rop: ROp, dims: Vec<Dim> },
+    Loop { dtype: DType, rop: ROp, dims: Vec<Dim> },
     Reduce { x: OpId, rop: ROp, dims: Vec<Dim> }, // Loops are always reduce loops
 }
 
@@ -143,8 +143,8 @@ impl Kernel {
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
-                Op::Loop { rop, dims } => println!(
-                    "{i:>3} LOOP {} dims={dims:?}",
+                Op::Loop { dtype, rop, dims } => println!(
+                    "{i:>3} ACC {dtype} LOOP {} dims={dims:?}",
                     match rop {
                         ROp::Sum => "SUM",
                         ROp::Max => "MAX",
@@ -231,18 +231,18 @@ impl Kernel {
         self.insert_loops_for_reduces();
         self.unfold_views();
 
-        /*let mut kernel = self.clone();
+        let mut kernel = self.clone();
         loop {
-            self.constant_folding();
-            self.loop_unrolling(loop_unroll_size);
-            self.deduplicate();
-            self.dead_code_elimination();
-            self.loop_invariant_code_motion();
+            //self.constant_folding();
+            //self.loop_unrolling(loop_unroll_size);
+            //self.deduplicate();
+            //self.dead_code_elimination();
+            //self.loop_invariant_code_motion();
             if *self == kernel {
                 break;
             }
             kernel = self.clone();
-        }*/
+        }
     }
 
     fn insert_loops_for_reduces(&mut self) {
@@ -261,18 +261,22 @@ impl Kernel {
             let Op::Reduce { x, rop, dims } = self.ops[op_id].clone() else { unreachable!() };
             let mut min_param = x;
             let mut params = vec![x];
+            let mut acc_dtype = None;
             while let Some(param) = params.pop() {
                 match self.ops[param] {
-                    Op::ConstView { .. } => {}
-                    Op::Const { .. } => {}
-                    Op::Index { .. } => {}
-                    Op::LoadView { .. } => {}
-                    Op::Load { index, .. } => {
-                        params.push(index);
-                        if index < min_param {
-                            min_param = index;
+                    Op::ConstView { value, .. } => {
+                        if acc_dtype.is_none() {
+                            acc_dtype = Some(value.dtype());
                         }
                     }
+                    Op::Const { .. } => unreachable!(),
+                    Op::Index { .. } => {}
+                    Op::LoadView { dtype, .. } => {
+                        if acc_dtype.is_none() {
+                            acc_dtype = Some(dtype);
+                        }
+                    }
+                    Op::Load { .. } => unreachable!(),
                     Op::Store { x, index } => {
                         params.push(index);
                         if index < min_param {
@@ -283,7 +287,16 @@ impl Kernel {
                             min_param = x;
                         }
                     }
-                    Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
+                    Op::Cast { x, dtype } => {
+                        params.push(x);
+                        if x < min_param {
+                            min_param = x;
+                        }
+                        if acc_dtype.is_none() {
+                            acc_dtype = Some(dtype);
+                        }
+                    }
+                    Op::Unary { x, .. } | Op::Reduce { x, .. } => {
                         params.push(x);
                         if x < min_param {
                             min_param = x;
@@ -302,42 +315,8 @@ impl Kernel {
                     Op::Loop { .. } => unreachable!(),
                 }
             }
-            self.ops.insert(min_param, Op::Loop { rop, dims });
-            for op_id in min_param + 1..self.ops.len() {
-                match &mut self.ops[op_id] {
-                    Op::ConstView { .. } => {}
-                    Op::Const { .. } => {}
-                    Op::Index { .. } => {}
-                    Op::LoadView { .. } => {}
-                    Op::Load { index, .. } => {
-                        if *index > min_param {
-                            *index += 1;
-                        }
-                    }
-                    Op::Store { x, index } => {
-                        if *index > min_param {
-                            *index += 1;
-                        }
-                        if *x > min_param {
-                            *x += 1;
-                        }
-                    }
-                    Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
-                        if *x > min_param {
-                            *x += 1;
-                        }
-                    }
-                    Op::Binary { x, y, .. } => {
-                        if *x > min_param {
-                            *x += 1;
-                        }
-                        if *y > min_param {
-                            *y += 1;
-                        }
-                    }
-                    Op::Loop { .. } => {}
-                }
-            }
+            self.ops.insert(min_param, Op::Loop { dtype: acc_dtype.unwrap(), rop, dims });
+            self.increment_range(min_param + 1..self.ops.len(), 1);
         }
     }
 
@@ -368,13 +347,12 @@ impl Kernel {
                         let x = new_op(&mut ops, Op::Binary { x, y, bop: BOp::Mul });
                         index = new_op(&mut ops, Op::Binary { x, y: index, bop: BOp::Add });
                     }
-                    let n1 = self.ops.len() - 1;
                     let n = ops.len() - 1;
                     self.ops[op_id] = Op::Load { dtype, index: op_id + n };
                     for op in ops.into_iter().rev() {
                         self.ops.insert(op_id, op);
                     }
-                    self.increment_range(op_id..op_id + n + 1, n1);
+                    self.increment_range(op_id..op_id + n + 1, op_id);
                     self.increment_range(op_id + n + 2..self.ops.len(), n + 1);
                     op_id += n + 1;
                 }
@@ -391,13 +369,12 @@ impl Kernel {
                         index = new_op(&mut ops, Op::Binary { x, y: index, bop: BOp::Add });
                         st *= d;
                     }
-                    let n1 = self.ops.len() - 1;
                     let n = ops.len() - 1;
                     self.ops[op_id] = Op::Store { x, index: op_id + n };
                     for op in ops.into_iter().rev() {
                         self.ops.insert(op_id, op);
                     }
-                    self.increment_range(op_id..op_id + n + 1, n1);
+                    self.increment_range(op_id..op_id + n + 1, op_id);
                     self.increment_range(op_id + n + 2..self.ops.len(), n + 1);
                     op_id += n + 1;
                 }
@@ -410,11 +387,11 @@ impl Kernel {
     fn increment_range(&mut self, range: Range<usize>, n: usize) {
         for op in &mut self.ops[range] {
             match op {
-                Op::ConstView { .. } |
-                Op::Const { .. } |
-                Op::Index { .. } |
-                Op::LoadView { .. } |
-                Op::Loop { .. } => {},
+                Op::ConstView { .. }
+                | Op::Const { .. }
+                | Op::Index { .. }
+                | Op::LoadView { .. }
+                | Op::Loop { .. } => {}
                 Op::Load { index, .. } => {
                     *index += n;
                 }

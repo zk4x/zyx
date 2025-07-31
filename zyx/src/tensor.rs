@@ -160,6 +160,9 @@ impl Tensor {
     /// }
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    /// [GradientTape] limits scope of backpropagation graph, therefore detach
+    /// is only required in very advanced cases, not in simple RNNs.
+    ///
     /// # Errors
     /// If function needs to realize tensor, it may return device error if the device
     /// fails to realize self.
