@@ -204,7 +204,7 @@ impl View {
         }
     }
 
-    pub(crate) fn expand_axis(&mut self, axis: Axis, ndim: Dim) {
+    pub fn expand_axis(&mut self, axis: Axis, ndim: Dim) {
         //println!("View expand {self} axis = {axis} to ndim {ndim}");
         let inner = self.0.last_mut().unwrap();
         let dim = &mut inner[axis];

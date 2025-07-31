@@ -876,3 +876,10 @@ fn bench_mm1() -> Result<(), ZyxError> {
     Tensor::realize([&z])?;
     Ok(())
 }
+
+#[test]
+fn double_vec() -> Result<(), ZyxError> {
+    let x = Tensor::from(vec![vec![4, 1, 2], vec![4, 6, 2]]);
+    assert_eq!(x.shape(), [2, 3]);
+    Ok(())
+}

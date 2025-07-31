@@ -3842,6 +3842,27 @@ impl<T: Scalar> TempData for Vec<T> {
     }
 }
 
+impl<T: Scalar> From<Vec<Vec<T>>> for Tensor {
+    fn from(data: Vec<Vec<T>>) -> Self {
+        Tensor { id: RT.lock().variable(vec![data.len(), data[0].len()], Box::new(data)).unwrap() }
+    }
+}
+
+impl<T: Scalar> TempData for Vec<Vec<T>> {
+    fn bytes(&self) -> usize {
+        self.len() * self[0].len() * T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> &[u8] {
+        let ptr: *const u8 = self.as_ptr().cast();
+        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+    }
+}
+
 impl<T: Scalar> From<&'static [T]> for Tensor {
     fn from(data: &'static [T]) -> Self {
         let n = data.len() as Dim;
