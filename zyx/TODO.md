@@ -41,7 +41,7 @@
   - [x] axes reshape
 - [x] kernelizer
   - [x] all dim reduce
-  - [ ] fix kernel reshape with shape that contains reduce ops and add new loops after those
+  - [ ] kernel reshape with shape that contains reduce ops and add new loops after those
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
   - [ ] improve reshape node
     - [x] merges, splits, reshapes of non reduce axes
@@ -57,8 +57,8 @@
   - [ ] automatic sharding across devices
 - [x] kernel
   - [x] default optimizations
-  - [ ] indexing for padded views
-  - [ ] indexing for multi reshape views
+  - [x] indexing for padded views
+  - [x] indexing for multi reshape views
   - [ ] vectorization, vector dtypes
   - [ ] common subexpression elimination/deduplication
   - [x] dead store elimination
