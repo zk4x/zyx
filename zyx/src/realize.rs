@@ -325,16 +325,15 @@ impl Runtime {
                                 }
                                 permute_axes.extend(max_axis + 1..n);
                                 permute_axes.extend_from_slice(axes);
-                                kernels[kid].apply_movement(|view| view.permute(&permute_axes));
+                                kernels[kid].apply_movement(|v| v.permute(&permute_axes));
                             }
 
                             kernels[kid].shape = self.graph.shape(nid).to_vec();
-
-                            let op = Op::Reduce {
-                                x: op_id,
-                                rop,
-                                dims: axes.iter().map(|&a| shape[a]).collect(),
-                            };
+                            let dims = axes.iter().map(|&a| shape[a]).collect();
+                            if shape == dims {
+                                kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
+                            }
+                            let op = Op::Reduce { x: op_id, rop, dims };
                             kernels[kid].ops.push(op);
                             (kid, kernels[kid].ops.len() - 1)
                         }

@@ -40,8 +40,8 @@
   - [x] axis merging
   - [x] axes reshape
 - [x] kernelizer
-  - [ ] all dim reduce
-  - [ ] fix kernel reshape with shape that contains reduce ops and new loops after those
+  - [x] all dim reduce
+  - [ ] fix kernel reshape with shape that contains reduce ops and add new loops after those
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
   - [ ] improve reshape node
     - [x] merges, splits, reshapes of non reduce axes
