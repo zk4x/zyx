@@ -18,18 +18,30 @@
       - [ ] conversion to spirv SSA (dealing with accumulators)
   - [x] dummy
     - [ ] validation for program ids
+- [x] runtime
+  - [x] fix event handling
+  - [ ] node deallocation after realization
+  - [ ] static graphs - unfortunately necessary for very high performance networks to achieve millions of tensor ops/second
+- [ ] autograd
+  - [x] fix t6 test
+  - [ ] more backpropagation tests
+  - [ ] drop unneded nodes when gradient tape is released
+  - [ ] proper realize function with gradient tape
+  - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
 - [ ] dtype
   - [ ] quantized dtypes
   - [x] optional implicit dtype casts
-- [x] runtime
-  - [x] graph size optimization - remove axes from Nodes, put it into map like shapes and dtypes
-  - [x] realization while tracing gradients
-  - [x] realization while not tracing gradients
-  - [x] gradient tape
-  - [x] switch shape, paddings and axes in graph from Vec to Box<[]>
-- [ ] kernelizer
-  - [ ] fix kernel reshape with shape that contains AccAssign ops and new loops after those
-- [x] scheduler
+- [x] view
+  - [x] split on padded view
+  - [x] view padding to ir
+    - [x] offset
+    - [x] padding condition
+  - [x] reshaped view to ir
+  - [x] axis merging
+  - [x] axes reshape
+- [x] kernelizer
+  - [ ] all dim reduce
+  - [ ] fix kernel reshape with shape that contains reduce ops and new loops after those
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
   - [ ] improve reshape node
     - [x] merges, splits, reshapes of non reduce axes
@@ -41,63 +53,30 @@
     - [ ] softmax fusion test (eventually should be single kernel)
     - [ ] just asserts that various graphs fuse into single kernel
   - [x] scheduling to multiple devices
-  - [ ] automatic sharding across devices
   - [x] fix bug when running phi3, panic on min_kernel function
+  - [ ] automatic sharding across devices
 - [x] kernel
-  - [x] ops remove unary view
-  - [x] ops remove binary views
-- [ ] optimizer
   - [x] default optimizations
-  - [ ] register tiling of all variables
-  - [ ] local tiling of all variables
-  - [ ] better picking of next optimization, or even optimization search
-  - [ ] flash attention
-  - [ ] splitting of global loops into register loops
-  - [ ] splitting of register loops into global loops (if global work size is too small)
-  - [ ] proper optimizer with tree search
-- [x] view
-  - [x] split on padded view
-  - [x] view padding to ir
-    - [x] offset
-    - [x] padding condition
-  - [x] reshaped view to ir
-  - [x] axis merging
-  - [x] axes reshape
-- [ ] IR
-  - [x] add dtype to load vop, so that we don't need to pass graph to ir
-  - [x] do not pass graph to ir
-  - [x] change ir register id to u16
-  - [x] remove ref counting from ir
-  - [x] merge all mul + add into mad instructions
-  - [x] add new reference counting that accounts for all variables, including indexing variables
-  - [x] loop invariant code motion
-  - [x] fix destructuring back from SSA
-  - [x] loop unrolling
-  - [x] loop splitting
-  - [ ] loop reordering
-  - [x] constant folding and propagation
+  - [ ] indexing for padded views
+  - [ ] indexing for multi reshape views
+  - [ ] vectorization, vector dtypes
   - [ ] common subexpression elimination/deduplication
   - [x] dead store elimination
-  - [ ] vectorization, vector dtypes
-  - [x] ops fusion, merges
-- [x] runtime
-  - [x] fix event handling
-  - [x] fix node deallocation after realization
-  - [x] static graphs - unfortunately necessary for very high performance networks to achieve millions of tensor ops/second
-- [ ] backward
-  - [x] fix t6 test
-  - [ ] more backpropagation tests
+  - [ ] loop unrolling
+  - [ ] loop splitting
+  - [ ] loop reordering
+  - [ ] loop invariant code motion
+  - [ ] merge all mul + add into mad instructions
+  - [ ] register tiling of all variables
+  - [ ] local tiling of all variables
+  - [ ] flash attention
+  - [ ] optimizer with tree search
 - [ ] testing
   - [ ] lot of testing for scheduler correctness
   - [ ] fuzzy tester
     - [x] unary ops
     - [ ] movemnt ops
     - [ ] binary ops
-- [x] make Dim usize, but easily changeable to u64
-- [ ] autograd
-  - [ ] drop unneded nodes when gradient tape is released
-  - [ ] proper realize function with gradient tape
-  - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
 
 - [x] docs
   - [x] manual for adding new backends

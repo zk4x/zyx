@@ -658,12 +658,17 @@ impl Runtime {
 
         let required_kernel_memory: Dim = stores
             .iter()
-            .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid) as Dim)
+            .map(|&tid| {
+                self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim
+            })
             .sum::<Dim>()
             + loads
                 .iter()
-                .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid) as Dim)
+                .map(|&tid| {
+                    self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim
+                })
                 .sum::<Dim>();
+        //println!("Kernel requires {required_kernel_memory} B");
         let mut dev_ids: Vec<usize> = (0..self.devices.len()).collect();
         dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
         let mut device_id = None;
@@ -672,12 +677,19 @@ impl Runtime {
             // Check if kernel arguments fit into associated memory pool
             let free_memory = self.pools[mpid].pool.free_bytes();
             // required memory is lowered by the amount of tensors already stored in that memory pool
-            let required_memory = required_kernel_memory
-                - self.pools[mpid]
-                    .buffer_map
-                    .keys()
-                    .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid) as Dim)
-                    .sum::<Dim>();
+            let existing_memory = loads
+                .iter()
+                .map(|tid| {
+                    if self.pools[mpid].buffer_map.contains_key(tid) {
+                        self.shape(*tid).iter().product::<Dim>()
+                            * self.dtype(*tid).byte_size() as Dim
+                    } else {
+                        0
+                    }
+                })
+                .sum::<Dim>();
+            //println!("Existing memory {existing_memory} B");
+            let required_memory = required_kernel_memory - existing_memory;
             if free_memory > required_memory {
                 device_id = Some(dev_id);
                 break;

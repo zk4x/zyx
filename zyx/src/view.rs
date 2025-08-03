@@ -98,7 +98,7 @@ impl View {
 
     // This is used for reshape, merge and split
     pub(crate) fn reshape(&mut self, axes: Range<Axis>, shape: &[Dim]) {
-        //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
+        println!("Reshape {self} axes {axes:?} into shape {shape:?}");
         debug_assert!(
             axes.end <= self.0.last().map_or(1, Vec::len) as Dim,
             "Reshape axes range {axes:?} is greater than view's rank {}",
