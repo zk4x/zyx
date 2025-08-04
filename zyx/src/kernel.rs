@@ -221,13 +221,17 @@ impl Kernel {
     }
 
     pub fn apply_optimization(&mut self, optimization: &Optimization) {
-        match optimization {
+        /*match optimization {
             Optimization::Basic { shape } => {
                 let n = self.shape.len();
                 self.apply_movement(|view| view.reshape(0..n, &shape));
                 self.shape = shape.clone();
             }
-        }
+        }*/
+        let n = self.shape.len();
+        let shape = vec![1, 1, 1, 1, 4, 2];
+        self.apply_movement(|view| view.reshape(0..n, &shape));
+        self.shape = shape.clone();
 
         //let loop_unroll_size = 8;
 
@@ -360,13 +364,17 @@ impl Kernel {
                             let a = if let Some(old_offset) = old_offset {
                                 let ost_c = new_op(&mut ops, Op::Const(Constant::U32(ost)));
                                 let a = new_op(&mut ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div });
-                                ost += dim.d as u32;
+                                ost *= dim.d as u32;
                                 let dimd_c = new_op(&mut ops, Op::Const(Constant::U32(dim.d as u32)));
                                 new_op(&mut ops, Op::Binary { x: a, y: dimd_c, bop: BOp::Mod })
                             } else {
-                                new_op(&mut ops, Op::Index { id: a as u8 })
+                                if dim.d == 1 {
+                                    new_op(&mut ops, Op::Const(Constant::U32(0)))
+                                } else {
+                                    new_op(&mut ops, Op::Index { id: a as u8 })
+                                }
                             };
-                            //println!("ost: {ost}, a: {a:?}, {dim:?}");
+                            println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
                                 let lp = new_op(&mut ops, Op::Const(Constant::U32(dim.lp.abs() as u32)));
@@ -599,8 +607,37 @@ impl Kernel {
                             self.ops[op_id] = Op::Const(Constant::binary(cx, cy, bop));
                             change = true;
                         }
-                        (&Op::Const(cx), y) => {
-                            todo!()
+                        (&Op::Const(cx), y) => match bop {
+                            BOp::Add => {
+                                if cx.is_zero() {
+                                    self.ops[op_id] = y.clone();
+                                    change = true;
+                                }
+                            }
+                            BOp::Sub => todo!(),
+                            BOp::Mul => {
+                                if cx.is_zero() {
+                                    self.ops[op_id] = Op::Const(cx);
+                                    change = true;
+                                } else if cx.is_one() {
+                                    self.ops[op_id] = y.clone();
+                                    change = true;
+                                }
+                            }
+                            BOp::Div => todo!(),
+                            BOp::Pow => todo!(),
+                            BOp::Mod => todo!(),
+                            BOp::Cmplt => todo!(),
+                            BOp::Cmpgt => todo!(),
+                            BOp::Max => todo!(),
+                            BOp::Or => todo!(),
+                            BOp::And => todo!(),
+                            BOp::BitXor => todo!(),
+                            BOp::BitOr => todo!(),
+                            BOp::BitAnd => todo!(),
+                            BOp::BitShiftLeft => todo!(),
+                            BOp::BitShiftRight => todo!(),
+                            BOp::NotEq => todo!(),
                         }
                         (x, &Op::Const(cy)) => match bop {
                             BOp::Add => {
