@@ -1,5 +1,5 @@
 use crate::{
-    DType, Map,
+    DType, Map, Set,
     backend::{Device, DeviceInfo, ProgramId},
     dtype::Constant,
     graph::{BOp, ROp, UOp},
@@ -165,6 +165,10 @@ impl Kernel {
         (0, 0, 0)
     }
 
+    pub fn is_reduce(&self) -> bool {
+        self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
+    }
+
     pub(super) fn default_optimization(&self, dev_info: &DeviceInfo) -> Optimization {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {
             fn get_factors(n: Dim) -> Vec<Dim> {
@@ -232,10 +236,10 @@ impl Kernel {
 
         let mut kernel = self.clone();
         loop {
-            //self.constant_folding();
+            self.constant_folding();
             //self.loop_unrolling(loop_unroll_size);
             //self.deduplicate();
-            //self.dead_code_elimination();
+            self.dead_code_elimination();
             //self.loop_invariant_code_motion();
             if *self == kernel {
                 break;
@@ -328,60 +332,7 @@ impl Kernel {
         while op_id < self.ops.len() {
             match self.ops[op_id] {
                 Op::ConstView { value, ref view } => {
-                    /*let mut pc = Reg::Const(Constant::Bool(true));
-                    let mut old_offset: Option<Reg> = None;
-                    //println!("Self {self:?}");
-                    for inner in self.0.iter().rev() {
-                        //println!("\n{inner:?}");
-                        // a = offset / ost % dim
-                        let mut ost = 1;
-                        let mut offset = Reg::Const(Constant::U64(0));
-                        for (a, dim) in inner.iter().enumerate().rev() {
-                            let a: Reg = old_offset.map_or_else(
-                                || Reg::Var(u16::try_from(a).unwrap()),
-                                |old_offset| {
-                                    let a = c.div(old_offset, Reg::Const(Constant::U64(ost)));
-                                    ost *= u64::try_from(dim.d).unwrap();
-                                    c.mod_(a, Reg::Const(Constant::U64(u64::try_from(dim.d).unwrap())))
-                                },
-                            );
-                            //println!("ost: {ost}, {dim:?}");
-                            // Offset
-                            //if dim.st != 0 && dim.d != 1 {
-                            let t = if dim.lp != 0 {
-                                let lp = Reg::Const(Constant::U64(u64::try_from(dim.lp.abs()).unwrap()));
-                                if dim.lp > 0 {
-                                    c.sub(a, lp)
-                                } else {
-                                    c.add(a, lp)
-                                }
-                            } else {
-                                a
-                            };
-                            let stride = Reg::Const(Constant::U64(u64::try_from(dim.st).unwrap()));
-                            offset = c.mad(t, stride, offset);
-                            //}
-                            // Padding condition
-                            if dim.lp > 0 {
-                                let lp = Reg::Const(Constant::U64(u64::try_from(dim.lp - 1).unwrap()));
-                                let t = c.cmpgt(a, lp);
-                                pc = c.and(t, pc);
-                            }
-                            if dim.rp > 0 {
-                                let rp = Reg::Const(Constant::U64(
-                                    u64::try_from(isize::try_from(dim.d).unwrap() - dim.rp).unwrap(),
-                                ));
-                                let t = c.cmplt(a, rp);
-                                pc = c.and(t, pc);
-                            }
-                        }
-                        old_offset = Some(offset);
-                    }
-                    let dtype = constant.dtype();
-                    let mut z = Reg::Const(constant);
-                    let pcd = c.cast(pc, dtype);
-                    // Nullify z if padding condition is false (if there is padding at that index)
-                    z = c.mul(pcd, z);*/
+                    // TODO process view
                     self.ops[op_id] = Op::Const(value);
                 }
                 Op::LoadView { dtype, ref view } => {
@@ -392,6 +343,7 @@ impl Kernel {
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
 
+                    println!("Unfolding view: {view}");
                     let mut ops = Vec::new();
                     let mut pc = new_op(&mut ops, Op::Const(Constant::Bool(true)));
                     let mut offset = new_op(&mut ops, Op::Const(Constant::U32(0)));
@@ -450,6 +402,9 @@ impl Kernel {
                     let pcd = new_op(&mut ops, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
                     _ = new_op(&mut ops, Op::Binary { x: pcd, y: z, bop: BOp::Mul });
+
+                    //for op in &ops { println!("{op:?}") }
+
                     self.ops.remove(op_id);
 
                     let n = ops.len() - 1;
@@ -517,7 +472,97 @@ impl Kernel {
         }
     }
 
-    fn dead_code_elimination(&mut self) {}
+    fn decrement_range(&mut self, range: Range<usize>, n: usize) {
+        for op in &mut self.ops[range.clone()] {
+            match op {
+                Op::ConstView { .. } | Op::Const { .. } | Op::Index { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
+                Op::Load { index, .. } => {
+                    if *index >= range.start {
+                        *index -= n;
+                    }
+                }
+                Op::Store { x, index } => {
+                    if *index >= range.start {
+                        *index -= n;
+                    }
+                    if *x >= range.start {
+                        *x -= n;
+                    }
+                }
+                Op::Cast { x, .. } => {
+                    if *x >= range.start {
+                        *x -= n;
+                    }
+                }
+                Op::Reduce { x, .. } => {
+                    if *x >= range.start {
+                        *x -= n;
+                    }
+                }
+                Op::Unary { x, .. } => {
+                    if *x >= range.start {
+                        *x -= n;
+                    }
+                }
+                Op::Binary { x, y, .. } => {
+                    if *x >= range.start {
+                        *x -= n;
+                    }
+                    if *y >= range.start {
+                        *y -= n;
+                    }
+                }
+            }
+        }
+    }
+
+    fn dead_code_elimination(&mut self) {
+        let mut params = Vec::new();
+        for op_id in 0..self.ops.len() {
+            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. }) {
+                params.push(op_id);
+            }
+        }
+        let mut needed = Set::with_capacity_and_hasher(self.ops.len(), BuildHasherDefault::new());
+        while let Some(param) = params.pop() {
+            needed.insert(param);
+            match self.ops[param] {
+                Op::ConstView { .. } => unreachable!(),
+                Op::Const(..) => {}
+                Op::Index { .. } => {}
+                Op::LoadView { .. } => unreachable!(),
+                Op::Load { index, .. } => {
+                    params.push(index);
+                }
+                Op::Store { x, index } => {
+                    params.push(x);
+                    params.push(index);
+                }
+                Op::Cast { x, .. } => {
+                    params.push(x);
+                }
+                Op::Unary { x, .. } => {
+                    params.push(x);
+                }
+                Op::Binary { x, y, .. } => {
+                    params.push(x);
+                    params.push(y);
+                }
+                Op::Loop { .. } => {}
+                Op::Reduce { x, .. } => {
+                    params.push(x);
+                }
+            }
+        }
+        for op_id in (0..self.ops.len()).rev() {
+            if needed.contains(&op_id) {
+                continue;
+            }
+            // Remove this op from kernel
+            self.ops.remove(op_id);
+            self.decrement_range(op_id..self.ops.len(), 1);
+        }
+    }
 
     fn loop_invariant_code_motion(&mut self) {}
 
@@ -574,14 +619,28 @@ impl Kernel {
                                     change = true;
                                 }
                             }
-                            BOp::Div => todo!(),
+                            BOp::Div => {
+                                if cy.is_zero() {
+                                    panic!("Division by zero constant.");
+                                } else if cy.is_one() {
+                                    self.ops[op_id] = x.clone();
+                                    change = true;
+                                }
+                            }
                             BOp::Pow => todo!(),
-                            BOp::Mod => todo!(),
-                            BOp::Cmplt => todo!(),
-                            BOp::Cmpgt => todo!(),
+                            BOp::Mod => {
+                                if cy.is_zero() {
+                                    panic!("Modulo by zero constant.");
+                                } else if cy.is_one() {
+                                    self.ops[op_id] = Op::Const(cy.dtype().zero_constant());
+                                    change = true;
+                                }
+                            }
+                            BOp::Cmplt => {}
+                            BOp::Cmpgt => {}
                             BOp::Max => todo!(),
                             BOp::Or => todo!(),
-                            BOp::And => todo!(),
+                            BOp::And => {}
                             BOp::BitXor => todo!(),
                             BOp::BitOr => todo!(),
                             BOp::BitAnd => todo!(),

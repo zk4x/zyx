@@ -98,17 +98,14 @@ impl View {
 
     // This is used for reshape, merge and split
     pub(crate) fn reshape(&mut self, axes: Range<Axis>, shape: &[Dim]) {
-        println!("Reshape {self} axes {axes:?} into shape {shape:?}");
+        //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
         debug_assert!(
             axes.end <= self.0.last().map_or(1, Vec::len) as Dim,
             "Reshape axes range {axes:?} is greater than view's rank {}",
             self.0.last().map_or(1, Vec::len)
         );
         debug_assert_eq!(
-            self.0.last().unwrap()[axes.start as usize..axes.end as usize]
-                .iter()
-                .map(|dim| dim.d)
-                .product::<Dim>(),
+            self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
             shape.iter().product::<Dim>()
         );
         let inner = self.0.last_mut().unwrap();
@@ -216,7 +213,7 @@ impl View {
     }
 
     pub fn pad(&mut self, padding: &[(isize, isize)]) {
-        for (axis, (lp, rp)) in padding.iter().copied().enumerate() {
+        for (axis, (lp, rp)) in padding.iter().copied().rev().enumerate() {
             if lp != 0 || rp != 0 {
                 self.pad_axis(axis, lp, rp);
             }
@@ -284,9 +281,7 @@ impl View {
         } else {
             dim.rp += right_pad;
         }
-        old_shape[axis] =
-            Dim::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad)
-                .unwrap();
+        old_shape[axis] = Dim::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad).unwrap();
         debug_assert_eq!(self.shape(), old_shape);
     }
 }

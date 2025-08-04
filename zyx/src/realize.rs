@@ -123,8 +123,7 @@ impl Runtime {
             let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(300);
             let mut visited: Map<TensorId, (KernelId, OpId)> =
                 Map::with_capacity_and_hasher(order.len() + 10, BuildHasherDefault::new());
-            let mut loads: Map<KernelId, Vec<TensorId>> =
-                Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+            let mut loads: Map<KernelId, Vec<TensorId>> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
             let mut stores: Map<KernelId, Vec<TensorId>> =
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
@@ -135,74 +134,25 @@ impl Runtime {
                     let shape = self.graph.shape(nid);
                     let view = View::contiguous(shape);
                     let op = Op::LoadView { dtype, view };
-                    let kernel =
-                        Kernel { ops: vec![op], n_outputs: rcs[&nid], shape: shape.to_vec() };
+                    let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid], shape: shape.to_vec() };
                     let kid = kernels.push(kernel);
                     loads.insert(kid, vec![nid]);
                     (kid, 0)
                 } else {
-                    fn duplicate_if_used_elsewhere(
-                        graph: &Graph,
-                        realized_nodes: &mut Set<TensorId>,
-                        rcs: &Map<TensorId, u32>,
-                        kernels: &mut Slab<KernelId, Kernel>,
-                        x: TensorId,
-                        kid: &mut KernelId,
-                        op_id: &mut usize,
-                        loads: &mut Map<KernelId, Vec<TensorId>>,
-                        stores: &mut Map<KernelId, Vec<TensorId>>,
-                    ) {
-                        if kernels[*kid].n_outputs > 1 || rcs[&x] > 1 {
-                            let kernel_is_small = true;
-                            let kernel = if kernel_is_small {
-                                let mut kernel = kernels[*kid].clone();
-                                kernel.n_outputs -= 1;
-                                kernel
-                            } else {
-                                let dtype = graph.dtype(x);
-                                let shape = graph.shape(x);
-
-                                realized_nodes.insert(x);
-                                kernels[*kid].ops.push(Op::Store { x: *op_id, index: 0 });
-                                stores
-                                    .entry(*kid)
-                                    .and_modify(|vec| vec.push(x))
-                                    .or_insert_with(|| vec![x]);
-
-                                let view = View::contiguous(shape);
-                                let op = Op::LoadView { dtype, view };
-                                loads.insert(kernels.len(), vec![x]);
-                                *op_id = 1;
-                                Kernel { ops: vec![op], n_outputs: 1, shape: shape.to_vec() }
-                            };
-                            *kid = kernels.len();
-                            kernels.push(kernel);
-                        }
-                    }
-
                     match self.graph[nid] {
                         Node::Leaf { .. } => unreachable!(),
                         Node::Const { value } => {
                             let view = View::contiguous(&[1]);
                             let op = Op::ConstView { value, view };
-                            let kernel =
-                                Kernel { ops: vec![op], n_outputs: rcs[&nid], shape: vec![1] };
+                            let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid], shape: vec![1] };
                             (kernels.push(kernel), 0)
                         }
                         Node::Expand { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kid, op_id) = visited[&x];
 
-                            duplicate_if_used_elsewhere(
-                                &self.graph,
-                                &mut virt_realized_nodes,
-                                &rcs,
-                                &mut kernels,
-                                x,
-                                &mut kid,
-                                &mut op_id,
-                                &mut loads,
-                                &mut stores,
-                            );
+                            if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
+                                duplicate_kernel(&mut kid, &mut kernels);
+                            }
 
                             kernels[kid].n_outputs = rcs[&nid];
 
@@ -212,19 +162,11 @@ impl Runtime {
                             (kid, op_id)
                         }
                         Node::Permute { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kid, op_id) = visited[&x];
 
-                            duplicate_if_used_elsewhere(
-                                &self.graph,
-                                &mut virt_realized_nodes,
-                                &rcs,
-                                &mut kernels,
-                                x,
-                                &mut kid,
-                                &mut op_id,
-                                &mut loads,
-                                &mut stores,
-                            );
+                            if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
+                                duplicate_kernel(&mut kid, &mut kernels);
+                            }
 
                             kernels[kid].n_outputs = rcs[&nid];
 
@@ -234,19 +176,11 @@ impl Runtime {
                             (kid, op_id)
                         }
                         Node::Reshape { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kid, op_id) = visited[&x];
 
-                            duplicate_if_used_elsewhere(
-                                &self.graph,
-                                &mut virt_realized_nodes,
-                                &rcs,
-                                &mut kernels,
-                                x,
-                                &mut kid,
-                                &mut op_id,
-                                &mut loads,
-                                &mut stores,
-                            );
+                            if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
+                                duplicate_kernel(&mut kid, &mut kernels);
+                            }
 
                             kernels[kid].n_outputs = rcs[&nid];
 
@@ -259,18 +193,28 @@ impl Runtime {
                         Node::Pad { x } => {
                             let (mut kid, mut op_id) = visited[&x];
 
-                            duplicate_if_used_elsewhere(
-                                &self.graph,
-                                &mut virt_realized_nodes,
-                                &rcs,
-                                &mut kernels,
-                                x,
-                                &mut kid,
-                                &mut op_id,
-                                &mut loads,
-                                &mut stores,
-                            );
-
+                            let cannot_be_padded = kernels[kid].is_reduce();
+                            if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
+                                duplicate_kernel(&mut kid, &mut kernels);
+                            }
+                            if cannot_be_padded {
+                                let pkid = kid;
+                                store_x(
+                                    x,
+                                    &mut kid,
+                                    &mut op_id,
+                                    &self.graph,
+                                    &mut virt_realized_nodes,
+                                    &mut kernels,
+                                    &mut loads,
+                                    &mut stores,
+                                );
+                                if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
+                                    let kernel = unsafe { kernels.remove_and_return(pkid) };
+                                    realized_nodes.extend(&stores[&pkid]);
+                                    self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
+                                }
+                            }
                             kernels[kid].n_outputs = rcs[&nid];
 
                             let padding = self.graph.padding(nid);
@@ -281,20 +225,12 @@ impl Runtime {
                         Node::Reduce { x, rop } => {
                             // Don't apply reduce if the kernel already contains reduce
                             // and the resulting shape's dimension is less than 256
-                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kid, op_id) = visited[&x];
                             let shape = self.graph.shape(x);
 
-                            duplicate_if_used_elsewhere(
-                                &self.graph,
-                                &mut virt_realized_nodes,
-                                &rcs,
-                                &mut kernels,
-                                x,
-                                &mut kid,
-                                &mut op_id,
-                                &mut loads,
-                                &mut stores,
-                            );
+                            if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
+                                duplicate_kernel(&mut kid, &mut kernels);
+                            }
 
                             kernels[kid].n_outputs = rcs[&nid];
 
@@ -371,9 +307,7 @@ impl Runtime {
                                 let n = kernels[kid].ops.len();
                                 for op in &mut kernely.ops {
                                     match op {
-                                        Op::ConstView { .. }
-                                        | Op::LoadView { .. }
-                                        | Op::Loop { .. } => {}
+                                        Op::ConstView { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
                                         Op::Store { x, .. }
                                         | Op::Cast { x, .. }
                                         | Op::Unary { x, .. }
@@ -409,19 +343,8 @@ impl Runtime {
                     kernels[kid].ops.push(op);
                 }
 
-                // Order kernels
-                let mut trkid = None;
-                for kid in kernels.ids() {
-                    //kernels[kid].debug();
-                    //println!("{}", kernels[kid].n_outputs);
-                    if kernels[kid].n_outputs == 0
-                        && loads[&kid].iter().all(|x| realized_nodes.contains(x))
-                    {
-                        trkid = Some(kid);
-                        break;
-                    }
-                }
-                if let Some(kid) = trkid {
+                if kernels[kid].n_outputs == 0 && loads[&kid].iter().all(|x| realized_nodes.contains(x)) {
+                    //println!("Found {trkid:?}\n");
                     let kernel = unsafe { kernels.remove_and_return(kid) };
                     realized_nodes.extend(&stores[&kid]);
                     self.launch_kernel(kernel, &loads[&kid], &stores[&kid])?;
@@ -453,16 +376,10 @@ impl Runtime {
         &mut self,
         realized_nodes: &Set<TensorId>,
         to_eval: &mut Set<TensorId>,
-    ) -> (
-        Vec<TensorId>,
-        Set<TensorId>,
-        Set<TensorId>,
-        Map<TensorId, u32>,
-    ) {
+    ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
         let old_to_eval = to_eval.clone();
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        let mut rcs: Map<TensorId, u32> =
-            Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 if !realized_nodes.contains(&nid) {
@@ -475,8 +392,7 @@ impl Runtime {
         let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
         let mut new_leafs = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
         let mut order = Vec::new();
-        let mut internal_rcs: Map<TensorId, u32> =
-            Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if let Some(&rc) = rcs.get(&nid) {
@@ -517,18 +433,12 @@ impl Runtime {
         &mut self,
         realized_nodes: &Set<TensorId>,
         to_eval: &mut Set<TensorId>,
-    ) -> (
-        Vec<TensorId>,
-        Set<TensorId>,
-        Set<TensorId>,
-        Map<TensorId, u32>,
-    ) {
+    ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
         // Get order for evaluation using DFS with ref counting to resolve
         // nodes with more than one parent.
         let (outside_nodes, mut order) = {
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            let mut rcs: Map<TensorId, u32> =
-                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
             while let Some(nid) = params.pop() {
                 rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                     params.extend(self.graph.nodes[nid].1.parameters());
@@ -539,8 +449,7 @@ impl Runtime {
             let mut order = Vec::new();
             let mut internal_rcs: Map<TensorId, u32> =
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            let mut outside_nodes =
-                Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            let mut outside_nodes = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
             while let Some(nid) = params.pop() {
                 if let Some(&rc) = rcs.get(&nid) {
@@ -612,8 +521,7 @@ impl Runtime {
         //println!("New leafs: {new_leafs:?}");
         //println!("To delete: {to_delete:?}");
         let to_eval: Set<TensorId> = to_eval.difference(realized_nodes).copied().collect();
-        let mut rcs: Map<TensorId, u32> =
-            Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if let Some(rc) = rcs.get_mut(&nid) {
@@ -641,12 +549,7 @@ impl Runtime {
         )
     }
 
-    fn launch_kernel(
-        &mut self,
-        mut kernel: Kernel,
-        loads: &[TensorId],
-        stores: &[TensorId],
-    ) -> Result<(), ZyxError> {
+    fn launch_kernel(&mut self, mut kernel: Kernel, loads: &[TensorId], stores: &[TensorId]) -> Result<(), ZyxError> {
         println!("Kernel launch");
         kernel.debug();
         println!();
@@ -657,15 +560,11 @@ impl Runtime {
 
         let required_kernel_memory: Dim = stores
             .iter()
-            .map(|&tid| {
-                self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim
-            })
+            .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim)
             .sum::<Dim>()
             + loads
                 .iter()
-                .map(|&tid| {
-                    self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim
-                })
+                .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim)
                 .sum::<Dim>();
         //println!("Kernel requires {required_kernel_memory} B");
         let mut dev_ids: Vec<usize> = (0..self.devices.len()).collect();
@@ -680,8 +579,7 @@ impl Runtime {
                 .iter()
                 .map(|tid| {
                     if self.pools[mpid].buffer_map.contains_key(tid) {
-                        self.shape(*tid).iter().product::<Dim>()
-                            * self.dtype(*tid).byte_size() as Dim
+                        self.shape(*tid).iter().product::<Dim>() * self.dtype(*tid).byte_size() as Dim
                     } else {
                         0
                     }
@@ -716,8 +614,8 @@ impl Runtime {
                     }
                     debug_assert_ne!(old_mpid, usize::MAX);
 
-                    let bytes = self.graph.shape(tid).iter().product::<Dim>()
-                        * self.graph.dtype(tid).byte_size() as Dim;
+                    let bytes =
+                        self.graph.shape(tid).iter().product::<Dim>() * self.graph.dtype(tid).byte_size() as Dim;
                     // No need to initialize here, other than rust is bad.
                     let mut byte_slice = vec![0u8; bytes as usize];
                     let src = self.pools[old_mpid].buffer_map[&tid];
@@ -736,11 +634,7 @@ impl Runtime {
                             break;
                         }
                     }
-                    self.pools[old_mpid].pool.pool_to_host(
-                        src,
-                        &mut byte_slice,
-                        event_wait_list,
-                    )?;
+                    self.pools[old_mpid].pool.pool_to_host(src, &mut byte_slice, event_wait_list)?;
 
                     // Delete the tensor from the old pool
                     self.pools[old_mpid].pool.deallocate(src, vec![]);
@@ -748,8 +642,7 @@ impl Runtime {
                     //println!("{byte_slice:?}");
 
                     let (dst, event) = self.pools[mpid].pool.allocate(bytes)?;
-                    let event =
-                        self.pools[mpid].pool.host_to_pool(&byte_slice, dst, vec![event])?;
+                    let event = self.pools[mpid].pool.host_to_pool(&byte_slice, dst, vec![event])?;
                     // We have to sync here, because byte_slice does not exist any more.
                     // The other solution would be to put this into temp_data.
                     // But perhaps we should figure some better async.
@@ -763,8 +656,7 @@ impl Runtime {
         // Allocate space for all stores (outputs)
         let mut output_buffers = BTreeSet::new();
         for &tid in stores {
-            let bytes =
-                self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim;
+            let bytes = self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim;
             let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
             self.pools[mpid].buffer_map.insert(tid, buffer_id);
             event_wait_list.push(event);
@@ -790,8 +682,7 @@ impl Runtime {
         let dev_info_id = if let Some(&dev_info_id) = self.cache.device_infos.get(device.info()) {
             dev_info_id
         } else {
-            let dev_info_id =
-                self.cache.device_infos.values().max().map_or(0, |id| id.checked_add(1).unwrap());
+            let dev_info_id = self.cache.device_infos.values().max().map_or(0, |id| id.checked_add(1).unwrap());
             assert!(self.cache.device_infos.insert(device.info().clone(), dev_info_id).is_none());
             dev_info_id
         };
@@ -803,9 +694,7 @@ impl Runtime {
                 event = Some(device.launch(program_id, &mut pool.pool, &args, event_wait_list)?);
             // If we know the best optimization, but it has not been compiled yet
             // (the best optimization was in disk cache)
-            } else if let Some(optimization) =
-                self.cache.optimizations.get(&(kernel_id, dev_info_id))
-            {
+            } else if let Some(optimization) = self.cache.optimizations.get(&(kernel_id, dev_info_id)) {
                 todo!()
                 //let mut kernel = kernel.clone();
                 //let kernel = kernel.apply_optimization(optimization);
@@ -820,8 +709,7 @@ impl Runtime {
             }
         } else {
             // If it is not in cache, we just get new empty kernel id where we insert the kernel
-            let kernel_id =
-                self.cache.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
+            let kernel_id = self.cache.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
             assert!(self.cache.kernels.insert(kernel.clone(), kernel_id).is_none());
 
             //if debug.sched() { kernel.debug(); }
@@ -840,16 +728,12 @@ impl Runtime {
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 pool.pool.sync_events(vec![event])?;
                 let nanos = nanos.elapsed().as_nanos();
-                assert!(
-                    self.cache.programs.insert((kernel_id, dev_id as u32), program_id).is_none()
-                );
+                assert!(self.cache.programs.insert((kernel_id, dev_id as u32), program_id).is_none());
                 if self.debug.perf() {
                     let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                     println!("{}", get_perf(flop, mem_read, mem_write, nanos));
                 }
-                self.cache
-                    .optimizations
-                    .insert((kernel_id, dev_info_id), (optimization, nanos as u64));
+                self.cache.optimizations.insert((kernel_id, dev_info_id), (optimization, nanos as u64));
             } else {
                 // Otherwise try search_iters optimizations (kernels), record and put the best in the cache
 
@@ -891,4 +775,38 @@ impl Runtime {
         // TODO Deallocate loads that are not used by any other kernel
         Ok(())
     }
+}
+
+fn store_x(
+    x: TensorId,
+    kid: &mut KernelId,
+    op_id: &mut usize,
+    graph: &Graph,
+    realized_nodes: &mut std::collections::HashSet<TensorId, BuildHasherDefault<crate::chasher::CHasher>>,
+    kernels: &mut Slab<KernelId, Kernel>,
+    loads: &mut std::collections::HashMap<KernelId, Vec<TensorId>, BuildHasherDefault<crate::chasher::CHasher>>,
+    stores: &mut std::collections::HashMap<KernelId, Vec<TensorId>, BuildHasherDefault<crate::chasher::CHasher>>,
+) {
+    let dtype = graph.dtype(x);
+    let shape = graph.shape(x);
+
+    realized_nodes.insert(x);
+    kernels[*kid].ops.push(Op::Store { x: *op_id, index: 0 });
+    stores.entry(*kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
+    kernels[*kid].n_outputs = 0;
+
+    let view = View::contiguous(shape);
+    let op = Op::LoadView { dtype, view };
+    loads.insert(kernels.len(), vec![x]);
+    *op_id = 1;
+    let kernel = Kernel { ops: vec![op], n_outputs: 1, shape: shape.to_vec() };
+    *kid = kernels.len();
+    kernels.push(kernel);
+}
+
+fn duplicate_kernel(kid: &mut KernelId, kernels: &mut Slab<KernelId, Kernel>) {
+    let mut kernel = kernels[*kid].clone();
+    kernel.n_outputs -= 1;
+    *kid = kernels.len();
+    kernels.push(kernel);
 }
