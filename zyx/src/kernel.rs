@@ -431,7 +431,11 @@ impl Kernel {
                     let shape = self.shape.clone();
                     for (id, d) in shape.iter().enumerate().rev() {
                         let stride = Constant::U32(st as u32);
-                        let x = new_op(&mut ops, Op::Index { id: id as u8 });
+                        let x = if *d > 1 {
+                            new_op(&mut ops, Op::Index { id: id as u8 })
+                        } else {
+                            new_op(&mut ops, Op::Const(Constant::U32(0)))
+                        };
                         let y = new_op(&mut ops, Op::Const(stride));
                         let x = new_op(&mut ops, Op::Binary { x, y, bop: BOp::Mul });
                         index = new_op(&mut ops, Op::Binary { x, y: index, bop: BOp::Add });
@@ -647,7 +651,12 @@ impl Kernel {
                                     change = true;
                                 }
                             }
-                            BOp::Sub => todo!(),
+                            BOp::Sub => {
+                                if cy.is_zero() {
+                                    self.ops[op_id] = x.clone();
+                                    change = true;
+                                }
+                            }
                             BOp::Mul => {
                                 if cy.is_zero() {
                                     self.ops[op_id] = Op::Const(cy);
@@ -684,7 +693,7 @@ impl Kernel {
                             BOp::BitAnd => todo!(),
                             BOp::BitShiftLeft => todo!(),
                             BOp::BitShiftRight => todo!(),
-                            BOp::NotEq => todo!(),
+                            BOp::NotEq => {},
                         },
                         _ => {}
                     },

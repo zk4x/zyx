@@ -321,8 +321,9 @@ impl Runtime {
                                 }
                                 kernels[kid].ops.extend(kernely.ops);
 
-                                let kidy_loads = loads.remove(&kidy).unwrap();
-                                loads.get_mut(&kid).unwrap().extend(kidy_loads);
+                                if let Some(kidy_loads) = loads.remove(&kidy) {
+                                    loads.get_mut(&kid).unwrap().extend(kidy_loads);
+                                }
 
                                 let op = Op::Binary { x: op_id, y: op_idy + n, bop };
                                 kernels[kid].ops.push(op);

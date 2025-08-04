@@ -649,8 +649,11 @@ impl OpenCLDevice {
                     dtypes.insert(i, dtypes[&x]);
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                 }
-                &Op::Binary { x, y, .. } => {
+                &Op::Binary { x, y, bop } => {
                     dtypes.insert(i, dtypes[&x]);
+                    if matches!(bop, BOp::NotEq | BOp::Cmpgt | BOp::Cmplt | BOp::And | BOp::Or) {
+                        dtypes.insert(i, DType::Bool);
+                    }
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                     rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
                 }
@@ -800,7 +803,7 @@ impl OpenCLDevice {
                         BOp::BitAnd => todo!(),
                         BOp::BitShiftLeft => todo!(),
                         BOp::BitShiftRight => todo!(),
-                        BOp::NotEq => todo!(),
+                        BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};").unwrap(),
                     }
                 }
                 &Op::Loop { dtype, rop, ref dims } => {

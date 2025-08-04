@@ -1856,7 +1856,9 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn nonzero(&self) -> Tensor {
-        !self.equal(Tensor::from(0).cast(self.dtype())).unwrap()
+        let y = Tensor::from(0).cast(self.dtype()).expand(self.shape()).unwrap();
+        let id = RT.lock().binary(self.id, y.id, BOp::NotEq);
+        Tensor { id }
     }
 
     // ternary
@@ -3527,7 +3529,7 @@ impl Display for Tensor {
             DType::Bool => {
                 let data: Result<Vec<bool>, _> = x.try_into();
                 match data {
-                    Ok(data) => tensor_to_string(&data, &self.shape(), 0, f.width()),
+                    Ok(data) => tensor_to_string(&data, &self.shape(), 5, f.width()),
                     Err(e) => format!("i32 tensor failed to realize {e:?}"),
                 }
             }

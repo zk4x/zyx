@@ -115,12 +115,10 @@ fn not() -> Result<(), ZyxError> {
 #[test]
 fn nonzero() -> Result<(), ZyxError> {
     let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
+        -3.285, 0.00, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
     ];
-    let zdata: Vec<bool> = Tensor::from(data).nonzero().try_into()?;
-    for (&x, y) in data.iter().zip(zdata) {
-        assert_eq!(x != 0., y);
-    }
+    let z = Tensor::from(data).nonzero();
+    assert_eq!(z, [true, false, true, true, true, true, true, true, true, true]);
     Ok(())
 }
 
