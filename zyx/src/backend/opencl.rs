@@ -764,18 +764,19 @@ impl OpenCLDevice {
                     .unwrap();
                 }
                 &Op::Unary { x, uop } => {
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtypes[&x], rcs[&i]);
+                    let dtype = dtypes[&x];
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     match uop {
-                        UOp::ReLU => writeln!(source, "{indent}r{reg} = max({x}, 0);",).unwrap(),
-                        UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};",).unwrap(),
-                        UOp::Exp2 => writeln!(source, "{indent}r{reg} = exp2({x});",).unwrap(),
-                        UOp::Log2 => todo!(),
-                        UOp::Reciprocal => todo!(),
-                        UOp::Sqrt => todo!(),
-                        UOp::Sin => todo!(),
-                        UOp::Cos => todo!(),
-                        UOp::Not => todo!(),
+                        UOp::ReLU => writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl()).unwrap(),
+                        UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};").unwrap(),
+                        UOp::Exp2 => writeln!(source, "{indent}r{reg} = exp2({x});").unwrap(),
+                        UOp::Log2 => writeln!(source, "{indent}r{reg} = log2({x});").unwrap(),
+                        UOp::Reciprocal => writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().ocl()).unwrap(),
+                        UOp::Sqrt => writeln!(source, "{indent}r{reg} = sqrt({x});").unwrap(),
+                        UOp::Sin => writeln!(source, "{indent}r{reg} = sin({x});").unwrap(),
+                        UOp::Cos => writeln!(source, "{indent}r{reg} = cos({x});").unwrap(),
+                        UOp::Not => writeln!(source, "{indent}r{reg} = !{x};").unwrap(),
                     }
                 }
                 &Op::Binary { x, y, bop } => {
@@ -783,10 +784,10 @@ impl OpenCLDevice {
                     let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     let y = get_var(y, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     match bop {
-                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};",).unwrap(),
-                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};",).unwrap(),
-                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};",).unwrap(),
-                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};",).unwrap(),
+                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};").unwrap(),
+                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),
+                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};").unwrap(),
+                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};").unwrap(),
                         BOp::Pow => todo!(),
                         BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};").unwrap(),
                         BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};").unwrap(),

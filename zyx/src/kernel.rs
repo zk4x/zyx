@@ -221,17 +221,17 @@ impl Kernel {
     }
 
     pub fn apply_optimization(&mut self, optimization: &Optimization) {
-        /*match optimization {
+        match optimization {
             Optimization::Basic { shape } => {
                 let n = self.shape.len();
                 self.apply_movement(|view| view.reshape(0..n, &shape));
                 self.shape = shape.clone();
             }
-        }*/
-        let n = self.shape.len();
+        }
+        /*let n = self.shape.len();
         let shape = vec![1, 1, 1, 1, 4, 2];
         self.apply_movement(|view| view.reshape(0..n, &shape));
-        self.shape = shape.clone();
+        self.shape = shape.clone();*/
 
         //let loop_unroll_size = 8;
 
@@ -347,7 +347,7 @@ impl Kernel {
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
 
-                    println!("Unfolding view: {view}");
+                    //println!("Unfolding view: {view}");
                     let mut ops = Vec::new();
                     let mut pc = new_op(&mut ops, Op::Const(Constant::Bool(true)));
                     let mut offset = new_op(&mut ops, Op::Const(Constant::U32(0)));
@@ -374,7 +374,7 @@ impl Kernel {
                                     new_op(&mut ops, Op::Index { id: a as u8 })
                                 }
                             };
-                            println!("ost: {ost}, a: {a:?}, {dim:?}");
+                            //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
                                 let lp = new_op(&mut ops, Op::Const(Constant::U32(dim.lp.abs() as u32)));
@@ -422,7 +422,7 @@ impl Kernel {
                     }
                     self.increment_range(op_id..op_id + n, op_id);
                     self.increment_range(op_id + n + 1..self.ops.len(), n);
-                    op_id += n + 1;
+                    op_id += n;
                 }
                 Op::Store { x, .. } => {
                     let mut ops = Vec::new();
@@ -439,6 +439,7 @@ impl Kernel {
                     }
                     let n = ops.len() - 1;
                     self.ops[op_id] = Op::Store { x, index: op_id + n };
+                    //println!("{ops:?}");
                     for op in ops.into_iter().rev() {
                         self.ops.insert(op_id, op);
                     }
