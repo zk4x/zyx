@@ -1,7 +1,7 @@
 use zyx::Tensor;
 
 /// Activation
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub enum Activation {
     //#[serde(alias = "gelu")]
     /// Gelu
@@ -34,7 +34,8 @@ pub enum Activation {
 
 impl Activation {
     /// Activation forward
-    pub fn forward(&self, xs: &Tensor) -> Tensor {
+    pub fn forward(&self, xs: impl Into<Tensor>) -> Tensor {
+        let xs = xs.into();
         match self {
             Self::Gelu => xs.gelu(),
             Self::Relu => xs.relu(),

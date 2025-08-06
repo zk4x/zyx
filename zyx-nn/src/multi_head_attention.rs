@@ -124,13 +124,13 @@ impl MultiheadAttention {
     /// Forward multihead attention
     pub fn forward(
         &self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-        attn_mask: Option<Tensor>,
+        query: impl Into<Tensor>,
+        key: impl Into<Tensor>,
+        value: impl Into<Tensor>,
+        attn_mask: Option<impl Into<Tensor>>,
         train: bool,
     ) -> Result<(Tensor, Tensor), ZyxError> {
-        let (mut q, mut k, mut v) = (query, key, value);
+        let (mut q, mut k, mut v) = (query.into(), key.into(), value.into());
 
         if !self.batch_first {
             q = q.transpose(0, 1)?;

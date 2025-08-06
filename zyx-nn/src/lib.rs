@@ -44,6 +44,9 @@ pub use causal_self_attention::CausalSelfAttention;
 mod multi_head_attention;
 pub use multi_head_attention::MultiheadAttention;
 
+mod feed_forward;
+pub use feed_forward::FeedForward;
+
 mod embedding;
 pub use embedding::Embedding;
 
