@@ -55,3 +55,6 @@ pub use conv2d::Conv2d;
 
 mod activation;
 pub use activation::Activation;
+
+mod positional_encoding;
+pub use positional_encoding::PositionalEncoding;
