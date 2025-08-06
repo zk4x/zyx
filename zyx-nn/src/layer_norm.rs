@@ -16,11 +16,19 @@ pub struct LayerNorm {
 
 impl LayerNorm {
     /// Initialize LayerNorm layer
-    pub fn init(normalized_shape: impl zyx::IntoShape, bias: bool, dtype: DType) -> Result<LayerNorm, ZyxError> {
+    pub fn new(
+        normalized_shape: impl zyx::IntoShape,
+        bias: bool,
+        dtype: DType,
+    ) -> Result<LayerNorm, ZyxError> {
         Ok(LayerNorm {
             d_dims: normalized_shape.rank(),
             weight: Some(Tensor::randn(normalized_shape.clone(), dtype)?),
-            bias: if bias { Some(Tensor::randn(normalized_shape, dtype)?) } else { None },
+            bias: if bias {
+                Some(Tensor::randn(normalized_shape, dtype)?)
+            } else {
+                None
+            },
             eps: 1e-5,
         })
     }
@@ -32,7 +40,7 @@ impl LayerNorm {
         let eps = Tensor::from(self.eps).cast(x.dtype());
         let a = &x - x.mean_kd(axes.clone()).unwrap();
         let b = (x.var_kd(axes, 1).unwrap() + eps).sqrt();
-        let mut x = a/b;
+        let mut x = a / b;
         if let Some(w) = &self.weight {
             x = x * w;
         }

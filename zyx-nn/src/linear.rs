@@ -12,12 +12,21 @@ pub struct Linear {
 
 impl Linear {
     /// Initilize linear layer in device self
-    pub fn init(in_features: usize, out_features: usize, bias: bool, dtype: DType) -> Result<Linear, ZyxError> {
+    pub fn new(
+        in_features: usize,
+        out_features: usize,
+        bias: bool,
+        dtype: DType,
+    ) -> Result<Linear, ZyxError> {
         let l = -(1.0 / (in_features as f32)).sqrt();
         let u = (1.0 / (in_features as f32)).sqrt();
         Ok(Linear {
             weight: Tensor::uniform([out_features, in_features], l..u)?.cast(dtype),
-            bias: if bias { Some(Tensor::uniform([out_features], l..u)?.cast(dtype)) } else { None },
+            bias: if bias {
+                Some(Tensor::uniform([out_features], l..u)?.cast(dtype))
+            } else {
+                None
+            },
         })
     }
 
@@ -34,7 +43,7 @@ impl Linear {
 
 #[test]
 fn linear() -> Result<(), ZyxError> {
-    let l0 = Linear::init(4, 16, true, DType::F32)?;
+    let l0 = Linear::new(4, 16, true, DType::F32)?;
     println!("{}\n{}", l0.weight, l0.bias.as_ref().unwrap());
     let x = Tensor::randn([8, 4], DType::F32)?;
     let y = l0.forward(x)?.relu();

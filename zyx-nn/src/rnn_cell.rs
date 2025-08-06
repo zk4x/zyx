@@ -16,7 +16,12 @@ pub struct RNNCell {
 
 impl RNNCell {
     /// Initialize linear layer in device self
-    pub fn init(self, input_size: usize, hidden_size: usize, dtype: DType) -> Result<RNNCell, ZyxError> {
+    pub fn new(
+        self,
+        input_size: usize,
+        hidden_size: usize,
+        dtype: DType,
+    ) -> Result<RNNCell, ZyxError> {
         let l = (-(1. / (hidden_size as f32))).sqrt();
         let u = (1. / (hidden_size as f32)).sqrt();
         Ok(RNNCell {
@@ -32,7 +37,11 @@ impl RNNCell {
     /// returns (x, self.weight_ih.dot(x) + self.bias_ih + self.weight_hh.dot(hidden) + self.bias_hh)
     ///
     /// This function does not apply nonlinearity and it does not change x
-    pub fn forward(&self, x: impl Into<Tensor>, hidden: impl Into<Tensor>) -> Result<(Tensor, Tensor), ZyxError> {
+    pub fn forward(
+        &self,
+        x: impl Into<Tensor>,
+        hidden: impl Into<Tensor>,
+    ) -> Result<(Tensor, Tensor), ZyxError> {
         let x = x.into();
         let mut hx = self.weight_hh.dot(hidden)?;
         if let Some(b) = &self.bias_hh {

@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use zyx::Tensor;
 
 /// # Stochastic gradient descent optimizer
@@ -58,7 +57,8 @@ impl SGD {
                 }
                 if self.momentum != 0.0 {
                     if let Some(bias) = self.bias.get_mut(i) {
-                        *bias = bias.clone() * self.momentum + grad.clone() * (1.0 - self.dampening);
+                        *bias =
+                            bias.clone() * self.momentum + grad.clone() * (1.0 - self.dampening);
                     } else {
                         self.bias.push(grad.clone());
                     }

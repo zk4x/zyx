@@ -12,7 +12,7 @@ pub struct RMSNorm {
 
 impl RMSNorm {
     /// Initialize RMSNorm layer
-    pub fn init(dim: usize, dtype: DType) -> RMSNorm {
+    pub fn new(dim: usize, dtype: DType) -> RMSNorm {
         RMSNorm {
             scale: Tensor::ones(dim, dtype),
             eps: 1e-6,

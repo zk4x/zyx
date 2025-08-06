@@ -1,9 +1,9 @@
 //! Simple implementation of mutex based on spinlock.
 
-/*use std::sync::MutexGuard;
-pub(super) struct Mutex<T, const N: usize>(std::sync::Mutex<T>);
+use std::sync::MutexGuard;
+pub(super) struct Mutex<T>(std::sync::Mutex<T>);
 
-impl<T, const N: usize> Mutex<T, N> {
+impl<T> Mutex<T> {
     pub(super) const fn new(data: T) -> Self {
         Self(std::sync::Mutex::new(data))
     }
@@ -11,10 +11,10 @@ impl<T, const N: usize> Mutex<T, N> {
     pub(crate) fn lock(&self) -> MutexGuard<T> {
         self.0.lock().ok().unwrap()
     }
-}*/
+}
 
 // Spinlock is better for debugging, but std::mutex::Mutex is better for release
-use std::{
+/*use std::{
     cell::UnsafeCell,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -94,4 +94,4 @@ impl<T> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.store(false, Ordering::Release);
     }
-}
+}*/

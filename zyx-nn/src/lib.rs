@@ -28,6 +28,9 @@ pub use layer_norm::LayerNorm;
 mod batch_norm;
 pub use batch_norm::BatchNorm;
 
+mod group_norm;
+pub use group_norm::GroupNorm;
+
 mod rms_norm;
 pub use rms_norm::RMSNorm;
 
@@ -37,6 +40,9 @@ pub use rnn_cell::RNNCell;
 
 mod causal_self_attention;
 pub use causal_self_attention::CausalSelfAttention;
+
+mod multi_head_attention;
+pub use multi_head_attention::MultiheadAttention;
 
 mod embedding;
 pub use embedding::Embedding;

@@ -4,7 +4,7 @@ use zyx_derive::Module;
 /// Applies a 2D convolution over an input signal composed of several input planes.
 ///
 /// See: https://pytorch.org/docs/stable/generated/torch.nn.Conv2d
-#[derive(Module)]
+#[derive(Debug, Module)]
 pub struct Conv2d {
     stride: Vec<usize>,
     dilation: Vec<usize>,
@@ -18,7 +18,7 @@ pub struct Conv2d {
 
 impl Conv2d {
     /// Initialize Conv2d
-    pub fn init(
+    pub fn new(
         in_channels: usize,
         out_channels: usize,
         kernel_size: impl IntoShape,
@@ -50,21 +50,13 @@ impl Conv2d {
 
     /// Forward conv2d layer
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        x.into().conv(&self.weight, self.bias.as_ref(), self.groups, &self.stride, &self.dilation, &self.padding)
+        x.into().conv(
+            &self.weight,
+            self.bias.as_ref(),
+            self.groups,
+            &self.stride,
+            &self.dilation,
+            &self.padding,
+        )
     }
 }
-
-/*def __init__(self, in_channels:int, out_channels:int, kernel_size:int|tuple[int, ...], stride=1, padding:int|tuple[int, ...]|str=0,
-              dilation=1, groups=1, bias=True):
-  self.kernel_size = make_tuple(kernel_size, 2)
-  if isinstance(padding, str):
-    if padding.lower() != 'same': raise ValueError(f"Invalid padding string {padding!r}, only 'same' is supported")
-    if stride != 1: raise ValueError("padding='same' is not supported for strided convolutions")
-    pad = [(d*(k-1)//2, d*(k-1) - d*(k-1)//2) for d,k in zip(make_tuple(dilation, len(self.kernel_size)), self.kernel_size[::-1])]
-    padding = tuple(flatten(pad))
-  self.stride, self.dilation, self.groups, self.padding = stride, dilation, groups, padding
-  scale = 1 / math.sqrt(in_channels * prod(self.kernel_size))
-  self.weight = Tensor.uniform(out_channels, in_channels//groups, *self.kernel_size, low=-scale, high=scale)
-  self.bias: Tensor|None = Tensor.uniform(out_channels, low=-scale, high=scale) if bias else None
-
-def __call__(self, x:Tensor) -> Tensor: return x.conv2d(self.weight, self.bias, self.groups, self.stride, self.dilation, self.padding)*/

@@ -16,7 +16,7 @@ pub struct Embedding {
 
 impl Embedding {
     /// new embedding layer
-    pub fn init(vocab_size: usize, embed_size: usize, dtype: DType) -> Result<Embedding, ZyxError> {
+    pub fn new(vocab_size: usize, embed_size: usize, dtype: DType) -> Result<Embedding, ZyxError> {
         Ok(Embedding {
             vocab_size,
             embed_size,
@@ -58,9 +58,10 @@ impl Embedding {
         let xdt = x.dtype();
         let wdt = self.weight.dtype();
         if xdt != wdt {
-            return Err(ZyxError::DTypeError(format!(
-                "Embedding::forward input x has dtype {xdt} but weight has dtype {wdt}"
-            ).into()));
+            return Err(ZyxError::DTypeError(
+                format!("Embedding::forward input x has dtype {xdt} but weight has dtype {wdt}")
+                    .into(),
+            ));
         }
         let big_shp: Vec<usize> = x_sh
             .iter()

@@ -13,7 +13,7 @@ pub struct CausalSelfAttention {
 
 impl CausalSelfAttention {
     /// New causal self attention
-    pub fn init(
+    pub fn new(
         n_embd: usize,
         n_head: usize,
         bias: bool,
@@ -21,8 +21,8 @@ impl CausalSelfAttention {
         dtype: DType,
     ) -> Result<CausalSelfAttention, ZyxError> {
         Ok(CausalSelfAttention {
-            c_attn: Linear::init(n_embd, 3 * n_embd, bias, dtype)?,
-            c_proj: Linear::init(n_embd, n_embd, bias, dtype)?,
+            c_attn: Linear::new(n_embd, 3 * n_embd, bias, dtype)?,
+            c_proj: Linear::new(n_embd, n_embd, bias, dtype)?,
             n_head,
             dropout_p,
         })
@@ -133,9 +133,26 @@ fn attention1() -> Result<(), ZyxError> {
     // after 5 iterations
     assert_eq!(
         x,
-        [[[-1.34166388e-04f32, -3.10145377e-04, -3.39602208e-04,  2.14193460e-05],
-         [-1.34166388e-04, -3.10145377e-04, -3.39602208e-04,  2.14193460e-05],
-         [-1.34166388e-04, -3.10145377e-04, -3.39602208e-04,  2.14193460e-05]]]
+        [[
+            [
+                -1.34166388e-04f32,
+                -3.10145377e-04,
+                -3.39602208e-04,
+                2.14193460e-05
+            ],
+            [
+                -1.34166388e-04,
+                -3.10145377e-04,
+                -3.39602208e-04,
+                2.14193460e-05
+            ],
+            [
+                -1.34166388e-04,
+                -3.10145377e-04,
+                -3.39602208e-04,
+                2.14193460e-05
+            ]
+        ]]
     );
 
     Ok(())

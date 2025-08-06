@@ -14,10 +14,14 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
-extern crate alloc;
+mod adam;
+pub use adam::Adam;
+
+mod adamw;
+pub use adamw::AdamW;
+
+mod rmsprop;
+pub use rmsprop::RMSprop;
 
 mod sgd;
 pub use sgd::SGD;
-
-mod adam;
-pub use adam::Adam;

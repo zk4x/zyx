@@ -27,7 +27,7 @@ pub struct BatchNorm {
 
 impl BatchNorm {
     /// Initilize layer_norm layer in device self
-    pub fn init(self, num_features: usize, dtype: DType) -> BatchNorm {
+    pub fn new(self, num_features: usize, dtype: DType) -> BatchNorm {
         BatchNorm {
             eps: 1e-5,
             momentum: 0.1,
