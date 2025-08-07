@@ -19,19 +19,22 @@ pub struct Kernel {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
+    // ops that exist only in kernelizer
     ConstView { value: Constant, view: View },
+    LoadView { dtype: DType, view: View },
+    Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
+
+    // ops that exist in IR
     Const(Constant),
     Index { id: u8 },
-    LoadView { dtype: DType, view: View },
     Load { dtype: DType, index: OpId },
     Store { x: OpId, index: OpId },
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    //DeclareAcc { dtype: DType, rop: ROp, dims: Vec<Dim> },
-    Loop { dtype: DType, rop: ROp, dims: Vec<Dim> },
-    //EndLoop {},
-    Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
+    DeclareAcc { dtype: DType, rop: ROp },
+    Loop { dims: Vec<Dim>, tiled: bool }, // tiled means both vectorization and tensor cores
+    EndLoop { dims: Vec<Dim> },
 }
 
 #[derive(Debug)]
@@ -144,20 +147,16 @@ impl Kernel {
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
-                Op::Loop { dtype, rop, dims } => println!(
-                    "{i:>3} ACC {dtype} LOOP {} dims={dims:?}",
-                    match rop {
-                        ROp::Sum => "SUM",
-                        ROp::Max => "MAX",
-                    }
-                ),
+                Op::Loop { dims, tiled } => println!("{i:>3} LOOP dims={dims:?} tiled={tiled:?}"),
+                Op::EndLoop { dims } => println!("{i:>3} ENDLOOP dims={dims:?}"),
                 Op::Reduce { x, rop, dims } => println!(
-                    "{i:>3} ENDLOOP {} {x}, dims={dims:?}",
+                    "{i:>3} REDUCE {} {x}, dims={dims:?}",
                     match rop {
                         ROp::Sum => "SUM",
                         ROp::Max => "MAX",
                     }
                 ),
+                Op::DeclareAcc { dtype, rop } => println!("{i:>3} ACC {dtype} {rop:?}"),
             }
         }
     }
@@ -237,7 +236,7 @@ impl Kernel {
 
         //let loop_unroll_size = 8;
 
-        self.insert_loops_for_reduces();
+        self.unfold_reduces();
         self.unfold_views();
 
         let mut kernel = self.clone();
@@ -254,7 +253,7 @@ impl Kernel {
         }
     }
 
-    fn insert_loops_for_reduces(&mut self) {
+    fn unfold_reduces(&mut self) {
         // Check the reduce op, trace all of it's dependencies,
         // put Loop op before dependency with lowest ID
         // increase all ids higher than that by one
@@ -316,10 +315,14 @@ impl Kernel {
                             min_param = y;
                         }
                     }
+                    Op::DeclareAcc { .. } => unreachable!(),
                     Op::Loop { .. } => unreachable!(),
+                    Op::EndLoop { .. } => unreachable!(),
                 }
             }
-            self.ops.insert(min_param, Op::Loop { dtype: acc_dtype.unwrap(), rop, dims });
+            self.ops.insert(min_param, Op::DeclareAcc { dtype: acc_dtype.unwrap(), rop });
+            self.ops.insert(min_param, Op::Loop { dims, tiled: false });
+            // TODO add binary op and endloop
             self.increment_range(min_param + 1..self.ops.len(), 1, min_param);
         }
     }
@@ -499,6 +502,8 @@ impl Kernel {
                         *y += n;
                     }
                 }
+                Op::DeclareAcc { .. } => {}
+                Op::EndLoop { .. } => {}
             }
         }
     }
@@ -543,6 +548,8 @@ impl Kernel {
                         *y -= n;
                     }
                 }
+                Op::DeclareAcc { .. } => {}
+                Op::EndLoop { .. } => {}
             }
         }
     }
@@ -550,7 +557,7 @@ impl Kernel {
     fn dead_code_elimination(&mut self) {
         let mut params = Vec::new();
         for op_id in 0..self.ops.len() {
-            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. }) {
+            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. } | Op::EndLoop { .. }) {
                 params.push(op_id);
             }
         }
@@ -583,6 +590,8 @@ impl Kernel {
                 Op::Reduce { x, .. } => {
                     params.push(x);
                 }
+                Op::DeclareAcc { .. } => {}
+                Op::EndLoop { .. } => {}
             }
         }
         for op_id in (0..self.ops.len()).rev() {
@@ -614,6 +623,8 @@ impl Kernel {
                     | Op::Load { .. }
                     | Op::Store { .. }
                     | Op::Loop { .. }
+                    | Op::EndLoop { .. }
+                    | Op::DeclareAcc { .. }
                     | Op::Reduce { .. } => {}
                     Op::Cast { x, dtype } => {
                         if let Op::Const(x) = self.ops[x] {

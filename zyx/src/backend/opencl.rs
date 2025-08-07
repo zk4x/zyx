@@ -658,6 +658,8 @@ impl OpenCLDevice {
                     rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
                 }
                 Op::Loop { .. } => {}
+                Op::EndLoop { .. } => {}
+                Op::DeclareAcc { .. } => {}
                 &Op::Reduce { x, .. } => {
                     dtypes.insert(i, dtypes[&x]);
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
@@ -810,7 +812,7 @@ impl OpenCLDevice {
                         BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};").unwrap(),
                     }
                 }
-                &Op::Loop { dtype, rop, ref dims } => {
+                &Op::DeclareAcc { dtype, rop } => {
                     accs.push(dtype);
                     writeln!(
                         source,
@@ -823,6 +825,8 @@ impl OpenCLDevice {
                         }
                     )
                     .unwrap();
+                }
+                &Op::Loop { ref dims, tiled: _ } => {
                     for dim in dims {
                         writeln!(
                             source,
@@ -833,15 +837,18 @@ impl OpenCLDevice {
                         loop_id += 1;
                     }
                 }
-                &Op::Reduce { x, rop, ref dims } => {
-                    accs.pop().unwrap();
+                &Op::Reduce { .. } => {
+                    unreachable!();
+                    /*accs.pop().unwrap();
                     let a = accs.len() as u8;
                     acc_map.insert(i, a);
                     let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     match rop {
                         ROp::Sum => writeln!(source, "{indent}acc{a} = {x} + acc{a};").unwrap(),
                         ROp::Max => writeln!(source, "{indent}acc{a} = max({x}, acc{a});").unwrap(),
-                    }
+                    }*/
+                }
+                Op::EndLoop { dims } => {
                     for _ in dims {
                         indent.pop();
                         indent.pop();
