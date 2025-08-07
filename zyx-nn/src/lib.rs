@@ -58,3 +58,9 @@ pub use activation::Activation;
 
 mod positional_encoding;
 pub use positional_encoding::PositionalEncoding;
+
+mod transformer_encoder_layer;
+pub use transformer_encoder_layer::TransformerEncoderLayer;
+
+mod transformer_decoder_layer;
+pub use transformer_decoder_layer::TransformerDecoderLayer;

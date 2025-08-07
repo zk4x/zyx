@@ -1566,11 +1566,64 @@ impl Tensor {
     }
 
     // index
-    /// Get function
+    /// Indexes into a tensor using flexible and expressive range-based access.
+    ///
+    /// This function provides ergonomic slicing capabilities for tensors,
+    /// supporting various index types such as integers, ranges, tuples, vectors,
+    /// and slices. It returns a new tensor that is a view of the original tensor
+    /// based on the provided indices.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - Any type implementing [`IntoIndex`], such as:
+    ///   - A single integer (e.g., `0`, `-1`)
+    ///   - A `Range` (e.g., `0..3`, `2..`, `..5`, `..`)
+    ///   - A tuple of integers/ranges for multi-dimensional access (e.g., `(0, 1..3, -1, ..)`), up to 8D
+    ///   - A `Vec<Range<isize>>` for dynamic indexing
+    ///   - A slice `&[impl IntoRange]` for general-purpose indexing
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Tensor, ZyxError>` — The sliced tensor view if indexing is valid,
+    ///   or a [`ZyxError::ShapeError`] if any index is out of bounds or mismatched.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// let x = Tensor::randn([3, 4, 5], DType::F32)?;
+    ///
+    /// // Select first item from first dimension
+    /// let a = x.get(0)?;
+    ///
+    /// // Select last element along the last axis
+    /// let b = x.get((.., .., -1))?;
+    ///
+    /// // Slice second dimension between index 1 and 3
+    /// let c = x.get((0, 1..3, ..))?;
+    ///
+    /// // Chain indexing calls
+    /// let d = x.get((0, .., -1))?.get(0)?;
+    ///
+    /// // Use a slice of ranges
+    /// let slice = &[0..2, 1..4];
+    /// let e = x.get(slice)?;
+    ///
+    /// // Use a vector of ranges dynamically
+    /// let ranges = vec![0..2, 0..4, 1..5];
+    /// let f = x.get(ranges)?;
+    /// ```
+    ///
+    /// # Notes
+    ///
+    /// - Negative indexing is supported (e.g., `-1` is the last element).
+    /// - Omitted dimensions are preserved in the output.
+    /// - This operation is non-mutating: it returns a new tensor and does not alter the original.
+    /// - Useful for flexible slicing, batching, and masking operations.
     ///
     /// # Errors
     ///
-    /// Returns error if self cannot be indexed by index.
+    /// Returns a [`ZyxError::ShapeError`] if the indices are invalid, out of bounds,
+    /// or don't match the tensor's dimensionality.
     #[allow(clippy::missing_panics_doc)]
     pub fn get(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
@@ -4081,6 +4134,19 @@ impl Not for &Tensor {
     type Output = Tensor;
     fn not(self) -> Self::Output {
         Tensor { id: RT.lock().unary(self.id, UOp::Not) }
+    }
+}
+
+/// Panics on indexing, with a helpful message directing to `.get(...)`.
+impl<I: IntoIndex> std::ops::Index<I> for Tensor {
+    type Output = Tensor;
+
+    fn index(&self, _index: I) -> &Self::Output {
+        panic!(
+            "Tensor does not support indexing with `[]`. \
+             Use `.get(...)` instead, which supports ranges, integers, and tuples. \
+             Example: tensor.get((0..3, -1))"
+        );
     }
 }
 

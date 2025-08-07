@@ -19,7 +19,6 @@ pub struct Kernel {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Op {
-    //Sink { stores: Vec<Op> }, // A way to put multiple stores in one kernel
     ConstView { value: Constant, view: View },
     Const(Constant),
     Index { id: u8 },
@@ -29,8 +28,10 @@ pub enum Op {
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
+    //DeclareAcc {},
     Loop { dtype: DType, rop: ROp, dims: Vec<Dim> },
-    Reduce { x: OpId, rop: ROp, dims: Vec<Dim> }, // Loops are always reduce loops
+    //EndLoop {},
+    Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
 }
 
 #[derive(Debug)]
@@ -643,7 +644,7 @@ impl Kernel {
                             BOp::BitShiftLeft => todo!(),
                             BOp::BitShiftRight => todo!(),
                             BOp::NotEq => todo!(),
-                        }
+                        },
                         (x, &Op::Const(cy)) => match bop {
                             BOp::Add => {
                                 if cy.is_zero() {
@@ -693,7 +694,7 @@ impl Kernel {
                             BOp::BitAnd => todo!(),
                             BOp::BitShiftLeft => todo!(),
                             BOp::BitShiftRight => todo!(),
-                            BOp::NotEq => {},
+                            BOp::NotEq => {}
                         },
                         _ => {}
                     },

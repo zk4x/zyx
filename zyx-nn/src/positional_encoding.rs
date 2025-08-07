@@ -112,7 +112,7 @@ impl PositionalEncoding {
     /// - Input tensor is not 3-dimensional.
     /// - The input dimension `d_model` does not match the positional encoding.
     /// - The sequence length exceeds the configured `max_len`.
-    pub fn forward<T: Into<Tensor>>(&self, x: T) -> Result<Tensor, ZyxError> {
+    pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
         let shape = x.shape();
 
