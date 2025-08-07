@@ -695,7 +695,7 @@ impl Runtime {
                 event = Some(device.launch(program_id, &mut pool.pool, &args, event_wait_list)?);
             // If we know the best optimization, but it has not been compiled yet
             // (the best optimization was in disk cache)
-            } else if let Some(optimization) = self.cache.optimizations.get(&(kernel_id, dev_info_id)) {
+            } else if let Some(_optimization) = self.cache.optimizations.get(&(kernel_id, dev_info_id)) {
                 todo!()
                 //let mut kernel = kernel.clone();
                 //let kernel = kernel.apply_optimization(optimization);

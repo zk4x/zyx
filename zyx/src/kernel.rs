@@ -28,7 +28,7 @@ pub enum Op {
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    //DeclareAcc {},
+    //DeclareAcc { dtype: DType, rop: ROp, dims: Vec<Dim> },
     Loop { dtype: DType, rop: ROp, dims: Vec<Dim> },
     //EndLoop {},
     Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
@@ -48,7 +48,7 @@ pub struct Cache {
 
 #[derive(Debug)]
 pub enum Optimization {
-    Basic { shape: Vec<Dim> },
+    Basic { shape: Vec<Dim>, loop_unroll_size: Dim },
 }
 
 impl Cache {
@@ -218,17 +218,18 @@ impl Kernel {
         shape.extend(global_work_size);
         shape.extend(local_work_size);
 
-        Optimization::Basic { shape }
+        Optimization::Basic { shape, loop_unroll_size: 16 }
     }
 
     pub fn apply_optimization(&mut self, optimization: &Optimization) {
-        match optimization {
-            Optimization::Basic { shape } => {
+        let loop_unroll_size = match optimization {
+            Optimization::Basic { shape, loop_unroll_size } => {
                 let n = self.shape.len();
                 self.apply_movement(|view| view.reshape(0..n, &shape));
                 self.shape = shape.clone();
+                *loop_unroll_size
             }
-        }
+        };
         /*let n = self.shape.len();
         let shape = vec![1, 1, 1, 1, 4, 2];
         self.apply_movement(|view| view.reshape(0..n, &shape));
@@ -242,8 +243,8 @@ impl Kernel {
         let mut kernel = self.clone();
         loop {
             self.constant_folding();
-            //self.loop_unrolling(loop_unroll_size);
-            //self.deduplicate();
+            self.loop_unrolling(loop_unroll_size);
+            self.deduplicate();
             self.dead_code_elimination();
             //self.loop_invariant_code_motion();
             if *self == kernel {
@@ -319,7 +320,7 @@ impl Kernel {
                 }
             }
             self.ops.insert(min_param, Op::Loop { dtype: acc_dtype.unwrap(), rop, dims });
-            self.increment_range(min_param + 1..self.ops.len(), 1);
+            self.increment_range(min_param + 1..self.ops.len(), 1, min_param);
         }
     }
 
@@ -336,7 +337,7 @@ impl Kernel {
         let mut op_id = 0;
         while op_id < self.ops.len() {
             match self.ops[op_id] {
-                Op::ConstView { value, ref view } => {
+                Op::ConstView { value, view: _ } => {
                     // TODO process view
                     self.ops[op_id] = Op::Const(value);
                 }
@@ -416,14 +417,14 @@ impl Kernel {
 
                     self.ops.remove(op_id);
 
-                    let n = ops.len() - 1;
+                    let n = ops.len();
+                    self.increment_range(op_id..self.ops.len(), n - 1, op_id);
                     //self.ops[op_id] = Op::Load { dtype, index: op_id + n };
                     for op in ops.into_iter().rev() {
                         self.ops.insert(op_id, op);
                     }
-                    self.increment_range(op_id..op_id + n, op_id);
-                    self.increment_range(op_id + n + 1..self.ops.len(), n);
-                    op_id += n;
+                    self.increment_range(op_id..op_id + n, op_id, 0);
+                    op_id = op_id + n - 1;
                 }
                 Op::Store { x, .. } => {
                     let mut ops = Vec::new();
@@ -448,8 +449,8 @@ impl Kernel {
                     for op in ops.into_iter().rev() {
                         self.ops.insert(op_id, op);
                     }
-                    self.increment_range(op_id..op_id + n + 1, op_id);
-                    self.increment_range(op_id + n + 2..self.ops.len(), n + 1);
+                    self.increment_range(op_id..op_id + n + 1, op_id, 0);
+                    self.increment_range(op_id + n + 2..self.ops.len(), n + 1, op_id);
                     op_id += n + 1;
                 }
                 _ => {}
@@ -458,29 +459,45 @@ impl Kernel {
         }
     }
 
-    fn increment_range(&mut self, range: Range<usize>, n: usize) {
-        for op in &mut self.ops[range] {
+    fn increment_range(&mut self, range: Range<usize>, n: usize, greater_than: usize) {
+        for op in &mut self.ops[range.clone()] {
             match op {
                 Op::ConstView { .. } | Op::Const { .. } | Op::Index { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
                 Op::Load { index, .. } => {
-                    *index += n;
+                    if *index >= greater_than {
+                        *index += n;
+                    }
                 }
                 Op::Store { x, index } => {
-                    *index += n;
-                    *x += n;
+                    if *index >= greater_than {
+                        *index += n;
+                    }
+                    if *x >= greater_than {
+                        *x += n;
+                    }
                 }
                 Op::Cast { x, .. } => {
-                    *x += n;
+                    if *x >= greater_than {
+                        *x += n;
+                    }
                 }
                 Op::Reduce { x, .. } => {
-                    *x += n;
+                    if *x >= greater_than {
+                        *x += n;
+                    }
                 }
                 Op::Unary { x, .. } => {
-                    *x += n;
+                    if *x >= greater_than {
+                        *x += n;
+                    }
                 }
                 Op::Binary { x, y, .. } => {
-                    *x += n;
-                    *y += n;
+                    if *x >= greater_than {
+                        *x += n;
+                    }
+                    if *y >= greater_than {
+                        *y += n;
+                    }
                 }
             }
         }
@@ -578,9 +595,11 @@ impl Kernel {
         }
     }
 
-    fn loop_invariant_code_motion(&mut self) {}
+    //fn loop_invariant_code_motion(&mut self) {}
 
-    fn deduplicate(&mut self) {}
+    fn deduplicate(&mut self) {
+        // TODO
+    }
 
     /// Constant folding
     fn constant_folding(&mut self) {
@@ -703,6 +722,6 @@ impl Kernel {
         }
     }
 
-    // Unroll all loops with dimension <= loop_unroll_size
-    fn loop_unrolling(&mut self, loop_unroll_size: usize) {}
+    /// Unroll all loops with dimension <= loop_unroll_size
+    fn loop_unrolling(&mut self, _loop_unroll_size: usize) {}
 }

@@ -132,10 +132,9 @@ impl Graph {
             match self.nodes[tensor_id].1 {
                 Node::Const { value } => return value.dtype(),
                 Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
-                Node::Binary {
-                    bop: BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or,
-                    ..
-                } => return DType::Bool,
+                Node::Binary { bop: BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or, .. } => {
+                    return DType::Bool;
+                }
                 _ => {
                     tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
                 }
@@ -173,8 +172,7 @@ impl Graph {
         //println!("Gradient tape: {tape:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = vec![x];
-        let mut rcs: Map<TensorId, u32> =
-            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 if !sources.contains(&nid)
@@ -188,8 +186,7 @@ impl Graph {
         }
         // Order them using rcs reference counts
         let mut order = Vec::new();
-        let mut internal_rcs: Map<TensorId, u32> =
-            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut params: Vec<TensorId> = vec![x];
         while let Some(nid) = params.pop() {
             if let Some(&rc) = rcs.get(&nid) {
@@ -231,8 +228,7 @@ impl Graph {
         //println!("{ids:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
-        let mut rcs: Map<TensorId, u8> =
-            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut rcs: Map<TensorId, u8> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 //println!("Access {nid:?}");
@@ -242,8 +238,7 @@ impl Graph {
         }
         // Order them using rcs reference counts
         let mut order = Vec::new();
-        let mut internal_rcs: Map<TensorId, u8> =
-            Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut internal_rcs: Map<TensorId, u8> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
         while let Some(nid) = params.pop() {
             if rcs[&nid] == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
@@ -262,18 +257,15 @@ impl Graph {
             }
         }
         // Puts graph of nodes into dot language for visualization
-        let mut user_rc: Map<TensorId, u32> =
-            self.nodes.iter().map(|(k, (rc, _))| (k, *rc)).collect();
+        let mut user_rc: Map<TensorId, u32> = self.nodes.iter().map(|(k, (rc, _))| (k, *rc)).collect();
         for (_, node) in self.nodes.values() {
             for param in node.parameters() {
                 *user_rc.get_mut(&param).unwrap() -= 1;
             }
         }
         //std::println!("User {:?}", user_rc);
-        let realized_nodes: Set<TensorId> =
-            pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
-        let mut res_dot_graph =
-            String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
+        let realized_nodes: Set<TensorId> = pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+        let mut res_dot_graph = String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
         let mut add_node = |i: TensorId, text: &str, shape: &str| {
             let fillcolor = if user_rc[&i] > 0 { "coral" } else { "aqua" };
             /*if let Some(label) = labels.get(&NodeId::new(id)) {
@@ -340,6 +332,7 @@ impl std::ops::IndexMut<TensorId> for Graph {
 
 use crate::dtype::Constant;
 
+#[allow(unused)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub enum BOp {
     Add,
@@ -451,23 +444,17 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
         match self {
-            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
-                parameters: [TensorId::ZERO, TensorId::ZERO],
-                idx: 0,
-                len: 0,
-            },
+            Node::Const { .. } | Node::Leaf { .. } => {
+                NodeParametersIterator { parameters: [TensorId::ZERO, TensorId::ZERO], idx: 0, len: 0 }
+            }
             Node::Unary { x, .. }
             | Node::Cast { x, .. }
             | Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Permute { x, .. }
             | Node::Pad { x, .. }
-            | Node::Reduce { x, .. } => {
-                NodeParametersIterator { parameters: [*x, TensorId::ZERO], idx: 0, len: 1 }
-            }
-            Node::Binary { x, y, .. } => {
-                NodeParametersIterator { parameters: [*x, *y], idx: 0, len: 2 }
-            }
+            | Node::Reduce { x, .. } => NodeParametersIterator { parameters: [*x, TensorId::ZERO], idx: 0, len: 1 },
+            Node::Binary { x, y, .. } => NodeParametersIterator { parameters: [*x, *y], idx: 0, len: 2 },
         }
     }
 

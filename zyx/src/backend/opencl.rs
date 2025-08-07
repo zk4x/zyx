@@ -771,11 +771,15 @@ impl OpenCLDevice {
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     match uop {
-                        UOp::ReLU => writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl()).unwrap(),
+                        UOp::ReLU => {
+                            writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl()).unwrap()
+                        }
                         UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};").unwrap(),
                         UOp::Exp2 => writeln!(source, "{indent}r{reg} = exp2({x});").unwrap(),
                         UOp::Log2 => writeln!(source, "{indent}r{reg} = log2({x});").unwrap(),
-                        UOp::Reciprocal => writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().ocl()).unwrap(),
+                        UOp::Reciprocal => {
+                            writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().ocl()).unwrap()
+                        }
                         UOp::Sqrt => writeln!(source, "{indent}r{reg} = sqrt({x});").unwrap(),
                         UOp::Sin => writeln!(source, "{indent}r{reg} = sin({x});").unwrap(),
                         UOp::Cos => writeln!(source, "{indent}r{reg} = cos({x});").unwrap(),
@@ -862,12 +866,12 @@ impl OpenCLDevice {
         let mut idx_str = String::new();
         writeln!(
             idx_str,
-            "  unsigned int idx0 = get_group_id(0), idx1 = get_group_id(1), idx2 = get_group_id(2);"
+            "  unsigned int idx0 = get_group_id(0), idx1 = get_group_id(1), idx2 = get_group_id(2),"
         )
         .unwrap();
         writeln!(
             idx_str,
-            "  unsigned int idx3 = get_local_id(0), idx4 = get_local_id(1), idx5 = get_local_id(2);"
+            "               idx3 = get_local_id(0), idx4 = get_local_id(1), idx5 = get_local_id(2);"
         )
         .unwrap();
 

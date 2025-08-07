@@ -224,9 +224,7 @@ impl DType {
             "U64" => Self::U64,
             "BOOL" => Self::Bool,
             _ => {
-                return Err(ZyxError::ParseError(
-                    format!("Could not parse dtype {text}").into(),
-                ));
+                return Err(ZyxError::ParseError(format!("Could not parse dtype {text}").into()));
             }
         })
     }
@@ -331,7 +329,7 @@ impl Constant {
         }
     }
 
-    #[allow(clippy::float_cmp)]
+    /*#[allow(clippy::float_cmp)]
     pub(crate) fn is_two(&self) -> bool {
         match *self {
             Constant::BF16(x) => bf16::from_le_bytes(x) == bf16::ONE + bf16::ONE,
@@ -348,7 +346,7 @@ impl Constant {
             Constant::I64(x) => i64::from_le_bytes(x) == 2,
             Constant::Bool(_) => false,
         }
-    }
+    }*/
 
     pub(super) fn cast(self, dtype: DType) -> Constant {
         match self {
@@ -394,18 +392,10 @@ impl Constant {
             }
         }
         match self {
-            Constant::BF16(x) => {
-                Constant::BF16(unary_func_float(half::bf16::from_le_bytes(x), uop).to_le_bytes())
-            }
-            Constant::F16(x) => {
-                Constant::F16(unary_func_float(half::f16::from_le_bytes(x), uop).to_le_bytes())
-            }
-            Constant::F32(x) => {
-                Constant::F32(unary_func_float(f32::from_le_bytes(x), uop).to_le_bytes())
-            }
-            Constant::F64(x) => {
-                Constant::F64(unary_func_float(f64::from_le_bytes(x), uop).to_le_bytes())
-            }
+            Constant::BF16(x) => Constant::BF16(unary_func_float(half::bf16::from_le_bytes(x), uop).to_le_bytes()),
+            Constant::F16(x) => Constant::F16(unary_func_float(half::f16::from_le_bytes(x), uop).to_le_bytes()),
+            Constant::F32(x) => Constant::F32(unary_func_float(f32::from_le_bytes(x), uop).to_le_bytes()),
+            Constant::F64(x) => Constant::F64(unary_func_float(f64::from_le_bytes(x), uop).to_le_bytes()),
             Constant::U8(x) => Constant::U8(unary_func(x, uop)),
             Constant::U16(x) => Constant::U16(unary_func(x, uop)),
             Constant::U32(x) => Constant::U32(unary_func(x, uop)),

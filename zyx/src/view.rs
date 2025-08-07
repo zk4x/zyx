@@ -58,7 +58,7 @@ impl View {
         self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
     }
 
-    pub(crate) fn original_numel(&self) -> usize {
+    /*pub(crate) fn original_numel(&self) -> usize {
         let mut res = 1;
         for dim in &self.0[0] {
             if dim.st != 0 {
@@ -66,11 +66,11 @@ impl View {
             }
         }
         res
-    }
+    }*/
 
-    pub(crate) fn numel(&self) -> usize {
+    /*pub(crate) fn numel(&self) -> usize {
         self.0.last().map_or(1, |inner| inner.iter().map(|dim| dim.d).product())
-    }
+    }*/
 
     /*#[cfg(debug_assertions)]
     pub(crate) fn is_contiguous(&self) -> bool {
@@ -86,15 +86,15 @@ impl View {
         })
     }*/
 
-    /// Inserts new loop, shifts all axes greater than axis up by one
-    pub(crate) fn insert_loop(&mut self, axis: usize) {
+    // Inserts new loop, shifts all axes greater than axis up by one
+    /*pub(crate) fn insert_loop(&mut self, axis: usize) {
         //println!("Inserting loop at axis {axis}");
         let inner = self.0.last_mut().unwrap();
         debug_assert!(axis < inner.len());
         let st = inner[axis].st;
         inner.insert(axis, RDim { d: 1, st, lp: 0, rp: 0 });
         //println!("After insert loop {self:?}");
-    }
+    }*/
 
     // This is used for reshape, merge and split
     pub(crate) fn reshape(&mut self, axes: Range<Axis>, shape: &[Dim]) {
@@ -201,7 +201,7 @@ impl View {
         }
     }
 
-    pub fn expand_axis(&mut self, axis: Axis, ndim: Dim) {
+    /*pub fn expand_axis(&mut self, axis: Axis, ndim: Dim) {
         //println!("View expand {self} axis = {axis} to ndim {ndim}");
         let inner = self.0.last_mut().unwrap();
         let dim = &mut inner[axis];
@@ -210,7 +210,7 @@ impl View {
         debug_assert_eq!(dim.rp, 0);
         dim.d = ndim;
         dim.st = 0;
-    }
+    }*/
 
     pub fn pad(&mut self, padding: &[(isize, isize)]) {
         for (axis, (lp, rp)) in padding.iter().copied().rev().enumerate() {
@@ -357,7 +357,7 @@ fn view_reshape() {
     assert_eq!(view.0.len(), 1);
 }
 
-#[test]
+/*#[test]
 fn view_reshape2() {
     /*let mut view = View::binded(&[4, 2, 3], &[5, 1, 2], 6);
     view.reshape(0..1, &[1, 1, 1]);
@@ -369,7 +369,7 @@ fn view_reshape2() {
     view.expand_axis(2, 4);
     assert_eq!(view.shape(), [1, 3, 4, 5]);
     assert_eq!(view.0.len(), 1);
-}
+}*/
 
 #[test]
 fn view_pad2() {

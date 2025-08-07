@@ -11,7 +11,8 @@ use std::{
 };
 
 pub trait SlabId:
-    std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize> {
+    std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize>
+{
     const ZERO: Self;
     fn inc(&mut self);
 }
@@ -61,11 +62,7 @@ impl<Id: SlabId> Iterator for IdIter<'_, Id> {
                 break;
             }
         }
-        if id >= self.max_exclusive {
-            None
-        } else {
-            Some(id)
-        }
+        if id >= self.max_exclusive { None } else { Some(id) }
     }
 }
 
@@ -133,13 +130,13 @@ impl<Id: SlabId, T> Slab<Id, T> {
             .map(|id| unsafe { self.values[id.into()].assume_init_ref() })
     }
 
-    pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+    /*pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.values
             .iter_mut()
             .enumerate()
             .filter(|(id, _)| !self.empty.contains(&(Id::from(*id))))
             .map(|(_, x)| unsafe { x.assume_init_mut() })
-    }
+    }*/
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (Id, &T)> {
         self.values
