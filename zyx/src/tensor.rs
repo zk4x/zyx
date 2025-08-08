@@ -936,9 +936,33 @@ impl Tensor {
         (exp2x.clone() - one.clone()) / (exp2x + one)
     }
 
-    /// Clamps value between min and max
-    /// # Errors
-    /// Errors if not broadcastable.
+    /// Clamps the elements of this tensor within a specified range.
+    ///
+    /// Each element in the tensor is constrained to lie between the corresponding
+    /// elements in the `min` and `max` tensors. Values below the minimum are set to
+    /// the minimum value, and values above the maximum are set to the maximum value.
+    ///
+    /// # Arguments
+    ///
+    /// * `min`: A tensor representing the lower bound for clamping.
+    /// * `max`: A tensor representing the upper bound for clamping.
+    ///
+    /// # Returns
+    ///
+    /// A new tensor with its elements clamped within the range defined by `min` and `max`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use zyx::Tensor;
+    ///
+    /// let tensor = Tensor::from([0.0, 1.0, 2.0]);
+    /// let min = Tensor::from([-1.0, 0.0, 0.0]);
+    /// let max = Tensor::from([1.0, 2.0, 3.0]);
+    ///
+    /// let clamped_tensor = tensor.clamp(min, max).unwrap();
+    /// assert_eq!(clamped_tensor, [0.0, 1.0, 2.0]);
+    /// ```
     pub fn clamp(&self, min: impl Into<Tensor>, max: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         self.maximum(min)?.minimum(max)
     }
@@ -1150,22 +1174,35 @@ impl Tensor {
         Ok(Tensor { id: RT.lock().reshape(self.id, shape) })
     }
 
-    /// Transpose last two dimensions of this tensor.
-    /// If `self.rank() == 1`, returns tensor with shape `[self.shape()[0], 1]` (column tensor)
-    #[allow(clippy::missing_panics_doc)]
+    /// Transpose (swap) the last two dimensions of this tensor.
+    ///
+    /// If the rank is 1, the method reshapes the tensor to shape `[n, 1].
+    ///
+    /// # Returns
+    ///
+    /// A new `Tensor` where the last two dimensions have been swapped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use zyx::Tensor;
+    ///
+    /// let t = Tensor::from([1.0, 2.0, 3.0]);
+    /// assert_eq!(t.t().shape(), &[3, 1]);
+    ///
+    /// let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+    /// assert_eq!(t.t().shape(), &[2, 2]);
+    /// ```
     #[must_use]
     pub fn t(&self) -> Tensor {
-        let mut rank = self.rank();
-        let x = if rank == 1 {
+        let rank = self.rank();
+        if rank == 1 {
             let n = self.numel();
-            rank = 2;
-            &self.reshape([1, n]).unwrap()
-        } else {
-            self
-        };
+            return self.reshape([n, 1]).unwrap();
+        }
         let mut axes: Vec<SAxis> = (0..SAxis::try_from(rank).unwrap()).collect();
         axes.swap((rank - 1) as usize, (rank - 2) as usize);
-        x.permute(axes).unwrap()
+        self.permute(axes).unwrap()
     }
 
     /// Transpose two arbitrary dimensions
