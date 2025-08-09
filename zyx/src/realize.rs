@@ -134,7 +134,7 @@ impl Runtime {
                     let shape = self.graph.shape(nid);
                     let view = View::contiguous(shape);
                     let op = Op::LoadView { dtype, view };
-                    let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid], shape: shape.to_vec() };
+                    let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid] };
                     let kid = kernels.push(kernel);
                     loads.insert(kid, vec![nid]);
                     (kid, 0)
@@ -144,7 +144,7 @@ impl Runtime {
                         Node::Const { value } => {
                             let view = View::contiguous(&[1]);
                             let op = Op::ConstView { value, view };
-                            let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid], shape: vec![1] };
+                            let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid] };
                             (kernels.push(kernel), 0)
                         }
                         Node::Expand { x } => {
@@ -158,7 +158,6 @@ impl Runtime {
 
                             let shape = self.graph.shape(nid);
                             kernels[kid].apply_movement(|view| view.expand(shape));
-                            kernels[kid].shape = shape.to_vec();
                             (kid, op_id)
                         }
                         Node::Permute { x } => {
@@ -172,7 +171,6 @@ impl Runtime {
 
                             let axes = self.graph.axes(nid);
                             kernels[kid].apply_movement(|view| view.permute(axes));
-                            kernels[kid].shape = self.graph.shape(nid).to_vec();
                             (kid, op_id)
                         }
                         Node::Reshape { x } => {
@@ -187,7 +185,6 @@ impl Runtime {
                             let n = self.graph.shape(x).len();
                             let shape = self.graph.shape(nid);
                             kernels[kid].apply_movement(|view| view.reshape(0..n, shape));
-                            kernels[kid].shape = shape.to_vec();
                             (kid, op_id)
                         }
                         Node::Pad { x } => {
@@ -219,7 +216,6 @@ impl Runtime {
 
                             let padding = self.graph.padding(nid);
                             kernels[kid].apply_movement(|view| view.pad(padding));
-                            kernels[kid].shape = self.graph.shape(nid).to_vec();
                             (kid, op_id)
                         }
                         Node::Reduce { x, rop } => {
@@ -264,7 +260,6 @@ impl Runtime {
                                 kernels[kid].apply_movement(|v| v.permute(&permute_axes));
                             }
 
-                            kernels[kid].shape = self.graph.shape(nid).to_vec();
                             let dims = axes.iter().map(|&a| shape[a]).collect();
                             if shape == dims {
                                 kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
@@ -800,7 +795,7 @@ fn store_x(
     let op = Op::LoadView { dtype, view };
     loads.insert(kernels.len(), vec![x]);
     *op_id = 1;
-    let kernel = Kernel { ops: vec![op], n_outputs: 1, shape: shape.to_vec() };
+    let kernel = Kernel { ops: vec![op], n_outputs: 1 };
     *kid = kernels.len();
     kernels.push(kernel);
 }

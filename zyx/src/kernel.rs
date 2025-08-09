@@ -13,7 +13,7 @@ pub type OpId = usize;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Kernel {
     pub ops: Vec<Op>,
-    pub shape: Vec<Dim>,
+    //pub shape: Vec<Dim>,
     pub n_outputs: u32,
 }
 
@@ -26,14 +26,14 @@ pub enum Op {
 
     // ops that exist in IR
     Const(Constant),
-    Index { id: u8 },
     Load { dtype: DType, index: OpId },
     Store { x: OpId, index: OpId },
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
     DeclareAcc { dtype: DType, rop: ROp },
-    Loop { dims: Vec<Dim>, tiled: bool }, // tiled means both vectorization and tensor cores
+    Loop { dim: Dim, tiled: bool }, // tiled means both vectorization and tensor cores
+    Accumulate { x: OpId, rop: ROp },
     EndLoop { dims: Vec<Dim> },
 }
 
@@ -135,11 +135,10 @@ impl Kernel {
     }
 
     pub fn debug(&self) {
-        println!("Kernel shape {:?}", self.shape);
+        //println!("Kernel shape {:?}", self.shape);
         for (i, op) in self.ops.iter().enumerate() {
             match op {
                 Op::Const(x) => println!("{i:>3} CONST {x}"),
-                Op::Index { id } => println!("{i:>3} INDEX {id}"),
                 Op::ConstView { value, view } => println!("{i:>3} CONST VIEW {value} {view}"),
                 Op::LoadView { dtype, view } => println!("{i:>3} LOAD VIEW {dtype} {view}"),
                 Op::Load { dtype, index } => println!("{i:>3} LOAD {dtype} at {index}"),
@@ -147,7 +146,7 @@ impl Kernel {
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
-                Op::Loop { dims, tiled } => println!("{i:>3} LOOP dims={dims:?} tiled={tiled:?}"),
+                Op::Loop { dim, tiled } => println!("{i:>3} LOOP dim={dim} tiled={tiled}"),
                 Op::EndLoop { dims } => println!("{i:>3} ENDLOOP dims={dims:?}"),
                 Op::Reduce { x, rop, dims } => println!(
                     "{i:>3} REDUCE {} {x}, dims={dims:?}",
@@ -156,7 +155,8 @@ impl Kernel {
                         ROp::Max => "MAX",
                     }
                 ),
-                Op::DeclareAcc { dtype, rop } => println!("{i:>3} ACC {dtype} {rop:?}"),
+                Op::DeclareAcc { dtype, rop } => println!("{i:>3} DECLARE ACC {dtype} {rop:?}"),
+                Op::Accumulate { x, rop } => println!("{i:>3} ACCUMULATE {x} {rop:?}"),
             }
         }
     }
@@ -200,7 +200,7 @@ impl Kernel {
             res
         }
 
-        let n = self.shape.iter().product();
+        let n = self.shape().iter().product();
         let mut global_work_size = get_equal_factors(n);
 
         let mut d = dev_info.max_local_threads;
@@ -223,9 +223,8 @@ impl Kernel {
     pub fn apply_optimization(&mut self, optimization: &Optimization) {
         let loop_unroll_size = match optimization {
             Optimization::Basic { shape, loop_unroll_size } => {
-                let n = self.shape.len();
+                let n = self.shape().len();
                 self.apply_movement(|view| view.reshape(0..n, &shape));
-                self.shape = shape.clone();
                 *loop_unroll_size
             }
         };
@@ -236,6 +235,7 @@ impl Kernel {
 
         //let loop_unroll_size = 8;
 
+        self.unfold_shape();
         self.unfold_reduces();
         self.unfold_views();
 
@@ -250,6 +250,54 @@ impl Kernel {
                 break;
             }
             kernel = self.clone();
+        }
+    }
+
+    fn shape(&self) -> Vec<Dim> {
+        if self.ops.iter().any(|op| matches!(op, Op::Loop { .. })) {
+            return self
+                .ops
+                .iter()
+                .map_while(|op| {
+                    if let Op::Loop { dim, .. } = op {
+                        Some(*dim)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+        let mut reduce_dims = 0;
+        for op in self.ops.iter().rev() {
+            match op {
+                Op::ConstView { view, .. } => {
+                    let mut shape = view.shape();
+                    for _ in 0..reduce_dims {
+                        shape.pop();
+                    }
+                    return shape;
+                }
+                Op::LoadView { view, .. } => {
+                    let mut shape = view.shape();
+                    for _ in 0..reduce_dims {
+                        shape.pop();
+                    }
+                    return shape;
+                }
+                Op::Reduce { dims, .. } => {
+                    reduce_dims += dims.len();
+                }
+                _ => {}
+            }
+        }
+        unreachable!()
+    }
+
+    fn unfold_shape(&mut self) {
+        let shape = self.shape();
+        self.increment_range(0..self.ops.len(), shape.len(), 0);
+        for dim in shape.into_iter().rev() {
+            self.ops.insert(0, Op::Loop { dim, tiled: false });
         }
     }
 
@@ -273,7 +321,6 @@ impl Kernel {
                         }
                     }
                     Op::Const { .. } => unreachable!(),
-                    Op::Index { .. } => {}
                     Op::LoadView { dtype, .. } => {
                         if acc_dtype.is_none() {
                             acc_dtype = Some(dtype);
@@ -316,14 +363,18 @@ impl Kernel {
                         }
                     }
                     Op::DeclareAcc { .. } => unreachable!(),
+                    Op::Accumulate { .. } => unreachable!(),
                     Op::Loop { .. } => unreachable!(),
                     Op::EndLoop { .. } => unreachable!(),
                 }
             }
+            self.ops[op_id] = Op::EndLoop { dims: dims.clone() };
+            self.ops.insert(op_id, Op::Accumulate { x, rop });
+            for dim in dims {
+                self.ops.insert(min_param, Op::Loop { dim, tiled: false });
+            }
             self.ops.insert(min_param, Op::DeclareAcc { dtype: acc_dtype.unwrap(), rop });
-            self.ops.insert(min_param, Op::Loop { dims, tiled: false });
-            // TODO add binary op and endloop
-            self.increment_range(min_param + 1..self.ops.len(), 1, min_param);
+            self.increment_range(min_param + 1..self.ops.len(), 2, min_param);
         }
     }
 
@@ -352,10 +403,14 @@ impl Kernel {
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
 
+                    let view = view.clone();
                     //println!("Unfolding view: {view}");
-                    let mut ops = Vec::new();
-                    let mut pc = new_op(&mut ops, Op::Const(Constant::Bool(true)));
-                    let mut offset = new_op(&mut ops, Op::Const(Constant::U32(0)));
+                    let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
+                    self.ops.pop();
+                    let ops = &mut self.ops;
+                    let axes = get_axes(&ops);
+                    let mut pc = new_op(ops, Op::Const(Constant::Bool(true)));
+                    let mut offset = new_op(ops, Op::Const(Constant::U32(0)));
                     let mut old_offset: Option<OpId> = None;
                     //println!("View");
                     //for inner in self.0.iter() { println!("{inner:?}") }
@@ -364,97 +419,94 @@ impl Kernel {
                         //println!("\n{inner:?}");
                         // a = offset / ost % dim
                         let mut ost = 1;
-                        offset = new_op(&mut ops, Op::Const(Constant::U32(0)));
+                        offset = new_op(ops, Op::Const(Constant::U32(0)));
                         for (a, dim) in inner.iter().enumerate().rev() {
                             let a = if let Some(old_offset) = old_offset {
-                                let ost_c = new_op(&mut ops, Op::Const(Constant::U32(ost)));
-                                let a = new_op(&mut ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div });
+                                let ost_c = new_op(ops, Op::Const(Constant::U32(ost)));
+                                let a = new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div });
                                 ost *= dim.d as u32;
-                                let dimd_c = new_op(&mut ops, Op::Const(Constant::U32(dim.d as u32)));
-                                new_op(&mut ops, Op::Binary { x: a, y: dimd_c, bop: BOp::Mod })
+                                let dimd_c = new_op(ops, Op::Const(Constant::U32(dim.d as u32)));
+                                new_op(ops, Op::Binary { x: a, y: dimd_c, bop: BOp::Mod })
                             } else {
                                 if dim.d == 1 {
-                                    new_op(&mut ops, Op::Const(Constant::U32(0)))
+                                    new_op(ops, Op::Const(Constant::U32(0)))
                                 } else {
-                                    new_op(&mut ops, Op::Index { id: a as u8 })
+                                    axes[a]
                                 }
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
-                                let lp = new_op(&mut ops, Op::Const(Constant::U32(dim.lp.abs() as u32)));
+                                let lp = new_op(ops, Op::Const(Constant::U32(dim.lp.abs() as u32)));
                                 if dim.lp > 0 {
-                                    new_op(&mut ops, Op::Binary { x: a, y: lp, bop: BOp::Sub })
+                                    new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Sub })
                                 } else {
-                                    new_op(&mut ops, Op::Binary { x: a, y: lp, bop: BOp::Add })
+                                    new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Add })
                                 }
                             } else {
                                 a
                             };
-                            let stride = new_op(&mut ops, Op::Const(Constant::U32(dim.st as u32)));
-                            let x = new_op(&mut ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
-                            offset = new_op(&mut ops, Op::Binary { x, y: offset, bop: BOp::Add });
+                            let stride = new_op(ops, Op::Const(Constant::U32(dim.st as u32)));
+                            let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
+                            offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
 
                             // Padding condition
                             if dim.lp > 0 {
-                                let lp = new_op(&mut ops, Op::Const(Constant::U32((dim.lp - 1) as u32)));
-                                let t = new_op(&mut ops, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
-                                pc = new_op(&mut ops, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let lp = new_op(ops, Op::Const(Constant::U32((dim.lp - 1) as u32)));
+                                let t = new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
+                                pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = new_op(&mut ops, Op::Const(Constant::U32((dim.d as isize - dim.rp) as u32)));
-                                let t = new_op(&mut ops, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
-                                pc = new_op(&mut ops, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let rp = new_op(ops, Op::Const(Constant::U32((dim.d as isize - dim.rp) as u32)));
+                                let t = new_op(ops, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
+                                pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                         }
                         old_offset = Some(offset);
                     }
-                    let pcu32 = new_op(&mut ops, Op::Cast { x: pc, dtype: DType::U32 });
-                    let offset = new_op(&mut ops, Op::Binary { x: pcu32, y: offset, bop: BOp::Mul });
-                    let z = new_op(&mut ops, Op::Load { dtype, index: offset });
-                    let pcd = new_op(&mut ops, Op::Cast { x: pc, dtype });
+                    let pcu32 = new_op(ops, Op::Cast { x: pc, dtype: DType::U32 });
+                    let offset = new_op(ops, Op::Binary { x: pcu32, y: offset, bop: BOp::Mul });
+                    let z = new_op(ops, Op::Load { dtype, index: offset });
+                    let pcd = new_op(ops, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
-                    _ = new_op(&mut ops, Op::Binary { x: pcd, y: z, bop: BOp::Mul });
+                    _ = new_op(ops, Op::Binary { x: pcd, y: z, bop: BOp::Mul });
 
-                    //for op in &ops { println!("{op:?}") }
-
-                    self.ops.remove(op_id);
-
-                    let n = ops.len();
-                    self.increment_range(op_id..self.ops.len(), n - 1, op_id);
-                    //self.ops[op_id] = Op::Load { dtype, index: op_id + n };
-                    for op in ops.into_iter().rev() {
-                        self.ops.insert(op_id, op);
-                    }
-                    self.increment_range(op_id..op_id + n, op_id, 0);
-                    op_id = op_id + n - 1;
+                    let n = self.ops.len();
+                    self.ops.extend(temp_ops);
+                    self.increment_range(n..self.ops.len(), n - op_id - 1, op_id);
+                    op_id = n;
+                    continue;
                 }
                 Op::Store { x, .. } => {
-                    let mut ops = Vec::new();
-                    let mut index = new_op(&mut ops, Op::Const(Constant::U32(0)));
+                    let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
+                    self.ops.pop();
+                    let axes = get_axes(&self.ops);
+                    let mut index = new_op(&mut self.ops, Op::Const(Constant::U32(0)));
                     let mut st = 1;
-                    let shape = self.shape.clone();
+                    let shape = self.shape().clone();
                     for (id, d) in shape.iter().enumerate().rev() {
                         let stride = Constant::U32(st as u32);
                         let x = if *d > 1 {
-                            new_op(&mut ops, Op::Index { id: id as u8 })
+                            axes[id]
                         } else {
-                            new_op(&mut ops, Op::Const(Constant::U32(0)))
+                            new_op(&mut self.ops, Op::Const(Constant::U32(0)))
                         };
-                        let y = new_op(&mut ops, Op::Const(stride));
-                        let x = new_op(&mut ops, Op::Binary { x, y, bop: BOp::Mul });
-                        index = new_op(&mut ops, Op::Binary { x, y: index, bop: BOp::Add });
+                        let y = new_op(&mut self.ops, Op::Const(stride));
+                        let x = new_op(&mut self.ops, Op::Binary { x, y, bop: BOp::Mul });
+                        index = new_op(&mut self.ops, Op::Binary { x, y: index, bop: BOp::Add });
                         st *= d;
                     }
-                    let n = ops.len() - 1;
-                    self.ops[op_id] = Op::Store { x, index: op_id + n };
-                    //println!("{ops:?}");
-                    for op in ops.into_iter().rev() {
-                        self.ops.insert(op_id, op);
+                    _ = new_op(&mut self.ops, Op::Store { x, index });
+
+                    let n = self.ops.len();
+                    /*for (i, op) in self.ops.iter().enumerate() {
+                        println!("{i} -> {op:?}");
                     }
-                    self.increment_range(op_id..op_id + n + 1, op_id, 0);
-                    self.increment_range(op_id + n + 2..self.ops.len(), n + 1, op_id);
-                    op_id += n + 1;
+                    println!("n={n}");*/
+                    self.ops.extend(temp_ops);
+                    self.increment_range(n..self.ops.len(), n - op_id - 1, op_id);
+                    op_id = n;
+                    continue;
                 }
                 _ => {}
             }
@@ -462,47 +514,52 @@ impl Kernel {
         }
     }
 
-    fn increment_range(&mut self, range: Range<usize>, n: usize, greater_than: usize) {
+    fn increment_range(&mut self, range: Range<usize>, d: usize, ge: usize) {
         for op in &mut self.ops[range.clone()] {
             match op {
-                Op::ConstView { .. } | Op::Const { .. } | Op::Index { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
+                Op::ConstView { .. } | Op::Const { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
                 Op::Load { index, .. } => {
-                    if *index >= greater_than {
-                        *index += n;
+                    if *index >= ge {
+                        *index += d;
                     }
                 }
                 Op::Store { x, index } => {
-                    if *index >= greater_than {
-                        *index += n;
+                    if *index >= ge {
+                        *index += d;
                     }
-                    if *x >= greater_than {
-                        *x += n;
+                    if *x >= ge {
+                        *x += d;
                     }
                 }
                 Op::Cast { x, .. } => {
-                    if *x >= greater_than {
-                        *x += n;
+                    if *x >= ge {
+                        *x += d;
                     }
                 }
                 Op::Reduce { x, .. } => {
-                    if *x >= greater_than {
-                        *x += n;
+                    if *x >= ge {
+                        *x += d;
                     }
                 }
                 Op::Unary { x, .. } => {
-                    if *x >= greater_than {
-                        *x += n;
+                    if *x >= ge {
+                        *x += d;
                     }
                 }
                 Op::Binary { x, y, .. } => {
-                    if *x >= greater_than {
-                        *x += n;
+                    if *x >= ge {
+                        *x += d;
                     }
-                    if *y >= greater_than {
-                        *y += n;
+                    if *y >= ge {
+                        *y += d;
                     }
                 }
                 Op::DeclareAcc { .. } => {}
+                Op::Accumulate { x, .. } => {
+                    if *x >= ge {
+                        *x += d;
+                    }
+                }
                 Op::EndLoop { .. } => {}
             }
         }
@@ -511,7 +568,7 @@ impl Kernel {
     fn decrement_range(&mut self, range: Range<usize>, n: usize) {
         for op in &mut self.ops[range.clone()] {
             match op {
-                Op::ConstView { .. } | Op::Const { .. } | Op::Index { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
+                Op::ConstView { .. } | Op::Const { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
                 Op::Load { index, .. } => {
                     if *index >= range.start {
                         *index -= n;
@@ -548,6 +605,11 @@ impl Kernel {
                         *y -= n;
                     }
                 }
+                Op::Accumulate { x, .. } => {
+                    if *x >= range.start {
+                        *x -= n;
+                    }
+                }
                 Op::DeclareAcc { .. } => {}
                 Op::EndLoop { .. } => {}
             }
@@ -567,7 +629,6 @@ impl Kernel {
             match self.ops[param] {
                 Op::ConstView { .. } => unreachable!(),
                 Op::Const(..) => {}
-                Op::Index { .. } => {}
                 Op::LoadView { .. } => unreachable!(),
                 Op::Load { index, .. } => {
                     params.push(index);
@@ -588,6 +649,9 @@ impl Kernel {
                 }
                 Op::Loop { .. } => {}
                 Op::Reduce { x, .. } => {
+                    params.push(x);
+                }
+                Op::Accumulate { x, .. } => {
                     params.push(x);
                 }
                 Op::DeclareAcc { .. } => {}
@@ -612,127 +676,154 @@ impl Kernel {
 
     /// Constant folding
     fn constant_folding(&mut self) {
-        let mut change = true;
-        while change {
-            change = false;
-            for op_id in 0..self.ops.len() {
-                match self.ops[op_id] {
-                    Op::ConstView { .. } | Op::LoadView { .. } => unreachable!(),
-                    Op::Const { .. }
-                    | Op::Index { .. }
-                    | Op::Load { .. }
-                    | Op::Store { .. }
-                    | Op::Loop { .. }
-                    | Op::EndLoop { .. }
-                    | Op::DeclareAcc { .. }
-                    | Op::Reduce { .. } => {}
-                    Op::Cast { x, dtype } => {
-                        if let Op::Const(x) = self.ops[x] {
-                            self.ops[op_id] = Op::Const(x.cast(dtype));
-                            change = true;
-                        }
+        let mut remaps = Map::with_hasher(BuildHasherDefault::new());
+        for op_id in 0..self.ops.len() {
+            match self.ops[op_id] {
+                Op::ConstView { .. } | Op::LoadView { .. } => unreachable!(),
+                Op::Const { .. }
+                | Op::Load { .. }
+                | Op::Store { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop { .. }
+                | Op::DeclareAcc { .. }
+                | Op::Accumulate { .. }
+                | Op::Reduce { .. } => {}
+                Op::Cast { x, dtype } => {
+                    if let Op::Const(x) = self.ops[x] {
+                        self.ops[op_id] = Op::Const(x.cast(dtype));
                     }
-                    Op::Unary { x, uop } => {
-                        if let Op::Const(x) = self.ops[x] {
-                            self.ops[op_id] = Op::Const(x.unary(uop));
-                            change = true;
-                        }
-                    }
-                    Op::Binary { x, y, bop } => match (&self.ops[x], &self.ops[y]) {
-                        (&Op::Const(cx), &Op::Const(cy)) => {
-                            self.ops[op_id] = Op::Const(Constant::binary(cx, cy, bop));
-                            change = true;
-                        }
-                        (&Op::Const(cx), y) => match bop {
-                            BOp::Add => {
-                                if cx.is_zero() {
-                                    self.ops[op_id] = y.clone();
-                                    change = true;
-                                }
-                            }
-                            BOp::Sub => todo!(),
-                            BOp::Mul => {
-                                if cx.is_zero() {
-                                    self.ops[op_id] = Op::Const(cx);
-                                    change = true;
-                                } else if cx.is_one() {
-                                    self.ops[op_id] = y.clone();
-                                    change = true;
-                                }
-                            }
-                            BOp::Div => todo!(),
-                            BOp::Pow => todo!(),
-                            BOp::Mod => todo!(),
-                            BOp::Cmplt => todo!(),
-                            BOp::Cmpgt => todo!(),
-                            BOp::Max => todo!(),
-                            BOp::Or => todo!(),
-                            BOp::And => todo!(),
-                            BOp::BitXor => todo!(),
-                            BOp::BitOr => todo!(),
-                            BOp::BitAnd => todo!(),
-                            BOp::BitShiftLeft => todo!(),
-                            BOp::BitShiftRight => todo!(),
-                            BOp::NotEq => todo!(),
-                        },
-                        (x, &Op::Const(cy)) => match bop {
-                            BOp::Add => {
-                                if cy.is_zero() {
-                                    self.ops[op_id] = x.clone();
-                                    change = true;
-                                }
-                            }
-                            BOp::Sub => {
-                                if cy.is_zero() {
-                                    self.ops[op_id] = x.clone();
-                                    change = true;
-                                }
-                            }
-                            BOp::Mul => {
-                                if cy.is_zero() {
-                                    self.ops[op_id] = Op::Const(cy);
-                                    change = true;
-                                } else if cy.is_one() {
-                                    self.ops[op_id] = x.clone();
-                                    change = true;
-                                }
-                            }
-                            BOp::Div => {
-                                if cy.is_zero() {
-                                    panic!("Division by zero constant.");
-                                } else if cy.is_one() {
-                                    self.ops[op_id] = x.clone();
-                                    change = true;
-                                }
-                            }
-                            BOp::Pow => todo!(),
-                            BOp::Mod => {
-                                if cy.is_zero() {
-                                    panic!("Modulo by zero constant.");
-                                } else if cy.is_one() {
-                                    self.ops[op_id] = Op::Const(cy.dtype().zero_constant());
-                                    change = true;
-                                }
-                            }
-                            BOp::Cmplt => {}
-                            BOp::Cmpgt => {}
-                            BOp::Max => todo!(),
-                            BOp::Or => todo!(),
-                            BOp::And => {}
-                            BOp::BitXor => todo!(),
-                            BOp::BitOr => todo!(),
-                            BOp::BitAnd => todo!(),
-                            BOp::BitShiftLeft => todo!(),
-                            BOp::BitShiftRight => todo!(),
-                            BOp::NotEq => {}
-                        },
-                        _ => {}
-                    },
                 }
+                Op::Unary { x, uop } => {
+                    if let Op::Const(x) = self.ops[x] {
+                        self.ops[op_id] = Op::Const(x.unary(uop));
+                    }
+                }
+                Op::Binary { x, y, bop } => match (&self.ops[x], &self.ops[y]) {
+                    (&Op::Const(cx), &Op::Const(cy)) => {
+                        self.ops[op_id] = Op::Const(Constant::binary(cx, cy, bop));
+                    }
+                    (&Op::Const(cx), _) => match bop {
+                        BOp::Add => {
+                            if cx.is_zero() {
+                                remaps.insert(op_id, y);
+                            }
+                        }
+                        BOp::Sub => todo!(),
+                        BOp::Mul => {
+                            if cx.is_zero() {
+                                remaps.insert(op_id, x);
+                            } else if cx.is_one() {
+                                remaps.insert(op_id, y);
+                            }
+                        }
+                        BOp::Div => todo!(),
+                        BOp::Pow => todo!(),
+                        BOp::Mod => todo!(),
+                        BOp::Cmplt => todo!(),
+                        BOp::Cmpgt => todo!(),
+                        BOp::Max => todo!(),
+                        BOp::Or => todo!(),
+                        BOp::And => todo!(),
+                        BOp::BitXor => todo!(),
+                        BOp::BitOr => todo!(),
+                        BOp::BitAnd => todo!(),
+                        BOp::BitShiftLeft => todo!(),
+                        BOp::BitShiftRight => todo!(),
+                        BOp::NotEq => todo!(),
+                    },
+                    (_, &Op::Const(cy)) => match bop {
+                        BOp::Add => {
+                            if cy.is_zero() {
+                                remaps.insert(op_id, x);
+                            }
+                        }
+                        BOp::Sub => {
+                            if cy.is_zero() {
+                                remaps.insert(op_id, x);
+                            }
+                        }
+                        BOp::Mul => {
+                            if cy.is_zero() {
+                                remaps.insert(op_id, y);
+                            } else if cy.is_one() {
+                                remaps.insert(op_id, x);
+                            }
+                        }
+                        BOp::Div => {
+                            if cy.is_zero() {
+                                panic!("Division by zero constant.");
+                            } else if cy.is_one() {
+                                remaps.insert(op_id, x);
+                            }
+                        }
+                        BOp::Pow => todo!(),
+                        BOp::Mod => {
+                            if cy.is_zero() {
+                                panic!("Modulo by zero constant.");
+                            } else if cy.is_one() {
+                                self.ops[op_id] = Op::Const(cy.dtype().zero_constant());
+                            }
+                        }
+                        BOp::Cmplt => {}
+                        BOp::Cmpgt => {}
+                        BOp::Max => todo!(),
+                        BOp::Or => todo!(),
+                        BOp::And => {}
+                        BOp::BitXor => todo!(),
+                        BOp::BitOr => todo!(),
+                        BOp::BitAnd => todo!(),
+                        BOp::BitShiftLeft => todo!(),
+                        BOp::BitShiftRight => todo!(),
+                        BOp::NotEq => {}
+                    },
+                    _ => {}
+                },
+            }
+        }
+        self.remap(&remaps);
+    }
+
+    fn remap(&mut self, remap: &Map<OpId, OpId>) {
+        let h = |x: &mut usize| {
+            if let Some(v) = remap.get(x) {
+                *x = *v;
+            }
+        };
+        for op in &mut self.ops {
+            match op {
+                Op::ConstView { .. } => {}
+                Op::LoadView { .. } => {}
+                Op::Reduce { x, .. } => h(x),
+                Op::Const(_) => {}
+                Op::Load { index, .. } => h(index),
+                Op::Store { x, index } => {
+                    h(x);
+                    h(index);
+                }
+                Op::Cast { x, .. } => h(x),
+                Op::Unary { x, .. } => h(x),
+                Op::Binary { x, y, .. } => {
+                    h(x);
+                    h(y);
+                }
+                Op::DeclareAcc { .. } => {}
+                Op::Loop { .. } => {}
+                Op::Accumulate { x, .. } => h(x),
+                Op::EndLoop { .. } => {}
             }
         }
     }
 
     /// Unroll all loops with dimension <= loop_unroll_size
     fn loop_unrolling(&mut self, _loop_unroll_size: usize) {}
+}
+
+fn get_axes(ops: &[Op]) -> Vec<OpId> {
+    let mut axes = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        if matches!(op, Op::Loop { .. }) {
+            axes.push(i);
+        }
+    }
+    axes
 }

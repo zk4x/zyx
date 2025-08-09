@@ -612,24 +612,28 @@ impl OpenCLDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        // TODO just do a full SSA to opencl by calculating register usage based on reference counts
-        // first we will calculate those reference counts.
-        let mut gws = [kernel.shape[0], kernel.shape[1], kernel.shape[2]];
-        let lws = [kernel.shape[3], kernel.shape[4], kernel.shape[5]];
+        let mut shape = [0; 6];
+        for (i, op) in kernel.ops[..6].iter().enumerate() {
+            let &Op::Loop { dim, .. } = op else { unreachable!() };
+            shape[i] = dim;
+        }
+        let mut gws = [shape[0], shape[1], shape[2]];
+        let lws = [shape[3], shape[4], shape[5]];
 
         let mut global_loads = Vec::new();
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
         let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
+        // first we will calculate those reference counts.
         for (i, op) in kernel.ops.iter().enumerate() {
             match op {
                 Op::ConstView { .. } => unreachable!(),
                 Op::Const(x) => {
                     dtypes.insert(i, x.dtype());
                 }
-                &Op::Index { .. } => {
+                /*&Op::Index { .. } => {
                     dtypes.insert(i, DType::U32);
-                }
+                }*/
                 Op::LoadView { .. } => unreachable!(),
                 &Op::Load { dtype, index } => {
                     dtypes.insert(i, dtype);
@@ -657,9 +661,15 @@ impl OpenCLDevice {
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                     rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
                 }
-                Op::Loop { .. } => {}
+                Op::Loop { .. } => {
+                    dtypes.insert(i, DType::U32);
+                }
                 Op::EndLoop { .. } => {}
                 Op::DeclareAcc { .. } => {}
+                &Op::Accumulate { x, .. } => {
+                    dtypes.insert(i, dtypes[&x]);
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
                 &Op::Reduce { x, .. } => {
                     dtypes.insert(i, dtypes[&x]);
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
@@ -717,7 +727,7 @@ impl OpenCLDevice {
             }
         }
 
-        let mut loop_id = 6;
+        let mut loop_id = 0;
 
         let mut indent = String::from("  ");
         let mut global_load_id = 0;
@@ -731,11 +741,9 @@ impl OpenCLDevice {
             match op {
                 Op::ConstView { .. } => unreachable!(),
                 Op::LoadView { .. } => unreachable!(),
+                Op::Reduce { .. } => unreachable!(),
                 &Op::Const(x) => {
                     constants.insert(i, x);
-                }
-                &Op::Index { id } => {
-                    indices.insert(i, id);
                 }
                 &Op::Load { dtype, index } => {
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
@@ -826,27 +834,27 @@ impl OpenCLDevice {
                     )
                     .unwrap();
                 }
-                &Op::Loop { ref dims, tiled: _ } => {
-                    for dim in dims {
+                &Op::Loop { dim, tiled: _ } => {
+                    indices.insert(i, loop_id);
+                    if loop_id > 5 {
                         writeln!(
                             source,
                             "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
                         )
                         .unwrap();
                         indent += "  ";
-                        loop_id += 1;
                     }
+                    loop_id += 1;
                 }
-                &Op::Reduce { .. } => {
-                    unreachable!();
-                    /*accs.pop().unwrap();
+                &Op::Accumulate { x, rop } => {
+                    accs.pop().unwrap();
                     let a = accs.len() as u8;
                     acc_map.insert(i, a);
                     let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     match rop {
                         ROp::Sum => writeln!(source, "{indent}acc{a} = {x} + acc{a};").unwrap(),
                         ROp::Max => writeln!(source, "{indent}acc{a} = max({x}, acc{a});").unwrap(),
-                    }*/
+                    }
                 }
                 Op::EndLoop { dims } => {
                     for _ in dims {
