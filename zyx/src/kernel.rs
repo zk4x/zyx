@@ -671,7 +671,16 @@ impl Kernel {
     //fn loop_invariant_code_motion(&mut self) {}
 
     fn deduplicate(&mut self) {
-        // TODO
+        let mut unique = Map::with_capacity_and_hasher(10, BuildHasherDefault::new());
+        let mut remaps = Map::with_hasher(BuildHasherDefault::new());
+        for (op_id, op) in self.ops.iter().enumerate() {
+            if let Some(&id) = unique.get(op) {
+                remaps.insert(op_id, id);
+            } else {
+                unique.insert(op.clone(), op_id);
+            }
+        }
+        self.remap(&remaps);
     }
 
     /// Constant folding
