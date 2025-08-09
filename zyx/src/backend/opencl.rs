@@ -746,13 +746,9 @@ impl OpenCLDevice {
                     constants.insert(i, x);
                 }
                 &Op::Load { dtype, index } => {
+                    let idx = get_var(index, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    writeln!(
-                        source,
-                        "{indent}r{reg} = g{global_load_id}[{}];",
-                        get_var(index, &constants, &indices, &acc_map, &reg_map, &mut registers)
-                    )
-                    .unwrap();
+                    writeln!(source, "{indent}r{reg} = g{global_load_id}[{idx}];",).unwrap();
                     global_load_id += 1;
                 }
                 &Op::Store { x, index } => {
@@ -767,19 +763,14 @@ impl OpenCLDevice {
                     global_stores.push(dtypes.get(&x).unwrap());
                 }
                 &Op::Cast { x, dtype } => {
+                    let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    writeln!(
-                        source,
-                        "{indent}r{reg} = ({}){};",
-                        dtype.ocl(),
-                        get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers)
-                    )
-                    .unwrap();
+                    writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl(),).unwrap();
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match uop {
                         UOp::ReLU => {
                             writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl()).unwrap()
@@ -797,9 +788,10 @@ impl OpenCLDevice {
                     }
                 }
                 &Op::Binary { x, y, bop } => {
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtypes[&x], rcs[&i]);
+                    let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     let y = get_var(y, &constants, &indices, &acc_map, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match bop {
                         BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};").unwrap(),
                         BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),
