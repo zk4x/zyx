@@ -80,10 +80,16 @@ impl Clone for Tensor {
     }
 }
 
+static MEMORY_LEAK_WARNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 impl Drop for Tensor {
     fn drop(&mut self) {
         //std::println!("dropping");
-        RT.lock().release(self.id);
+        if let Some(mut rt) = RT.try_lock() {
+            rt.release(self.id);
+        } else if !MEMORY_LEAK_WARNING.swap(true, std::sync::atomic::Ordering::Acquire) {
+            println!("Warning: Unable to release tensor due to runtime mutex lock.");
+        }
     }
 }
 

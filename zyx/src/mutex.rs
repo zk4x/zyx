@@ -1,15 +1,19 @@
 //! Simple implementation of mutex based on spinlock.
 
 use std::sync::MutexGuard;
-pub(super) struct Mutex<T>(std::sync::Mutex<T>);
+pub struct Mutex<T>(std::sync::Mutex<T>);
 
 impl<T> Mutex<T> {
-    pub(super) const fn new(data: T) -> Self {
+    pub const fn new(data: T) -> Self {
         Self(std::sync::Mutex::new(data))
     }
 
-    pub(crate) fn lock(&self) -> MutexGuard<'_, T> {
+    pub fn lock(&self) -> MutexGuard<'_, T> {
         self.0.lock().ok().unwrap()
+    }
+
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+        self.0.try_lock().ok()
     }
 }
 

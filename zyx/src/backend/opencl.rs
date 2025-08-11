@@ -826,7 +826,7 @@ impl OpenCLDevice {
                     )
                     .unwrap();
                 }
-                &Op::Loop { dim, tiled: _ } => {
+                &Op::Loop { dim, vectorize: _ } => {
                     indices.insert(i, loop_id);
                     if loop_id > 5 {
                         writeln!(

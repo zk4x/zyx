@@ -24,17 +24,19 @@ pub enum Op {
     LoadView { dtype: DType, view: View },
     Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
 
-    // ops that exist in IR
+    // ops that only exist after unfolding views and reduces
     Const(Constant),
     Load { dtype: DType, index: OpId },
+    DeclareAcc { dtype: DType, rop: ROp },
+    Loop { dim: Dim, vectorize: bool }, // vectorize means both vectorization and tensor cores
+    Accumulate { x: OpId, rop: ROp },
+    EndLoop { dims: Vec<Dim> },
+
+    // ops that exist in both
     Store { x: OpId, index: OpId },
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    DeclareAcc { dtype: DType, rop: ROp },
-    Loop { dim: Dim, tiled: bool }, // tiled means both vectorization and tensor cores
-    Accumulate { x: OpId, rop: ROp },
-    EndLoop { dims: Vec<Dim> },
 }
 
 #[derive(Debug)]
@@ -43,15 +45,32 @@ pub struct Cache {
     pub kernels: Map<Kernel, u32>,
     // Finished optimizations of kernels for given devices
     // kernel id, device info id => optimization, time to run in nanos
-    pub optimizations: Map<(u32, u32), (Optimization, u64)>,
+    pub optimizations: Map<(u32, u32), (Optimizer, u64)>,
     // This last one is not stored to disk
     // kernel id, device id => program id
     pub programs: Map<(u32, u32), ProgramId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Optimization {
     Basic { shape: Vec<Dim>, loop_unroll_size: Dim },
+}
+
+#[derive(Debug)]
+pub enum Optimizer {
+    Done(Optimization),
+    Default(Optimization),
+    Ongoing { current: Optimization, best: Optimization },
+}
+
+impl Optimizer {
+    fn next_optimization(&self) -> Option<&Optimization> {
+        match self {
+            Optimizer::Done(optimization) => todo!(),
+            Optimizer::Default(optimization) => Some(&optimization),
+            Optimizer::Ongoing { current, best } => todo!(),
+        }
+    }
 }
 
 impl Cache {
@@ -146,7 +165,7 @@ impl Kernel {
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
-                Op::Loop { dim, tiled } => println!("{i:>3} LOOP dim={dim} tiled={tiled}"),
+                Op::Loop { dim, vectorize: tiled } => println!("{i:>3} LOOP dim={dim} tiled={tiled}"),
                 Op::EndLoop { dims } => println!("{i:>3} ENDLOOP dims={dims:?}"),
                 Op::Reduce { x, rop, dims } => println!(
                     "{i:>3} REDUCE {} {x}, dims={dims:?}",
@@ -169,7 +188,7 @@ impl Kernel {
         self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
     }
 
-    pub(super) fn default_optimization(&self, dev_info: &DeviceInfo) -> Optimization {
+    pub(super) fn default_optimization(&self, dev_info: &DeviceInfo) -> Optimizer {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {
             fn get_factors(n: Dim) -> Vec<Dim> {
                 let mut factors = Vec::new();
@@ -217,10 +236,11 @@ impl Kernel {
         shape.extend(global_work_size);
         shape.extend(local_work_size);
 
-        Optimization::Basic { shape, loop_unroll_size: 16 }
+        Optimizer::Default(Optimization::Basic { shape, loop_unroll_size: 16 })
     }
 
-    pub fn apply_optimization(&mut self, optimization: &Optimization) {
+    pub fn apply_optimization(&mut self, optimizer: &Optimizer) {
+        let Some(optimization) = optimizer.next_optimization() else { return };
         let loop_unroll_size = match optimization {
             Optimization::Basic { shape, loop_unroll_size } => {
                 let n = self.shape().len();
@@ -297,7 +317,7 @@ impl Kernel {
         let shape = self.shape();
         self.increment_range(0..self.ops.len(), shape.len(), 0);
         for dim in shape.into_iter().rev() {
-            self.ops.insert(0, Op::Loop { dim, tiled: false });
+            self.ops.insert(0, Op::Loop { dim, vectorize: false });
         }
     }
 
@@ -370,11 +390,12 @@ impl Kernel {
             }
             self.ops[op_id] = Op::EndLoop { dims: dims.clone() };
             self.ops.insert(op_id, Op::Accumulate { x, rop });
+            let n = dims.len();
             for dim in dims {
-                self.ops.insert(min_param, Op::Loop { dim, tiled: false });
+                self.ops.insert(min_param, Op::Loop { dim, vectorize: false });
             }
             self.ops.insert(min_param, Op::DeclareAcc { dtype: acc_dtype.unwrap(), rop });
-            self.increment_range(min_param + 1..self.ops.len(), 2, min_param);
+            self.increment_range(min_param + 1..self.ops.len(), 1 + n, min_param);
         }
     }
 
@@ -619,7 +640,10 @@ impl Kernel {
     fn dead_code_elimination(&mut self) {
         let mut params = Vec::new();
         for op_id in 0..self.ops.len() {
-            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. } | Op::EndLoop { .. }) {
+            if matches!(
+                self.ops[op_id],
+                Op::Store { .. } | Op::Loop { .. } | Op::EndLoop { .. } | Op::DeclareAcc { .. }
+            ) {
                 params.push(op_id);
             }
         }
@@ -676,7 +700,10 @@ impl Kernel {
         for (op_id, op) in self.ops.iter().enumerate() {
             if let Some(&id) = unique.get(op) {
                 remaps.insert(op_id, id);
-            } else {
+            } else if !matches!(
+                op,
+                Op::Load { .. } | Op::Loop { .. } | Op::DeclareAcc { .. } | Op::Store { .. }
+            ) {
                 unique.insert(op.clone(), op_id);
             }
         }
