@@ -261,12 +261,13 @@ impl Kernel {
 
         let mut kernel = self.clone();
         loop {
+            self.move_constants_to_beginning();
             self.constant_folding();
             self.deduplicate();
 
             self.dead_code_elimination();
             self.loop_invariant_code_motion();
-            self.loop_unrolling(loop_unroll_size);
+            //self.loop_unrolling(loop_unroll_size);
 
             if *self == kernel {
                 break;
@@ -687,6 +688,24 @@ impl Kernel {
                 }
             }
         }
+        self.remap(&remaps);
+    }
+
+    fn move_constants_to_beginning(&mut self) {
+        let tail = self.ops.split_off(6);
+        let mut remaps = Map::with_hasher(BuildHasherDefault::new());
+        let n_constants = tail.iter().filter(|op| matches!(op, Op::Const(_))).count();
+
+        for (i, op) in tail.iter().enumerate() {
+            if matches!(op, Op::Const(_)) {
+                let new_index = self.ops.len();
+                self.ops.push(op.clone());
+                remaps.insert(i + 6 + n_constants, new_index);
+            }
+        }
+        self.ops.extend(tail);
+        let ops_len = self.ops.len();
+        increment(&mut self.ops, 6 + remaps.len()..ops_len, remaps.len(), 6);
         self.remap(&remaps);
     }
 
