@@ -30,7 +30,7 @@ pub enum Op {
     DeclareAcc { dtype: DType, rop: ROp },
     Loop { dim: Dim, vectorize: bool }, // vectorize means both vectorization and tensor cores
     Accumulate { x: OpId, rop: ROp },
-    EndLoop { dims: Vec<Dim> },
+    EndLoop,
 
     // ops that exist in both
     Store { x: OpId, index: OpId },
@@ -166,7 +166,7 @@ impl Kernel {
                 Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
                 Op::Loop { dim, vectorize: tiled } => println!("{i:>3} LOOP dim={dim} tiled={tiled}"),
-                Op::EndLoop { dims } => println!("{i:>3} ENDLOOP dims={dims:?}"),
+                Op::EndLoop => println!("{i:>3} ENDLOOP"),
                 Op::Reduce { x, rop, dims } => println!(
                     "{i:>3} REDUCE {} {x}, dims={dims:?}",
                     match rop {
@@ -388,14 +388,21 @@ impl Kernel {
                     Op::EndLoop { .. } => unreachable!(),
                 }
             }
-            self.ops[op_id] = Op::EndLoop { dims: dims.clone() };
-            self.ops.insert(op_id, Op::Accumulate { x, rop });
             let n = dims.len();
+            self.ops[op_id] = Op::EndLoop;
+            for _ in 0..(n - 1) {
+                self.ops.insert(op_id, Op::EndLoop);
+            }
+            self.ops.insert(op_id, Op::Accumulate { x, rop });
             for dim in dims {
                 self.ops.insert(min_param, Op::Loop { dim, vectorize: false });
             }
             self.ops.insert(min_param, Op::DeclareAcc { dtype: acc_dtype.unwrap(), rop });
             self.increment_range(min_param + 1..self.ops.len(), 1 + n, min_param);
+            /*for (i, op) in self.ops.iter().enumerate() {
+                println!("{i} -> {op:?}");
+            }
+            println!("n={n}\n");*/
         }
     }
 
@@ -851,7 +858,55 @@ impl Kernel {
     }
 
     /// Unroll all loops with dimension <= loop_unroll_size
-    fn loop_unrolling(&mut self, _loop_unroll_size: usize) {}
+    fn loop_unrolling(&mut self, _loop_unroll_size: usize) {
+        /*let mut output = Vec::new();
+        let mut i = 0;
+
+        while i < self.ops.len() {
+            match self.ops[i] {
+                Op::Loop { dim, .. } => {
+                    // Find the matching EndLoop
+                    let loop_start = i + 1;
+                    let mut depth = 1;
+                    let mut loop_end = loop_start;
+
+                    while loop_end < self.ops.len() {
+                        match &self.ops[loop_end] {
+                            Op::Loop { .. } => depth += 1,
+                            Op::EndLoop => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        loop_end += 1;
+                    }
+
+                    if depth != 0 {
+                        panic!("Unmatched loop at index {}", i);
+                    }
+
+                    // Extract the loop body
+                    let body = &ir[loop_start..loop_end];
+
+                    // Recursively unroll the loop body in case of nested loops
+                    let unrolled_body = unroll_loops(body);
+
+                    for _ in 0..*num_iters {
+                        output.extend(unrolled_body.clone());
+                    }
+
+                    i = loop_end + 1; // Skip past EndLoop
+                }
+                _ => {
+                    output.push(ir[i].clone());
+                    i += 1;
+                }
+            }
+        }*/
+    }
 }
 
 fn get_axes(ops: &[Op]) -> Vec<OpId> {

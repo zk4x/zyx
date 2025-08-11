@@ -848,13 +848,11 @@ impl OpenCLDevice {
                         ROp::Max => writeln!(source, "{indent}acc{a} = max({x}, acc{a});").unwrap(),
                     }
                 }
-                Op::EndLoop { dims } => {
-                    for _ in dims {
-                        indent.pop();
-                        indent.pop();
-                        writeln!(source, "{indent}}}").unwrap();
-                        loop_id -= 1;
-                    }
+                Op::EndLoop => {
+                    indent.pop();
+                    indent.pop();
+                    writeln!(source, "{indent}}}").unwrap();
+                    loop_id -= 1;
                 }
             }
         }
