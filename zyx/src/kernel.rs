@@ -262,10 +262,12 @@ impl Kernel {
         let mut kernel = self.clone();
         loop {
             self.constant_folding();
-            self.loop_unrolling(loop_unroll_size);
             self.deduplicate();
+
             self.dead_code_elimination();
-            //self.loop_invariant_code_motion();
+            self.loop_invariant_code_motion();
+            self.loop_unrolling(loop_unroll_size);
+
             if *self == kernel {
                 break;
             }
@@ -315,7 +317,8 @@ impl Kernel {
 
     fn unfold_shape(&mut self) {
         let shape = self.shape();
-        self.increment_range(0..self.ops.len(), shape.len(), 0);
+        let n = self.ops.len();
+        increment(&mut self.ops, 0..n, shape.len(), 0);
         for dim in shape.into_iter().rev() {
             self.ops.insert(0, Op::Loop { dim, vectorize: false });
         }
@@ -398,7 +401,8 @@ impl Kernel {
                 self.ops.insert(min_param, Op::Loop { dim, vectorize: false });
             }
             self.ops.insert(min_param, Op::DeclareAcc { dtype: acc_dtype.unwrap(), rop });
-            self.increment_range(min_param + 1..self.ops.len(), 1 + n, min_param);
+            let ops_len = self.ops.len();
+            increment(&mut self.ops, min_param + 1..ops_len, 1 + n, min_param);
             /*for (i, op) in self.ops.iter().enumerate() {
                 println!("{i} -> {op:?}");
             }
@@ -501,7 +505,8 @@ impl Kernel {
 
                     let n = self.ops.len();
                     self.ops.extend(temp_ops);
-                    self.increment_range(n..self.ops.len(), n - op_id - 1, op_id);
+                    let ops_len = self.ops.len();
+                    increment(&mut self.ops, n..ops_len, n - op_id - 1, op_id);
                     op_id = n;
                     continue;
                 }
@@ -532,64 +537,14 @@ impl Kernel {
                     }
                     println!("n={n}");*/
                     self.ops.extend(temp_ops);
-                    self.increment_range(n..self.ops.len(), n - op_id - 1, op_id);
+                    let ops_len = self.ops.len();
+                    increment(&mut self.ops, n..ops_len, n - op_id - 1, op_id);
                     op_id = n;
                     continue;
                 }
                 _ => {}
             }
             op_id += 1;
-        }
-    }
-
-    fn increment_range(&mut self, range: Range<usize>, d: usize, ge: usize) {
-        for op in &mut self.ops[range.clone()] {
-            match op {
-                Op::ConstView { .. } | Op::Const { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
-                Op::Load { index, .. } => {
-                    if *index >= ge {
-                        *index += d;
-                    }
-                }
-                Op::Store { x, index } => {
-                    if *index >= ge {
-                        *index += d;
-                    }
-                    if *x >= ge {
-                        *x += d;
-                    }
-                }
-                Op::Cast { x, .. } => {
-                    if *x >= ge {
-                        *x += d;
-                    }
-                }
-                Op::Reduce { x, .. } => {
-                    if *x >= ge {
-                        *x += d;
-                    }
-                }
-                Op::Unary { x, .. } => {
-                    if *x >= ge {
-                        *x += d;
-                    }
-                }
-                Op::Binary { x, y, .. } => {
-                    if *x >= ge {
-                        *x += d;
-                    }
-                    if *y >= ge {
-                        *y += d;
-                    }
-                }
-                Op::DeclareAcc { .. } => {}
-                Op::Accumulate { x, .. } => {
-                    if *x >= ge {
-                        *x += d;
-                    }
-                }
-                Op::EndLoop { .. } => {}
-            }
         }
     }
 
@@ -699,19 +654,37 @@ impl Kernel {
         }
     }
 
-    //fn loop_invariant_code_motion(&mut self) {}
+    fn loop_invariant_code_motion(&mut self) {}
 
     fn deduplicate(&mut self) {
-        let mut unique = Map::with_capacity_and_hasher(10, BuildHasherDefault::new());
+        // TODO deduplication should preserve loop boundaries
+        let mut unique_stack: Vec<Map<Op, OpId>> = Vec::new();
         let mut remaps = Map::with_hasher(BuildHasherDefault::new());
         for (op_id, op) in self.ops.iter().enumerate() {
-            if let Some(&id) = unique.get(op) {
-                remaps.insert(op_id, id);
-            } else if !matches!(
-                op,
-                Op::Load { .. } | Op::Loop { .. } | Op::DeclareAcc { .. } | Op::Store { .. }
-            ) {
-                unique.insert(op.clone(), op_id);
+            match op {
+                Op::Loop { .. } => {
+                    unique_stack.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::new()));
+                }
+                Op::EndLoop => {
+                    unique_stack.pop();
+                }
+                _ => {
+                    for unique in &unique_stack {
+                        if let Some(&id) = unique.get(op) {
+                            remaps.insert(op_id, id);
+                            break;
+                        }
+                    }
+
+                    if !remaps.contains_key(&op_id)
+                        && !matches!(
+                            op,
+                            Op::Load { .. } | Op::Loop { .. } | Op::DeclareAcc { .. } | Op::Store { .. }
+                        )
+                    {
+                        unique_stack.last_mut().unwrap().insert(op.clone(), op_id);
+                    }
+                }
             }
         }
         self.remap(&remaps);
@@ -858,54 +831,70 @@ impl Kernel {
     }
 
     /// Unroll all loops with dimension <= loop_unroll_size
-    fn loop_unrolling(&mut self, _loop_unroll_size: usize) {
-        /*let mut output = Vec::new();
-        let mut i = 0;
+    fn loop_unrolling(&mut self, loop_unroll_size: usize) {
+        fn unroll_innermost_loop(ir: &mut Vec<Op>, loop_unroll_size: usize) -> bool {
+            let mut stack = Vec::new();
+            let mut innermost_range: Option<std::ops::Range<usize>> = None;
 
-        while i < self.ops.len() {
-            match self.ops[i] {
-                Op::Loop { dim, .. } => {
-                    // Find the matching EndLoop
-                    let loop_start = i + 1;
-                    let mut depth = 1;
-                    let mut loop_end = loop_start;
-
-                    while loop_end < self.ops.len() {
-                        match &self.ops[loop_end] {
-                            Op::Loop { .. } => depth += 1,
-                            Op::EndLoop => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    break;
-                                }
-                            }
-                            _ => {}
+            // Reverse scan to find the innermost matched Loop..EndLoop
+            for (i, op) in ir.iter().enumerate().rev() {
+                match op {
+                    Op::EndLoop => {
+                        stack.push(i);
+                    }
+                    &Op::Loop { dim, .. } => {
+                        if dim > loop_unroll_size {
+                            stack.pop();
+                            continue;
                         }
-                        loop_end += 1;
+                        if let Some(end) = stack.pop() {
+                            innermost_range = Some(i..end + 1);
+                            break; // Unroll one innermost loop per call
+                        }
                     }
-
-                    if depth != 0 {
-                        panic!("Unmatched loop at index {}", i);
-                    }
-
-                    // Extract the loop body
-                    let body = &ir[loop_start..loop_end];
-
-                    // Recursively unroll the loop body in case of nested loops
-                    let unrolled_body = unroll_loops(body);
-
-                    for _ in 0..*num_iters {
-                        output.extend(unrolled_body.clone());
-                    }
-
-                    i = loop_end + 1; // Skip past EndLoop
-                }
-                _ => {
-                    output.push(ir[i].clone());
-                    i += 1;
+                    _ => {}
                 }
             }
-        }*/
+
+            let Some(range) = innermost_range else {
+                return false; // no matched loop found
+            };
+
+            let Op::Loop { dim, .. } = ir[range.start] else {
+                unreachable!("Expected Op::Loop at start of matched loop range");
+            };
+
+            for (i, op) in ir.iter().enumerate() {
+                println!("{i} -> {op:?}");
+            }
+            println!();
+
+            let mut body = ir.split_off(range.start);
+            let mut tail = body.split_off(range.end - range.start);
+            body.pop();
+
+            // Append body dim times
+            for i in 0..dim {
+                let mut body = body.clone();
+                let n = body.len();
+                increment(&mut body, 0..n, i * n, range.start);
+                body[0] = Op::Const(Constant::U32(i as u32));
+
+                ir.extend(body);
+            }
+
+            let n = tail.len();
+            //increment(&mut tail, 0..n, (dim - 1) * body.len(), range.start);
+            ir.extend(tail);
+
+            for (i, op) in ir.iter().enumerate() {
+                println!("{i} -> {op:?}");
+            }
+            panic!();
+
+            true
+        }
+        while unroll_innermost_loop(&mut self.ops, loop_unroll_size) {}
     }
 }
 
@@ -917,4 +906,32 @@ fn get_axes(ops: &[Op]) -> Vec<OpId> {
         }
     }
     axes
+}
+
+fn increment(ops: &mut [Op], range: Range<usize>, d: usize, ge: usize) {
+    let h = |x: &mut usize| {
+        if *x >= ge {
+            *x += d
+        }
+    };
+    for op in &mut ops[range] {
+        match op {
+            Op::ConstView { .. }
+            | Op::Const { .. }
+            | Op::LoadView { .. }
+            | Op::Loop { .. }
+            | Op::DeclareAcc { .. }
+            | Op::EndLoop { .. } => {}
+            Op::Load { index, .. } => h(index),
+            Op::Store { x, index } => {
+                h(index);
+                h(x);
+            }
+            Op::Cast { x, .. } | Op::Reduce { x, .. } | Op::Unary { x, .. } | Op::Accumulate { x, .. } => h(x),
+            Op::Binary { x, y, .. } => {
+                h(x);
+                h(y);
+            }
+        }
+    }
 }
