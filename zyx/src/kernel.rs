@@ -167,26 +167,19 @@ impl Kernel {
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
                 Op::Loop { dim, vectorize: tiled } => println!("{i:>3} LOOP dim={dim} tiled={tiled}"),
                 Op::EndLoop => println!("{i:>3} ENDLOOP"),
-                Op::Reduce { x, rop, dims } => println!(
-                    "{i:>3} REDUCE {} {x}, dims={dims:?}",
-                    match rop {
-                        ROp::Sum => "SUM",
-                        ROp::Max => "MAX",
-                    }
-                ),
+                Op::Reduce { x, rop, dims } => println!("{i:>3} REDUCE {} {x}, dims={dims:?}", match rop {
+                    ROp::Sum => "SUM",
+                    ROp::Max => "MAX",
+                }),
                 Op::DeclareAcc { dtype, rop } => println!("{i:>3} DECLARE ACC {dtype} {rop:?}"),
                 Op::Accumulate { x, rop } => println!("{i:>3} ACCUMULATE {x} {rop:?}"),
             }
         }
     }
 
-    pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
-        (0, 0, 0)
-    }
+    pub fn flop_mem_rw(&self) -> (u128, u128, u128) { (0, 0, 0) }
 
-    pub fn is_reduce(&self) -> bool {
-        self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
-    }
+    pub fn is_reduce(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::Reduce { .. })) }
 
     pub(super) fn default_optimization(&self, dev_info: &DeviceInfo) -> Optimizer {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {
@@ -909,7 +902,7 @@ impl Kernel {
             for (i, op) in ir.iter().enumerate() {
                 println!("{i} -> {op:?}");
             }
-            panic!();
+            //panic!();
 
             true
         }
