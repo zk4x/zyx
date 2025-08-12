@@ -26,7 +26,7 @@ pub enum Op {
 
     // ops that only exist after unfolding views and reduces
     Const(Constant),
-    Load { dtype: DType, index: OpId },
+    Load { dtype: DType, index: OpId, arg_id: u8 },
     DeclareAcc { dtype: DType, rop: ROp },
     Loop { dim: Dim, vectorize: bool }, // vectorize means both vectorization and tensor cores
     Accumulate { x: OpId, rop: ROp },
@@ -160,7 +160,7 @@ impl Kernel {
                 Op::Const(x) => println!("{i:>3} CONST {x}"),
                 Op::ConstView { value, view } => println!("{i:>3} CONST VIEW {value} {view}"),
                 Op::LoadView { dtype, view } => println!("{i:>3} LOAD VIEW {dtype} {view}"),
-                Op::Load { dtype, index } => println!("{i:>3} LOAD {dtype} at {index}"),
+                Op::Load { dtype, index, arg_id } => println!("{i:>3} LOAD {dtype} at {index}, arg_id={arg_id}"),
                 Op::Store { x, index } => println!("{i:>3} STORE {x} at {index}"),
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
@@ -257,10 +257,15 @@ impl Kernel {
             self.move_constants_to_beginning();
             self.constant_folding();
             self.common_subexpression_elimination();
+            //println!();
+            //self.debug();
+            self.dead_code_elimination();
+            //println!();
+            //self.debug();
 
-            //self.dead_code_elimination();
             self.loop_invariant_code_motion();
             self.loop_unrolling(loop_unroll_size);
+            //panic!();
 
             if *self == kernel {
                 break;
@@ -415,6 +420,7 @@ impl Kernel {
         }
 
         let mut op_id = 0;
+        let mut arg_id = 0;
         while op_id < self.ops.len() {
             match self.ops[op_id] {
                 Op::ConstView { value, view: _ } => {
@@ -492,7 +498,7 @@ impl Kernel {
                     }
                     let pcu32 = new_op(ops, Op::Cast { x: pc, dtype: DType::U32 });
                     let offset = new_op(ops, Op::Binary { x: pcu32, y: offset, bop: BOp::Mul });
-                    let z = new_op(ops, Op::Load { dtype, index: offset });
+                    let z = new_op(ops, Op::Load { dtype, index: offset, arg_id });
                     let pcd = new_op(ops, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
                     _ = new_op(ops, Op::Binary { x: pcd, y: z, bop: BOp::Mul });
@@ -502,6 +508,7 @@ impl Kernel {
                     let ops_len = self.ops.len();
                     increment(&mut self.ops[n..], n - op_id - 1, op_id..ops_len);
                     op_id = n;
+                    arg_id += 1;
                     continue;
                 }
                 Op::Store { x, .. } => {
@@ -844,46 +851,27 @@ impl Kernel {
 
     /// Unroll all loops with dimension <= loop_unroll_size
     fn loop_unrolling(&mut self, loop_unroll_size: usize) {
-        fn unroll_innermost_loop(ir: &mut Vec<Op>, loop_unroll_size: usize) -> bool {
-            let mut stack = Vec::new();
-            let mut innermost_range: Option<std::ops::Range<usize>> = None;
-
-            // Reverse scan to find the innermost matched Loop..EndLoop
-            for (i, op) in ir.iter().enumerate().rev() {
-                match op {
-                    Op::EndLoop => {
-                        stack.push(i);
-                    }
-                    &Op::Loop { dim, .. } => {
-                        if dim > loop_unroll_size {
-                            stack.pop();
-                            continue;
-                        }
-                        if let Some(end) = stack.pop() {
-                            innermost_range = Some(i..end + 1);
-                            break; // Unroll one innermost loop per call
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            let Some(range) = innermost_range else {
-                return false; // no matched loop found
-            };
-
+        fn unroll_loop(ir: &mut Vec<Op>, range: Range<usize>) {
             let Op::Loop { dim, .. } = ir[range.start] else {
                 unreachable!("Expected Op::Loop at start of matched loop range");
             };
 
-            /*for (i, op) in ir.iter().enumerate() {
-                println!("{i} -> {op:?}");
-            }
-            println!();*/
-
             let mut body = ir.split_off(range.start);
             let mut tail = body.split_off(range.end - range.start);
             body.pop();
+
+            // If body contains accumulator, we replace it with binary ops and DeclareAcc with constant
+            let mut replace_acc = if body.iter().any(|op| matches!(op, Op::Accumulate { .. })) {
+                ir.iter().rposition(|op| matches!(op, Op::DeclareAcc { .. }))
+            } else { None };
+            if let Some(decl_acc_id) = replace_acc {
+                if let Op::DeclareAcc { dtype, rop } = ir[decl_acc_id] {
+                    ir[decl_acc_id] = Op::Const(match rop {
+                        ROp::Sum => dtype.zero_constant(),
+                        ROp::Max => dtype.min_constant(),
+                    });
+                }
+            }
 
             // Append body dim times
             for i in 0..dim {
@@ -892,6 +880,19 @@ impl Kernel {
                 increment(&mut body, i * n, range.clone());
                 body[0] = Op::Const(Constant::U32(i as u32));
 
+                if let Some(decl_acc_id) = replace_acc {
+                    for (op_id, op) in body.iter_mut().enumerate() {
+                        if let &mut Op::Accumulate { x, rop } = op {
+                            *op = Op::Binary { x, y: decl_acc_id, bop: match rop {
+                                ROp::Sum => BOp::Add,
+                                ROp::Max => BOp::Max,
+                            }};
+                            replace_acc = Some(op_id + ir.len());
+                            break;
+                        }
+                    }
+                }
+
                 ir.extend(body);
             }
 
@@ -899,14 +900,34 @@ impl Kernel {
             increment(&mut tail, (dim - 1) * body.len(), range);
             ir.extend(tail);
 
-            /*for (i, op) in ir.iter().enumerate() {
+            for (i, op) in ir.iter().enumerate() {
                 println!("{i} -> {op:?}");
-            }*/
-            //panic!();
-
-            true
+            }
         }
-        while unroll_innermost_loop(&mut self.ops, loop_unroll_size) {}
+
+        let mut ranges = Vec::new();
+        let mut stack = Vec::new();
+
+        for (i, op) in self.ops.iter().enumerate() {
+            match op {
+                Op::Loop { dim, .. } => {
+                    stack.push((i, dim));
+                }
+                &Op::EndLoop => {
+                    if let Some((start, dim)) = stack.pop() {
+                        if *dim <= loop_unroll_size {
+                            ranges.push(start..i + 1);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        //println!("{ranges:?}");
+
+        for range in ranges {
+            unroll_loop(&mut self.ops, range);
+        }
     }
 }
 

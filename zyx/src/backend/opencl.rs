@@ -620,7 +620,7 @@ impl OpenCLDevice {
         let mut gws = [shape[0], shape[1], shape[2]];
         let lws = [shape[3], shape[4], shape[5]];
 
-        let mut global_loads = Vec::new();
+        let mut global_loads: Map<u8, DType> = Map::with_capacity_and_hasher(10, BuildHasherDefault::new());
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
         let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
@@ -635,10 +635,10 @@ impl OpenCLDevice {
                     dtypes.insert(i, DType::U32);
                 }*/
                 Op::LoadView { .. } => unreachable!(),
-                &Op::Load { dtype, index } => {
+                &Op::Load { dtype, index, arg_id } => {
                     dtypes.insert(i, dtype);
                     rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-                    global_loads.push(dtype);
+                    global_loads.insert(arg_id, dtype);
                 }
                 &Op::Store { x, index } => {
                     dtypes.insert(i, dtypes[&x]);
@@ -730,7 +730,6 @@ impl OpenCLDevice {
         let mut loop_id = 0;
 
         let mut indent = String::from("  ");
-        let mut global_load_id = 0;
         let mut global_store_id = 0;
 
         let mut source = String::with_capacity(1000);
@@ -745,11 +744,10 @@ impl OpenCLDevice {
                 &Op::Const(x) => {
                     constants.insert(i, x);
                 }
-                &Op::Load { dtype, index } => {
+                &Op::Load { dtype, index, arg_id } => {
                     let idx = get_var(index, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    writeln!(source, "{indent}r{reg} = g{global_load_id}[{idx}];",).unwrap();
-                    global_load_id += 1;
+                    writeln!(source, "{indent}r{reg} = g{arg_id}[{idx}];",).unwrap();
                 }
                 &Op::Store { x, index } => {
                     writeln!(
@@ -858,8 +856,8 @@ impl OpenCLDevice {
         }
 
         let mut global_args = String::new();
-        for (i, dtype) in global_loads.into_iter().enumerate() {
-            writeln!(global_args, "  __global const {}* g{i},", dtype.ocl()).unwrap();
+        for (arg_id, dtype) in global_loads {
+            writeln!(global_args, "  __global const {}* g{arg_id},", dtype.ocl()).unwrap();
         }
         for (i, dtype) in global_stores.into_iter().enumerate() {
             writeln!(global_args, "  __global {}* gw{i},", dtype.ocl()).unwrap();
