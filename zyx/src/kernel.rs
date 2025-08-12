@@ -256,11 +256,11 @@ impl Kernel {
         loop {
             self.move_constants_to_beginning();
             self.constant_folding();
-            self.deduplicate();
+            self.common_subexpression_elimination();
 
-            self.dead_code_elimination();
+            //self.dead_code_elimination();
             self.loop_invariant_code_motion();
-            //self.loop_unrolling(loop_unroll_size);
+            self.loop_unrolling(loop_unroll_size);
 
             if *self == kernel {
                 break;
@@ -312,7 +312,7 @@ impl Kernel {
     fn unfold_shape(&mut self) {
         let shape = self.shape();
         let n = self.ops.len();
-        increment(&mut self.ops, 0..n, shape.len(), 0);
+        increment(&mut self.ops, shape.len(), 0..n);
         for dim in shape.into_iter().rev() {
             self.ops.insert(0, Op::Loop { dim, vectorize: false });
         }
@@ -396,7 +396,7 @@ impl Kernel {
             }
             self.ops.insert(min_param, Op::DeclareAcc { dtype: acc_dtype.unwrap(), rop });
             let ops_len = self.ops.len();
-            increment(&mut self.ops, min_param + 1..ops_len, 1 + n, min_param);
+            increment(&mut self.ops[min_param + 1..], 1 + n, min_param..ops_len);
             /*for (i, op) in self.ops.iter().enumerate() {
                 println!("{i} -> {op:?}");
             }
@@ -500,7 +500,7 @@ impl Kernel {
                     let n = self.ops.len();
                     self.ops.extend(temp_ops);
                     let ops_len = self.ops.len();
-                    increment(&mut self.ops, n..ops_len, n - op_id - 1, op_id);
+                    increment(&mut self.ops[n..], n - op_id - 1, op_id..ops_len);
                     op_id = n;
                     continue;
                 }
@@ -532,7 +532,7 @@ impl Kernel {
                     println!("n={n}");*/
                     self.ops.extend(temp_ops);
                     let ops_len = self.ops.len();
-                    increment(&mut self.ops, n..ops_len, n - op_id - 1, op_id);
+                    increment(&mut self.ops[n..], n - op_id - 1, op_id..ops_len);
                     op_id = n;
                     continue;
                 }
@@ -650,7 +650,7 @@ impl Kernel {
 
     fn loop_invariant_code_motion(&mut self) {}
 
-    fn deduplicate(&mut self) {
+    fn common_subexpression_elimination(&mut self) {
         // TODO deduplication should preserve loop boundaries
         let mut unique_stack: Vec<Map<Op, OpId>> = Vec::new();
         let mut remaps = Map::with_hasher(BuildHasherDefault::new());
@@ -698,7 +698,7 @@ impl Kernel {
         }
         self.ops.extend(tail);
         let ops_len = self.ops.len();
-        increment(&mut self.ops, 6 + remaps.len()..ops_len, remaps.len(), 6);
+        increment(&mut self.ops[6 + remaps.len()..], remaps.len(), 6..ops_len);
         self.remap(&remaps);
     }
 
@@ -876,10 +876,10 @@ impl Kernel {
                 unreachable!("Expected Op::Loop at start of matched loop range");
             };
 
-            for (i, op) in ir.iter().enumerate() {
+            /*for (i, op) in ir.iter().enumerate() {
                 println!("{i} -> {op:?}");
             }
-            println!();
+            println!();*/
 
             let mut body = ir.split_off(range.start);
             let mut tail = body.split_off(range.end - range.start);
@@ -889,19 +889,19 @@ impl Kernel {
             for i in 0..dim {
                 let mut body = body.clone();
                 let n = body.len();
-                increment(&mut body, 0..n, i * n, range.start);
+                increment(&mut body, i * n, range.clone());
                 body[0] = Op::Const(Constant::U32(i as u32));
 
                 ir.extend(body);
             }
 
-            let n = tail.len();
-            //increment(&mut tail, 0..n, (dim - 1) * body.len(), range.start);
+            increment(&mut tail, (dim - 1) * body.len() - 1, range.end..usize::MAX);
+            increment(&mut tail, (dim - 1) * body.len(), range);
             ir.extend(tail);
 
-            for (i, op) in ir.iter().enumerate() {
+            /*for (i, op) in ir.iter().enumerate() {
                 println!("{i} -> {op:?}");
-            }
+            }*/
             //panic!();
 
             true
@@ -920,13 +920,13 @@ fn get_axes(ops: &[Op]) -> Vec<OpId> {
     axes
 }
 
-fn increment(ops: &mut [Op], range: Range<usize>, d: usize, ge: usize) {
+fn increment(ops: &mut [Op], d: usize, range: Range<usize>) {
     let h = |x: &mut usize| {
-        if *x >= ge {
+        if range.contains(x) {
             *x += d
         }
     };
-    for op in &mut ops[range] {
+    for op in ops {
         match op {
             Op::ConstView { .. }
             | Op::Const { .. }
