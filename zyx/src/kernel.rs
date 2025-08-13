@@ -212,17 +212,20 @@ impl Kernel {
             res
         }
 
-        let n = self.shape().iter().product();
-        let mut global_work_size = get_equal_factors(n);
+        let n: Dim = self.shape().iter().product();
 
         let mut d = dev_info.max_local_threads;
         while n % d != 0 {
             d -= 1;
         }
+        debug_assert_eq!(n % d, 0);
+
         let local_work_size = get_equal_factors(d);
-        global_work_size[0] /= local_work_size[0];
-        global_work_size[1] /= local_work_size[1];
-        global_work_size[2] /= local_work_size[2];
+
+        let global_work_size = get_equal_factors(n/d);
+
+        debug_assert_eq!(global_work_size.iter().product::<Dim>(), n/d);
+        debug_assert_eq!(local_work_size.iter().product::<Dim>(), d);
 
         // Concatenate global and local work sizes to get the final 6D shape
         let mut shape = vec![];
@@ -257,15 +260,10 @@ impl Kernel {
             self.move_constants_to_beginning();
             self.constant_folding();
             self.common_subexpression_elimination();
-            //println!();
-            //self.debug();
             self.dead_code_elimination();
-            //println!();
-            //self.debug();
 
-            self.loop_invariant_code_motion();
-            self.loop_unrolling(loop_unroll_size);
-            //panic!();
+            // loop unrolling plus loop invariant code motion
+            self.loop_optimization(loop_unroll_size);
 
             if *self == kernel {
                 break;
@@ -655,8 +653,6 @@ impl Kernel {
         }
     }
 
-    fn loop_invariant_code_motion(&mut self) {}
-
     fn common_subexpression_elimination(&mut self) {
         // TODO deduplication should preserve loop boundaries
         let mut unique_stack: Vec<Map<Op, OpId>> = Vec::new();
@@ -850,7 +846,7 @@ impl Kernel {
     }
 
     /// Unroll all loops with dimension <= loop_unroll_size
-    fn loop_unrolling(&mut self, loop_unroll_size: usize) {
+    fn loop_optimization(&mut self, loop_unroll_size: usize) {
         fn unroll_loop(ir: &mut Vec<Op>, range: Range<usize>) {
             let Op::Loop { dim, .. } = ir[range.start] else {
                 unreachable!("Expected Op::Loop at start of matched loop range");
@@ -900,10 +896,30 @@ impl Kernel {
             increment(&mut tail, (dim - 1) * body.len(), range);
             ir.extend(tail);
 
-            for (i, op) in ir.iter().enumerate() {
+            /*for (i, op) in ir.iter().enumerate() {
                 println!("{i} -> {op:?}");
-            }
+            }*/
         }
+
+        /*fn loop_invariant_code_motion(ir: &mut Vec<Op>, range: Range<usize>) {
+            for op_id in range {
+                match &ir[op_id] {
+                    Op::ConstView { value, view } => todo!(),
+                    Op::LoadView { dtype, view } => todo!(),
+                    Op::Reduce { x, rop, dims } => todo!(),
+                    Op::Const(constant) => todo!(),
+                    Op::Load { dtype, index, arg_id } => todo!(),
+                    Op::DeclareAcc { dtype, rop } => todo!(),
+                    Op::Loop { dim, vectorize } => todo!(),
+                    Op::Accumulate { x, rop } => todo!(),
+                    Op::EndLoop => todo!(),
+                    Op::Store { x, index } => todo!(),
+                    Op::Cast { x, dtype } => todo!(),
+                    Op::Unary { x, uop } => todo!(),
+                    Op::Binary { x, y, bop } => todo!(),
+                }
+            }
+        }*/
 
         let mut ranges = Vec::new();
         let mut stack = Vec::new();

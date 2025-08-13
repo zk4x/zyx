@@ -106,7 +106,8 @@ impl View {
         );
         debug_assert_eq!(
             self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
-            shape.iter().product::<Dim>()
+            shape.iter().product::<Dim>(),
+            "Reshape failed, products are different: {:?} -> {:?}", self.shape(), shape
         );
         let inner = self.0.last_mut().unwrap();
         let mut contiguous = true;

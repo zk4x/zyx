@@ -289,7 +289,7 @@ fn matmul_1024() -> Result<(), ZyxError> {
     //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
     //let y = xy.pop().unwrap();
     //let x = xy.pop().unwrap();
-    let mut xyz: std::collections::HashMap<String, Tensor> = Tensor::load("../xyz2.safetensors")?;
+    let mut xyz: std::collections::HashMap<String, Tensor> = Tensor::load("./tests/xyz2.safetensors")?;
     let z = xyz.remove("z").unwrap();
     let y = xyz.remove("y").unwrap();
     let x = xyz.remove("x").unwrap();
