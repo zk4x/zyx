@@ -192,55 +192,55 @@ impl Tensor {
         let id = match self.dtype() {
             DType::BF16 => {
                 let data: Vec<bf16> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::F16 => {
                 let data: Vec<f16> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::F32 => {
                 let data: Vec<f32> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::F64 => {
                 let data: Vec<f64> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::U8 => {
                 let data: Vec<u8> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::U16 => {
                 let data: Vec<u16> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::U32 => {
                 let data: Vec<u32> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::U64 => {
                 let data: Vec<u64> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::I8 => {
                 let data: Vec<i8> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::I16 => {
                 let data: Vec<i16> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::I32 => {
                 let data: Vec<i32> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::I64 => {
                 let data: Vec<i64> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
             DType::Bool => {
                 let data: Vec<bool> = self.try_into()?;
-                RT.lock().variable(shape, Box::new(data))
+                RT.lock().new_tensor(shape, Box::new(data))
             }
         }?;
         Ok(Tensor { id })
@@ -298,19 +298,19 @@ impl Tensor {
             match dtype {
                 DType::BF16 => {
                     let data: Vec<bf16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::F16 => {
                     let data: Vec<f16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::F32 => {
                     let data: Vec<f32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::F64 => {
                     let data: Vec<f64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::U8
                 | DType::U16
@@ -327,35 +327,35 @@ impl Tensor {
             match dtype {
                 DType::U8 => {
                     let data: Vec<u8> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::U16 => {
                     let data: Vec<u16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::U32 => {
                     let data: Vec<u32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::U64 => {
                     let data: Vec<u64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::I8 => {
                     let data: Vec<i8> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::I16 => {
                     let data: Vec<i16> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::I32 => {
                     let data: Vec<i32> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::I64 => {
                     let data: Vec<i64> = (0..n).map(|_| rt.rng.rand()).collect();
-                    Ok(Tensor { id: rt.variable(shape, Box::new(data))? })
+                    Ok(Tensor { id: rt.new_tensor(shape, Box::new(data))? })
                 }
                 DType::Bool => Err(ZyxError::DTypeError("Uniform is not supported for bool".into())),
                 DType::BF16 | DType::F16 | DType::F32 | DType::F64 => unreachable!(),
@@ -518,7 +518,7 @@ impl Tensor {
     /// Returns allocation failure or backend initialization failure
     pub fn from_vec<T: Scalar>(data: Vec<T>, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         let shape = shape.into_shape().collect();
-        let id = RT.lock().variable(shape, Box::new(data))?;
+        let id = RT.lock().new_tensor(shape, Box::new(data))?;
         Ok(Tensor { id })
     }
 
@@ -3699,7 +3699,7 @@ impl From<&Tensor> for Tensor {
 
 impl<T: Scalar> From<T> for Tensor {
     fn from(value: T) -> Self {
-        Tensor { id: RT.lock().variable(vec![1], Box::new(value)).unwrap() }
+        Tensor { id: RT.lock().new_tensor(vec![1], Box::new(value)).unwrap() }
     }
 }
 
@@ -3721,7 +3721,7 @@ impl<T: Scalar> TempData for T {
 
 impl<T: Scalar> From<Vec<T>> for Tensor {
     fn from(data: Vec<T>) -> Self {
-        Tensor { id: RT.lock().variable(vec![data.len() as Dim], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().new_tensor(vec![data.len() as Dim], Box::new(data)).unwrap() }
     }
 }
 
@@ -3742,7 +3742,7 @@ impl<T: Scalar> TempData for Vec<T> {
 
 impl<T: Scalar> From<Vec<Vec<T>>> for Tensor {
     fn from(data: Vec<Vec<T>>) -> Self {
-        Tensor { id: RT.lock().variable(vec![data.len(), data[0].len()], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().new_tensor(vec![data.len(), data[0].len()], Box::new(data)).unwrap() }
     }
 }
 
@@ -3764,7 +3764,7 @@ impl<T: Scalar> TempData for Vec<Vec<T>> {
 impl<T: Scalar> From<&'static [T]> for Tensor {
     fn from(data: &'static [T]) -> Self {
         let n = data.len() as Dim;
-        Tensor { id: RT.lock().variable(vec![n], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().new_tensor(vec![n], Box::new(data)).unwrap() }
     }
 }
 
@@ -3785,7 +3785,7 @@ impl<T: Scalar> TempData for &'static [T] {
 
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
     fn from(data: [T; D0]) -> Self {
-        Tensor { id: RT.lock().variable(vec![D0 as Dim], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().new_tensor(vec![D0 as Dim], Box::new(data)).unwrap() }
     }
 }
 
@@ -3807,7 +3807,7 @@ impl<T: Scalar, const D0: usize> TempData for [T; D0] {
 impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor {
     fn from(data: [[T; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0].as_ptr(), D0 * D1) };
-        Tensor { id: RT.lock().variable(vec![D0 as Dim, D1 as Dim], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim], Box::new(data)).unwrap() }
     }
 }
 
@@ -3829,7 +3829,7 @@ impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2]; D1]; D0]> for Tensor {
     fn from(data: [[[T; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0].as_ptr(), D0 * D1 * D2) };
-        Tensor { id: RT.lock().variable(vec![D0 as Dim, D1 as Dim, D2 as Dim], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim], Box::new(data)).unwrap() }
     }
 }
 
@@ -3853,7 +3853,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
 {
     fn from(data: [[[[T; D3]; D2]; D1]; D0]) -> Self {
         let data = unsafe { core::slice::from_raw_parts(data[0][0][0].as_ptr(), D0 * D1 * D2 * D3) };
-        Tensor { id: RT.lock().variable(vec![D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim], Box::new(data)).unwrap() }
+        Tensor { id: RT.lock().new_tensor(vec![D0 as Dim, D1 as Dim, D2 as Dim, D3 as Dim], Box::new(data)).unwrap() }
     }
 }
 

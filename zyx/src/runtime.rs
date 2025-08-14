@@ -294,7 +294,7 @@ impl Runtime {
         }
     }
 
-    pub(super) fn variable(
+    pub(super) fn new_tensor(
         &mut self,
         shape: Vec<Dim>,
         data: Box<dyn TempData>,

@@ -630,7 +630,7 @@ impl OpenCLDevice {
 
         let mut global_args = String::new();
         for (i, op) in kernel.ops.iter().enumerate() {
-            if let &Op::Define { dtype, scope, ro } = op
+            if let &Op::Define { dtype, scope, ro, len } = op
                 && scope == Scope::Global
             {
                 writeln!(
@@ -691,11 +691,11 @@ impl OpenCLDevice {
                     dtypes.insert(i, DType::U32);
                 }
                 Op::EndLoop { .. } => {}
-                Op::DeclareAcc { .. } => {}
+                /*Op::DeclareAcc { .. } => {}
                 &Op::Accumulate { x, .. } => {
                     dtypes.insert(i, dtypes[&x]);
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                }
+                }*/
                 &Op::Reduce { x, .. } => {
                     dtypes.insert(i, dtypes[&x]);
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
@@ -769,8 +769,18 @@ impl OpenCLDevice {
                 &Op::Const(x) => {
                     constants.insert(i, x);
                 }
-                Op::Define { dtype, scope, ro } => {
-                    // TODO
+                &Op::Define { dtype, scope, ro, len } => {
+                    if scope == Scope::Register {
+                        writeln!(
+                            source,
+                            "{indent}{}{} acc{}[{len}];",
+                            if ro { "const " } else { "" },
+                            dtype.ocl(),
+                            accs.len(),
+                        )
+                        .unwrap();
+                        accs.push(dtype);
+                    }
                 }
                 &Op::Load { src, index } => {
                     let dtype = dtypes[&src];
@@ -837,7 +847,25 @@ impl OpenCLDevice {
                         BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};").unwrap(),
                     }
                 }
-                &Op::DeclareAcc { dtype, rop } => {
+                &Op::Loop { dim, scope } => {
+                    indices.insert(i, loop_id);
+                    if scope == Scope::Register {
+                        writeln!(
+                            source,
+                            "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
+                        )
+                        .unwrap();
+                        indent += "  ";
+                    }
+                    loop_id += 1;
+                }
+                Op::EndLoop => {
+                    indent.pop();
+                    indent.pop();
+                    writeln!(source, "{indent}}}").unwrap();
+                    loop_id -= 1;
+                }
+                /*&Op::DeclareAcc { dtype, rop } => {
                     accs.push(dtype);
                     writeln!(
                         source,
@@ -851,18 +879,6 @@ impl OpenCLDevice {
                     )
                     .unwrap();
                 }
-                &Op::Loop { dim, scope } => {
-                    indices.insert(i, loop_id);
-                    if scope == Scope::Register {
-                        writeln!(
-                            source,
-                            "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
-                        )
-                        .unwrap();
-                        indent += "  ";
-                    }
-                    loop_id += 1;
-                }
                 &Op::Accumulate { x, rop } => {
                     accs.pop().unwrap();
                     let a = accs.len() as u8;
@@ -872,13 +888,7 @@ impl OpenCLDevice {
                         ROp::Sum => writeln!(source, "{indent}acc{a} = {x} + acc{a};").unwrap(),
                         ROp::Max => writeln!(source, "{indent}acc{a} = max({x}, acc{a});").unwrap(),
                     }
-                }
-                Op::EndLoop => {
-                    indent.pop();
-                    indent.pop();
-                    writeln!(source, "{indent}}}").unwrap();
-                    loop_id -= 1;
-                }
+                }*/
             }
         }
 

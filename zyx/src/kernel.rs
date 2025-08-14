@@ -6,7 +6,11 @@ use crate::{
     shape::Dim,
     view::View,
 };
-use std::{fmt::Display, hash::BuildHasherDefault, ops::Range};
+use std::{
+    fmt::Display,
+    hash::BuildHasherDefault,
+    ops::{Range, RangeBounds},
+};
 
 pub type OpId = usize;
 
@@ -34,13 +38,13 @@ pub enum Op {
 
     // ops that only exist after unfolding views and reduces
     Const(Constant),
-    Define { dtype: DType, scope: Scope, ro: bool },
+    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
     Load { src: OpId, index: OpId },
     Loop { dim: Dim, scope: Scope }, // vectorize means both vectorization and tensor cores
     EndLoop,
 
-    DeclareAcc { dtype: DType, rop: ROp },
-    Accumulate { x: OpId, rop: ROp },
+    //DeclareAcc { dtype: DType, rop: ROp },
+    //Accumulate { x: OpId, rop: ROp },
 
     // ops that exist in both
     Store { dst: OpId, src: OpId, index: OpId },
@@ -176,17 +180,26 @@ impl Kernel {
         for (i, op) in self.ops.iter().enumerate() {
             const RED: &str = "\x1b[31m";
             const GREEN: &str = "\x1b[32m";
-            //const YELLOW: &str = "\x1b[33m";
+            const YELLOW: &str = "\x1b[33m";
             const BLUE: &str = "\x1b[34m";
             const MAGENTA: &str = "\x1b[35m";
             const CYAN: &str = "\x1b[36m";
             const RESET: &str = "\x1b[0m";
             match op {
+                Op::ConstView { value, view } => println!("{i:>3} {CYAN}CONST VIEW{RESET} {value} {view}"),
+                Op::LoadView { dtype, view } => println!("{i:>3} {CYAN}LOAD VIEW{RESET} {dtype} {view}"),
+                Op::StoreView { src, dtype } => println!("{i:>3} {CYAN}STORE VIEW{RESET} {src} {dtype}"),
+                Op::Reduce { x, rop, dims } => println!(
+                    "{i:>3} {CYAN}REDUCE{RESET} {} {x}, dims={dims:?}",
+                    match rop {
+                        ROp::Sum => "SUM",
+                        ROp::Max => "MAX",
+                    }
+                ),
+                Op::Define { dtype, scope, ro, len } => {
+                    println!("{i:>3} {YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}")
+                }
                 Op::Const(x) => println!("{i:>3} {MAGENTA}CONST{RESET} {x}"),
-                Op::ConstView { value, view } => println!("{i:>3} CONST VIEW {value} {view}"),
-                Op::LoadView { dtype, view } => println!("{i:>3} LOAD VIEW {dtype} {view}"),
-                Op::StoreView { src, dtype } => println!("{i:>3} STORE VIEW {src} {dtype}"),
-                Op::Define { dtype, scope, ro } => println!("{i:>3} {CYAN}DEFINE{RESET} {scope} {dtype}, ro={ro}"),
                 Op::Load { src, index } => println!("{i:>3} {GREEN}LOAD{RESET} p{src}[{index}]"),
                 Op::Store { dst, src, index } => println!("{i:>3} {RED}STORE{RESET} p{dst}[{index}] <- {src}"),
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
@@ -194,15 +207,6 @@ impl Kernel {
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
                 Op::Loop { dim, scope } => println!("{i:>3} {BLUE}LOOP{RESET} {scope} dim={dim}"),
                 Op::EndLoop => println!("{i:>3} ENDLOOP"),
-                Op::Reduce { x, rop, dims } => println!(
-                    "{i:>3} REDUCE {} {x}, dims={dims:?}",
-                    match rop {
-                        ROp::Sum => "SUM",
-                        ROp::Max => "MAX",
-                    }
-                ),
-                Op::DeclareAcc { dtype, rop } => println!("{i:>3} DECLARE ACC {dtype} {rop:?}"),
-                Op::Accumulate { x, rop } => println!("{i:>3} ACCUMULATE {x} {rop:?}"),
             }
         }
         println!();
@@ -418,28 +422,85 @@ impl Kernel {
                             min_param = y;
                         }
                     }
-                    Op::DeclareAcc { .. } => unreachable!(),
-                    Op::Accumulate { .. } => unreachable!(),
                     Op::Loop { .. } => unreachable!(),
                     Op::EndLoop { .. } => unreachable!(),
                 }
             }
-            let n = dims.len();
+            let dtype = acc_dtype.unwrap();
+
+            let n_dims = dims.len();
             self.ops[op_id] = Op::EndLoop;
-            for _ in 0..(n - 1) {
-                self.ops.insert(op_id, Op::EndLoop);
-            }
-            self.ops.insert(op_id, Op::Accumulate { x, rop });
+
+            let mut body = self.ops.split_off(min_param);
+            let mut tail = body.split_off(op_id - self.ops.len());
+
+            // Declare accumulator
+            let c_0 = self.ops.len();
+            self.ops.push(Op::Const(match rop {
+                ROp::Sum => dtype.zero_constant(),
+                ROp::Max => dtype.min_constant(),
+            }));
+            let acc = self.ops.len();
+            self.ops.push(Op::Define { dtype, scope: Scope::Register, ro: false, len: 1 });
+            self.ops.push(Op::Store { dst: min_param + 1, src: c_0, index: c_0 });
+
+            // Insert Loops
             for dim in dims {
-                self.ops.insert(min_param, Op::Loop { dim, scope: Scope::Register });
+                self.ops.push(Op::Loop { dim, scope: Scope::Register });
             }
-            self.ops.insert(min_param, Op::DeclareAcc { dtype: acc_dtype.unwrap(), rop });
-            let ops_len = self.ops.len();
-            increment(&mut self.ops[min_param + 1..], 1 + n, min_param..ops_len);
-            /*for (i, op) in self.ops.iter().enumerate() {
-                println!("{i} -> {op:?}");
+
+            increment(&mut body, 3 + n_dims, min_param..);
+            self.ops.extend(body);
+
+            // Insert reduce op (load + binary + store)
+            let y = self.ops.len();
+            self.ops.push(Op::Load { src: acc, index: c_0 });
+            self.ops.push(Op::Binary {
+                x: x + n_dims + 3,
+                y,
+                bop: match rop {
+                    ROp::Sum => BOp::Add,
+                    ROp::Max => BOp::Max,
+                },
+            });
+            self.ops.push(Op::Store { dst: acc, src: y + 1, index: c_0 });
+
+            // Insert endloops
+            for _ in 0..(n_dims - 1) {
+                self.ops.push(Op::EndLoop);
             }
-            println!("n={n}\n");*/
+
+            // Update tail by adding load acc before all ops referencing op_id
+            // op_id -> acc
+            let mut i = 0;
+            while i < tail.len() {
+                match &mut tail[i] {
+                    Op::ConstView { value, view } => todo!(),
+                    Op::LoadView { dtype, view } => todo!(),
+                    Op::StoreView { src, .. } => {
+                        if *src == op_id {
+                            *src = self.ops.len() + i;
+                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                        }
+                    }
+                    Op::Reduce { x, rop, dims } => todo!(),
+                    Op::Const(constant) => todo!(),
+                    Op::Define { dtype, scope, ro, len } => todo!(),
+                    Op::Load { src, index } => todo!(),
+                    Op::Loop { dim, scope } => todo!(),
+                    Op::EndLoop => {}
+                    Op::DeclareAcc { dtype, rop } => {}
+                    Op::Accumulate { x, rop } => todo!(),
+                    Op::Store { dst, src, index } => todo!(),
+                    Op::Cast { x, dtype } => todo!(),
+                    Op::Unary { x, uop } => todo!(),
+                    Op::Binary { x, y, bop } => todo!(),
+                }
+                i += 1;
+            }
+
+            self.debug();
+            panic!();
         }
     }
 
@@ -460,10 +521,10 @@ impl Kernel {
         let k = loads.len() + stores.len();
         let temp_ops = self.ops.split_off(0);
         for dtype in loads {
-            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: true });
+            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: true, len: 0 });
         }
         for dtype in stores {
-            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: false });
+            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: false, len: 0 });
         }
         self.ops.extend(temp_ops);
         let n = self.ops.len();
@@ -571,8 +632,7 @@ impl Kernel {
 
                     let n = self.ops.len();
                     self.ops.extend(temp_ops);
-                    let ops_len = self.ops.len();
-                    increment(&mut self.ops[n..], n - op_id - 1, op_id..ops_len);
+                    increment(&mut self.ops[n..], n - op_id - 1, op_id..);
                     op_id = n;
                     load_id += 1;
                     continue;
@@ -605,8 +665,7 @@ impl Kernel {
                     }
                     println!("n={n}");*/
                     self.ops.extend(temp_ops);
-                    let ops_len = self.ops.len();
-                    increment(&mut self.ops[n..], n - op_id - 1, op_id..ops_len);
+                    increment(&mut self.ops[n..], n - op_id - 1, op_id..);
                     op_id = n;
                     store_id += 1;
                     continue;
@@ -620,7 +679,11 @@ impl Kernel {
     fn decrement_range(&mut self, range: Range<usize>, n: usize) {
         for op in &mut self.ops[range.clone()] {
             match op {
-                Op::ConstView { .. } | Op::Const { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Loop { .. } => {}
+                Op::ConstView { .. }
+                | Op::Const { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Loop { .. } => {}
                 Op::Define { .. } => {}
                 Op::Load { src, index } => {
                     if *src >= range.start {
@@ -759,12 +822,9 @@ impl Kernel {
                     if !remaps.contains_key(&op_id)
                         && !matches!(
                             op,
-                            Op::Load { .. }
-                                | Op::Store { .. }
-                                | Op::Define { .. }
-                                | Op::Loop { .. }
-                                | Op::EndLoop { .. }
-                                | Op::DeclareAcc { .. }
+                            Op::Define { .. }
+                            | Op::Loop { .. }
+                            | Op::EndLoop { .. }
                         )
                     {
                         unique_stack.last_mut().unwrap().insert(op.clone(), op_id);
@@ -772,7 +832,7 @@ impl Kernel {
                 }
             }
         }
-        self.remap(&remaps);
+        remap(&mut self.ops, &remaps);
     }
 
     fn move_constants_to_beginning(&mut self) {
@@ -789,13 +849,8 @@ impl Kernel {
             }
         }
         self.ops.extend(tail);
-        let ops_len = self.ops.len();
-        increment(
-            &mut self.ops[n_defines + remaps.len()..],
-            remaps.len(),
-            n_defines..ops_len,
-        );
-        self.remap(&remaps);
+        increment(&mut self.ops[n_defines + remaps.len()..], remaps.len(), n_defines..);
+        remap(&mut self.ops, &remaps);
     }
 
     /// Constant folding
@@ -904,44 +959,7 @@ impl Kernel {
                 },
             }
         }
-        self.remap(&remaps);
-    }
-
-    fn remap(&mut self, remap: &Map<OpId, OpId>) {
-        let h = |x: &mut usize| {
-            if let Some(v) = remap.get(x) {
-                *x = *v;
-            }
-        };
-        for op in &mut self.ops {
-            match op {
-                Op::ConstView { .. } => {}
-                Op::LoadView { .. } => {}
-                Op::StoreView { .. } => {}
-                Op::Reduce { x, .. } => h(x),
-                Op::Const(_) => {}
-                Op::Define { .. } => {}
-                Op::Load { src, index, .. } => {
-                    h(src);
-                    h(index);
-                }
-                Op::Store { dst, src, index } => {
-                    h(dst);
-                    h(src);
-                    h(index);
-                }
-                Op::Cast { x, .. } => h(x),
-                Op::Unary { x, .. } => h(x),
-                Op::Binary { x, y, .. } => {
-                    h(x);
-                    h(y);
-                }
-                Op::DeclareAcc { .. } => {}
-                Op::Loop { .. } => {}
-                Op::Accumulate { x, .. } => h(x),
-                Op::EndLoop { .. } => {}
-            }
-        }
+        remap(&mut self.ops, &remaps);
     }
 
     /// Unroll all loops with dimension <= loop_unroll_size
@@ -1062,8 +1080,22 @@ fn get_axes(ops: &[Op]) -> Vec<OpId> {
     axes
 }
 
-fn increment(ops: &mut [Op], d: usize, range: Range<usize>) {
+fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
+    let start = match range.start_bound() {
+        std::ops::Bound::Included(x) => *x,
+        std::ops::Bound::Excluded(x) => *x + 1,
+        std::ops::Bound::Unbounded => 0,
+    };
+    let end = match range.end_bound() {
+        std::ops::Bound::Included(x) => *x + 1,
+        std::ops::Bound::Excluded(x) => *x,
+        std::ops::Bound::Unbounded => usize::MAX,
+    };
+    debug_assert!(start < end);
+    let range = start..end;
+
     let h = |x: &mut usize| {
+        //println!("{x}, {range:?}, contains={}", range.contains(x));
         if range.contains(x) {
             *x += d
         }
@@ -1094,6 +1126,45 @@ fn increment(ops: &mut [Op], d: usize, range: Range<usize>) {
                 h(x);
                 h(y);
             }
+        }
+    }
+}
+
+fn remap(ops: &mut [Op], remap: &Map<OpId, OpId>) {
+    let h = |x: &mut usize| {
+        if let Some(v) = remap.get(x) {
+            *x = *v;
+        }
+    };
+    for op in ops {
+        match op {
+            Op::ConstView { .. } => {}
+            Op::LoadView { .. } => {}
+            Op::StoreView { src, .. } => {
+                h(src);
+            }
+            Op::Const(_) => {}
+            Op::Define { .. } => {}
+            Op::Load { src, index, .. } => {
+                h(src);
+                h(index);
+            }
+            Op::Store { dst, src, index } => {
+                h(dst);
+                h(src);
+                h(index);
+            }
+            Op::Cast { x, .. } |
+            Op::Unary { x, .. } |
+            Op::Reduce { x, .. } => h(x),
+            Op::Binary { x, y, .. } => {
+                h(x);
+                h(y);
+            }
+            Op::DeclareAcc { .. } => {}
+            Op::Loop { .. } => {}
+            Op::Accumulate { x, .. } => h(x),
+            Op::EndLoop { .. } => {}
         }
     }
 }
