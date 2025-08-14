@@ -189,13 +189,12 @@ impl Kernel {
                 Op::ConstView { value, view } => println!("{i:>3} {CYAN}CONST VIEW{RESET} {value} {view}"),
                 Op::LoadView { dtype, view } => println!("{i:>3} {CYAN}LOAD VIEW{RESET} {dtype} {view}"),
                 Op::StoreView { src, dtype } => println!("{i:>3} {CYAN}STORE VIEW{RESET} {src} {dtype}"),
-                Op::Reduce { x, rop, dims } => println!(
-                    "{i:>3} {CYAN}REDUCE{RESET} {} {x}, dims={dims:?}",
-                    match rop {
+                Op::Reduce { x, rop, dims } => {
+                    println!("{i:>3} {CYAN}REDUCE{RESET} {} {x}, dims={dims:?}", match rop {
                         ROp::Sum => "SUM",
                         ROp::Max => "MAX",
-                    }
-                ),
+                    })
+                }
                 Op::Define { dtype, scope, ro, len } => {
                     println!("{i:>3} {YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}")
                 }
@@ -206,19 +205,15 @@ impl Kernel {
                 Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
                 Op::Loop { dim, scope } => println!("{i:>3} {BLUE}LOOP{RESET} {scope} dim={dim}"),
-                Op::EndLoop => println!("{i:>3} ENDLOOP"),
+                Op::EndLoop => println!("{i:>3} {BLUE}ENDLOOP{RESET}"),
             }
         }
         println!();
     }
 
-    pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
-        (0, 0, 0)
-    }
+    pub fn flop_mem_rw(&self) -> (u128, u128, u128) { (0, 0, 0) }
 
-    pub fn is_reduce(&self) -> bool {
-        self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
-    }
+    pub fn is_reduce(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::Reduce { .. })) }
 
     pub(super) fn default_optimization(&self, dev_info: &DeviceInfo) -> Optimizer {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {
@@ -475,32 +470,82 @@ impl Kernel {
             let mut i = 0;
             while i < tail.len() {
                 match &mut tail[i] {
-                    Op::ConstView { value, view } => todo!(),
-                    Op::LoadView { dtype, view } => todo!(),
+                    Op::ConstView { .. } => {}
+                    Op::LoadView { .. } => {}
                     Op::StoreView { src, .. } => {
                         if *src == op_id {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                         }
                     }
-                    Op::Reduce { x, rop, dims } => todo!(),
-                    Op::Const(constant) => todo!(),
-                    Op::Define { dtype, scope, ro, len } => todo!(),
-                    Op::Load { src, index } => todo!(),
-                    Op::Loop { dim, scope } => todo!(),
+                    Op::Reduce { x, .. } => {
+                        if *x == op_id {
+                            *x = self.ops.len() + i;
+                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                        }
+                    }
+                    Op::Const(_) => todo!(),
+                    Op::Define { .. } => {}
+                    Op::Load { src, index } => {
+                        if *index == op_id {
+                            panic!();
+                        }
+                        if *src == op_id {
+                            *src = self.ops.len() + i;
+                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                        }
+                    }
+                    Op::Loop { .. } => {}
                     Op::EndLoop => {}
-                    Op::DeclareAcc { dtype, rop } => {}
-                    Op::Accumulate { x, rop } => todo!(),
-                    Op::Store { dst, src, index } => todo!(),
-                    Op::Cast { x, dtype } => todo!(),
-                    Op::Unary { x, uop } => todo!(),
-                    Op::Binary { x, y, bop } => todo!(),
+                    Op::Store { src, index, .. } => {
+                        if *index == op_id {
+                            panic!();
+                        }
+                        if *src == op_id {
+                            *src = self.ops.len() + i;
+                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                        }
+                    }
+                    Op::Cast { x, .. } => {
+                        if *x == op_id {
+                            *x = self.ops.len() + i;
+                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                        }
+                    }
+                    Op::Unary { x, .. } => {
+                        if *x == op_id {
+                            *x = self.ops.len() + i;
+                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                        }
+                    }
+                    Op::Binary { x, y, .. } => {
+                        let tail1 = if *x == op_id {
+                            *x = self.ops.len() + i;
+                            true
+                        } else {
+                            false
+                        };
+                        let tail2 = if *y == op_id {
+                            *y = self.ops.len() + i;
+                            true
+                        } else {
+                            false
+                        };
+                        if tail1 {
+                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                        }
+                        if tail2 {
+                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                        }
+                    }
                 }
                 i += 1;
             }
 
-            self.debug();
-            panic!();
+            self.ops.extend(tail);
+
+            //self.debug();
+            //panic!();
         }
     }
 
@@ -727,12 +772,6 @@ impl Kernel {
                         *y -= n;
                     }
                 }
-                Op::Accumulate { x, .. } => {
-                    if *x >= range.start {
-                        *x -= n;
-                    }
-                }
-                Op::DeclareAcc { .. } => {}
                 Op::EndLoop { .. } => {}
             }
         }
@@ -741,10 +780,7 @@ impl Kernel {
     fn dead_code_elimination(&mut self) {
         let mut params = Vec::new();
         for op_id in 0..self.ops.len() {
-            if matches!(
-                self.ops[op_id],
-                Op::Store { .. } | Op::Loop { .. } | Op::EndLoop { .. } | Op::DeclareAcc { .. }
-            ) {
+            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. } | Op::EndLoop { .. }) {
                 params.push(op_id);
             }
         }
@@ -779,10 +815,6 @@ impl Kernel {
                     Op::Reduce { x, .. } => {
                         params.push(x);
                     }
-                    Op::Accumulate { x, .. } => {
-                        params.push(x);
-                    }
-                    Op::DeclareAcc { .. } => {}
                     Op::Define { .. } => {}
                     Op::EndLoop { .. } => {}
                 }
@@ -820,12 +852,7 @@ impl Kernel {
                     }
 
                     if !remaps.contains_key(&op_id)
-                        && !matches!(
-                            op,
-                            Op::Define { .. }
-                            | Op::Loop { .. }
-                            | Op::EndLoop { .. }
-                        )
+                        && !matches!(op, Op::Define { .. } | Op::Loop { .. } | Op::EndLoop { .. })
                     {
                         unique_stack.last_mut().unwrap().insert(op.clone(), op_id);
                     }
@@ -864,8 +891,6 @@ impl Kernel {
                 | Op::Store { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop { .. }
-                | Op::DeclareAcc { .. }
-                | Op::Accumulate { .. }
                 | Op::Define { .. } => {}
                 Op::Cast { x, dtype } => {
                     if let Op::Const(x) = self.ops[x] {
@@ -974,7 +999,7 @@ impl Kernel {
             body.pop();
 
             // If body contains accumulator, we replace it with binary ops and DeclareAcc with constant
-            let mut replace_acc = if body.iter().any(|op| matches!(op, Op::Accumulate { .. })) {
+            /*let mut replace_acc = if body.iter().any(|op| matches!(op, Op::Accumulate { .. })) {
                 ir.iter().rposition(|op| matches!(op, Op::DeclareAcc { .. }))
             } else {
                 None
@@ -986,7 +1011,7 @@ impl Kernel {
                         ROp::Max => dtype.min_constant(),
                     });
                 }
-            }
+            }*/
 
             // Append body dim times
             for i in 0..dim {
@@ -995,7 +1020,7 @@ impl Kernel {
                 increment(&mut body, i * n, range.clone());
                 body[0] = Op::Const(Constant::U32(i as u32));
 
-                if let Some(decl_acc_id) = replace_acc {
+                /*if let Some(decl_acc_id) = replace_acc {
                     for (op_id, op) in body.iter_mut().enumerate() {
                         if let &mut Op::Accumulate { x, rop } = op {
                             *op = Op::Binary {
@@ -1010,7 +1035,7 @@ impl Kernel {
                             break;
                         }
                     }
-                }
+                }*/
 
                 ir.extend(body);
             }
@@ -1106,7 +1131,6 @@ fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
             | Op::Const { .. }
             | Op::LoadView { .. }
             | Op::Loop { .. }
-            | Op::DeclareAcc { .. }
             | Op::Define { .. }
             | Op::EndLoop { .. } => {}
             Op::StoreView { src, .. } => {
@@ -1121,7 +1145,7 @@ fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
                 h(src);
                 h(index);
             }
-            Op::Cast { x, .. } | Op::Reduce { x, .. } | Op::Unary { x, .. } | Op::Accumulate { x, .. } => h(x),
+            Op::Cast { x, .. } | Op::Reduce { x, .. } | Op::Unary { x, .. } => h(x),
             Op::Binary { x, y, .. } => {
                 h(x);
                 h(y);
@@ -1154,16 +1178,12 @@ fn remap(ops: &mut [Op], remap: &Map<OpId, OpId>) {
                 h(src);
                 h(index);
             }
-            Op::Cast { x, .. } |
-            Op::Unary { x, .. } |
-            Op::Reduce { x, .. } => h(x),
+            Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => h(x),
             Op::Binary { x, y, .. } => {
                 h(x);
                 h(y);
             }
-            Op::DeclareAcc { .. } => {}
             Op::Loop { .. } => {}
-            Op::Accumulate { x, .. } => h(x),
             Op::EndLoop { .. } => {}
         }
     }

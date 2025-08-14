@@ -9,7 +9,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{BOp, ROp, UOp},
+    graph::{BOp, UOp},
     kernel::{Kernel, Op, OpId, Scope},
     shape::Dim,
     slab::Slab,
@@ -403,9 +403,7 @@ impl OpenCLMemoryPool {
         unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization).unwrap();
     }
 
-    pub const fn free_bytes(&self) -> Dim {
-        self.free_bytes
-    }
+    pub const fn free_bytes(&self) -> Dim { self.free_bytes }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
@@ -599,17 +597,11 @@ impl OpenCLMemoryPool {
 }
 
 impl OpenCLDevice {
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
+    pub const fn deinitialize(&mut self) { let _ = self; }
 
-    pub const fn info(&self) -> &DeviceInfo {
-        &self.dev_info
-    }
+    pub const fn info(&self) -> &DeviceInfo { &self.dev_info }
 
-    pub const fn memory_pool_id(&self) -> u32 {
-        self.memory_pool_id
-    }
+    pub const fn memory_pool_id(&self) -> u32 { self.memory_pool_id }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         let mut gws = Vec::new();
@@ -630,7 +622,7 @@ impl OpenCLDevice {
 
         let mut global_args = String::new();
         for (i, op) in kernel.ops.iter().enumerate() {
-            if let &Op::Define { dtype, scope, ro, len } = op
+            if let &Op::Define { dtype, scope, ro, .. } = op
                 && scope == Scope::Global
             {
                 writeln!(
@@ -708,8 +700,6 @@ impl OpenCLDevice {
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
-        let mut accs: Vec<DType> = Vec::new();
-        let mut acc_map: Map<OpId, u8> = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
 
         fn new_reg(
             op_id: OpId,
@@ -735,7 +725,6 @@ impl OpenCLDevice {
             op_id: OpId,
             constants: &Map<OpId, Constant>,
             indices: &Map<OpId, u8>,
-            acc_map: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
             registers: &mut [(DType, u32)],
         ) -> String {
@@ -743,8 +732,6 @@ impl OpenCLDevice {
                 format!("{}", c.ocl())
             } else if let Some(id) = indices.get(&op_id) {
                 format!("idx{id}")
-            } else if let Some(id) = acc_map.get(&op_id) {
-                format!("acc{id}")
             } else if let Some(reg) = reg_map.get(&op_id) {
                 registers[*reg].1 -= 1;
                 format!("r{reg}")
@@ -754,9 +741,7 @@ impl OpenCLDevice {
         }
 
         let mut loop_id = 0;
-
         let mut indent = String::from("  ");
-
         let mut source = String::with_capacity(1000);
 
         for (i, op) in kernel.ops.iter().enumerate() {
@@ -773,18 +758,16 @@ impl OpenCLDevice {
                     if scope == Scope::Register {
                         writeln!(
                             source,
-                            "{indent}{}{} acc{}[{len}];",
+                            "{indent}{}{} p{i}[{len}];",
                             if ro { "const " } else { "" },
                             dtype.ocl(),
-                            accs.len(),
                         )
                         .unwrap();
-                        accs.push(dtype);
                     }
                 }
                 &Op::Load { src, index } => {
                     let dtype = dtypes[&src];
-                    let idx = get_var(index, &constants, &indices, &acc_map, &reg_map, &mut registers);
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
                 }
@@ -792,19 +775,19 @@ impl OpenCLDevice {
                     writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",
-                        get_var(index, &constants, &indices, &acc_map, &reg_map, &mut registers),
-                        get_var(src, &constants, &indices, &acc_map, &reg_map, &mut registers)
+                        get_var(index, &constants, &indices, &reg_map, &mut registers),
+                        get_var(src, &constants, &indices, &reg_map, &mut registers)
                     )
                     .unwrap();
                 }
                 &Op::Cast { x, dtype } => {
-                    let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl(),).unwrap();
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match uop {
                         UOp::ReLU => {
@@ -824,8 +807,8 @@ impl OpenCLDevice {
                 }
                 &Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
-                    let y = get_var(y, &constants, &indices, &acc_map, &reg_map, &mut registers);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match bop {
                         BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};").unwrap(),
@@ -864,31 +847,30 @@ impl OpenCLDevice {
                     indent.pop();
                     writeln!(source, "{indent}}}").unwrap();
                     loop_id -= 1;
-                }
-                /*&Op::DeclareAcc { dtype, rop } => {
-                    accs.push(dtype);
-                    writeln!(
-                        source,
-                        "{indent}{} acc{} = {};",
-                        dtype.ocl(),
-                        accs.len() - 1,
-                        match rop {
-                            ROp::Sum => dtype.zero_constant().ocl(),
-                            ROp::Max => dtype.min_constant().ocl(),
-                        }
-                    )
-                    .unwrap();
-                }
-                &Op::Accumulate { x, rop } => {
-                    accs.pop().unwrap();
-                    let a = accs.len() as u8;
-                    acc_map.insert(i, a);
-                    let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
-                    match rop {
-                        ROp::Sum => writeln!(source, "{indent}acc{a} = {x} + acc{a};").unwrap(),
-                        ROp::Max => writeln!(source, "{indent}acc{a} = max({x}, acc{a});").unwrap(),
-                    }
-                }*/
+                } /*&Op::DeclareAcc { dtype, rop } => {
+                      accs.push(dtype);
+                      writeln!(
+                          source,
+                          "{indent}{} acc{} = {};",
+                          dtype.ocl(),
+                          accs.len() - 1,
+                          match rop {
+                              ROp::Sum => dtype.zero_constant().ocl(),
+                              ROp::Max => dtype.min_constant().ocl(),
+                          }
+                      )
+                      .unwrap();
+                  }
+                  &Op::Accumulate { x, rop } => {
+                      accs.pop().unwrap();
+                      let a = accs.len() as u8;
+                      acc_map.insert(i, a);
+                      let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
+                      match rop {
+                          ROp::Sum => writeln!(source, "{indent}acc{a} = {x} + acc{a};").unwrap(),
+                          ROp::Max => writeln!(source, "{indent}acc{a} = max({x}, acc{a});").unwrap(),
+                      }
+                  }*/
             }
         }
 
@@ -1058,9 +1040,7 @@ impl OpenCLDevice {
         self.programs.remove(program_id);
     }
 
-    pub const fn free_compute(&self) -> u128 {
-        self.dev_info.compute
-    }
+    pub const fn free_compute(&self) -> u128 { self.dev_info.compute }
 }
 
 impl OpenCLStatus {
