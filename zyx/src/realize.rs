@@ -303,7 +303,7 @@ impl Runtime {
                                 for op in &mut kernely.ops {
                                     match op {
                                         Op::ConstView { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
-                                        Op::Store { src: x, .. }
+                                        Op::StoreView { src: x, .. }
                                         | Op::Cast { x, .. }
                                         | Op::Unary { x, .. }
                                         | Op::Reduce { x, .. } => *x += n,
@@ -333,7 +333,8 @@ impl Runtime {
                 visited.insert(nid, (kid, op_id));
                 if to_eval.contains(&nid) {
                     virt_realized_nodes.insert(nid);
-                    let op = Op::Store { dst: 0, src: op_id, index: 0 };
+                    let dtype = self.graph.dtype(nid);
+                    let op = Op::StoreView { src: op_id, dtype };
                     stores.entry(kid).and_modify(|vec| vec.push(nid)).or_insert_with(|| vec![nid]);
                     kernels[kid].n_outputs -= 1;
                     kernels[kid].ops.push(op);
@@ -787,7 +788,7 @@ fn store_x(
     let shape = graph.shape(x);
 
     realized_nodes.insert(x);
-    kernels[*kid].ops.push(Op::Store { dst: 0, src: *op_id, index: 0 });
+    kernels[*kid].ops.push(Op::StoreView { src: *op_id, dtype });
     stores.entry(*kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
     kernels[*kid].n_outputs = 0;
 

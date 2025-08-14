@@ -29,6 +29,7 @@ pub enum Op {
     // ops that exist only in kernelizer
     ConstView { value: Constant, view: View },
     LoadView { dtype: DType, view: View },
+    StoreView { src: OpId, dtype: DType },
     Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
 
     // ops that only exist after unfolding views and reduces
@@ -175,16 +176,17 @@ impl Kernel {
         for (i, op) in self.ops.iter().enumerate() {
             const RED: &str = "\x1b[31m";
             const GREEN: &str = "\x1b[32m";
-            const YELLOW: &str = "\x1b[33m";
+            //const YELLOW: &str = "\x1b[33m";
             const BLUE: &str = "\x1b[34m";
             const MAGENTA: &str = "\x1b[35m";
             const CYAN: &str = "\x1b[36m";
             const RESET: &str = "\x1b[0m";
             match op {
-                Op::Const(x) => println!("{i:>3} CONST {x}"),
+                Op::Const(x) => println!("{i:>3} {MAGENTA}CONST{RESET} {x}"),
                 Op::ConstView { value, view } => println!("{i:>3} CONST VIEW {value} {view}"),
                 Op::LoadView { dtype, view } => println!("{i:>3} LOAD VIEW {dtype} {view}"),
-                Op::Define { dtype, scope, ro } => println!("{i:>3} DEFINE {scope} {dtype}, ro={ro}"),
+                Op::StoreView { src, dtype } => println!("{i:>3} STORE VIEW {src} {dtype}"),
+                Op::Define { dtype, scope, ro } => println!("{i:>3} {CYAN}DEFINE{RESET} {scope} {dtype}, ro={ro}"),
                 Op::Load { src, index } => println!("{i:>3} {GREEN}LOAD{RESET} p{src}[{index}]"),
                 Op::Store { dst, src, index } => println!("{i:>3} {RED}STORE{RESET} p{dst}[{index}] <- {src}"),
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
@@ -203,6 +205,7 @@ impl Kernel {
                 Op::Accumulate { x, rop } => println!("{i:>3} ACCUMULATE {x} {rop:?}"),
             }
         }
+        println!();
     }
 
     pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
@@ -272,17 +275,12 @@ impl Kernel {
                 *loop_unroll_size
             }
         };
-        /*let n = self.shape.len();
-        let shape = vec![1, 1, 1, 1, 4, 2];
-        self.apply_movement(|view| view.reshape(0..n, &shape));
-        self.shape = shape.clone();*/
 
-        //let loop_unroll_size = 8;
+        let loop_unroll_size = 0;
 
         self.unfold_reduces();
+        self.define_globals();
         self.unfold_views();
-
-        self.debug();
 
         let mut kernel = self.clone();
         loop {
@@ -383,6 +381,7 @@ impl Kernel {
                             acc_dtype = Some(dtype);
                         }
                     }
+                    Op::StoreView { .. } => {}
                     Op::Load { .. } => unreachable!(),
                     Op::Store { src, index, .. } => {
                         params.push(index);
@@ -444,6 +443,33 @@ impl Kernel {
         }
     }
 
+    fn define_globals(&mut self) {
+        let mut loads = Vec::new();
+        let mut stores = Vec::new();
+        for op in &self.ops {
+            match op {
+                &Op::LoadView { dtype, .. } => {
+                    loads.push(dtype);
+                }
+                &Op::StoreView { dtype, .. } => {
+                    stores.push(dtype);
+                }
+                _ => {}
+            }
+        }
+        let k = loads.len() + stores.len();
+        let temp_ops = self.ops.split_off(0);
+        for dtype in loads {
+            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: true });
+        }
+        for dtype in stores {
+            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: false });
+        }
+        self.ops.extend(temp_ops);
+        let n = self.ops.len();
+        increment(&mut self.ops, k, 0..n);
+    }
+
     fn unfold_views(&mut self) {
         // First we generate the whole view into a new vec,
         // then we insert the vec into existing ops
@@ -454,6 +480,9 @@ impl Kernel {
             op_id
         }
 
+        let n_loads = self.ops.iter().filter(|op| matches!(op, Op::LoadView { .. })).count();
+        let mut load_id = 0;
+        let mut store_id = n_loads;
         let mut op_id = 0;
         while op_id < self.ops.len() {
             match self.ops[op_id] {
@@ -468,8 +497,8 @@ impl Kernel {
                     // pc = a0 > lp0-1 && a0 < d0-rp0
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
-
                     let view = view.clone();
+
                     //println!("Unfolding view: {view}");
                     let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
                     self.ops.pop();
@@ -531,14 +560,10 @@ impl Kernel {
                         old_offset = Some(offset);
                     }
 
-                    ops.insert(0, Op::Define { dtype, scope: Scope::Global, ro: true });
-                    let n = ops.len();
-                    increment(ops, 1, 0..n);
-
                     let pcu32 = new_op(ops, Op::Cast { x: pc, dtype: DType::U32 });
                     let offset = new_op(ops, Op::Binary { x: pcu32, y: offset, bop: BOp::Mul });
 
-                    let z = new_op(ops, Op::Load { src: 0, index: offset });
+                    let z = new_op(ops, Op::Load { src: load_id, index: offset });
 
                     let pcd = new_op(ops, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
@@ -549,15 +574,16 @@ impl Kernel {
                     let ops_len = self.ops.len();
                     increment(&mut self.ops[n..], n - op_id - 1, op_id..ops_len);
                     op_id = n;
+                    load_id += 1;
                     continue;
                 }
-                Op::Store { src, .. } => {
+                Op::StoreView { src, .. } => {
                     let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
                     self.ops.pop();
                     let axes = get_axes(&self.ops);
                     let mut index = new_op(&mut self.ops, Op::Const(Constant::U32(0)));
                     let mut st = 1;
-                    let shape = self.shape().clone();
+                    let shape = self.shape();
                     for (id, d) in shape.iter().enumerate().rev() {
                         let stride = Constant::U32(st as u32);
                         let x = if *d > 1 {
@@ -571,13 +597,7 @@ impl Kernel {
                         st *= d;
                     }
 
-                    _ = new_op(&mut self.ops, Op::Store { dst: 0, src, index });
-
-                    let dtype = DType::F32;
-
-                    self.ops.insert(0, Op::Define { dtype, scope: Scope::Global, ro: false });
-                    let n = self.ops.len();
-                    increment(&mut self.ops, 1, 0..n);
+                    _ = new_op(&mut self.ops, Op::Store { dst: store_id, src, index });
 
                     let n = self.ops.len();
                     /*for (i, op) in self.ops.iter().enumerate() {
@@ -588,6 +608,7 @@ impl Kernel {
                     let ops_len = self.ops.len();
                     increment(&mut self.ops[n..], n - op_id - 1, op_id..ops_len);
                     op_id = n;
+                    store_id += 1;
                     continue;
                 }
                 _ => {}
@@ -599,9 +620,12 @@ impl Kernel {
     fn decrement_range(&mut self, range: Range<usize>, n: usize) {
         for op in &mut self.ops[range.clone()] {
             match op {
-                Op::ConstView { .. } | Op::Const { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
+                Op::ConstView { .. } | Op::Const { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Loop { .. } => {}
                 Op::Define { .. } => {}
-                Op::Load { index, .. } => {
+                Op::Load { src, index } => {
+                    if *src >= range.start {
+                        *src -= n;
+                    }
                     if *index >= range.start {
                         *index -= n;
                     }
@@ -663,40 +687,42 @@ impl Kernel {
         }
         let mut needed = Set::with_capacity_and_hasher(self.ops.len(), BuildHasherDefault::new());
         while let Some(param) = params.pop() {
-            needed.insert(param);
-            match self.ops[param] {
-                Op::ConstView { .. } => unreachable!(),
-                Op::Const(..) => {}
-                Op::LoadView { .. } => unreachable!(),
-                Op::Load { src, index } => {
-                    params.push(src);
-                    params.push(index);
+            if needed.insert(param) {
+                match self.ops[param] {
+                    Op::Const(..) => {}
+                    Op::ConstView { .. } => unreachable!(),
+                    Op::LoadView { .. } => unreachable!(),
+                    Op::StoreView { .. } => unreachable!(),
+                    Op::Load { src, index } => {
+                        params.push(src);
+                        params.push(index);
+                    }
+                    Op::Store { dst, src, index } => {
+                        params.push(dst);
+                        params.push(src);
+                        params.push(index);
+                    }
+                    Op::Cast { x, .. } => {
+                        params.push(x);
+                    }
+                    Op::Unary { x, .. } => {
+                        params.push(x);
+                    }
+                    Op::Binary { x, y, .. } => {
+                        params.push(x);
+                        params.push(y);
+                    }
+                    Op::Loop { .. } => {}
+                    Op::Reduce { x, .. } => {
+                        params.push(x);
+                    }
+                    Op::Accumulate { x, .. } => {
+                        params.push(x);
+                    }
+                    Op::DeclareAcc { .. } => {}
+                    Op::Define { .. } => {}
+                    Op::EndLoop { .. } => {}
                 }
-                Op::Store { dst, src, index } => {
-                    params.push(dst);
-                    params.push(src);
-                    params.push(index);
-                }
-                Op::Cast { x, .. } => {
-                    params.push(x);
-                }
-                Op::Unary { x, .. } => {
-                    params.push(x);
-                }
-                Op::Binary { x, y, .. } => {
-                    params.push(x);
-                    params.push(y);
-                }
-                Op::Loop { .. } => {}
-                Op::Reduce { x, .. } => {
-                    params.push(x);
-                }
-                Op::Accumulate { x, .. } => {
-                    params.push(x);
-                }
-                Op::DeclareAcc { .. } => {}
-                Op::Define { .. } => {}
-                Op::EndLoop { .. } => {}
             }
         }
         for op_id in (0..self.ops.len()).rev() {
@@ -734,10 +760,11 @@ impl Kernel {
                         && !matches!(
                             op,
                             Op::Load { .. }
-                                | Op::Loop { .. }
-                                | Op::DeclareAcc { .. }
                                 | Op::Store { .. }
                                 | Op::Define { .. }
+                                | Op::Loop { .. }
+                                | Op::EndLoop { .. }
+                                | Op::DeclareAcc { .. }
                         )
                     {
                         unique_stack.last_mut().unwrap().insert(op.clone(), op_id);
@@ -776,7 +803,7 @@ impl Kernel {
         let mut remaps = Map::with_hasher(BuildHasherDefault::new());
         for op_id in 0..self.ops.len() {
             match self.ops[op_id] {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
                 Op::Const { .. }
                 | Op::Load { .. }
                 | Op::Store { .. }
@@ -890,6 +917,7 @@ impl Kernel {
             match op {
                 Op::ConstView { .. } => {}
                 Op::LoadView { .. } => {}
+                Op::StoreView { .. } => {}
                 Op::Reduce { x, .. } => h(x),
                 Op::Const(_) => {}
                 Op::Define { .. } => {}
@@ -1049,6 +1077,9 @@ fn increment(ops: &mut [Op], d: usize, range: Range<usize>) {
             | Op::DeclareAcc { .. }
             | Op::Define { .. }
             | Op::EndLoop { .. } => {}
+            Op::StoreView { src, .. } => {
+                h(src);
+            }
             Op::Load { src, index } => {
                 h(src);
                 h(index);

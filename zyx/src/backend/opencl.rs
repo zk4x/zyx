@@ -6,7 +6,13 @@
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
-    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, ROp, UOp}, kernel::{Kernel, Op, OpId, Scope}, shape::Dim, slab::Slab, DType, Map
+    DType, Map,
+    dtype::Constant,
+    error::{BackendError, ErrorStatus},
+    graph::{BOp, ROp, UOp},
+    kernel::{Kernel, Op, OpId, Scope},
+    shape::Dim,
+    slab::Slab,
 };
 use libloading::Library;
 use nanoserde::DeJson;
@@ -122,8 +128,8 @@ pub struct OpenCLDevice {
 pub(super) struct OpenCLProgram {
     program: *mut c_void,
     kernel: *mut c_void,
-    gws: [Dim; 3],
-    lws: [Dim; 3],
+    gws: Vec<Dim>,
+    lws: Vec<Dim>,
 }
 
 #[derive(Debug)]
@@ -606,15 +612,40 @@ impl OpenCLDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        let mut shape = [0; 6];
-        for (i, op) in kernel.ops[..6].iter().enumerate() {
-            let &Op::Loop { dim, .. } = op else { unreachable!() };
-            shape[i] = dim;
+        let mut gws = Vec::new();
+        let mut lws = Vec::new();
+        for op in &kernel.ops {
+            if let &Op::Loop { dim, scope } = op {
+                match scope {
+                    Scope::Global => {
+                        gws.push(dim);
+                    }
+                    Scope::Local => {
+                        lws.push(dim);
+                    }
+                    Scope::Register => {}
+                }
+            }
         }
-        let mut gws = [shape[0], shape[1], shape[2]];
-        let lws = [shape[3], shape[4], shape[5]];
 
-        let mut global_loads: Map<u8, DType> = Map::with_capacity_and_hasher(10, BuildHasherDefault::new());
+        let mut global_args = String::new();
+        for (i, op) in kernel.ops.iter().enumerate() {
+            if let &Op::Define { dtype, scope, ro } = op
+                && scope == Scope::Global
+            {
+                writeln!(
+                    global_args,
+                    "  __global {}{}* p{i},",
+                    if ro { "const " } else { "" },
+                    dtype.ocl()
+                )
+                .unwrap();
+            }
+        }
+        global_args.pop();
+        global_args.pop();
+        global_args.push_str("\n");
+
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
         let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
@@ -622,32 +653,23 @@ impl OpenCLDevice {
         for (i, op) in kernel.ops.iter().enumerate() {
             match op {
                 Op::ConstView { .. } => unreachable!(),
+                Op::StoreView { .. } => unreachable!(),
+                Op::LoadView { .. } => unreachable!(),
                 Op::Const(x) => {
                     dtypes.insert(i, x.dtype());
                 }
-                /*&Op::Index { .. } => {
-                    dtypes.insert(i, DType::U32);
-                }*/
-                Op::LoadView { .. } => unreachable!(),
-                &Op::Define { dtype, scope, ro  } => {
+                &Op::Define { dtype, .. } => {
                     dtypes.insert(i, dtype);
-                    match scope {
-                        Scope::Global => {
-                            if ro {
-                                global_loads.insert(i as u8, dtype);
-                            }
-                        }
-                        Scope::Local => todo!(),
-                        Scope::Register => todo!(),
-                    }
                 }
                 &Op::Load { src, index } => {
+                    dtypes.insert(i, dtypes[&src]);
                     rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
                 }
                 &Op::Store { dst, src, index } => {
                     dtypes.insert(i, dtypes[&src]);
-                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    rcs.entry(dst).and_modify(|rc| *rc += 1).or_insert(1);
                     rcs.entry(src).and_modify(|rc| *rc += 1).or_insert(1);
+                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
                 }
                 &Op::Cast { x, dtype } => {
                     dtypes.insert(i, dtype);
@@ -734,22 +756,21 @@ impl OpenCLDevice {
         let mut loop_id = 0;
 
         let mut indent = String::from("  ");
-        let mut global_store_id = 0;
 
         let mut source = String::with_capacity(1000);
-        let mut global_stores = Vec::new();
 
         for (i, op) in kernel.ops.iter().enumerate() {
             //println!("{i} -> {op:?}");
             match op {
                 Op::ConstView { .. } => unreachable!(),
                 Op::LoadView { .. } => unreachable!(),
+                Op::StoreView { .. } => unreachable!(),
                 Op::Reduce { .. } => unreachable!(),
                 &Op::Const(x) => {
                     constants.insert(i, x);
                 }
                 Op::Define { dtype, scope, ro } => {
-                    writeln!(source, "YO YO YO");
+                    // TODO
                 }
                 &Op::Load { src, index } => {
                     let dtype = dtypes[&src];
@@ -760,13 +781,11 @@ impl OpenCLDevice {
                 &Op::Store { dst, src, index } => {
                     writeln!(
                         source,
-                        "{indent}gw{global_store_id}[{}] = {};",
+                        "{indent}p{dst}[{}] = {};",
                         get_var(index, &constants, &indices, &acc_map, &reg_map, &mut registers),
                         get_var(src, &constants, &indices, &acc_map, &reg_map, &mut registers)
                     )
                     .unwrap();
-                    global_store_id += 1;
-                    global_stores.push(dtypes.get(&src).unwrap());
                 }
                 &Op::Cast { x, dtype } => {
                     let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
@@ -862,17 +881,6 @@ impl OpenCLDevice {
                 }
             }
         }
-
-        let mut global_args = String::new();
-        for (arg_id, dtype) in global_loads {
-            writeln!(global_args, "  __global const {}* g{arg_id},", dtype.ocl()).unwrap();
-        }
-        for (i, dtype) in global_stores.into_iter().enumerate() {
-            writeln!(global_args, "  __global {}* gw{i},", dtype.ocl()).unwrap();
-        }
-        global_args.pop();
-        global_args.pop();
-        global_args.push_str("\n");
 
         let mut idx_str = String::new();
         writeln!(
