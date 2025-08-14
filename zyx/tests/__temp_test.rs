@@ -1,23 +1,14 @@
-use zyx::{DType, Scalar, Tensor, ZyxError};
+use zyx::{Scalar, Tensor, ZyxError};
 
 #[test]
-fn matmul_1024() -> Result<(), ZyxError> {
-    //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
-    //let y = xy.pop().unwrap();
-    //let x = xy.pop().unwrap();
-    let mut xyz: std::collections::HashMap<String, Tensor> = Tensor::load("./tests/xyz2.safetensors")?;
-    let z = xyz.remove("z").unwrap();
-    let y = xyz.remove("y").unwrap();
-    let x = xyz.remove("x").unwrap();
-    //println!("{:?}", x.shape());
-    //println!("{:?}", y.shape());
-    let dataz: Vec<i64> = z.try_into()?;
-    let zz = x.matmul(y)?;
-    let datazz: Vec<i64> = zz.try_into()?;
-    for (i, (x, y)) in dataz.iter().zip(datazz).enumerate() {
-        //println!("{x}, {y}");
-        assert!(x.is_equal(y), "{x} != {y} at index {i}");
+fn exp2() -> Result<(), ZyxError> {
+    let data: [f32; 10] = [
+        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
+    ];
+    let zdata: Vec<f32> = Tensor::from(data).exp2().try_into()?;
+    for (x, y) in data.iter().zip(zdata) {
+        //assert_eq!(x.exp2(), y);
+        assert!(x.exp2().is_equal(y));
     }
-    //println!("{z}");
     Ok(())
 }

@@ -6,13 +6,7 @@
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
-    DType, Map,
-    dtype::Constant,
-    error::{BackendError, ErrorStatus},
-    graph::{BOp, ROp, UOp},
-    kernel::{Kernel, Op, OpId},
-    shape::Dim,
-    slab::Slab,
+    dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, ROp, UOp}, kernel::{Kernel, Op, OpId, Scope}, shape::Dim, slab::Slab, DType, Map
 };
 use libloading::Library;
 use nanoserde::DeJson;
@@ -635,15 +629,25 @@ impl OpenCLDevice {
                     dtypes.insert(i, DType::U32);
                 }*/
                 Op::LoadView { .. } => unreachable!(),
-                &Op::Load { dtype, index, arg_id } => {
+                &Op::Define { dtype, scope, ro  } => {
                     dtypes.insert(i, dtype);
-                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-                    global_loads.insert(arg_id, dtype);
+                    match scope {
+                        Scope::Global => {
+                            if ro {
+                                global_loads.insert(i as u8, dtype);
+                            }
+                        }
+                        Scope::Local => todo!(),
+                        Scope::Register => todo!(),
+                    }
                 }
-                &Op::Store { x, index } => {
-                    dtypes.insert(i, dtypes[&x]);
+                &Op::Load { src, index } => {
                     rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                &Op::Store { dst, src, index } => {
+                    dtypes.insert(i, dtypes[&src]);
+                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    rcs.entry(src).and_modify(|rc| *rc += 1).or_insert(1);
                 }
                 &Op::Cast { x, dtype } => {
                     dtypes.insert(i, dtype);
@@ -744,21 +748,25 @@ impl OpenCLDevice {
                 &Op::Const(x) => {
                     constants.insert(i, x);
                 }
-                &Op::Load { dtype, index, arg_id } => {
+                Op::Define { dtype, scope, ro } => {
+                    writeln!(source, "YO YO YO");
+                }
+                &Op::Load { src, index } => {
+                    let dtype = dtypes[&src];
                     let idx = get_var(index, &constants, &indices, &acc_map, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    writeln!(source, "{indent}r{reg} = g{arg_id}[{idx}];",).unwrap();
+                    writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
                 }
-                &Op::Store { x, index } => {
+                &Op::Store { dst, src, index } => {
                     writeln!(
                         source,
                         "{indent}gw{global_store_id}[{}] = {};",
                         get_var(index, &constants, &indices, &acc_map, &reg_map, &mut registers),
-                        get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers)
+                        get_var(src, &constants, &indices, &acc_map, &reg_map, &mut registers)
                     )
                     .unwrap();
                     global_store_id += 1;
-                    global_stores.push(dtypes.get(&x).unwrap());
+                    global_stores.push(dtypes.get(&src).unwrap());
                 }
                 &Op::Cast { x, dtype } => {
                     let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
@@ -824,9 +832,9 @@ impl OpenCLDevice {
                     )
                     .unwrap();
                 }
-                &Op::Loop { dim, vectorize: _ } => {
+                &Op::Loop { dim, scope } => {
                     indices.insert(i, loop_id);
-                    if loop_id > 5 {
+                    if scope == Scope::Register {
                         writeln!(
                             source,
                             "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
