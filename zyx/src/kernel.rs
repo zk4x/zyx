@@ -10,6 +10,7 @@ use std::{
     fmt::Display,
     hash::BuildHasherDefault,
     ops::{Range, RangeBounds},
+    u128,
 };
 
 pub type OpId = usize;
@@ -59,21 +60,29 @@ pub struct Cache {
     pub kernels: Map<Kernel, u32>,
     // Finished optimizations of kernels for given devices
     // kernel id, device info id => optimization, time to run in nanos
-    pub optimizations: Map<(u32, u32), (Optimizer, u64)>,
+    pub optimizations: Map<(u32, u32), Optimizer>,
     // This last one is not stored to disk
     // kernel id, device id => program id
     pub programs: Map<(u32, u32), ProgramId>,
 }
 
 #[derive(Debug, Clone)]
-pub enum Optimization {
-    Basic { global_work_size: Vec<Dim>, local_work_size: Vec<Dim>, loop_unroll_size: Dim },
+pub struct Optimization {
+    global_loops: Vec<Dim>,
+    local_loops: Vec<Dim>,
+    global_reg_loops: Vec<Dim>,
+    register_loops: Vec<Vec<Dim>>,
+    loop_unroll_size: Dim,
 }
 
 #[derive(Debug)]
-pub enum Optimizer {
-    Done(Optimization),
-    Default(Optimization),
+pub struct Optimizer {
+    // Initial optimization
+    pub initial_global_loops: Vec<Dim>,
+    // Current optimization
+    pub last: Optimization,
+    pub best: Optimization,
+    pub best_time_nanos: u128,
 }
 
 impl Display for Scope {
@@ -87,12 +96,7 @@ impl Display for Scope {
 }
 
 impl Optimizer {
-    fn next_optimization(&self) -> Option<&Optimization> {
-        match self {
-            Optimizer::Done(_optimization) => todo!(),
-            Optimizer::Default(optimization) => Some(&optimization),
-        }
-    }
+    pub fn next_optimization(&self) -> Option<&Optimization> { Some(&self.last) }
 }
 
 impl Cache {
@@ -208,14 +212,28 @@ impl Kernel {
                 Op::EndLoop => println!("{i:>3} {BLUE}ENDLOOP{RESET}"),
             }
         }
-        println!();
     }
 
     pub fn flop_mem_rw(&self) -> (u128, u128, u128) { (0, 0, 0) }
 
     pub fn is_reduce(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::Reduce { .. })) }
 
-    pub(super) fn default_optimization(&self, dev_info: &DeviceInfo) -> Optimizer {
+    pub fn new_optimizer(&self, dev_info: &DeviceInfo) -> Optimizer {
+        // Get a current global work size
+        let shape = self.shape();
+
+        let current = Optimization {
+            global_loops: shape.clone(),
+            local_loops: vec![],
+            global_reg_loops: vec![],
+            register_loops: vec![],
+            loop_unroll_size: 0,
+        };
+
+        Optimizer { initial_global_loops: shape, last: current.clone(), best: current, best_time_nanos: u128::MAX }
+    }
+
+    /*pub(super) fn new_optimizer(&self, dev_info: &DeviceInfo) -> Optimizer {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {
             fn get_factors(n: Dim) -> Vec<Dim> {
                 let mut factors = Vec::new();
@@ -260,23 +278,18 @@ impl Kernel {
         debug_assert_eq!(global_work_size.iter().product::<Dim>(), n / d);
         debug_assert_eq!(local_work_size.iter().product::<Dim>(), d);
 
-        Optimizer::Default(Optimization::Basic { global_work_size, local_work_size, loop_unroll_size: 0 })
-    }
+        //Optimizer::Default(Optimization::Basic { global_work_size, local_work_size, loop_unroll_size: 0 })
+        todo!()
+    }*/
 
-    pub fn apply_optimization(&mut self, optimizer: &Optimizer) {
-        let Some(optimization) = optimizer.next_optimization() else { return };
-        let loop_unroll_size = match optimization {
-            Optimization::Basic { global_work_size, local_work_size, loop_unroll_size } => {
-                let shape: Vec<Dim> = global_work_size.iter().chain(local_work_size).copied().collect();
-                let n = self.shape().len();
-                self.apply_movement(|view| view.reshape(0..n, &shape));
-                self.unfold_shape(global_work_size, local_work_size);
-                *loop_unroll_size
-            }
-        };
-
+    pub fn apply_optimization(&mut self, optimization: &Optimization) {
+        let shape: Vec<Dim> = optimization.global_loops.iter().chain(&optimization.local_loops).copied().collect();
+        let n = self.shape().len();
+        self.apply_movement(|view| view.reshape(0..n, &shape));
+        self.unfold_shape(&optimization.global_loops, &optimization.local_loops);
         self.unfold_reduces();
         self.define_globals();
+        self.debug();
         self.unfold_views();
 
         let mut kernel = self.clone();
@@ -287,7 +300,7 @@ impl Kernel {
             self.dead_code_elimination();
 
             // loop unrolling plus loop invariant code motion
-            self.loop_optimization(loop_unroll_size);
+            self.loop_optimization(optimization.loop_unroll_size);
 
             if *self == kernel {
                 break;
@@ -609,7 +622,7 @@ impl Kernel {
                     let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
                     self.ops.pop();
                     let ops = &mut self.ops;
-                    let axes = get_axes(&ops);
+                    let axes = get_axes(&ops[0..op_id]);
                     let mut pc = new_op(ops, Op::Const(Constant::Bool(true)));
                     let mut offset = new_op(ops, Op::Const(Constant::U32(0)));
                     let mut old_offset: Option<OpId> = None;
@@ -1098,8 +1111,14 @@ impl Kernel {
 fn get_axes(ops: &[Op]) -> Vec<OpId> {
     let mut axes = Vec::new();
     for (i, op) in ops.iter().enumerate() {
-        if matches!(op, Op::Loop { .. }) {
-            axes.push(i);
+        match op {
+            Op::Loop { .. } => {
+                axes.push(i);
+            }
+            Op::EndLoop => {
+                axes.pop();
+            }
+            _ => {}
         }
     }
     axes

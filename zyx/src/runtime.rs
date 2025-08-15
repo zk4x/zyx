@@ -97,7 +97,7 @@ impl Runtime {
             config_dir: None,
             cache: Cache::new(),
             training: false,
-            search_iterations: 0,
+            search_iterations: 50,
             debug: DebugMask(0),
             temp_data: Vec::new(),
             constants: [Constant::I32(0); NUM_CONSTANTS],
@@ -106,9 +106,7 @@ impl Runtime {
         }
     }
 
-    pub(super) fn retain(&mut self, x: TensorId) {
-        self.graph.retain(x);
-    }
+    pub(super) fn retain(&mut self, x: TensorId) { self.graph.retain(x); }
 
     pub(super) fn release(&mut self, x: TensorId) {
         let to_remove = self.graph.release(x);
@@ -198,12 +196,7 @@ impl Runtime {
                 }
             }
         }*/
-        crate::backend::initialize_backends(
-            &device_config,
-            &mut self.pools,
-            &mut self.devices,
-            self.debug.dev(),
-        )?;
+        crate::backend::initialize_backends(&device_config, &mut self.pools, &mut self.devices, self.debug.dev())?;
         self.pools.shrink_to_fit();
         self.devices.shrink_to_fit();
         Ok(())
@@ -240,9 +233,7 @@ impl Runtime {
         self.debug*/
     }
 
-    pub(super) const fn manual_seed(&mut self, seed: u64) {
-        self.rng = Rng::seed_from_u64(seed);
-    }
+    pub(super) const fn manual_seed(&mut self, seed: u64) { self.rng = Rng::seed_from_u64(seed); }
 
     /// Creates dot plot of graph between given tensors
     #[must_use]
@@ -252,14 +243,10 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn shape(&self, x: TensorId) -> &[Dim] {
-        self.graph.shape(x)
-    }
+    pub(super) fn shape(&self, x: TensorId) -> &[Dim] { self.graph.shape(x) }
 
     #[must_use]
-    pub(super) fn dtype(&self, x: TensorId) -> DType {
-        self.graph.dtype(x)
-    }
+    pub(super) fn dtype(&self, x: TensorId) -> DType { self.graph.dtype(x) }
 
     pub(super) fn tensor_from_path(
         &mut self,
@@ -294,17 +281,10 @@ impl Runtime {
         }
     }
 
-    pub(super) fn new_tensor(
-        &mut self,
-        shape: Vec<Dim>,
-        data: Box<dyn TempData>,
-    ) -> Result<TensorId, ZyxError> {
+    pub(super) fn new_tensor(&mut self, shape: Vec<Dim>, data: Box<dyn TempData>) -> Result<TensorId, ZyxError> {
         let bytes = data.bytes();
         let dtype = data.dtype();
-        debug_assert_eq!(
-            shape.iter().product::<Dim>() * dtype.byte_size() as Dim,
-            bytes
-        );
+        debug_assert_eq!(shape.iter().product::<Dim>() * dtype.byte_size() as Dim, bytes);
         if bytes == dtype.byte_size() as Dim {
             let value = data.read();
             let value = Constant::from_le_bytes(value, dtype);
@@ -350,11 +330,8 @@ impl Runtime {
         let mpid = memory_pool_id as usize;
         let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
         self.temp_data.push(data);
-        let event = self.pools[mpid].pool.host_to_pool(
-            self.temp_data.last().unwrap().read(),
-            buffer_id,
-            vec![event],
-        )?;
+        let event =
+            self.pools[mpid].pool.host_to_pool(self.temp_data.last().unwrap().read(), buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.pools[mpid].buffer_map.insert(id, buffer_id);
         self.pools[mpid].events.insert([buffer_id].into(), event);
@@ -393,11 +370,7 @@ impl Runtime {
     /// Bitcast self to other type, currently immediatelly realizes the tensor.
     /// The caller is responsible for ensuring that destination dtype is representable
     /// with bytes of source data.
-    pub(super) unsafe fn bitcast(
-        &mut self,
-        x: TensorId,
-        dtype: DType,
-    ) -> Result<TensorId, ZyxError> {
+    pub(super) unsafe fn bitcast(&mut self, x: TensorId, dtype: DType) -> Result<TensorId, ZyxError> {
         if dtype == self.dtype(x) {
             self.retain(x);
             return Ok(x);
@@ -545,9 +518,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn unary(&mut self, x: TensorId, uop: UOp) -> TensorId {
-        self.graph.push(Node::Unary { x, uop })
-    }
+    pub(super) fn unary(&mut self, x: TensorId, uop: UOp) -> TensorId { self.graph.push(Node::Unary { x, uop }) }
 
     #[must_use]
     pub(super) fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> TensorId {
@@ -564,10 +535,7 @@ impl Runtime {
                 format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into(),
             ));
         }
-        debug_assert!(
-            data.len() as Dim <= n,
-            "Return buffer is bigger than tensor"
-        );
+        debug_assert!(data.len() as Dim <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
             let mut to_eval = Set::with_capacity_and_hasher(1, BuildHasherDefault::default());
@@ -575,9 +543,8 @@ impl Runtime {
             self.realize(&to_eval)?;
         }
 
-        let byte_slice: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size())
-        };
+        let byte_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size()) };
 
         let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x).unwrap();
 
@@ -606,11 +573,7 @@ impl Runtime {
                 }
             }
             if let Some((pool_id, buffer_id)) = buffer {
-                if !self
-                    .pools
-                    .iter()
-                    .any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
-                {
+                if !self.pools.iter().any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id)) {
                     let pool = &mut self.pools[pool_id];
                     let mut events = Vec::new();
                     if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {

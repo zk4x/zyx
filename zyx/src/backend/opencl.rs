@@ -915,7 +915,11 @@ impl OpenCLDevice {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
 
-        let name = format!("k_{}_{}_{}__{}_{}_{}", gws[0], gws[1], gws[2], lws[0], lws[1], lws[2],);
+        let name = format!(
+            "k_{}__{}",
+            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+        );
 
         let source = format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n",);
         if debug_asm {
@@ -1018,6 +1022,11 @@ impl OpenCLDevice {
         } else {
             event_wait_list.as_ptr()
         };
+        let lws_ptr = if program.lws.is_empty() {
+            ptr::null()
+        } else {
+            program.lws.as_ptr().cast()
+        };
         unsafe {
             (self.clEnqueueNDRangeKernel)(
                 self.queues[queue_id].queue,
@@ -1025,7 +1034,7 @@ impl OpenCLDevice {
                 u32::try_from(program.gws.len()).unwrap(),
                 ptr::null(),
                 program.gws.as_ptr().cast(),
-                program.lws.as_ptr().cast(),
+                lws_ptr,
                 event_wait_list.len().try_into().unwrap(),
                 event_wait_list_ptr,
                 &mut event,
