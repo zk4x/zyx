@@ -815,11 +815,11 @@ impl OpenCLDevice {
                         BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),
                         BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};").unwrap(),
                         BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};").unwrap(),
-                        BOp::Pow => todo!(),
+                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow({x}, {y});").unwrap(),
                         BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};").unwrap(),
                         BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};").unwrap(),
                         BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};").unwrap(),
-                        BOp::Max => todo!(),
+                        BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});").unwrap(),
                         BOp::Or => todo!(),
                         BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};").unwrap(),
                         BOp::BitXor => todo!(),
@@ -832,13 +832,30 @@ impl OpenCLDevice {
                 }
                 &Op::Loop { dim, scope } => {
                     indices.insert(i, loop_id);
-                    if scope == Scope::Register {
-                        writeln!(
-                            source,
-                            "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
-                        )
-                        .unwrap();
-                        indent += "  ";
+                    match scope {
+                        Scope::Global => {
+                            writeln!(
+                                source,
+                                "{indent}unsigned int idx{loop_id} = get_group_id({loop_id}); // 0..{dim}"
+                            )
+                            .unwrap();
+                        }
+                        Scope::Local => {
+                            writeln!(
+                                source,
+                                "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..{dim}",
+                                loop_id - 3
+                            )
+                            .unwrap();
+                        }
+                        Scope::Register => {
+                            writeln!(
+                                source,
+                                "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
+                            )
+                            .unwrap();
+                            indent += "  ";
+                        }
                     }
                     loop_id += 1;
                 }
@@ -874,18 +891,6 @@ impl OpenCLDevice {
             }
         }
 
-        let mut idx_str = String::new();
-        writeln!(
-            idx_str,
-            "  unsigned int idx0 = get_group_id(0), idx1 = get_group_id(1), idx2 = get_group_id(2),"
-        )
-        .unwrap();
-        writeln!(
-            idx_str,
-            "               idx3 = get_local_id(0), idx4 = get_local_id(1), idx5 = get_local_id(2);"
-        )
-        .unwrap();
-
         let mut reg_str = String::new();
         let (dt, _) = registers.remove(0);
         let mut prev_dt = dt;
@@ -912,7 +917,7 @@ impl OpenCLDevice {
 
         let name = format!("k_{}_{}_{}__{}_{}_{}", gws[0], gws[1], gws[2], lws[0], lws[1], lws[2],);
 
-        let source = format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{idx_str}{reg_str}{source}}}\n",);
+        let source = format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n",);
         if debug_asm {
             println!("{source}");
         }

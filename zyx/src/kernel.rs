@@ -40,7 +40,7 @@ pub enum Op {
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
     Load { src: OpId, index: OpId },
-    Loop { dim: Dim, scope: Scope }, // vectorize means both vectorization and tensor cores
+    Loop { dim: Dim, scope: Scope },
     EndLoop,
 
     //DeclareAcc { dtype: DType, rop: ROp },
@@ -260,7 +260,7 @@ impl Kernel {
         debug_assert_eq!(global_work_size.iter().product::<Dim>(), n / d);
         debug_assert_eq!(local_work_size.iter().product::<Dim>(), d);
 
-        Optimizer::Default(Optimization::Basic { global_work_size, local_work_size, loop_unroll_size: 16 })
+        Optimizer::Default(Optimization::Basic { global_work_size, local_work_size, loop_unroll_size: 0 })
     }
 
     pub fn apply_optimization(&mut self, optimizer: &Optimizer) {
@@ -274,8 +274,6 @@ impl Kernel {
                 *loop_unroll_size
             }
         };
-
-        let loop_unroll_size = 0;
 
         self.unfold_reduces();
         self.define_globals();
@@ -431,27 +429,29 @@ impl Kernel {
 
             // Declare accumulator
             let c_0 = self.ops.len();
+            self.ops.push(Op::Const(dtype.zero_constant()));
+            let acc_init = self.ops.len();
             self.ops.push(Op::Const(match rop {
                 ROp::Sum => dtype.zero_constant(),
                 ROp::Max => dtype.min_constant(),
             }));
             let acc = self.ops.len();
             self.ops.push(Op::Define { dtype, scope: Scope::Register, ro: false, len: 1 });
-            self.ops.push(Op::Store { dst: min_param + 1, src: c_0, index: c_0 });
+            self.ops.push(Op::Store { dst: min_param + 2, src: acc_init, index: c_0 });
 
             // Insert Loops
             for dim in dims {
                 self.ops.push(Op::Loop { dim, scope: Scope::Register });
             }
 
-            increment(&mut body, 3 + n_dims, min_param..);
+            increment(&mut body, 4 + n_dims, min_param..);
             self.ops.extend(body);
 
             // Insert reduce op (load + binary + store)
             let y = self.ops.len();
             self.ops.push(Op::Load { src: acc, index: c_0 });
             self.ops.push(Op::Binary {
-                x: x + n_dims + 3,
+                x: x + n_dims + 4,
                 y,
                 bop: match rop {
                     ROp::Sum => BOp::Add,

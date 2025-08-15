@@ -15,7 +15,6 @@
   - [x] wgpu
     - [ ] fix load calculation, probably using Atomic usize
     - [ ] spirv compiler
-      - [ ] conversion to spirv SSA (dealing with accumulators)
   - [x] dummy
     - [ ] validation for program ids
 - [x] runtime
@@ -59,37 +58,23 @@
   - [x] default optimizations
   - [x] indexing for padded views
   - [x] indexing for multi reshape views
-  - [ ] vectorization, vector dtypes
-  - [ ] common subexpression elimination/deduplication
+  - [x] common subexpression elimination
   - [x] dead store elimination
-  - [ ] loop unrolling
   - [ ] loop splitting
   - [ ] loop reordering
+  - [ ] loop unrolling
   - [ ] loop invariant code motion
+  - [ ] vectorization, vector dtypes
   - [ ] merge all mul + add into mad instructions
   - [ ] register tiling of all variables
   - [ ] local tiling of all variables
   - [ ] flash attention
   - [ ] optimizer with tree search
 - [ ] testing
-  - [ ] lot of testing for scheduler correctness
   - [ ] fuzzy tester
     - [x] unary ops
     - [ ] movemnt ops
     - [ ] binary ops
-
-- [x] docs
-  - [x] manual for adding new backends
-- [x] dependencies
-  - [x] replace serde with nanoserde
-  - [x] implement custom progress bar
-  - [x] remove indicatiff
-
-- examples
-  - [x] get phi working
-    - [ ] fix tensor memory leak
-
-- tests
   - [ ] padding on elementwise kernel
   - [ ] expand on elementwise kernel
   - [ ] reshape on elementwise kernel
@@ -98,46 +83,17 @@
   - [ ] expand on reduce kernel
   - [ ] reshape on reduce kernel
   - [ ] permute on reduce kernel
+  - [ ] lot of testing for scheduler correctness
 
+- [x] docs
+  - [x] manual for adding new backends
+- [x] dependencies
+  - [x] replace serde with nanoserde
+  - [x] implement custom progress bar
+  - [x] remove indicatiff
+  - [x] remove xdg
+  - [x] remove rand
 
-## Architecture
-
-We need to support both dynamic and static graph. Once the graph is created by applying ops, it can be stored as static graph, or interpreted dynamically.
-Both static and dynamic graphs are send to kernelizer to create kernels. Then these kernels are scheduled. In case of static graph, there will be static scheduler,
-that will create static graph with only compiled kernel launch and memory operation instructions. In case of dynamic graph, there will be interpreter
-directly interpreting kernelized graph. It assigns kernels to available devices.
-
-Perhaps it's best to just compile all kernels for all devices. Then scheduler will take a list of kernels, which kernel depends on which other kernels and list of tensors.
-This can be the same for static and dynamic graph. There is probably little we can get from doing this all ahead of time, probably just best to check the load on the devices
-and assign kernels appropriatelly even in static graphs, instead of assigning automatically always to the same devices.
-
-
-## Final architecture
-
-### Dynamic graphs
-
-So user creates graph. Then orders it's realization.
-Graph interpreter:
-Kernelizer creates kernels. Kernels are scheduled to devices, compiled for those devices, launched and compilation results cached. This is done repeatedly for each kernel.
-
-### Static graphs
-
-User creates graph. Then orders it's compilation.
-Graph compiler:
-Kernelizer creates kernels. Kernels are scheduled to devices all at once. Then kernels are compiled all at once. Then compiled kernel ids and buffer ids are stored in graph as list
-of kernel launches and memory operations. This static graph can then be executed at any time. Then we just need to increase ref count for included tensors, so that there are no
-conflicts with dynamic graphs.
-
-## For both
-
-In both cases kernel compilation includes:
-- kernel caching
-- kernel optimization
-
-Check if kernel requires further optimization:
-  - no - use cached kernel
-  - yes - optimize it:
-    while we haven't tried enough optimizations:
-      1. optimizer picks optimization
-      2. kernel with optimization is lowered to ir and compiled for selected device
-      3. repeat
+- examples
+  - [x] get phi working
+    - [ ] fix tensor memory leak
