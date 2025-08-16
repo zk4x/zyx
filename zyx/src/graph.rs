@@ -33,13 +33,9 @@ impl Graph {
         }
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.nodes.len() == TensorId::ZERO
-    }
+    pub(super) fn is_empty(&self) -> bool { self.nodes.len() == TensorId::ZERO }
 
-    pub(super) fn retain(&mut self, x: TensorId) {
-        self.nodes[x].0 += 1;
-    }
+    pub(super) fn retain(&mut self, x: TensorId) { self.nodes[x].0 += 1; }
 
     /// Returns which tensors should be deallocated
     pub(super) fn release(&mut self, x: TensorId) -> Set<TensorId> {
@@ -108,9 +104,7 @@ impl Graph {
         self.paddings.insert(id, padding.into_boxed_slice());
     }
 
-    pub(super) fn push_axes(&mut self, id: TensorId, axes: Vec<Axis>) {
-        self.axes.insert(id, axes.into_boxed_slice());
-    }
+    pub(super) fn push_axes(&mut self, id: TensorId, axes: Vec<Axis>) { self.axes.insert(id, axes.into_boxed_slice()); }
 
     pub(super) fn add_shape(&mut self, id: TensorId) {
         let shape = self.shape(id).into();
@@ -143,13 +137,9 @@ impl Graph {
         panic!("DType of {tensor_id:?} could not be found. This is internal bug.")
     }
 
-    pub(super) fn padding(&self, tensor_id: TensorId) -> &[(isize, isize)] {
-        &self.paddings[&tensor_id]
-    }
+    pub(super) fn padding(&self, tensor_id: TensorId) -> &[(isize, isize)] { &self.paddings[&tensor_id] }
 
-    pub(super) fn axes(&self, tensor_id: TensorId) -> &[Axis] {
-        &self.axes[&tensor_id]
-    }
+    pub(super) fn axes(&self, tensor_id: TensorId) -> &[Axis] { &self.axes[&tensor_id] }
 
     pub(super) fn shape(&self, tensor_id: TensorId) -> &[Dim] {
         let mut tensor_id = tensor_id;
@@ -188,12 +178,12 @@ impl Graph {
         let mut order = Vec::new();
         let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut params: Vec<TensorId> = vec![x];
-        while let Some(nid) = params.pop() {
-            if let Some(&rc) = rcs.get(&nid) {
-                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                    order.push(nid);
-                    params.extend(self.nodes[nid].1.parameters());
-                }
+        while let Some(nid) = params.pop()
+            && let Some(&rc) = rcs.get(&nid)
+        {
+            if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                order.push(nid);
+                params.extend(self.nodes[nid].1.parameters());
             }
         }
         //println!("order {order:?}");
@@ -319,15 +309,11 @@ impl Graph {
 
 impl std::ops::Index<TensorId> for Graph {
     type Output = Node;
-    fn index(&self, index: TensorId) -> &Self::Output {
-        &self.nodes[index].1
-    }
+    fn index(&self, index: TensorId) -> &Self::Output { &self.nodes[index].1 }
 }
 
 impl std::ops::IndexMut<TensorId> for Graph {
-    fn index_mut(&mut self, index: TensorId) -> &mut Self::Output {
-        &mut self.nodes[index].1
-    }
+    fn index_mut(&mut self, index: TensorId) -> &mut Self::Output { &mut self.nodes[index].1 }
 }
 
 use crate::dtype::Constant;

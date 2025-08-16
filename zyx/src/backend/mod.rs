@@ -35,46 +35,34 @@ mod wgpu;
 pub struct BufferId(u32);
 
 impl From<usize> for BufferId {
-    fn from(value: usize) -> Self {
-        BufferId(value as u32)
-    }
+    fn from(value: usize) -> Self { BufferId(u32::try_from(value).unwrap()) }
 }
 
 impl From<BufferId> for usize {
-    fn from(value: BufferId) -> Self {
-        value.0 as usize
-    }
+    fn from(value: BufferId) -> Self { value.0 as usize }
 }
 
 impl SlabId for BufferId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
+    fn inc(&mut self) { self.0 += 1; }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProgramId(u32);
 
 impl From<usize> for ProgramId {
-    fn from(value: usize) -> Self {
-        ProgramId(value as u32)
-    }
+    fn from(value: usize) -> Self { ProgramId(u32::try_from(value).unwrap()) }
 }
 
 impl From<ProgramId> for usize {
-    fn from(value: ProgramId) -> Self {
-        value.0 as usize
-    }
+    fn from(value: ProgramId) -> Self { value.0 as usize }
 }
 
 impl SlabId for ProgramId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
+    fn inc(&mut self) { self.0 += 1; }
 }
 
 pub fn initialize_backends(
@@ -83,46 +71,38 @@ pub fn initialize_backends(
     devices: &mut Vec<Device>,
     debug_backends: bool,
 ) -> Result<(), BackendError> {
-    if let Err(err) = disk::initialize_pool(memory_pools, debug_backends) {
-        if debug_backends {
-            println!("{err}")
-        }
-    }
-    if let Err(err) =
-        dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends)
+    if let Err(err) = disk::initialize_pool(memory_pools, debug_backends)
+        && debug_backends
     {
-        if debug_backends {
-            println!("{err}");
-        }
+        println!("{err}");
     }
-    if let Err(err) =
-        cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends)
+    if let Err(err) = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends)
+        && debug_backends
     {
-        if debug_backends {
-            println!("{err}");
-        }
+        println!("{err}");
+    }
+    if let Err(err) = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends)
+        && debug_backends
+    {
+        println!("{err}");
     }
     /*if let Err(err) = hip::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
         }
     }*/
-    if let Err(err) =
-        opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends)
+    if let Err(err) = opencl::initialize_device(&device_config.opencl, memory_pools, devices, debug_backends)
+        && debug_backends
     {
-        if debug_backends {
-            println!("{err}");
-        }
+        println!("{err}");
     }
     //#[cfg(feature = "vulkan")]
     //let _ = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_dev);
     #[cfg(feature = "wgpu")]
-    if let Err(err) =
-        wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends)
+    if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends)
+        && debug_backends
     {
-        if debug_backends {
-            println!("{err}");
-        }
+        println!("{err}");
     }
 
     if devices.is_empty() || memory_pools.is_empty() {
@@ -171,11 +151,11 @@ pub struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
     /// Biggest kernel dimensions
-    pub max_global_work_dims: [Dim; 3],
+    pub max_global_work_dims: Vec<Dim>,
     /// Maximum local work size threads
     pub max_local_threads: Dim,
     /// Maximum local work size dimensions
-    pub max_local_work_dims: [Dim; 3],
+    pub max_local_work_dims: Vec<Dim>,
     /// Preferred vector size in bytes
     pub preferred_vector_size: u8,
     /// Local memory size in bytes

@@ -43,7 +43,11 @@
 #![allow(trivial_numeric_casts)] // why not?, will by optimizad by the compiler anyway
 // Deny later
 #![allow(clippy::single_char_lifetime_names)]
-#![deny(clippy::cargo)]
+#![forbid(clippy::cargo)]
+#![allow(clippy::option_if_let_else)]
+#![allow(clippy::fallible_impl_from)]
+#![allow(clippy::cast_sign_loss)]
+#![allow(clippy::cast_possible_truncation)]
 
 use crate::runtime::Runtime;
 use std::{fs::File, path::Path};
@@ -70,8 +74,7 @@ mod realize;
 mod view;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
-type Map<K, V> =
-    std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
+type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 
 pub use autograd::GradientTape;
 pub use dtype::DType;
@@ -91,33 +94,23 @@ pub struct DebugMask(u32);
 impl DebugMask {
     /// Is device debugging enabled?
     #[must_use]
-    pub const fn dev(&self) -> bool {
-        self.0 % 2 == 1
-    }
+    pub const fn dev(&self) -> bool { self.0 % 2 == 1 }
 
     /// Is performance debugging enabled?
     #[must_use]
-    pub const fn perf(&self) -> bool {
-        (self.0 >> 1) % 2 == 1
-    }
+    pub const fn perf(&self) -> bool { (self.0 >> 1) % 2 == 1 }
 
     /// Is scheduler debugging enabled?
     #[must_use]
-    pub const fn sched(&self) -> bool {
-        (self.0 >> 2) % 2 == 1
-    }
+    pub const fn sched(&self) -> bool { (self.0 >> 2) % 2 == 1 }
 
     /// Is debugging of IR enabled?
     #[must_use]
-    pub const fn ir(&self) -> bool {
-        (self.0 >> 3) % 2 == 1
-    }
+    pub const fn ir(&self) -> bool { (self.0 >> 3) % 2 == 1 }
 
     /// Is assembly debugging enabled?
     #[must_use]
-    pub const fn asm(&self) -> bool {
-        (self.0 >> 4) % 2 == 1
-    }
+    pub const fn asm(&self) -> bool { (self.0 >> 4) % 2 == 1 }
 }
 
 /// Save tensors or modules

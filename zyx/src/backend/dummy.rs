@@ -31,25 +31,20 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: "Configured out.".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "Configured out.".into() });
     }
     if debug_dev {
         println!("Using dummy backend");
     }
-    let pool = MemoryPool::Dummy(DummyMemoryPool {
-        free_bytes: 1024 * 1024 * 1024 * 1024 * 1024,
-        buffers: Slab::new(),
-    });
+    let pool =
+        MemoryPool::Dummy(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
     memory_pools.push(Pool::new(pool));
     devices.push(Device::Dummy(DummyDevice {
         device_info: DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: [u32::MAX as Dim, u32::MAX as Dim, u32::MAX as Dim],
+            max_global_work_dims: vec![u32::MAX as Dim; 3],
             max_local_threads: 256 * 256,
-            max_local_work_dims: [1, 256, 256],
+            max_local_work_dims: vec![1, 256, 256],
             preferred_vector_size: 8,
             local_mem_size: 1024 * 1024 * 1024,
             num_registers: 128,
@@ -60,22 +55,15 @@ pub(super) fn initialize_device(
 }
 
 impl DummyMemoryPool {
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
+    pub const fn deinitialize(&mut self) { let _ = self; }
 
-    pub const fn free_bytes(&self) -> Dim {
-        self.free_bytes
-    }
+    pub const fn free_bytes(&self) -> Dim { self.free_bytes }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
-            return Err(BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: "OOM".into(),
-            });
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
         }
         let id = self.buffers.push(bytes);
         Ok((id, Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))
@@ -135,29 +123,19 @@ impl DummyMemoryPool {
 }
 
 impl DummyDevice {
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
+    pub const fn deinitialize(&mut self) { let _ = self; }
 
-    pub const fn info(&self) -> &super::DeviceInfo {
-        &self.device_info
-    }
+    pub const fn info(&self) -> &super::DeviceInfo { &self.device_info }
 
     pub const fn memory_pool_id(&self) -> u32 {
         let _ = self;
         0
     }
 
-    pub const fn free_compute(&self) -> u128 {
-        self.device_info.compute
-    }
+    pub const fn free_compute(&self) -> u128 { self.device_info.compute }
 
     #[allow(clippy::unnecessary_wraps)]
-    pub const fn compile(
-        &mut self,
-        kernel: &Kernel,
-        debug_asm: bool,
-    ) -> Result<ProgramId, BackendError> {
+    pub const fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         let _ = self;
         let _ = kernel;
         let _ = debug_asm;

@@ -134,13 +134,13 @@ pub(super) fn initialize_device(
     devices: &mut Vec<Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
-    if let Some(device_ids) = &config.device_ids {
-        if device_ids.is_empty() {
-            if debug_dev {
-                println!("CUDA won't be used, as it was configured out");
-            }
-            return Ok(());
+    if let Some(device_ids) = &config.device_ids
+        && device_ids.is_empty()
+    {
+        if debug_dev {
+            println!("CUDA won't be used, as it was configured out");
         }
+        return Ok(());
     }
     let cuda_paths = [
         "/lib/x86_64-linux-gnu/libcuda.so",
@@ -207,9 +207,9 @@ pub(super) fn initialize_device(
         return Err(err);
     }
     let mut driver_version = 0;
-    unsafe { cuDriverGetVersion(&mut driver_version) }.check(ErrorStatus::DeviceQuery)?;
+    unsafe { cuDriverGetVersion(&raw mut driver_version) }.check(ErrorStatus::DeviceQuery)?;
     let mut num_devices = 0;
-    unsafe { cuDeviceGetCount(&mut num_devices) }.check(ErrorStatus::DeviceQuery)?;
+    unsafe { cuDeviceGetCount(&raw mut num_devices) }.check(ErrorStatus::DeviceQuery)?;
     if num_devices == 0 {
         return Err(BackendError {
             status: ErrorStatus::DeviceEnumeration,
@@ -229,7 +229,7 @@ pub(super) fn initialize_device(
     let cuda = Arc::new(cuda);
     for dev_id in device_ids {
         let mut device = 0;
-        if let Err(err) = unsafe { cuDeviceGet(&mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration) {
+        if let Err(err) = unsafe { cuDeviceGet(&raw mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration) {
             if debug_dev {
                 println!("Device with id {dev_id} requested, but could not be enumerated.");
             }
@@ -243,8 +243,8 @@ pub(super) fn initialize_device(
         };
         let mut major = 0;
         let mut minor = 0;
-        let Ok(()) =
-            unsafe { cuDeviceComputeCapability(&mut major, &mut minor, device) }.check(ErrorStatus::DeviceQuery)
+        let Ok(()) = unsafe { cuDeviceComputeCapability(&raw mut major, &raw mut minor, device) }
+            .check(ErrorStatus::DeviceQuery)
         else {
             continue;
         };
@@ -254,12 +254,12 @@ pub(super) fn initialize_device(
             });
         }
         let mut free_bytes = 0;
-        let Ok(()) = unsafe { cuDeviceTotalMem(&mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
+        let Ok(()) = unsafe { cuDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         let free_bytes = free_bytes as Dim;
         let mut context: CUcontext = ptr::null_mut();
-        if let Err(e) = unsafe { cuCtxCreate(&mut context, 0, device) }.check(ErrorStatus::Initialization) {
+        if let Err(e) = unsafe { cuCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization) {
             if debug_dev {
                 println!("Device with id {dev_id} requested, but cuda context initialization failed. {e:?}");
             }
@@ -271,7 +271,7 @@ pub(super) fn initialize_device(
         }*/
         //println!("Using context {context:?} and device {device:?}");
         let mut stream = ptr::null_mut();
-        if let Err(err) = unsafe { cuStreamCreate(&mut stream, 0) }.check(ErrorStatus::Initialization) {
+        if let Err(err) = unsafe { cuStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
             if debug_dev {
                 println!("Device with id {dev_id} requested, but cuda stream initialization failed. {err:?}");
             }
@@ -305,7 +305,7 @@ pub(super) fn initialize_device(
         let mut streams = Vec::new();
         for _ in 0..8 {
             let mut stream = ptr::null_mut();
-            if let Err(err) = unsafe { cuStreamCreate(&mut stream, 0) }.check(ErrorStatus::Initialization) {
+            if let Err(err) = unsafe { cuStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
                 if debug_dev {
                     println!("Device with id {dev_id} requested, but cuda stream initialization failed. {err:?}");
                 }
@@ -317,9 +317,9 @@ pub(super) fn initialize_device(
             device,
             dev_info: DeviceInfo {
                 compute: 1024 * 1024 * 1024 * 1024,
-                max_global_work_dims: [64, 64, 64],
+                max_global_work_dims: vec![64, 64, 64],
                 max_local_threads: 1,
-                max_local_work_dims: [1, 1, 1],
+                max_local_work_dims: vec![1, 1, 1],
                 local_mem_size: 0,
                 num_registers: 96,
                 preferred_vector_size: 16,
@@ -340,8 +340,8 @@ pub(super) fn initialize_device(
             //cuStreamDestroy,
         };
         dev.dev_info = DeviceInfo {
-            compute: 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: [
+            compute: 1024 * 1024 * 1024 * 1024, // TODO run a kernel to get an estimate
+            max_global_work_dims: vec![
                 Dim::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
                     cuDeviceGetAttribute,
@@ -363,7 +363,7 @@ pub(super) fn initialize_device(
                 cuDeviceGetAttribute,
             )?)
             .unwrap(),
-            max_local_work_dims: [
+            max_local_work_dims: vec![
                 Dim::try_from(dev.get(
                     CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X,
                     cuDeviceGetAttribute,
@@ -395,13 +395,9 @@ pub(super) fn initialize_device(
 }
 
 impl CUDAMemoryPool {
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
+    pub const fn deinitialize(&mut self) { let _ = self; }
 
-    pub const fn free_bytes(&self) -> Dim {
-        self.free_bytes
-    }
+    pub const fn free_bytes(&self) -> Dim { self.free_bytes }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
@@ -411,10 +407,10 @@ impl CUDAMemoryPool {
         let mut ptr = u64::try_from(self.device).unwrap();
         //unsafe { (self.cuCtxSetCurrent)(self.context) }.check("Failed to set current CUDA context.")?;
         let mut event = ptr::null_mut();
-        unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryAllocation)?;
+        unsafe { (self.cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryAllocation)?;
         debug_assert!(!self.stream.is_null());
         //unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
-        unsafe { (self.cuMemAlloc)(&mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation)?;
+        unsafe { (self.cuMemAlloc)(&raw mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation)?;
         unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
         Ok((
@@ -452,7 +448,7 @@ impl CUDAMemoryPool {
             }
         }
         let mut event = ptr::null_mut();
-        unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryCopyH2P)?;
+        unsafe { (self.cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyH2P)?;
         debug_assert!(!self.stream.is_null());
         //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
         unsafe { (self.cuMemcpyHtoDAsync)(dst.ptr, src.as_ptr().cast(), src.len(), self.stream) }
@@ -476,7 +472,7 @@ impl CUDAMemoryPool {
         }
         let src = &self.buffers[src];
         let mut event = ptr::null_mut();
-        unsafe { (self.cuEventCreate)(&mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H)?;
+        unsafe { (self.cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H)?;
         unsafe { (self.cuMemcpyDtoHAsync)(dst.as_mut_ptr().cast(), src.ptr, dst.len(), self.stream) }
             .check(ErrorStatus::MemoryCopyP2H)?;
         unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
@@ -505,30 +501,29 @@ impl CUDAMemoryPool {
 }
 
 impl CUDADevice {
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
+    pub const fn deinitialize(&mut self) { let _ = self; }
 
-    pub const fn info(&self) -> &DeviceInfo {
-        &self.dev_info
-    }
+    pub const fn info(&self) -> &DeviceInfo { &self.dev_info }
 
-    pub const fn memory_pool_id(&self) -> u32 {
-        self.memory_pool_id
-    }
+    pub const fn memory_pool_id(&self) -> u32 { self.memory_pool_id }
 
-    pub const fn free_compute(&self) -> u128 {
-        self.dev_info.compute
-    }
+    pub const fn free_compute(&self) -> u128 { self.dev_info.compute }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
 
         let mut module = ptr::null_mut();
-        if let Err(err) =
-            unsafe { (self.cuModuleLoadDataEx)(&mut module, ptx.as_ptr().cast(), 0, ptr::null_mut(), ptr::null_mut()) }
-                .check(ErrorStatus::KernelCompilation)
+        if let Err(err) = unsafe {
+            (self.cuModuleLoadDataEx)(
+                &raw mut module,
+                ptx.as_ptr().cast(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        }
+        .check(ErrorStatus::KernelCompilation)
         {
             if debug_asm {
                 println!("Failed to compile kernel with err: {err:?}");
@@ -537,7 +532,7 @@ impl CUDADevice {
         }
         let mut function: CUfunction = ptr::null_mut();
         // Don't forget that the name is null terminated string
-        if let Err(err) = unsafe { (self.cuModuleGetFunction)(&mut function, module, name.as_ptr().cast()) }
+        if let Err(err) = unsafe { (self.cuModuleGetFunction)(&raw mut function, module, name.as_ptr().cast()) }
             .check(ErrorStatus::KernelLaunch)
         {
             if debug_asm {
@@ -573,7 +568,7 @@ impl CUDADevice {
         for &arg in args {
             let arg = &memory_pool.buffers[arg];
             //let ptr = &mut arg.mem;
-            let ptr: *const u64 = &arg.ptr;
+            let ptr: *const u64 = &raw const arg.ptr;
             let ptr: *mut u64 = ptr.cast_mut();
             kernel_params.push(ptr.cast());
         }
@@ -588,7 +583,7 @@ impl CUDADevice {
         //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
 
         let mut event = ptr::null_mut();
-        unsafe { (self.cuEventCreate)(&mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
+        unsafe { (self.cuEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
         unsafe {
             (self.cuLaunchKernel)(
                 program.function,
@@ -636,7 +631,7 @@ impl CUDADevice {
         cuDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> CUDAStatus,
     ) -> Result<c_int, BackendError> {
         let mut v = 0;
-        unsafe { cuDeviceGetAttribute(&mut v, attr, self.device) }.check(ErrorStatus::DeviceQuery)?;
+        unsafe { cuDeviceGetAttribute(&raw mut v, attr, self.device) }.check(ErrorStatus::DeviceQuery)?;
         Ok(v)
     }
 
@@ -857,7 +852,7 @@ impl CUDADevice {
         let mut program = ptr::null_mut();
         unsafe {
             nvrtcCreateProgram(
-                &mut program,
+                &raw mut program,
                 source.as_ptr().cast(),
                 name.as_ptr().cast(),
                 0,
@@ -875,7 +870,8 @@ impl CUDADevice {
         {
             println!("CUDA compilation error {e:?}");
             let mut program_log_size: usize = 0;
-            unsafe { nvrtcGetProgramLogSize(program, &mut program_log_size) }.check(ErrorStatus::KernelCompilation)?;
+            unsafe { nvrtcGetProgramLogSize(program, &raw mut program_log_size) }
+                .check(ErrorStatus::KernelCompilation)?;
             let mut program_log_vec: Vec<u8> = vec![0; program_log_size + 1];
             unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr().cast()) }
                 .check(ErrorStatus::KernelCompilation)?;
@@ -886,15 +882,15 @@ impl CUDADevice {
             }
         }
         let mut ptx_size: usize = 0;
-        unsafe { nvrtcGetPTXSize(program, &mut ptx_size) }.check(ErrorStatus::KernelCompilation)?;
+        unsafe { nvrtcGetPTXSize(program, &raw mut ptx_size) }.check(ErrorStatus::KernelCompilation)?;
         let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
         unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr().cast()) }.check(ErrorStatus::KernelCompilation)?;
-        unsafe { nvrtcDestroyProgram(&mut program) }.check(ErrorStatus::KernelCompilation)?;
+        unsafe { nvrtcDestroyProgram(&raw mut program) }.check(ErrorStatus::KernelCompilation)?;
         Ok((global_work_size, local_work_size, name, ptx_vec))
     }
 
     #[allow(unused)]
-    fn compile_ptx(&mut self, kernel: Kernel, debug_asm: bool) -> ([Dim; 3], [Dim; 3], Box<str>, Vec<u8>) {
+    fn compile_ptx(&mut self, kernel: &Kernel, debug_asm: bool) -> ([Dim; 3], [Dim; 3], Box<str>, Vec<u8>) {
         let mut global_work_size = [0; 3];
         let mut local_work_size = [0; 3];
         /*for (i, op) in kernel.ops[..3].iter().enumerate() {

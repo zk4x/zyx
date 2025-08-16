@@ -10,7 +10,6 @@ use std::{
     fmt::Display,
     hash::BuildHasherDefault,
     ops::{Range, RangeBounds},
-    u128,
 };
 
 pub type OpId = usize;
@@ -76,13 +75,107 @@ pub struct Optimization {
 }
 
 #[derive(Debug)]
+enum OptPhase {
+    /// Add new local dimension to the end of local dimensions
+    AddLocal,
+    /// Decrease last local dimension by minimum divisor
+    DecreaseLastLocal,
+    /// Split global loop at given index into given length
+    SplitGlobal,
+    Done,
+}
+
+#[derive(Debug)]
 pub struct Optimizer {
-    // Initial optimization
-    pub initial_global_loops: Vec<Dim>,
-    // Current optimization
-    pub last: Optimization,
-    pub best: Optimization,
+    // Last optimization
+    best: Optimization,
+    last: Optimization,
     pub best_time_nanos: u128,
+    phase: OptPhase,
+}
+
+impl Kernel {
+    pub fn new_optimizer(&self, dev_info: &DeviceInfo) -> Optimizer {
+        // Get a current global work size
+        let shape = self.shape();
+
+        if shape.len() > dev_info.max_global_work_dims.len() {
+            todo!()
+        }
+
+        let last = Optimization {
+            global_loops: shape,
+            local_loops: vec![],
+            global_reg_loops: vec![],
+            register_loops: vec![],
+            loop_unroll_size: 0,
+        };
+
+        Optimizer { last: last.clone(), best: last, best_time_nanos: u128::MAX, phase: OptPhase::AddLocal }
+    }
+}
+
+impl Optimizer {
+    pub fn next_optimization(&mut self, dev_info: &DeviceInfo, last_time_nanos: u128) -> Option<&Optimization> {
+        let time_improved = last_time_nanos < self.best_time_nanos;
+        if time_improved {
+            self.best = self.last.clone();
+            self.best_time_nanos = last_time_nanos;
+        }
+        match self.phase {
+            OptPhase::AddLocal => {
+                let mut next_local = None;
+                if self.last.local_loops.len() < self.last.global_loops.len() {
+                    for d in &mut self.last.global_loops {
+                        let md = max_divisor(*d);
+                        if md > 1
+                            && md
+                                < dev_info.max_local_work_dims
+                                    [dev_info.max_global_work_dims.len() - self.last.local_loops.len() - 1]
+                            && md * self.last.local_loops.iter().product::<Dim>() < dev_info.max_local_threads
+                        {
+                            *d /= md;
+                            next_local = Some(md);
+                        }
+                    }
+                }
+
+                // Next phase
+                self.phase = OptPhase::DecreaseLastLocal;
+
+                if let Some(next_local) = next_local {
+                    self.last.local_loops.push(next_local);
+                    Some(&self.last)
+                } else {
+                    self.next_optimization(dev_info, last_time_nanos)
+                }
+            }
+            OptPhase::DecreaseLastLocal => {
+                if time_improved {
+                    let d = *self.last.local_loops.last().unwrap();
+                    // Min divisor
+                    let md = d / max_divisor(d);
+
+                    if md > 1 {
+                        *self.last.global_loops.last_mut().unwrap() *= md;
+                        *self.last.local_loops.last_mut().unwrap() /= md;
+                        return Some(&self.last);
+                    }
+                }
+                let gd = self.last.global_loops.iter().product();
+                if max_divisor(gd) < gd {
+                    self.phase = OptPhase::AddLocal;
+                } else {
+                    self.phase = OptPhase::SplitGlobal;
+                }
+                self.next_optimization(dev_info, last_time_nanos)
+            }
+            OptPhase::SplitGlobal => {
+                todo!()
+            }
+            OptPhase::Done => None,
+        }
+    }
 }
 
 impl Display for Scope {
@@ -93,10 +186,6 @@ impl Display for Scope {
             Scope::Register => "REG",
         })
     }
-}
-
-impl Optimizer {
-    pub fn next_optimization(&self) -> Option<&Optimization> { Some(&self.last) }
 }
 
 impl Cache {
@@ -197,10 +286,10 @@ impl Kernel {
                     println!("{i:>3} {CYAN}REDUCE{RESET} {} {x}, dims={dims:?}", match rop {
                         ROp::Sum => "SUM",
                         ROp::Max => "MAX",
-                    })
+                    });
                 }
                 Op::Define { dtype, scope, ro, len } => {
-                    println!("{i:>3} {YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}")
+                    println!("{i:>3} {YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
                 }
                 Op::Const(x) => println!("{i:>3} {MAGENTA}CONST{RESET} {x}"),
                 Op::Load { src, index } => println!("{i:>3} {GREEN}LOAD{RESET} p{src}[{index}]"),
@@ -214,24 +303,9 @@ impl Kernel {
         }
     }
 
-    pub fn flop_mem_rw(&self) -> (u128, u128, u128) { (0, 0, 0) }
+    pub const fn flop_mem_rw(&self) -> (u128, u128, u128) { (0, 0, 0) }
 
     pub fn is_reduce(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::Reduce { .. })) }
-
-    pub fn new_optimizer(&self, dev_info: &DeviceInfo) -> Optimizer {
-        // Get a current global work size
-        let shape = self.shape();
-
-        let current = Optimization {
-            global_loops: shape.clone(),
-            local_loops: vec![],
-            global_reg_loops: vec![],
-            register_loops: vec![],
-            loop_unroll_size: 0,
-        };
-
-        Optimizer { initial_global_loops: shape, last: current.clone(), best: current, best_time_nanos: u128::MAX }
-    }
 
     /*pub(super) fn new_optimizer(&self, dev_info: &DeviceInfo) -> Optimizer {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {
@@ -289,7 +363,7 @@ impl Kernel {
         self.unfold_shape(&optimization.global_loops, &optimization.local_loops);
         self.unfold_reduces();
         self.define_globals();
-        self.debug();
+        //self.debug();
         self.unfold_views();
 
         let mut kernel = self.clone();
@@ -330,14 +404,7 @@ impl Kernel {
         let mut reduce_dims = 0;
         for op in self.ops.iter().rev() {
             match op {
-                Op::ConstView { view, .. } => {
-                    let mut shape = view.shape();
-                    for _ in 0..reduce_dims {
-                        shape.pop();
-                    }
-                    return shape;
-                }
-                Op::LoadView { view, .. } => {
+                Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
                     let mut shape = view.shape();
                     for _ in 0..reduce_dims {
                         shape.pop();
@@ -370,6 +437,7 @@ impl Kernel {
         // put Loop op before dependency with lowest ID
         // increase all ids higher than that by one
 
+        #[allow(clippy::needless_collect)] // false positive
         let reduce_ops: Vec<OpId> =
             self.ops.iter().enumerate().filter(|(_, op)| matches!(op, Op::Reduce { .. })).map(|(i, _)| i).collect();
         for op_id in reduce_ops.into_iter().rev() {
@@ -384,15 +452,19 @@ impl Kernel {
                             acc_dtype = Some(value.dtype());
                         }
                     }
-                    Op::Const { .. } => unreachable!(),
+                    Op::Const { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop => unreachable!(),
                     Op::Define { .. } => {}
                     Op::LoadView { dtype, .. } => {
                         if acc_dtype.is_none() {
                             acc_dtype = Some(dtype);
                         }
                     }
-                    Op::StoreView { .. } => {}
-                    Op::Load { .. } => unreachable!(),
+                    Op::StoreView { src, .. } => {
+                        params.push(src);
+                        if src < min_param {
+                            min_param = src;
+                        }
+                    }
                     Op::Store { src, index, .. } => {
                         params.push(index);
                         if index < min_param {
@@ -428,8 +500,6 @@ impl Kernel {
                             min_param = y;
                         }
                     }
-                    Op::Loop { .. } => unreachable!(),
-                    Op::EndLoop { .. } => unreachable!(),
                 }
             }
             let dtype = acc_dtype.unwrap();
@@ -483,51 +553,24 @@ impl Kernel {
             let mut i = 0;
             while i < tail.len() {
                 match &mut tail[i] {
-                    Op::ConstView { .. } => {}
-                    Op::LoadView { .. } => {}
+                    Op::ConstView { .. } | Op::LoadView { .. } | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => {}
                     Op::StoreView { src, .. } => {
                         if *src == op_id {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                         }
                     }
-                    Op::Reduce { x, .. } => {
+                    Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
                         if *x == op_id {
                             *x = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                         }
                     }
                     Op::Const(_) => todo!(),
-                    Op::Define { .. } => {}
-                    Op::Load { src, index } => {
-                        if *index == op_id {
-                            panic!();
-                        }
+                    Op::Load { src, index } | Op::Store { src, index, .. } => {
+                        assert_ne!(*index, op_id);
                         if *src == op_id {
                             *src = self.ops.len() + i;
-                            tail.insert(i, Op::Load { src: acc, index: c_0 });
-                        }
-                    }
-                    Op::Loop { .. } => {}
-                    Op::EndLoop => {}
-                    Op::Store { src, index, .. } => {
-                        if *index == op_id {
-                            panic!();
-                        }
-                        if *src == op_id {
-                            *src = self.ops.len() + i;
-                            tail.insert(i, Op::Load { src: acc, index: c_0 });
-                        }
-                    }
-                    Op::Cast { x, .. } => {
-                        if *x == op_id {
-                            *x = self.ops.len() + i;
-                            tail.insert(i, Op::Load { src: acc, index: c_0 });
-                        }
-                    }
-                    Op::Unary { x, .. } => {
-                        if *x == op_id {
-                            *x = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                         }
                     }
@@ -566,11 +609,11 @@ impl Kernel {
         let mut loads = Vec::new();
         let mut stores = Vec::new();
         for op in &self.ops {
-            match op {
-                &Op::LoadView { dtype, .. } => {
+            match *op {
+                Op::LoadView { dtype, .. } => {
                     loads.push(dtype);
                 }
-                &Op::StoreView { dtype, .. } => {
+                Op::StoreView { dtype, .. } => {
                     stores.push(dtype);
                 }
                 _ => {}
@@ -641,17 +684,15 @@ impl Kernel {
                                 ost *= dim.d as u32;
                                 let dimd_c = new_op(ops, Op::Const(Constant::U32(dim.d as u32)));
                                 new_op(ops, Op::Binary { x: a, y: dimd_c, bop: BOp::Mod })
+                            } else if dim.d == 1 {
+                                new_op(ops, Op::Const(Constant::U32(0)))
                             } else {
-                                if dim.d == 1 {
-                                    new_op(ops, Op::Const(Constant::U32(0)))
-                                } else {
-                                    axes[a]
-                                }
+                                axes[a]
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
-                                let lp = new_op(ops, Op::Const(Constant::U32(dim.lp.abs() as u32)));
+                                let lp = new_op(ops, Op::Const(Constant::U32(dim.lp.unsigned_abs() as u32)));
                                 if dim.lp > 0 {
                                     new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Sub })
                                 } else {
@@ -741,8 +782,9 @@ impl Kernel {
                 | Op::Const { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
-                | Op::Loop { .. } => {}
-                Op::Define { .. } => {}
+                | Op::Loop { .. }
+                | Op::Define { .. }
+                | Op::EndLoop => {}
                 Op::Load { src, index } => {
                     if *src >= range.start {
                         *src -= n;
@@ -762,17 +804,7 @@ impl Kernel {
                         *src -= n;
                     }
                 }
-                Op::Cast { x, .. } => {
-                    if *x >= range.start {
-                        *x -= n;
-                    }
-                }
-                Op::Reduce { x, .. } => {
-                    if *x >= range.start {
-                        *x -= n;
-                    }
-                }
-                Op::Unary { x, .. } => {
+                Op::Cast { x, .. } | Op::Reduce { x, .. } | Op::Unary { x, .. } => {
                     if *x >= range.start {
                         *x -= n;
                     }
@@ -785,7 +817,6 @@ impl Kernel {
                         *y -= n;
                     }
                 }
-                Op::EndLoop { .. } => {}
             }
         }
     }
@@ -793,7 +824,7 @@ impl Kernel {
     fn dead_code_elimination(&mut self) {
         let mut params = Vec::new();
         for op_id in 0..self.ops.len() {
-            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. } | Op::EndLoop { .. }) {
+            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. } | Op::EndLoop) {
                 params.push(op_id);
             }
         }
@@ -801,10 +832,8 @@ impl Kernel {
         while let Some(param) = params.pop() {
             if needed.insert(param) {
                 match self.ops[param] {
-                    Op::Const(..) => {}
-                    Op::ConstView { .. } => unreachable!(),
-                    Op::LoadView { .. } => unreachable!(),
-                    Op::StoreView { .. } => unreachable!(),
+                    Op::Const(..) | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => {}
+                    Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } => unreachable!(),
                     Op::Load { src, index } => {
                         params.push(src);
                         params.push(index);
@@ -814,22 +843,13 @@ impl Kernel {
                         params.push(src);
                         params.push(index);
                     }
-                    Op::Cast { x, .. } => {
-                        params.push(x);
-                    }
-                    Op::Unary { x, .. } => {
-                        params.push(x);
-                    }
                     Op::Binary { x, y, .. } => {
                         params.push(x);
                         params.push(y);
                     }
-                    Op::Loop { .. } => {}
-                    Op::Reduce { x, .. } => {
+                    Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
                         params.push(x);
                     }
-                    Op::Define { .. } => {}
-                    Op::EndLoop { .. } => {}
                 }
             }
         }
@@ -864,8 +884,7 @@ impl Kernel {
                         }
                     }
 
-                    if !remaps.contains_key(&op_id)
-                        && !matches!(op, Op::Define { .. } | Op::Loop { .. } | Op::EndLoop { .. })
+                    if !remaps.contains_key(&op_id) && !matches!(op, Op::Define { .. } | Op::Loop { .. } | Op::EndLoop)
                     {
                         unique_stack.last_mut().unwrap().insert(op.clone(), op_id);
                     }
@@ -903,7 +922,7 @@ impl Kernel {
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Loop { .. }
-                | Op::EndLoop { .. }
+                | Op::EndLoop
                 | Op::Define { .. } => {}
                 Op::Cast { x, dtype } => {
                     if let Op::Const(x) = self.ops[x] {
@@ -949,12 +968,7 @@ impl Kernel {
                         BOp::NotEq => todo!(),
                     },
                     (_, &Op::Const(cy)) => match bop {
-                        BOp::Add => {
-                            if cy.is_zero() {
-                                remaps.insert(op_id, x);
-                            }
-                        }
-                        BOp::Sub => {
+                        BOp::Add | BOp::Sub => {
                             if cy.is_zero() {
                                 remaps.insert(op_id, x);
                             }
@@ -981,17 +995,14 @@ impl Kernel {
                                 self.ops[op_id] = Op::Const(cy.dtype().zero_constant());
                             }
                         }
-                        BOp::Cmplt => {}
-                        BOp::Cmpgt => {}
+                        BOp::Cmplt | BOp::Cmpgt | BOp::NotEq | BOp::And => {}
                         BOp::Max => todo!(),
                         BOp::Or => todo!(),
-                        BOp::And => {}
                         BOp::BitXor => todo!(),
                         BOp::BitOr => todo!(),
                         BOp::BitAnd => todo!(),
                         BOp::BitShiftLeft => todo!(),
                         BOp::BitShiftRight => todo!(),
-                        BOp::NotEq => {}
                     },
                     _ => {}
                 },
@@ -1000,7 +1011,7 @@ impl Kernel {
         remap(&mut self.ops, &remaps);
     }
 
-    /// Unroll all loops with dimension <= loop_unroll_size
+    /// Unroll all loops with dimension <= `loop_unroll_size`
     fn loop_optimization(&mut self, loop_unroll_size: usize) {
         fn unroll_loop(ir: &mut Vec<Op>, range: Range<usize>) {
             let Op::Loop { dim, .. } = ir[range.start] else {
@@ -1091,10 +1102,10 @@ impl Kernel {
                     stack.push((i, dim));
                 }
                 &Op::EndLoop => {
-                    if let Some((start, dim)) = stack.pop() {
-                        if *dim <= loop_unroll_size {
-                            ranges.push(start..i + 1);
-                        }
+                    if let Some((start, dim)) = stack.pop()
+                        && *dim <= loop_unroll_size
+                    {
+                        ranges.push(start..i + 1);
                     }
                 }
                 _ => {}
@@ -1141,7 +1152,7 @@ fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
     let h = |x: &mut usize| {
         //println!("{x}, {range:?}, contains={}", range.contains(x));
         if range.contains(x) {
-            *x += d
+            *x += d;
         }
     };
     for op in ops {
@@ -1151,7 +1162,7 @@ fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
             | Op::LoadView { .. }
             | Op::Loop { .. }
             | Op::Define { .. }
-            | Op::EndLoop { .. } => {}
+            | Op::EndLoop => {}
             Op::StoreView { src, .. } => {
                 h(src);
             }
@@ -1181,13 +1192,15 @@ fn remap(ops: &mut [Op], remap: &Map<OpId, OpId>) {
     };
     for op in ops {
         match op {
-            Op::ConstView { .. } => {}
-            Op::LoadView { .. } => {}
+            Op::ConstView { .. }
+            | Op::LoadView { .. }
+            | Op::Const(_)
+            | Op::Loop { .. }
+            | Op::EndLoop
+            | Op::Define { .. } => {}
             Op::StoreView { src, .. } => {
                 h(src);
             }
-            Op::Const(_) => {}
-            Op::Define { .. } => {}
             Op::Load { src, index, .. } => {
                 h(src);
                 h(index);
@@ -1202,8 +1215,17 @@ fn remap(ops: &mut [Op], remap: &Map<OpId, OpId>) {
                 h(x);
                 h(y);
             }
-            Op::Loop { .. } => {}
-            Op::EndLoop { .. } => {}
         }
     }
+}
+
+fn max_divisor(x: usize) -> usize {
+    debug_assert_ne!(x, 0);
+    let sqrt_x = (x as f64).sqrt() as usize;
+    for i in 2..=sqrt_x {
+        if x.is_multiple_of(i) {
+            return x / i;
+        }
+    }
+    x
 }

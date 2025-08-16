@@ -365,7 +365,7 @@ impl Runtime {
     }
 
     fn graph_order(
-        &mut self,
+        &self,
         realized_nodes: &Set<TensorId>,
         to_eval: &mut Set<TensorId>,
     ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
@@ -422,7 +422,7 @@ impl Runtime {
     }
 
     fn graph_order_with_gradient(
-        &mut self,
+        &self,
         realized_nodes: &Set<TensorId>,
         to_eval: &mut Set<TensorId>,
     ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
@@ -708,7 +708,7 @@ impl Runtime {
             // If search_iters == 0, we use default optimizations
             let mut optimizer = kernel.new_optimizer(device.info());
             if self.search_iterations == 0 {
-                let optimization = optimizer.next_optimization().unwrap();
+                let optimization = optimizer.next_optimization(device.info(), u128::MAX).unwrap();
                 kernel.apply_optimization(&optimization);
                 let program_id = device.compile(&kernel, self.debug.asm())?;
                 let nanos = std::time::Instant::now();
@@ -737,31 +737,31 @@ impl Runtime {
                 };
 
                 let mut i = 0;
-                while let Some(optimization) = optimizer.next_optimization()
+                let mut last_time_nanos = u128::MAX;
+                while let Some(optimization) = optimizer.next_optimization(device.info(), last_time_nanos)
                     && i < self.search_iterations
                 {
-                    kernel.apply_optimization(&optimization);
+                    let mut kernel = kernel.clone();
+                    kernel.apply_optimization(optimization);
                     if self.debug.ir() {
-                        println!("Optimized kernel");
+                        println!("\nOptimized kernel");
                         kernel.debug();
                         println!();
                     }
                     let program_id = device.compile(&kernel, self.debug.asm())?;
-                    let nanos = std::time::Instant::now();
+                    let begin = std::time::Instant::now();
                     let event = device.launch(program_id, &mut pool.pool, &args, Vec::new())?;
                     pool.pool.sync_events(vec![event])?;
-                    let nanos = nanos.elapsed().as_nanos();
-                    if nanos < optimizer.best_time_nanos {
+                    last_time_nanos = begin.elapsed().as_nanos();
+                    if last_time_nanos < optimizer.best_time_nanos {
                         self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
-                        optimizer.best = optimization.clone();
-                        optimizer.best_time_nanos = nanos;
                     }
                     if let Some((prog_bar, flop, mem_read, mem_write)) = &mut progress_bar {
                         prog_bar.inc(
                             1,
                             &format!(
                                 "{}, best={}",
-                                get_perf(*flop, *mem_read, *mem_write, nanos),
+                                get_perf(*flop, *mem_read, *mem_write, last_time_nanos),
                                 optimizer.best_time_nanos
                             ),
                         );

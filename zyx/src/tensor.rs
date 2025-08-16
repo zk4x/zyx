@@ -85,6 +85,68 @@ impl Drop for Tensor {
     }
 }
 
+// Trait to zip tuples of iterators
+pub trait TupleZip: Sized {
+    type Item;
+    type IntoIter: Iterator<Item = Self::Item>;
+
+    fn zip(self) -> Self::IntoIter;
+}
+
+// Implementation for 2-tuples
+impl<IA, IB, T> TupleZip for (IA, IB)
+where
+    IA: IntoIterator<Item = T>,
+    IB: IntoIterator<Item = T>,
+    T: Copy,
+{
+    type Item = (T, T);
+    type IntoIter = std::iter::Zip<IA::IntoIter, IB::IntoIter>;
+
+    fn zip(self) -> Self::IntoIter { self.0.into_iter().zip(self.1.into_iter()) }
+}
+
+// Implementation for 3-tuples
+impl<IA, IB, IC, T> TupleZip for (IA, IB, IC)
+where
+    IA: IntoIterator<Item = T>,
+    IB: IntoIterator<Item = T>,
+    IC: IntoIterator<Item = T>,
+    T: Copy,
+{
+    type Item = (T, T, T);
+    type IntoIter = std::iter::Map<
+        std::iter::Zip<std::iter::Zip<IA::IntoIter, IB::IntoIter>, IC::IntoIter>,
+        fn(((T, T), T)) -> (T, T, T),
+    >;
+
+    fn zip(self) -> Self::IntoIter {
+        fn flatten<T: Copy>(((a, b), c): ((T, T), T)) -> (T, T, T) { (a, b, c) }
+        self.0.into_iter().zip(self.1.into_iter()).zip(self.2.into_iter()).map(flatten)
+    }
+}
+
+// Implementation for 4-tuples
+impl<IA, IB, IC, ID, T> TupleZip for (IA, IB, IC, ID)
+where
+    IA: IntoIterator<Item = T>,
+    IB: IntoIterator<Item = T>,
+    IC: IntoIterator<Item = T>,
+    ID: IntoIterator<Item = T>,
+    T: Copy,
+{
+    type Item = (T, T, T, T);
+    type IntoIter = std::iter::Map<
+        std::iter::Zip<std::iter::Zip<std::iter::Zip<IA::IntoIter, IB::IntoIter>, IC::IntoIter>, ID::IntoIter>,
+        fn((((T, T), T), T)) -> (T, T, T, T),
+    >;
+
+    fn zip(self) -> Self::IntoIter {
+        fn flatten<T: Copy>((((a, b), c), d): (((T, T), T), T)) -> (T, T, T, T) { (a, b, c, d) }
+        self.0.into_iter().zip(self.1.into_iter()).zip(self.2.into_iter()).zip(self.3.into_iter()).map(flatten)
+    }
+}
+
 impl Tensor {
     /// Shape of tensor
     #[must_use]
@@ -2293,14 +2355,16 @@ impl Tensor {
             dilation
         };
         let i_ = &shape[rank - k_.len()..];
-        let o_: Vec<usize> = i_
-            .iter()
-            .copied()
-            .zip(d_.iter().copied())
-            .zip(k_.iter().copied())
-            .zip(s_.iter().copied())
-            .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s))
-            .collect();
+        let o_: Vec<usize> =
+            (i_, d_.iter(), k_.iter(), s_.iter()).zip().map(|(i, d, k, s)| (i - d * (k - 1)).div_ceil(*s)).collect();
+        /*i_
+        .iter()
+        .copied()
+        .zip(d_.iter().copied())
+        .zip(k_.iter().copied())
+        .zip(s_.iter().copied())
+        .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s))
+        .collect();*/
         //println!("s_ {s_:?}, d_ {d_:?}, i_ {i_:?} o_ {o_:?}");
         let repeats: Vec<usize> = repeat_n(1, rank - k_.len())
             .chain(

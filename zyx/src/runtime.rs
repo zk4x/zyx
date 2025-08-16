@@ -127,19 +127,19 @@ impl Runtime {
         }
 
         // Set env vars
-        if let Ok(x) = std::env::var("ZYX_DEBUG") {
-            if let Ok(x) = x.parse::<u32>() {
-                self.debug = DebugMask(x);
-            }
+        if let Ok(x) = std::env::var("ZYX_DEBUG")
+            && let Ok(x) = x.parse::<u32>()
+        {
+            self.debug = DebugMask(x);
         }
 
         // ZYX_SEARCH is number of variations of one kernel that will be tried
         // during each run of the program. Timings are cached to disk,
         // so rerunning the same kernels will continue the search where it left of.
-        if let Ok(x) = std::env::var("ZYX_SEARCH") {
-            if let Ok(x) = x.parse() {
-                self.search_iterations = x;
-            }
+        if let Ok(x) = std::env::var("ZYX_SEARCH")
+            && let Ok(x) = x.parse()
+        {
+            self.search_iterations = x;
         }
 
         // Search through config directory and find zyx/backend_config.json
