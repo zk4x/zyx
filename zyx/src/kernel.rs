@@ -171,7 +171,28 @@ impl Optimizer {
                 self.next_optimization(dev_info, last_time_nanos)
             }
             OptPhase::SplitGlobal => {
-                todo!()
+                if self.last.global_loops.iter().product::<usize>() == 1 {
+                    self.phase = OptPhase::Done;
+                    self.next_optimization(dev_info, last_time_nanos)
+                } else {
+                    let mut next_global = None;
+                    for d in &mut self.last.global_loops {
+                        let md = max_divisor(*d);
+                        if md > 1 && md != *d {
+                            *d /= md;
+                            next_global = Some(md);
+                        }
+                    }
+
+                    self.phase = OptPhase::AddLocal;
+
+                    if let Some(d) = next_global {
+                        self.last.global_loops.push(d);
+                        Some(&self.last)
+                    } else {
+                        self.next_optimization(dev_info, last_time_nanos)
+                    }
+                }
             }
             OptPhase::Done => None,
         }
@@ -283,10 +304,13 @@ impl Kernel {
                 Op::LoadView { dtype, view } => println!("{i:>3} {CYAN}LOAD VIEW{RESET} {dtype} {view}"),
                 Op::StoreView { src, dtype } => println!("{i:>3} {CYAN}STORE VIEW{RESET} {src} {dtype}"),
                 Op::Reduce { x, rop, dims } => {
-                    println!("{i:>3} {CYAN}REDUCE{RESET} {} {x}, dims={dims:?}", match rop {
-                        ROp::Sum => "SUM",
-                        ROp::Max => "MAX",
-                    });
+                    println!(
+                        "{i:>3} {CYAN}REDUCE{RESET} {} {x}, dims={dims:?}",
+                        match rop {
+                            ROp::Sum => "SUM",
+                            ROp::Max => "MAX",
+                        }
+                    );
                 }
                 Op::Define { dtype, scope, ro, len } => {
                     println!("{i:>3} {YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
@@ -303,9 +327,13 @@ impl Kernel {
         }
     }
 
-    pub const fn flop_mem_rw(&self) -> (u128, u128, u128) { (0, 0, 0) }
+    pub const fn flop_mem_rw(&self) -> (u128, u128, u128) {
+        (0, 0, 0)
+    }
 
-    pub fn is_reduce(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::Reduce { .. })) }
+    pub fn is_reduce(&self) -> bool {
+        self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
+    }
 
     /*pub(super) fn new_optimizer(&self, dev_info: &DeviceInfo) -> Optimizer {
         fn get_equal_factors(x: Dim) -> [Dim; 3] {

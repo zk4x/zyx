@@ -31,21 +31,29 @@ pub type SAxis = i32;
 pub struct TensorId(u32);
 
 impl From<usize> for TensorId {
-    fn from(value: usize) -> Self { TensorId(value as u32) }
+    fn from(value: usize) -> Self {
+        TensorId(value as u32)
+    }
 }
 
 impl From<TensorId> for usize {
-    fn from(value: TensorId) -> usize { value.0 as usize }
+    fn from(value: TensorId) -> usize {
+        value.0 as usize
+    }
 }
 
 impl SlabId for TensorId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) { self.0 += 1; }
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
 }
 
 impl Display for TensorId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_fmt(format_args!("{self:?}")) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{self:?}"))
+    }
 }
 
 /// A tensor represents a multi-dimensional array of values. This is the primary data structure in the library.
@@ -103,7 +111,9 @@ where
     type Item = (T, T);
     type IntoIter = std::iter::Zip<IA::IntoIter, IB::IntoIter>;
 
-    fn zip(self) -> Self::IntoIter { self.0.into_iter().zip(self.1.into_iter()) }
+    fn zip(self) -> Self::IntoIter {
+        self.0.into_iter().zip(self.1)
+    }
 }
 
 // Implementation for 3-tuples
@@ -121,8 +131,7 @@ where
     >;
 
     fn zip(self) -> Self::IntoIter {
-        fn flatten<T: Copy>(((a, b), c): ((T, T), T)) -> (T, T, T) { (a, b, c) }
-        self.0.into_iter().zip(self.1.into_iter()).zip(self.2.into_iter()).map(flatten)
+        self.0.into_iter().zip(self.1).zip(self.2).map(|((a, b), c)| (a, b, c))
     }
 }
 
@@ -142,18 +151,56 @@ where
     >;
 
     fn zip(self) -> Self::IntoIter {
-        fn flatten<T: Copy>((((a, b), c), d): (((T, T), T), T)) -> (T, T, T, T) { (a, b, c, d) }
-        self.0.into_iter().zip(self.1.into_iter()).zip(self.2.into_iter()).zip(self.3.into_iter()).map(flatten)
+        self.0.into_iter().zip(self.1).zip(self.2).zip(self.3).map(|(((a, b), c), d)| (a, b, c, d))
     }
 }
 
 impl Tensor {
-    /// Shape of tensor
+    /// Returns an owned vector containing the shape (dimensions) of the tensor.
+    ///
+    /// This method retrieves the dimensions of the tensor as a vector. Each element
+    /// in the resulting vector corresponds to the size of one dimension of the tensor.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use crate::tensor::Tensor;
+    ///
+    /// let t = Tensor::from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]);
+    /// assert_eq!(t.shape(), vec![2, 4]);
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<usize>` containing the shape of the tensor.
     #[must_use]
-    pub fn shape(&self) -> Vec<Dim> { RT.lock().shape(self.id).to_vec() }
+    pub fn shape(&self) -> Vec<Dim> {
+        RT.lock().shape(self.id).to_vec()
+    }
 
-    /// First N dims of the tensor
-    #[must_use]
+    /// Returns a slice of the first N dimensions of this tensor.
+    ///
+    /// # Parameters
+    ///
+    /// * `const N: usize` - The number of dimensions to return.
+    ///
+    /// # Errors
+    ///
+    /// This function will return a ZyxError if:
+    ///
+    /// * `N` is greater than the number of dimensions in this tensor,
+    ///   resulting in a ShapeError with a message indicating the mismatch.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use zyx::Tensor;
+    /// use zyx::Tensor;
+    /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
+    /// let [d1, d2] = t.dims::<2>().unwrap();
+    /// assert_eq!(d1, 2);
+    /// assert_eq!(d2, 3);
+    /// ```
     pub fn dims<const N: usize>(&self) -> Result<[Dim; N], ZyxError> {
         let rt = RT.lock();
         let shape = rt.shape(self.id);
@@ -166,33 +213,68 @@ impl Tensor {
         }
     }
 
-    /// Number of scalar elements stored in self
+    /// Returns the total number of elements in the tensor.
+    ///
+    /// This method calculates the product of all dimensions of the tensor, effectively
+    /// giving you the total number of elements it contains. This can be useful for
+    /// various operations where the total size of a tensor is needed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
+    /// assert_eq!(t.numel(), 6);
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// A `Dim` representing the total number of elements in the tensor.
+    ///
+    /// # Notes
+    ///
+    /// The method uses a read lock on the runtime (`RT.lock()`) to access and iterate
+    /// over the shape of the tensor, calculating the product of all dimensions.
     #[must_use]
-    pub fn numel(&self) -> Dim { RT.lock().shape(self.id).iter().product() }
+    pub fn numel(&self) -> Dim {
+        RT.lock().shape(self.id).iter().product()
+    }
 
     /// Rank of self. Rank means number of dimensions/axes.
     #[must_use]
-    pub fn rank(&self) -> Dim { RT.lock().shape(self.id).len() }
+    pub fn rank(&self) -> Dim {
+        RT.lock().shape(self.id).len()
+    }
 
     /// Datatype of self. See [`DType`](crate::DType) for available datatypes.
     #[must_use]
-    pub fn dtype(&self) -> DType { RT.lock().dtype(self.id) }
+    pub fn dtype(&self) -> DType {
+        RT.lock().dtype(self.id)
+    }
 
     /// Is zyx in training mode?
     #[must_use]
-    pub fn training() -> bool { RT.lock().training }
+    pub fn training() -> bool {
+        RT.lock().training
+    }
 
     /// Set training mode
-    pub fn set_training(training: bool) { RT.lock().training = training; }
+    pub fn set_training(training: bool) {
+        RT.lock().training = training;
+    }
 
     /// Is implicit casting enabled?
     /// Implicit casts are enabled by default.
     #[must_use]
-    pub fn implicit_casts() -> bool { RT.lock().implicit_casts }
+    pub fn implicit_casts() -> bool {
+        RT.lock().implicit_casts
+    }
 
     /// Set implicit casts.
     /// Implicit casts are enabled by default.
-    pub fn set_implicit_casts(implicit_casts: bool) { RT.lock().implicit_casts = implicit_casts; }
+    pub fn set_implicit_casts(implicit_casts: bool) {
+        RT.lock().implicit_casts = implicit_casts;
+    }
 
     /// Immediatelly evaluate passed tensors This will asynchronously enqueue the computational graph
     /// to the device, but it will not block (await). This is for performance reasons. Actual
@@ -318,7 +400,9 @@ impl Tensor {
 
     /// Manually sets the seed for the random number generator.
     /// This function is only available if the `rand` feature is enabled.
-    pub fn manual_seed(seed: u64) { RT.lock().manual_seed(seed); }
+    pub fn manual_seed(seed: u64) {
+        RT.lock().manual_seed(seed);
+    }
 
     /// Create random value in range 0f..1f with float dtype
     /// or 0..`{integer}::MAX` if it is integer
@@ -561,11 +645,15 @@ impl Tensor {
     // unary
     /// Computes the absolute value of each element in self.
     #[must_use]
-    pub fn abs(&self) -> Tensor { self.relu() + (-self).relu() }
+    pub fn abs(&self) -> Tensor {
+        self.relu() + (-self).relu()
+    }
 
     /// Casts self to [dtype](crate::DType).
     #[must_use]
-    pub fn cast(&self, dtype: DType) -> Tensor { return Tensor { id: RT.lock().cast(self.id, dtype) }; }
+    pub fn cast(&self, dtype: DType) -> Tensor {
+        return Tensor { id: RT.lock().cast(self.id, dtype) };
+    }
 
     /// Changes dtype of the tensor without mutating it.
     /// Currently this function will also realize the tensor (if it is not already realized)
@@ -585,7 +673,9 @@ impl Tensor {
 
     /// Applies element-wise, CELU(x)=max⁡(0,x)+min⁡(0,α∗(exp⁡(x/α)−1)).
     #[must_use]
-    pub fn celu(&self, alpha: impl Scalar) -> Tensor { self.relu() - (-((self / alpha).exp() - 1) * alpha).relu() }
+    pub fn celu(&self, alpha: impl Scalar) -> Tensor {
+        self.relu() - (-((self / alpha).exp() - 1) * alpha).relu()
+    }
 
     /// Returns a new tensor with the cosine of the elements of self.
     /// # Panics
@@ -617,8 +707,11 @@ impl Tensor {
     /// Returns device error if the device failed to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
     pub fn dropout<P: Scalar + Float>(&self, probability: P) -> Tensor {
-        // TODO fix this for training (dropout in training is just scaling)
-        Tensor::from(probability).cmplt(Tensor::rand(self.shape(), P::dtype()).unwrap()).unwrap() * self.clone()
+        if Tensor::training() {
+            Tensor::from(probability).cmplt(Tensor::rand(self.shape(), P::dtype()).unwrap()).unwrap() * self.clone()
+        } else {
+            self / P::one().sub(probability)
+        }
     }
 
     /// Applies the Exponential Linear Unit function element-wise.
@@ -729,7 +822,9 @@ impl Tensor {
 
     /// Compute logarithm with any base
     #[must_use]
-    pub fn log(&self, base: impl Into<Tensor>) -> Tensor { self.log2() / base.into().log2() }
+    pub fn log(&self, base: impl Into<Tensor>) -> Tensor {
+        self.log2() / base.into().log2()
+    }
 
     /// Computes the Mish activation function for each element in the input tensor.
     ///
@@ -741,7 +836,9 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `Mish(input_element)`.
     #[must_use]
-    pub fn mish(&self) -> Tensor { self * self.softplus(1., 20.).tanh() }
+    pub fn mish(&self) -> Tensor {
+        self * self.softplus(1., 20.).tanh()
+    }
 
     /// Computes the quick GELU activation function for each element in the input tensor.
     ///
@@ -753,7 +850,9 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `QuickGELU(input_element)`.
     #[must_use]
-    pub fn quick_gelu(&self) -> Tensor { self * (1.702f32 * self).sigmoid() }
+    pub fn quick_gelu(&self) -> Tensor {
+        self * (1.702f32 * self).sigmoid()
+    }
 
     /// Computes the multiplicative inverse of each element in the input tensor, 1/x.
     ///
@@ -765,7 +864,9 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, where each element is the multiplicative inverse (reciprocal) of the corresponding element in the input tensor using a faster implementation.
     #[must_use]
-    pub fn reciprocal(&self) -> Tensor { return Tensor { id: RT.lock().unary(self.id, UOp::Reciprocal) }; }
+    pub fn reciprocal(&self) -> Tensor {
+        return Tensor { id: RT.lock().unary(self.id, UOp::Reciprocal) };
+    }
 
     /// Applies the Rectified Linear Unit (`ReLU`) activation function to each element in the input tensor.
     ///
@@ -777,7 +878,9 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `max(0, input_element)`.
     #[must_use]
-    pub fn relu(&self) -> Tensor { return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) }; }
+    pub fn relu(&self) -> Tensor {
+        return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) };
+    }
 
     /// Computes the reciprocal square root of each element in the input tensor.
     ///
@@ -789,7 +892,9 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor.
     #[must_use]
-    pub fn rsqrt(&self) -> Tensor { self.reciprocal().sqrt() }
+    pub fn rsqrt(&self) -> Tensor {
+        self.reciprocal().sqrt()
+    }
 
     /// Applies the Self-Normalized Linear Unit (Selu) activation function to each element in the input tensor.
     ///
@@ -919,7 +1024,9 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the Swish function.
     #[must_use]
-    pub fn swish(&self) -> Tensor { self * self.sigmoid() }
+    pub fn swish(&self) -> Tensor {
+        self * self.sigmoid()
+    }
 
     /// Applies the tangent function to each element in the input tensor.
     ///
@@ -931,7 +1038,9 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, where each element is computed according to the tangent function.
     #[must_use]
-    pub fn tan(&self) -> Tensor { self.sin() / self.cos() }
+    pub fn tan(&self) -> Tensor {
+        self.sin() / self.cos()
+    }
 
     /// Returns the hyperbolic tangent of each element in the tensor.
     ///
@@ -1798,7 +1907,9 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if the tensors have non broadcasteable shapes.
-    pub fn minimum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> { Ok(-(-self).maximum(-rhs.into())?) }
+    pub fn minimum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        Ok(-(-self).maximum(-rhs.into())?)
+    }
 
     /// Matmul and dot
     ///
@@ -1839,7 +1950,9 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if the tensors have non broadcasteable shapes.
-    pub fn matmul(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> { self.dot(rhs) }
+    pub fn matmul(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        self.dot(rhs)
+    }
 
     /// Returns a new tensor where each element is the result of raising the corresponding element in `self` to the power of `exponent`.
     ///
@@ -1975,7 +2088,9 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     #[must_use]
-    pub fn l1_loss(&self, target: impl Into<Tensor>) -> Tensor { (self - target).abs() }
+    pub fn l1_loss(&self, target: impl Into<Tensor>) -> Tensor {
+        (self - target).abs()
+    }
 
     /// Calculates the Mean Squared Error (MSE) loss.
     ///
@@ -3000,7 +3115,9 @@ pub struct DebugGuard {
 }
 
 impl Drop for DebugGuard {
-    fn drop(&mut self) { RT.lock().debug = self.debug; }
+    fn drop(&mut self) {
+        RT.lock().debug = self.debug;
+    }
 }
 
 impl Tensor {
@@ -3185,7 +3302,9 @@ impl Tensor {
     }
 
     /// Tensor id
-    pub(super) const fn id(&self) -> TensorId { self.id }
+    pub(super) const fn id(&self) -> TensorId {
+        self.id
+    }
 }
 
 impl TryFrom<Tensor> for bf16 {
@@ -3527,15 +3646,21 @@ pub trait IntoRange: Clone {
 }
 
 impl IntoRange for RangeFull {
-    fn into_range(self) -> Range<isize> { 0..isize::MAX }
+    fn into_range(self) -> Range<isize> {
+        0..isize::MAX
+    }
 }
 
 impl IntoRange for RangeFrom<isize> {
-    fn into_range(self) -> Range<isize> { self.start..isize::MAX }
+    fn into_range(self) -> Range<isize> {
+        self.start..isize::MAX
+    }
 }
 
 impl IntoRange for RangeTo<isize> {
-    fn into_range(self) -> Range<isize> { 0..self.end }
+    fn into_range(self) -> Range<isize> {
+        0..self.end
+    }
 }
 
 impl IntoRange for RangeInclusive<isize> {
@@ -3557,7 +3682,9 @@ impl IntoRange for RangeToInclusive<isize> {
 }
 
 impl IntoRange for Range<isize> {
-    fn into_range(self) -> Range<isize> { self }
+    fn into_range(self) -> Range<isize> {
+        self
+    }
 }
 
 impl IntoRange for isize {
@@ -3576,15 +3703,21 @@ pub trait IntoIndex {
 }
 
 impl IntoIndex for Vec<Range<isize>> {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> { self.into_iter() }
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+        self.into_iter()
+    }
 }
 
 impl<I: IntoRange> IntoIndex for &[I] {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> { self.iter().cloned().map(IntoRange::into_range) }
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+        self.iter().cloned().map(IntoRange::into_range)
+    }
 }
 
 impl<I0: IntoRange> IntoIndex for I0 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> { [self.into_range()].into_iter() }
+    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+        [self.into_range()].into_iter()
+    }
 }
 
 impl<I0: IntoRange, I1: IntoRange> IntoIndex for (I0, I1) {
@@ -3684,17 +3817,25 @@ impl<
 }
 
 impl From<&Tensor> for Tensor {
-    fn from(value: &Tensor) -> Self { value.clone() }
+    fn from(value: &Tensor) -> Self {
+        value.clone()
+    }
 }
 
 impl<T: Scalar> From<T> for Tensor {
-    fn from(value: T) -> Self { Tensor { id: RT.lock().new_tensor(vec![1], Box::new(value)).unwrap() } }
+    fn from(value: T) -> Self {
+        Tensor { id: RT.lock().new_tensor(vec![1], Box::new(value)).unwrap() }
+    }
 }
 
 impl<T: Scalar> TempData for T {
-    fn bytes(&self) -> Dim { T::byte_size() as Dim }
+    fn bytes(&self) -> Dim {
+        T::byte_size() as Dim
+    }
 
-    fn dtype(&self) -> DType { T::dtype() }
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
 
     fn read(&self) -> &[u8] {
         let ptr: *const T = self;
@@ -3710,9 +3851,13 @@ impl<T: Scalar> From<Vec<T>> for Tensor {
 }
 
 impl<T: Scalar> TempData for Vec<T> {
-    fn bytes(&self) -> Dim { self.len() * T::byte_size() }
+    fn bytes(&self) -> Dim {
+        self.len() * T::byte_size()
+    }
 
-    fn dtype(&self) -> DType { T::dtype() }
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
@@ -3727,9 +3872,13 @@ impl<T: Scalar> From<Vec<Vec<T>>> for Tensor {
 }
 
 impl<T: Scalar> TempData for Vec<Vec<T>> {
-    fn bytes(&self) -> usize { self.len() * self[0].len() * T::byte_size() }
+    fn bytes(&self) -> usize {
+        self.len() * self[0].len() * T::byte_size()
+    }
 
-    fn dtype(&self) -> DType { T::dtype() }
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
@@ -3745,9 +3894,13 @@ impl<T: Scalar> From<&'static [T]> for Tensor {
 }
 
 impl<T: Scalar> TempData for &'static [T] {
-    fn bytes(&self) -> Dim { self.len() * T::byte_size() }
+    fn bytes(&self) -> Dim {
+        self.len() * T::byte_size()
+    }
 
-    fn dtype(&self) -> DType { T::dtype() }
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
@@ -3756,13 +3909,19 @@ impl<T: Scalar> TempData for &'static [T] {
 }
 
 impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
-    fn from(data: [T; D0]) -> Self { Tensor { id: RT.lock().new_tensor(vec![D0 as Dim], Box::new(data)).unwrap() } }
+    fn from(data: [T; D0]) -> Self {
+        Tensor { id: RT.lock().new_tensor(vec![D0 as Dim], Box::new(data)).unwrap() }
+    }
 }
 
 impl<T: Scalar, const D0: usize> TempData for [T; D0] {
-    fn bytes(&self) -> Dim { D0 * T::byte_size() }
+    fn bytes(&self) -> Dim {
+        D0 * T::byte_size()
+    }
 
-    fn dtype(&self) -> DType { T::dtype() }
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
@@ -3778,9 +3937,13 @@ impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
-    fn bytes(&self) -> Dim { D0 * D1 * T::byte_size() }
+    fn bytes(&self) -> Dim {
+        D0 * D1 * T::byte_size()
+    }
 
-    fn dtype(&self) -> DType { T::dtype() }
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
@@ -3796,9 +3959,13 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
 }
 
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData for [[[T; D2]; D1]; D0] {
-    fn bytes(&self) -> Dim { D0 * D1 * D2 * T::byte_size() }
+    fn bytes(&self) -> Dim {
+        D0 * D1 * D2 * T::byte_size()
+    }
 
-    fn dtype(&self) -> DType { T::dtype() }
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
@@ -3818,9 +3985,13 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> TempData
     for [[[[T; D3]; D2]; D1]; D0]
 {
-    fn bytes(&self) -> Dim { D0 * D1 * D2 * D3 * T::byte_size() }
+    fn bytes(&self) -> Dim {
+        D0 * D1 * D2 * D3 * T::byte_size()
+    }
 
-    fn dtype(&self) -> DType { T::dtype() }
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
 
     fn read(&self) -> &[u8] {
         let ptr: *const u8 = self.as_ptr().cast();
@@ -3829,15 +4000,21 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
 }
 
 impl PartialEq<f32> for Tensor {
-    fn eq(&self, other: &f32) -> bool { self.clone().try_into().is_ok_and(|data| Scalar::is_equal(data, *other)) }
+    fn eq(&self, other: &f32) -> bool {
+        self.clone().try_into().is_ok_and(|data| Scalar::is_equal(data, *other))
+    }
 }
 
 impl PartialEq<f64> for Tensor {
-    fn eq(&self, other: &f64) -> bool { self.clone().try_into().is_ok_and(|data| Scalar::is_equal(data, *other)) }
+    fn eq(&self, other: &f64) -> bool {
+        self.clone().try_into().is_ok_and(|data| Scalar::is_equal(data, *other))
+    }
 }
 
 impl PartialEq<i32> for Tensor {
-    fn eq(&self, other: &i32) -> bool { self.clone().try_into().is_ok_and(|data| Scalar::is_equal(data, *other)) }
+    fn eq(&self, other: &i32) -> bool {
+        self.clone().try_into().is_ok_and(|data| Scalar::is_equal(data, *other))
+    }
 }
 
 impl<T: Scalar, const D0: usize> PartialEq<[T; D0]> for Tensor {
@@ -4102,22 +4279,30 @@ impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
 
 impl Neg for Tensor {
     type Output = Tensor;
-    fn neg(self) -> Self::Output { Tensor { id: RT.lock().unary(self.id, UOp::Neg) } }
+    fn neg(self) -> Self::Output {
+        Tensor { id: RT.lock().unary(self.id, UOp::Neg) }
+    }
 }
 
 impl Neg for &Tensor {
     type Output = Tensor;
-    fn neg(self) -> Self::Output { Tensor { id: RT.lock().unary(self.id, UOp::Neg) } }
+    fn neg(self) -> Self::Output {
+        Tensor { id: RT.lock().unary(self.id, UOp::Neg) }
+    }
 }
 
 impl Not for Tensor {
     type Output = Tensor;
-    fn not(self) -> Self::Output { Tensor { id: RT.lock().unary(self.id, UOp::Not) } }
+    fn not(self) -> Self::Output {
+        Tensor { id: RT.lock().unary(self.id, UOp::Not) }
+    }
 }
 
 impl Not for &Tensor {
     type Output = Tensor;
-    fn not(self) -> Self::Output { Tensor { id: RT.lock().unary(self.id, UOp::Not) } }
+    fn not(self) -> Self::Output {
+        Tensor { id: RT.lock().unary(self.id, UOp::Not) }
+    }
 }
 
 /// Panics on indexing, with a helpful message directing to `.get(...)`.
@@ -4137,12 +4322,16 @@ macro_rules! impl_trait {
     ($trait:ident for $type:ty, $fn_name:ident) => {
         impl $trait<Tensor> for $type {
             type Output = Tensor;
-            fn $fn_name(self, rhs: Tensor) -> Self::Output { rhs.$fn_name(self) }
+            fn $fn_name(self, rhs: Tensor) -> Self::Output {
+                rhs.$fn_name(self)
+            }
         }
 
         impl $trait<&Tensor> for $type {
             type Output = Tensor;
-            fn $fn_name(self, rhs: &Tensor) -> Self::Output { rhs.$fn_name(self) }
+            fn $fn_name(self, rhs: &Tensor) -> Self::Output {
+                rhs.$fn_name(self)
+            }
         }
     };
 }

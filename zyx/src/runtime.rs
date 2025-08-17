@@ -106,7 +106,9 @@ impl Runtime {
         }
     }
 
-    pub(super) fn retain(&mut self, x: TensorId) { self.graph.retain(x); }
+    pub(super) fn retain(&mut self, x: TensorId) {
+        self.graph.retain(x);
+    }
 
     pub(super) fn release(&mut self, x: TensorId) {
         let to_remove = self.graph.release(x);
@@ -150,8 +152,8 @@ impl Runtime {
                 let path = PathBuf::from(path);
                 if path.is_absolute() { Some(path) } else { None }
             })
-            .or_else(|| env::home_dir().and_then(|home| Some(home.join(".config"))))
-            .and_then(|path| Some(path.join("zyx/device_config.json")))
+            .or_else(|| env::home_dir().map(|home| home.join(".config")))
+            .map(|path| path.join("zyx/device_config.json"))
             .and_then(|mut path| {
                 if let Ok(file) = std::fs::read_to_string(&path) {
                     path.pop();
@@ -233,7 +235,9 @@ impl Runtime {
         self.debug*/
     }
 
-    pub(super) const fn manual_seed(&mut self, seed: u64) { self.rng = Rng::seed_from_u64(seed); }
+    pub(super) const fn manual_seed(&mut self, seed: u64) {
+        self.rng = Rng::seed_from_u64(seed);
+    }
 
     /// Creates dot plot of graph between given tensors
     #[must_use]
@@ -243,10 +247,14 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn shape(&self, x: TensorId) -> &[Dim] { self.graph.shape(x) }
+    pub(super) fn shape(&self, x: TensorId) -> &[Dim] {
+        self.graph.shape(x)
+    }
 
     #[must_use]
-    pub(super) fn dtype(&self, x: TensorId) -> DType { self.graph.dtype(x) }
+    pub(super) fn dtype(&self, x: TensorId) -> DType {
+        self.graph.dtype(x)
+    }
 
     pub(super) fn tensor_from_path(
         &mut self,
@@ -518,7 +526,9 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn unary(&mut self, x: TensorId, uop: UOp) -> TensorId { self.graph.push(Node::Unary { x, uop }) }
+    pub(super) fn unary(&mut self, x: TensorId, uop: UOp) -> TensorId {
+        self.graph.push(Node::Unary { x, uop })
+    }
 
     #[must_use]
     pub(super) fn binary(&mut self, x: TensorId, y: TensorId, bop: BOp) -> TensorId {
@@ -572,16 +582,16 @@ impl Runtime {
                     break;
                 }
             }
-            if let Some((pool_id, buffer_id)) = buffer {
-                if !self.pools.iter().any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id)) {
-                    let pool = &mut self.pools[pool_id];
-                    let mut events = Vec::new();
-                    if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
-                        let event = pool.events.remove(&key.clone()).unwrap();
-                        events.push(event);
-                    }
-                    pool.pool.deallocate(buffer_id, events);
+            if let Some((pool_id, buffer_id)) = buffer
+                && !self.pools.iter().any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
+            {
+                let pool = &mut self.pools[pool_id];
+                let mut events = Vec::new();
+                if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
+                    let event = pool.events.remove(&key.clone()).unwrap();
+                    events.push(event);
                 }
+                pool.pool.deallocate(buffer_id, events);
             }
         }
     }

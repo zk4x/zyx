@@ -61,6 +61,7 @@ mod mutex;
 #[cfg(feature = "py")]
 mod py_bindings;
 mod rng;
+mod optimizer;
 mod runtime;
 mod scalar;
 mod shape;
