@@ -48,6 +48,10 @@ impl Optimizer {
         }
     }
 
+    pub fn max_iters(&self) -> u64 {
+        self.max_iter
+    }
+
     pub fn next_optimization(&mut self, last_time_nanos: u128) -> Option<Optimization> {
         if last_time_nanos < self.best_time_nanos {
             self.best_time_nanos = last_time_nanos;
@@ -73,7 +77,7 @@ impl Optimizer {
         self.rand_iteration += 1;
         let mut rng = crate::rng::Rng::seed_from_systime();
         for _ in 0..1_000_000 {
-            let index = rng.range(0..self.max_indices.iter().product());
+            let index = rng.range(0..self.max_iter);
             if self.tried.insert(Optimization(index)) {
                 return Some(Optimization(index));
             }
@@ -83,10 +87,11 @@ impl Optimizer {
 
     fn deterministic_search(&mut self) -> Option<Optimization> {
         for _ in 0..1_000_000 {
-            if !self.tried.contains(&Optimization(self.full_iteration)) && self.full_iteration < self.max_iter {
-                return Some(Optimization(self.full_iteration));
-            }
+            let temp = self.full_iteration;
             self.full_iteration += 1;
+            if !self.tried.contains(&Optimization(temp)) && temp < self.max_iter {
+                return Some(Optimization(temp));
+            }
         }
         None
     }
@@ -146,7 +151,6 @@ impl LocalWorkSizeOpt {
             let res = divisors(d, max_lwd);
             gws_factors.push(res);
         }
-        println!("{gws_factors:?}");
         Self { gws, gws_factors }
     }
 

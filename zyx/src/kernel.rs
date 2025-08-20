@@ -92,6 +92,9 @@ impl Cache {
 
 #[allow(clippy::similar_names)]
 pub fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> String {
+    if nanos == u128::MAX {
+        return format!("INF time taken");
+    }
     const fn value_unit(x: u128) -> (u128, &'static str) {
         match x {
             0..1000 => (x * 100, ""),

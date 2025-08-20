@@ -80,15 +80,13 @@ impl Clone for Tensor {
     }
 }
 
-static MEMORY_LEAK_WARNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 impl Drop for Tensor {
     fn drop(&mut self) {
         //std::println!("dropping");
         if let Some(mut rt) = RT.try_lock() {
             rt.release(self.id);
-        } else if !MEMORY_LEAK_WARNING.swap(true, std::sync::atomic::Ordering::Acquire) {
-            println!("Warning: Unable to release tensor due to runtime mutex lock.");
+        } else {
+            println!("Warning: Unable to drop Tensor due to runtime mutex lock.");
         }
     }
 }
@@ -3116,7 +3114,11 @@ pub struct DebugGuard {
 
 impl Drop for DebugGuard {
     fn drop(&mut self) {
-        RT.lock().debug = self.debug;
+        if let Some(mut rt) = RT.try_lock() {
+            rt.debug = self.debug;
+        } else {
+            println!("Warning: Unable to drop DebugGuard due to runtime mutex lock.");
+        }
     }
 }
 

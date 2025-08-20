@@ -2,6 +2,8 @@
 
 use crate::{
     Map, Set, ZyxError,
+    backend::ProgramId,
+    error::BackendError,
     graph::{Graph, Node},
     kernel::{Kernel, Op, OpId, get_perf},
     optimizer::Optimizer,
@@ -352,7 +354,7 @@ impl Runtime {
 
             let elapsed = begin.elapsed();
             if self.debug.perf() {
-                println!("Kernelizer took {} us", elapsed.as_micros());
+                println!("Kernelizer took {} μs", elapsed.as_micros());
             }
         }
 
@@ -706,7 +708,7 @@ impl Runtime {
         }
 
         if self.debug.sched() {
-            println!("Optimizing kernel");
+            println!("Optimizing kernel, max iterations: {}", optimizer.max_iters());
             kernel.debug();
         }
 
@@ -758,25 +760,42 @@ impl Runtime {
                     kernel.debug();
                     println!();
                 }
-                let program_id = device.compile(&kernel, self.debug.asm())?;
-                let begin = std::time::Instant::now();
-                let event = device.launch(program_id, &mut pool.pool, &args, Vec::new())?;
-                pool.pool.sync_events(vec![event])?;
-                last_time_nanos = begin.elapsed().as_nanos();
-                if last_time_nanos < optimizer.best_time_nanos {
-                    self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
-                }
+
+                let res = (|| -> Result<(ProgramId, u128), BackendError> {
+                    let program_id = device.compile(&kernel, self.debug.asm())?;
+                    let begin = std::time::Instant::now();
+                    let event = device.launch(program_id, &mut pool.pool, &args, Vec::new())?;
+                    pool.pool.sync_events(vec![event])?;
+                    Ok((program_id, begin.elapsed().as_nanos()))
+                })();
+
+                last_time_nanos = if let Ok((program_id, last_time_nanos)) = res {
+                    if last_time_nanos < optimizer.best_time_nanos {
+                        self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
+                    }
+                    last_time_nanos
+                } else {
+                    u128::MAX
+                };
+
                 if let Some((prog_bar, flop, mem_read, mem_write)) = &mut progress_bar {
                     prog_bar.inc(
                         1,
                         &format!(
-                            "{}, best={}",
+                            "{}, best={}μs",
                             get_perf(*flop, *mem_read, *mem_write, last_time_nanos),
-                            optimizer.best_time_nanos
+                            if optimizer.best_time_nanos == u128::MAX {
+                                "inf"
+                            } else {
+                                &(optimizer.best_time_nanos / 1000).to_string()
+                            }
                         ),
                     );
                 }
                 i += 1;
+            }
+            if progress_bar.is_some() {
+                println!();
             }
         }
         self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer);
