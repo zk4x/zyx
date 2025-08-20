@@ -403,7 +403,9 @@ impl OpenCLMemoryPool {
         unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization).unwrap();
     }
 
-    pub const fn free_bytes(&self) -> Dim { self.free_bytes }
+    pub const fn free_bytes(&self) -> Dim {
+        self.free_bytes
+    }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
@@ -597,11 +599,17 @@ impl OpenCLMemoryPool {
 }
 
 impl OpenCLDevice {
-    pub const fn deinitialize(&mut self) { let _ = self; }
+    pub const fn deinitialize(&mut self) {
+        let _ = self;
+    }
 
-    pub const fn info(&self) -> &DeviceInfo { &self.dev_info }
+    pub const fn info(&self) -> &DeviceInfo {
+        &self.dev_info
+    }
 
-    pub const fn memory_pool_id(&self) -> u32 { self.memory_pool_id }
+    pub const fn memory_pool_id(&self) -> u32 {
+        self.memory_pool_id
+    }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         fn new_reg(
@@ -720,11 +728,6 @@ impl OpenCLDevice {
                     dtypes.insert(i, DType::U32);
                 }
                 Op::EndLoop => {}
-                /*Op::DeclareAcc { .. } => {}
-                &Op::Accumulate { x, .. } => {
-                    dtypes.insert(i, dtypes[&x]);
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                }*/
                 &Op::Reduce { x, .. } => {
                     dtypes.insert(i, dtypes[&x]);
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
@@ -790,7 +793,10 @@ impl OpenCLDevice {
                             writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl()).unwrap();
                         }
                         UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};").unwrap(),
-                        UOp::Exp2 => writeln!(source, "{indent}r{reg} = exp2({x});").unwrap(),
+                        UOp::Exp2 => {
+                            //writeln!(source, "{indent}printf(\"%d\\n\", r{reg});").unwrap();
+                            writeln!(source, "{indent}r{reg} = exp2({x});").unwrap();
+                        }
                         UOp::Log2 => writeln!(source, "{indent}r{reg} = log2({x});").unwrap(),
                         UOp::Reciprocal => {
                             writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().ocl()).unwrap();
@@ -816,13 +822,13 @@ impl OpenCLDevice {
                         BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};").unwrap(),
                         BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};").unwrap(),
                         BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});").unwrap(),
-                        BOp::Or => todo!(),
+                        BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};").unwrap(),
                         BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};").unwrap(),
-                        BOp::BitXor => todo!(),
-                        BOp::BitOr => todo!(),
-                        BOp::BitAnd => todo!(),
-                        BOp::BitShiftLeft => todo!(),
-                        BOp::BitShiftRight => todo!(),
+                        BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};").unwrap(),
+                        BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};").unwrap(),
+                        BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};").unwrap(),
+                        BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};").unwrap(),
+                        BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};").unwrap(),
                         BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};").unwrap(),
                     }
                 }
@@ -841,7 +847,7 @@ impl OpenCLDevice {
                             writeln!(
                                 source,
                                 "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..{dim}",
-                                loop_id + n_global_ids
+                                loop_id - n_global_ids
                             )
                             .unwrap();
                         }
@@ -861,30 +867,7 @@ impl OpenCLDevice {
                     indent.pop();
                     writeln!(source, "{indent}}}").unwrap();
                     loop_id -= 1;
-                } /*&Op::DeclareAcc { dtype, rop } => {
-                      accs.push(dtype);
-                      writeln!(
-                          source,
-                          "{indent}{} acc{} = {};",
-                          dtype.ocl(),
-                          accs.len() - 1,
-                          match rop {
-                              ROp::Sum => dtype.zero_constant().ocl(),
-                              ROp::Max => dtype.min_constant().ocl(),
-                          }
-                      )
-                      .unwrap();
-                  }
-                  &Op::Accumulate { x, rop } => {
-                      accs.pop().unwrap();
-                      let a = accs.len() as u8;
-                      acc_map.insert(i, a);
-                      let x = get_var(x, &constants, &indices, &acc_map, &reg_map, &mut registers);
-                      match rop {
-                          ROp::Sum => writeln!(source, "{indent}acc{a} = {x} + acc{a};").unwrap(),
-                          ROp::Max => writeln!(source, "{indent}acc{a} = max({x}, acc{a});").unwrap(),
-                      }
-                  }*/
+                }
             }
         }
 
@@ -975,10 +958,9 @@ impl OpenCLDevice {
         args: &[BufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        //memory_pool.sync_events(event_wait_list.clone())?;
-        /*for &arg in args {
-            let buffer = memory_pool.get_buffer(arg);
-            let BufferMut::OpenCL(buffer) = buffer else { unreachable!() };
+        /*memory_pool.sync_events(event_wait_list.clone())?;
+        for &arg in args {
+            let buffer = &memory_pool.buffers[arg];
             let mut dst = vec![0; buffer.bytes];
             memory_pool.pool_to_host(arg, &mut dst, vec![]).unwrap();
             println!("{dst:?}");
@@ -1051,7 +1033,9 @@ impl OpenCLDevice {
         self.programs.remove(program_id);
     }
 
-    pub const fn free_compute(&self) -> u128 { self.dev_info.compute }
+    pub const fn free_compute(&self) -> u128 {
+        self.dev_info.compute
+    }
 }
 
 impl OpenCLStatus {

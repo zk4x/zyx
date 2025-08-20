@@ -553,11 +553,14 @@ impl Runtime {
             self.realize(&to_eval)?;
         }
 
-        let byte_slice: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size()) };
-
         let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x).unwrap();
 
+        Self::load_buffer(data, pool, buffer_id)
+    }
+
+    pub fn load_buffer<T: Scalar>(data: &mut [T], pool: &mut Pool, buffer_id: BufferId) -> Result<(), ZyxError> {
+        let byte_slice: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size()) };
         for buffers in pool.events.keys() {
             if buffers.contains(&buffer_id) {
                 let event = pool.events.remove(&buffers.clone()).unwrap();

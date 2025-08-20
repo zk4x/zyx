@@ -1,10 +1,5 @@
 use crate::{
-    DType, Map, Set,
-    backend::{Device, DeviceInfo, ProgramId},
-    dtype::Constant,
-    graph::{BOp, ROp, UOp},
-    shape::Dim,
-    view::View,
+    backend::{Device, DeviceInfo, ProgramId}, dtype::Constant, graph::{BOp, ROp, UOp}, optimizer::Optimizer, shape::Dim, view::View, DType, Map, Set
 };
 use std::{
     fmt::Display,
@@ -63,140 +58,6 @@ pub struct Cache {
     // This last one is not stored to disk
     // kernel id, device id => program id
     pub programs: Map<(u32, u32), ProgramId>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Optimization {
-    global_loops: Vec<Dim>,
-    local_loops: Vec<Dim>,
-    global_reg_loops: Vec<Dim>,
-    register_loops: Vec<Vec<Dim>>,
-    loop_unroll_size: Dim,
-}
-
-#[derive(Debug)]
-enum OptPhase {
-    /// Add new local dimension to the end of local dimensions
-    AddLocal,
-    /// Decrease last local dimension by minimum divisor
-    DecreaseLastLocal,
-    /// Split global loop at given index into given length
-    SplitGlobal,
-    Done,
-}
-
-#[derive(Debug)]
-pub struct Optimizer {
-    // Last optimization
-    best: Optimization,
-    last: Optimization,
-    pub best_time_nanos: u128,
-    phase: OptPhase,
-}
-
-impl Kernel {
-    pub fn new_optimizer(&self, dev_info: &DeviceInfo) -> Optimizer {
-        // Get a current global work size
-        let shape = self.shape();
-
-        if shape.len() > dev_info.max_global_work_dims.len() {
-            todo!()
-        }
-
-        let last = Optimization {
-            global_loops: shape,
-            local_loops: vec![],
-            global_reg_loops: vec![],
-            register_loops: vec![],
-            loop_unroll_size: 0,
-        };
-
-        Optimizer { last: last.clone(), best: last, best_time_nanos: u128::MAX, phase: OptPhase::AddLocal }
-    }
-}
-
-impl Optimizer {
-    pub fn next_optimization(&mut self, dev_info: &DeviceInfo, last_time_nanos: u128) -> Option<&Optimization> {
-        let time_improved = last_time_nanos < self.best_time_nanos;
-        if time_improved {
-            self.best = self.last.clone();
-            self.best_time_nanos = last_time_nanos;
-        }
-        match self.phase {
-            OptPhase::AddLocal => {
-                let mut next_local = None;
-                if self.last.local_loops.len() < self.last.global_loops.len() {
-                    for d in &mut self.last.global_loops {
-                        let md = max_divisor(*d);
-                        if md > 1
-                            && md
-                                < dev_info.max_local_work_dims
-                                    [dev_info.max_global_work_dims.len() - self.last.local_loops.len() - 1]
-                            && md * self.last.local_loops.iter().product::<Dim>() < dev_info.max_local_threads
-                        {
-                            *d /= md;
-                            next_local = Some(md);
-                        }
-                    }
-                }
-
-                // Next phase
-                self.phase = OptPhase::DecreaseLastLocal;
-
-                if let Some(next_local) = next_local {
-                    self.last.local_loops.push(next_local);
-                    Some(&self.last)
-                } else {
-                    self.next_optimization(dev_info, last_time_nanos)
-                }
-            }
-            OptPhase::DecreaseLastLocal => {
-                if time_improved {
-                    let d = *self.last.local_loops.last().unwrap();
-                    // Min divisor
-                    let md = d / max_divisor(d);
-
-                    if md > 1 {
-                        *self.last.global_loops.last_mut().unwrap() *= md;
-                        *self.last.local_loops.last_mut().unwrap() /= md;
-                        return Some(&self.last);
-                    }
-                }
-                let gd = self.last.global_loops.iter().product();
-                if max_divisor(gd) < gd {
-                    self.phase = OptPhase::AddLocal;
-                } else {
-                    self.phase = OptPhase::SplitGlobal;
-                }
-                self.next_optimization(dev_info, last_time_nanos)
-            }
-            OptPhase::SplitGlobal => {
-                if self.last.global_loops.iter().product::<usize>() == 1 {
-                    self.phase = OptPhase::Done;
-                    self.next_optimization(dev_info, last_time_nanos)
-                } else {
-                    let mut next_global = None;
-                    for d in &mut self.last.global_loops {
-                        let md = max_divisor(*d);
-                        if md > 1 && md != *d {
-                            *d /= md;
-                            next_global = Some(md);
-                        }
-                    }
-
-                    self.phase = OptPhase::AddLocal;
-
-                    if let Some(d) = next_global {
-                        self.last.global_loops.push(d);
-                        Some(&self.last)
-                    } else {
-                        self.next_optimization(dev_info, last_time_nanos)
-                    }
-                }
-            }
-            OptPhase::Done => None,
-        }
-    }
 }
 
 impl Display for Scope {
@@ -384,34 +245,7 @@ impl Kernel {
         todo!()
     }*/
 
-    pub fn apply_optimization(&mut self, optimization: &Optimization) {
-        let shape: Vec<Dim> = optimization.global_loops.iter().chain(&optimization.local_loops).copied().collect();
-        let n = self.shape().len();
-        self.apply_movement(|view| view.reshape(0..n, &shape));
-        self.unfold_shape(&optimization.global_loops, &optimization.local_loops);
-        self.unfold_reduces();
-        self.define_globals();
-        //self.debug();
-        self.unfold_views();
-
-        let mut kernel = self.clone();
-        loop {
-            self.move_constants_to_beginning();
-            self.constant_folding();
-            self.common_subexpression_elimination();
-            self.dead_code_elimination();
-
-            // loop unrolling plus loop invariant code motion
-            self.loop_optimization(optimization.loop_unroll_size);
-
-            if *self == kernel {
-                break;
-            }
-            kernel = self.clone();
-        }
-    }
-
-    fn shape(&self) -> Vec<Dim> {
+    pub fn shape(&self) -> Vec<Dim> {
         if self.ops.iter().any(|op| matches!(op, Op::Loop { .. })) {
             return self
                 .ops
@@ -448,7 +282,7 @@ impl Kernel {
         unreachable!()
     }
 
-    fn unfold_shape(&mut self, global_work_size: &[Dim], local_work_size: &[Dim]) {
+    pub fn unfold_shape(&mut self, global_work_size: &[Dim], local_work_size: &[Dim]) {
         let k = global_work_size.len() + local_work_size.len();
         let n = self.ops.len();
         increment(&mut self.ops, k, 0..n);
@@ -460,7 +294,7 @@ impl Kernel {
         }
     }
 
-    fn unfold_reduces(&mut self) {
+    pub fn unfold_reduces(&mut self) {
         // Check the reduce op, trace all of it's dependencies,
         // put Loop op before dependency with lowest ID
         // increase all ids higher than that by one
@@ -633,7 +467,7 @@ impl Kernel {
         }
     }
 
-    fn define_globals(&mut self) {
+    pub fn define_globals(&mut self) {
         let mut loads = Vec::new();
         let mut stores = Vec::new();
         for op in &self.ops {
@@ -660,7 +494,7 @@ impl Kernel {
         increment(&mut self.ops, k, 0..n);
     }
 
-    fn unfold_views(&mut self) {
+    pub fn unfold_views(&mut self) {
         // First we generate the whole view into a new vec,
         // then we insert the vec into existing ops
         // Convert view
@@ -849,7 +683,7 @@ impl Kernel {
         }
     }
 
-    fn dead_code_elimination(&mut self) {
+    pub fn dead_code_elimination(&mut self) {
         let mut params = Vec::new();
         for op_id in 0..self.ops.len() {
             if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. } | Op::EndLoop) {
@@ -891,7 +725,7 @@ impl Kernel {
         }
     }
 
-    fn common_subexpression_elimination(&mut self) {
+    pub fn common_subexpression_elimination(&mut self) {
         // TODO deduplication should preserve loop boundaries
         let mut unique_stack: Vec<Map<Op, OpId>> = Vec::new();
         unique_stack.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::new()));
@@ -922,7 +756,7 @@ impl Kernel {
         remap(&mut self.ops, &remaps);
     }
 
-    fn move_constants_to_beginning(&mut self) {
+    pub fn move_constants_to_beginning(&mut self) {
         let n_defines = self.ops.iter().position(|op| !matches!(op, Op::Define { .. })).unwrap();
         let tail = self.ops.split_off(n_defines);
         let mut remaps = Map::with_hasher(BuildHasherDefault::new());
@@ -941,7 +775,7 @@ impl Kernel {
     }
 
     /// Constant folding
-    fn constant_folding(&mut self) {
+    pub fn constant_folding(&mut self) {
         let mut remaps = Map::with_hasher(BuildHasherDefault::new());
         for op_id in 0..self.ops.len() {
             match self.ops[op_id] {
@@ -1040,7 +874,7 @@ impl Kernel {
     }
 
     /// Unroll all loops with dimension <= `loop_unroll_size`
-    fn loop_optimization(&mut self, loop_unroll_size: usize) {
+    pub fn loop_optimization(&mut self, loop_unroll_size: usize) {
         fn unroll_loop(ir: &mut Vec<Op>, range: Range<usize>) {
             let Op::Loop { dim, .. } = ir[range.start] else {
                 unreachable!("Expected Op::Loop at start of matched loop range");
@@ -1245,15 +1079,4 @@ fn remap(ops: &mut [Op], remap: &Map<OpId, OpId>) {
             }
         }
     }
-}
-
-fn max_divisor(x: usize) -> usize {
-    debug_assert_ne!(x, 0);
-    let sqrt_x = (x as f64).sqrt() as usize;
-    for i in 2..=sqrt_x {
-        if x.is_multiple_of(i) {
-            return x / i;
-        }
-    }
-    x
 }

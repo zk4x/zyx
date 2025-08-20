@@ -53,6 +53,11 @@ impl Rng {
         Self { s }
     }
 
+    pub fn seed_from_systime() -> Self {
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        Rng::seed_from_u64(seed as u64)
+    }
+
     const fn next_u64(&mut self) -> u64 {
         let res = self.s[0].wrapping_add(self.s[3]).rotate_left(23).wrapping_add(self.s[0]);
 
@@ -131,7 +136,7 @@ impl Rng {
         }
     }
 
-    /*pub(super) fn range<T: Scalar>(&mut self, range: impl RangeBounds<T>) -> T {
+    pub fn range<T: Scalar>(&mut self, range: impl std::ops::RangeBounds<T>) -> T {
         match T::dtype() {
             DType::BF16 | DType::F16 | DType::F32 | DType::F64 => {
                 let mut start: f64 = match range.start_bound() {
@@ -152,34 +157,31 @@ impl Rng {
             }
 
             DType::U8 | DType::U16 | DType::U32 | DType::U64 => {
-                match range.start_bound() {
-                    std::ops::Bound::Included(start) => todo!(),
-                    std::ops::Bound::Excluded(start) => todo!(),
-                    std::ops::Bound::Unbounded => todo!(),
+                let mut start: u64 = match range.start_bound() {
+                    std::ops::Bound::Included(start) => *start,
+                    std::ops::Bound::Excluded(start) => start.add(T::one()),
+                    std::ops::Bound::Unbounded => T::min_value(),
+                }.cast();
+                let mut end: u64 = match range.end_bound() {
+                    std::ops::Bound::Included(end) => end.add(T::one()),
+                    std::ops::Bound::Excluded(end) => *end,
+                    std::ops::Bound::Unbounded => T::max_value(),
+                }.cast();
+                if end < start {
+                    (start, end) = (end, start);
                 }
-                match range.end_bound() {
-                    std::ops::Bound::Included(_) => todo!(),
-                    std::ops::Bound::Excluded(_) => todo!(),
-                    std::ops::Bound::Unbounded => todo!(),
-                }
+                let x = self.next_u64();
+                //(x * (end - start) + start).cast()
+                (x % (end - start) +  start).cast()
             }
 
             DType::I8 | DType::I16 | DType::I32 | DType::I64 => {
-                match range.start_bound() {
-                    std::ops::Bound::Included(start) => todo!(),
-                    std::ops::Bound::Excluded(start) => todo!(),
-                    std::ops::Bound::Unbounded => todo!(),
-                }
-                match range.end_bound() {
-                    std::ops::Bound::Included(_) => todo!(),
-                    std::ops::Bound::Excluded(_) => todo!(),
-                    std::ops::Bound::Unbounded => todo!(),
-                }
+                todo!()
             }
 
             DType::Bool => todo!(),
         }
-    }*/
+    }
 }
 
 /*#[test]

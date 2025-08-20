@@ -64,7 +64,7 @@ impl GradientTape {
         //println!("Sources: {sources:?}");
         let mut rt = RT.lock();
         let grads: Map<TensorId, TensorId> =
-            rt.backward(target.id(), &sources.iter().copied().collect());
+            rt.gradient(target.id(), &sources.iter().copied().collect());
         rt.graph.gradient_tape_ref_count += 1;
         rt.drop_gradient_tape();
         drop(rt);
@@ -87,7 +87,7 @@ impl GradientTape {
         let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
         //println!("Sources: {sources:?}");
         let grads: Map<TensorId, TensorId> =
-            RT.lock().backward(target.id(), &sources.iter().copied().collect());
+            RT.lock().gradient(target.id(), &sources.iter().copied().collect());
         sources
             .into_iter()
             .map(|x: TensorId| grads.get(&x).copied())
@@ -107,12 +107,11 @@ impl Runtime {
         self.graph.gradient_tape_ref_count -= 1;
         if self.graph.gradient_tape_ref_count == 0 {
             self.graph.gradient_tape = None;
-            // TODO delete all unneeded nodes
         }
     }
 
     #[allow(clippy::similar_names)]
-    pub(super) fn backward(
+    pub(super) fn gradient(
         &mut self,
         x: TensorId,
         sources: &Set<TensorId>,
