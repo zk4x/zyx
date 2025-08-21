@@ -153,42 +153,36 @@ impl Runtime {
                         }
                         Node::Expand { x } => {
                             let (mut kid, op_id) = visited[&x];
-
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
                                 duplicate_kernel(&mut kid, &mut kernels);
                             }
-
                             kernels[kid].n_outputs = rcs[&nid];
-
                             let shape = self.graph.shape(nid);
                             kernels[kid].apply_movement(|view| view.expand(shape));
+                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
                             (kid, op_id)
                         }
                         Node::Permute { x } => {
                             let (mut kid, op_id) = visited[&x];
-
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
                                 duplicate_kernel(&mut kid, &mut kernels);
                             }
-
                             kernels[kid].n_outputs = rcs[&nid];
-
                             let axes = self.graph.axes(nid);
                             kernels[kid].apply_movement(|view| view.permute(axes));
+                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
                             (kid, op_id)
                         }
                         Node::Reshape { x } => {
                             let (mut kid, op_id) = visited[&x];
-
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
                                 duplicate_kernel(&mut kid, &mut kernels);
                             }
-
                             kernels[kid].n_outputs = rcs[&nid];
-
                             let n = self.graph.shape(x).len();
                             let shape = self.graph.shape(nid);
                             kernels[kid].apply_movement(|view| view.reshape(0..n, shape));
+                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
                             (kid, op_id)
                         }
                         Node::Pad { x } => {
@@ -220,6 +214,7 @@ impl Runtime {
 
                             let padding = self.graph.padding(nid);
                             kernels[kid].apply_movement(|view| view.pad(padding));
+                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
                             (kid, op_id)
                         }
                         Node::Reduce { x, rop } => {
@@ -227,11 +222,9 @@ impl Runtime {
                             // and the resulting shape's dimension is less than 256
                             let (mut kid, op_id) = visited[&x];
                             let shape = self.graph.shape(x);
-
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
                                 duplicate_kernel(&mut kid, &mut kernels);
                             }
-
                             kernels[kid].n_outputs = rcs[&nid];
 
                             let axes = self.graph.axes(nid);
@@ -239,7 +232,7 @@ impl Runtime {
                             {
                                 use crate::shape::Axis;
                                 let mut sorted_axes: Vec<Axis> = axes.into();
-                                sorted_axes.sort();
+                                sorted_axes.sort_unstable();
                                 debug_assert_eq!(axes, sorted_axes, "Reduce axes must be sorted.");
                             }
 
@@ -395,24 +388,24 @@ impl Runtime {
         let mut order = Vec::new();
         let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        while let Some(nid) = params.pop() {
-            if let Some(&rc) = rcs.get(&nid) {
-                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                    order.push(nid);
-                    let node = &self.graph.nodes[nid];
-                    if node.0 > rc {
-                        new_leafs.insert(nid);
-                        if !realized_nodes.contains(&nid) {
-                            to_eval.insert(nid);
-                        }
-                    } else if !to_eval.contains(&nid) {
-                        to_delete.insert(nid);
-                    } else {
-                        new_leafs.insert(nid);
-                    }
+        while let Some(nid) = params.pop()
+            && let Some(&rc) = rcs.get(&nid)
+        {
+            if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                order.push(nid);
+                let node = &self.graph.nodes[nid];
+                if node.0 > rc {
+                    new_leafs.insert(nid);
                     if !realized_nodes.contains(&nid) {
-                        params.extend(node.1.parameters());
+                        to_eval.insert(nid);
                     }
+                } else if !to_eval.contains(&nid) {
+                    to_delete.insert(nid);
+                } else {
+                    new_leafs.insert(nid);
+                }
+                if !realized_nodes.contains(&nid) {
+                    params.extend(node.1.parameters());
                 }
             }
         }
@@ -452,15 +445,15 @@ impl Runtime {
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
             let mut outside_nodes = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            while let Some(nid) = params.pop() {
-                if let Some(&rc) = rcs.get(&nid) {
-                    if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                        order.push(nid);
-                        let node = &self.graph.nodes[nid];
-                        params.extend(node.1.parameters());
-                        if node.0 > rc {
-                            outside_nodes.insert(nid);
-                        }
+            while let Some(nid) = params.pop()
+                && let Some(&rc) = rcs.get(&nid)
+            {
+                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    let node = &self.graph.nodes[nid];
+                    params.extend(node.1.parameters());
+                    if node.0 > rc {
+                        outside_nodes.insert(nid);
                     }
                 }
             }
@@ -796,7 +789,10 @@ impl Runtime {
             }
             if let Some((_, flop, mem_read, mem_write)) = &progress_bar {
                 println!();
-                println!("Best: {}", get_perf(*flop, *mem_read, *mem_write, optimizer.best_time_nanos));
+                println!(
+                    "Best: {}",
+                    get_perf(*flop, *mem_read, *mem_write, optimizer.best_time_nanos)
+                );
             }
         }
         self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer);

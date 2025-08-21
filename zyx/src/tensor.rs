@@ -3575,7 +3575,7 @@ impl Display for Tensor {
                 }
             }
         };
-        f.write_fmt(format_args!("{res}\nTensor {:?} {}", self.shape(), self.dtype()))
+        f.write_fmt(format_args!("{res}\ntensor {} {:?}", self.dtype(), self.shape()))
     }
 }
 

@@ -51,7 +51,7 @@ impl View {
     }*/
 
     pub(crate) fn rank(&self) -> usize {
-        self.0.last().map_or(1, Vec::len)
+        self.0.last().map_or(0, Vec::len)
     }
 
     pub(crate) fn shape(&self) -> Vec<Dim> {
@@ -214,7 +214,8 @@ impl View {
     }*/
 
     pub fn pad(&mut self, padding: &[(isize, isize)]) {
-        for (axis, (lp, rp)) in padding.iter().copied().rev().enumerate() {
+        //println!("view: {:?} padding: {padding:?}", self.shape());
+        for (axis, &(lp, rp)) in (0..self.rank()).rev().zip(padding) {
             if lp != 0 || rp != 0 {
                 self.pad_axis(axis, lp, rp);
             }

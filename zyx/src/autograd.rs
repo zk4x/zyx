@@ -48,6 +48,7 @@ impl GradientTape {
             100,
             BuildHasherDefault::default(),
         ));
+        drop(rt);
         Self {}
     }
 

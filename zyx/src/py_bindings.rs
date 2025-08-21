@@ -2,12 +2,14 @@
 
 #![allow(missing_docs)]
 
+use crate::{DType, GradientTape, Tensor, ZyxError, tensor::SAxis};
+use pyo3::buffer::PyBuffer;
+use pyo3::prelude::*;
 use pyo3::{
-    exceptions::PyOSError, pymethods, pymodule, types::{PyAnyMethods, PyList, PyModule, PyModuleMethods, PyTuple}, Bound, FromPyObject, PyAny, PyErr, PyResult
-};
-
-use crate::{
-    runtime::ZyxError, DType, GradientTape, Tensor
+    Bound, PyAny, PyErr, PyResult,
+    exceptions::{PyOSError, PyTypeError},
+    pymethods, pymodule,
+    types::{PyAnyMethods, PyIterator, PyList, PyModule, PyModuleMethods, PyTuple},
 };
 
 impl From<ZyxError> for PyErr {
@@ -21,23 +23,129 @@ impl GradientTape {
     #[must_use]
     #[pyo3(name = "backward")]
     pub fn gradient_py(&self, x: &Tensor, sources: &Bound<'_, PyList>) -> Vec<Option<Tensor>> {
-        let sources: Vec<Tensor> = sources
-            .into_iter()
-            .map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)"))
-            .collect();
+        let sources: Vec<Tensor> =
+            sources.into_iter().map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)")).collect();
         self.gradient(x, &sources)
     }
 }
 
 #[pymethods]
 impl Tensor {
+    #[new]
+    fn new(py_obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(tensor) = from_numpy::<f32>(py_obj) {
+            return Ok(tensor);
+        }
+        if let Ok(tensor) = from_numpy::<f64>(py_obj) {
+            return Ok(tensor);
+        }
+        if let Ok(tensor) = from_numpy::<i8>(py_obj) {
+            return Ok(tensor);
+        }
+        if let Ok(tensor) = from_numpy::<i16>(py_obj) {
+            return Ok(tensor);
+        }
+        if let Ok(tensor) = from_numpy::<i32>(py_obj) {
+            return Ok(tensor);
+        }
+        if let Ok(tensor) = from_numpy::<i64>(py_obj) {
+            return Ok(tensor);
+        }
+        if let Ok(tensor) = from_numpy::<u8>(py_obj) {
+            return Ok(tensor);
+        }
+        if let Ok(tensor) = from_numpy::<u16>(py_obj) {
+            return Ok(tensor);
+        }
+        if let Ok(tensor) = from_numpy::<u32>(py_obj) {
+            return Ok(tensor);
+        }
+        if let Ok(tensor) = from_numpy::<u64>(py_obj) {
+            return Ok(tensor);
+        }
+
+        if let Ok(val) = py_obj.extract::<i64>() {
+            return Ok(Tensor::from(val));
+        }
+        if let Ok(val) = py_obj.extract::<f64>() {
+            return Ok(Tensor::from(val));
+        }
+
+        if let Ok(vec) = py_obj.extract::<Vec<i64>>() {
+            return Ok(Tensor::from(vec));
+        }
+        if let Ok(vec) = py_obj.extract::<Vec<f64>>() {
+            return Ok(Tensor::from(vec));
+        }
+
+        if let Ok(mat) = py_obj.extract::<Vec<Vec<i64>>>() {
+            return Ok(Tensor::from(mat));
+        }
+        if let Ok(mat) = py_obj.extract::<Vec<Vec<f64>>>() {
+            return Ok(Tensor::from(mat));
+        }
+
+        Err(PyTypeError::new_err("Unsupported input type for Tensor"))
+    }
+
+    fn numpy<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let shape = self.shape();
+        let np = py.import("numpy")?;
+        Ok(match self.dtype() {
+            DType::BF16 => todo!(),
+            DType::F16 => todo!(),
+            DType::F32 => {
+                let data: Vec<f32> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "float32"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::F64 => {
+                let data: Vec<f64> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "float64"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::U8 => {
+                let data: Vec<u8> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "uint8"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::U16 => {
+                let data: Vec<u16> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "uint16"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::U32 => {
+                let data: Vec<u32> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "uint32"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::U64 => {
+                let data: Vec<u64> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "uint64"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::I8 => {
+                let data: Vec<i8> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "int8"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::I16 => {
+                let data: Vec<i16> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "int16"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::I32 => {
+                let data: Vec<i32> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "int32"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::I64 => {
+                let data: Vec<i64> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "int64"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+            DType::Bool => {
+                let data: Vec<bool> = self.clone().try_into()?;
+                np.getattr("array")?.call1((data, "bool"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+            }
+        })
+    }
+
     #[staticmethod]
     #[pyo3(name = "plot_dot_graph")]
     pub fn plot_dot_graph_py(tensors: &Bound<'_, PyList>, name: &str) -> Result<(), std::io::Error> {
-        let tensors: Vec<Tensor> = tensors
-            .into_iter()
-            .map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)"))
-            .collect();
+        let tensors: Vec<Tensor> =
+            tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
         Tensor::plot_graph(&tensors, name)
     }
 
@@ -63,10 +171,8 @@ impl Tensor {
     #[staticmethod]
     #[pyo3(name = "realize")]
     pub fn realize_py(tensors: &Bound<'_, PyList>) -> Result<(), ZyxError> {
-        let tensors: Vec<Tensor> = tensors
-            .into_iter()
-            .map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)"))
-            .collect();
+        let tensors: Vec<Tensor> =
+            tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
         Tensor::realize(&tensors)
     }
 
@@ -129,13 +235,8 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "ones", signature = (*shape, dtype=DType::F32))]
     pub fn ones_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Tensor {
-        let shape: Vec<usize> = shape
-            .into_iter()
-            .map(|d| {
-                d.extract::<usize>()
-                    .expect("Shape must be positive integers")
-            })
-            .collect();
+        let shape: Vec<usize> =
+            shape.into_iter().map(|d| d.extract::<usize>().expect("Shape must be positive integers")).collect();
         return Tensor::ones(shape, dtype);
     }
 
@@ -226,13 +327,41 @@ impl Tensor {
         self.pad(padding)
     }*/
 
+    fn __repr__(&self) -> String {
+        format!("{self:?}")
+    }
+
+    fn __str__(&self) -> String {
+        self.to_string()
+    }
+
     #[must_use]
     #[pyo3(name = "dot")]
     fn dot_py(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
             self.dot(rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for add".into()))
+            return Err(ZyxError::DTypeError("unsupported rhs for dot".into()));
+        }
+    }
+
+    #[must_use]
+    fn __matmul__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(rhs) = rhs.extract::<Self>() {
+            self.dot(rhs)
+        } else {
+            return Err(ZyxError::DTypeError("unsupported rhs for dot".into()));
+        }
+    }
+
+    #[must_use]
+    fn __add__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(rhs) = rhs.extract::<Self>() {
+            Ok(self + rhs)
+        } else if let Ok(rhs) = rhs.extract::<f64>() {
+            Ok(self + rhs)
+        } else {
+            return Err(ZyxError::DTypeError("unsupported rhs for add".into()));
         }
     }
 
@@ -243,7 +372,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             Ok(self - rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for add".into()))
+            return Err(ZyxError::DTypeError("unsupported rhs for sub".into()));
         }
     }
 
@@ -254,7 +383,7 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             Ok(self * rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for add".into()))
+            return Err(ZyxError::DTypeError("unsupported rhs for mul".into()));
         }
     }
 
@@ -265,34 +394,35 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             Ok(self / rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for add".into()))
+            return Err(ZyxError::DTypeError("unsupported rhs for add".into()));
         }
     }
 }
 
-fn to_sh(shape: &Bound<'_, PyAny>) -> Result<Vec<usize>, ZyxError> {
-    if shape.is_none() {
-        return Err(ZyxError::ShapeError("Shape cannot be None".into()));
+fn to_sh(shape: &Bound<'_, PyTuple>) -> Result<Vec<usize>, ZyxError> {
+    if shape.len() == 1 {
+        let first = shape.get_item(0).unwrap();
+
+        // Check if first arg is list or tuple
+        if first.is_instance_of::<PyList>() || first.is_instance_of::<PyTuple>() {
+            let iter = PyIterator::from_object(&first).unwrap();
+            let mut vec = Vec::new();
+
+            for item in iter {
+                let val = item.unwrap().extract::<usize>().unwrap();
+                vec.push(val);
+            }
+
+            return Ok(vec);
+        }
     }
-    let tuple = shape.downcast::<PyTuple>().unwrap();
-    if tuple.len().unwrap() == 1 {
-        let first_element = tuple.get_item(0).unwrap();
-        let dims: Vec<usize> = FromPyObject::extract_bound(&first_element).unwrap();
-        Ok(dims)
-    } else {
-        let dims: Vec<usize> = FromPyObject::extract_bound(tuple).unwrap();
-        Ok(dims)
-    }
+
+    // Otherwise treat each argument as a usize directly
+    Ok(shape.as_slice().iter().map(|x| x.extract::<usize>().unwrap()).collect())
 }
 
-fn to_ax(axes: &Bound<'_, PyTuple>) -> Vec<isize> {
-    axes
-        .into_iter()
-        .map(|d| {
-            d.extract::<isize>()
-                .expect("Shape must be positive integers")
-        })
-        .collect()
+fn to_ax(axes: &Bound<'_, PyTuple>) -> Vec<SAxis> {
+    axes.into_iter().map(|d| d.extract::<SAxis>().expect("Shape must be positive integers")).collect()
 }
 
 /// A Python module implemented in Rust.
@@ -304,4 +434,48 @@ fn zyx_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<GradientTape>()?;
     //m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     Ok(())
+}
+
+fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+    let buffer = PyBuffer::<T>::get(obj)?;
+
+    let shape = buffer.shape().to_vec();
+    let strides = buffer.strides().to_vec();
+    let data = buffer.as_slice(obj.py()).unwrap();
+    let data2: Vec<T> = data.iter().map(|x| x.get()).collect();
+    println!("dtype={}, shape={shape:?}, strides={strides:?}, {data2:?}", T::dtype());
+
+    let ndim = shape.len();
+    assert_eq!(strides.len(), ndim);
+    assert_eq!(shape.len(), ndim);
+
+    let total_len: usize = shape.iter().product();
+    let mut result = Vec::with_capacity(total_len);
+
+    let mut indices = vec![0; ndim];
+
+    for _ in 0..total_len {
+        // Compute flat index in strided source
+        let mut offset_bytes: isize = 0;
+        for (i, &stride) in indices.iter().zip(strides.iter()) {
+            offset_bytes += (*i as isize) * stride;
+        }
+
+        // Convert byte offset into index into `data`
+        let element_size = std::mem::size_of::<T>() as isize;
+        let index = (offset_bytes / element_size) as usize;
+
+        result.push(data[index].get());
+
+        // Advance indices (like an odometer)
+        for d in (0..ndim).rev() {
+            indices[d] += 1;
+            if indices[d] < shape[d] {
+                break;
+            }
+            indices[d] = 0;
+        }
+    }
+
+    Ok(Tensor::from(result).reshape(shape).unwrap())
 }

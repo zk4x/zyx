@@ -20,7 +20,11 @@ maintenance = { status = "experimental" }
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.8.6", default-features = false } # ISC
 # nanoserde is used to read backend config
-nanoserde = { version = "0.2.1", default-features = false, features = ["std", "binary", "json"] }
+nanoserde = { version = "0.2.1", default-features = false, features = [
+    "std",
+    "binary",
+    "json",
+] }
 
 # To be removed
 # Support for f16 and bf16 dtypes
@@ -37,7 +41,7 @@ futures = { version = "0.3.31", default-features = false, features = [
 pollster = { version = "0.4.0", default-features = false, optional = true }
 
 # Pyo3 is used only for python bindings
-pyo3 = { version = "0.24.2", optional = true } # MIT or Apache 2.0
+pyo3 = { version = "0.25.1", optional = true, features=["extension-module", "auto-initialize"] } # MIT or Apache 2.0
 
 # Vulkano, will be later removed
 #vulkano = { version = "*", optional = true }
@@ -48,7 +52,7 @@ crate-type = ["lib"] #, "cdylib"]
 [features]
 default = [
     #"wgpu",
-    #"py",
+    "py",
 ]
 
 # Enables wgpu backend
@@ -63,7 +67,7 @@ py = ["dep:pyo3"]
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.
 opt-level = 0 # Optimization level.
-debug = true # Include debug info.
+debug = true  # Include debug info.
 #split-debuginfo = '...'  # Debug info splitting behavior.
 strip = false           # Removes symbols or debuginfo.
 debug-assertions = true # Enables debug assertions.

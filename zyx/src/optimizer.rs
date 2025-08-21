@@ -40,7 +40,7 @@ impl Optimizer {
             max_indices: [local_work_size_opt_max_index, loop_opt_max_index],
             best_optimization: Optimization(0),
             best_time_nanos: u128::MAX,
-            tried: HashSet::with_capacity(50),
+            tried: HashSet::with_capacity(200),
             rand_iteration: 0,
             full_iteration: 0,
             max_iter: local_work_size_opt_max_index * loop_opt_max_index,
@@ -71,7 +71,7 @@ impl Optimizer {
     }
 
     fn random_search(&mut self) -> Option<Optimization> {
-        if self.rand_iteration >= 50 {
+        if self.rand_iteration >= 200 {
             return None;
         }
         self.rand_iteration += 1;
@@ -145,7 +145,13 @@ impl LocalWorkSizeOpt {
             }
             res
         }
-        let gws = kernel.shape();
+        let mut gws = kernel.shape();
+        // If gws > dev_info.max_global_work_dims.len(), then we join the starting dimensions
+        while gws.len() > dev_info.max_global_work_dims.len() {
+            let d = gws.remove(0);
+            gws[0] *= d;
+        }
+
         let mut gws_factors = Vec::new();
         for (d, &max_lwd) in gws.iter().copied().zip(&dev_info.max_local_work_dims) {
             let res = divisors(d, max_lwd);

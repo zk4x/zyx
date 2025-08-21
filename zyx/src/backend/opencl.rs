@@ -903,6 +903,7 @@ impl OpenCLDevice {
 
         let source = format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n",);
         if debug_asm {
+            println!();
             println!("{source}");
         }
 
