@@ -4,7 +4,9 @@
 
 use crate::{DType, GradientTape, Tensor, ZyxError, tensor::SAxis};
 use pyo3::buffer::PyBuffer;
+use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
+use pyo3::types::PySlice;
 use pyo3::{
     Bound, PyAny, PyErr, PyResult,
     exceptions::{PyOSError, PyTypeError},
@@ -333,6 +335,54 @@ impl Tensor {
 
     fn __str__(&self) -> String {
         self.to_string()
+    }
+
+    fn __getitem__(&self, idx: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+        // Convert Python slice into Rust Range<isize>
+        fn slice_to_range(slice: &Bound<'_, PySlice>) -> PyResult<std::ops::Range<isize>> {
+            let indices = slice.indices(isize::MAX)?;
+            if indices.step != 1 {
+                return Err(PyIndexError::new_err("Slice step != 1 is not supported"));
+            }
+            Ok(indices.start..indices.stop)
+        }
+
+        // Recursively parse index into Vec<Range<isize>>
+        fn index_to_ranges(idx: &Bound<'_, PyAny>) -> PyResult<Vec<std::ops::Range<isize>>> {
+            if let Ok(i) = idx.extract::<isize>() {
+                Ok(vec![i..i + 1])
+            } else if let Ok(slice) = idx.downcast::<PySlice>() {
+                Ok(vec![slice_to_range(slice)?])
+            } else if let Ok(tuple) = idx.downcast::<PyTuple>() {
+                let mut ranges = Vec::with_capacity(tuple.len());
+                for item in tuple.iter() {
+                    if let Ok(i) = item.extract::<isize>() {
+                        ranges.push(i..i + 1);
+                    } else if let Ok(slice) = item.downcast::<PySlice>() {
+                        ranges.push(slice_to_range(slice)?);
+                    } else {
+                        return Err(PyIndexError::new_err("Tuple elements must be int or slice"));
+                    }
+                }
+                Ok(ranges)
+            } else if let Ok(list) = idx.downcast::<PyList>() {
+                let mut ranges = Vec::with_capacity(list.len());
+                for item in list.iter() {
+                    if let Ok(slice) = item.downcast::<PySlice>() {
+                        ranges.push(slice_to_range(slice)?);
+                    } else {
+                        return Err(PyIndexError::new_err("List elements must be slices"));
+                    }
+                }
+                Ok(ranges)
+            } else {
+                Err(PyIndexError::new_err("Unsupported index type"))
+            }
+        }
+
+        let ranges = index_to_ranges(idx)?;
+
+        self.get(ranges).map_err(|e| PyIndexError::new_err(format!("{:?}", e)))
     }
 
     #[must_use]
