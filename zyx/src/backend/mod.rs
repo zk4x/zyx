@@ -234,7 +234,7 @@ impl MemoryPool {
     // src must be alive as long as Event is not synchronized
     pub fn host_to_pool(
         &mut self,
-        src: &[u8],
+        src: &[u8], // TODO this will likely have to be Vec<u8> for better lifetimes handling and less synchronization
         dst: BufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {

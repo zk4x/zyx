@@ -58,7 +58,7 @@ impl View {
         self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
     }
 
-    /*pub(crate) fn original_numel(&self) -> usize {
+    pub(crate) fn original_numel(&self) -> usize {
         let mut res = 1;
         for dim in &self.0[0] {
             if dim.st != 0 {
@@ -66,11 +66,11 @@ impl View {
             }
         }
         res
-    }*/
+    }
 
-    /*pub(crate) fn numel(&self) -> usize {
+    pub(crate) fn numel(&self) -> usize {
         self.0.last().map_or(1, |inner| inner.iter().map(|dim| dim.d).product())
-    }*/
+    }
 
     /*#[cfg(debug_assertions)]
     pub(crate) fn is_contiguous(&self) -> bool {

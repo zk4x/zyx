@@ -21,12 +21,10 @@
   - [x] fix event handling
   - [ ] node deallocation after realization
   - [ ] static graphs - unfortunately necessary for very high performance networks to achieve millions of tensor ops/second
-- [ ] autograd
+- [x] autograd
   - [x] fix t6 test
-  - [ ] more backpropagation tests
-  - [ ] drop unneded nodes when gradient tape is released
-  - [ ] proper realize function with gradient tape
   - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
+  - [ ] fix realize function with gradient tape
 - [ ] dtype
   - [ ] quantized dtypes
   - [x] optional implicit dtype casts
@@ -60,6 +58,7 @@
   - [x] indexing for multi reshape views
   - [x] common subexpression elimination
   - [x] dead store elimination
+  - [ ] kernel flops, memory reads, memory writes
   - [ ] loop splitting
   - [ ] loop reordering
   - [ ] loop unrolling
@@ -69,7 +68,7 @@
   - [ ] register tiling of all variables
   - [ ] local tiling of all variables
   - [ ] flash attention
-  - [ ] optimizer with tree search
+  - [x] optimizer with search
 - [ ] testing
   - [ ] fuzzy tester
     - [x] unary ops
@@ -84,6 +83,7 @@
   - [ ] reshape on reduce kernel
   - [ ] permute on reduce kernel
   - [ ] lot of testing for scheduler correctness
+  - [ ] more autograd tests
 
 - [x] docs
   - [x] manual for adding new backends

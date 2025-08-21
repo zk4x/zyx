@@ -22,7 +22,7 @@ Zyx printgs kernels in intermediate representation.
 8 - ir
 
 0001 0000
-Zyx prints kernels in native assembly or other native code (i.e. opencl kernel source code).
+Zyx prints kernels in native assembly or other native code (e.g. opencl kernel source code).
 16 - asm
 
 

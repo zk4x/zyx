@@ -1,5 +1,11 @@
 use crate::{
-    backend::{Device, DeviceInfo, ProgramId}, dtype::Constant, graph::{BOp, ROp, UOp}, optimizer::Optimizer, shape::Dim, view::View, DType, Map, Set
+    DType, Map, Set,
+    backend::{Device, DeviceInfo, ProgramId},
+    dtype::Constant,
+    graph::{BOp, ROp, UOp},
+    optimizer::Optimizer,
+    shape::Dim,
+    view::View,
 };
 use std::{
     fmt::Display,
@@ -191,62 +197,77 @@ impl Kernel {
         }
     }
 
-    pub const fn flop_mem_rw(&self) -> (u128, u128, u128) {
-        (0, 0, 0)
+    pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
+        let stores: Vec<OpId> =
+            self.ops.iter().enumerate().filter(|(_, op)| matches!(op, Op::StoreView { .. })).map(|(i, _)| i).collect();
+
+        let mut flop = 0;
+        let mut mr = 0;
+        let mut mw = 0;
+        let mut visited = Map::with_hasher(BuildHasherDefault::new());
+
+        // flop, memory read, memory write, number of elements being processed
+        fn recursive(x: OpId, ops: &[Op], visited: &mut Map<OpId, u128>) -> (u128, u128, u128) {
+            if visited.contains_key(&x) {
+                return (0, 0, 0);
+            }
+            let (f, r, w, n) = match &ops[x] {
+                Op::ConstView { view, .. } => (0, 0, 0, view.numel() as u128),
+                Op::LoadView { view, .. } => {
+                    (0, view.original_numel() as u128, 0, view.numel() as u128)
+                }
+                Op::StoreView { src, .. } => {
+                    let (f, r, w) = recursive(*src, ops, visited);
+                    let n = visited[src];
+                    (f, r, w + n, 0)
+                }
+                Op::Cast { x, .. } |
+                Op::Unary { x, .. } => {
+                    let (f, r, w) = recursive(*x, ops, visited);
+                    let n = visited[x];
+                    (f + n, r, w, n)
+                }
+                Op::Binary { x, y, .. } => {
+                    let (fx, rx, wx) = recursive(*x, ops, visited);
+                    let (fy, ry, wy) = recursive(*y, ops, visited);
+                    let n = visited[x];
+                    debug_assert_eq!(n, visited[y]);
+                    (fx + fy + n, rx + ry, wx + wy, n)
+                }
+                Op::Reduce { x, dims, .. } => {
+                    let (mut f, r, w) = recursive(*x, ops, visited);
+                    let mut n = visited[x];
+                    let rd = dims.iter().product::<usize>() as u128;
+                    n /= rd;
+                    f += n * (rd - 1);
+                    (f, r, w, n)
+                }
+                Op::Const(..) => unreachable!(),
+                Op::Define { .. } => unreachable!(),
+                Op::Load { .. } => unreachable!(),
+                Op::Loop { .. } => unreachable!(),
+                Op::EndLoop => unreachable!(),
+                Op::Store { .. } => unreachable!(),
+            };
+            visited.insert(x, n);
+            (f, r, w)
+        }
+
+        for store in stores {
+            let (f, r, w) = recursive(store, &self.ops, &mut visited);
+            flop += f;
+            mr += r;
+            mw += w;
+        }
+
+        //panic!("{}, {}, {}", flop, mr, mw);
+
+        (flop, mr, mw)
     }
 
     pub fn is_reduce(&self) -> bool {
         self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
     }
-
-    /*pub(super) fn new_optimizer(&self, dev_info: &DeviceInfo) -> Optimizer {
-        fn get_equal_factors(x: Dim) -> [Dim; 3] {
-            fn get_factors(n: Dim) -> Vec<Dim> {
-                let mut factors = Vec::new();
-                for i in 1..=n.isqrt() {
-                    if n % i == 0 {
-                        factors.insert(0, i);
-                        factors.push(n / i);
-                    }
-                }
-                factors
-            }
-            let f = get_factors(x);
-            let mut res = [1, 1, 1];
-            let mut min_dist = x as isize;
-            for i in 0..f.len() {
-                for j in i..f.len() {
-                    for k in j..f.len() {
-                        if f[i] * f[j] * f[k] == x {
-                            let r = (f[i] as isize - f[j] as isize).abs() + (f[i] as isize - f[k] as isize).abs();
-                            if r < min_dist {
-                                min_dist = r;
-                                res = [f[i], f[j], f[k]];
-                            }
-                        }
-                    }
-                }
-            }
-            res
-        }
-
-        let n: Dim = self.shape().iter().product();
-
-        let mut d = dev_info.max_local_threads;
-        while n % d != 0 {
-            d -= 1;
-        }
-        debug_assert_eq!(n % d, 0);
-
-        let local_work_size: Vec<usize> = get_equal_factors(d).into();
-        let global_work_size: Vec<usize> = get_equal_factors(n / d).into();
-
-        debug_assert_eq!(global_work_size.iter().product::<Dim>(), n / d);
-        debug_assert_eq!(local_work_size.iter().product::<Dim>(), d);
-
-        //Optimizer::Default(Optimization::Basic { global_work_size, local_work_size, loop_unroll_size: 0 })
-        todo!()
-    }*/
 
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.iter().any(|op| matches!(op, Op::Loop { .. })) {
@@ -475,22 +496,22 @@ impl Kernel {
         let mut stores = Vec::new();
         for op in &self.ops {
             match *op {
-                Op::LoadView { dtype, .. } => {
-                    loads.push(dtype);
+                Op::LoadView { dtype, ref view } => {
+                    loads.push((dtype, view.original_numel()));
                 }
                 Op::StoreView { dtype, .. } => {
-                    stores.push(dtype);
+                    stores.push((dtype, 0));
                 }
                 _ => {}
             }
         }
         let k = loads.len() + stores.len();
         let temp_ops = self.ops.split_off(0);
-        for dtype in loads {
-            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: true, len: 0 });
+        for (dtype, len) in loads {
+            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: true, len });
         }
-        for dtype in stores {
-            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: false, len: 0 });
+        for (dtype, len) in stores {
+            self.ops.push(Op::Define { dtype, scope: Scope::Global, ro: false, len });
         }
         self.ops.extend(temp_ops);
         let n = self.ops.len();
@@ -875,113 +896,6 @@ impl Kernel {
         }
         remap(&mut self.ops, &remaps);
     }
-
-    /// Unroll all loops with dimension <= `loop_unroll_size`
-    pub fn loop_optimization(&mut self, loop_unroll_size: usize) {
-        fn unroll_loop(ir: &mut Vec<Op>, range: Range<usize>) {
-            let Op::Loop { dim, .. } = ir[range.start] else {
-                unreachable!("Expected Op::Loop at start of matched loop range");
-            };
-
-            let mut body = ir.split_off(range.start);
-            let mut tail = body.split_off(range.end - range.start);
-            body.pop();
-
-            // If body contains accumulator, we replace it with binary ops and DeclareAcc with constant
-            /*let mut replace_acc = if body.iter().any(|op| matches!(op, Op::Accumulate { .. })) {
-                ir.iter().rposition(|op| matches!(op, Op::DeclareAcc { .. }))
-            } else {
-                None
-            };
-            if let Some(decl_acc_id) = replace_acc {
-                if let Op::DeclareAcc { dtype, rop } = ir[decl_acc_id] {
-                    ir[decl_acc_id] = Op::Const(match rop {
-                        ROp::Sum => dtype.zero_constant(),
-                        ROp::Max => dtype.min_constant(),
-                    });
-                }
-            }*/
-
-            // Append body dim times
-            for i in 0..dim {
-                let mut body = body.clone();
-                let n = body.len();
-                increment(&mut body, i * n, range.clone());
-                body[0] = Op::Const(Constant::U32(i as u32));
-
-                /*if let Some(decl_acc_id) = replace_acc {
-                    for (op_id, op) in body.iter_mut().enumerate() {
-                        if let &mut Op::Accumulate { x, rop } = op {
-                            *op = Op::Binary {
-                                x,
-                                y: decl_acc_id,
-                                bop: match rop {
-                                    ROp::Sum => BOp::Add,
-                                    ROp::Max => BOp::Max,
-                                },
-                            };
-                            replace_acc = Some(op_id + ir.len());
-                            break;
-                        }
-                    }
-                }*/
-
-                ir.extend(body);
-            }
-
-            increment(&mut tail, (dim - 1) * body.len() - 1, range.end..usize::MAX);
-            increment(&mut tail, (dim - 1) * body.len(), range);
-            ir.extend(tail);
-
-            /*for (i, op) in ir.iter().enumerate() {
-                println!("{i} -> {op:?}");
-            }*/
-        }
-
-        /*fn loop_invariant_code_motion(ir: &mut Vec<Op>, range: Range<usize>) {
-            for op_id in range {
-                match &ir[op_id] {
-                    Op::ConstView { value, view } => todo!(),
-                    Op::LoadView { dtype, view } => todo!(),
-                    Op::Reduce { x, rop, dims } => todo!(),
-                    Op::Const(constant) => todo!(),
-                    Op::Load { dtype, index, arg_id } => todo!(),
-                    Op::DeclareAcc { dtype, rop } => todo!(),
-                    Op::Loop { dim, vectorize } => todo!(),
-                    Op::Accumulate { x, rop } => todo!(),
-                    Op::EndLoop => todo!(),
-                    Op::Store { x, index } => todo!(),
-                    Op::Cast { x, dtype } => todo!(),
-                    Op::Unary { x, uop } => todo!(),
-                    Op::Binary { x, y, bop } => todo!(),
-                }
-            }
-        }*/
-
-        let mut ranges = Vec::new();
-        let mut stack = Vec::new();
-
-        for (i, op) in self.ops.iter().enumerate() {
-            match op {
-                Op::Loop { dim, .. } => {
-                    stack.push((i, dim));
-                }
-                &Op::EndLoop => {
-                    if let Some((start, dim)) = stack.pop()
-                        && *dim <= loop_unroll_size
-                    {
-                        ranges.push(start..i + 1);
-                    }
-                }
-                _ => {}
-            }
-        }
-        //println!("{ranges:?}");
-
-        for range in ranges {
-            unroll_loop(&mut self.ops, range);
-        }
-    }
 }
 
 fn get_axes(ops: &[Op]) -> Vec<OpId> {
@@ -1000,7 +914,7 @@ fn get_axes(ops: &[Op]) -> Vec<OpId> {
     axes
 }
 
-fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
+pub fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
     let start = match range.start_bound() {
         std::ops::Bound::Included(x) => *x,
         std::ops::Bound::Excluded(x) => *x + 1,

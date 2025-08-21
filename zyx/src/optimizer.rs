@@ -1,7 +1,7 @@
 use nanoserde::{DeBin, SerBin};
 
-use crate::{backend::DeviceInfo, kernel::Kernel, shape::Dim};
-use std::collections::HashSet;
+use crate::{backend::DeviceInfo, dtype::Constant, kernel::{increment, Kernel, Op}, shape::Dim};
+use std::{collections::HashSet, ops::Range};
 
 // Indices in 0..max_index for each optimization Opt
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, DeBin, SerBin)]
@@ -201,6 +201,113 @@ impl LoopOpt {
 
     fn apply_optimization(&self, index: u64, kernel: &mut Kernel) {
         // TODO
+    }
+
+    /// Unroll all loops with dimension <= `loop_unroll_size`
+    fn loop_optimization(kernel: &mut Kernel, loop_unroll_size: usize) {
+        fn unroll_loop(ir: &mut Vec<Op>, range: Range<usize>) {
+            let Op::Loop { dim, .. } = ir[range.start] else {
+                unreachable!("Expected Op::Loop at start of matched loop range");
+            };
+
+            let mut body = ir.split_off(range.start);
+            let mut tail = body.split_off(range.end - range.start);
+            body.pop();
+
+            // If body contains accumulator, we replace it with binary ops and DeclareAcc with constant
+            /*let mut replace_acc = if body.iter().any(|op| matches!(op, Op::Accumulate { .. })) {
+                ir.iter().rposition(|op| matches!(op, Op::DeclareAcc { .. }))
+            } else {
+                None
+            };
+            if let Some(decl_acc_id) = replace_acc {
+                if let Op::DeclareAcc { dtype, rop } = ir[decl_acc_id] {
+                    ir[decl_acc_id] = Op::Const(match rop {
+                        ROp::Sum => dtype.zero_constant(),
+                        ROp::Max => dtype.min_constant(),
+                    });
+                }
+            }*/
+
+            // Append body dim times
+            for i in 0..dim {
+                let mut body = body.clone();
+                let n = body.len();
+                increment(&mut body, i * n, range.clone());
+                body[0] = Op::Const(Constant::U32(i as u32));
+
+                /*if let Some(decl_acc_id) = replace_acc {
+                    for (op_id, op) in body.iter_mut().enumerate() {
+                        if let &mut Op::Accumulate { x, rop } = op {
+                            *op = Op::Binary {
+                                x,
+                                y: decl_acc_id,
+                                bop: match rop {
+                                    ROp::Sum => BOp::Add,
+                                    ROp::Max => BOp::Max,
+                                },
+                            };
+                            replace_acc = Some(op_id + ir.len());
+                            break;
+                        }
+                    }
+                }*/
+
+                ir.extend(body);
+            }
+
+            increment(&mut tail, (dim - 1) * body.len() - 1, range.end..usize::MAX);
+            increment(&mut tail, (dim - 1) * body.len(), range);
+            ir.extend(tail);
+
+            /*for (i, op) in ir.iter().enumerate() {
+                println!("{i} -> {op:?}");
+            }*/
+        }
+
+        /*fn loop_invariant_code_motion(ir: &mut Vec<Op>, range: Range<usize>) {
+            for op_id in range {
+                match &ir[op_id] {
+                    Op::ConstView { value, view } => todo!(),
+                    Op::LoadView { dtype, view } => todo!(),
+                    Op::Reduce { x, rop, dims } => todo!(),
+                    Op::Const(constant) => todo!(),
+                    Op::Load { dtype, index, arg_id } => todo!(),
+                    Op::DeclareAcc { dtype, rop } => todo!(),
+                    Op::Loop { dim, vectorize } => todo!(),
+                    Op::Accumulate { x, rop } => todo!(),
+                    Op::EndLoop => todo!(),
+                    Op::Store { x, index } => todo!(),
+                    Op::Cast { x, dtype } => todo!(),
+                    Op::Unary { x, uop } => todo!(),
+                    Op::Binary { x, y, bop } => todo!(),
+                }
+            }
+        }*/
+
+        let mut ranges = Vec::new();
+        let mut stack = Vec::new();
+
+        for (i, op) in kernel.ops.iter().enumerate() {
+            match op {
+                Op::Loop { dim, .. } => {
+                    stack.push((i, dim));
+                }
+                &Op::EndLoop => {
+                    if let Some((start, dim)) = stack.pop()
+                        && *dim <= loop_unroll_size
+                    {
+                        ranges.push(start..i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        //println!("{ranges:?}");
+
+        for range in ranges {
+            unroll_loop(&mut kernel.ops, range);
+        }
     }
 }
 

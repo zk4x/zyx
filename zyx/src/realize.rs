@@ -794,8 +794,9 @@ impl Runtime {
                 }
                 i += 1;
             }
-            if progress_bar.is_some() {
+            if let Some((_, flop, mem_read, mem_write)) = &progress_bar {
                 println!();
+                println!("Best: {}", get_perf(*flop, *mem_read, *mem_write, optimizer.best_time_nanos));
             }
         }
         self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer);

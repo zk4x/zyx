@@ -285,6 +285,15 @@ fn cat() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn matmul_3() -> Result<(), ZyxError> {
+    let x = Tensor::rand([1024, 1024], DType::F32)?;
+    let y = Tensor::rand([1024, 1024], DType::F32)?;
+    let z = x.dot(y)?;
+    Tensor::realize([&z])?;
+    Ok(())
+}
+
+#[test]
 fn matmul_1024() -> Result<(), ZyxError> {
     //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
     //let y = xy.pop().unwrap();
