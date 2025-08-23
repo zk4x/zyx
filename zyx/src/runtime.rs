@@ -97,7 +97,7 @@ impl Runtime {
             config_dir: None,
             cache: Cache::new(),
             training: false,
-            search_iterations: 500,
+            search_iterations: 0,
             debug: DebugMask(0),
             temp_data: Vec::new(),
             constants: [Constant::I32(0); NUM_CONSTANTS],

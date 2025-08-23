@@ -36,6 +36,9 @@ pub enum Op {
     LoadView { dtype: DType, view: View },
     StoreView { src: OpId, dtype: DType },
     Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
+    //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
+    //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
+    //PadIndex(isize, isize), // Pad index with padding
 
     // ops that only exist after unfolding views and reduces
     Const(Constant),
@@ -185,7 +188,7 @@ impl Kernel {
                 Op::Define { dtype, scope, ro, len } => {
                     println!("{i:>3} {YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
                 }
-                Op::Const(x) => println!("{i:>3} {MAGENTA}CONST{RESET} {x}"),
+                Op::Const(x) => println!("{i:>3} {MAGENTA}CONST{RESET} {} {x}", x.dtype()),
                 Op::Load { src, index } => println!("{i:>3} {GREEN}LOAD{RESET} p{src}[{index}]"),
                 Op::Store { dst, src, index } => println!("{i:>3} {RED}STORE{RESET} p{dst}[{index}] <- {src}"),
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
@@ -269,6 +272,10 @@ impl Kernel {
         self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
     }
 
+    pub fn contains_stores(&self) -> bool {
+        self.ops.iter().any(|x| matches!(x, Op::StoreView { .. }))
+    }
+
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.iter().any(|op| matches!(op, Op::Loop { .. })) {
             return self
@@ -323,10 +330,9 @@ impl Kernel {
         // put Loop op before dependency with lowest ID
         // increase all ids higher than that by one
 
-        #[allow(clippy::needless_collect)] // false positive
-        let reduce_ops: Vec<OpId> =
-            self.ops.iter().enumerate().filter(|(_, op)| matches!(op, Op::Reduce { .. })).map(|(i, _)| i).collect();
-        for op_id in reduce_ops.into_iter().rev() {
+        while let Some(op_id) = self.ops.iter().rev().position(|op| matches!(op, Op::Reduce { .. })) {
+        //for op_id in reduce_ops.into_iter().rev() {
+            let op_id = self.ops.len() - op_id - 1;
             let Op::Reduce { x, rop, dims } = self.ops[op_id].clone() else { unreachable!() };
             let mut min_param = x;
             let mut params = vec![x];
@@ -338,8 +344,23 @@ impl Kernel {
                             acc_dtype = Some(value.dtype());
                         }
                     }
-                    Op::Const { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop => unreachable!(),
-                    Op::Define { .. } => {}
+                    Op::Const(c) => {
+                        if acc_dtype.is_none() {
+                            acc_dtype = Some(c.dtype());
+                        }
+                    }
+                    Op::Load { src, .. } => {
+                        params.push(src);
+                        if src < min_param {
+                            min_param = src;
+                        }
+                    }
+                    Op::Loop { .. } | Op::EndLoop => {}
+                    Op::Define { dtype, .. } => {
+                        if acc_dtype.is_none() {
+                            acc_dtype = Some(dtype);
+                        }
+                    }
                     Op::LoadView { dtype, .. } => {
                         if acc_dtype.is_none() {
                             acc_dtype = Some(dtype);
@@ -388,6 +409,7 @@ impl Kernel {
                     }
                 }
             }
+
             let dtype = acc_dtype.unwrap();
 
             let n_dims = dims.len();
@@ -398,7 +420,7 @@ impl Kernel {
 
             // Declare accumulator
             let c_0 = self.ops.len();
-            self.ops.push(Op::Const(dtype.zero_constant()));
+            self.ops.push(Op::Const(Constant::U32(0)));
             let acc_init = self.ops.len();
             self.ops.push(Op::Const(match rop {
                 ROp::Sum => dtype.zero_constant(),
@@ -452,7 +474,7 @@ impl Kernel {
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                         }
                     }
-                    Op::Const(_) => todo!(),
+                    Op::Const(_) => {}
                     Op::Load { src, index } | Op::Store { src, index, .. } => {
                         assert_ne!(*index, op_id);
                         if *src == op_id {
@@ -486,6 +508,7 @@ impl Kernel {
 
             self.ops.extend(tail);
 
+            // TODO the STORE VIEW points to wrong thing
             //self.debug();
             //panic!();
         }

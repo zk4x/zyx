@@ -327,7 +327,7 @@ fn save() -> Result<(), ZyxError> {
 }*/
 
 #[test]
-fn softmax1() -> Result<(), ZyxError> {
+fn softmax_1() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 4., 3.]);
     //let y = x.softmax([]);
     //println!("{y:?}");
@@ -356,7 +356,7 @@ fn softmax1() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn softmax2() -> Result<(), ZyxError> {
+fn softmax_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2f32, 4., 3.], [4., 2., 3.]]);
     let y = x.softmax([])?;
     assert_eq!(

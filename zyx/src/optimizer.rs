@@ -1,6 +1,11 @@
 use nanoserde::{DeBin, SerBin};
 
-use crate::{backend::DeviceInfo, dtype::Constant, kernel::{increment, Kernel, Op}, shape::Dim};
+use crate::{
+    backend::DeviceInfo,
+    dtype::Constant,
+    kernel::{Kernel, Op, increment},
+    shape::Dim,
+};
 use std::{collections::HashSet, ops::Range};
 
 // Indices in 0..max_index for each optimization Opt
@@ -10,8 +15,10 @@ pub struct Optimization(u64);
 #[derive(Debug, Clone, DeBin, SerBin)]
 pub struct Optimizer {
     // optimizations
-    local_work_size_opt: LocalWorkSizeOpt,
+    local_work_size_opt: WorkSizeOpt,
     loop_opt: LoopOpt,
+    //inner_loop_split_opt: InnerLoopSplitOpt,
+    //inner_loop_swap_opt: InnerLoopSwapOpt, // a bit harder to know max number of optimizations
     max_indices: [u64; 2],
     // best optimization found so far
     best_optimization: Optimization,
@@ -30,7 +37,7 @@ pub struct Optimizer {
 
 impl Optimizer {
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
-        let local_work_size_opt = LocalWorkSizeOpt::new(kernel, dev_info);
+        let local_work_size_opt = WorkSizeOpt::new(kernel, dev_info);
         let loop_opt = LoopOpt::new(kernel);
         let local_work_size_opt_max_index = local_work_size_opt.max_index();
         let loop_opt_max_index = loop_opt.max_index();
@@ -48,9 +55,7 @@ impl Optimizer {
         }
     }
 
-    pub fn max_iters(&self) -> u64 {
-        self.max_iter
-    }
+    pub fn max_iters(&self) -> u64 { self.max_iter }
 
     pub fn next_optimization(&mut self, last_time_nanos: u128) -> Option<Optimization> {
         if last_time_nanos < self.best_time_nanos {
@@ -103,6 +108,10 @@ impl Optimizer {
         self.local_work_size_opt.apply_optimization(local_work_size_opt_index, kernel);
 
         kernel.unfold_reduces();
+        //println!();
+        //kernel.debug();
+        //panic!();
+
         kernel.define_globals();
         kernel.unfold_views();
 
@@ -124,12 +133,12 @@ impl Optimizer {
 }
 
 #[derive(Debug, Clone, DeBin, SerBin)]
-struct LocalWorkSizeOpt {
+struct WorkSizeOpt {
     gws: Vec<Dim>,
     gws_factors: Vec<Vec<Dim>>,
 }
 
-impl LocalWorkSizeOpt {
+impl WorkSizeOpt {
     fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
         fn divisors(x: usize, limit: usize) -> Vec<usize> {
             debug_assert_ne!(x, 0);
@@ -160,9 +169,7 @@ impl LocalWorkSizeOpt {
         Self { gws, gws_factors }
     }
 
-    fn max_index(&self) -> u64 {
-        self.gws_factors.iter().map(|gd| gd.len() as u64).product()
-    }
+    fn max_index(&self) -> u64 { self.gws_factors.iter().map(|gd| gd.len() as u64).product() }
 
     fn apply_optimization(&self, index: u64, kernel: &mut Kernel) {
         // TODO make this work with limitations for amx local work threads
@@ -197,13 +204,9 @@ impl LocalWorkSizeOpt {
 struct LoopOpt {}
 
 impl LoopOpt {
-    fn new(kernel: &Kernel) -> Self {
-        Self {}
-    }
+    fn new(kernel: &Kernel) -> Self { Self {} }
 
-    fn max_index(&self) -> u64 {
-        1
-    }
+    fn max_index(&self) -> u64 { 1 }
 
     fn apply_optimization(&self, index: u64, kernel: &mut Kernel) {
         // TODO

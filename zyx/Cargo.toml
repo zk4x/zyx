@@ -41,7 +41,10 @@ futures = { version = "0.3.31", default-features = false, features = [
 pollster = { version = "0.4.0", default-features = false, optional = true }
 
 # Pyo3 is used only for python bindings
-pyo3 = { version = "0.25.1", optional = true, features=["extension-module", "auto-initialize"] } # MIT or Apache 2.0
+pyo3 = { version = "0.25.1", optional = true, features = [
+    "extension-module",
+    "auto-initialize",
+] } # MIT or Apache 2.0
 
 # Vulkano, will be later removed
 #vulkano = { version = "*", optional = true }
@@ -52,7 +55,7 @@ crate-type = ["lib"] #, "cdylib"]
 [features]
 default = [
     #"wgpu",
-    "py",
+    #"py",
 ]
 
 # Enables wgpu backend
@@ -83,7 +86,7 @@ opt-level = 3            # Also "z" is quite fine
 strip = true
 debug-assertions = false
 overflow-checks = true
-lto = true
+lto = "fat"
 panic = "abort"
 incremental = false
 codegen-units = 1

@@ -22,21 +22,15 @@ pub struct KernelId(u32);
 impl SlabId for KernelId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
+    fn inc(&mut self) { self.0 += 1; }
 }
 
 impl From<usize> for KernelId {
-    fn from(value: usize) -> Self {
-        KernelId(value as u32)
-    }
+    fn from(value: usize) -> Self { KernelId(value as u32) }
 }
 
 impl From<KernelId> for usize {
-    fn from(value: KernelId) -> Self {
-        value.0 as usize
-    }
+    fn from(value: KernelId) -> Self { value.0 as usize }
 }
 
 impl Runtime {
@@ -131,6 +125,8 @@ impl Runtime {
             let mut stores: Map<KernelId, Vec<TensorId>> =
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
+            println!("{rcs:?}");
+
             for nid in order {
                 println!("{nid} -> {:?}", self.graph[nid]);
                 let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
@@ -152,9 +148,29 @@ impl Runtime {
                             (kernels.push(kernel), 0)
                         }
                         Node::Expand { x } => {
-                            let (mut kid, op_id) = visited[&x];
+                            let (mut kid, mut op_id) = visited[&x];
+                            // TODO instead of sotre add expand op that inserts loop in IR
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
-                                duplicate_kernel(&mut kid, &mut kernels);
+                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
+                                    let pkid = kid;
+                                    store_x(
+                                        x,
+                                        &mut kid,
+                                        &mut op_id,
+                                        &self.graph,
+                                        &mut virt_realized_nodes,
+                                        &mut kernels,
+                                        &mut loads,
+                                        &mut stores,
+                                    );
+                                    if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
+                                        let kernel = unsafe { kernels.remove_and_return(pkid) };
+                                        realized_nodes.extend(&stores[&pkid]);
+                                        self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
+                                    }
+                                } else {
+                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
+                                }
                             }
                             kernels[kid].n_outputs = rcs[&nid];
                             let shape = self.graph.shape(nid);
@@ -163,36 +179,10 @@ impl Runtime {
                             (kid, op_id)
                         }
                         Node::Permute { x } => {
-                            let (mut kid, op_id) = visited[&x];
-                            if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
-                                duplicate_kernel(&mut kid, &mut kernels);
-                            }
-                            kernels[kid].n_outputs = rcs[&nid];
-                            let axes = self.graph.axes(nid);
-                            kernels[kid].apply_movement(|view| view.permute(axes));
-                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
-                            (kid, op_id)
-                        }
-                        Node::Reshape { x } => {
-                            let (mut kid, op_id) = visited[&x];
-                            if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
-                                duplicate_kernel(&mut kid, &mut kernels);
-                            }
-                            kernels[kid].n_outputs = rcs[&nid];
-                            let n = self.graph.shape(x).len();
-                            let shape = self.graph.shape(nid);
-                            kernels[kid].apply_movement(|view| view.reshape(0..n, shape));
-                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
-                            (kid, op_id)
-                        }
-                        Node::Pad { x } => {
                             let (mut kid, mut op_id) = visited[&x];
-
-                            let cannot_be_padded = kernels[kid].is_reduce();
+                            // TODO instead of store add permute op that swaps indices in IR
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
-                                duplicate_kernel(&mut kid, &mut kernels);
-                            }
-                            if cannot_be_padded {
+                                //duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
                                 let pkid = kid;
                                 store_x(
                                     x,
@@ -211,6 +201,77 @@ impl Runtime {
                                 }
                             }
                             kernels[kid].n_outputs = rcs[&nid];
+                            let axes = self.graph.axes(nid);
+                            kernels[kid].apply_movement(|view| view.permute(axes));
+                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
+                            (kid, op_id)
+                        }
+                        Node::Reshape { x } => {
+                            let (mut kid, mut op_id) = visited[&x];
+
+                            // TODO duplicate or store only if this is not mergeable.
+                            // Otherwise if it is like unsqueeze or splitting two dims
+                            // or fusing two dims, it can be represented by a custom
+                            // op that is unfoldable into indices, since it does not change
+                            // global work size.
+
+                            if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
+                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
+                                    let pkid = kid;
+                                    store_x(
+                                        x,
+                                        &mut kid,
+                                        &mut op_id,
+                                        &self.graph,
+                                        &mut virt_realized_nodes,
+                                        &mut kernels,
+                                        &mut loads,
+                                        &mut stores,
+                                    );
+                                    if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
+                                        let kernel = unsafe { kernels.remove_and_return(pkid) };
+                                        realized_nodes.extend(&stores[&pkid]);
+                                        self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
+                                    }
+                                } else {
+                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
+                                }
+                            }
+                            kernels[kid].n_outputs = rcs[&nid];
+                            let n = self.graph.shape(x).len();
+                            let shape = self.graph.shape(nid);
+                            kernels[kid].apply_movement(|view| view.reshape(0..n, shape));
+                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
+                            (kid, op_id)
+                        }
+                        Node::Pad { x } => {
+                            let (mut kid, mut op_id) = visited[&x];
+
+                            // TODO instead of duplication add pad op that add if statement into ir (e.g. if idx < padding)
+                            if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
+                                //}
+                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
+                                    let pkid = kid;
+                                    store_x(
+                                        x,
+                                        &mut kid,
+                                        &mut op_id,
+                                        &self.graph,
+                                        &mut virt_realized_nodes,
+                                        &mut kernels,
+                                        &mut loads,
+                                        &mut stores,
+                                    );
+                                    if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
+                                        let kernel = unsafe { kernels.remove_and_return(pkid) };
+                                        realized_nodes.extend(&stores[&pkid]);
+                                        self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
+                                    }
+                                } else {
+                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
+                                }
+                            }
+                            kernels[kid].n_outputs = rcs[&nid];
 
                             let padding = self.graph.padding(nid);
                             kernels[kid].apply_movement(|view| view.pad(padding));
@@ -220,12 +281,37 @@ impl Runtime {
                         Node::Reduce { x, rop } => {
                             // Don't apply reduce if the kernel already contains reduce
                             // and the resulting shape's dimension is less than 256
-                            let (mut kid, op_id) = visited[&x];
-                            let shape = self.graph.shape(x);
+                            let (mut kid, mut op_id) = visited[&x];
+
+                            // If the kernel has more than one output, or rc of x is more than one,
+                            // we have to either copy it (if it is small), or store x (if kid is big)
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
-                                duplicate_kernel(&mut kid, &mut kernels);
+                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
+                                    let pkid = kid;
+                                    store_x(
+                                        x,
+                                        &mut kid,
+                                        &mut op_id,
+                                        &self.graph,
+                                        &mut virt_realized_nodes,
+                                        &mut kernels,
+                                        &mut loads,
+                                        &mut stores,
+                                    );
+                                    if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
+                                        let kernel = unsafe { kernels.remove_and_return(pkid) };
+                                        realized_nodes.extend(&stores[&pkid]);
+                                        self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
+                                    }
+                                } else {
+                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
+                                }
                             }
                             kernels[kid].n_outputs = rcs[&nid];
+
+                            /*for kernel in kernels.iter() {
+                                println!("{:?}, {}", kernel.0, kernel.1.n_outputs);
+                            }*/
 
                             let axes = self.graph.axes(nid);
                             #[cfg(debug_assertions)]
@@ -236,9 +322,10 @@ impl Runtime {
                                 debug_assert_eq!(axes, sorted_axes, "Reduce axes must be sorted.");
                             }
 
-                            // If the kernel has more than one output, or rc of x is more than one,
-                            // we have to either copy it (if it is small), or store x (if kid is big)
+                            //kernels[kid].debug();
+                            //println!("{axes:?}");
 
+                            let shape = self.graph.shape(x);
                             {
                                 // Permute before reduce so that reduce axes are last
                                 let n = shape.len();
@@ -280,21 +367,31 @@ impl Runtime {
                         Node::Binary { x, y, bop } => {
                             let (kid, op_id) = visited[&x];
                             let (kidy, op_idy) = visited[&y];
+                            /*if nid.0 == 11 {
+                                for (id, kernel) in kernels.iter() {
+                                    println!("{id:?}");
+                                    kernel.debug();
+                                    println!();
+                                }
+                                println!("kid={kid:?}, kidy={kidy:?}");
+                            }*/
+                            /*println!("visited={visited:?}");
+                            println!("loads={loads:?}");
+                            println!("kid={kid:?}, kidy={kidy:?}");*/
                             if kid == kidy {
                                 kernels[kid].n_outputs = kernels[kid].n_outputs + rcs[&nid] - 2;
                                 let op = Op::Binary { x: op_id, y: op_idy, bop };
                                 kernels[kid].ops.push(op);
                             } else if true {
-                                // if mergeable
-                                // if it is not mergeable, it is already stored, so this is just a load
-                                // this is handled outside
-
                                 // The issues is what to do if not mergeable (like both kernels have stores)
                                 // and op_id is not the last op in that kernel, then we don't know if there was
                                 // not some movement operation applied. Perhaps we have to check if RC > 1
                                 // before applying movement ops and not apply movement op in that case.
                                 // This is solved, because we never apply movement on kernel that contains ops
                                 // that will be used elsewhere.
+
+                                // TODO Binary must deduplicate loops, in reverse, those that are not reduced.
+
                                 let mut kernely = unsafe { kernels.remove_and_return(kidy) };
                                 let n = kernels[kid].ops.len();
                                 for op in &mut kernely.ops {
@@ -313,10 +410,13 @@ impl Runtime {
                                 }
                                 kernels[kid].ops.extend(kernely.ops);
 
-                                if let Some(kidy_loads) = loads.remove(&kidy) {
-                                    loads.get_mut(&kid).unwrap().extend(kidy_loads);
+                                if let Some(kidy_loads) = loads.remove(&kidy)
+                                    && let Some(kid_loads) = loads.get_mut(&kid)
+                                {
+                                    kid_loads.extend(kidy_loads);
                                 }
 
+                                kernels[kid].n_outputs = kernels[kid].n_outputs + kernely.n_outputs + rcs[&nid] - 2;
                                 let op = Op::Binary { x: op_id, y: op_idy + n, bop };
                                 kernels[kid].ops.push(op);
                             } else {
@@ -337,11 +437,25 @@ impl Runtime {
                     kernels[kid].ops.push(op);
                 }
 
+                //println!("{}, rc={}", kernels[kid].n_outputs, rcs[&nid]);
+
                 if kernels[kid].n_outputs == 0 && loads[&kid].iter().all(|x| realized_nodes.contains(x)) {
                     //println!("Found {trkid:?}\n");
                     let kernel = unsafe { kernels.remove_and_return(kid) };
                     realized_nodes.extend(&stores[&kid]);
                     self.launch_kernel(kernel, &loads[&kid], &stores[&kid])?;
+                }
+            }
+
+            #[cfg(debug_assertions)]
+            {
+                if kernels.len() > KernelId(0) {
+                    println!("Unrealized kernels:");
+                    for (id, kernel) in kernels.iter() {
+                        println!("{id:?}");
+                        kernel.debug();
+                        println!();
+                    }
                 }
             }
 
@@ -714,7 +828,10 @@ impl Runtime {
             let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
             pool.pool.sync_events(vec![event])?;
             let nanos = nanos.elapsed().as_nanos();
-            assert!(self.cache.programs.insert((kernel_id, dev_id as u32), program_id).is_none());
+            //assert!(self.cache.programs.insert((kernel_id, dev_id as u32), program_id).is_none());
+            if nanos < optimizer.best_time_nanos {
+                self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
+            }
             if self.debug.perf() {
                 let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 println!("{}", get_perf(flop, mem_read, mem_write, nanos));
@@ -829,9 +946,21 @@ fn store_x(
     kernels.push(kernel);
 }
 
-fn duplicate_kernel(kid: &mut KernelId, kernels: &mut Slab<KernelId, Kernel>) {
-    let mut kernel = kernels[*kid].clone();
-    kernel.n_outputs -= 1;
+fn duplicate_kernel(
+    kid: &mut KernelId,
+    kernels: &mut Slab<KernelId, Kernel>,
+    loads: &mut Map<KernelId, Vec<TensorId>>,
+    stores: &mut Map<KernelId, Vec<TensorId>>,
+) {
+    kernels[*kid].n_outputs -= 1;
+    let kernel = kernels[*kid].clone();
+    //kernel.n_outputs -= 1;
+    if let Some(loaded_tensors) = loads.get(kid) {
+        loads.insert(*kid, loaded_tensors.clone());
+    }
+    if let Some(stored_tensors) = stores.get(kid) {
+        stores.insert(*kid, stored_tensors.clone());
+    }
     *kid = kernels.len();
     kernels.push(kernel);
 }

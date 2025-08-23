@@ -167,11 +167,13 @@ impl View {
         //println!("After reshape: {self}\n");
     }
 
+    // If axes are shorter than inner, we just permute the first dimensions
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
         // Version without allocation
         let inner = self.0.last_mut().unwrap();
-        debug_assert_eq!(inner.len(), axes.len());
+        debug_assert!(inner.len() >= axes.len(), "Failed to permute {:?} by axes={axes:?}", self.shape());
+        debug_assert_eq!(*axes.iter().max().unwrap(), axes.len() - 1, "Failed to permute {:?} by axes={axes:?}", self.shape());
 
         let mut temp = inner[axes[0]].clone();
         let mut a = 0;
@@ -303,12 +305,21 @@ impl Display for View {
 }
 
 #[test]
-fn view_permute() {
+fn view_permute_1() {
     let mut view = View::contiguous(&[3, 1, 4, 2]);
     view.permute(&[3, 1, 0, 2]);
     assert_eq!(view.shape(), [2, 1, 3, 4]);
     view.permute(&[2, 0, 3, 1]);
     assert_eq!(view.shape(), [3, 2, 4, 1]);
+}
+
+#[test]
+fn view_permute_2() {
+    let mut view = View::contiguous(&[3, 1, 4, 2]);
+    view.permute(&[1, 2, 0]);
+    assert_eq!(view.shape(), [1, 4, 3, 2]);
+    view.permute(&[2, 1, 0]);
+    assert_eq!(view.shape(), [3, 4, 1, 2]);
 }
 
 // Permute test, no alloc is ~25% faster
