@@ -702,7 +702,7 @@ impl OpenCLDevice {
                     dtypes.insert(i, dtypes[&src]);
                     rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
                 }
-                &Op::Store { dst, src, index } => {
+                &Op::Store { dst, x: src, index } => {
                     dtypes.insert(i, dtypes[&src]);
                     rcs.entry(dst).and_modify(|rc| *rc += 1).or_insert(1);
                     rcs.entry(src).and_modify(|rc| *rc += 1).or_insert(1);
@@ -770,7 +770,7 @@ impl OpenCLDevice {
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
                 }
-                &Op::Store { dst, src, index } => {
+                &Op::Store { dst, x: src, index } => {
                     writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",

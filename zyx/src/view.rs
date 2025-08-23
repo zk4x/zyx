@@ -5,7 +5,7 @@ use std::{fmt::Display, ops::Range};
 
 /// .0[0] is original shape, further shapes are additional reshapes
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct View(pub Vec<Vec<RDim>>); // TODO switch to Box<[]> instead of Vec?
+pub struct View(pub Vec<Vec<RDim>>);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RDim {
@@ -58,6 +58,11 @@ impl View {
         self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
     }
 
+    #[cfg(test)]
+    fn strides(&self) -> Vec<Dim> {
+        self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.st).collect())
+    }
+
     pub(crate) fn original_numel(&self) -> usize {
         let mut res = 1;
         for dim in &self.0[0] {
@@ -96,8 +101,175 @@ impl View {
         //println!("After insert loop {self:?}");
     }*/
 
+    pub fn reshape(&mut self, axes: Range<Axis>, new_shape: &[Dim]) {
+        //println!("Reshape {:?}, axes {:?} into shape {new_shape:?}, {self}", self.shape(), axes.clone());
+        debug_assert!(
+            axes.end <= self.0.last().map_or(1, Vec::len) as Dim,
+            "Reshape axes range {axes:?} is greater than view's rank {}",
+            self.0.last().map_or(1, Vec::len)
+        );
+        debug_assert_eq!(
+            self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
+            new_shape.iter().product::<Dim>(),
+            "Reshape failed, products are different: {:?} -> {:?}",
+            self.shape(),
+            new_shape
+        );
+
+        pub fn try_reshape(block: &[RDim], new_shape: &[usize]) -> Vec<RDim> {
+            fn is_contiguous_block(dims: &[RDim]) -> bool {
+                //println!("is contiguous: {dims:?}");
+                let mut expected_stride = dims.last().map(|rd| rd.st).unwrap_or(1);
+                for rd in dims.iter().rev() {
+                    if rd.lp != 0 || rd.rp != 0 {
+                        return false;
+                    }
+                    if rd.d == 1 {
+                        continue; // Stride doesn't matter if dim == 1
+                    }
+                    if rd.st != expected_stride {
+                        //println!("non-contiguous");
+                        return false;
+                    }
+                    expected_stride *= rd.d;
+                }
+                //println!("contiguous");
+                true
+            }
+
+            /*let old_total: usize = block.iter().map(|rd| rd.d).product();
+            let new_total: usize = new_shape.iter().product();
+
+            if old_total != new_total {
+                return Vec::new();
+            }*/
+
+            if block.iter().map(|rd| rd.d).eq(new_shape.iter().copied()) {
+                return block.into(); // Same shape, nothing to do
+            }
+
+            let mut new_dims = vec![
+                RDim {
+                    d: 0,
+                    st: 0,
+                    lp: 0,
+                    rp: 0
+                };
+                new_shape.len()
+            ];
+            let (mut orig_start, mut new_start) = (0, 0);
+            let old_len = block.len();
+            let new_len = new_shape.len();
+
+            while orig_start < old_len && new_start < new_len {
+                let mut orig_prod = 1;
+                let mut new_prod = 1;
+                let mut i = orig_start;
+                let mut j = new_start;
+
+                // Expand until products match
+                loop {
+                    if orig_prod == new_prod && orig_prod != 1 {
+                        break;
+                    }
+
+                    let take_orig = (orig_prod <= new_prod && i < old_len) || j >= new_len;
+                    let take_new = !take_orig && j < new_len;
+
+                    if take_orig {
+                        orig_prod *= block[i].d;
+                        i += 1;
+                    }
+
+                    if take_new {
+                        new_prod *= new_shape[j];
+                        j += 1;
+                    }
+
+                    if i == old_len && j == new_len {
+                        break;
+                    }
+
+                    if orig_prod > new_prod && j == new_len {
+                        return Vec::new();
+                    }
+                    if new_prod > orig_prod && i == old_len {
+                        return Vec::new();
+                    }
+                }
+
+                let orig_slice = &block[orig_start..i];
+                let new_slice_shape = &new_shape[new_start..j];
+
+                if orig_slice
+                    .iter()
+                    .map(|rd| rd.d)
+                    .eq(new_slice_shape.iter().copied())
+                {
+                    // Shape unchanged: copy original RDims as-is, skip contiguous check
+                    for (k, rd) in (new_start..j).zip(orig_slice.iter()) {
+                        new_dims[k] = rd.clone();
+                    }
+                } else {
+                    // Shape changed: check contiguity and no padding allowed
+                    if !is_contiguous_block(orig_slice) {
+                        return Vec::new();
+                    }
+
+                    // Recompute strides, zero padding
+                    let mut stride = orig_slice.last().map(|rd| rd.st).unwrap_or(1);
+                    for k in (new_start..j).rev() {
+                        let dim = new_shape[k];
+                        new_dims[k] = RDim {
+                            d: dim,
+                            st: if dim == 1 { 0 } else { stride },
+                            lp: 0,
+                            rp: 0,
+                        };
+                        stride *= dim;
+                    }
+                }
+
+                orig_start = i;
+                new_start = j;
+            }
+
+            if orig_start != old_len || new_start != new_len {
+                return Vec::new();
+            }
+
+            new_dims
+        }
+
+        if let Some(last_block) = self.0.last_mut() {
+            // Try to reshape last block in place
+            let new_block = try_reshape(&last_block[axes.clone()], new_shape);
+            if !new_block.is_empty() {
+                // Reshape succeeded in place, done
+                _ = last_block.splice(axes, new_block);
+                return;
+            }
+        }
+
+        // Reshape failed, so append a new block with contiguous strides and zero padding
+        let mut new_block = Vec::with_capacity(new_shape.len());
+        let mut stride = 1;
+        for &dim in new_shape.iter().rev() {
+            new_block.push(RDim {
+                d: dim,
+                st: stride,
+                lp: 0,
+                rp: 0,
+            });
+            stride *= dim;
+        }
+        new_block.reverse();
+
+        self.0.push(new_block);
+    }
+
     // This is used for reshape, merge and split
-    pub(crate) fn reshape(&mut self, axes: Range<Axis>, shape: &[Dim]) {
+    /*pub(crate) fn reshape_direct(&mut self, axes: Range<Axis>, shape: &[Dim]) {
         //println!("Reshape {self} axes {axes:?} into shape {shape:?}");
         debug_assert!(
             axes.end <= self.0.last().map_or(1, Vec::len) as Dim,
@@ -107,7 +279,9 @@ impl View {
         debug_assert_eq!(
             self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
             shape.iter().product::<Dim>(),
-            "Reshape failed, products are different: {:?} -> {:?}", self.shape(), shape
+            "Reshape failed, products are different: {:?} -> {:?}",
+            self.shape(),
+            shape
         );
         let inner = self.0.last_mut().unwrap();
         let mut contiguous = true;
@@ -132,6 +306,7 @@ impl View {
                 }
             }
         }
+        //println!("contiguous={contiguous}");
         if axes.clone().any(|a| inner[a as usize].st == 0) {
             contiguous = false;
         }
@@ -165,15 +340,24 @@ impl View {
             self.0.push(to_contiguous_rdims(&old_shape));
         }
         //println!("After reshape: {self}\n");
-    }
+    }*/
 
     // If axes are shorter than inner, we just permute the first dimensions
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
         // Version without allocation
         let inner = self.0.last_mut().unwrap();
-        debug_assert!(inner.len() >= axes.len(), "Failed to permute {:?} by axes={axes:?}", self.shape());
-        debug_assert_eq!(*axes.iter().max().unwrap(), axes.len() - 1, "Failed to permute {:?} by axes={axes:?}", self.shape());
+        debug_assert!(
+            inner.len() >= axes.len(),
+            "Failed to permute {:?} by axes={axes:?}",
+            self.shape()
+        );
+        debug_assert_eq!(
+            *axes.iter().max().unwrap(),
+            axes.len() - 1,
+            "Failed to permute {:?} by axes={axes:?}",
+            self.shape()
+        );
 
         let mut temp = inner[axes[0]].clone();
         let mut a = 0;
@@ -337,7 +521,7 @@ fn view_permute2() {
 #[test]
 fn view_split() {
     let mut view = View::contiguous(&[3, 1, 4, 2]);
-    println!("{view}");
+    //println!("{view}");
     view.reshape(2..3, &[2, 2, 1]);
     assert_eq!(view.shape(), [3, 1, 2, 2, 1, 2]);
     view.reshape(0..1, &[1, 3, 1]);
@@ -354,7 +538,7 @@ fn view_binded() {
 }*/
 
 #[test]
-fn view_reshape() {
+fn view_reshape_1() {
     let mut view = View::contiguous(&[3, 1, 4, 2]);
     view.reshape(1..3, &[2, 2]);
     assert_eq!(view.shape(), [3, 2, 2, 2]);
@@ -370,19 +554,16 @@ fn view_reshape() {
     assert_eq!(view.0.len(), 1);
 }
 
-/*#[test]
-fn view_reshape2() {
-    /*let mut view = View::binded(&[4, 2, 3], &[5, 1, 2], 6);
-    view.reshape(0..1, &[1, 1, 1]);
-    assert_eq!(view.shape(), [1, 1, 1, 2, 3, 1, 1, 4]);
-    assert_eq!(view.0.len(), 1);*/
-    let mut view = View::contiguous(&[3, 1, 5]);
-    view.reshape(0..1, &[1, 3]);
-    assert_eq!(view.shape(), [1, 3, 1, 5]);
-    view.expand_axis(2, 4);
-    assert_eq!(view.shape(), [1, 3, 4, 5]);
-    assert_eq!(view.0.len(), 1);
-}*/
+#[test]
+fn view_reshape_2() {
+    let mut view = View::contiguous(&[512, 368]);
+    view.permute(&[1, 0]);
+    view.reshape(0..2, &[1, 368, 512]);
+    println!("{view}");
+    debug_assert_eq!(view.0.len(), 1);
+    debug_assert_eq!(view.shape(), [1, 368, 512]);
+    debug_assert_eq!(view.strides(), [0, 1, 368]);
+}
 
 #[test]
 fn view_pad2() {

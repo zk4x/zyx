@@ -92,7 +92,7 @@ impl Drop for Tensor {
 }
 
 // Trait to zip tuples of iterators
-pub trait TupleZip: Sized {
+trait TupleZip: Sized {
     type Item;
     type IntoIter: Iterator<Item = Self::Item>;
 
@@ -238,13 +238,31 @@ impl Tensor {
         RT.lock().shape(self.id).iter().product()
     }
 
-    /// Rank of self. Rank means number of dimensions/axes.
+    /// Returns the number of dimensions (rank) of the tensor.
+    ///
+    /// The rank is equivalent to the number of elements in the shape vector.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    /// let t = Tensor::from([[2, 3], [4, 1]]);
+    /// assert_eq!(t.rank(), 2);
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// The rank of the tensor as a `Dim`.
     #[must_use]
     pub fn rank(&self) -> Dim {
         RT.lock().shape(self.id).len()
     }
 
-    /// Datatype of self. See [`DType`](crate::DType) for available datatypes.
+    /// Returns the data type of the tensor.
+    ///
+    /// This method retrieves the dtype information for the tensor, which determines
+    /// the kind of data stored in the tensor (e.g., float32, int64).
+    /// See [`DType`](crate::DType) for available datatypes.
     #[must_use]
     pub fn dtype(&self) -> DType {
         RT.lock().dtype(self.id)

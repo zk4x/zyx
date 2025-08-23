@@ -47,15 +47,30 @@ pub enum Op {
     Loop { dim: Dim, scope: Scope },
     EndLoop,
 
-    //DeclareAcc { dtype: DType, rop: ROp },
-    //Accumulate { x: OpId, rop: ROp },
-
     // ops that exist in both
-    Store { dst: OpId, src: OpId, index: OpId },
+    Store { dst: OpId, x: OpId, index: OpId },
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
 }
+
+// This is SSA representation. All ops return immutable variables.
+// The Define op can define mutable variables.
+// Variables defined by define op can only be accessed with Load on Store ops,
+// using their src and dst fields.
+/*pub enum Op {
+    Const(Constant),
+    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
+    Load { src: OpId, index: OpId },
+    Store { dst: OpId, x: OpId, index: OpId },
+
+    Loop { dim: Dim, scope: Scope },
+    EndLoop,
+
+    Cast { x: OpId, dtype: DType },
+    Unary { x: OpId, uop: UOp },
+    Binary { x: OpId, y: OpId, bop: BOp },
+}*/
 
 #[derive(Debug)]
 pub struct Cache {
@@ -190,7 +205,7 @@ impl Kernel {
                 }
                 Op::Const(x) => println!("{i:>3} {MAGENTA}CONST{RESET} {} {x}", x.dtype()),
                 Op::Load { src, index } => println!("{i:>3} {GREEN}LOAD{RESET} p{src}[{index}]"),
-                Op::Store { dst, src, index } => println!("{i:>3} {RED}STORE{RESET} p{dst}[{index}] <- {src}"),
+                Op::Store { dst, x: src, index } => println!("{i:>3} {RED}STORE{RESET} p{dst}[{index}] <- {src}"),
                 Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
@@ -372,7 +387,7 @@ impl Kernel {
                             min_param = src;
                         }
                     }
-                    Op::Store { src, index, .. } => {
+                    Op::Store { x: src, index, .. } => {
                         params.push(index);
                         if index < min_param {
                             min_param = index;
@@ -428,7 +443,7 @@ impl Kernel {
             }));
             let acc = self.ops.len();
             self.ops.push(Op::Define { dtype, scope: Scope::Register, ro: false, len: 1 });
-            self.ops.push(Op::Store { dst: min_param + 2, src: acc_init, index: c_0 });
+            self.ops.push(Op::Store { dst: min_param + 2, x: acc_init, index: c_0 });
 
             // Insert Loops
             for dim in dims {
@@ -449,7 +464,7 @@ impl Kernel {
                     ROp::Max => BOp::Max,
                 },
             });
-            self.ops.push(Op::Store { dst: acc, src: y + 1, index: c_0 });
+            self.ops.push(Op::Store { dst: acc, x: y + 1, index: c_0 });
 
             // Insert endloops
             for _ in 0..(n_dims - 1) {
@@ -475,7 +490,7 @@ impl Kernel {
                         }
                     }
                     Op::Const(_) => {}
-                    Op::Load { src, index } | Op::Store { src, index, .. } => {
+                    Op::Load { src, index } | Op::Store { x: src, index, .. } => {
                         assert_ne!(*index, op_id);
                         if *src == op_id {
                             *src = self.ops.len() + i;
@@ -665,7 +680,7 @@ impl Kernel {
                         st *= d;
                     }
 
-                    _ = new_op(&mut self.ops, Op::Store { dst: store_id, src, index });
+                    _ = new_op(&mut self.ops, Op::Store { dst: store_id, x: src, index });
 
                     let n = self.ops.len();
                     /*for (i, op) in self.ops.iter().enumerate() {
@@ -702,7 +717,7 @@ impl Kernel {
                         *index -= n;
                     }
                 }
-                Op::Store { dst, src, index } => {
+                Op::Store { dst, x: src, index } => {
                     if *index >= range.start {
                         *index -= n;
                     }
@@ -747,7 +762,7 @@ impl Kernel {
                         params.push(src);
                         params.push(index);
                     }
-                    Op::Store { dst, src, index } => {
+                    Op::Store { dst, x: src, index } => {
                         params.push(dst);
                         params.push(src);
                         params.push(index);
@@ -972,7 +987,7 @@ pub fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
                 h(src);
                 h(index);
             }
-            Op::Store { dst, src, index } => {
+            Op::Store { dst, x: src, index } => {
                 h(dst);
                 h(src);
                 h(index);
@@ -1007,7 +1022,7 @@ fn remap(ops: &mut [Op], remap: &Map<OpId, OpId>) {
                 h(src);
                 h(index);
             }
-            Op::Store { dst, src, index } => {
+            Op::Store { dst, x: src, index } => {
                 h(dst);
                 h(src);
                 h(index);
