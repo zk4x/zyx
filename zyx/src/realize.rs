@@ -22,15 +22,21 @@ pub struct KernelId(u32);
 impl SlabId for KernelId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) { self.0 += 1; }
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
 }
 
 impl From<usize> for KernelId {
-    fn from(value: usize) -> Self { KernelId(value as u32) }
+    fn from(value: usize) -> Self {
+        KernelId(value as u32)
+    }
 }
 
 impl From<KernelId> for usize {
-    fn from(value: KernelId) -> Self { value.0 as usize }
+    fn from(value: KernelId) -> Self {
+        value.0 as usize
+    }
 }
 
 impl Runtime {
@@ -68,6 +74,8 @@ impl Runtime {
             }
             (realized_nodes, order, rcs, new_leafs, to_delete)
         };
+
+        // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
         let mut virt_realized_nodes = realized_nodes.clone();
 
         {
@@ -125,7 +133,7 @@ impl Runtime {
             let mut stores: Map<KernelId, Vec<TensorId>> =
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
-            println!("{rcs:?}");
+            //println!("{rcs:?}");
 
             for nid in order {
                 println!("{nid} -> {:?}", self.graph[nid]);
@@ -271,6 +279,7 @@ impl Runtime {
                                     duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
                                 }
                             }
+                            //println!("{loads:?}, {kid:?}");
                             kernels[kid].n_outputs = rcs[&nid];
 
                             let padding = self.graph.padding(nid);
@@ -419,6 +428,14 @@ impl Runtime {
                                 kernels[kid].n_outputs = kernels[kid].n_outputs + kernely.n_outputs + rcs[&nid] - 2;
                                 let op = Op::Binary { x: op_id, y: op_idy + n, bop };
                                 kernels[kid].ops.push(op);
+
+                                // Fix visited
+                                for (_, (kidm, op_id)) in &mut visited {
+                                    if *kidm == kidy {
+                                        *kidm = kid;
+                                        *op_id += n;
+                                    }
+                                }
                             } else {
                                 todo!()
                             }
@@ -438,6 +455,10 @@ impl Runtime {
                 }
 
                 //println!("{}, rc={}", kernels[kid].n_outputs, rcs[&nid]);
+                //println!();
+                //kernels[kid].debug();
+                //println!("{loads:?}, {kid:?}");
+                //println!();
 
                 if kernels[kid].n_outputs == 0 && loads[&kid].iter().all(|x| realized_nodes.contains(x)) {
                     //println!("Found {trkid:?}\n");
@@ -823,6 +844,13 @@ impl Runtime {
         if self.search_iterations == 0 {
             let optimization = optimizer.next_optimization(u128::MAX).unwrap();
             optimizer.apply_optimization(&mut kernel, optimization);
+
+            if self.debug.ir() {
+                println!("\nIR optimized kernel");
+                kernel.debug();
+                println!();
+            }
+
             let program_id = device.compile(&kernel, self.debug.asm())?;
             let nanos = std::time::Instant::now();
             let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
@@ -952,15 +980,17 @@ fn duplicate_kernel(
     loads: &mut Map<KernelId, Vec<TensorId>>,
     stores: &mut Map<KernelId, Vec<TensorId>>,
 ) {
+    //println!("Duplicating");
     kernels[*kid].n_outputs -= 1;
     let kernel = kernels[*kid].clone();
     //kernel.n_outputs -= 1;
+    let nkid = kernels.len();
     if let Some(loaded_tensors) = loads.get(kid) {
-        loads.insert(*kid, loaded_tensors.clone());
+        loads.insert(nkid, loaded_tensors.clone());
     }
     if let Some(stored_tensors) = stores.get(kid) {
-        stores.insert(*kid, stored_tensors.clone());
+        stores.insert(nkid, stored_tensors.clone());
     }
-    *kid = kernels.len();
+    *kid = nkid;
     kernels.push(kernel);
 }

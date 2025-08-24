@@ -139,8 +139,8 @@ fn rope2() -> Result<(), ZyxError> {
         let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
         let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
         let sh = xs.shape();
-        let sin_freqs = sin.squeeze(1).unwrap().squeeze(0).unwrap();
-        let cos_freqs = cos.squeeze(1).unwrap().squeeze(0).unwrap();
+        let sin_freqs = sin.squeeze([0, 1]);
+        let cos_freqs = cos.squeeze([0, 1]);
         let d = isize::try_from(*sh.last().unwrap()).unwrap();
         let a = xs.get((.., .., .., ..d / 2)).unwrap();
         //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);

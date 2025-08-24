@@ -195,7 +195,7 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// use zyx::Tensor;
     /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
-    /// let [d1, d2] = t.dims::<2>().unwrap();
+    /// let [d1, d2] = t.dims().unwrap();
     /// assert_eq!(d1, 2);
     /// assert_eq!(d2, 3);
     /// ```
@@ -208,6 +208,42 @@ impl Tensor {
             ))
         } else {
             Ok(shape[..N].try_into().unwrap())
+        }
+    }
+
+    /// Returns a slice of the last N dimensions of this tensor.
+    ///
+    /// # Parameters
+    ///
+    /// * `const N: usize` - The number of dimensions to return.
+    ///
+    /// # Errors
+    ///
+    /// This function will return a ZyxError if:
+    ///
+    /// * `N` is greater than the number of dimensions in this tensor,
+    ///   resulting in a ShapeError with a message indicating the mismatch.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use zyx::Tensor;
+    /// use zyx::Tensor;
+    /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
+    /// let [d2] = t.rdims().unwrap();
+    /// assert_eq!(d2, 3);
+    /// ```
+    pub fn rdims<const N: usize>(&self) -> Result<[Dim; N], ZyxError> {
+        let rt = RT.lock();
+        let shape = rt.shape(self.id);
+        if N > shape.len() {
+            Err(ZyxError::ShapeError(
+                format!("Requested {N} dims, but tensor only has rank of {}", shape.len()).into(),
+            ))
+        } else {
+            let mut last_dims = [0; N];
+            last_dims.copy_from_slice(&shape[shape.len() - 3..]);
+            Ok(last_dims)
         }
     }
 
@@ -536,7 +572,7 @@ impl Tensor {
         let unif_samples = Tensor::rand([num_samples, cdf_sh[0], 1], DType::F32)?;
         let indices =
             unif_samples.expand([num_samples, cdf_sh[0], cdf_sh[1]])?.cmplt(cdf)?.not().sum([2])?.permute([1, 0])?;
-        Ok((if rank == 1 { indices.squeeze(0)? } else { indices }).cast(DType::I32))
+        Ok((if rank == 1 { indices.squeeze([0]) } else { indices }).cast(DType::I32))
     }
 
     /// Create tensor sampled from uniform distribution
@@ -1131,6 +1167,32 @@ impl Tensor {
     pub fn expand(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
         //println!("Expand from {sh:?} to {shape:?}");
         let id = RT.lock().expand(self.id, shape.into_shape().collect())?;
+        Ok(Tensor { id })
+    }
+
+    /// Expands the tensor along a given axis to a new dimension.
+    ///
+    /// # Arguments
+    /// * `axis` – The axis to expand. It can be an integer index or a `SAxis` value.
+    /// * `dim`  – The new size that the chosen axis should have.
+    ///
+    /// # Returns
+    /// A new `Tensor` with the expanded shape on success, or a `ZyxError` if the
+    /// expansion fails (e.g., out‑of‑range axis, runtime error).
+    ///
+    /// # Example
+    /// ```
+    /// let t = zyx::Tensor::from([[2], [3]]);
+    /// let t2 = t.expand_axis(1, 5)?;
+    /// assert_eq!(t2.shape(), [2, 5]);
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
+    pub fn expand_axis(&self, axis: SAxis, dim: Dim) -> Result<Tensor, ZyxError> {
+        //println!("Expand from {sh:?} to {shape:?}");
+        let mut shape = self.shape();
+        let axis = into_axis(axis, shape.len())?;
+        shape[axis] = dim;
+        let id = RT.lock().expand(self.id, shape)?;
         Ok(Tensor { id })
     }
 
@@ -1811,7 +1873,6 @@ impl Tensor {
         let shape = self.shape();
         let padding: Vec<(isize, isize)> = index
             .into_index()
-            .into_iter()
             .zip(shape.iter())
             .map(|(r, &d)| {
                 (
@@ -1830,6 +1891,38 @@ impl Tensor {
                 )
             })
             .collect();
+        let n = shape.rank() - padding.len();
+        let padding: Vec<(isize, isize)> =
+            padding.into_iter().chain(repeat_n((0, 0), n)).collect::<Vec<(isize, isize)>>().into_iter().rev().collect();
+        //std::println!("Get padding: {padding:?}");
+        self.pad_zeros(padding)
+    }
+
+    /// Same as [Tensor::get], but instead of indexing from first dimensions, it indexes from last dimensions.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn rget(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
+        let shape = self.shape();
+        let padding: Vec<(isize, isize)> = index
+            .into_index()
+            .zip(shape.iter().rev())
+            .map(|(r, &d)| {
+                (
+                    if r.start >= 0 {
+                        -r.start
+                    } else {
+                        -r.start - isize::try_from(d).unwrap()
+                    },
+                    if r.end == isize::MAX {
+                        0
+                    } else if r.end > 0 {
+                        -(isize::try_from(d).unwrap() - r.end)
+                    } else {
+                        r.end
+                    },
+                )
+            })
+            .collect();
+        println!("{padding:?}");
         let n = shape.rank() - padding.len();
         let padding: Vec<(isize, isize)> =
             padding.into_iter().chain(repeat_n((0, 0), n)).collect::<Vec<(isize, isize)>>().into_iter().rev().collect();
@@ -2281,23 +2374,23 @@ impl Tensor {
     ///
     /// Returns error if self cannot be squeezed along axis.
     #[allow(clippy::missing_panics_doc)]
-    pub fn squeeze(&self, axis: isize) -> Result<Tensor, ZyxError> {
+    pub fn squeeze(&self, axes: impl IntoIterator<Item = SAxis>) -> Tensor {
         let shape = self.shape();
-        if axis < 0 {
-            let rank = shape.len();
-            let dim = usize::try_from(-axis).unwrap();
-            let dim = rank - dim + 1;
-            if shape[dim] != 1 {
-                return Ok(self.clone());
+        let mut naxes = Vec::new();
+        for axis in axes.into_iter() {
+            if let Ok(axis) = into_axis(axis, shape.len()) {
+                naxes.push(axis);
             }
-            self.reshape(shape[..dim].iter().copied().chain(shape[dim + 1..].iter().copied()).collect::<Vec<usize>>())
-        } else {
-            let dim = usize::try_from(axis).unwrap();
-            if shape[dim] != 1 {
-                return Ok(self.clone());
-            }
-            self.reshape(shape[..dim].iter().copied().chain(shape[dim + 1..].iter().copied()).collect::<Vec<usize>>())
         }
+        let mut new_shape = Vec::new();
+        for (a, d) in shape.into_iter().enumerate() {
+            if d != 1 {
+                new_shape.push(d);
+            } else if !naxes.contains(&a) {
+                new_shape.push(d);
+            }
+        }
+        self.reshape(new_shape).unwrap()
     }
 
     /// Expands the dimensionality of a tensor by inserting singleton dimensions.
@@ -2770,9 +2863,8 @@ impl Tensor {
     /// Returns error if shapes of tensors are not compatible.
     #[allow(clippy::missing_panics_doc)]
     pub fn rope(&self, sin_freqs: impl Into<Tensor>, cos_freqs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let sh = self.shape();
-        let sin_freqs = sin_freqs.into();
-        let cos_freqs = cos_freqs.into();
+        let sin_freqs: Tensor = sin_freqs.into();
+        let cos_freqs: Tensor = cos_freqs.into();
         if !RT.lock().implicit_casts {
             let dtype = self.dtype();
             let sdtype = sin_freqs.dtype();
@@ -2783,14 +2875,41 @@ impl Tensor {
                 ).into()));
             }
         }
-        let sin_freqs = sin_freqs.squeeze(1).unwrap().squeeze(0).unwrap(); // [seq_len, dim]
-        let cos_freqs = cos_freqs.squeeze(1).unwrap().squeeze(0).unwrap(); // [seq_len, dim]
-        let d = isize::try_from(*sh.last().unwrap()).unwrap();
-        let a = self.get((.., .., .., ..d / 2)).unwrap();
-        let b = -self.get((.., .., .., d / 2..)).unwrap();
+
+        let sh: Vec<usize> = self.shape();
+        if sh.len() < 2 {
+            return Err(ZyxError::ShapeError(
+                format!("RoPE requires input >= 2d, but current input is {}d", sh.len()).into(),
+            ));
+        }
+
+        let seq_len = sh[sh.len() - 2];
+        let embed_dim = sh[sh.len() - 1];
+
+        let axes = 0..sh.len() as SAxis - 2;
+        let sin_freqs = sin_freqs.squeeze(axes.clone());
+        let cos_freqs = cos_freqs.squeeze(axes);
+
+        if sin_freqs.shape() != [seq_len, embed_dim / 2] || cos_freqs.shape() != [seq_len, embed_dim / 2] {
+            return Err(ZyxError::ShapeError(
+                format!(
+                    "sin_freqs and cos_freqs must have shape [seq_len, embed_dim / 2] after squeezing. \
+                 However, after squeezing, sin_freqs has shape {:?} and cos_freqs has shape {:?}. \
+                 Expected shapes: [{seq_len}, {}]",
+                    sin_freqs.shape(),
+                    cos_freqs.shape(),
+                    embed_dim / 2
+                )
+                .into(),
+            ));
+        }
+
+        let a = self.rget(..embed_dim as isize / 2).unwrap();
+        let b = -self.rget(embed_dim as isize / 2..).unwrap();
         let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
         let co = a * sin_freqs + b * cos_freqs;
-        let r = Tensor::cat([&co, &ro], -1).unwrap();
+        let r = Tensor::cat([&co, &ro], -1).unwrap(); // Concatenate along the last dimension
+
         Ok(r)
     }
 
@@ -3719,41 +3838,41 @@ impl IntoRange for isize {
 /// Implemented for objects that can be used to index tensors.
 pub trait IntoIndex {
     /// Convert self to tensor index.
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>>;
+    fn into_index(self) -> impl Iterator<Item = Range<isize>>;
 }
 
 impl IntoIndex for Vec<Range<isize>> {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         self.into_iter()
     }
 }
 
 impl<I: IntoRange> IntoIndex for &[I] {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         self.iter().cloned().map(IntoRange::into_range)
     }
 }
 
 impl<I0: IntoRange> IntoIndex for I0 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         [self.into_range()].into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange> IntoIndex for (I0, I1) {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         [self.0.into_range(), self.1.into_range()].into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange> IntoIndex for (I0, I1, I2) {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         [self.0.into_range(), self.1.into_range(), self.2.into_range()].into_iter()
     }
 }
 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange> IntoIndex for (I0, I1, I2, I3) {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -3765,7 +3884,7 @@ impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange> IntoIndex for (
 }
 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange> IntoIndex for (I0, I1, I2, I3, I4) {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -3780,7 +3899,7 @@ impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange> 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange> IntoIndex
     for (I0, I1, I2, I3, I4, I5)
 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -3796,7 +3915,7 @@ impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, 
 impl<I0: IntoRange, I1: IntoRange, I2: IntoRange, I3: IntoRange, I4: IntoRange, I5: IntoRange, I6: IntoRange> IntoIndex
     for (I0, I1, I2, I3, I4, I5, I6)
 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),
@@ -3821,7 +3940,7 @@ impl<
     I7: IntoRange,
 > IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
 {
-    fn into_index(self) -> impl IntoIterator<Item = Range<isize>> {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         [
             self.0.into_range(),
             self.1.into_range(),

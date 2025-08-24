@@ -326,7 +326,7 @@ pub(super) fn initialize_device(
                 }
             };
             println!(
-                "Using OpenCL platform, platform id {platform_id}, name {} on devices:",
+                "Using OpenCL platform id {platform_id}: {}, on devices:",
                 String::from_utf8(platform_name).unwrap()
             );
         }
