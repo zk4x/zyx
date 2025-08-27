@@ -251,21 +251,11 @@ impl View {
             }
         }
 
+        //println!("Reshape non-contiguous");
         // Reshape failed, so append a new block with contiguous strides and zero padding
-        let mut new_block = Vec::with_capacity(new_shape.len());
-        let mut stride = 1;
-        for &dim in new_shape.iter().rev() {
-            new_block.push(RDim {
-                d: dim,
-                st: stride,
-                lp: 0,
-                rp: 0,
-            });
-            stride *= dim;
-        }
-        new_block.reverse();
-
-        self.0.push(new_block);
+        let mut shape = self.shape();
+        shape.splice(axes, new_shape.iter().copied());
+        self.0.push(to_contiguous_rdims(&shape));
     }
 
     // This is used for reshape, merge and split
@@ -526,6 +516,7 @@ fn view_split() {
     assert_eq!(view.shape(), [3, 1, 2, 2, 1, 2]);
     view.reshape(0..1, &[1, 3, 1]);
     assert_eq!(view.shape(), [1, 3, 1, 1, 2, 2, 1, 2]);
+    assert_eq!(view.0.len(), 1);
 }
 
 /*#[test]

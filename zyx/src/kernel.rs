@@ -591,10 +591,93 @@ impl Kernel {
         let mut op_id = 0;
         while op_id < self.ops.len() {
             match self.ops[op_id] {
-                Op::ConstView { .. } => {
+                Op::ConstView { value, ref view  } => {
+                    // With padding, right padding does not affect offset
+                    // offset = (a0-lp0)*st0 + a1*st1
+                    // Padding condition, negative right padding does not affect it
+                    // pc = a0 > lp0-1 && a0 < d0-rp0
+                    // pc = pc.cast(dtype)
+                    // x = pc * value[offset]
+                    let view = view.clone();
+
+                    //println!("Unfolding view: {view}");
+                    let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
+                    self.ops.pop();
+                    let ops = &mut self.ops;
+                    let axes = get_axes(&ops[0..op_id]);
+                    let mut pc = new_op(ops, Op::Const(Constant::Bool(true)));
+                    #[allow(unused)] // false positive
+                    let mut offset = new_op(ops, Op::Const(Constant::U32(0)));
+                    let mut old_offset: Option<OpId> = None;
+                    //println!("View");
+                    //for inner in self.0.iter() { println!("{inner:?}") }
+                    //println!();
+                    for inner in view.0.iter().rev() {
+                        //println!("\n{inner:?}");
+                        // a = offset / ost % dim
+                        let mut ost = 1;
+                        offset = new_op(ops, Op::Const(Constant::U32(0)));
+                        for (a, dim) in inner.iter().enumerate().rev() {
+                            let a = if let Some(old_offset) = old_offset {
+                                let ost_c = new_op(ops, Op::Const(Constant::U32(ost)));
+                                let a = new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div });
+                                ost *= dim.d as u32;
+                                let dimd_c = new_op(ops, Op::Const(Constant::U32(dim.d as u32)));
+                                new_op(ops, Op::Binary { x: a, y: dimd_c, bop: BOp::Mod })
+                            } else if dim.d == 1 {
+                                new_op(ops, Op::Const(Constant::U32(0)))
+                            } else {
+                                axes[a]
+                            };
+                            //println!("ost: {ost}, a: {a:?}, {dim:?}");
+                            // Offset
+                            let t = if dim.lp != 0 {
+                                let lp = new_op(ops, Op::Const(Constant::U32(dim.lp.unsigned_abs() as u32)));
+                                if dim.lp > 0 {
+                                    new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Sub })
+                                } else {
+                                    new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Add })
+                                }
+                            } else {
+                                a
+                            };
+                            let stride = new_op(ops, Op::Const(Constant::U32(dim.st as u32)));
+                            let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
+                            offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
+
+                            // Padding condition
+                            if dim.lp > 0 {
+                                let lp = new_op(ops, Op::Const(Constant::U32((dim.lp - 1) as u32)));
+                                let t = new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
+                                pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
+                            }
+                            if dim.rp > 0 {
+                                let rp = new_op(ops, Op::Const(Constant::U32((dim.d as isize - dim.rp) as u32)));
+                                let t = new_op(ops, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
+                                pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
+                            }
+                        }
+                        old_offset = Some(offset);
+                    }
+
+                    //let pcu32 = new_op(ops, Op::Cast { x: pc, dtype: DType::U32 });
+                    //let offset = new_op(ops, Op::Binary { x: pcu32, y: offset, bop: BOp::Mul });
+
+                    let z = new_op(ops, Op::Const(value));
+
                     // TODO process view
                     //self.ops[op_id] = Op::Const(value);
-                    todo!()
+                    let dtype = value.dtype();
+                    let pcd = new_op(ops, Op::Cast { x: pc, dtype });
+                    // Nullify z if padding condition is false (if there is padding at that index)
+                    _ = new_op(ops, Op::Binary { x: pcd, y: z, bop: BOp::Mul });
+
+                    let n = self.ops.len();
+                    self.ops.extend(temp_ops);
+                    increment(&mut self.ops[n..], n - op_id - 1, op_id..);
+                    op_id = n;
+                    load_id += 1;
+                    continue;
                 }
                 Op::LoadView { dtype, ref view } => {
                     // With padding, right padding does not affect offset
