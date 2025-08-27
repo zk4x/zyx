@@ -107,6 +107,9 @@ impl Optimizer {
         let [local_work_size_opt_index, loop_opt_index] = optimization.into_indices(self.max_indices);
         self.local_work_size_opt.apply_optimization(local_work_size_opt_index, kernel);
 
+        //println!();
+        //kernel.debug();
+
         kernel.unfold_reduces();
         //println!();
         //kernel.debug();
@@ -204,15 +207,16 @@ impl WorkSizeOpt {
 struct LoopOpt {}
 
 impl LoopOpt {
-    fn new(kernel: &Kernel) -> Self { Self {} }
+    fn new(_kernel: &Kernel) -> Self { Self {} }
 
     fn max_index(&self) -> u64 { 1 }
 
-    fn apply_optimization(&self, index: u64, kernel: &mut Kernel) {
+    fn apply_optimization(&self, _index: u64, _kernel: &mut Kernel) {
         // TODO
     }
 
     /// Unroll all loops with dimension <= `loop_unroll_size`
+    #[allow(unused)]
     fn loop_optimization(kernel: &mut Kernel, loop_unroll_size: usize) {
         fn unroll_loop(ir: &mut Vec<Op>, range: Range<usize>) {
             let Op::Loop { dim, .. } = ir[range.start] else {

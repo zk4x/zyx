@@ -1,10 +1,10 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    Map, Set, ZyxError,
+    DType, Map, Set, ZyxError,
     backend::ProgramId,
     error::BackendError,
-    graph::{Graph, Node},
+    graph::Node,
     kernel::{Kernel, Op, OpId, get_perf},
     optimizer::Optimizer,
     prog_bar::ProgressBar,
@@ -22,21 +22,15 @@ pub struct KernelId(u32);
 impl SlabId for KernelId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
+    fn inc(&mut self) { self.0 += 1; }
 }
 
 impl From<usize> for KernelId {
-    fn from(value: usize) -> Self {
-        KernelId(value as u32)
-    }
+    fn from(value: usize) -> Self { KernelId(value as u32) }
 }
 
 impl From<KernelId> for usize {
-    fn from(value: KernelId) -> Self {
-        value.0 as usize
-    }
+    fn from(value: KernelId) -> Self { value.0 as usize }
 }
 
 impl Runtime {
@@ -140,12 +134,13 @@ impl Runtime {
                 let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
                     let dtype = self.graph.dtype(nid);
                     let shape = self.graph.shape(nid);
-                    let view = View::contiguous(shape);
+                    /*let view = View::contiguous(shape);
                     let op = Op::LoadView { dtype, view };
                     let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid] };
                     let kid = kernels.push(kernel);
                     loads.insert(kid, vec![nid]);
-                    (kid, 0)
+                    (kid, 0)*/
+                    add_load(nid, shape, dtype, &mut kernels, &mut loads)
                 } else {
                     match self.graph[nid] {
                         Node::Leaf { .. } => unreachable!(),
@@ -156,26 +151,25 @@ impl Runtime {
                             (kernels.push(kernel), 0)
                         }
                         Node::Expand { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kid, mut op_id) = self.get_visited(x, &mut kernels, &visited, &mut loads);
                             // TODO instead of sotre add expand op that inserts loop in IR
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
                                 if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
-                                    let pkid = kid;
-                                    store_x(
+                                    let dtype = self.graph.dtype(x);
+                                    self.add_store(
                                         x,
-                                        &mut kid,
-                                        &mut op_id,
-                                        &self.graph,
+                                        kid,
+                                        op_id,
+                                        dtype,
+                                        &mut realized_nodes,
                                         &mut virt_realized_nodes,
                                         &mut kernels,
-                                        &mut loads,
+                                        &loads,
                                         &mut stores,
-                                    );
-                                    if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
-                                        let kernel = unsafe { kernels.remove_and_return(pkid) };
-                                        realized_nodes.extend(&stores[&pkid]);
-                                        self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
-                                    }
+                                        &mut visited,
+                                    )?;
+                                    let shape = self.graph.shape(x);
+                                    (kid, op_id) = add_load(x, shape, dtype, &mut kernels, &mut loads);
                                 } else {
                                     duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
                                 }
@@ -187,25 +181,27 @@ impl Runtime {
                             (kid, op_id)
                         }
                         Node::Permute { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kid, mut op_id) = self.get_visited(x, &mut kernels, &visited, &mut loads);
                             // TODO instead of store add permute op that swaps indices in IR
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
-                                //duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                let pkid = kid;
-                                store_x(
-                                    x,
-                                    &mut kid,
-                                    &mut op_id,
-                                    &self.graph,
-                                    &mut virt_realized_nodes,
-                                    &mut kernels,
-                                    &mut loads,
-                                    &mut stores,
-                                );
-                                if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
-                                    let kernel = unsafe { kernels.remove_and_return(pkid) };
-                                    realized_nodes.extend(&stores[&pkid]);
-                                    self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
+                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
+                                    let dtype = self.graph.dtype(x);
+                                    self.add_store(
+                                        x,
+                                        kid,
+                                        op_id,
+                                        dtype,
+                                        &mut realized_nodes,
+                                        &mut virt_realized_nodes,
+                                        &mut kernels,
+                                        &loads,
+                                        &mut stores,
+                                        &mut visited,
+                                    )?;
+                                    let shape = self.graph.shape(x);
+                                    (kid, op_id) = add_load(x, shape, dtype, &mut kernels, &mut loads);
+                                } else {
+                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
                                 }
                             }
                             kernels[kid].n_outputs = rcs[&nid];
@@ -215,7 +211,7 @@ impl Runtime {
                             (kid, op_id)
                         }
                         Node::Reshape { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kid, mut op_id) = self.get_visited(x, &mut kernels, &visited, &mut loads);
 
                             // TODO duplicate or store only if this is not mergeable.
                             // Otherwise if it is like unsqueeze or splitting two dims
@@ -225,22 +221,21 @@ impl Runtime {
 
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
                                 if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
-                                    let pkid = kid;
-                                    store_x(
+                                    let dtype = self.graph.dtype(x);
+                                    self.add_store(
                                         x,
-                                        &mut kid,
-                                        &mut op_id,
-                                        &self.graph,
+                                        kid,
+                                        op_id,
+                                        dtype,
+                                        &mut realized_nodes,
                                         &mut virt_realized_nodes,
                                         &mut kernels,
-                                        &mut loads,
+                                        &loads,
                                         &mut stores,
-                                    );
-                                    if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
-                                        let kernel = unsafe { kernels.remove_and_return(pkid) };
-                                        realized_nodes.extend(&stores[&pkid]);
-                                        self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
-                                    }
+                                        &mut visited,
+                                    )?;
+                                    let shape = self.graph.shape(x);
+                                    (kid, op_id) = add_load(x, shape, dtype, &mut kernels, &mut loads);
                                 } else {
                                     duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
                                 }
@@ -253,28 +248,27 @@ impl Runtime {
                             (kid, op_id)
                         }
                         Node::Pad { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kid, mut op_id) = self.get_visited(x, &mut kernels, &visited, &mut loads);
 
                             // TODO instead of duplication add pad op that add if statement into ir (e.g. if idx < padding)
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
                                 //}
                                 if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
-                                    let pkid = kid;
-                                    store_x(
+                                    let dtype = self.graph.dtype(x);
+                                    self.add_store(
                                         x,
-                                        &mut kid,
-                                        &mut op_id,
-                                        &self.graph,
+                                        kid,
+                                        op_id,
+                                        dtype,
+                                        &mut realized_nodes,
                                         &mut virt_realized_nodes,
                                         &mut kernels,
-                                        &mut loads,
+                                        &loads,
                                         &mut stores,
-                                    );
-                                    if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
-                                        let kernel = unsafe { kernels.remove_and_return(pkid) };
-                                        realized_nodes.extend(&stores[&pkid]);
-                                        self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
-                                    }
+                                        &mut visited,
+                                    )?;
+                                    let shape = self.graph.shape(x);
+                                    (kid, op_id) = add_load(x, shape, dtype, &mut kernels, &mut loads);
                                 } else {
                                     duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
                                 }
@@ -290,28 +284,27 @@ impl Runtime {
                         Node::Reduce { x, rop } => {
                             // Don't apply reduce if the kernel already contains reduce
                             // and the resulting shape's dimension is less than 256
-                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kid, mut op_id) = self.get_visited(x, &mut kernels, &visited, &mut loads);
 
                             // If the kernel has more than one output, or rc of x is more than one,
                             // we have to either copy it (if it is small), or store x (if kid is big)
                             if kernels[kid].n_outputs > 1 || rcs[&x] > 1 {
                                 if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
-                                    let pkid = kid;
-                                    store_x(
+                                    let dtype = self.graph.dtype(x);
+                                    self.add_store(
                                         x,
-                                        &mut kid,
-                                        &mut op_id,
-                                        &self.graph,
+                                        kid,
+                                        op_id,
+                                        dtype,
+                                        &mut realized_nodes,
                                         &mut virt_realized_nodes,
                                         &mut kernels,
-                                        &mut loads,
+                                        &loads,
                                         &mut stores,
-                                    );
-                                    if loads[&pkid].iter().all(|x| realized_nodes.contains(x)) {
-                                        let kernel = unsafe { kernels.remove_and_return(pkid) };
-                                        realized_nodes.extend(&stores[&pkid]);
-                                        self.launch_kernel(kernel, &loads[&pkid], &stores[&pkid])?;
-                                    }
+                                        &mut visited,
+                                    )?;
+                                    let shape = self.graph.shape(x);
+                                    (kid, op_id) = add_load(x, shape, dtype, &mut kernels, &mut loads);
                                 } else {
                                     duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
                                 }
@@ -362,20 +355,21 @@ impl Runtime {
                             (kid, kernels[kid].ops.len() - 1)
                         }
                         Node::Cast { x, dtype } => {
-                            let (kid, op_id) = visited[&x];
+                            let (kid, op_id) = self.get_visited(x, &mut kernels, &visited, &mut loads);
                             kernels[kid].ops.push(Op::Cast { x: op_id, dtype });
                             kernels[kid].n_outputs += rcs[&nid] - 1;
                             (kid, kernels[kid].ops.len() - 1)
                         }
                         Node::Unary { x, uop } => {
-                            let (kid, op_id) = visited[&x];
+                            let (kid, op_id) = self.get_visited(x, &mut kernels, &visited, &mut loads);
                             kernels[kid].ops.push(Op::Unary { x: op_id, uop });
                             kernels[kid].n_outputs += rcs[&nid] - 1;
                             (kid, kernels[kid].ops.len() - 1)
                         }
                         Node::Binary { x, y, bop } => {
-                            let (kid, op_id) = visited[&x];
-                            let (kidy, op_idy) = visited[&y];
+                            //let (kid, op_id) = visited[&x];
+                            let (kid, op_id) = self.get_visited(x, &mut kernels, &visited, &mut loads);
+                            let (kidy, op_idy) = self.get_visited(y, &mut kernels, &visited, &mut loads);
                             /*if nid.0 == 11 {
                                 for (id, kernel) in kernels.iter() {
                                     println!("{id:?}");
@@ -445,26 +439,30 @@ impl Runtime {
                     }
                 };
                 visited.insert(nid, (kid, op_id));
+
+                /*println!();
+                println!("{}, rc={}", kernels[kid].n_outputs, rcs[&nid]);
+                kernels[kid].debug();
+                println!("{loads:?}, {kid:?}");
+                println!();*/
+
                 if to_eval.contains(&nid) {
-                    virt_realized_nodes.insert(nid);
+                    //println!();
+                    //kernels[kid].debug();
+                    //println!("{}", kernels[kid].n_outputs);
                     let dtype = self.graph.dtype(nid);
-                    let op = Op::StoreView { src: op_id, dtype };
-                    stores.entry(kid).and_modify(|vec| vec.push(nid)).or_insert_with(|| vec![nid]);
-                    kernels[kid].n_outputs -= 1;
-                    kernels[kid].ops.push(op);
-                }
-
-                //println!("{}, rc={}", kernels[kid].n_outputs, rcs[&nid]);
-                //println!();
-                //kernels[kid].debug();
-                //println!("{loads:?}, {kid:?}");
-                //println!();
-
-                if kernels[kid].n_outputs == 0 && loads[&kid].iter().all(|x| realized_nodes.contains(x)) {
-                    //println!("Found {trkid:?}\n");
-                    let kernel = unsafe { kernels.remove_and_return(kid) };
-                    realized_nodes.extend(&stores[&kid]);
-                    self.launch_kernel(kernel, &loads[&kid], &stores[&kid])?;
+                    self.add_store(
+                        nid,
+                        kid,
+                        op_id,
+                        dtype,
+                        &mut realized_nodes,
+                        &mut virt_realized_nodes,
+                        &mut kernels,
+                        &loads,
+                        &mut stores,
+                        &mut visited,
+                    )?;
                 }
             }
 
@@ -498,6 +496,50 @@ impl Runtime {
         // Delete nodes, but do not use release function, just remove it from graph.nodes
         self.graph.delete_tensors(&to_delete);
 
+        Ok(())
+    }
+
+    /// Either get visited kernel from visited, or it's realized kernel,
+    /// so create a new load kernel for that.
+    fn get_visited(
+        &mut self,
+        x: TensorId,
+        kernels: &mut Slab<KernelId, Kernel>,
+        visited: &Map<TensorId, (KernelId, usize)>,
+        loads: &mut Map<KernelId, Vec<TensorId>>,
+    ) -> (KernelId, usize) {
+        if let Some(&(kid, op_id)) = visited.get(&x) {
+            (kid, op_id)
+        } else {
+            let shape = self.graph.shape(x);
+            let dtype = self.graph.dtype(x);
+            add_load(x, shape, dtype, kernels, loads)
+        }
+    }
+
+    fn add_store(
+        &mut self,
+        x: TensorId,
+        kid: KernelId,
+        op_id: usize,
+        dtype: DType,
+        realized_nodes: &mut Set<TensorId>,
+        virt_realized_nodes: &mut Set<TensorId>,
+        kernels: &mut Slab<KernelId, Kernel>,
+        loads: &Map<KernelId, Vec<TensorId>>,
+        stores: &mut Map<KernelId, Vec<TensorId>>,
+        visited: &mut Map<TensorId, (KernelId, OpId)>,
+    ) -> Result<(), ZyxError> {
+        visited.remove(&x).unwrap();
+        virt_realized_nodes.insert(x);
+        kernels[kid].ops.push(Op::StoreView { src: op_id, dtype });
+        stores.entry(kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
+        kernels[kid].n_outputs -= 1;
+        if kernels[kid].n_outputs == 0 && loads[&kid].iter().all(|x| realized_nodes.contains(x)) {
+            let kernel = unsafe { kernels.remove_and_return(kid) };
+            self.launch_kernel(kernel, &*loads[&kid], &*stores[&kid])?;
+            realized_nodes.extend(&*stores[&kid]);
+        }
         Ok(())
     }
 
@@ -947,31 +989,19 @@ impl Runtime {
     }
 }
 
-fn store_x(
+fn add_load(
     x: TensorId,
-    kid: &mut KernelId,
-    op_id: &mut usize,
-    graph: &Graph,
-    realized_nodes: &mut std::collections::HashSet<TensorId, BuildHasherDefault<crate::chasher::CHasher>>,
+    shape: &[Dim],
+    dtype: DType,
     kernels: &mut Slab<KernelId, Kernel>,
-    loads: &mut std::collections::HashMap<KernelId, Vec<TensorId>, BuildHasherDefault<crate::chasher::CHasher>>,
-    stores: &mut std::collections::HashMap<KernelId, Vec<TensorId>, BuildHasherDefault<crate::chasher::CHasher>>,
-) {
-    let dtype = graph.dtype(x);
-    let shape = graph.shape(x);
-
-    realized_nodes.insert(x);
-    kernels[*kid].ops.push(Op::StoreView { src: *op_id, dtype });
-    stores.entry(*kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
-    kernels[*kid].n_outputs = 0;
-
+    loads: &mut Map<KernelId, Vec<TensorId>>,
+) -> (KernelId, OpId) {
     let view = View::contiguous(shape);
     let op = Op::LoadView { dtype, view };
-    loads.insert(kernels.len(), vec![x]);
-    *op_id = 1;
     let kernel = Kernel { ops: vec![op], n_outputs: 1 };
-    *kid = kernels.len();
-    kernels.push(kernel);
+    let kid = kernels.push(kernel);
+    loads.insert(kid, vec![x]);
+    (kid, 0)
 }
 
 fn duplicate_kernel(
@@ -984,7 +1014,7 @@ fn duplicate_kernel(
     kernels[*kid].n_outputs -= 1;
     let kernel = kernels[*kid].clone();
     //kernel.n_outputs -= 1;
-    let nkid = kernels.len();
+    let nkid = kernels.push(kernel);
     if let Some(loaded_tensors) = loads.get(kid) {
         loads.insert(nkid, loaded_tensors.clone());
     }
@@ -992,5 +1022,4 @@ fn duplicate_kernel(
         stores.insert(nkid, stored_tensors.clone());
     }
     *kid = nkid;
-    kernels.push(kernel);
 }

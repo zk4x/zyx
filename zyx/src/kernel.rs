@@ -18,8 +18,7 @@ pub type OpId = usize;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Kernel {
     pub ops: Vec<Op>,
-    //pub shape: Vec<Dim>,
-    pub n_outputs: u32,
+    pub n_outputs: u32, // TODO remove this from here
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,7 +37,7 @@ pub enum Op {
     Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
     //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
     //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
-    //PadIndex(isize, isize), // Pad index with padding
+    //PadIndex(OpId, isize, isize), // Pad index with padding
 
     // ops that only exist after unfolding views and reduces
     Const(Constant),
@@ -179,38 +178,42 @@ impl Kernel {
 
     pub fn debug(&self) {
         //println!("Kernel shape {:?}", self.shape);
+        const RED: &str = "\x1b[31m";
+        const GREEN: &str = "\x1b[32m";
+        const YELLOW: &str = "\x1b[33m";
+        const BLUE: &str = "\x1b[34m";
+        const MAGENTA: &str = "\x1b[35m";
+        const CYAN: &str = "\x1b[36m";
+        const RESET: &str = "\x1b[0m";
+        let mut indent = String::from(" ");
         for (i, op) in self.ops.iter().enumerate() {
-            const RED: &str = "\x1b[31m";
-            const GREEN: &str = "\x1b[32m";
-            const YELLOW: &str = "\x1b[33m";
-            const BLUE: &str = "\x1b[34m";
-            const MAGENTA: &str = "\x1b[35m";
-            const CYAN: &str = "\x1b[36m";
-            const RESET: &str = "\x1b[0m";
             match op {
-                Op::ConstView { value, view } => println!("{i:>3} {CYAN}CONST VIEW{RESET} {value} {view}"),
-                Op::LoadView { dtype, view } => println!("{i:>3} {CYAN}LOAD VIEW{RESET} {dtype} {view}"),
-                Op::StoreView { src, dtype } => println!("{i:>3} {CYAN}STORE VIEW{RESET} {src} {dtype}"),
+                Op::ConstView { value, view } => println!("{i:>3}{indent}{CYAN}CONST VIEW{RESET} {value} {view}"),
+                Op::LoadView { dtype, view } => println!("{i:>3}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}"),
+                Op::StoreView { src, dtype } => println!("{i:>3}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}"),
                 Op::Reduce { x, rop, dims } => {
-                    println!(
-                        "{i:>3} {CYAN}REDUCE{RESET} {} {x}, dims={dims:?}",
-                        match rop {
-                            ROp::Sum => "SUM",
-                            ROp::Max => "MAX",
-                        }
-                    );
+                    println!("{i:>3}{indent}{CYAN}REDUCE{RESET} {} {x}, dims={dims:?}", match rop {
+                        ROp::Sum => "SUM",
+                        ROp::Max => "MAX",
+                    });
                 }
                 Op::Define { dtype, scope, ro, len } => {
-                    println!("{i:>3} {YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
+                    println!("{i:>3}{indent}{YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
                 }
-                Op::Const(x) => println!("{i:>3} {MAGENTA}CONST{RESET} {} {x}", x.dtype()),
-                Op::Load { src, index } => println!("{i:>3} {GREEN}LOAD{RESET} p{src}[{index}]"),
-                Op::Store { dst, x: src, index } => println!("{i:>3} {RED}STORE{RESET} p{dst}[{index}] <- {src}"),
-                Op::Cast { x, dtype } => println!("{i:>3} CAST {x} {dtype:?}"),
-                Op::Unary { x, uop } => println!("{i:>3} UNARY {uop:?} {x}"),
-                Op::Binary { x, y, bop } => println!("{i:>3} BINARY {bop:?} {x} {y}"),
-                Op::Loop { dim, scope } => println!("{i:>3} {BLUE}LOOP{RESET} {scope} dim={dim}"),
-                Op::EndLoop => println!("{i:>3} {BLUE}ENDLOOP{RESET}"),
+                Op::Const(x) => println!("{i:>3}{indent}{MAGENTA}CONST{RESET} {} {x}", x.dtype()),
+                Op::Load { src, index } => println!("{i:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}]"),
+                Op::Store { dst, x: src, index } => println!("{i:>3}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}"),
+                Op::Cast { x, dtype } => println!("{i:>3}{indent}CAST {x} {dtype:?}"),
+                Op::Unary { x, uop } => println!("{i:>3}{indent}UNARY {uop:?} {x}"),
+                Op::Binary { x, y, bop } => println!("{i:>3}{indent}BINARY {bop:?} {x} {y}"),
+                Op::Loop { dim, scope } => {
+                    println!("{i:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}");
+                    indent += " ";
+                }
+                Op::EndLoop => {
+                    indent.pop();
+                    println!("{i:>3}{indent}{BLUE}ENDLOOP{RESET}");
+                }
             }
         }
     }
@@ -231,16 +234,13 @@ impl Kernel {
             }
             let (f, r, w, n) = match &ops[x] {
                 Op::ConstView { view, .. } => (0, 0, 0, view.numel() as u128),
-                Op::LoadView { view, .. } => {
-                    (0, view.original_numel() as u128, 0, view.numel() as u128)
-                }
+                Op::LoadView { view, .. } => (0, view.original_numel() as u128, 0, view.numel() as u128),
                 Op::StoreView { src, .. } => {
                     let (f, r, w) = recursive(*src, ops, visited);
                     let n = visited[src];
                     (f, r, w + n, 0)
                 }
-                Op::Cast { x, .. } |
-                Op::Unary { x, .. } => {
+                Op::Cast { x, .. } | Op::Unary { x, .. } => {
                     let (f, r, w) = recursive(*x, ops, visited);
                     let n = visited[x];
                     (f + n, r, w, n)
@@ -283,13 +283,9 @@ impl Kernel {
         (flop, mr, mw)
     }
 
-    pub fn is_reduce(&self) -> bool {
-        self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
-    }
+    pub fn is_reduce(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::Reduce { .. })) }
 
-    pub fn contains_stores(&self) -> bool {
-        self.ops.iter().any(|x| matches!(x, Op::StoreView { .. }))
-    }
+    pub fn contains_stores(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::StoreView { .. })) }
 
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.iter().any(|op| matches!(op, Op::Loop { .. })) {
@@ -344,9 +340,10 @@ impl Kernel {
         // Check the reduce op, trace all of it's dependencies,
         // put Loop op before dependency with lowest ID
         // increase all ids higher than that by one
+        //self.debug();
 
         while let Some(op_id) = self.ops.iter().rev().position(|op| matches!(op, Op::Reduce { .. })) {
-        //for op_id in reduce_ops.into_iter().rev() {
+            //for op_id in reduce_ops.into_iter().rev() {
             let op_id = self.ops.len() - op_id - 1;
             let Op::Reduce { x, rop, dims } = self.ops[op_id].clone() else { unreachable!() };
             let mut min_param = x;
@@ -473,6 +470,7 @@ impl Kernel {
 
             // Update tail by adding load acc before all ops referencing op_id
             // op_id -> acc
+            let mut n_inserted_loads = 0;
             let mut i = 0;
             while i < tail.len() {
                 match &mut tail[i] {
@@ -481,12 +479,20 @@ impl Kernel {
                         if *src == op_id {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
+                            i += 1;
+                            n_inserted_loads += 1;
+                        } else if *src > op_id {
+                            *src += n_inserted_loads + 8;
                         }
                     }
                     Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
                         if *x == op_id {
                             *x = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
+                            i += 1;
+                            n_inserted_loads += 1;
+                        } else if *x > op_id {
+                            *x += n_inserted_loads + 8;
                         }
                     }
                     Op::Const(_) => {}
@@ -495,6 +501,10 @@ impl Kernel {
                         if *src == op_id {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
+                            i += 1;
+                            n_inserted_loads += 1;
+                        } else if *src > op_id {
+                            *src += n_inserted_loads + 8;
                         }
                     }
                     Op::Binary { x, y, .. } => {
@@ -510,11 +520,18 @@ impl Kernel {
                         } else {
                             false
                         };
-                        if tail1 {
-                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                        if tail1 || tail2 {
+                            n_inserted_loads += 1;
                         }
-                        if tail2 {
+                        if *x > op_id && !tail1 {
+                            *x += n_inserted_loads + 8;
+                        }
+                        if *y > op_id && !tail2 {
+                            *y += n_inserted_loads + 8;
+                        }
+                        if tail1 || tail2 {
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
+                            i += 1;
                         }
                     }
                 }
@@ -527,6 +544,8 @@ impl Kernel {
             //self.debug();
             //panic!();
         }
+        //println!();
+        //self.debug();
     }
 
     pub fn define_globals(&mut self) {
@@ -572,9 +591,10 @@ impl Kernel {
         let mut op_id = 0;
         while op_id < self.ops.len() {
             match self.ops[op_id] {
-                Op::ConstView { value, view: _ } => {
+                Op::ConstView { .. } => {
                     // TODO process view
-                    self.ops[op_id] = Op::Const(value);
+                    //self.ops[op_id] = Op::Const(value);
+                    todo!()
                 }
                 Op::LoadView { dtype, ref view } => {
                     // With padding, right padding does not affect offset
