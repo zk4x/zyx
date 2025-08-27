@@ -720,7 +720,7 @@ impl Runtime {
         )
     }
 
-    fn launch_kernel(&mut self, mut kernel: Kernel, loads: &[TensorId], stores: &[TensorId]) -> Result<(), ZyxError> {
+    fn launch_kernel(&mut self, kernel: Kernel, loads: &[TensorId], stores: &[TensorId]) -> Result<(), ZyxError> {
         // Iterate over all memory pools ordered by device speed.
         // Then select first fastest device that has associated memory pool which fits all tensors used
         // as arguments for the kernel that are not yet allocated on that memory pool.
@@ -885,16 +885,22 @@ impl Runtime {
 
         // If search_iters == 0, we use default optimizations
         if self.search_iterations == 0 {
-            let optimization = optimizer.next_optimization(u128::MAX).unwrap();
-            optimizer.apply_optimization(&mut kernel, optimization);
+            let mut okernel;
+            loop {
+                okernel = kernel.clone();
+                let optimization = optimizer.next_optimization(u128::MAX).unwrap();
+                if optimizer.apply_optimization(&mut okernel, optimization) {
+                    break;
+                }
+            }
 
             if self.debug.ir() {
                 println!("\nIR optimized kernel");
-                kernel.debug();
+                okernel.debug();
                 println!();
             }
 
-            let program_id = device.compile(&kernel, self.debug.asm())?;
+            let program_id = device.compile(&okernel, self.debug.asm())?;
             let nanos = std::time::Instant::now();
             let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
             pool.pool.sync_events(vec![event])?;
@@ -904,7 +910,7 @@ impl Runtime {
                 self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
             }
             if self.debug.perf() {
-                let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
+                let (flop, mem_read, mem_write) = okernel.flop_mem_rw();
                 println!("{}", get_perf(flop, mem_read, mem_write, nanos));
             }
             optimizer.best_time_nanos = nanos;
@@ -934,8 +940,11 @@ impl Runtime {
             while let Some(optimization) = optimizer.next_optimization(last_time_nanos)
                 && i < self.search_iterations
             {
+                i += 1;
                 let mut kernel = kernel.clone();
-                optimizer.apply_optimization(&mut kernel, optimization);
+                if !optimizer.apply_optimization(&mut kernel, optimization) {
+                    continue
+                }
                 if self.debug.ir() {
                     println!("\nIR optimized kernel");
                     kernel.debug();
@@ -973,7 +982,6 @@ impl Runtime {
                         ),
                     );
                 }
-                i += 1;
             }
             if let Some((_, flop, mem_read, mem_write)) = &progress_bar {
                 println!();

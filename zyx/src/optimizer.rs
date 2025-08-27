@@ -103,9 +103,12 @@ impl Optimizer {
 }
 
 impl Optimizer {
-    pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization) {
+    #[must_use]
+    pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization) -> bool {
         let [local_work_size_opt_index, loop_opt_index] = optimization.into_indices(self.max_indices);
-        self.local_work_size_opt.apply_optimization(local_work_size_opt_index, kernel);
+        if !self.local_work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
+            return false;
+        }
 
         //println!();
         //kernel.debug();
@@ -125,13 +128,16 @@ impl Optimizer {
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
 
-            self.loop_opt.apply_optimization(loop_opt_index, kernel);
+            if !self.loop_opt.apply_optimization(loop_opt_index, kernel) {
+                return false;
+            }
 
             if *kernel == temp_kernel {
                 break;
             }
             temp_kernel = kernel.clone();
         }
+        true
     }
 }
 
@@ -139,6 +145,7 @@ impl Optimizer {
 struct WorkSizeOpt {
     gws: Vec<Dim>,
     gws_factors: Vec<Vec<Dim>>,
+    max_local_threads: Dim,
 }
 
 impl WorkSizeOpt {
@@ -169,12 +176,15 @@ impl WorkSizeOpt {
             let res = divisors(d, max_lwd);
             gws_factors.push(res);
         }
-        Self { gws, gws_factors }
+        let max_local_threads = dev_info.max_local_threads;
+        Self { gws, gws_factors, max_local_threads }
     }
 
     fn max_index(&self) -> u64 { self.gws_factors.iter().map(|gd| gd.len() as u64).product() }
 
-    fn apply_optimization(&self, index: u64, kernel: &mut Kernel) {
+    // Returns false if this index is invalid
+    #[must_use]
+    fn apply_optimization(&self, index: u64, kernel: &mut Kernel) -> bool {
         // TODO make this work with limitations for max local work threads
 
         let mut value = index as usize;
@@ -199,6 +209,7 @@ impl WorkSizeOpt {
         let n = kernel.shape().len();
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
         kernel.unfold_shape(&gws, &lws);
+        true
     }
 }
 
@@ -211,8 +222,10 @@ impl LoopOpt {
 
     fn max_index(&self) -> u64 { 1 }
 
-    fn apply_optimization(&self, _index: u64, _kernel: &mut Kernel) {
+    #[must_use]
+    fn apply_optimization(&self, _index: u64, _kernel: &mut Kernel) -> bool {
         // TODO
+        true
     }
 
     /// Unroll all loops with dimension <= `loop_unroll_size`
