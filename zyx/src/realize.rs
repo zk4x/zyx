@@ -736,6 +736,7 @@ impl Runtime {
         //println!("Kernel requires {required_kernel_memory} B");
         let mut dev_ids: Vec<usize> = (0..self.devices.len()).collect();
         dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
+        dev_ids.reverse();
         let mut device_id = None;
         for dev_id in dev_ids {
             let mpid = self.devices[dev_id].memory_pool_id() as usize;

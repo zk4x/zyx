@@ -175,7 +175,7 @@ impl WorkSizeOpt {
     fn max_index(&self) -> u64 { self.gws_factors.iter().map(|gd| gd.len() as u64).product() }
 
     fn apply_optimization(&self, index: u64, kernel: &mut Kernel) {
-        // TODO make this work with limitations for amx local work threads
+        // TODO make this work with limitations for max local work threads
 
         let mut value = index as usize;
         let mut result: Vec<usize> = Vec::new();

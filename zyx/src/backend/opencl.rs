@@ -667,6 +667,10 @@ impl OpenCLDevice {
             }
         }
 
+        if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
+        }
+
         let mut global_args = String::new();
         for (i, op) in kernel.ops.iter().enumerate() {
             if let &Op::Define { dtype, scope, ro, .. } = op
@@ -888,10 +892,10 @@ impl OpenCLDevice {
         writeln!(reg_str, ";").unwrap();
 
         let mut pragma = String::new();
-        if source.contains("half") {
+        if dtypes.values().any(|&x| x == DType::F16) {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
         }
-        if source.contains("double") {
+        if dtypes.values().any(|&x| x == DType::F64) {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
 
@@ -1075,7 +1079,7 @@ impl OpenCLDevice {
         }
         let mlt = usize::from_ne_bytes(self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?.try_into().unwrap()) as Dim;
         self.dev_info = DeviceInfo {
-            compute: 1024 * 1024 * 1024 * 1024,
+            compute: 1024 * 1024 * 1024,
             max_global_work_dims,
             max_local_threads: mlt,
             max_local_work_dims: vec![mlt; max_work_item_dims],

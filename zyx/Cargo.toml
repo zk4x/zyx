@@ -33,6 +33,9 @@ half = { version = "2.6.0", default-features = false } # MIT or Apache 2.0
 # Lot of dependencies from wgpu, probably just don't use that
 wgpu = { version = "25.0.0", default-features = false, features = [
     "wgsl",
+    "vulkan",
+    "metal",
+    "dx12",
 ], optional = true }
 # Futures for wgpu axync mess. Some functions are async, while others using polling and it's a mess that deadlocks
 futures = { version = "0.3.31", default-features = false, features = [
@@ -54,7 +57,7 @@ crate-type = ["lib"] #, "cdylib"]
 
 [features]
 default = [
-    #"wgpu",
+    "wgpu",
     #"py",
 ]
 

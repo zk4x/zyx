@@ -290,7 +290,7 @@ impl MemoryPool {
     }
 }
 
-#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug)]
 pub enum Device {
     CUDA(CUDADevice),
     OpenCL(OpenCLDevice),
@@ -338,7 +338,7 @@ impl Device {
             Device::CUDA(dev) => dev.free_compute(),
             Device::OpenCL(dev) => dev.free_compute(),
             #[cfg(feature = "wgpu")]
-            Device::WGPU(dev) => dev.compute(),
+            Device::WGPU(dev) => dev.free_compute(),
             Device::Dummy(dev) => dev.free_compute(),
         }
     }

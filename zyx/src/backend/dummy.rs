@@ -20,6 +20,7 @@ pub struct DummyMemoryPool {
     buffers: Slab<BufferId, Dim>,
 }
 
+#[derive(Debug)]
 pub struct DummyDevice {
     device_info: DeviceInfo,
 }
