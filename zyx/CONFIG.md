@@ -9,6 +9,10 @@ The create file device_config.json in that folder. $HOME/.config/zyx/device_conf
 Copy this into your device_config.json:
 ```json
 {
+  "search": {
+    "iterations": 100,
+    "save_to_disk": true
+  },
   "cuda": {
     "device_ids": [0]
   },

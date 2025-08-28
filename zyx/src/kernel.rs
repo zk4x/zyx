@@ -1,3 +1,5 @@
+use nanoserde::{DeBin, SerBin};
+
 use crate::{
     DType, Map, Set,
     backend::{Device, DeviceInfo, ProgramId},
@@ -15,20 +17,20 @@ use std::{
 
 pub type OpId = usize;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct Kernel {
     pub ops: Vec<Op>,
     pub n_outputs: u32, // TODO remove this from here
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Scope {
     Global,
     Local,
     Register,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist only in kernelizer
     ConstView { value: Constant, view: View },
@@ -81,6 +83,32 @@ pub struct Cache {
     // This last one is not stored to disk
     // kernel id, device id => program id
     pub programs: Map<(u32, u32), ProgramId>,
+}
+
+impl SerBin for Cache {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        self.device_infos.len().ser_bin(output);
+        for (key, value) in &self.device_infos {
+            key.ser_bin(output);
+            value.ser_bin(output);
+        }
+        self.kernels.len().ser_bin(output);
+        for (key, value) in &self.kernels {
+            key.ser_bin(output);
+            value.ser_bin(output);
+        }
+        self.optimizations.len().ser_bin(output);
+        for (key, value) in &self.optimizations {
+            key.ser_bin(output);
+            value.ser_bin(output);
+        }
+    }
+}
+
+impl DeBin for Cache {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        todo!()
+    }
 }
 
 impl Display for Scope {

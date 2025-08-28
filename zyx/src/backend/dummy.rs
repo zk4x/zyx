@@ -32,7 +32,7 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError { status: ErrorStatus::Initialization, context: "Configured out.".into() });
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "Dummy backend configured out.".into() });
     }
     if debug_dev {
         println!("Using dummy backend");

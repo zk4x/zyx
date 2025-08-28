@@ -884,7 +884,7 @@ impl Runtime {
         }
 
         // If search_iters == 0, we use default optimizations
-        if self.search_iterations == 0 {
+        if self.search_config.iterations == 0 {
             let mut okernel;
             loop {
                 okernel = kernel.clone();
@@ -920,7 +920,7 @@ impl Runtime {
             let mut progress_bar = if self.debug.perf() {
                 let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 Some((
-                    ProgressBar::new(self.search_iterations as u64),
+                    ProgressBar::new(self.search_config.iterations as u64),
                     flop,
                     mem_read,
                     mem_write,
@@ -938,7 +938,7 @@ impl Runtime {
             let mut i = 0;
             let mut last_time_nanos = u128::MAX;
             while let Some(optimization) = optimizer.next_optimization(last_time_nanos)
-                && i < self.search_iterations
+                && i < self.search_config.iterations
             {
                 i += 1;
                 let mut kernel = kernel.clone();

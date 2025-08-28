@@ -1,10 +1,12 @@
 //! View handles movement operations.
 
+use nanoserde::{DeBin, SerBin};
+
 use crate::shape::{Axis, Dim};
 use std::{fmt::Display, ops::Range};
 
 /// .0[0] is original shape, further shapes are additional reshapes
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct View(pub Vec<Vec<RDim>>);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -13,6 +15,26 @@ pub struct RDim {
     pub st: Dim,   // stride
     pub lp: isize, // left pad
     pub rp: isize, // right pad
+}
+
+impl SerBin for RDim {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        self.d.ser_bin(output);
+        self.st.ser_bin(output);
+        output.extend(self.lp.to_le_bytes());
+        output.extend(self.rp.to_le_bytes());
+    }
+}
+
+impl DeBin for RDim {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        Ok(Self {
+            d: todo!(),
+            st: todo!(),
+            lp: todo!(),
+            rp: todo!(),
+        })
+    }
 }
 
 fn to_contiguous_rdims(shape: &[Dim]) -> Vec<RDim> {

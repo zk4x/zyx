@@ -60,7 +60,7 @@ pub struct CUDAMemoryPool {
     //cuMemcpyHtoD: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize) -> CUDAStatus,
     //cuMemcpyPeer: unsafe extern "C" fn(CUdeviceptr, CUcontext, CUdeviceptr, CUcontext, usize) -> CUDAStatus,
     //cuCtxSetCurrent: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
-    //cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
+    cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus,
 }
 
 #[derive(Debug)]
@@ -121,6 +121,7 @@ pub struct CUDAEvent {
     event: CUevent,
 }
 
+// TODO remove this using channels
 unsafe impl Send for CUDAMemoryPool {}
 unsafe impl Send for CUDADevice {}
 unsafe impl Send for CUDABuffer {}
@@ -198,6 +199,7 @@ pub(super) fn initialize_device(
     let cuEventRecord = *unsafe { cuda.get(b"cuEventRecord\0") }.unwrap();
     let cuEventSynchronize = *unsafe { cuda.get(b"cuEventSynchronize\0") }.unwrap();
     let cuEventDestroy = *unsafe { cuda.get(b"cuEventDestroy\0") }.unwrap();
+    let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
     //let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }.unwrap();
 
     if let Err(err) = unsafe { cuInit(0) }.check(ErrorStatus::Initialization) {
@@ -299,7 +301,7 @@ pub(super) fn initialize_device(
             //cuMemcpyHtoD,
             //cuMemcpyPeer,
             //cuCtxSetCurrent,
-            //cuCtxDestroy,
+            cuCtxDestroy,
         });
         memory_pools.push(Pool::new(pool));
         let mut streams = Vec::new();

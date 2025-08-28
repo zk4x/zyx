@@ -1,5 +1,5 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
-use crate::backend::{BufferId, Device, DeviceConfig, Event, MemoryPool};
+use crate::backend::{BufferId, Config, Device, Event, MemoryPool, SearchConfig};
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{BOp, Graph, Node, ROp, UOp};
@@ -36,8 +36,8 @@ pub struct Runtime {
     pub rng: Rng,
     /// Are we in training mode?
     pub training: bool,
-    /// How many variations of one kernel to try during optimization
-    pub search_iterations: usize,
+    /// Search configuration
+    pub search_config: SearchConfig,
     /// Debug mask
     pub debug: DebugMask,
     /// Temporary storage, TODO limit the number of elements in temporary storage
@@ -97,7 +97,7 @@ impl Runtime {
             config_dir: None,
             cache: Cache::new(),
             training: false,
-            search_iterations: 0,
+            search_config: SearchConfig::new(),
             debug: DebugMask(0),
             temp_data: Vec::new(),
             constants: [Constant::I32(0); NUM_CONSTANTS],
@@ -135,15 +135,6 @@ impl Runtime {
             self.debug = DebugMask(x);
         }
 
-        // ZYX_SEARCH is number of variations of one kernel that will be tried
-        // during each run of the program. Timings are cached to disk,
-        // so rerunning the same kernels will continue the search where it left of.
-        if let Ok(x) = std::env::var("ZYX_SEARCH")
-            && let Ok(x) = x.parse()
-        {
-            self.search_iterations = x;
-        }
-
         // Search through config directory and find zyx/backend_config.json
         // If not found or failed to parse, use defaults.
 
@@ -153,7 +144,7 @@ impl Runtime {
                 if path.is_absolute() { Some(path) } else { None }
             })
             .or_else(|| env::home_dir().map(|home| home.join(".config")))
-            .map(|path| path.join("zyx/device_config.json"))
+            .map(|path| path.join("zyx/config.json"))
             .and_then(|mut path| {
                 if let Ok(file) = std::fs::read_to_string(&path) {
                     path.pop();
@@ -164,12 +155,12 @@ impl Runtime {
                 }
             });
 
-        let device_config = config_file
+        let config = config_file
             .and_then(|file| {
                 DeJson::deserialize_json(&file)
                     .map_err(|e| {
                         if self.debug.dev() {
-                            println!("Failed to parse device_config.json, {e}");
+                            println!("Failed to parse config.json, {e}");
                         }
                     })
                     .ok()
@@ -183,24 +174,27 @@ impl Runtime {
                 if self.debug.dev() {
                     println!("Failed to get device config, using defaults.");
                 }
-                DeviceConfig::default()
+                Config::default()
             });
 
         // Load optimizer cache from disk if it exists
-        /*if let Some(mut path) = self.config_dir.clone() {
+        if let Some(mut path) = self.config_dir.clone() {
             path.push("cached_kernels");
             if let Ok(mut file) = std::fs::File::open(path) {
                 use std::io::Read;
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf).unwrap();
-                if let Ok(kernel_cache) = bitcode::decode(&buf) {
-                    self.kernel_cache = kernel_cache;
+                if let Ok(kernel_cache) = nanoserde::DeBin::deserialize_bin(&buf) {
+                    self.cache = kernel_cache;
                 }
             }
-        }*/
-        crate::backend::initialize_backends(&device_config, &mut self.pools, &mut self.devices, self.debug.dev())?;
+        }
+
+        crate::backend::initialize_backends(&config, &mut self.pools, &mut self.devices, self.debug.dev())?;
         self.pools.shrink_to_fit();
         self.devices.shrink_to_fit();
+
+        self.search_config = config.search;
         Ok(())
     }
 

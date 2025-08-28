@@ -5,11 +5,12 @@ use crate::{
     graph::{BOp, UOp},
 };
 use half::{bf16, f16};
+use nanoserde::{DeBin, SerBin};
 use std::fmt::{Debug, Display};
 
 /// Represents the data type used for operations.
 #[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum DType {
     /// 16 bit bfloat data type.
     BF16,
@@ -39,7 +40,7 @@ pub enum DType {
     Bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Constant {
     BF16([u8; 2]), // le bytes
     F16([u8; 2]),  // le bytes

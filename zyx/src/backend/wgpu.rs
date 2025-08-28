@@ -16,9 +16,15 @@ use wgpu::{
     util::DownloadBuffer,
 };
 
-#[derive(DeJson, Debug, Default)]
+#[derive(DeJson, Debug)]
 pub struct WGPUConfig {
     enabled: bool,
+}
+
+impl Default for WGPUConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug)]

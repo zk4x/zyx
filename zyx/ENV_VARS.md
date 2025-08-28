@@ -24,8 +24,3 @@ Zyx printgs kernels in intermediate representation.
 0001 0000
 Zyx prints kernels in native assembly or other native code (e.g. opencl kernel source code).
 16 - asm
-
-
-For kernel search zyx uses ZYX_SEARCH variable.
-For example ZYX_SEARCH=1000 will search over 1000 variations of each kernel before caching
-them to disk and continuing with the next kernel.

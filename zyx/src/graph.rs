@@ -1,5 +1,7 @@
 //! Graph of tensor operations.
 
+use nanoserde::{DeBin, SerBin};
+
 use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::{
@@ -319,7 +321,7 @@ impl std::ops::IndexMut<TensorId> for Graph {
 use crate::dtype::Constant;
 
 #[allow(unused)]
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
 pub enum BOp {
     Add,
     Sub,
@@ -340,7 +342,7 @@ pub enum BOp {
     NotEq,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
 pub enum UOp {
     ReLU,
     Neg,
@@ -353,7 +355,7 @@ pub enum UOp {
     Not,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
 pub enum ROp {
     Sum,
     Max,
