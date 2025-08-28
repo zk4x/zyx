@@ -8,6 +8,7 @@
 use std::{
     ffi::{c_char, c_int, c_uint, c_void},
     fmt::Write,
+    hash::BuildHasherDefault,
     ptr,
     sync::Arc,
 };
@@ -16,10 +17,11 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    DType,
+    DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::Kernel,
+    graph::{BOp, UOp},
+    kernel::{Kernel, Op, OpId, Scope},
     shape::Dim,
     slab::Slab,
 };
@@ -106,8 +108,8 @@ pub(super) struct CUDAProgram {
     //name: String,
     module: CUmodule,
     function: CUfunction,
-    global_work_size: [Dim; 3],
-    local_work_size: [Dim; 3],
+    gws: Vec<Dim>,
+    lws: Vec<Dim>,
 }
 
 #[derive(Debug)]
@@ -397,9 +399,13 @@ pub(super) fn initialize_device(
 }
 
 impl CUDAMemoryPool {
-    pub const fn deinitialize(&mut self) { let _ = self; }
+    pub const fn deinitialize(&mut self) {
+        let _ = self;
+    }
 
-    pub const fn free_bytes(&self) -> Dim { self.free_bytes }
+    pub const fn free_bytes(&self) -> Dim {
+        self.free_bytes
+    }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
@@ -503,17 +509,25 @@ impl CUDAMemoryPool {
 }
 
 impl CUDADevice {
-    pub const fn deinitialize(&mut self) { let _ = self; }
+    pub const fn deinitialize(&mut self) {
+        let _ = self;
+    }
 
-    pub const fn info(&self) -> &DeviceInfo { &self.dev_info }
+    pub const fn info(&self) -> &DeviceInfo {
+        &self.dev_info
+    }
 
-    pub const fn memory_pool_id(&self) -> u32 { self.memory_pool_id }
+    pub const fn memory_pool_id(&self) -> u32 {
+        self.memory_pool_id
+    }
 
-    pub const fn free_compute(&self) -> u128 { self.dev_info.compute }
+    pub const fn free_compute(&self) -> u128 {
+        self.dev_info.compute
+    }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
-        //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
+        //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
 
         let mut module = ptr::null_mut();
         if let Err(err) = unsafe {
@@ -547,8 +561,8 @@ impl CUDADevice {
             //name,
             module,
             function,
-            global_work_size: gws,
-            local_work_size: lws,
+            gws,
+            lws,
         });
         Ok(program_id)
     }
@@ -589,12 +603,12 @@ impl CUDADevice {
         unsafe {
             (self.cuLaunchKernel)(
                 program.function,
-                u32::try_from(program.global_work_size[0]).unwrap(),
-                u32::try_from(program.global_work_size[1]).unwrap(),
-                u32::try_from(program.global_work_size[2]).unwrap(),
-                u32::try_from(program.local_work_size[0]).unwrap(),
-                u32::try_from(program.local_work_size[1]).unwrap(),
-                u32::try_from(program.local_work_size[2]).unwrap(),
+                u32::try_from(program.gws.get(0).copied().unwrap_or(1)).unwrap(),
+                u32::try_from(program.gws.get(1).copied().unwrap_or(1)).unwrap(),
+                u32::try_from(program.gws.get(2).copied().unwrap_or(1)).unwrap(),
+                u32::try_from(program.lws.get(0).copied().unwrap_or(1)).unwrap(),
+                u32::try_from(program.lws.get(1).copied().unwrap_or(1)).unwrap(),
+                u32::try_from(program.lws.get(2).copied().unwrap_or(1)).unwrap(),
                 0,
                 self.streams[stream_id].stream,
                 kernel_params.as_mut_ptr(),
@@ -643,178 +657,309 @@ impl CUDADevice {
         &self,
         kernel: &Kernel,
         debug_asm: bool,
-    ) -> Result<([Dim; 3], [Dim; 3], String, Vec<u8>), BackendError> {
-        let mut source = String::from("(\n");
-        let mut indent = String::from("  ");
-
-        let mut global_work_size = [0; 3];
-        let mut local_work_size = [0; 3];
-
-        /*for (i, op) in kernel.ops[..6].iter().enumerate() {
-            if let &IROp::Loop { len } = op {
-                if i < 3 {
-                    global_work_size[i] = len;
-                } else {
-                    local_work_size[i - 3] = len;
+    ) -> Result<(Vec<Dim>, Vec<Dim>, String, Vec<u8>), BackendError> {
+        fn new_reg(
+            op_id: OpId,
+            reg_map: &mut Map<OpId, usize>,
+            registers: &mut Vec<(DType, u32)>,
+            dtype: DType,
+            rc: u32,
+        ) -> usize {
+            for (i, (dt, nrc)) in registers.iter_mut().enumerate() {
+                if *nrc == 0 && *dt == dtype {
+                    reg_map.insert(op_id, i);
+                    registers[i].1 = rc;
+                    return i;
                 }
+            }
+            let i = registers.len();
+            registers.push((dtype, rc));
+            reg_map.insert(op_id, i);
+            i
+        }
+
+        fn get_var(
+            op_id: OpId,
+            constants: &Map<OpId, Constant>,
+            indices: &Map<OpId, u8>,
+            reg_map: &Map<OpId, usize>,
+            registers: &mut [(DType, u32)],
+        ) -> String {
+            if let Some(c) = constants.get(&op_id) {
+                c.cu()
+            } else if let Some(id) = indices.get(&op_id) {
+                format!("idx{id}")
+            } else if let Some(reg) = reg_map.get(&op_id) {
+                registers[*reg].1 -= 1;
+                format!("r{reg}")
             } else {
                 unreachable!()
             }
-        }*/
+        }
 
-        // Declare global variables
-        /*for (id, (read_only, dtype)) in kernel.global_variables.iter().enumerate() {
-            writeln!(
-                source,
-                "{indent}{}{}* p{id},",
-                if *read_only { "const " } else { "" },
-                dtype.cu(),
-            );
-        }*/
-
-        source.pop();
-        source.pop();
-        source.push_str("\n) {\n");
-
-        // Declare local variables
-        /*for (id, (scope, dtype, len, _)) in kernel.local_variables.iter().enumerate() {
-            writeln!(
-                source,
-                "{indent}__shared__ {} p{id}[{len}];",
-                //if *read_only { "const " } else { "" },
-                dtype.cu(),
-            );
-        }*/
-
-        // Declare register variables
-        /*for (id, dtype) in kernel.registers.iter().enumerate() {
-            writeln!(source, "{indent}{} r{id};", dtype.cu());
-        }*/
-
-        // Add indices for global and local loops
-        writeln!(
-            source,
-            "{indent}r0 = blockIdx.x;  /* 0..{} */\n{indent}r1 = blockIdx.y;  /* 0..{} */\n{indent}r2 = blockIdx.z;  /* 0..{} */\n{indent}r3 = threadIdx.x;  /* 0..{} */\n{indent}r4 = threadIdx.y;  /* 0..{} */\n{indent}r5 = threadIdx.z;  /* 0..{} */",
-            global_work_size[0],
-            global_work_size[1],
-            global_work_size[2],
-            local_work_size[0],
-            local_work_size[1],
-            local_work_size[2]
-        );
-
-        /*for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
-            match op {
-                IROp::Load { z, address, offset } => {
-                    writeln!(source, "{indent}r{z} = p{address}[{}];", offset.cu());
-                }
-                IROp::Store { address, offset, x } => {
-                    writeln!(source, "{indent}p{address}[{}] = {};", offset.cu(), x.cu());
-                }
-                IROp::Set { z, value } => {
-                    writeln!(source, "{indent}r{z} = {};", value.cu());
-                }
-                IROp::Cast { z, x, dtype } => {
-                    writeln!(source, "{indent}r{} = ({})r{};", z, dtype.cu(), x);
-                }
-                IROp::Unary { z, x, uop } => {
-                    let dtype = kernel.registers[z as usize];
-                    let zero = Constant::new(0).cast(dtype).cu();
-                    match uop {
-                        UOp::ReLU => {
-                            if dtype == DType::F16 {
-                                writeln!(
-                                    source,
-                                    "{indent}r{z} = r{x} * __float2half(r{x} > {zero});"
-                                )
-                            } else {
-                                writeln!(source, "{indent}r{z} = r{x} * (r{x} > {zero});")
-                            }
-                        }
-                        UOp::Neg => writeln!(source, "{indent}r{z} = -r{x};"),
-                        UOp::Exp2 => writeln!(source, "{indent}r{z} = exp2(r{x});"),
-                        UOp::Log2 => writeln!(source, "{indent}r{z} = log2(r{x});"),
-                        UOp::Reciprocal => writeln!(source, "{indent}r{z} = 1/r{x};"),
-                        UOp::Sqrt => writeln!(source, "{indent}r{z} = sqrt(r{x});"),
-                        UOp::Sin => writeln!(source, "{indent}r{z} = sin(r{x});"),
-                        UOp::Cos => writeln!(source, "{indent}r{z} = cos(r{x});"),
-                        UOp::Not => writeln!(source, "{indent}r{z} = !r{x};"),
-                    };
-                }
-                IROp::Binary { z, x, y, bop } => {
-                    writeln!(
-                        source,
-                        "{indent}r{z} = {};",
-                        match bop {
-                            BOp::Add => format!("{} + {}", x.cu(), y.cu()),
-                            BOp::Sub => format!("{} - {}", x.cu(), y.cu()),
-                            BOp::Mul => format!("{} * {}", x.cu(), y.cu()),
-                            BOp::Div => format!("{} / {}", x.cu(), y.cu()),
-                            BOp::Mod => format!("{} % {}", x.cu(), y.cu()),
-                            BOp::Pow => format!("pow({}, {})", x.cu(), y.cu()),
-                            BOp::Cmplt => format!("{} < {}", x.cu(), y.cu()),
-                            BOp::Cmpgt => format!("{} > {}", x.cu(), y.cu()),
-                            BOp::Max => format!("max({}, {})", x.cu(), y.cu()),
-                            BOp::Or => format!("{} || {}", x.cu(), y.cu()),
-                            BOp::And => format!("{} && {}", x.cu(), y.cu()),
-                            BOp::BitOr => format!("{} | {}", x.cu(), y.cu()),
-                            BOp::BitAnd => format!("{} & {}", x.cu(), y.cu()),
-                            BOp::BitXor => format!("{} ^ {}", x.cu(), y.cu()),
-                            BOp::NotEq => format!("{} != {}", x.cu(), y.cu()),
-                            BOp::BitShiftLeft => format!("{} << {}", x.cu(), y.cu()),
-                            BOp::BitShiftRight => format!("{} >> {}", x.cu(), y.cu()),
-                        }
-                    );
-                }
-                IROp::MAdd { z, a, b, c } => {
-                    writeln!(
-                        source,
-                        "{indent}r{z} = {} * {} + {};",
-                        a.cu(),
-                        b.cu(),
-                        c.cu()
-                    );
-                }
-                IROp::Loop { id, len } => {
-                    writeln!(
-                        source,
-                        "{indent}for (unsigned int r{id} = 0; r{id} < {len}; r{id} += 1) {{"
-                    );
-                    indent.push_str("  ");
-                }
-                IROp::EndLoop { .. } => {
-                    indent.pop();
-                    indent.pop();
-                    writeln!(source, "{indent}}}");
-                }
-                IROp::LocalBarrier => {
-                    writeln!(source, "__syncthreads()");
-                }
-                _ => {
-                    todo!()
+        let mut gws = Vec::new();
+        let mut lws = Vec::new();
+        for op in &kernel.ops {
+            if let &Op::Loop { dim, scope } = op {
+                match scope {
+                    Scope::Global => {
+                        gws.push(dim);
+                    }
+                    Scope::Local => {
+                        lws.push(dim);
+                    }
+                    Scope::Register => {}
                 }
             }
-        }*/
-        source += "}\n";
+        }
 
-        let mut name = format!(
-            "k_{}_{}_{}__{}_{}_{}",
-            global_work_size[0],
-            global_work_size[1],
-            global_work_size[2],
-            local_work_size[0],
-            local_work_size[1],
-            local_work_size[2],
-        );
+        if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "Invalid local work size.".into(),
+            });
+        }
+
+        let mut global_args = String::new();
+        for (i, op) in kernel.ops.iter().enumerate() {
+            if let &Op::Define { dtype, scope, ro, .. } = op
+                && scope == Scope::Global
+            {
+                writeln!(
+                    global_args,
+                    "  __global {}{}* p{i},",
+                    if ro { "const " } else { "" },
+                    dtype.cu()
+                )
+                .unwrap();
+            }
+        }
+        global_args.pop();
+        global_args.pop();
+        global_args.push('\n');
+
+        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
+        let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+
+        // first we will calculate those reference counts.
+        for (i, op) in kernel.ops.iter().enumerate() {
+            match op {
+                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } => unreachable!(),
+                Op::Const(x) => {
+                    dtypes.insert(i, x.dtype());
+                }
+                &Op::Define { dtype, .. } => {
+                    dtypes.insert(i, dtype);
+                }
+                &Op::Load { src, index } => {
+                    dtypes.insert(i, dtypes[&src]);
+                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                &Op::Store { dst, x: src, index } => {
+                    dtypes.insert(i, dtypes[&src]);
+                    rcs.entry(dst).and_modify(|rc| *rc += 1).or_insert(1);
+                    rcs.entry(src).and_modify(|rc| *rc += 1).or_insert(1);
+                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                &Op::Cast { x, dtype } => {
+                    dtypes.insert(i, dtype);
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                &Op::Unary { x, .. } => {
+                    dtypes.insert(i, dtypes[&x]);
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                &Op::Binary { x, y, bop } => {
+                    dtypes.insert(i, dtypes[&x]);
+                    if matches!(bop, BOp::NotEq | BOp::Cmpgt | BOp::Cmplt | BOp::And | BOp::Or) {
+                        dtypes.insert(i, DType::Bool);
+                    }
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+                Op::Loop { .. } => {
+                    dtypes.insert(i, DType::U32);
+                }
+                Op::EndLoop => {}
+                &Op::Reduce { x, .. } => {
+                    dtypes.insert(i, dtypes[&x]);
+                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                }
+            }
+        }
+
+        let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
+        let mut registers: Vec<(DType, u32)> = Vec::new();
+
+        let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
+
+        let mut n_global_ids = 0;
+        let mut loop_id = 0;
+        let mut indent = String::from("  ");
+        let mut source = String::with_capacity(1000);
+
+        for (i, op) in kernel.ops.iter().enumerate() {
+            //println!("{i} -> {op:?}");
+            match op {
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                &Op::Const(x) => {
+                    constants.insert(i, x);
+                }
+                &Op::Define { dtype, scope, ro, len } => {
+                    if scope == Scope::Register {
+                        writeln!(
+                            source,
+                            "{indent}{}{} p{i}[{len}];",
+                            if ro { "const " } else { "" },
+                            dtype.cu(),
+                        )
+                        .unwrap();
+                    }
+                }
+                &Op::Load { src, index } => {
+                    let dtype = dtypes[&src];
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
+                }
+                &Op::Store { dst, x: src, index } => {
+                    writeln!(
+                        source,
+                        "{indent}p{dst}[{}] = {};",
+                        get_var(index, &constants, &indices, &reg_map, &mut registers),
+                        get_var(src, &constants, &indices, &reg_map, &mut registers)
+                    )
+                    .unwrap();
+                }
+                &Op::Cast { x, dtype } => {
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    writeln!(source, "{indent}r{reg} = ({}){x};", dtype.cu(),).unwrap();
+                }
+                &Op::Unary { x, uop } => {
+                    let dtype = dtypes[&x];
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    match uop {
+                        UOp::ReLU => {
+                            writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().cu()).unwrap();
+                        }
+                        UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};").unwrap(),
+                        UOp::Exp2 => {
+                            //writeln!(source, "{indent}printf(\"%d\\n\", r{reg});").unwrap();
+                            writeln!(source, "{indent}r{reg} = exp2({x});").unwrap();
+                        }
+                        UOp::Log2 => writeln!(source, "{indent}r{reg} = log2({x});").unwrap(),
+                        UOp::Reciprocal => {
+                            writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().cu()).unwrap();
+                        }
+                        UOp::Sqrt => writeln!(source, "{indent}r{reg} = sqrt({x});").unwrap(),
+                        UOp::Sin => writeln!(source, "{indent}r{reg} = sin({x});").unwrap(),
+                        UOp::Cos => writeln!(source, "{indent}r{reg} = cos({x});").unwrap(),
+                    }
+                }
+                &Op::Binary { x, y, bop } => {
+                    let dtype = dtypes[&x];
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    match bop {
+                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};").unwrap(),
+                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),
+                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};").unwrap(),
+                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};").unwrap(),
+                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow({x}, {y});").unwrap(),
+                        BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};").unwrap(),
+                        BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};").unwrap(),
+                        BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};").unwrap(),
+                        BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});").unwrap(),
+                        BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};").unwrap(),
+                        BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};").unwrap(),
+                        BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};").unwrap(),
+                        BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};").unwrap(),
+                        BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};").unwrap(),
+                        BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};").unwrap(),
+                        BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};").unwrap(),
+                        BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};").unwrap(),
+                    }
+                }
+                &Op::Loop { dim, scope } => {
+                    indices.insert(i, loop_id);
+                    match scope {
+                        Scope::Global => {
+                            writeln!(
+                                source,
+                                "{indent}unsigned int idx{loop_id} = get_group_id({loop_id}); // 0..{dim}"
+                            )
+                            .unwrap();
+                            n_global_ids += 1;
+                        }
+                        Scope::Local => {
+                            writeln!(
+                                source,
+                                "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..{dim}",
+                                loop_id - n_global_ids
+                            )
+                            .unwrap();
+                        }
+                        Scope::Register => {
+                            writeln!(
+                                source,
+                                "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
+                            )
+                            .unwrap();
+                            indent += "  ";
+                        }
+                    }
+                    loop_id += 1;
+                }
+                Op::EndLoop => {
+                    indent.pop();
+                    indent.pop();
+                    writeln!(source, "{indent}}}").unwrap();
+                    loop_id -= 1;
+                }
+            }
+        }
+
+        let mut reg_str = String::new();
+        let (dt, _) = registers.remove(0);
+        let mut prev_dt = dt;
+        write!(reg_str, "{indent}{} r0", dt.cu()).unwrap();
+        let mut i = 1;
+        for (dt, _) in registers {
+            if dt == prev_dt {
+                write!(reg_str, ", r{i}").unwrap();
+            } else {
+                write!(reg_str, ";\n{indent}{} r{i}", dt.cu()).unwrap();
+            }
+            prev_dt = dt;
+            i += 1;
+        }
+        writeln!(reg_str, ";").unwrap();
+
         let mut pragma = String::new();
-        if source.contains("__half") {
+        if dtypes.values().any(|&x| x == DType::F16) {
             pragma += "#include <cuda_fp16.h>\n";
         }
-        let source = format!("{pragma}extern \"C\" __global__ void {name}{source}\0");
-        name += "\0";
+        if dtypes.values().any(|&x| x == DType::F64) {
+            pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+        }
+
+        let mut name = format!(
+            "k_{}__{}",
+            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+        );
+
+        let source =
+            format!("{pragma}extern \"C\" __global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\0",);
         if debug_asm {
+            println!();
             println!("{source}");
         }
+        name += "\0";
 
         let cudartc_paths = [
             "/lib/x86_64-linux-gnu/libnvrtc.so",
@@ -826,7 +971,7 @@ impl CUDADevice {
         let cudartc = cudartc_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
         let Some(cudartc) = cudartc else {
             return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
+                status: ErrorStatus::Initialization,
                 context: "CUDA libnvrtc.so not found.".into(),
             });
         };
@@ -888,35 +1033,84 @@ impl CUDADevice {
         let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
         unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr().cast()) }.check(ErrorStatus::KernelCompilation)?;
         unsafe { nvrtcDestroyProgram(&raw mut program) }.check(ErrorStatus::KernelCompilation)?;
-        Ok((global_work_size, local_work_size, name, ptx_vec))
+        Ok((gws, lws, name, ptx_vec))
     }
 
     #[allow(unused)]
-    fn compile_ptx(&mut self, kernel: &Kernel, debug_asm: bool) -> ([Dim; 3], [Dim; 3], Box<str>, Vec<u8>) {
-        let mut global_work_size = [0; 3];
-        let mut local_work_size = [0; 3];
-        /*for (i, op) in kernel.ops[..3].iter().enumerate() {
-            if let IROp::Loop { len } = op {
-                global_work_size[i] = *len;
+    fn compile_ptx(
+        &mut self,
+        kernel: &Kernel,
+        debug_asm: bool,
+    ) -> Result<(Vec<Dim>, Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
+        fn new_reg(
+            op_id: OpId,
+            reg_map: &mut Map<OpId, usize>,
+            registers: &mut Vec<(DType, u32)>,
+            dtype: DType,
+            rc: u32,
+        ) -> usize {
+            for (i, (dt, nrc)) in registers.iter_mut().enumerate() {
+                if *nrc == 0 && *dt == dtype {
+                    reg_map.insert(op_id, i);
+                    registers[i].1 = rc;
+                    return i;
+                }
+            }
+            let i = registers.len();
+            registers.push((dtype, rc));
+            reg_map.insert(op_id, i);
+            i
+        }
+
+        fn get_var(
+            op_id: OpId,
+            constants: &Map<OpId, Constant>,
+            indices: &Map<OpId, u8>,
+            reg_map: &Map<OpId, usize>,
+            registers: &mut [(DType, u32)],
+        ) -> String {
+            if let Some(c) = constants.get(&op_id) {
+                c.cu()
+            } else if let Some(id) = indices.get(&op_id) {
+                format!("%idx{id}")
+            } else if let Some(reg) = reg_map.get(&op_id) {
+                registers[*reg].1 -= 1;
+                format!("%r{reg}")
+            } else {
+                unreachable!()
             }
         }
-        for (i, op) in kernel.ops[3..6].iter().enumerate() {
-            if let IROp::Loop { len } = op {
-                local_work_size[i] = *len;
+        let mut gws = Vec::new();
+        let mut lws = Vec::new();
+        for op in &kernel.ops {
+            if let &Op::Loop { dim, scope } = op {
+                match scope {
+                    Scope::Global => {
+                        gws.push(dim);
+                    }
+                    Scope::Local => {
+                        lws.push(dim);
+                    }
+                    Scope::Register => {}
+                }
             }
-        }*/
+        }
+
+        if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "Invalid local work size.".into(),
+            });
+        }
+
         let name = format!(
-            "k__{}_{}__{}_{}__{}_{}",
-            global_work_size[0],
-            local_work_size[0],
-            global_work_size[1],
-            local_work_size[1],
-            global_work_size[2],
-            local_work_size[2],
+            "k_{}__{}",
+            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
-        let indent = "    ";
-        let mut source = format!(
+        let mut indent = String::from("  ");
+        let mut global_args = format!(
             ".version {0}.{1}
 .target sm_{0}{1}
 .address_size 64
@@ -924,160 +1118,267 @@ impl CUDADevice {
             self.compute_capability[0], self.compute_capability[1]
         );
         // Declare global variables
-        /*for (id, (_, _)) in kernel.global_variables.iter().enumerate() {
-            writeln!(source, "{indent}.param    .u64 g{id},");
-        }*/
-        source.pop();
-        source.pop();
-        source += "\n) {\n";
+        for (i, op) in kernel.ops.iter().enumerate() {
+            if let &Op::Define { dtype, scope, ro, .. } = op
+                && scope == Scope::Global
+            {
+                writeln!(global_args, "{indent}.param .u64 g{i},").unwrap();
+            }
+        }
+        global_args.pop();
+        global_args.pop();
+        global_args += "\n) {\n";
 
-        // TOOD declare local variables
+        let (rcs, dtypes) = get_dtypes(&kernel);
 
-        // Temporaries
-        writeln!(source, "{indent}.reg  .pred    p;");
-        writeln!(source, "{indent}.reg  .s64    a0;");
-        writeln!(source, "{indent}.reg  .s64    a1;");
-        // Declare register variables
-        /*for (id, dtype) in kernel.registers.iter().enumerate() {
-            writeln!(source, "{indent}.reg  .{}    r{id};", dtype.ptx());
-        }*/
-        // Add indices for global and local loops
-        writeln!(source, "{indent}mov.u32    r0, %ctaid.x;");
-        writeln!(source, "{indent}mov.u32    r1, %tid.x;");
-        writeln!(source, "{indent}mov.u32    r2, %ctaid.y;");
-        writeln!(source, "{indent}mov.u32    r3, %tid.y;");
-        writeln!(source, "{indent}mov.u32    r4, %ctaid.z;");
-        writeln!(source, "{indent}mov.u32    r5, %tid.z;");
+        let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
+        let mut registers: Vec<(DType, u32)> = Vec::new();
 
-        let mut loop_id = 6;
-        /*for op in kernel.ops[6..kernel.ops.len() - 6].iter().copied() {
+        let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
+
+        let mut n_global_ids = 0;
+        let mut loop_id = 0;
+        let mut source = String::with_capacity(1000);
+
+        for (i, op) in kernel.ops.iter().enumerate() {
+            //println!("{i} -> {op:?}");
             match op {
-                IROp::Set { z, value } => {
-                    writeln!(source, "{indent}mov.{}  r{z}, {};", value.dtype().ptx(), value.cu());
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                &Op::Const(x) => {
+                    constants.insert(i, x);
                 }
-                IROp::Load { z, address, offset } => {
-                    let dtype = kernel.registers[z as usize];
-                    // Get address
-                    writeln!(
-                        source,
-                        "{indent}ld.param.u64    a0, [a{address}+{}];",
-                        offset.cu()
-                    );
-                    // Convert address to global
-                    writeln!(source, "{indent}cvta.to.global.u64    a1, a0;");
-                    // Load from global to register
-                    writeln!(source, "{indent}ld.global.{}    r{}, [a1];", dtype.ptx(), z);
-                }
-                IROp::Store { address, offset: _, x } => {
-                    let Reg::Var(id) = x else { panic!() };
-                    let dtype = kernel.registers[id as usize];
-                    // Get address
-                    writeln!(source, "{indent}ld.param.u64    a0, [a{address}];");
-                    // Convert address to global
-                    writeln!(source, "{indent}cvta.to.global.u64    a1, a0;");
-                    // Load from global to register
-                    writeln!(
-                        source,
-                        "{indent}st.global.{}    [a1], {};",
-                        dtype.ptx(),
-                        x.cu()
-                    );
-                }
-                IROp::Unary { z, x, uop } => {
-                    let dtype = kernel.registers[z as usize];
-                    match uop {
-                        UOp::ReLU => todo!(),
-                        UOp::Neg => _ = writeln!(source, "{indent}neg.{}   r{z}, r{x};", dtype.ptx()),
-                        UOp::Exp2 => {
-                            _ = writeln!(source, "{indent}ex2.approx.{}   r{z}, r{x};", dtype.ptx());
+                &Op::Define { dtype, scope, ro, len } => {
+                    match scope {
+                        Scope::Global => {
+                            writeln!(source, "{indent}ld.param.u64 %p{i}, [g{i}];");
                         }
-                        UOp::Log2 => {
-                            _ = writeln!(source, "{indent}lg2.approx.{}   r{z}, r{x};", dtype.ptx());
-                        }
-                        UOp::Sqrt => {
-                            _ = writeln!(source, "{indent}sqrt.approx.{}   r{z}, r{x};", dtype.ptx());
-                        }
-                        UOp::Sin => {
-                            _ = writeln!(source, "{indent}sin.approx.{}   r{z}, r{x};", dtype.ptx());
-                        }
-                        UOp::Cos => {
-                            _ = writeln!(source, "{indent}cos.approx.{}   r{z}, r{x};", dtype.ptx());
-                        }
-                        UOp::Not => {
-                            _ = writeln!(source, "{indent}not.{}   r{z}, r{x};", dtype.ptx());
-                        }
-                        UOp::Reciprocal => todo!(),
+                        Scope::Local => todo!(),
+                        Scope::Register => todo!(),
                     }
                 }
-                IROp::Binary { z, x, y, bop } => {
-                    let dtype = kernel.registers[z as usize];
-                    //println!("Adding binary {bop:?}");
-                    writeln!(
-                        source,
-                        "{indent}{}.{}   r{z}, r{x}, r{y};",
-                        match bop {
-                            BOp::Add => "add",
-                            BOp::Sub => "sub",
-                            BOp::Mul => "mul",
-                            BOp::Div => "div",
-                            BOp::Pow => todo!(),
-                            BOp::Cmplt => "set.lt",
-                            BOp::Cmpgt => "set.gt",
-                            BOp::NotEq => "set.ne",
-                            BOp::Max => todo!(),
-                            BOp::Or => todo!(),
-                            BOp::And => todo!(),
-                            BOp::BitOr => todo!(),
-                            BOp::BitAnd => todo!(),
-                            BOp::BitXor => todo!(),
-                            BOp::Mod => todo!(),
-                            BOp::BitShiftLeft => todo!(),
-                            BOp::BitShiftRight => todo!(),
-                        },
-                        dtype.ptx(),
-                    );
+                &Op::Load { src, index } => {
+                    let dtype = dtypes[&src];
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
+                    writeln!(source, "{indent}shl.b64 %offset, %offset, {};", dtype.byte_size().ilog2());
+                    writeln!(source, "{indent}add.u64 %address, %p{src}, %offset;");
+                    writeln!(source, "{indent}ld.global.{} %r{reg}, [%address];", dtype.ptx());
                 }
-                /*IROp::MAdd { z, a, b, c } => {
-                    let dtype = kernel.registers[z as usize];
-                    writeln!(
-                        source,
-                        "{indent}mad.lo.{}    r{z}, {}, {}, {};",
-                        dtype.ptx(),
-                        a.cu(),
-                        b.cu(),
-                        c.cu()
-                    );
-                }*/
-                IROp::Loop { .. } => {
-                    writeln!(source, "LOOP_{id}:");
+                &Op::Store { dst, x: src, index } => {
+                    let dtype = dtypes[&src];
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
+                    let src = get_var(src, &constants, &indices, &reg_map, &mut registers);
+                    writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
+                    writeln!(source, "{indent}shl.b64 %offset, %offset, {};", dtype.byte_size().ilog2());
+                    writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;");
+                    writeln!(source, "{indent}st.global.{} [%address], {src};", dtype.ptx());
                 }
-                IROp::EndLoop { len } => {
-                    // Increment counter
-                    writeln!(source, "{indent}add.u32    r{id}, r{id}, 1;");
-                    // Set condition
-                    writeln!(source, "{indent}setp.lt.u32    p, r{id}, {len};");
-                    // Branch
-                    writeln!(source, "@p  bra    LOOP_{id};");
+                &Op::Cast { x, dtype } => {
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    writeln!(source, "{indent}r{reg} = ({}){x};", dtype.cu(),).unwrap();
                 }
-                IROp::LocalBarrier => {
-                    writeln!(source, "__syncthreas()");
+                &Op::Unary { x, uop } => {
+                    let dtype = dtypes[&x];
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    match uop {
+                        UOp::ReLU => {
+                            writeln!(source, "{indent}max.{} %r{reg}, {x}, 0.0;", dtype.ptx()).unwrap();
+                        }
+                        UOp::Neg => {
+                            writeln!(source, "{indent}neg.{} %r{reg}, {x};", dtype.ptx()).unwrap();
+                        }
+                        UOp::Exp2 => {
+                            writeln!(source, "{indent}ex2.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
+                        }
+                        UOp::Log2 => {
+                            writeln!(source, "{indent}lg2.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
+                        }
+                        UOp::Reciprocal => {
+                            writeln!(source, "{indent}rcp.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
+                        }
+                        UOp::Sqrt => {
+                            writeln!(source, "{indent}sqrt.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
+                        }
+                        UOp::Sin => {
+                            writeln!(source, "{indent}sin.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
+                        }
+                        UOp::Cos => {
+                            writeln!(source, "{indent}cos.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
+                        }
+                    }
                 }
-                IROp::Cast { z, x, dtype } => {
-                    _ = writeln!(
-                        source,
-                        "{indent}cvt.{}.{}    r{z}, r{x};",
-                        dtype.ptx(),
-                        dtype.ptx(),
-                    );
+                &Op::Binary { x, y, bop } => {
+                    let dtype = dtypes[&i];
+                    let xr = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let yr = get_var(y, &constants, &indices, &reg_map, &mut registers);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    match bop {
+                        BOp::Mul => {
+                            match dtype {
+                                DType::BF16 => todo!(),
+                                DType::F16 => todo!(),
+                                DType::F32 => todo!(),
+                                DType::F64 => todo!(),
+                                DType::U8 => todo!(),
+                                DType::U16 => todo!(),
+                                DType::U32 => {
+                                    writeln!(source, "{indent}mul.lo.u32 %r{reg}, {xr}, {yr};").unwrap();
+                                }
+                                DType::U64 => todo!(),
+                                DType::I8 => todo!(),
+                                DType::I16 => todo!(),
+                                DType::I32 => todo!(),
+                                DType::I64 => todo!(),
+                                DType::Bool => todo!(),
+                            }
+                        }
+                        BOp::Mod => {
+                            match dtype {
+                                DType::BF16 => todo!(),
+                                DType::F16 => todo!(),
+                                DType::F32 => todo!(),
+                                DType::F64 => todo!(),
+                                DType::U8 => todo!(),
+                                DType::U16 => todo!(),
+                                DType::U32 => {
+                                    writeln!(source, "{indent}rem.u32 %r{reg}, {xr}, {yr};").unwrap();
+                                }
+                                DType::U64 => todo!(),
+                                DType::I8 => todo!(),
+                                DType::I16 => todo!(),
+                                DType::I32 => todo!(),
+                                DType::I64 => todo!(),
+                                DType::Bool => todo!(),
+                            }
+                        }
+                        BOp::Add => {
+                            match dtype {
+                                DType::BF16 => todo!(),
+                                DType::F16 => todo!(),
+                                DType::F32 => todo!(),
+                                DType::F64 => todo!(),
+                                DType::U8 => todo!(),
+                                DType::U16 => todo!(),
+                                DType::U32 => {
+                                    writeln!(source, "{indent}add.u32 %r{reg}, {xr}, {yr};").unwrap();
+                                }
+                                DType::U64 => todo!(),
+                                DType::I8 => todo!(),
+                                DType::I16 => todo!(),
+                                DType::I32 => todo!(),
+                                DType::I64 => todo!(),
+                                DType::Bool => todo!(),
+                            }
+                        }
+                        BOp::NotEq => {
+                            writeln!(source, "{indent}setp.ne.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
+                        }
+                        op => todo!("{op:?}"),
+                    }
+                }
+                &Op::Loop { dim, scope } => {
+                    indices.insert(i, loop_id);
+                    match scope {
+                        Scope::Global => {
+                            writeln!(
+                                source,
+                                "{indent}mov.u32 %idx{loop_id}, %ctaid.{};",
+                                match loop_id {
+                                    0 => "x",
+                                    1 => "y",
+                                    2 => "z",
+                                    _ => unreachable!(),
+                                }
+                            )
+                            .unwrap();
+                            n_global_ids += 1;
+                        }
+                        Scope::Local => {
+                            writeln!(
+                                source,
+                                "{indent}mov.u32 %idx{loop_id}, %tid.{};",
+                                match loop_id - n_global_ids {
+                                    0 => "x",
+                                    1 => "y",
+                                    2 => "z",
+                                    _ => unreachable!(),
+                                }
+                            )
+                            .unwrap();
+                        }
+                        Scope::Register => {
+                            writeln!(
+                                source,
+                                "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
+                            )
+                            .unwrap();
+                            indent += "  ";
+                        }
+                    }
+                    loop_id += 1;
+                }
+                Op::EndLoop => {
+                    indent.pop();
+                    indent.pop();
+                    writeln!(source, "{indent}}}").unwrap();
+                    loop_id -= 1;
                 }
             }
-        }*/
-        // End kernel
-        writeln!(source, "{indent}ret;\n}}\0");
-        if debug_asm {
-            println!("Compiling kernel {name}, PTX source:\n{source}");
         }
-        (global_work_size, local_work_size, name.into(), source.into())
+
+        let mut max_loop_id = 0;
+        for op in &kernel.ops {
+            if let Op::Loop { .. } = op {
+                max_loop_id += 1;
+            }
+        }
+
+        let mut reg_str = format!("{indent}.reg .u64 %offset;\n{indent}.reg .s64 %address;\n");
+
+        for (i, op) in kernel.ops.iter().enumerate() {
+            if let Op::Define { dtype, scope, ro, len } = op && *scope == Scope::Global {
+                writeln!(reg_str, "{indent}.reg .u64 %p{i};").unwrap();
+            }
+        }
+
+        for i in 0..max_loop_id {
+            writeln!(reg_str, "{indent}.reg .u32 %idx{i};").unwrap();
+        }
+
+        let (dt, _) = registers.remove(0);
+        let mut prev_dt = dt;
+        write!(reg_str, "{indent}.reg .{} %r0", dt.ptx()).unwrap();
+        let mut i = 1;
+        for (dt, _) in registers {
+            if dt == prev_dt {
+                write!(reg_str, ", %r{i}").unwrap();
+            } else {
+                write!(reg_str, ";\n{indent}.reg .{} %r{i}", dt.ptx()).unwrap();
+            }
+            prev_dt = dt;
+            i += 1;
+        }
+        writeln!(reg_str, ";").unwrap();
+
+        let mut pragma = String::new();
+        if dtypes.values().any(|&x| x == DType::F16) {
+            pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
+        }
+        if dtypes.values().any(|&x| x == DType::F64) {
+            pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+        }
+
+        let mut loop_id = 6;
+        // End kernel
+        source = format!("{pragma}{global_args}{reg_str}{source}{indent}ret;\n}}\0");
+        if debug_asm {
+            println!("{source}");
+        }
+        Ok((gws, lws, name.into(), source.into()))
     }
 }
 
@@ -1305,7 +1606,7 @@ impl DType {
             Self::I16 => "s16",
             Self::I32 => "s32",
             Self::I64 => "s64",
-            Self::Bool => "bool",
+            Self::Bool => "pred",
             Self::U8 => "u8",
             Self::U16 => "u16",
             Self::U32 => "u32",
@@ -1473,4 +1774,58 @@ impl CUDAStatus {
             Err(BackendError { status, context: format!("{self:?}").into() })
         }
     }
+}
+
+fn get_dtypes(kernel: &Kernel) -> (Map<OpId, u32>, Map<OpId, DType>) {
+    let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
+    let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+
+    // first we will calculate those reference counts.
+    for (i, op) in kernel.ops.iter().enumerate() {
+        match op {
+            Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } => unreachable!(),
+            Op::Const(x) => {
+                dtypes.insert(i, x.dtype());
+            }
+            &Op::Define { dtype, .. } => {
+                dtypes.insert(i, dtype);
+            }
+            &Op::Load { src, index } => {
+                dtypes.insert(i, dtypes[&src]);
+                rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+            &Op::Store { dst, x: src, index } => {
+                dtypes.insert(i, dtypes[&src]);
+                rcs.entry(dst).and_modify(|rc| *rc += 1).or_insert(1);
+                rcs.entry(src).and_modify(|rc| *rc += 1).or_insert(1);
+                rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+            &Op::Cast { x, dtype } => {
+                dtypes.insert(i, dtype);
+                rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+            &Op::Unary { x, .. } => {
+                dtypes.insert(i, dtypes[&x]);
+                rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+            &Op::Binary { x, y, bop } => {
+                if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or) {
+                    dtypes.insert(i, DType::Bool);
+                } else {
+                    dtypes.insert(i, dtypes[&x]);
+                }
+                rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+            Op::Loop { .. } => {
+                dtypes.insert(i, DType::U32);
+            }
+            Op::EndLoop => {}
+            &Op::Reduce { x, .. } => {
+                dtypes.insert(i, dtypes[&x]);
+                rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+        }
+    }
+    (rcs, dtypes)
 }

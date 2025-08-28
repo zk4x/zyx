@@ -340,6 +340,7 @@ pub enum BOp {
     BitShiftLeft,
     BitShiftRight,
     NotEq,
+    Eq,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
@@ -352,7 +353,6 @@ pub enum UOp {
     Sqrt,
     Sin,
     Cos,
-    Not,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]

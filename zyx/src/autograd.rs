@@ -360,11 +360,6 @@ impl Runtime {
                         self.release(tanh_x_2).unwrap();
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }*/
-                    UOp::Not => {
-                        todo!("Not backward")
-                        //self.x.e(TernaryOps.WHERE, grad_output, grad_output.const(0)) if self.needs_input_grad[1] else None,
-                        //self.x.e(TernaryOps.WHERE, grad_output.const(0), grad_output) if self.needs_input_grad[2] else None
-                    }
                 },
                 Node::Reshape { x, .. } => {
                     let grad = self.reshape(grad, self.shape(x).into());

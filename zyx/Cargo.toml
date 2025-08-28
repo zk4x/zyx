@@ -57,7 +57,7 @@ crate-type = ["lib"] #, "cdylib"]
 
 [features]
 default = [
-    "wgpu",
+    #"wgpu",
     #"py",
 ]
 

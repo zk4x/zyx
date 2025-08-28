@@ -3,7 +3,7 @@
 use nanoserde::{DeBin, SerBin};
 
 use crate::shape::{Axis, Dim};
-use std::{fmt::Display, ops::Range};
+use std::{cmp::Ordering, fmt::Display, ops::Range};
 
 /// .0[0] is original shape, further shapes are additional reshapes
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
@@ -28,12 +28,25 @@ impl SerBin for RDim {
 
 impl DeBin for RDim {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        Ok(Self {
-            d: todo!(),
-            st: todo!(),
-            lp: todo!(),
-            rp: todo!(),
-        })
+        let d = Dim::de_bin(offset, bytes)?;
+        let st = Dim::de_bin(offset, bytes)?;
+
+        // Read lp: isize (convert from bytes)
+        if *offset + std::mem::size_of::<isize>() > bytes.len() {
+            return Err(nanoserde::DeBinErr::new(*offset, 8, bytes.len()));
+        }
+        let lp_bytes = &bytes[*offset..*offset + std::mem::size_of::<isize>()];
+        let lp = isize::from_le_bytes(lp_bytes.try_into().unwrap());
+        *offset += std::mem::size_of::<isize>();
+
+        // Read rp: isize
+        if *offset + std::mem::size_of::<isize>() > bytes.len() {
+            return Err(nanoserde::DeBinErr::new(*offset, 8, bytes.len()));
+        }
+        let rp_bytes = &bytes[*offset..*offset + std::mem::size_of::<isize>()];
+        let rp = isize::from_le_bytes(rp_bytes.try_into().unwrap());
+        *offset += std::mem::size_of::<isize>();
+        Ok(Self { d, st, lp, rp })
     }
 }
 
@@ -170,64 +183,50 @@ impl View {
                 return block.into(); // Same shape, nothing to do
             }
 
-            let mut new_dims = vec![
-                RDim {
-                    d: 0,
-                    st: 0,
-                    lp: 0,
-                    rp: 0
-                };
-                new_shape.len()
-            ];
+            let mut new_dims = vec![RDim { d: 0, st: 0, lp: 0, rp: 0 }; new_shape.len()];
             let (mut orig_start, mut new_start) = (0, 0);
             let old_len = block.len();
             let new_len = new_shape.len();
 
             while orig_start < old_len && new_start < new_len {
-                let mut orig_prod = 1;
-                let mut new_prod = 1;
-                let mut i = orig_start;
-                let mut j = new_start;
+                let (mut orig_prod, mut new_prod) = (block[orig_start].d, new_shape[new_start]);
+                let (mut i, mut j) = (orig_start + 1, new_start + 1);
 
                 // Expand until products match
                 loop {
-                    if orig_prod == new_prod && orig_prod != 1 {
-                        break;
-                    }
-
-                    let take_orig = (orig_prod <= new_prod && i < old_len) || j >= new_len;
-                    let take_new = !take_orig && j < new_len;
-
-                    if take_orig {
-                        orig_prod *= block[i].d;
-                        i += 1;
-                    }
-
-                    if take_new {
-                        new_prod *= new_shape[j];
-                        j += 1;
-                    }
-
-                    if i == old_len && j == new_len {
-                        break;
-                    }
-
-                    if orig_prod > new_prod && j == new_len {
-                        return Vec::new();
-                    }
-                    if new_prod > orig_prod && i == old_len {
-                        return Vec::new();
+                    match orig_prod.cmp(&new_prod) {
+                        Ordering::Less => {
+                            orig_prod *= block[i].d;
+                            i += 1;
+                            debug_assert!(i <= old_len);
+                        }
+                        Ordering::Greater => {
+                            new_prod *= new_shape[j];
+                            j += 1;
+                            debug_assert!(j <= new_len);
+                        }
+                        Ordering::Equal => {
+                            if i < old_len {
+                                if block[i].d == 1 {
+                                    i += 1;
+                                    continue;
+                                }
+                            }
+                            if j < new_len {
+                                if new_shape[j] == 1 {
+                                    j += 1;
+                                    continue;
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
 
                 let orig_slice = &block[orig_start..i];
                 let new_slice_shape = &new_shape[new_start..j];
 
-                if orig_slice
-                    .iter()
-                    .map(|rd| rd.d)
-                    .eq(new_slice_shape.iter().copied())
-                {
+                if orig_slice.iter().map(|rd| rd.d).eq(new_slice_shape.iter().copied()) {
                     // Shape unchanged: copy original RDims as-is, skip contiguous check
                     for (k, rd) in (new_start..j).zip(orig_slice.iter()) {
                         new_dims[k] = rd.clone();
@@ -242,12 +241,7 @@ impl View {
                     let mut stride = orig_slice.last().map(|rd| rd.st).unwrap_or(1);
                     for k in (new_start..j).rev() {
                         let dim = new_shape[k];
-                        new_dims[k] = RDim {
-                            d: dim,
-                            st: if dim == 1 { 0 } else { stride },
-                            lp: 0,
-                            rp: 0,
-                        };
+                        new_dims[k] = RDim { d: dim, st: if dim == 1 { 0 } else { stride }, lp: 0, rp: 0 };
                         stride *= dim;
                     }
                 }
@@ -257,7 +251,10 @@ impl View {
             }
 
             if orig_start != old_len || new_start != new_len {
-                return Vec::new();
+                //println!("{new_dims:?}");
+                //println!("{orig_start}, {new_start}");
+                //return Vec::new();
+                unreachable!();
             }
 
             new_dims
