@@ -648,10 +648,9 @@ impl Tensor {
         // return (Tensor.full((math.ceil((stop-start)/step),), step, dtype=dtype, **kwargs)._cumsum() + (start - step)).cast(dtype)
         //println!("Arange {start:?}, {stop:?}, {step:?}");
         let n: i64 = stop.sub(start).div(step).cast();
-        //println!("Shape {n}");
         let x = Tensor::full(Dim::try_from(n).unwrap(), step);
-        //println!("{x}");
         let x = x.cumsum(0)?;
+        //println!("{x}");
         Ok(x + start - step)
     }
 
@@ -2804,9 +2803,9 @@ impl Tensor {
     ///
     /// Returns error if shapes of tensors are not compatible.
     #[allow(clippy::missing_panics_doc)]
-    pub fn rope(&self, sin_freqs: impl Into<Tensor>, cos_freqs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let sin_freqs: Tensor = sin_freqs.into();
-        let cos_freqs: Tensor = cos_freqs.into();
+    pub fn rope(&self, sine_frequencies: impl Into<Tensor>, cosine_frequencies: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let sin_freqs: Tensor = sine_frequencies.into();
+        let cos_freqs: Tensor = cosine_frequencies.into();
         if !RT.lock().implicit_casts {
             let dtype = self.dtype();
             let sdtype = sin_freqs.dtype();

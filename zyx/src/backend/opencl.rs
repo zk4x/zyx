@@ -877,20 +877,22 @@ impl OpenCLDevice {
         }
 
         let mut reg_str = String::new();
-        let (dt, _) = registers.remove(0);
-        let mut prev_dt = dt;
-        write!(reg_str, "{indent}{} r0", dt.ocl()).unwrap();
-        let mut i = 1;
-        for (dt, _) in registers {
-            if dt == prev_dt {
-                write!(reg_str, ", r{i}").unwrap();
-            } else {
-                write!(reg_str, ";\n{indent}{} r{i}", dt.ocl()).unwrap();
+        if registers.len() > 0 {
+            let (dt, _) = registers.remove(0);
+            let mut prev_dt = dt;
+            write!(reg_str, "{indent}{} r0", dt.ocl()).unwrap();
+            let mut i = 1;
+            for (dt, _) in registers {
+                if dt == prev_dt {
+                    write!(reg_str, ", r{i}").unwrap();
+                } else {
+                    write!(reg_str, ";\n{indent}{} r{i}", dt.ocl()).unwrap();
+                }
+                prev_dt = dt;
+                i += 1;
             }
-            prev_dt = dt;
-            i += 1;
+            writeln!(reg_str, ";").unwrap();
         }
-        writeln!(reg_str, ";").unwrap();
 
         let mut pragma = String::new();
         if dtypes.values().any(|&x| x == DType::F16) {

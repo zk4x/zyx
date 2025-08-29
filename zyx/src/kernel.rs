@@ -143,12 +143,7 @@ impl DeBin for Cache {
             programs.insert(key, value);
         }
 
-        Ok(Cache {
-            device_infos,
-            kernels,
-            optimizations,
-            programs,
-        })
+        Ok(Cache { device_infos, kernels, optimizations, programs })
     }
 }
 
@@ -273,17 +268,22 @@ impl Kernel {
                 Op::LoadView { dtype, view } => println!("{i:>3}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}"),
                 Op::StoreView { src, dtype } => println!("{i:>3}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}"),
                 Op::Reduce { x, rop, dims } => {
-                    println!("{i:>3}{indent}{CYAN}REDUCE{RESET} {} {x}, dims={dims:?}", match rop {
-                        ROp::Sum => "SUM",
-                        ROp::Max => "MAX",
-                    });
+                    println!(
+                        "{i:>3}{indent}{CYAN}REDUCE{RESET} {} {x}, dims={dims:?}",
+                        match rop {
+                            ROp::Sum => "SUM",
+                            ROp::Max => "MAX",
+                        }
+                    );
                 }
                 Op::Define { dtype, scope, ro, len } => {
                     println!("{i:>3}{indent}{YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
                 }
                 Op::Const(x) => println!("{i:>3}{indent}{MAGENTA}CONST{RESET} {} {x}", x.dtype()),
                 Op::Load { src, index } => println!("{i:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}]"),
-                Op::Store { dst, x: src, index } => println!("{i:>3}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}"),
+                Op::Store { dst, x: src, index } => {
+                    println!("{i:>3}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}")
+                }
                 Op::Cast { x, dtype } => println!("{i:>3}{indent}CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{i:>3}{indent}UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3}{indent}BINARY {bop:?} {x} {y}"),
@@ -364,9 +364,13 @@ impl Kernel {
         (flop, mr, mw)
     }
 
-    pub fn is_reduce(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::Reduce { .. })) }
+    pub fn is_reduce(&self) -> bool {
+        self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
+    }
 
-    pub fn contains_stores(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::StoreView { .. })) }
+    pub fn contains_stores(&self) -> bool {
+        self.ops.iter().any(|x| matches!(x, Op::StoreView { .. }))
+    }
 
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.iter().any(|op| matches!(op, Op::Loop { .. })) {
@@ -421,7 +425,6 @@ impl Kernel {
         // Check the reduce op, trace all of it's dependencies,
         // put Loop op before dependency with lowest ID
         // increase all ids higher than that by one
-        //self.debug();
 
         while let Some(op_id) = self.ops.iter().rev().position(|op| matches!(op, Op::Reduce { .. })) {
             //for op_id in reduce_ops.into_iter().rev() {
@@ -551,7 +554,8 @@ impl Kernel {
 
             // Update tail by adding load acc before all ops referencing op_id
             // op_id -> acc
-            let mut n_inserted_loads = 0;
+            //let mut n_inserted_loads = 0;
+            let mut inserted_loads = Vec::new();
             let mut i = 0;
             while i < tail.len() {
                 match &mut tail[i] {
@@ -561,9 +565,11 @@ impl Kernel {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                             i += 1;
-                            n_inserted_loads += 1;
+                            //n_inserted_loads += 1;
+                            inserted_loads.push(i);
                         } else if *src > op_id {
-                            *src += n_inserted_loads + 8;
+                            //*src += n_inserted_loads + 8;
+                            *src += inserted_loads.iter().filter(|&&v| v + 8 < *src).count() + 8;
                         }
                     }
                     Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
@@ -571,9 +577,9 @@ impl Kernel {
                             *x = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                             i += 1;
-                            n_inserted_loads += 1;
+                            inserted_loads.push(i);
                         } else if *x > op_id {
-                            *x += n_inserted_loads + 8;
+                            *x += inserted_loads.iter().filter(|&&v| v + 8 < *x).count() + 8;
                         }
                     }
                     Op::Const(_) => {}
@@ -583,34 +589,35 @@ impl Kernel {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                             i += 1;
-                            n_inserted_loads += 1;
+                            inserted_loads.push(i);
                         } else if *src > op_id {
-                            *src += n_inserted_loads + 8;
+                            *src += inserted_loads.iter().filter(|&&v| v + 8 < *src).count() + 8;
                         }
                     }
                     Op::Binary { x, y, .. } => {
-                        let tail1 = if *x == op_id {
+                        let tailx = if *x == op_id {
                             *x = self.ops.len() + i;
                             true
                         } else {
                             false
                         };
-                        let tail2 = if *y == op_id {
+                        let taily = if *y == op_id {
                             *y = self.ops.len() + i;
                             true
                         } else {
                             false
                         };
-                        if tail1 || tail2 {
-                            n_inserted_loads += 1;
+                        if tailx || taily {
+                            inserted_loads.push(i);
                         }
-                        if *x > op_id && !tail1 {
-                            *x += n_inserted_loads + 8;
+                        if *x > op_id && !tailx {
+                            *x += inserted_loads.iter().filter(|&&v| v + 8 < *x).count() + 8;
                         }
-                        if *y > op_id && !tail2 {
-                            *y += n_inserted_loads + 8;
+                        if *y > op_id && !taily {
+                            println!("{inserted_loads:?}");
+                            *y += inserted_loads.iter().filter(|&&v| v + 8 < *y).count() + 8;
                         }
-                        if tail1 || tail2 {
+                        if tailx || taily {
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                             i += 1;
                         }
@@ -620,13 +627,7 @@ impl Kernel {
             }
 
             self.ops.extend(tail);
-
-            // TODO the STORE VIEW points to wrong thing
-            //self.debug();
-            //panic!();
         }
-        //println!();
-        //self.debug();
     }
 
     pub fn define_globals(&mut self) {
@@ -672,7 +673,7 @@ impl Kernel {
         let mut op_id = 0;
         while op_id < self.ops.len() {
             match self.ops[op_id] {
-                Op::ConstView { value, ref view  } => {
+                Op::ConstView { value, ref view } => {
                     // With padding, right padding does not affect offset
                     // offset = (a0-lp0)*st0 + a1*st1
                     // Padding condition, negative right padding does not affect it
