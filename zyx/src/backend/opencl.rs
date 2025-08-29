@@ -668,7 +668,10 @@ impl OpenCLDevice {
         }
 
         if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "Invalid local work size.".into(),
+            });
         }
 
         let mut global_args = String::new();
@@ -773,6 +776,7 @@ impl OpenCLDevice {
                     let dtype = dtypes[&src];
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    //writeln!(source, "printf(\"%d\\n\", r1);").unwrap();
                     writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
                 }
                 &Op::Store { dst, x: src, index } => {

@@ -611,7 +611,6 @@ impl Kernel {
                             *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
                         }
                         if *y > op_id && !taily {
-                            println!("{inserted_loads:?}");
                             *y += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *y + n).count() + n;
                         }
                         if tailx || taily {

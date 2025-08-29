@@ -888,11 +888,12 @@ impl Runtime {
                 return Ok(());
             } else if let Some(opt) = self.cache.optimizations.get(&(kid, dev_info_id)) {
                 // Continue optimizing using optimizations cached to disk
-                kernel_id = kid;
                 optimizer = opt.clone();
             } else {
-                unreachable!()
+                // It was optimized for different device
+                optimizer = Optimizer::new(&kernel, device.info());
             }
+            kernel_id = kid;
         } else {
             // If it is not in cache, we just get new empty kernel id where we insert the kernel
             kernel_id = self.cache.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
@@ -937,6 +938,21 @@ impl Runtime {
             }
             optimizer.best_time_nanos = nanos;
         } else {
+            let mut last_time_nanos = u128::MAX;
+            if optimizer.next_optimization(last_time_nanos).is_none() { // done optimizing, loaded best from disk
+                let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization());
+                debug_assert!(opt_res);
+                if self.debug.ir() {
+                    println!("\nIR optimized kernel");
+                    kernel.debug();
+                    println!();
+                }
+                let program_id = device.compile(&kernel, self.debug.asm())?;
+                let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
+                self.pools[mpid].events.insert(output_buffers, event);
+                return Ok(());
+            }
+
             pool.pool.sync_events(event_wait_list)?;
 
             let mut progress_bar = if self.debug.perf() {
@@ -958,20 +974,6 @@ impl Runtime {
             }*/
 
             let mut i = 0;
-            let mut last_time_nanos = u128::MAX;
-            if optimizer.next_optimization(last_time_nanos).is_none() { // done optimizing, loaded best from disk
-                let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization());
-                debug_assert!(opt_res);
-                if self.debug.ir() {
-                    println!("\nIR optimized kernel");
-                    kernel.debug();
-                    println!();
-                }
-                let program_id = device.compile(&kernel, self.debug.asm())?;
-                let event = device.launch(program_id, &mut pool.pool, &args, Vec::new())?;
-                self.pools[mpid].events.insert(output_buffers, event);
-                return Ok(());
-            }
             while let Some(optimization) = optimizer.next_optimization(last_time_nanos)
                 && i < self.search_config.iterations
             {

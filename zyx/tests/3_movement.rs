@@ -49,7 +49,10 @@ fn pad_1() -> Result<(), ZyxError> {
 fn pad_2() -> Result<(), ZyxError> {
     let a = Tensor::from([[1i32, 2], [3, 4]]).reshape([1, 1, 2, 2])?;
     let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 1, 4])?;
-    let c = a.pad_zeros([(0, 2), (0, 2)])? + b;
+    let x = a.pad_zeros([(0, 2), (0, 2)])?;
+    println!("{x}");
+    panic!();
+    let c = x + b;
     assert_eq!(c, [[[[6i32, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]);
     Ok(())
 }
@@ -75,19 +78,19 @@ fn rope_2() -> Result<(), ZyxError> {
     let base = 10000f32;
 
     let [batch_size, seq_len, embed_dim] = x.dims()?;
-    
+
     assert_eq!(embed_dim % 2, 0, "Embedding dimension should be even for RoPE.");
-    
+
     // Generate the position indices
     let position = Tensor::arange(0., seq_len as f32, 1.)?.unsqueeze(1)?;  // Shape: (seq_len, 1)
-    
+
     // Create a tensor of frequencies for each dimension
     let mut freqs = Tensor::arange(0., embed_dim as f32 / 2., 1.)?;  // Shape: (embed_dim // 2)
     freqs = Tensor::from(base).pow(freqs * (2 / embed_dim) as f32)?;  // Apply scaling for frequency
 
     // Create the positional encoding matrix (sinusoidal)
     let pos_enc = position * freqs;  // Shape: (seq_len, embed_dim // 2)
-    
+
     // Apply sin and cos to each dimension
     let sin_enc = pos_enc.sin();  // Shape: (seq_len, embed_dim // 2)
     let cos_enc = pos_enc.cos();  // Shape: (seq_len, embed_dim // 2)
