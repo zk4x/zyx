@@ -199,9 +199,9 @@ pub fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) 
         }
     }
 
-    let (f, f_u) = value_unit(flop);
-    let (br, br_u) = value_unit(bytes_read);
-    let (bw, bw_u) = value_unit(bytes_written);
+    //let (f, f_u) = value_unit(flop);
+    //let (br, br_u) = value_unit(bytes_read);
+    //let (bw, bw_u) = value_unit(bytes_written);
     let (t, t_u) = match nanos {
         0..1_000 => (nanos * 10, "ns"),
         1_000..1_000_000 => (nanos / 100, "μs"),
@@ -1074,6 +1074,7 @@ impl Kernel {
                         BOp::BitShiftLeft => todo!(),
                         BOp::BitShiftRight => todo!(),
                         BOp::NotEq => todo!(),
+                        BOp::Eq => todo!(),
                     },
                     (_, &Op::Const(cy)) => match bop {
                         BOp::Add | BOp::Sub => {
@@ -1103,7 +1104,7 @@ impl Kernel {
                                 self.ops[op_id] = Op::Const(cy.dtype().zero_constant());
                             }
                         }
-                        BOp::Cmplt | BOp::Cmpgt | BOp::NotEq | BOp::And => {}
+                        BOp::Cmplt | BOp::Cmpgt | BOp::NotEq | BOp::And | BOp::Eq => {}
                         BOp::Max => todo!(),
                         BOp::Or => todo!(),
                         BOp::BitXor => todo!(),

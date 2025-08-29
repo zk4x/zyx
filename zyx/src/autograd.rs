@@ -258,6 +258,9 @@ impl Runtime {
                     BOp::NotEq => {
                         panic!("NotEq is not a differentiable operation.");
                     }
+                    BOp::Eq => {
+                        panic!("Eq is not a differentiable operation.");
+                    }
                     BOp::Max => {
                         todo!("Max backward.");
                     }

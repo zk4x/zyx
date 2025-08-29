@@ -882,6 +882,7 @@ impl CUDADevice {
                         BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};").unwrap(),
                         BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};").unwrap(),
                         BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};").unwrap(),
+                        BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};").unwrap(),
                     }
                 }
                 &Op::Loop { dim, scope } => {

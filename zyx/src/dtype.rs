@@ -424,6 +424,7 @@ impl Constant {
                 BOp::Or => Constant::new(x.or(y)),
                 BOp::And => Constant::new(x.and(y)),
                 BOp::NotEq => Constant::new(x.noteq(y)),
+                BOp::Eq => Constant::new(x.is_equal(y)),
                 BOp::BitXor => Constant::new(x.bitxor(y)),
                 BOp::BitOr => Constant::new(x.bitor(y)),
                 BOp::BitAnd => Constant::new(x.bitand(y)),

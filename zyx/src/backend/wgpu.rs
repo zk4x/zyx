@@ -307,7 +307,6 @@ impl WGPUDevice {
                         UOp::Sqrt => writeln!(source, "{indent}let r{i} = sqrt(r{x});").unwrap(),
                         UOp::Sin => writeln!(source, "{indent}let r{i} = sin(r{x});").unwrap(),
                         UOp::Cos => writeln!(source, "{indent}let r{i} = cos(r{x});").unwrap(),
-                        UOp::Not => writeln!(source, "{indent}let r{i} = !r{x};").unwrap(),
                     }
                 }
                 &Op::Binary { x, y, bop } => match bop {
@@ -328,6 +327,7 @@ impl WGPUDevice {
                     BOp::BitShiftLeft => writeln!(source, "{indent}r{i} = r{x} << r{y};").unwrap(),
                     BOp::BitShiftRight => writeln!(source, "{indent}r{i} = r{x} >> r{y};").unwrap(),
                     BOp::NotEq => writeln!(source, "{indent}r{i} = r{x} != r{y};").unwrap(),
+                    BOp::Eq => writeln!(source, "{indent}r{i} = r{x} == r{y};").unwrap(),
                 },
                 &Op::Loop { dim, scope } => {
                     match scope {
