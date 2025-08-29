@@ -5,6 +5,7 @@
 #![allow(unused)]
 
 use super::{Device, DeviceInfo, MemoryPool};
+use crate::DType;
 use crate::backend::{BufferId, Event, ProgramId};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
@@ -12,7 +13,6 @@ use crate::kernel::Kernel;
 use crate::runtime::Pool;
 use crate::shape::Dim;
 use crate::slab::Slab;
-use crate::DType;
 use libloading::Library;
 use nanoserde::DeJson;
 use std::ffi::{c_char, c_int, c_uint, c_void};
@@ -139,7 +139,7 @@ pub(super) fn initialize_device(
     let hipDeviceTotalMem: unsafe extern "C" fn(*mut usize, HIPdevice) -> HIPStatus =
         *unsafe { hip.get(b"hipDeviceTotalMem\0") }.unwrap();
     //let hipDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, HIPdevice_attribute, HIPdevice) -> HIPStatus =
-        //*unsafe { hip.get(b"hipDeviceGetAttribute\0") }.unwrap();
+    //*unsafe { hip.get(b"hipDeviceGetAttribute\0") }.unwrap();
     let hipCtxCreate: unsafe extern "C" fn(*mut HIPcontext, c_uint, HIPdevice) -> HIPStatus =
         *unsafe { hip.get(b"hipCtxCreate\0") }.unwrap();
     let hipMemAlloc = *unsafe { hip.get(b"hipMalloc\0") }.unwrap();
@@ -158,7 +158,7 @@ pub(super) fn initialize_device(
     //let hipStreamDestroy = *unsafe { hip.get(b"hipStreamDestroy\0") }.unwrap();
     //let hipModuleUnload = *unsafe { hip.get(b"hipModuleUnload\0") }.unwrap();
 
-    let hipStreamWaitEvent = *unsafe { hip.get(b"cuStreamWaitEvent\0") }.unwrap();
+    let hipStreamWaitEvent = *unsafe { hip.get(b"hipStreamWaitEvent\0") }.unwrap();
     //let cuStreamDestroy = *unsafe { cuda.get(b"cuStreamDestroy\0") }.unwrap();
     let hipModuleUnload = *unsafe { hip.get(b"hipModuleUnload\0") }.unwrap();
     let hipEventCreate = *unsafe { hip.get(b"hipEventCreate\0") }.unwrap();
@@ -644,7 +644,8 @@ impl HIPDevice {
     }
 
     pub fn release(&mut self, program_id: ProgramId) {
-        let _ = unsafe { (self.hipModuleUnload)(self.programs[program_id].module) }.check(ErrorStatus::Deinitialization);
+        let _ =
+            unsafe { (self.hipModuleUnload)(self.programs[program_id].module) }.check(ErrorStatus::Deinitialization);
         self.programs.remove(program_id);
     }
 

@@ -1,4 +1,4 @@
-use zyx::{Scalar, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn relu() -> Result<(), ZyxError> {
@@ -123,7 +123,7 @@ fn nonzero() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn tanh() -> Result<(), ZyxError> {
+fn tanh_1() -> Result<(), ZyxError> {
     let data: [f32; 10] = [
         -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
     ];
@@ -131,5 +131,13 @@ fn tanh() -> Result<(), ZyxError> {
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.tanh().is_equal(y));
     }
+    Ok(())
+}
+
+#[test]
+fn tanh_2() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2, 4, 1], [5, 4, 1]]).cast(DType::F32);
+    let x = x.tanh();
+    assert_eq!(x, [[0.964028f32, 0.999329, 0.761594], [0.999909, 0.999329, 0.761594]]);
     Ok(())
 }

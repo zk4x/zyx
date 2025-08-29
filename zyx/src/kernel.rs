@@ -173,7 +173,7 @@ pub fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) 
     let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
     let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
 
-    format!(
+    /*format!(
         "{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w, {}.{:02} {f_u}FLOP, {}.{:02} {br_u}B r, {}.{:02} {bw_u}B w",
         t / 10,
         t % 10,
@@ -189,6 +189,18 @@ pub fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) 
         br % 100,
         bw / 100,
         bw % 100,
+    )*/
+
+    format!(
+        "{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w",
+        t / 10,
+        t % 10,
+        fs / 100,
+        fs % 100,
+        brs / 100,
+        brs % 100,
+        bws / 100,
+        bws % 100,
     )
 }
 

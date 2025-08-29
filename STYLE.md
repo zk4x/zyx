@@ -2,7 +2,7 @@
 
 ## On virtual tables
 
-Don't use dyn, or virtual tables, just use enums instead. If there is necessity to work with function pointers, then pass those function pointers around directly. Dyn can be use extremely carefully in rust to avoid macro hell. Zyx uses it for backends.
+Don't use dyn, or virtual tables, use enums instead. If there is necessity to work with function pointers, then pass those function pointers around directly. Dyn can be used extremely carefully in rust to avoid macro hell.
 
 ## On Arc, Rc
 
@@ -28,11 +28,8 @@ Inheritance is bad. Do not use it at all.
 
 ## Asserts
 
-Use debug asserts everywhere to check the code. Anytime some invariant should hold, just put in an assert.
+Use debug asserts everywhere to check the code. Anytime some invariant should hold, put in an assert.
 This goes for maximum size of numbers, maximum memory usage and any limits that are put on the program.
-Debug asserts in rust sometimes do not work I got burnt on it multiple times, assuming invariant holds while
-debugging, but rust did not check it for me. It was horrible. So either create new cargo feature for it
-or just use normal asserts.
 
 ## Code should make sense
 
@@ -44,7 +41,7 @@ updated to be more concise as the code gets more concise.
 
 ## Explicit over implicit
 
-Use explicit return keyword, just to make code more readable. Some operations can be implicit, like casting.
+Use explicit return keyword to make code more readable. Some operations can be implicit, like casting.
 The rule of thumb is: If I am not sure what is going on, I need to make the code more explicit until I know what is
 going on without thinking about it. This applies to every programmer in the team. If anyone in the team does not
 understand the code, make it more explicit. The code should intuitivelly make sense. If it does not, make it more explicit.
@@ -53,18 +50,18 @@ If the code makes perfect sense and feels too verbose, do not be afraid to make 
 ## Cut the trash out
 
 Try to not get slowed down by the inferiority of your language. For example Rust does not implement Hash, Eq or Ord
-for floats. Just use ordered float crate and accept everything bad about it (horrible syntax, slower performance).
-Another example is lifetimes. Try to use lifetimes very rarely, do not go into complex lifetime annotations, just
-use global variables or Rc/Arc. Another example is orphan rule, just do to not use traits if possible. Use procedural
+for floats. Use ordered float crate and accept everything bad about it (horrible syntax, slower performance).
+Another example is lifetimes. Try to use lifetimes very rarely, do not go into complex lifetime annotations,
+use global variables or Rc/Arc. Another example is orphan rule, do to not use traits if possible. Use procedural
 programming like if you are writing c.
 
 ## Prefer functionality over niche performance gains when picking datastructres
 
 Use Vec instead of Box<[]> even on immutable data structures. Box<[]> simply isn't flexible enough. Box<[]> can not
 be created from parallel iterator. Many other libraries will return Vec<> and converting that to Box<[]> is expensive.
-Just use Vec and accept that it takes 24 bytes instead of 16 bytes (on 64 bit machines). Similarly Mutex is often
+Use Vec and accept that it takes 24 bytes instead of 16 bytes (on 64 bit machines). Similarly Mutex is often
 much more useful than RefCell. It depends on the usecase, but if you really need the performance, use UnsafeCell.
-If you don't and you may want to make the code multithreaded, just use Mutex. Use RefCell only if the performance
+If you don't and you may want to make the code multithreaded, use Mutex. Use RefCell only if the performance
 is good enough and you are 100% certain you won't ever make it multithreaded.
 These kinds of optimizations are nicer in zig than in rust.
 
@@ -76,7 +73,7 @@ To make long functions understandable, use code blocks.
 
 ## Memory
 
-Just use arenas to group allocations for high performance code. For low performance code just use whatever is easiest
+Use arenas to group allocations for high performance code. For low performance code use whatever is easiest
 to type.
 
 ## API design
@@ -100,7 +97,7 @@ the hardware fullfills virtually the same role as the hardware the software was 
 There is a consensus that the complexity of software comes from existence of state. Functional programming only
 allows for mutation by passing variables to functions and returning new variables. This is a nice property,
 but functional languages are inherently slow and borderline useless due to this. Highly complex optimizations
-can be applied to make functional languages just as fast as procedural/oop languages. All software in the world
+can be applied to make functional languages as fast as procedural/oop languages. All software in the world
 can also be written in functional programming languages, but without persistent state and mutations it gets
 annoying to write. Most software is shorter (as in LOC) when it is written in procedural/oop way. What I advocate
 for is transparent stateful programming. That is all state should be stored in very few places, ideally in one place
@@ -123,7 +120,7 @@ preferrably stored in those structs (preffer SOA instead of AOS) both for perfor
 
 Structs themeselves should be written with debugging in mind. The representation of state should be human readable.
 
-Basically there is no point in drawing UML diagram of single struct. Just read the declaration of the struct and it's
+Basically there is no point in drawing UML diagram of single struct. Read the declaration of the struct and it's
 fields. Since programmers do not like drawing UML diagrams and there is almost no way to guarantee that UML diagram
 is accurate representation of the code (other than automatically generating UML diagrams from code), it is better
 to write code in such a way that UML diagrams are not needed to understand the whole program.
@@ -144,10 +141,10 @@ duplicate code. So refactor and remove duplicate code, thus adding good enough a
 
 Always duplicate. This is extremely powerfull. Typical approach involves doing software design where we decide on the right
 abstractions, then implementation and the product should be done. But after implementation it turns out the current
-abstraction is wrong, so there comes a refactor. Better approach is to just design the user API and write a list
-of requirements. Afterwards just write the simplest code that makes that user API work. Do not add abstraction
-or classes. If you need to use similar code in different places, just duplicate it. Just copy it. Once the program passes
-some integration tests, just remove the duplication by adding abstraction. The resulting abstraction will be
+abstraction is wrong, so there comes a refactor. Better approach is to design the user API and write a list
+of requirements. Afterwards write the simplest code that makes that user API work. Do not add abstraction
+or classes. If you need to use similar code in different places, duplicate it. Copy it. Once the program passes
+some integration tests, remove the duplication by adding abstraction. The resulting abstraction will be
 much less likely to need a refactor.
 
 ## Multiplication
@@ -188,7 +185,7 @@ but at the same time it should be straightforward. The program should not signif
 
 Use the best approach you want to use and then fake it till you make if the programming language does not support your way.
 This is especially true for Rust, since it wants to impose it's way on users, but in order to be compatible with other
-languages, you just have to make compromises.
+languages, you have to make compromises.
 
 ## Code creep
 
