@@ -34,7 +34,7 @@ fn fuse_2() -> Result<(), ZyxError> {
 fn fuse_3() -> Result<(), ZyxError> {
     let x = Tensor::from([[2f32, 4., 3.], [1., 5., 1.]]);
     let z = x.sum([0])?.expand([2, 3])? + x;
-    assert_eq!(z, [[2f32, 4., 3.], [1., 5., 1.]]);
+    assert_eq!(z, [[5f32, 13., 7.], [4., 14., 5.]]);
     Ok(())
 }
 

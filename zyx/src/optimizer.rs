@@ -55,7 +55,9 @@ impl Optimizer {
         }
     }
 
-    pub fn max_iters(&self) -> u64 { self.max_iter }
+    pub fn max_iters(&self) -> u64 {
+        self.max_iter
+    }
 
     pub fn next_optimization(&mut self, last_time_nanos: u128) -> Option<Optimization> {
         if last_time_nanos < self.best_time_nanos {
@@ -112,14 +114,13 @@ impl Optimizer {
 
         //println!();
         //kernel.debug();
-
         kernel.unfold_reduces();
         //println!();
         //kernel.debug();
-        //panic!();
 
         kernel.define_globals();
         kernel.unfold_views();
+        //panic!();
 
         let mut temp_kernel = kernel.clone();
         loop {
@@ -180,7 +181,9 @@ impl WorkSizeOpt {
         Self { gws, gws_factors, max_local_threads }
     }
 
-    fn max_index(&self) -> u64 { self.gws_factors.iter().map(|gd| gd.len() as u64).product() }
+    fn max_index(&self) -> u64 {
+        self.gws_factors.iter().map(|gd| gd.len() as u64).product()
+    }
 
     // Returns false if this index is invalid
     #[must_use]
@@ -218,9 +221,13 @@ impl WorkSizeOpt {
 struct LoopOpt {}
 
 impl LoopOpt {
-    fn new(_kernel: &Kernel) -> Self { Self {} }
+    fn new(_kernel: &Kernel) -> Self {
+        Self {}
+    }
 
-    fn max_index(&self) -> u64 { 1 }
+    fn max_index(&self) -> u64 {
+        1
+    }
 
     #[must_use]
     fn apply_optimization(&self, _index: u64, _kernel: &mut Kernel) -> bool {

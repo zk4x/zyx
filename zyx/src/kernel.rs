@@ -555,6 +555,10 @@ impl Kernel {
             // Update tail by adding load acc before all ops referencing op_id
             // op_id -> acc
             //let mut n_inserted_loads = 0;
+
+            // number of new inserted ops before the tail section
+            let n = 7 + n_dims * 2 - 1;
+
             let mut inserted_loads = Vec::new();
             let mut i = 0;
             while i < tail.len() {
@@ -569,7 +573,8 @@ impl Kernel {
                             inserted_loads.push(i);
                         } else if *src > op_id {
                             //*src += n_inserted_loads + 8;
-                            *src += inserted_loads.iter().filter(|&&v| v + 8 < *src).count() + 8;
+                            //println!("src={src}, {inserted_loads:?}");
+                            *src += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *src + n).count() + n;
                         }
                     }
                     Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
@@ -579,7 +584,7 @@ impl Kernel {
                             i += 1;
                             inserted_loads.push(i);
                         } else if *x > op_id {
-                            *x += inserted_loads.iter().filter(|&&v| v + 8 < *x).count() + 8;
+                            *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
                         }
                     }
                     Op::Const(_) => {}
@@ -591,7 +596,8 @@ impl Kernel {
                             i += 1;
                             inserted_loads.push(i);
                         } else if *src > op_id {
-                            *src += inserted_loads.iter().filter(|&&v| v + 8 < *src).count() + 8;
+                            //*src += inserted_loads.iter().filter(|&&v| v + 8 < *src).count() + n;
+                            *src += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *src + n).count() + n;
                         }
                     }
                     Op::Binary { x, y, .. } => {
@@ -611,11 +617,11 @@ impl Kernel {
                             inserted_loads.push(i);
                         }
                         if *x > op_id && !tailx {
-                            *x += inserted_loads.iter().filter(|&&v| v + 8 < *x).count() + 8;
+                            *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
                         }
                         if *y > op_id && !taily {
                             println!("{inserted_loads:?}");
-                            *y += inserted_loads.iter().filter(|&&v| v + 8 < *y).count() + 8;
+                            *y += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *y + n).count() + n;
                         }
                         if tailx || taily {
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
@@ -701,11 +707,20 @@ impl Kernel {
                         offset = new_op(ops, Op::Const(Constant::U32(0)));
                         for (a, dim) in inner.iter().enumerate().rev() {
                             let a = if let Some(old_offset) = old_offset {
-                                let ost_c = new_op(ops, Op::Const(Constant::U32(ost)));
-                                let a = new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div });
-                                ost *= dim.d as u32;
-                                let dimd_c = new_op(ops, Op::Const(Constant::U32(dim.d as u32)));
-                                new_op(ops, Op::Binary { x: a, y: dimd_c, bop: BOp::Mod })
+                                if dim.d != 1 {
+                                    let t_ost = ost;
+                                    ost *= dim.d as u32;
+                                    let x = if t_ost != 1 {
+                                        let ost_c = new_op(ops, Op::Const(Constant::U32(t_ost)));
+                                        new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
+                                    } else {
+                                        old_offset
+                                    };
+                                    let dimd_c = new_op(ops, Op::Const(Constant::U32(dim.d as u32)));
+                                    new_op(ops, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
+                                } else {
+                                    old_offset
+                                }
                             } else if dim.d == 1 {
                                 new_op(ops, Op::Const(Constant::U32(0)))
                             } else {
@@ -723,9 +738,12 @@ impl Kernel {
                             } else {
                                 a
                             };
-                            let stride = new_op(ops, Op::Const(Constant::U32(dim.st as u32)));
-                            let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
-                            offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
+
+                            if dim.st != 0 {
+                                let stride = new_op(ops, Op::Const(Constant::U32(dim.st as u32)));
+                                let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
+                                offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
+                            }
 
                             // Padding condition
                             if dim.lp > 0 {
@@ -788,11 +806,20 @@ impl Kernel {
                         offset = new_op(ops, Op::Const(Constant::U32(0)));
                         for (a, dim) in inner.iter().enumerate().rev() {
                             let a = if let Some(old_offset) = old_offset {
-                                let ost_c = new_op(ops, Op::Const(Constant::U32(ost)));
-                                let a = new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div });
-                                ost *= dim.d as u32;
-                                let dimd_c = new_op(ops, Op::Const(Constant::U32(dim.d as u32)));
-                                new_op(ops, Op::Binary { x: a, y: dimd_c, bop: BOp::Mod })
+                                if dim.d != 1 {
+                                    let t_ost = ost;
+                                    ost *= dim.d as u32;
+                                    let x = if t_ost != 1 {
+                                        let ost_c = new_op(ops, Op::Const(Constant::U32(t_ost)));
+                                        new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
+                                    } else {
+                                        old_offset
+                                    };
+                                    let dimd_c = new_op(ops, Op::Const(Constant::U32(dim.d as u32)));
+                                    new_op(ops, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
+                                } else {
+                                    old_offset
+                                }
                             } else if dim.d == 1 {
                                 new_op(ops, Op::Const(Constant::U32(0)))
                             } else {
@@ -810,9 +837,12 @@ impl Kernel {
                             } else {
                                 a
                             };
-                            let stride = new_op(ops, Op::Const(Constant::U32(dim.st as u32)));
-                            let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
-                            offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
+
+                            if dim.st != 0 {
+                                let stride = new_op(ops, Op::Const(Constant::U32(dim.st as u32)));
+                                let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
+                                offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
+                            }
 
                             // Padding condition
                             if dim.lp > 0 {
