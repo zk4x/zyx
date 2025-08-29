@@ -44,7 +44,7 @@ impl SlabId for BufferId {
     fn inc(&mut self) { self.0 += 1; }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, DeBin, SerBin)]
 pub struct ProgramId(u32);
 
 impl From<usize> for ProgramId {

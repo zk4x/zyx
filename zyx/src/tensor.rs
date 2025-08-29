@@ -2062,12 +2062,12 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn equal(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().binary(x.id, y.id, BOp::NotEq);
+        let id = RT.lock().binary(x.id, y.id, BOp::Eq);
         let x = Tensor { id };
-        Ok(x.not())
+        Ok(x)
     }
 
-    /// Returns ones where self is different from zero and zeros otherwise.
+    /// Returns true where self is different from zero and false otherwise.
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn nonzero(&self) -> Tensor {
@@ -4308,12 +4308,16 @@ impl Neg for &Tensor {
 
 impl Not for Tensor {
     type Output = Tensor;
-    fn not(self) -> Self::Output { Tensor { id: RT.lock().unary(self.id, UOp::Not) } }
+    fn not(self) -> Self::Output {
+        self.equal(0).unwrap()
+    }
 }
 
 impl Not for &Tensor {
     type Output = Tensor;
-    fn not(self) -> Self::Output { Tensor { id: RT.lock().unary(self.id, UOp::Not) } }
+    fn not(self) -> Self::Output {
+        self.equal(0).unwrap()
+    }
 }
 
 /// Panics on indexing, with a helpful message directing to `.get(...)`.

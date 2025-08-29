@@ -721,9 +721,10 @@ impl OpenCLDevice {
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                 }
                 &Op::Binary { x, y, bop } => {
-                    dtypes.insert(i, dtypes[&x]);
-                    if matches!(bop, BOp::NotEq | BOp::Cmpgt | BOp::Cmplt | BOp::And | BOp::Or) {
+                    if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or) {
                         dtypes.insert(i, DType::Bool);
+                    } else {
+                        dtypes.insert(i, dtypes[&x]);
                     }
                     rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                     rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
@@ -808,11 +809,10 @@ impl OpenCLDevice {
                         UOp::Sqrt => writeln!(source, "{indent}r{reg} = sqrt({x});").unwrap(),
                         UOp::Sin => writeln!(source, "{indent}r{reg} = sin({x});").unwrap(),
                         UOp::Cos => writeln!(source, "{indent}r{reg} = cos({x});").unwrap(),
-                        UOp::Not => writeln!(source, "{indent}r{reg} = !{x};").unwrap(),
                     }
                 }
                 &Op::Binary { x, y, bop } => {
-                    let dtype = dtypes[&x];
+                    let dtype = dtypes[&i];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);

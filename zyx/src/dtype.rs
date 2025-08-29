@@ -376,7 +376,6 @@ impl Constant {
                 }
                 UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
-                UOp::Not => x.not(),
             }
         }
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
@@ -389,7 +388,6 @@ impl Constant {
                 UOp::Sqrt => x.sqrt(),
                 UOp::Sin => x.sin(),
                 UOp::Cos => x.cos(),
-                UOp::Not => x.not(),
             }
         }
         match self {

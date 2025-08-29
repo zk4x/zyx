@@ -1,18 +1,7 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    DType, Map, Set, ZyxError,
-    backend::ProgramId,
-    error::BackendError,
-    graph::Node,
-    kernel::{Kernel, Op, OpId, get_perf},
-    optimizer::Optimizer,
-    prog_bar::ProgressBar,
-    runtime::Runtime,
-    shape::Dim,
-    slab::{Slab, SlabId},
-    tensor::TensorId,
-    view::View,
+    backend::ProgramId, error::{BackendError, ErrorStatus}, graph::Node, kernel::{get_perf, Kernel, Op, OpId}, optimizer::Optimizer, prog_bar::ProgressBar, runtime::Runtime, shape::Dim, slab::{Slab, SlabId}, tensor::TensorId, view::View, DType, Map, Set, ZyxError
 };
 use std::{collections::BTreeSet, hash::BuildHasherDefault};
 
@@ -977,6 +966,18 @@ impl Runtime {
                     }
                     last_time_nanos
                 } else {
+                    if let Err(err) = res {
+                        match err.status {
+                            ErrorStatus::KernelCompilation |
+                            ErrorStatus::IncorrectKernelArg |
+                            ErrorStatus::KernelLaunch |
+                            ErrorStatus::KernelSync => {}
+                            _ => {
+                                println!();
+                                return Err(ZyxError::BackendError(err));
+                            }
+                        }
+                    }
                     u128::MAX
                 };
 
