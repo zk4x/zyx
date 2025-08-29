@@ -1,7 +1,20 @@
 //! Converts graph to kernels and schedules them to devices
 
+use nanoserde::SerBin;
+
 use crate::{
-    backend::ProgramId, error::{BackendError, ErrorStatus}, graph::Node, kernel::{get_perf, Kernel, Op, OpId}, optimizer::Optimizer, prog_bar::ProgressBar, runtime::Runtime, shape::Dim, slab::{Slab, SlabId}, tensor::TensorId, view::View, DType, Map, Set, ZyxError
+    DType, Map, Set, ZyxError,
+    backend::ProgramId,
+    error::{BackendError, ErrorStatus},
+    graph::Node,
+    kernel::{Kernel, Op, OpId, get_perf},
+    optimizer::Optimizer,
+    prog_bar::ProgressBar,
+    runtime::Runtime,
+    shape::Dim,
+    slab::{Slab, SlabId},
+    tensor::TensorId,
+    view::View,
 };
 use std::{collections::BTreeSet, hash::BuildHasherDefault};
 
@@ -11,15 +24,21 @@ pub struct KernelId(u32);
 impl SlabId for KernelId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) { self.0 += 1; }
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
 }
 
 impl From<usize> for KernelId {
-    fn from(value: usize) -> Self { KernelId(value as u32) }
+    fn from(value: usize) -> Self {
+        KernelId(value as u32)
+    }
 }
 
 impl From<KernelId> for usize {
-    fn from(value: KernelId) -> Self { value.0 as usize }
+    fn from(value: KernelId) -> Self {
+        value.0 as usize
+    }
 }
 
 impl Runtime {
@@ -532,7 +551,9 @@ impl Runtime {
         kernels[kid].ops.push(Op::StoreView { src: op_id, dtype });
         stores.entry(kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
         kernels[kid].n_outputs -= 1;
-        if kernels[kid].n_outputs == 0 && loads.get(&kid).map(|loads| loads.iter().all(|x| realized_nodes.contains(x))).unwrap_or(true) {
+        if kernels[kid].n_outputs == 0
+            && loads.get(&kid).map(|loads| loads.iter().all(|x| realized_nodes.contains(x))).unwrap_or(true)
+        {
             let kernel = unsafe { kernels.remove_and_return(kid) };
             if let Some(loads) = loads.get(&kid) {
                 self.launch_kernel(kernel, loads, &*stores[&kid])?;
@@ -721,7 +742,7 @@ impl Runtime {
         )
     }
 
-    fn launch_kernel(&mut self, kernel: Kernel, loads: &[TensorId], stores: &[TensorId]) -> Result<(), ZyxError> {
+    fn launch_kernel(&mut self, mut kernel: Kernel, loads: &[TensorId], stores: &[TensorId]) -> Result<(), ZyxError> {
         // Iterate over all memory pools ordered by device speed.
         // Then select first fastest device that has associated memory pool which fits all tensors used
         // as arguments for the kernel that are not yet allocated on that memory pool.
@@ -911,7 +932,7 @@ impl Runtime {
                 self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
             }
             if self.debug.perf() {
-                let (flop, mem_read, mem_write) = okernel.flop_mem_rw();
+                let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 println!("{}", get_perf(flop, mem_read, mem_write, nanos));
             }
             optimizer.best_time_nanos = nanos;
@@ -938,6 +959,19 @@ impl Runtime {
 
             let mut i = 0;
             let mut last_time_nanos = u128::MAX;
+            if optimizer.next_optimization(last_time_nanos).is_none() { // done optimizing, loaded best from disk
+                let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization());
+                debug_assert!(opt_res);
+                if self.debug.ir() {
+                    println!("\nIR optimized kernel");
+                    kernel.debug();
+                    println!();
+                }
+                let program_id = device.compile(&kernel, self.debug.asm())?;
+                let event = device.launch(program_id, &mut pool.pool, &args, Vec::new())?;
+                self.pools[mpid].events.insert(output_buffers, event);
+                return Ok(());
+            }
             while let Some(optimization) = optimizer.next_optimization(last_time_nanos)
                 && i < self.search_config.iterations
             {
@@ -968,10 +1002,10 @@ impl Runtime {
                 } else {
                     if let Err(err) = res {
                         match err.status {
-                            ErrorStatus::KernelCompilation |
-                            ErrorStatus::IncorrectKernelArg |
-                            ErrorStatus::KernelLaunch |
-                            ErrorStatus::KernelSync => {}
+                            ErrorStatus::KernelCompilation
+                            | ErrorStatus::IncorrectKernelArg
+                            | ErrorStatus::KernelLaunch
+                            | ErrorStatus::KernelSync => {}
                             _ => {
                                 println!();
                                 return Err(ZyxError::BackendError(err));
@@ -1004,7 +1038,15 @@ impl Runtime {
                 );
             }
         }
+
         self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer);
+        if self.search_config.save_to_disk {
+            if let Some(mut path) = self.config_dir.as_ref().cloned() {
+                path.push("cached_kernels");
+                let ser_cache: Vec<u8> = self.cache.serialize_bin();
+                std::fs::write(path, ser_cache)?;
+            }
+        }
 
         // TODO Deallocate loads that are not used by any other kernel
         Ok(())

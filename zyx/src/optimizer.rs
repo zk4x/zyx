@@ -59,6 +59,10 @@ impl Optimizer {
         self.max_iter
     }
 
+    pub fn best_optimization(&self) -> Optimization {
+        self.best_optimization
+    }
+
     pub fn next_optimization(&mut self, last_time_nanos: u128) -> Option<Optimization> {
         if last_time_nanos < self.best_time_nanos {
             self.best_time_nanos = last_time_nanos;

@@ -107,42 +107,33 @@ impl SerBin for Cache {
 
 impl DeBin for Cache {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let mut device_infos = Map::with_hasher(BuildHasherDefault::new());
         let len = usize::de_bin(offset, bytes)?;
+        let mut device_infos = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let key = DeviceInfo::de_bin(offset, bytes)?;
             let value = u32::de_bin(offset, bytes)?;
             device_infos.insert(key, value);
         }
 
-        let mut kernels = Map::with_hasher(BuildHasherDefault::new());
         let len = usize::de_bin(offset, bytes)?;
+        let mut kernels = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let key = Kernel::de_bin(offset, bytes)?;
             let value = u32::de_bin(offset, bytes)?;
             kernels.insert(key, value);
         }
 
-        let mut optimizations = Map::with_hasher(BuildHasherDefault::new());
         let len = usize::de_bin(offset, bytes)?;
+        let mut optimizations = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let k1 = u32::de_bin(offset, bytes)?;
             let k2 = u32::de_bin(offset, bytes)?;
             let key = (k1, k2);
-            let value = Optimizer::de_bin(offset, bytes)?;
+            let value = Optimizer::de_bin(offset, bytes).unwrap();
             optimizations.insert(key, value);
         }
 
-        let mut programs = Map::with_hasher(BuildHasherDefault::new());
-        let len = usize::de_bin(offset, bytes)?;
-        for _ in 0..len {
-            let k1 = u32::de_bin(offset, bytes)?;
-            let k2 = u32::de_bin(offset, bytes)?;
-            let key = (k1, k2);
-            let value = ProgramId::de_bin(offset, bytes)?;
-            programs.insert(key, value);
-        }
-
+        let programs = Map::with_hasher(BuildHasherDefault::new());
         Ok(Cache { device_infos, kernels, optimizations, programs })
     }
 }

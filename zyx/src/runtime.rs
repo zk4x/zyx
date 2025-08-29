@@ -31,7 +31,7 @@ pub struct Runtime {
     /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
     pub cache: Cache,
     /// Zyx configuration directory path
-    config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
+    pub config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
     /// Random number generator
     pub rng: Rng,
     /// Are we in training mode?
@@ -184,9 +184,7 @@ impl Runtime {
                 use std::io::Read;
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf).unwrap();
-                if let Ok(kernel_cache) = nanoserde::DeBin::deserialize_bin(&buf) {
-                    self.cache = kernel_cache;
-                }
+                self.cache = nanoserde::DeBin::deserialize_bin(&buf).unwrap();
             }
         }
 

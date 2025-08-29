@@ -30,22 +30,23 @@ impl DeBin for RDim {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
         let d = Dim::de_bin(offset, bytes)?;
         let st = Dim::de_bin(offset, bytes)?;
+        let isize_bytes = std::mem::size_of::<isize>();
 
         // Read lp: isize (convert from bytes)
-        if *offset + std::mem::size_of::<isize>() > bytes.len() {
-            return Err(nanoserde::DeBinErr::new(*offset, 8, bytes.len()));
+        if *offset + isize_bytes > bytes.len() {
+            return Err(nanoserde::DeBinErr::new(*offset, isize_bytes, bytes.len()));
         }
-        let lp_bytes = &bytes[*offset..*offset + std::mem::size_of::<isize>()];
+        let lp_bytes = &bytes[*offset..*offset + isize_bytes];
         let lp = isize::from_le_bytes(lp_bytes.try_into().unwrap());
-        *offset += std::mem::size_of::<isize>();
+        *offset += isize_bytes;
 
         // Read rp: isize
-        if *offset + std::mem::size_of::<isize>() > bytes.len() {
-            return Err(nanoserde::DeBinErr::new(*offset, 8, bytes.len()));
+        if *offset + isize_bytes > bytes.len() {
+            return Err(nanoserde::DeBinErr::new(*offset, isize_bytes, bytes.len()));
         }
-        let rp_bytes = &bytes[*offset..*offset + std::mem::size_of::<isize>()];
+        let rp_bytes = &bytes[*offset..*offset + isize_bytes];
         let rp = isize::from_le_bytes(rp_bytes.try_into().unwrap());
-        *offset += std::mem::size_of::<isize>();
+        *offset += isize_bytes;
         Ok(Self { d, st, lp, rp })
     }
 }
@@ -599,4 +600,12 @@ fn view_pad2() {
             ]
         ])
     );
+}
+
+#[test]
+fn view_serialization() {
+    let view = View::contiguous(&[3, 4, 1, 7, 1]);
+    let x = view.serialize_bin();
+    let view2: View = nanoserde::DeBin::deserialize_bin(&x).ok().unwrap();
+    assert_eq!(view, view2);
 }
