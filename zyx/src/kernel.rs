@@ -20,7 +20,7 @@ pub type OpId = usize;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct Kernel {
     pub ops: Vec<Op>,
-    pub n_outputs: u32, // TODO remove this from here
+    //pub n_outputs: u32, // TODO remove this from here
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
@@ -1082,7 +1082,7 @@ impl Kernel {
                             }
                         }
                         BOp::Div => todo!(),
-                        BOp::Pow => todo!(),
+                        BOp::Pow => {}
                         BOp::Mod => todo!(),
                         BOp::Cmplt => todo!(),
                         BOp::Cmpgt => todo!(),
