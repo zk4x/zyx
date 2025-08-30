@@ -58,12 +58,13 @@
   - [x] indexing for multi reshape views
   - [x] common subexpression elimination
   - [x] dead store elimination
-  - [ ] kernel flops, memory reads, memory writes
+  - [x] kernel flops, memory reads, memory writes
   - [ ] loop splitting
   - [ ] loop reordering
   - [ ] loop unrolling
   - [ ] loop invariant code motion
   - [ ] vectorization, vector dtypes
+  - [ ] tensor cores/tiling
   - [ ] merge all mul + add into mad instructions
   - [ ] register tiling of all variables
   - [ ] local tiling of all variables
@@ -74,6 +75,9 @@
     - [x] unary ops
     - [ ] movemnt ops
     - [ ] binary ops
+  - [ ] pad_2
+  - [ ] softmax_1
+  - [ ] reshape_permute_1
   - [ ] padding on elementwise kernel
   - [ ] expand on elementwise kernel
   - [ ] reshape on elementwise kernel

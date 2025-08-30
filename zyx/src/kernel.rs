@@ -259,13 +259,10 @@ impl Kernel {
                 Op::LoadView { dtype, view } => println!("{i:>3}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}"),
                 Op::StoreView { src, dtype } => println!("{i:>3}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}"),
                 Op::Reduce { x, rop, dims } => {
-                    println!(
-                        "{i:>3}{indent}{CYAN}REDUCE{RESET} {} {x}, dims={dims:?}",
-                        match rop {
-                            ROp::Sum => "SUM",
-                            ROp::Max => "MAX",
-                        }
-                    );
+                    println!("{i:>3}{indent}{CYAN}REDUCE{RESET} {} {x}, dims={dims:?}", match rop {
+                        ROp::Sum => "SUM",
+                        ROp::Max => "MAX",
+                    });
                 }
                 Op::Define { dtype, scope, ro, len } => {
                     println!("{i:>3}{indent}{YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
@@ -355,13 +352,9 @@ impl Kernel {
         (flop, mr, mw)
     }
 
-    pub fn is_reduce(&self) -> bool {
-        self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
-    }
+    pub fn is_reduce(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::Reduce { .. })) }
 
-    pub fn contains_stores(&self) -> bool {
-        self.ops.iter().any(|x| matches!(x, Op::StoreView { .. }))
-    }
+    pub fn contains_stores(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::StoreView { .. })) }
 
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.iter().any(|op| matches!(op, Op::Loop { .. })) {
@@ -771,7 +764,7 @@ impl Kernel {
                 }
                 Op::LoadView { dtype, ref view } => {
                     // With padding, right padding does not affect offset
-                    // offset = (a0-lp0)*st0 + a1*st1
+                    // offset = (a0-lp0)*st0 + a1*st1 + a2*st2 + (a3-lp3)*st3 + ...
                     // Padding condition, negative right padding does not affect it
                     // pc = a0 > lp0-1 && a0 < d0-rp0
                     // pc = pc.cast(dtype)
@@ -815,7 +808,7 @@ impl Kernel {
                             } else {
                                 axes[a]
                             };
-                            //println!("ost: {ost}, a: {a:?}, {dim:?}");
+                            println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
                                 let lp = new_op(ops, Op::Const(Constant::U32(dim.lp.unsigned_abs() as u32)));

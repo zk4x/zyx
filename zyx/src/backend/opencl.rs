@@ -403,9 +403,7 @@ impl OpenCLMemoryPool {
         unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization).unwrap();
     }
 
-    pub const fn free_bytes(&self) -> Dim {
-        self.free_bytes
-    }
+    pub const fn free_bytes(&self) -> Dim { self.free_bytes }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
@@ -599,17 +597,11 @@ impl OpenCLMemoryPool {
 }
 
 impl OpenCLDevice {
-    pub const fn deinitialize(&mut self) {
-        let _ = self;
-    }
+    pub const fn deinitialize(&mut self) { let _ = self; }
 
-    pub const fn info(&self) -> &DeviceInfo {
-        &self.dev_info
-    }
+    pub const fn info(&self) -> &DeviceInfo { &self.dev_info }
 
-    pub const fn memory_pool_id(&self) -> u32 {
-        self.memory_pool_id
-    }
+    pub const fn memory_pool_id(&self) -> u32 { self.memory_pool_id }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         fn new_reg(
@@ -820,6 +812,9 @@ impl OpenCLDevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    if dtype == DType::U32 && bop == BOp::Mul && y == "4" {
+                        writeln!(source, "printf(\"r1=%d, r0=%d\\n\", r1, r0);").unwrap();
+                    }
                     match bop {
                         BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};").unwrap(),
                         BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),
@@ -1045,9 +1040,7 @@ impl OpenCLDevice {
         self.programs.remove(program_id);
     }
 
-    pub const fn free_compute(&self) -> u128 {
-        self.dev_info.compute
-    }
+    pub const fn free_compute(&self) -> u128 { self.dev_info.compute }
 }
 
 impl OpenCLStatus {
