@@ -24,21 +24,15 @@ pub struct KernelId(u32);
 impl SlabId for KernelId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
+    fn inc(&mut self) { self.0 += 1; }
 }
 
 impl From<usize> for KernelId {
-    fn from(value: usize) -> Self {
-        KernelId(value as u32)
-    }
+    fn from(value: usize) -> Self { KernelId(value as u32) }
 }
 
 impl From<KernelId> for usize {
-    fn from(value: KernelId) -> Self {
-        value.0 as usize
-    }
+    fn from(value: KernelId) -> Self { value.0 as usize }
 }
 
 impl Runtime {
@@ -131,6 +125,8 @@ impl Runtime {
             let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(300);
             let mut visited: Map<TensorId, (KernelId, OpId)> =
                 Map::with_capacity_and_hasher(order.len() + 10, BuildHasherDefault::new());
+            let mut outputs: Map<KernelId, Set<TensorId>> =
+                Map::with_capacity_and_hasher(order.len() + 10, BuildHasherDefault::new());
             let mut loads: Map<KernelId, Vec<TensorId>> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
             let mut stores: Map<KernelId, Vec<TensorId>> =
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
@@ -139,7 +135,7 @@ impl Runtime {
             //println!("{to_eval:?}");
 
             for nid in order {
-                println!("{nid} -> {:?}", self.graph[nid]);
+                println!("{nid} x {} -> {:?}", rcs[&nid], self.graph[nid]);
                 let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
                     let dtype = self.graph.dtype(nid);
                     let shape = self.graph.shape(nid);
@@ -449,16 +445,8 @@ impl Runtime {
                 };
                 visited.insert(nid, (kid, op_id));
 
-                /*println!("{}, rc={}", kernels[kid].n_outputs, rcs[&nid]);
-                println!("n_kernels={:?}", kernels.len());
-                for kernel in kernels.values() {
-                    println!("kernel n_outputs={}", kernel.n_outputs);
-                    kernel.debug();
-                }*/
-                /*println!();
-                kernels[kid].debug();
-                println!("{loads:?}, {kid:?}");
-                println!();*/
+                println!("n_outputs={}", kernels[kid].n_outputs);
+                //println!("n_kernels={:?}", kernels.len());
 
                 if to_eval.contains(&nid) {
                     //println!();
@@ -551,6 +539,8 @@ impl Runtime {
         kernels[kid].ops.push(Op::StoreView { src: op_id, dtype });
         stores.entry(kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
         kernels[kid].n_outputs -= 1;
+        println!("store n_outputs={}", kernels[kid].n_outputs);
+        kernels[kid].debug();
         if kernels[kid].n_outputs == 0
             && loads.get(&kid).map(|loads| loads.iter().all(|x| realized_nodes.contains(x))).unwrap_or(true)
         {
@@ -939,7 +929,8 @@ impl Runtime {
             optimizer.best_time_nanos = nanos;
         } else {
             let mut last_time_nanos = u128::MAX;
-            if optimizer.next_optimization(last_time_nanos).is_none() { // done optimizing, loaded best from disk
+            if optimizer.next_optimization(last_time_nanos).is_none() {
+                // done optimizing, loaded best from disk
                 let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization());
                 debug_assert!(opt_res);
                 if self.debug.ir() {

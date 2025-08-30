@@ -4,9 +4,11 @@
     - [ ] tensor cores
     - [ ] fix load calculation, probably using Atomic usize
     - [x] fix event memory leaks, all events must be properly destroyed
+    - [ ] channel for context, because cuda context is thread local
   - [ ] hip
   - [x] opencl
     - [ ] fix load calculation, probably using Atomic usize
+    - [ ] channel for context is required by some (e.g. cuda), but not others
   - [ ] vulkan
     - [ ] initialization
     - [ ] memory management
@@ -43,6 +45,9 @@
   - [ ] improve reshape node
     - [x] merges, splits, reshapes of non reduce axes
     - [ ] inserting new loops to the end of the kernel
+  - [ ] improve expand node (should almost never store)
+  - [ ] improve permute node (should never store)
+  - [ ] improve pad node (should almost never store)
   - [ ] pad could also work even with kernels that store stuff, just pad the store view
   - [x] expand reduce bug
   - [x] fix is expandable conditions
@@ -52,6 +57,7 @@
   - [x] scheduling to multiple devices
   - [x] fix bug when running phi3, panic on min_kernel function
   - [ ] automatic sharding across devices
+  - [ ] automatic dropping of unneeded tensors
 - [x] kernel
   - [x] default optimizations
   - [x] indexing for padded views
@@ -59,15 +65,16 @@
   - [x] common subexpression elimination
   - [x] dead store elimination
   - [x] kernel flops, memory reads, memory writes
-  - [ ] loop splitting
+  - [ ] global to inner loop splitting
+  - [ ] inner loop splitting
   - [ ] loop reordering
   - [ ] loop unrolling
   - [ ] loop invariant code motion
   - [ ] vectorization, vector dtypes
   - [ ] tensor cores/tiling
   - [ ] merge all mul + add into mad instructions
-  - [ ] register tiling of all variables
   - [ ] local tiling of all variables
+  - [ ] streaming dual reduce ops (e.g. streaming softmax)
   - [ ] flash attention
   - [x] optimizer with search
 - [ ] testing
@@ -75,9 +82,10 @@
     - [x] unary ops
     - [ ] movemnt ops
     - [ ] binary ops
-  - [ ] pad_2
+  - [x] pad_2
+  - [x] reshape_permute_1
+  - [x] rope_2
   - [ ] softmax_1
-  - [ ] reshape_permute_1
   - [ ] padding on elementwise kernel
   - [ ] expand on elementwise kernel
   - [ ] reshape on elementwise kernel
@@ -86,7 +94,7 @@
   - [ ] expand on reduce kernel
   - [ ] reshape on reduce kernel
   - [ ] permute on reduce kernel
-  - [ ] lot of testing for scheduler correctness
+  - [ ] lot of testing for kernelizer correctness
   - [ ] more autograd tests
 
 - [x] docs

@@ -1841,7 +1841,7 @@ impl Tensor {
         let n = shape.rank() - padding.len();
         let padding: Vec<(isize, isize)> =
             padding.into_iter().chain(repeat_n((0, 0), n)).collect::<Vec<(isize, isize)>>().into_iter().rev().collect();
-        //std::println!("Get padding: {padding:?}");
+        //println!("get padding: {padding:?}");
         self.pad_zeros(padding)
     }
 
@@ -1869,11 +1869,10 @@ impl Tensor {
                 )
             })
             .collect();
-        println!("{padding:?}");
         let n = shape.rank() - padding.len();
         let padding: Vec<(isize, isize)> =
-            padding.into_iter().chain(repeat_n((0, 0), n)).collect::<Vec<(isize, isize)>>().into_iter().rev().collect();
-        //std::println!("Get padding: {padding:?}");
+            padding.into_iter().chain(repeat_n((0, 0), n)).collect::<Vec<(isize, isize)>>().into_iter().collect();
+        //println!("rget padding: {padding:?}");
         self.pad_zeros(padding)
     }
 
@@ -2803,7 +2802,11 @@ impl Tensor {
     ///
     /// Returns error if shapes of tensors are not compatible.
     #[allow(clippy::missing_panics_doc)]
-    pub fn rope(&self, sine_frequencies: impl Into<Tensor>, cosine_frequencies: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    pub fn rope(
+        &self,
+        sine_frequencies: impl Into<Tensor>,
+        cosine_frequencies: impl Into<Tensor>,
+    ) -> Result<Tensor, ZyxError> {
         let sin_freqs: Tensor = sine_frequencies.into();
         let cos_freqs: Tensor = cosine_frequencies.into();
         if !RT.lock().implicit_casts {
@@ -4307,16 +4310,12 @@ impl Neg for &Tensor {
 
 impl Not for Tensor {
     type Output = Tensor;
-    fn not(self) -> Self::Output {
-        self.equal(0).unwrap()
-    }
+    fn not(self) -> Self::Output { self.equal(0).unwrap() }
 }
 
 impl Not for &Tensor {
     type Output = Tensor;
-    fn not(self) -> Self::Output {
-        self.equal(0).unwrap()
-    }
+    fn not(self) -> Self::Output { self.equal(0).unwrap() }
 }
 
 /// Panics on indexing, with a helpful message directing to `.get(...)`.

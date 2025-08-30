@@ -812,9 +812,6 @@ impl OpenCLDevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    if dtype == DType::U32 && bop == BOp::Mul && y == "4" {
-                        writeln!(source, "printf(\"r1=%d, r0=%d\\n\", r1, r0);").unwrap();
-                    }
                     match bop {
                         BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};").unwrap(),
                         BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),

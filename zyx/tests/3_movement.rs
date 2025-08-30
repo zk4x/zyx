@@ -49,10 +49,7 @@ fn pad_1() -> Result<(), ZyxError> {
 fn pad_2() -> Result<(), ZyxError> {
     let a = Tensor::from([[1i32, 2], [3, 4]]).reshape([1, 1, 2, 2])?;
     let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 1, 4])?;
-    let x = a.pad_zeros([(0, 2), (0, 2)])?;
-    println!("{x}");
-    panic!();
-    let c = x + b;
+    let c = a.pad_zeros([(0, 2), (0, 2)])? + b;
     assert_eq!(c, [[[[6i32, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]);
     Ok(())
 }
@@ -82,23 +79,23 @@ fn rope_2() -> Result<(), ZyxError> {
     assert_eq!(embed_dim % 2, 0, "Embedding dimension should be even for RoPE.");
 
     // Generate the position indices
-    let position = Tensor::arange(0., seq_len as f32, 1.)?.unsqueeze(1)?;  // Shape: (seq_len, 1)
+    let position = Tensor::arange(0., seq_len as f32, 1.)?.unsqueeze(1)?; // Shape: (seq_len, 1)
 
     // Create a tensor of frequencies for each dimension
-    let mut freqs = Tensor::arange(0., embed_dim as f32 / 2., 1.)?;  // Shape: (embed_dim // 2)
-    freqs = Tensor::from(base).pow(freqs * (2 / embed_dim) as f32)?;  // Apply scaling for frequency
+    let mut freqs = Tensor::arange(0., embed_dim as f32 / 2., 1.)?; // Shape: (embed_dim // 2)
+    freqs = Tensor::from(base).pow(freqs * (2 / embed_dim) as f32)?; // Apply scaling for frequency
 
     // Create the positional encoding matrix (sinusoidal)
-    let pos_enc = position * freqs;  // Shape: (seq_len, embed_dim // 2)
+    let pos_enc = position * freqs; // Shape: (seq_len, embed_dim // 2)
 
     // Apply sin and cos to each dimension
-    let sin_enc = pos_enc.sin();  // Shape: (seq_len, embed_dim // 2)
-    let cos_enc = pos_enc.cos();  // Shape: (seq_len, embed_dim // 2)
+    let sin_enc = pos_enc.sin(); // Shape: (seq_len, embed_dim // 2)
+    let cos_enc = pos_enc.cos(); // Shape: (seq_len, embed_dim // 2)
 
     // Now, interleave sin and cos values for the full embedding (pairing them)
     // sin_enc -> even dimensions, cos_enc -> odd dimensions
-    let sin_enc = sin_enc.unsqueeze(0)?.expand_axis(0, batch_size)?;  // Expand for batch size
-    let cos_enc = cos_enc.unsqueeze(0)?.expand_axis(0, batch_size)?;  // Expand for batch size
+    let sin_enc = sin_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
+    let cos_enc = cos_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
 
     // Combine sin and cos to create the final embedding
     // The idea is to apply sin/cos to even and odd dimensions
