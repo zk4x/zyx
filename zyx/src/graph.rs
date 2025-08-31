@@ -353,6 +353,7 @@ pub enum UOp {
     Sqrt,
     Sin,
     Cos,
+    Floor,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]

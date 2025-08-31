@@ -371,7 +371,7 @@ impl Constant {
         use crate::Float;
         fn unary_func<T: Scalar>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Exp2 | UOp::Log2 | UOp::Reciprocal | UOp::Sqrt | UOp::Sin | UOp::Cos => {
+                UOp::Exp2 | UOp::Log2 | UOp::Reciprocal | UOp::Sqrt | UOp::Sin | UOp::Cos | UOp::Floor => {
                     unreachable!()
                 }
                 UOp::ReLU => x.relu(),
@@ -388,6 +388,7 @@ impl Constant {
                 UOp::Sqrt => x.sqrt(),
                 UOp::Sin => x.sin(),
                 UOp::Cos => x.cos(),
+                UOp::Floor => x.floor(),
             }
         }
         match self {

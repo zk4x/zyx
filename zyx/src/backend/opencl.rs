@@ -805,6 +805,7 @@ impl OpenCLDevice {
                         UOp::Sqrt => writeln!(source, "{indent}r{reg} = sqrt({x});").unwrap(),
                         UOp::Sin => writeln!(source, "{indent}r{reg} = sin({x});").unwrap(),
                         UOp::Cos => writeln!(source, "{indent}r{reg} = cos({x});").unwrap(),
+                        UOp::Floor => writeln!(source, "{indent}r{reg} = floor({x});").unwrap(),
                     }
                 }
                 &Op::Binary { x, y, bop } => {

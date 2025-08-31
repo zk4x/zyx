@@ -48,6 +48,7 @@
   - [ ] improve permute node (should never store)
   - [ ] improve pad node (should almost never store)
   - [ ] pad could also work even with kernels that store stuff, just pad the store view
+  - [ ] binary op synchronization (with dependent loads and stores)
   - [x] expand reduce bug
   - [x] fix is expandable conditions
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks

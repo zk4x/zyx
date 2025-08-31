@@ -412,8 +412,8 @@ impl Kernel {
 
         while let Some(op_id) = self.ops.iter().rev().position(|op| matches!(op, Op::Reduce { .. })) {
             //for op_id in reduce_ops.into_iter().rev() {
-            println!();
-            self.debug();
+            //println!();
+            //self.debug();
             let op_id = self.ops.len() - op_id - 1;
             let Op::Reduce { x, rop, dims } = self.ops[op_id].clone() else { unreachable!() };
             let mut min_param = x;
@@ -574,16 +574,29 @@ impl Kernel {
                         }
                     }
                     Op::Const(_) => {}
-                    Op::Load { src, index } | Op::Store { x: src, index, .. } => {
-                        assert_ne!(*index, op_id);
+                    Op::Load { src, index } => {
+                        debug_assert_ne!(*index, op_id);
                         if *src == op_id {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
                             i += 1;
                             inserted_loads.push(i);
                         } else if *src > op_id {
-                            //*src += inserted_loads.iter().filter(|&&v| v + 8 < *src).count() + n;
                             *src += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *src + n).count() + n;
+                        }
+                    }
+                    Op::Store { dst, x, index } => {
+                        debug_assert_ne!(*index, op_id);
+                        if *dst > op_id {
+                            *dst += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *dst + n).count() + n;
+                        }
+                        if *x == op_id {
+                            *x = self.ops.len() + i;
+                            tail.insert(i, Op::Load { src: acc, index: c_0 });
+                            i += 1;
+                            inserted_loads.push(i);
+                        } else if *x > op_id {
+                            *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
                         }
                     }
                     Op::Binary { x, y, .. } => {
@@ -619,8 +632,8 @@ impl Kernel {
 
             self.ops.extend(tail);
         }
-        println!();
-        self.debug();
+        //println!();
+        //self.debug();
     }
 
     pub fn define_globals(&mut self) {

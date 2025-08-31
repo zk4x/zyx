@@ -1,4 +1,3 @@
-use std::hash::BuildHasherDefault;
 use crate::{
     Map, RT, Set, Tensor,
     dtype::Constant,
@@ -7,6 +6,7 @@ use crate::{
     shape::{Axis, Dim},
     tensor::TensorId,
 };
+use std::hash::BuildHasherDefault;
 
 /// Gradient tape
 ///
@@ -30,9 +30,7 @@ use crate::{
 pub struct GradientTape {}
 
 impl Default for GradientTape {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 impl GradientTape {
@@ -44,10 +42,7 @@ impl GradientTape {
             //panic!("Only one gradient tape can exist at a time.");
             return Self {};
         }
-        rt.graph.gradient_tape = Some(Set::with_capacity_and_hasher(
-            100,
-            BuildHasherDefault::default(),
-        ));
+        rt.graph.gradient_tape = Some(Set::with_capacity_and_hasher(100, BuildHasherDefault::default()));
         drop(rt);
         Self {}
     }
@@ -56,16 +51,11 @@ impl GradientTape {
     /// Any ops following this function will not be traced.
     /// If you want to keep tracing, use [`gradient_persistent`](GradientTape::gradient_persistent)
     #[must_use]
-    pub fn gradient<'a>(
-        &self,
-        target: &Tensor,
-        sources: impl IntoIterator<Item = &'a Tensor>,
-    ) -> Vec<Option<Tensor>> {
+    pub fn gradient<'a>(&self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
         let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
         //println!("Sources: {sources:?}");
         let mut rt = RT.lock();
-        let grads: Map<TensorId, TensorId> =
-            rt.gradient(target.id(), &sources.iter().copied().collect());
+        let grads: Map<TensorId, TensorId> = rt.gradient(target.id(), &sources.iter().copied().collect());
         rt.graph.gradient_tape_ref_count += 1;
         rt.drop_gradient_tape();
         drop(rt);
@@ -87,8 +77,7 @@ impl GradientTape {
     ) -> Vec<Option<Tensor>> {
         let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
         //println!("Sources: {sources:?}");
-        let grads: Map<TensorId, TensorId> =
-            RT.lock().gradient(target.id(), &sources.iter().copied().collect());
+        let grads: Map<TensorId, TensorId> = RT.lock().gradient(target.id(), &sources.iter().copied().collect());
         sources
             .into_iter()
             .map(|x: TensorId| grads.get(&x).copied())
@@ -117,27 +106,15 @@ impl Runtime {
     }
 
     #[allow(clippy::similar_names)]
-    pub(super) fn gradient(
-        &mut self,
-        x: TensorId,
-        sources: &Set<TensorId>,
-    ) -> Map<TensorId, TensorId> {
-        fn insert_or_add_grad(
-            r: &mut Runtime,
-            grads: &mut Map<TensorId, TensorId>,
-            x: TensorId,
-            grad: TensorId,
-        ) {
+    pub(super) fn gradient(&mut self, x: TensorId, sources: &Set<TensorId>) -> Map<TensorId, TensorId> {
+        fn insert_or_add_grad(r: &mut Runtime, grads: &mut Map<TensorId, TensorId>, x: TensorId, grad: TensorId) {
             match grads.entry(x) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(grad);
                 }
                 std::collections::hash_map::Entry::Occupied(e) => {
                     let (k, prev_grad) = e.remove_entry();
-                    grads.insert(
-                        k,
-                        r.graph.push(Node::Binary { x: prev_grad, y: grad, bop: BOp::Add }),
-                    );
+                    grads.insert(k, r.graph.push(Node::Binary { x: prev_grad, y: grad, bop: BOp::Add }));
                     // These can never fail as it just decreses ref count,
                     // there is no deallocation.
                     r.release(prev_grad);
@@ -152,8 +129,7 @@ impl Runtime {
 
         let req_grad: Set<TensorId> = topo.iter().copied().chain(sources.iter().copied()).collect();
         // Node -> Grad
-        let mut grads: Map<TensorId, TensorId> =
-            Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut grads: Map<TensorId, TensorId> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
 
         // Initial gradient of ones
         grads.insert(x, self.ones(self.shape(x).into(), self.dtype(x)));
@@ -197,7 +173,14 @@ impl Runtime {
                         }
                     }
                     BOp::Mod => {
-                        todo!("Mod backward")
+                        if req_grad.contains(&x) {
+                            self.retain(grad);
+                            insert_or_add_grad(self, &mut grads, x, grad);
+                        }
+                        if req_grad.contains(&y) {
+                            // -floor(x/y) * grad
+                            todo!();
+                        }
                     }
                     BOp::Div => {
                         if req_grad.contains(&x) {
@@ -309,7 +292,9 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
                     UOp::Exp2 => {
-                        let temp = self.constant(std::f64::consts::E.log2());
+                        let dtype = self.dtype(x);
+                        let c = std::f64::consts::E.log2();
+                        let temp = self.graph.push(Node::Const { value: Constant::new(c).cast(dtype) });
                         let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
                         self.release(temp);
                         let temp2 = self.binary(nid, temp1, BOp::Mul);
@@ -319,7 +304,9 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     UOp::Log2 => {
-                        let temp = self.constant(std::f64::consts::E.log2());
+                        let dtype = self.dtype(x);
+                        let c = std::f64::consts::E.log2();
+                        let temp = self.graph.push(Node::Const { value: Constant::new(c).cast(dtype) });
                         let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
                         self.release(temp);
                         let temp2 = self.binary(x, temp1, BOp::Mul);
@@ -354,15 +341,21 @@ impl Runtime {
                         let grad = self.unary(grad, UOp::Neg);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
-                    /*UOp::Tanh => {
-                        // 1 - tanh^2(x)
-                        let tanh_x_2 = self.mul(nid, nid);
-                        let ones = self.ones(self.shape(x).into(), self.dtype(x));
-                        let grad = self.sub(ones, tanh_x_2);
-                        self.release(ones).unwrap();
-                        self.release(tanh_x_2).unwrap();
+                    UOp::Floor => {
+                        let dtype = self.dtype(x);
+                        let temp = self.graph.push(Node::Const { value: Constant::new(0).cast(dtype) });
+                        let grad = self.expand(temp, self.shape(x).into()).unwrap();
+                        self.release(temp);
                         insert_or_add_grad(self, &mut grads, x, grad);
-                    }*/
+                    } /*UOp::Tanh => {
+                          // 1 - tanh^2(x)
+                          let tanh_x_2 = self.mul(nid, nid);
+                          let ones = self.ones(self.shape(x).into(), self.dtype(x));
+                          let grad = self.sub(ones, tanh_x_2);
+                          self.release(ones).unwrap();
+                          self.release(tanh_x_2).unwrap();
+                          insert_or_add_grad(self, &mut grads, x, grad);
+                      }*/
                 },
                 Node::Reshape { x, .. } => {
                     let grad = self.reshape(grad, self.shape(x).into());

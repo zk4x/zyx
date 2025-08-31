@@ -752,6 +752,16 @@ impl Tensor {
         x
     }
 
+    /// Returns a new floored tensor
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn floor(&self) -> Tensor {
+        let x = self.float_cast().unwrap();
+        let x = Tensor { id: RT.lock().unary(x.id, UOp::Floor) };
+        x
+    }
+
     /// Computes the exponential of each element in the input tensor using base e.
     ///
     /// This function returns a new tensor that is computed by taking the exponential of each
