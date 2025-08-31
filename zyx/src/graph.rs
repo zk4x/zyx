@@ -331,7 +331,7 @@ pub enum BOp {
     Mod,
     Cmplt,
     Cmpgt,
-    Max,
+    Maximum,
     Or,
     And,
     BitXor,

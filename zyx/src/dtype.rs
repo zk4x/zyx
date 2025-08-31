@@ -419,7 +419,7 @@ impl Constant {
                 BOp::Div => Constant::new(x.div(y)),
                 BOp::Pow => Constant::new(x.pow(y)),
                 BOp::Mod => Constant::new(x.mod_(y)),
-                BOp::Max => Constant::new(x.max(y)),
+                BOp::Maximum => Constant::new(x.max(y)),
                 BOp::Cmplt => Constant::new(x.cmplt(y)),
                 BOp::Cmpgt => Constant::new(x.cmpgt(y)),
                 BOp::Or => Constant::new(x.or(y)),

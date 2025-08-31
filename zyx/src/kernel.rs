@@ -528,7 +528,7 @@ impl Kernel {
                 y,
                 bop: match rop {
                     ROp::Sum => BOp::Add,
-                    ROp::Max => BOp::Max,
+                    ROp::Max => BOp::Maximum,
                 },
             });
             self.ops.push(Op::Store { dst: acc, x: y + 1, index: c_0 });
@@ -1103,7 +1103,7 @@ impl Kernel {
                         BOp::Mod => todo!(),
                         BOp::Cmplt => todo!(),
                         BOp::Cmpgt => todo!(),
-                        BOp::Max => todo!(),
+                        BOp::Maximum => todo!(),
                         BOp::Or => todo!(),
                         BOp::And => todo!(),
                         BOp::BitXor => todo!(),
@@ -1143,7 +1143,7 @@ impl Kernel {
                             }
                         }
                         BOp::Cmplt | BOp::Cmpgt | BOp::NotEq | BOp::And | BOp::Eq => {}
-                        BOp::Max => todo!(),
+                        BOp::Maximum => todo!(),
                         BOp::Or => todo!(),
                         BOp::BitXor => todo!(),
                         BOp::BitOr => todo!(),

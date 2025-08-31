@@ -107,8 +107,8 @@ impl Runtime {
 
     #[allow(clippy::similar_names)]
     pub(super) fn gradient(&mut self, x: TensorId, sources: &Set<TensorId>) -> Map<TensorId, TensorId> {
-        fn insert_or_add_grad(r: &mut Runtime, grads: &mut Map<TensorId, TensorId>, x: TensorId, grad: TensorId) {
-            match grads.entry(x) {
+        fn insert_or_add_grad(r: &mut Runtime, grads: &mut Map<TensorId, TensorId>, nid: TensorId, grad: TensorId) {
+            match grads.entry(nid) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(grad);
                 }
@@ -172,16 +172,6 @@ impl Runtime {
                             insert_or_add_grad(self, &mut grads, y, grad);
                         }
                     }
-                    BOp::Mod => {
-                        if req_grad.contains(&x) {
-                            self.retain(grad);
-                            insert_or_add_grad(self, &mut grads, x, grad);
-                        }
-                        if req_grad.contains(&y) {
-                            // -floor(x/y) * grad
-                            todo!();
-                        }
-                    }
                     BOp::Div => {
                         if req_grad.contains(&x) {
                             let x_grad = self.binary(grad, y, BOp::Div);
@@ -196,6 +186,23 @@ impl Runtime {
                             let y_grad = self.binary(x_mul, y_squared, BOp::Div);
                             self.release(y_squared);
                             insert_or_add_grad(self, &mut grads, y, y_grad);
+                        }
+                    }
+                    BOp::Mod => {
+                        if req_grad.contains(&x) {
+                            self.retain(grad);
+                            insert_or_add_grad(self, &mut grads, x, grad);
+                        }
+                        if req_grad.contains(&y) {
+                            // (x/y).floor().neg() * grad
+                            let x_div_y = self.binary(x, y, BOp::Div);
+                            let floored = self.unary(x_div_y, UOp::Floor);
+                            self.release(x_div_y);
+                            let negated = self.unary(floored, UOp::Neg);
+                            self.release(floored);
+                            let grad = self.binary(negated, grad, BOp::Mul);
+                            self.release(negated);
+                            insert_or_add_grad(self, &mut grads, y, grad);
                         }
                     }
                     BOp::Pow => {
@@ -232,6 +239,9 @@ impl Runtime {
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
                     }
+                    BOp::Maximum => {
+                        todo!("Max backward.");
+                    }
                     BOp::Cmplt => {
                         panic!("Cmplt is not a differentiable operation.");
                     }
@@ -244,29 +254,26 @@ impl Runtime {
                     BOp::Eq => {
                         panic!("Eq is not a differentiable operation.");
                     }
-                    BOp::Max => {
-                        todo!("Max backward.");
-                    }
                     BOp::Or => {
-                        todo!("Or backward.");
+                        panic!("Or is not a differentiable operation.");
                     }
                     BOp::And => {
-                        todo!("And backward.");
+                        panic!("And is not a differentiable operation.");
                     }
                     BOp::BitAnd => {
-                        todo!("BitAnd backward.");
+                        panic!("BitAnd is not a differentiable operation.");
                     }
                     BOp::BitOr => {
-                        todo!("BitOr backward.");
+                        panic!("BitOr is not a differentiable operation.");
                     }
                     BOp::BitXor => {
-                        todo!("BitXor backward.");
+                        panic!("BitXor is not a differentiable operation.");
                     }
                     BOp::BitShiftLeft => {
-                        todo!("BitXor backward.");
+                        panic!("BitShiftLeft is not a differentiable operation.");
                     }
                     BOp::BitShiftRight => {
-                        todo!("BitXor backward.");
+                        panic!("BitShiftRight is not a differentiable operation.");
                     }
                 },
                 Node::Cast { x, .. } => {

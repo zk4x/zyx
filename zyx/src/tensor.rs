@@ -1963,7 +1963,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().binary(x.id, y.id, BOp::Max);
+        let id = RT.lock().binary(x.id, y.id, BOp::Maximum);
         Ok(Tensor { id })
     }
 

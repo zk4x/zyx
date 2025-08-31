@@ -874,7 +874,7 @@ impl CUDADevice {
                         BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};").unwrap(),
                         BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};").unwrap(),
                         BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};").unwrap(),
-                        BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});").unwrap(),
+                        BOp::Maximum => writeln!(source, "{indent}r{reg} = max({x}, {y});").unwrap(),
                         BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};").unwrap(),
                         BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};").unwrap(),
                         BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};").unwrap(),
