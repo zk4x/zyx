@@ -600,9 +600,19 @@ impl Runtime {
             outputs.remove(&kid);
             let kernel = unsafe { kernels.remove_and_return(kid) };
             realized_nodes.extend(&*stores[&kid]);
-            if let Some(loads) = loads.remove(&kid) {
+            if let Some(kernel_loads) = loads.remove(&kid) {
                 let stores = stores.remove(&kid).unwrap();
-                self.launch_kernel(kernel, loads, stores)?;
+                self.launch_kernel(kernel, kernel_loads.clone(), stores)?;
+
+                // Delete unneeded intermediate tensors in memory pools
+                for tid in kernel_loads {
+                    if !loads.values().any(|loads| loads.contains(&tid)) {
+                        // drop tid from memory pools
+                        let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
+                        to_remove.insert(tid);
+                        self.deallocate_tensors(&to_remove);
+                    }
+                }
             } else {
                 let stores = stores.remove(&kid).unwrap();
                 self.launch_kernel(kernel, Vec::new(), stores)?;

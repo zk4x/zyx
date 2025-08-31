@@ -412,6 +412,8 @@ impl Kernel {
 
         while let Some(op_id) = self.ops.iter().rev().position(|op| matches!(op, Op::Reduce { .. })) {
             //for op_id in reduce_ops.into_iter().rev() {
+            println!();
+            self.debug();
             let op_id = self.ops.len() - op_id - 1;
             let Op::Reduce { x, rop, dims } = self.ops[op_id].clone() else { unreachable!() };
             let mut min_param = x;
@@ -617,6 +619,8 @@ impl Kernel {
 
             self.ops.extend(tail);
         }
+        println!();
+        self.debug();
     }
 
     pub fn define_globals(&mut self) {
