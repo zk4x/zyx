@@ -240,7 +240,37 @@ impl Runtime {
                         }
                     }
                     BOp::Maximum => {
-                        todo!("Max backward.");
+                        //# Create masks for where x > y, x < y, and x == y
+                        //mask_x_greater = (x > y).to(grad_output.dtype)
+                        //mask_y_greater = (x < y).to(grad_output.dtype)
+                        //mask_equal = (x == y).to(grad_output.dtype)
+                        //# When equal, split gradient equally
+                        //grad_x = grad_output * (mask_x_greater + 0.5 * mask_equal)
+                        //grad_y = grad_output * (mask_y_greater + 0.5 * mask_equal)
+
+                        let dtype = self.dtype(x);
+                        let c = self.graph.push(Node::Const { value: Constant::new(0.5).cast(dtype) });
+                        let mask_eq = self.binary(x, y, BOp::Eq);
+                        let eq = self.binary(mask_eq, c, BOp::Mul);
+                        self.release(c);
+                        self.release(mask_eq);
+                        if req_grad.contains(&x) {
+                            let mask_xgt = self.binary(x, y, BOp::Cmpgt);
+                            let add = self.binary(mask_xgt, eq, BOp::Add);
+                            self.release(mask_xgt);
+                            let x_grad = self.binary(grad, add, BOp::Mul);
+                            self.release(add);
+                            insert_or_add_grad(self, &mut grads, x, x_grad);
+                        }
+                        if req_grad.contains(&y) {
+                            let mask_ygt = self.binary(x, y, BOp::Cmplt);
+                            let add = self.binary(mask_ygt, eq, BOp::Add);
+                            self.release(mask_ygt);
+                            let y_grad = self.binary(grad, add, BOp::Mul);
+                            self.release(add);
+                            insert_or_add_grad(self, &mut grads, y, y_grad);
+                        }
+                        self.release(eq);
                     }
                     BOp::Cmplt => {
                         panic!("Cmplt is not a differentiable operation.");
