@@ -19,10 +19,10 @@
     - [ ] spirv compiler
   - [x] dummy
     - [ ] validation for program ids
-- [x] runtime
+- [ ] runtime
   - [x] fix event handling
   - [ ] node deallocation after realization
-  - [ ] static graphs - unfortunately necessary for very high performance networks to achieve millions of tensor ops/second
+  - [ ] static graphs - unfortunately necessary for very high performance networks to achieve hundreds of millions of tensor ops/second
 - [x] autograd
   - [x] fix t6 test
   - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
@@ -38,9 +38,8 @@
   - [x] reshaped view to ir
   - [x] axis merging
   - [x] axes reshape
-- [x] kernelizer
+- [ ] kernelizer
   - [x] all dim reduce
-  - [ ] kernel reshape with shape that contains reduce ops and add new loops after those
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
   - [ ] improve reshape node
     - [x] merges, splits, reshapes of non reduce axes
@@ -58,7 +57,7 @@
   - [x] fix bug when running phi3, panic on min_kernel function
   - [ ] automatic sharding across devices
   - [ ] automatic dropping of unneeded tensors
-- [x] kernel
+- [ ] kernel
   - [x] default optimizations
   - [x] indexing for padded views
   - [x] indexing for multi reshape views
@@ -84,8 +83,9 @@
     - [ ] binary ops
   - [x] pad_2
   - [x] reshape_permute_1
-  - [x] rope_2
-  - [ ] softmax_1
+  - [x] rope_1
+  - [ ] rope_2
+  - [x] softmax_1
   - [ ] padding on elementwise kernel
   - [ ] expand on elementwise kernel
   - [ ] reshape on elementwise kernel
@@ -107,5 +107,5 @@
   - [x] remove rand
 
 - examples
-  - [x] get phi working
+  - [ ] get phi working
     - [ ] fix tensor memory leak

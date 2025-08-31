@@ -163,7 +163,7 @@ impl Runtime {
                             if outputs[&kid].len() > 1 {
                                 if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
                                     let dtype = self.graph.dtype(x);
-                                    self.add_store(
+                                    let rc = self.add_store(
                                         x,
                                         kid,
                                         op_id,
@@ -176,6 +176,7 @@ impl Runtime {
                                         &mut visited,
                                         &mut outputs,
                                     )?;
+                                    rcs.insert(x, rc);
                                     let shape = self.graph.shape(x);
                                     (kid, op_id) =
                                         add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, &rcs);
@@ -197,7 +198,7 @@ impl Runtime {
                             if outputs[&kid].len() > 1 {
                                 if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
                                     let dtype = self.graph.dtype(x);
-                                    self.add_store(
+                                    let rc = self.add_store(
                                         x,
                                         kid,
                                         op_id,
@@ -210,6 +211,7 @@ impl Runtime {
                                         &mut visited,
                                         &mut outputs,
                                     )?;
+                                    rcs.insert(x, rc);
                                     let shape = self.graph.shape(x);
                                     (kid, op_id) =
                                         add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, &rcs);
@@ -237,7 +239,7 @@ impl Runtime {
                             if outputs[&kid].len() > 1 {
                                 if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
                                     let dtype = self.graph.dtype(x);
-                                    self.add_store(
+                                    let rc = self.add_store(
                                         x,
                                         kid,
                                         op_id,
@@ -250,6 +252,7 @@ impl Runtime {
                                         &mut visited,
                                         &mut outputs,
                                     )?;
+                                    rcs.insert(x, rc);
                                     let shape = self.graph.shape(x);
                                     (kid, op_id) =
                                         add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, &rcs);
@@ -273,7 +276,7 @@ impl Runtime {
                             if outputs[&kid].len() > 1 {
                                 if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
                                     let dtype = self.graph.dtype(x);
-                                    self.add_store(
+                                    let rc = self.add_store(
                                         x,
                                         kid,
                                         op_id,
@@ -286,6 +289,7 @@ impl Runtime {
                                         &mut visited,
                                         &mut outputs,
                                     )?;
+                                    rcs.insert(x, rc);
                                     let shape = self.graph.shape(x);
                                     (kid, op_id) =
                                         add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, &rcs);
@@ -313,7 +317,7 @@ impl Runtime {
                             if outputs[&kid].len() > 1 {
                                 if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
                                     let dtype = self.graph.dtype(x);
-                                    self.add_store(
+                                    let rc = self.add_store(
                                         x,
                                         kid,
                                         op_id,
@@ -326,6 +330,7 @@ impl Runtime {
                                         &mut visited,
                                         &mut outputs,
                                     )?;
+                                    rcs.insert(x, rc);
                                     let shape = self.graph.shape(x);
                                     (kid, op_id) =
                                         add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, &rcs);
@@ -480,7 +485,10 @@ impl Runtime {
                 visited.insert(nid, (kid, op_id));
 
                 //println!("n_outputs={}", kernels[kid].n_outputs);
-                //println!("n_kernels={:?}", kernels.len());
+                //println!("n_kernels={:?}, visited={:?}", kernels.len(), visited);
+                //for (kid, kernel) in kernels.iter() {
+                //println!("{kid:?}, outputs={:?}", outputs[&kid]);
+                //kernels[kid].debug();
 
                 if to_eval.contains(&nid) {
                     //println!();
@@ -500,6 +508,7 @@ impl Runtime {
                         &mut visited,
                         &mut outputs,
                     )?;
+                    rcs.insert(nid, rc);
                 }
             }
 
@@ -507,8 +516,8 @@ impl Runtime {
             {
                 if kernels.len() > KernelId(0) {
                     println!("Unrealized kernels:");
-                    for (id, kernel) in kernels.iter() {
-                        println!("{id:?}");
+                    for (kid, kernel) in kernels.iter() {
+                        println!("{kid:?}, outputs={:?}", outputs[&kid]);
                         kernel.debug();
                         println!();
                     }
@@ -531,7 +540,8 @@ impl Runtime {
             self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
             to_delete.remove(&tensor);
         }
-        // Delete nodes, but do not use release function, just remove it from graph.nodes
+        // Delete nodes, but do not use release function (don't deallocate again),
+        // only remove it from graph.nodes
         self.graph.delete_tensors(&to_delete);
 
         Ok(())
@@ -598,6 +608,7 @@ impl Runtime {
                 self.launch_kernel(kernel, Vec::new(), stores)?;
             }
         }
+        //println!("ADDED STORE for {x} x {xrc_rem}");
         Ok(xrc_rem as u32)
     }
 
@@ -1107,6 +1118,7 @@ fn add_load(
     outputs: &mut Map<KernelId, Vec<TensorId>>,
     rcs: &Map<TensorId, u32>,
 ) -> (KernelId, OpId) {
+    //println!("ADDING LOAD for {x} x {}", rcs[&x]);
     let view = View::contiguous(shape);
     let op = Op::LoadView { dtype, view };
     let kernel = Kernel { ops: vec![op] };
