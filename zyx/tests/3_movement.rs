@@ -87,15 +87,20 @@ fn rope_2() -> Result<(), ZyxError> {
 
     // Create the positional encoding matrix (sinusoidal)
     let pos_enc = position * freqs; // Shape: (seq_len, embed_dim // 2)
+    //println!("{pos_enc}");
 
     // Apply sin and cos to each dimension
     let sin_enc = pos_enc.sin(); // Shape: (seq_len, embed_dim // 2)
     let cos_enc = pos_enc.cos(); // Shape: (seq_len, embed_dim // 2)
+    //Tensor::realize([&sin_enc, &cos_enc])?;
 
     // Now, interleave sin and cos values for the full embedding (pairing them)
     // sin_enc -> even dimensions, cos_enc -> odd dimensions
     let sin_enc = sin_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
     let cos_enc = cos_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
+    //Tensor::realize([&sin_enc, &cos_enc])?;
+    println!("{sin_enc}\n{cos_enc}");
+    panic!();
 
     // Combine sin and cos to create the final embedding
     // The idea is to apply sin/cos to even and odd dimensions

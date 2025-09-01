@@ -576,6 +576,9 @@ impl Kernel {
                     Op::Const(_) => {}
                     Op::Load { src, index } => {
                         debug_assert_ne!(*index, op_id);
+                        if *index > op_id {
+                            *index += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *index + n).count() + n;
+                        }
                         if *src == op_id {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
@@ -587,6 +590,9 @@ impl Kernel {
                     }
                     Op::Store { dst, x, index } => {
                         debug_assert_ne!(*index, op_id);
+                        if *index > op_id {
+                            *index += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *index + n).count() + n;
+                        }
                         if *dst > op_id {
                             *dst += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *dst + n).count() + n;
                         }
@@ -777,7 +783,6 @@ impl Kernel {
                     self.ops.extend(temp_ops);
                     increment(&mut self.ops[n..], n - op_id - 1, op_id..);
                     op_id = n;
-                    load_id += 1;
                     continue;
                 }
                 Op::LoadView { dtype, ref view } => {
