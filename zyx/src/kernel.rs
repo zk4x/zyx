@@ -108,6 +108,9 @@ impl SerBin for Cache {
 impl DeBin for Cache {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
         let len = usize::de_bin(offset, bytes)?;
+        if len > bytes.len() - *offset {
+            return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset))
+        }
         let mut device_infos = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let key = DeviceInfo::de_bin(offset, bytes)?;
@@ -116,6 +119,9 @@ impl DeBin for Cache {
         }
 
         let len = usize::de_bin(offset, bytes)?;
+        if len > bytes.len() - *offset {
+            return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset))
+        }
         let mut kernels = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let key = Kernel::de_bin(offset, bytes)?;
@@ -124,6 +130,9 @@ impl DeBin for Cache {
         }
 
         let len = usize::de_bin(offset, bytes)?;
+        if len > bytes.len() - *offset {
+            return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset))
+        }
         let mut optimizations = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let k1 = u32::de_bin(offset, bytes)?;
