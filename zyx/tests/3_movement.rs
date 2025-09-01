@@ -91,6 +91,8 @@ fn rope_2() -> Result<(), ZyxError> {
     // Apply sin and cos to each dimension
     let sin_enc = pos_enc.sin(); // Shape: (seq_len, embed_dim // 2)
     let cos_enc = pos_enc.cos(); // Shape: (seq_len, embed_dim // 2)
+    debug_assert_eq!(sin_enc, [[0f32, 0.0], [0.8415, -0.5064]]);
+    debug_assert_eq!(cos_enc, [[1f32, 1.0], [0.5403, 0.8623]]);
 
     // Now, interleave sin and cos values for the full embedding (pairing them)
     // sin_enc -> even dimensions, cos_enc -> odd dimensions
@@ -101,7 +103,7 @@ fn rope_2() -> Result<(), ZyxError> {
     // The idea is to apply sin/cos to even and odd dimensions
     let x = x.rope(sin_enc, cos_enc)?;
 
-    println!("{x}");
+    assert_eq!(x, [[[1.0, 2.0, 3.0, 4.0], [-2.347314, 7.449169, 10.087157, 3.353991]]]);
 
     Ok(())
 }

@@ -121,7 +121,7 @@ fn mix_expand_reduce() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn rope1() -> Result<(), ZyxError> {
+fn rope_3() -> Result<(), ZyxError> {
     let xs = Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
     let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
     let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
@@ -131,7 +131,7 @@ fn rope1() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn rope2() -> Result<(), ZyxError> {
+fn rope_4() -> Result<(), ZyxError> {
     let z = {
         let xs = Tensor::from([[1f32, 4., 2., 4., 4., 3.], [4., 2., 4., 4., 3., 4.]]).reshape([1, 1, 2, 6])?;
         let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
