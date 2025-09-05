@@ -93,12 +93,15 @@ fn rope_2() -> Result<(), ZyxError> {
     let sin_enc = pos_enc.sin(); // Shape: (seq_len, embed_dim // 2)
     let cos_enc = pos_enc.cos(); // Shape: (seq_len, embed_dim // 2)
     //Tensor::realize([&sin_enc, &cos_enc])?;
+    //println!("{sin_enc}\n{cos_enc}");
+    //panic!();
 
     // Now, interleave sin and cos values for the full embedding (pairing them)
     // sin_enc -> even dimensions, cos_enc -> odd dimensions
     let sin_enc = sin_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
     let cos_enc = cos_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
-    //Tensor::realize([&sin_enc, &cos_enc])?;
+    drop(pos_enc);
+    Tensor::realize([&sin_enc, &cos_enc])?;
     println!("{sin_enc}\n{cos_enc}");
     panic!();
 

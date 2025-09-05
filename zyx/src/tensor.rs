@@ -1145,7 +1145,6 @@ impl Tensor {
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     pub fn expand_axis(&self, axis: SAxis, dim: Dim) -> Result<Tensor, ZyxError> {
-        //println!("Expand from {sh:?} to {shape:?}");
         let mut shape = self.shape();
         let axis = into_axis(axis, shape.len())?;
         shape[axis] = dim;

@@ -421,6 +421,7 @@ impl Runtime {
 
     /// Expand verification is so complex, that it may be simpler to just do it here instead of in tensor
     pub(super) fn expand(&mut self, x: TensorId, shape: Vec<Dim>) -> Result<TensorId, ZyxError> {
+        //println!("Expanding {x}");
         let sh: Vec<Dim> = self.shape(x).into();
         if shape == sh {
             self.retain(x);
@@ -432,14 +433,16 @@ impl Runtime {
                 format!("Cannot expand {sh:?} into {shape:?}").into(),
             ));
         }
-        let mut expanded = false;
+        let mut reshaped = false;
         let new_shape = if shape.len() > sh.len() {
-            expanded = true;
+            reshaped = true;
             std::iter::repeat_n(1, shape.len() - sh.len()).chain(sh.iter().copied()).collect()
         } else {
             sh
         };
+
         debug_assert_eq!(shape.len(), new_shape.len());
+        #[cfg(debug_assertions)]
         for (&s, &d) in new_shape.iter().zip(shape.iter()) {
             if !(s == d || s == 1) {
                 return Err(ZyxError::ShapeError(
@@ -447,7 +450,8 @@ impl Runtime {
                 ));
             }
         }
-        if expanded {
+
+        if reshaped {
             let x = self.reshape(x, new_shape.clone());
             if shape == new_shape {
                 self.retain(x);
