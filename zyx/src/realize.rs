@@ -24,15 +24,21 @@ pub struct KernelId(u32);
 impl SlabId for KernelId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) { self.0 += 1; }
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
 }
 
 impl From<usize> for KernelId {
-    fn from(value: usize) -> Self { KernelId(value as u32) }
+    fn from(value: usize) -> Self {
+        KernelId(value as u32)
+    }
 }
 
 impl From<KernelId> for usize {
-    fn from(value: KernelId) -> Self { value.0 as usize }
+    fn from(value: KernelId) -> Self {
+        value.0 as usize
+    }
 }
 
 impl Runtime {
@@ -502,8 +508,34 @@ impl Runtime {
                     )?;
                     rcs.insert(nid, rc);
                     let shape = self.graph.shape(nid);
-                    let (kid, op_id) = add_load(nid, shape, dtype, &mut kernels, &mut loads, &mut outputs, &rcs);
-                    visited.insert(nid, (kid, op_id));
+                    if rcs[&nid] > 0 {
+                        let (kid, op_id) = add_load(nid, shape, dtype, &mut kernels, &mut loads, &mut outputs, &rcs);
+                        visited.insert(nid, (kid, op_id));
+                    }
+                }
+            }
+
+            if kernels.len() > KernelId(0) {
+                let kids: Vec<KernelId> = kernels.ids().collect();
+                while let Some(kid) = kids.iter().find(|&&kid| loads.get(&kid).map(|loads| loads.iter().all(|x| realized_nodes.contains(x))).unwrap_or(true)).copied() {
+                    let kernel = unsafe { kernels.remove_and_return(kid) };
+                    realized_nodes.extend(&*stores[&kid]);
+                    let stores = stores.remove(&kid).unwrap();
+                    if let Some(kernel_loads) = loads.remove(&kid) {
+                        self.launch_kernel(kernel, kernel_loads.clone(), stores)?;
+
+                        // Delete unneeded intermediate tensors in memory pools
+                        for tid in kernel_loads {
+                            if !loads.values().any(|loads| loads.contains(&tid)) {
+                                // drop tid from memory pools
+                                let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
+                                to_remove.insert(tid);
+                                self.deallocate_tensors(&to_remove);
+                            }
+                        }
+                    } else {
+                        self.launch_kernel(kernel, Vec::new(), stores)?;
+                    }
                 }
             }
 
@@ -518,6 +550,7 @@ impl Runtime {
                     }
                     panic!();
                 }
+                debug_assert!(to_eval.is_subset(&realized_nodes));
             }
 
             let elapsed = begin.elapsed();
@@ -575,21 +608,20 @@ impl Runtime {
             outputs.remove(&kid);
             let kernel = unsafe { kernels.remove_and_return(kid) };
             realized_nodes.extend(&*stores[&kid]);
+            let stores = stores.remove(&kid).unwrap();
             if let Some(kernel_loads) = loads.remove(&kid) {
-                let stores = stores.remove(&kid).unwrap();
                 self.launch_kernel(kernel, kernel_loads.clone(), stores)?;
 
                 // Delete unneeded intermediate tensors in memory pools
-                /*for tid in kernel_loads {
+                for tid in kernel_loads {
                     if !loads.values().any(|loads| loads.contains(&tid)) {
                         // drop tid from memory pools
                         let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
                         to_remove.insert(tid);
                         self.deallocate_tensors(&to_remove);
                     }
-                }*/
+                }
             } else {
-                let stores = stores.remove(&kid).unwrap();
                 self.launch_kernel(kernel, Vec::new(), stores)?;
             }
         }
@@ -1089,7 +1121,6 @@ impl Runtime {
             }
         }
 
-        // TODO Deallocate loads that are not used by any other kernel
         Ok(())
     }
 }

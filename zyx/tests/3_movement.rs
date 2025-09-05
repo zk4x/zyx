@@ -100,14 +100,15 @@ fn rope_2() -> Result<(), ZyxError> {
     // sin_enc -> even dimensions, cos_enc -> odd dimensions
     let sin_enc = sin_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
     let cos_enc = cos_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
-    drop(pos_enc);
-    Tensor::realize([&sin_enc, &cos_enc])?;
-    println!("{sin_enc}\n{cos_enc}");
-    panic!();
+    //drop(pos_enc);
+    //Tensor::realize([&sin_enc, &cos_enc])?;
+    //println!("{sin_enc}\n{cos_enc}");
+    //panic!();
 
     // Combine sin and cos to create the final embedding
     // The idea is to apply sin/cos to even and odd dimensions
     let x = x.rope(sin_enc, cos_enc)?;
+    //drop(pos_enc);
 
     assert_eq!(x, [[[1.0, 2.0, 3.0, 4.0], [-2.347314, 7.449169, 10.087157, 3.353991]]]);
 
