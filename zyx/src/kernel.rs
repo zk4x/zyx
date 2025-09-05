@@ -600,6 +600,9 @@ impl Kernel {
                     }
                     Op::Store { dst, x, index } => {
                         debug_assert_ne!(*index, op_id);
+                        if *index > op_id {
+                            *index += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *index + n).count() + n;
+                        }
                         if *dst > op_id {
                             *dst += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *dst + n).count() + n;
                         }

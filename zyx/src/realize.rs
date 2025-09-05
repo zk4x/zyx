@@ -122,16 +122,16 @@ impl Runtime {
             // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
             let mut virt_realized_nodes = realized_nodes.clone();
 
-            let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(300);
+            let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(30);
             let mut visited: Map<TensorId, (KernelId, OpId)> =
-                Map::with_capacity_and_hasher(order.len() + 10, BuildHasherDefault::new());
+                Map::with_capacity_and_hasher(order.len() + 2, BuildHasherDefault::new());
             let mut outputs: Map<KernelId, Vec<TensorId>> = Map::with_hasher(BuildHasherDefault::new());
             let mut loads: Map<KernelId, Vec<TensorId>> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
             let mut stores: Map<KernelId, Vec<TensorId>> =
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
             //println!("{rcs:?}");
-            //println!("{to_eval:?}");
+            println!("{to_eval:?}");
 
             for nid in order {
                 println!("{nid} x {} -> {:?}", rcs[&nid], self.graph[nid]);
@@ -489,6 +489,7 @@ impl Runtime {
                 //for (kid, kernel) in kernels.iter() {
                 //println!("{kid:?}, outputs={:?}", outputs[&kid]);
                 //kernels[kid].debug();
+                //println!("{:?}", outputs[&kid]);
 
                 if to_eval.contains(&nid) {
                     //println!();
@@ -605,14 +606,14 @@ impl Runtime {
                 self.launch_kernel(kernel, kernel_loads.clone(), stores)?;
 
                 // Delete unneeded intermediate tensors in memory pools
-                for tid in kernel_loads {
+                /*for tid in kernel_loads {
                     if !loads.values().any(|loads| loads.contains(&tid)) {
                         // drop tid from memory pools
                         let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
                         to_remove.insert(tid);
                         self.deallocate_tensors(&to_remove);
                     }
-                }
+                }*/
             } else {
                 let stores = stores.remove(&kid).unwrap();
                 self.launch_kernel(kernel, Vec::new(), stores)?;
