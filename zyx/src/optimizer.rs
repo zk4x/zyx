@@ -16,10 +16,11 @@ pub struct Optimization(u64);
 pub struct Optimizer {
     // optimizations
     local_work_size_opt: WorkSizeOpt,
-    loop_opt: LoopOpt,
+    loop_unrolling_opt: LoopUnrollingOpt,
+    loop_split_opt: LoopSplitOpt,
     //inner_loop_split_opt: InnerLoopSplitOpt,
     //inner_loop_swap_opt: InnerLoopSwapOpt, // a bit harder to know max number of optimizations
-    max_indices: [u64; 2],
+    max_indices: [u64; 3],
     // best optimization found so far
     best_optimization: Optimization,
     // time taken by kernel with the best optimization
@@ -38,13 +39,16 @@ pub struct Optimizer {
 impl Optimizer {
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
         let local_work_size_opt = WorkSizeOpt::new(kernel, dev_info);
-        let loop_opt = LoopOpt::new(kernel);
         let local_work_size_opt_max_index = local_work_size_opt.max_index();
-        let loop_opt_max_index = loop_opt.max_index();
+        let loop_unrolling_opt = LoopUnrollingOpt::new(kernel);
+        let loop_opt_max_index = loop_unrolling_opt.max_index();
+        let loop_split_opt = LoopSplitOpt::new(kernel, 3);
+        let loop_split_opt_max_index = loop_split_opt.max_index();
         Self {
             local_work_size_opt,
-            loop_opt,
-            max_indices: [local_work_size_opt_max_index, loop_opt_max_index],
+            loop_unrolling_opt,
+            loop_split_opt,
+            max_indices: [local_work_size_opt_max_index, loop_opt_max_index, loop_split_opt_max_index],
             best_optimization: Optimization(0),
             best_time_nanos: u128::MAX,
             tried: HashSet::with_capacity(200),
@@ -55,9 +59,13 @@ impl Optimizer {
         }
     }
 
-    pub fn max_iters(&self) -> u64 { self.max_iter }
+    pub fn max_iters(&self) -> u64 {
+        self.max_iter
+    }
 
-    pub fn best_optimization(&self) -> Optimization { self.best_optimization }
+    pub fn best_optimization(&self) -> Optimization {
+        self.best_optimization
+    }
 
     pub fn next_optimization(&mut self, last_time_nanos: u128) -> Option<Optimization> {
         if last_time_nanos < self.best_time_nanos {
@@ -107,8 +115,12 @@ impl Optimizer {
 impl Optimizer {
     #[must_use]
     pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization) -> bool {
-        let [local_work_size_opt_index, loop_opt_index] = optimization.into_indices(self.max_indices);
+        let [local_work_size_opt_index, loop_opt_index, loop_split_opt_index] = optimization.into_indices(self.max_indices);
         if !self.local_work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
+            return false;
+        }
+        
+        if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
             return false;
         }
 
@@ -125,7 +137,7 @@ impl Optimizer {
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
 
-            if !self.loop_opt.apply_optimization(loop_opt_index, kernel) {
+            if !self.loop_unrolling_opt.apply_optimization(loop_opt_index, kernel) {
                 return false;
             }
 
@@ -177,7 +189,9 @@ impl WorkSizeOpt {
         Self { gws, gws_factors, max_local_threads }
     }
 
-    fn max_index(&self) -> u64 { self.gws_factors.iter().map(|gd| gd.len() as u64).product() }
+    fn max_index(&self) -> u64 {
+        self.gws_factors.iter().map(|gd| gd.len() as u64).product()
+    }
 
     // Returns false if this index is invalid
     #[must_use]
@@ -212,12 +226,16 @@ impl WorkSizeOpt {
 
 /// loop unrolling plus loop invariant code motion
 #[derive(Debug, Clone, DeBin, SerBin)]
-struct LoopOpt {}
+struct LoopUnrollingOpt {}
 
-impl LoopOpt {
-    fn new(_kernel: &Kernel) -> Self { Self {} }
+impl LoopUnrollingOpt {
+    fn new(_kernel: &Kernel) -> Self {
+        Self {}
+    }
 
-    fn max_index(&self) -> u64 { 1 }
+    fn max_index(&self) -> u64 {
+        1
+    }
 
     #[must_use]
     fn apply_optimization(&self, _index: u64, _kernel: &mut Kernel) -> bool {
@@ -320,9 +338,9 @@ impl LoopOpt {
                     if let Some((start, dim)) = stack.pop()
                         && *dim <= loop_unroll_size
                     {
-                        ranges.push(start..i + 1);
+                            ranges.push(start..i + 1);
+                        }
                     }
-                }
                 _ => {}
             }
         }
@@ -361,4 +379,192 @@ fn test_get_indices() {
     let opt = Optimization(23902);
     let max_values = [49, 17, 8, 9];
     assert_eq!(opt.into_indices(max_values), [19, 8, 7, 7]);
+}
+
+#[derive(Debug, Clone, DeBin, SerBin)]
+struct LoopSplitOpt {
+    // For each reduction op, store possible split configurations
+    // [reduction_op_index][split_configuration][split_dimensions]
+    reduction_splits: Vec<Vec<Vec<Dim>>>,
+    max_depth: usize, // Maximum split depth (default: 3)
+}
+ 
+impl LoopSplitOpt {
+    fn new(kernel: &Kernel, max_depth: usize) -> Self {
+        let mut reduction_splits = Vec::new();
+
+        // Find all reduction ops
+        for (_, op) in kernel.ops.iter().enumerate() {
+            if let Op::Reduce { dims, .. } = op {
+                // Generate all valid splits for these dimensions
+                let splits = Self::generate_splits(dims, max_depth);
+                reduction_splits.push(splits);
+            }
+        }
+
+        println!("{reduction_splits:?}");
+
+        LoopSplitOpt { reduction_splits, max_depth }
+    }
+ 
+    fn max_index(&self) -> u64 {
+        if self.reduction_splits.len() == 0 {
+            return 1
+        }
+        self.reduction_splits.iter().map(|splits| splits.len() as u64).product::<u64>() + 1
+    }
+
+    fn decode_index(&self, index: u64) -> (u64, u64) {
+        let mut idx = index as usize;
+        for (i, splits) in self.reduction_splits.iter().enumerate() {
+            if idx < splits.len() {
+                return (i as u64, idx as u64);
+            }
+            idx -= splits.len();
+        }
+        panic!("Index {index} out of bounds");
+    }
+
+    fn generate_splits(dims: &[Dim], max_depth: usize) -> Vec<Vec<Dim>> {
+        let mut all_splits = Vec::new();
+        let total_size: Dim = dims.iter().product();
+
+        // Generate all possible factorizations up to max_depth
+        Self::find_factorizations(total_size, 1, max_depth, &mut Vec::new(), &mut all_splits);
+        
+        // Filter out splits that contain dimensions with length 1
+        all_splits.retain(|split| !split.contains(&1));
+        
+        all_splits
+    }
+
+    fn find_factorizations(
+        remaining: Dim,
+        start: Dim,
+        max_depth: usize,
+        current: &mut Vec<Dim>,
+        results: &mut Vec<Vec<Dim>>,
+    ) {
+        if current.len() == max_depth || remaining == 1 {
+            if !current.is_empty() {
+                results.push(current.clone());
+            }
+            return;
+        }
+
+        for i in start..=remaining {
+            if remaining % i == 0 {
+                current.push(i);
+                Self::find_factorizations(remaining / i, i, max_depth, current, results);
+                current.pop();
+            }
+        }
+    }
+
+    fn apply_optimization(&self, index: u64, kernel: &mut Kernel) -> bool {
+        if index == 0 {
+            // At index 0, we apply no splits
+            return true;
+        }
+        // 1. Find which reduction op and split configuration to apply
+        let (reduction_idx, split_idx) = self.decode_index(index);
+        let reduction_idx = reduction_idx as usize;
+        let split_idx = split_idx as usize;
+        
+        // 2. Get the target reduction op
+        let mut reduction_count = 0;
+        let mut target_op_id = None;
+        
+        for (op_id, op) in kernel.ops.iter().enumerate() {
+            if let Op::Reduce { .. } = op {
+                if reduction_count == reduction_idx {
+                    target_op_id = Some(op_id);
+                    break;
+                }
+                reduction_count += 1;
+            }
+        }
+        
+        let Some(op_id) = target_op_id else { return false };
+        //let Op::Reduce { ref mut dims, .. } = kernel.ops[op_id] else { unreachable!() };
+        
+        // 3. Apply the selected split configuration
+        let new_dims = self.reduction_splits[reduction_idx][split_idx].clone();
+        
+        // 4. Reshape all dependent views (using tracing algorithm from unfold_reduces)
+        let min_param = self.find_min_param(kernel, op_id);
+        
+        // 5. Reshape all views between min_param and op_id
+        for i in min_param..op_id {
+            match &mut kernel.ops[i] {
+                Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
+                    // Get the split dimensions for this reduction
+                    let split_dims = &self.reduction_splits[reduction_idx][split_idx];
+                    
+                    // Find the axes that correspond to the reduction dimensions
+                    let original_shape = view.shape();
+                    let mut axes_to_reshape = Vec::new();
+                    let mut new_shape_for_axes = Vec::new();
+                    
+                    // Find which dimensions in the original shape correspond to the reduction dimensions
+                    for &reduced_dim in new_dims.iter() {
+                        if let Some(axis) = original_shape.iter().position(|&d| d == reduced_dim) {
+                            axes_to_reshape.push(axis);
+                        }
+                    }
+                    
+                    // Create the new shape for the axes being reshaped
+                    for &split_dim in split_dims.iter() {
+                        new_shape_for_axes.push(split_dim);
+                    }
+                    
+                    // Reshape only the reduced axes with their new split dimensions
+                    if !axes_to_reshape.is_empty() {
+                        let start = axes_to_reshape[0];
+                        let end = axes_to_reshape[axes_to_reshape.len() - 1] + 1;
+                        view.reshape(start..end, &new_shape_for_axes);
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        true
+    }
+    
+    fn find_min_param(&self, kernel: &Kernel, op_id: usize) -> usize {
+        // Reuse the tracing algorithm from kernel.unfold_reduces (lines 422-502)
+        let Op::Reduce { x, .. } = kernel.ops[op_id] else { unreachable!() };
+        
+        let mut min_param = x;
+        let mut params = vec![x];
+        
+        while let Some(param) = params.pop() {
+            match kernel.ops[param] {
+                Op::Load { src, .. } => {
+                    params.push(src);
+                    if src < min_param { min_param = src; }
+                }
+                Op::Store { x: src, index, .. } => {
+                    params.push(index);
+                    if index < min_param { min_param = index; }
+                    params.push(src);
+                    if src < min_param { min_param = src; }
+                }
+                Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
+                    params.push(x);
+                    if x < min_param { min_param = x; }
+                }
+                Op::Binary { x, y, .. } => {
+                    params.push(x);
+                    if x < min_param { min_param = x; }
+                    params.push(y);
+                    if y < min_param { min_param = y; }
+                }
+                _ => {}
+            }
+        }
+        
+        min_param
+    }
 }
