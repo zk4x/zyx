@@ -402,18 +402,6 @@ impl Kernel {
         unreachable!()
     }
 
-    pub fn unfold_shape(&mut self, global_work_size: &[Dim], local_work_size: &[Dim]) {
-        let k = global_work_size.len() + local_work_size.len();
-        let n = self.ops.len();
-        increment(&mut self.ops, k, 0..n);
-        for &dim in local_work_size.iter().rev() {
-            self.ops.insert(0, Op::Loop { dim, scope: Scope::Local });
-        }
-        for &dim in global_work_size.iter().rev() {
-            self.ops.insert(0, Op::Loop { dim, scope: Scope::Global });
-        }
-    }
-
     pub fn unfold_reduces(&mut self) {
         // Check the reduce op, trace all of it's dependencies,
         // put Loop op before dependency with lowest ID

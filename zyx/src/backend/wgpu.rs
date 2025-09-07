@@ -307,6 +307,7 @@ impl WGPUDevice {
                         UOp::Sqrt => writeln!(source, "{indent}let r{i} = sqrt(r{x});").unwrap(),
                         UOp::Sin => writeln!(source, "{indent}let r{i} = sin(r{x});").unwrap(),
                         UOp::Cos => writeln!(source, "{indent}let r{i} = cos(r{x});").unwrap(),
+                        UOp::Floor => writeln!(source, "{indent}let r{i} = floor(r{x});").unwrap(),
                     }
                 }
                 &Op::Binary { x, y, bop } => match bop {
@@ -318,7 +319,7 @@ impl WGPUDevice {
                     BOp::Mod => writeln!(source, "{indent}let r{i} = r{x} % r{y};").unwrap(),
                     BOp::Cmplt => writeln!(source, "{indent}let r{i} = r{x} < r{y};").unwrap(),
                     BOp::Cmpgt => writeln!(source, "{indent}let r{i} = r{x} > r{y};").unwrap(),
-                    BOp::Max => writeln!(source, "{indent}let r{i} = max(r{x}, r{y});").unwrap(),
+                    BOp::Maximum => writeln!(source, "{indent}let r{i} = max(r{x}, r{y});").unwrap(),
                     BOp::Or => writeln!(source, "{indent}let r{i} = r{x} || r{y};").unwrap(),
                     BOp::And => writeln!(source, "{indent}let r{i} = r{x} && r{y};").unwrap(),
                     BOp::BitXor => writeln!(source, "{indent}let r{i} = r{x} ^ r{y};").unwrap(),
@@ -357,6 +358,13 @@ impl WGPUDevice {
                     loop_id -= 1;
                 }
             }
+        }
+
+        while loop_id as usize > lws.len() + gws.len() {
+            indent.pop();
+            indent.pop();
+            loop_id -= 1;
+            writeln!(source, "{indent}}}").unwrap();
         }
 
         let mut pragma = String::new();
