@@ -138,7 +138,7 @@ impl DeBin for Cache {
             let k1 = u32::de_bin(offset, bytes)?;
             let k2 = u32::de_bin(offset, bytes)?;
             let key = (k1, k2);
-            let value = Optimizer::de_bin(offset, bytes).unwrap();
+            let value = Optimizer::de_bin(offset, bytes)?;
             optimizations.insert(key, value);
         }
 

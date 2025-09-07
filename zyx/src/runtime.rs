@@ -184,7 +184,9 @@ impl Runtime {
                 use std::io::Read;
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf).unwrap();
-                self.cache = nanoserde::DeBin::deserialize_bin(&buf).unwrap();
+                if let Ok(cache) = nanoserde::DeBin::deserialize_bin(&buf) {
+                    self.cache = cache;
+                }
             }
         }
 
