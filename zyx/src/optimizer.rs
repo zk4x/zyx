@@ -655,104 +655,86 @@ fn test_generate_splits_fix() {
 
 #[derive(Debug, Clone, DeBin, SerBin)]
 struct GlobalWorkSizeSplitOpt {
-    // For each global dimension, store possible split configurations
-    // [global_dim_index][split_configuration][split_dimensions]
-    global_splits: Vec<Vec<Vec<Dim>>>,
+    // For each global dimension, store possible divisors
+    // [global_dim_index][divisor_index] = divisor
+    global_divisors: Vec<Vec<Dim>>,
 }
 
 impl GlobalWorkSizeSplitOpt {
-    fn new(kernel: &Kernel, max_depth: usize) -> Self {
-        let mut global_splits = Vec::new();
+    fn new(kernel: &Kernel, _max_depth: usize) -> Self {
+        let mut global_divisors = Vec::new();
         let gws = kernel.shape();
 
-        // Generate splits for each global dimension
+        // Generate possible divisors for each global dimension
         for &dim in &gws {
-            let splits = Self::generate_splits(&[dim], max_depth);
-            global_splits.push(splits);
+            let divisors = Self::get_valid_divisors(dim);
+            global_divisors.push(divisors);
         }
 
-        GlobalWorkSizeSplitOpt { global_splits }
+        GlobalWorkSizeSplitOpt { global_divisors }
     }
 
     fn max_index(&self) -> u64 {
-        if self.global_splits.is_empty() {
-            return 1;
-        }
-        self.global_splits.iter().map(|splits| splits.len() as u64).product::<u64>() + 1
+        self.global_divisors.iter().map(|divisors| divisors.len() as u64).product::<u64>()
     }
 
-    fn generate_splits(dims: &[Dim], max_depth: usize) -> Vec<Vec<Dim>> {
-        // Calculate the total product of all dimensions
-        let total_product: Dim = dims.iter().product();
-
-        // Generate all possible factorizations of the total product up to max_depth
-        let mut current = Vec::new();
-        let mut results = Vec::new();
-
-        // Inline factorization generation
-        fn find_factorizations(
-            remaining: Dim,
-            start: Dim,
-            max_depth: usize,
-            current: &mut Vec<Dim>,
-            results: &mut Vec<Vec<Dim>>,
-        ) {
-            if current.len() == max_depth || remaining == 1 {
-                if !current.is_empty() {
-                    results.push(current.clone());
-                }
-                return;
-            }
-
-            for i in start..=remaining {
-                if remaining % i == 0 {
-                    current.push(i);
-                    find_factorizations(remaining / i, i, max_depth, current, results);
-                    current.pop();
-                }
+    fn get_valid_divisors(dim: Dim) -> Vec<Dim> {
+        let mut divisors = Vec::new();
+        
+        // Find all divisors of the dimension
+        for i in 2..=dim {
+            if dim % i == 0 {
+                divisors.push(i);
             }
         }
-
-        find_factorizations(total_product, 1, max_depth, &mut current, &mut results);
-
-        // Filter out splits that contain dimensions with length 1
-        results.retain(|split| !split.contains(&1));
-
-        // Only keep splits where the product equals the total product
-        results.retain(|split| split.iter().product::<Dim>() == total_product);
-
-        // Add the original dimensions as a valid option (no split)
-        results.push(dims.to_vec());
-
-        results
+        
+        divisors
     }
 
     fn apply_optimization(&self, index: u64, kernel: &mut Kernel) -> bool {
-        if self.global_splits.is_empty() {
+        if self.global_divisors.is_empty() {
             return true;
         }
 
-        // Simple index calculation - no need for decode_index
+        // Decode the index to select which dimension to split and which divisor to use
         let mut idx = index as usize;
-        for (dim_idx, splits) in self.global_splits.iter().enumerate() {
-            if idx < splits.len() {
-                let split_dims = splits[idx].clone();
+        for (dim_idx, divisors) in self.global_divisors.iter().enumerate() {
+            if idx < divisors.len() {
+                let divisor = divisors[idx];
+                let original_dim = kernel.shape()[dim_idx];
+                let inner_dim = original_dim / divisor;
                 
-                // Update ALL views in the kernel to split the global dimension
-                for op in &mut kernel.ops {
-                    match op {
-                        Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
-                            if view.shape().len() > dim_idx {
-                                view.reshape(dim_idx..dim_idx + 1, &split_dims);
-                            }
-                        }
-                        _ => {}
-                    }
+                // Check if the inner loop would be too large (e.g., > 256 for register loops)
+                if inner_dim > 256 {
+                    return false;
                 }
+                
+                // Split the global dimension into global and register loops
+                self.split_global_dimension(kernel, dim_idx, divisor, inner_dim);
                 return true;
             }
-            idx -= splits.len();
+            idx -= divisors.len();
         }
         panic!("Index {index} out of bounds");
+    }
+
+    fn split_global_dimension(&self, kernel: &mut Kernel, dim_idx: usize, global_dim: Dim, inner_dim: Dim) {
+        // Update the kernel shape to reflect the split
+        let mut new_shape = kernel.shape().to_vec();
+        new_shape[dim_idx] = global_dim;
+        new_shape.insert(dim_idx + 1, inner_dim);
+        
+        // Update all views to reflect the split
+        for op in &mut kernel.ops {
+            match op {
+                Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
+                    if view.shape().len() > dim_idx {
+                        // Reshape the view to reflect the split
+                        view.reshape(dim_idx..dim_idx + 1, &[global_dim, inner_dim]);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
