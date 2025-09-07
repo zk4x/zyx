@@ -3,7 +3,7 @@ use nanoserde::{DeBin, SerBin};
 use crate::{
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{increment, Kernel, Op, OpId},
+    kernel::{Kernel, Op, OpId, increment},
     shape::Dim,
 };
 use std::{collections::HashSet, ops::Range};
@@ -483,15 +483,42 @@ impl LoopSplitOpt {
         let split_dims = self.reduction_splits[reduction_idx][split_idx].clone();
 
         // Replace the dims in the reduction operation
+        let n_reduce_dims;
         if let Op::Reduce { ref mut dims, .. } = kernel.ops[reduce_op_id] {
+            n_reduce_dims = dims.len();
             *dims = split_dims.clone();
         } else {
             return false; // Should not happen since we checked it's a Reduce op
         }
 
-        // 4. Handle dependent view reshaping if needed
-        // For now, we'll just return true since the basic functionality is working
-        // TODO: Implement proper view reshaping for dependent operations
+        let min_param = self.find_min_param(kernel, reduce_op_id);
+        let mut n_skipped_axes = 0;
+        for (op_id, op) in kernel.ops.iter_mut().enumerate() {
+            match op {
+                Op::ConstView { view, .. } => {
+                    if op_id > min_param && op_id < reduce_op_id {
+                        let rank = view.rank();
+                        view.reshape(
+                            rank - n_skipped_axes - n_reduce_dims..rank - n_skipped_axes,
+                            &split_dims,
+                        );
+                    }
+                }
+                Op::LoadView { view, .. } => {
+                    if op_id > min_param && op_id < reduce_op_id {
+                        let rank = view.rank();
+                        view.reshape(
+                            rank - n_skipped_axes - n_reduce_dims..rank - n_skipped_axes,
+                            &split_dims,
+                        );
+                    }
+                }
+                Op::Reduce { dims, .. } => {
+                    n_skipped_axes += dims.len();
+                }
+                _ => {}
+            }
+        }
 
         true
     }
