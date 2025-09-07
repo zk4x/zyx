@@ -3,7 +3,7 @@ use nanoserde::{DeBin, SerBin};
 use crate::{
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{Kernel, Op, OpId, increment},
+    kernel::{Kernel, Op, OpId, Scope, increment},
     shape::Dim,
 };
 use std::{collections::HashSet, ops::Range};
@@ -18,10 +18,8 @@ pub struct Optimizer {
     local_work_size_opt: WorkSizeOpt,
     loop_unrolling_opt: LoopUnrollingOpt,
     loop_split_opt: LoopSplitOpt,
-    global_work_size_split_opt: GlobalWorkSizeSplitOpt,
-    //inner_loop_split_opt: InnerLoopSplitOpt,
     //inner_loop_swap_opt: InnerLoopSwapOpt, // a bit harder to know max number of optimizations
-    max_indices: [u64; 4],
+    max_indices: [u64; 3],
     // best optimization found so far
     best_optimization: Optimization,
     // time taken by kernel with the best optimization
@@ -40,30 +38,24 @@ pub struct Optimizer {
 impl Optimizer {
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
         let local_work_size_opt = WorkSizeOpt::new(kernel, dev_info);
-        let local_work_size_opt_max_index = local_work_size_opt.max_index();
         let loop_unrolling_opt = LoopUnrollingOpt::new(kernel);
-        let loop_opt_max_index = loop_unrolling_opt.max_index();
         let loop_split_opt = LoopSplitOpt::new(kernel, 3);
-        let loop_split_opt_max_index = loop_split_opt.max_index();
-        let global_work_size_split_opt = GlobalWorkSizeSplitOpt::new(kernel, 3);
-        let global_work_size_split_opt_max_index = global_work_size_split_opt.max_index();
+        let max_indices = [
+            local_work_size_opt.max_index(),
+            loop_unrolling_opt.max_index(),
+            loop_split_opt.max_index(),
+        ];
         Self {
+            max_indices,
             local_work_size_opt,
             loop_unrolling_opt,
             loop_split_opt,
-            global_work_size_split_opt,
-            max_indices: [
-                local_work_size_opt_max_index,
-                loop_opt_max_index,
-                loop_split_opt_max_index,
-                global_work_size_split_opt_max_index,
-            ],
             best_optimization: Optimization(0),
             best_time_nanos: u128::MAX,
             tried: HashSet::with_capacity(200),
             rand_iteration: 0,
             full_iteration: 0,
-            max_iter: local_work_size_opt_max_index * loop_opt_max_index,
+            max_iter: max_indices.iter().product(),
             last: Optimization(0),
         }
     }
@@ -124,7 +116,7 @@ impl Optimizer {
 impl Optimizer {
     #[must_use]
     pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization) -> bool {
-        let [local_work_size_opt_index, loop_opt_index, loop_split_opt_index, global_work_size_split_opt_index] =
+        let [local_work_size_opt_index, loop_opt_index, loop_split_opt_index] =
             optimization.into_indices(self.max_indices);
 
         if !self.local_work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
@@ -132,10 +124,6 @@ impl Optimizer {
         }
 
         if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
-            return false;
-        }
-
-        if !self.global_work_size_split_opt.apply_optimization(global_work_size_split_opt_index, kernel) {
             return false;
         }
 
@@ -168,7 +156,7 @@ impl Optimizer {
 #[derive(Debug, Clone, DeBin, SerBin)]
 struct WorkSizeOpt {
     gws: Vec<Dim>,
-    gws_factors: Vec<Vec<Dim>>,
+    gws_factors: Vec<Vec<[Dim; 2]>>,
     max_local_threads: Dim,
 }
 
@@ -188,6 +176,7 @@ impl WorkSizeOpt {
             }
             res
         }
+
         let mut gws = kernel.shape();
         // If gws > dev_info.max_global_work_dims.len(), then we join the starting dimensions
         while gws.len() > dev_info.max_global_work_dims.len() {
@@ -198,8 +187,22 @@ impl WorkSizeOpt {
         let mut gws_factors = Vec::new();
         for (d, &max_lwd) in gws.iter().copied().zip(&dev_info.max_local_work_dims) {
             let res = divisors(d, max_lwd);
-            gws_factors.push(res);
+
+            let mut factors = Vec::new();
+            // here factors needs to contain all possible pairs of values in res
+            for i in 0..res.len() {
+                for j in 0..res.len() {
+                    let a = res[i];
+                    let b = res[j];
+                    if a * b <= d {
+                        factors.push([a, b]);
+                    }
+                }
+            }
+
+            gws_factors.push(factors);
         }
+
         let max_local_threads = dev_info.max_local_threads;
         Self { gws, gws_factors, max_local_threads }
     }
@@ -211,8 +214,6 @@ impl WorkSizeOpt {
     // Returns false if this index is invalid
     #[must_use]
     fn apply_optimization(&self, index: u64, kernel: &mut Kernel) -> bool {
-        // TODO make this work with limitations for max local work threads
-
         let mut value = index as usize;
         let mut result: Vec<usize> = Vec::new();
         for max in self.gws_factors.iter().map(|f| f.len()).rev() {
@@ -221,20 +222,40 @@ impl WorkSizeOpt {
         }
         result.reverse();
 
-        let mut lws = Vec::new();
-        for (i, factors) in result.into_iter().zip(&self.gws_factors) {
-            lws.push(factors[i]);
-        }
-
         let mut gws = self.gws.clone();
-        for (g, l) in gws.iter_mut().zip(&lws) {
-            *g /= l;
+        let mut lws = Vec::new();
+        let mut rws = Vec::new();
+        for (i, factors) in result.into_iter().zip(&self.gws_factors) {
+            let [l, r] = factors[i];
+            lws.push(l);
+            rws.push(r);
+        }
+        if lws.iter().product::<Dim>() > self.max_local_threads {
+            return false;
+        }
+        for ((g, l), r) in gws.iter_mut().zip(&lws).zip(&rws) {
+            *g /= l * r;
         }
 
-        let shape: Vec<Dim> = gws.iter().chain(&lws).copied().collect();
+        let shape: Vec<Dim> = gws.iter().chain(&lws).chain(&rws).copied().collect();
+        println!("{shape:?}");
         let n = kernel.shape().len();
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
-        kernel.unfold_shape(&gws, &lws);
+
+        {
+            let k = gws.len() + lws.len() + rws.len();
+            let n = kernel.ops.len();
+            increment(&mut kernel.ops, k, 0..n);
+            for &dim in rws.iter().rev() {
+                kernel.ops.insert(0, Op::Loop { dim, scope: Scope::Register });
+            }
+            for &dim in lws.iter().rev() {
+                kernel.ops.insert(0, Op::Loop { dim, scope: Scope::Local });
+            }
+            for &dim in gws.iter().rev() {
+                kernel.ops.insert(0, Op::Loop { dim, scope: Scope::Global });
+            }
+        };
         true
     }
 }
@@ -650,91 +671,5 @@ fn test_generate_splits_fix() {
             "Split {:?} has product {} != {}",
             split, product, expected_product
         );
-    }
-}
-
-#[derive(Debug, Clone, DeBin, SerBin)]
-struct GlobalWorkSizeSplitOpt {
-    // For each global dimension, store possible divisors
-    // [global_dim_index][divisor_index] = divisor
-    global_divisors: Vec<Vec<Dim>>,
-}
-
-impl GlobalWorkSizeSplitOpt {
-    fn new(kernel: &Kernel, _max_depth: usize) -> Self {
-        let mut global_divisors = Vec::new();
-        let gws = kernel.shape();
-
-        // Generate possible divisors for each global dimension
-        for &dim in &gws {
-            let divisors = Self::get_valid_divisors(dim);
-            global_divisors.push(divisors);
-        }
-
-        GlobalWorkSizeSplitOpt { global_divisors }
-    }
-
-    fn max_index(&self) -> u64 {
-        self.global_divisors.iter().map(|divisors| divisors.len() as u64).product::<u64>()
-    }
-
-    fn get_valid_divisors(dim: Dim) -> Vec<Dim> {
-        let mut divisors = Vec::new();
-        
-        // Find all divisors of the dimension
-        for i in 2..=dim {
-            if dim % i == 0 {
-                divisors.push(i);
-            }
-        }
-        
-        divisors
-    }
-
-    fn apply_optimization(&self, index: u64, kernel: &mut Kernel) -> bool {
-        if self.global_divisors.is_empty() {
-            return true;
-        }
-
-        // Decode the index to select which dimension to split and which divisor to use
-        let mut idx = index as usize;
-        for (dim_idx, divisors) in self.global_divisors.iter().enumerate() {
-            if idx < divisors.len() {
-                let divisor = divisors[idx];
-                let original_dim = kernel.shape()[dim_idx];
-                let inner_dim = original_dim / divisor;
-                
-                // Check if the inner loop would be too large (e.g., > 256 for register loops)
-                if inner_dim > 256 {
-                    return false;
-                }
-                
-                // Split the global dimension into global and register loops
-                self.split_global_dimension(kernel, dim_idx, divisor, inner_dim);
-                return true;
-            }
-            idx -= divisors.len();
-        }
-        panic!("Index {index} out of bounds");
-    }
-
-    fn split_global_dimension(&self, kernel: &mut Kernel, dim_idx: usize, global_dim: Dim, inner_dim: Dim) {
-        // Update the kernel shape to reflect the split
-        let mut new_shape = kernel.shape().to_vec();
-        new_shape[dim_idx] = global_dim;
-        new_shape.insert(dim_idx + 1, inner_dim);
-        
-        // Update all views to reflect the split
-        for op in &mut kernel.ops {
-            match op {
-                Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
-                    if view.shape().len() > dim_idx {
-                        // Reshape the view to reflect the split
-                        view.reshape(dim_idx..dim_idx + 1, &[global_dim, inner_dim]);
-                    }
-                }
-                _ => {}
-            }
-        }
     }
 }

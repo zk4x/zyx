@@ -873,6 +873,13 @@ impl OpenCLDevice {
             }
         }
 
+        while loop_id as usize > lws.len() + gws.len() {
+            indent.pop();
+            indent.pop();
+            loop_id -= 1;
+            writeln!(source, "{indent}}}").unwrap();
+        }
+
         let mut reg_str = String::new();
         if registers.len() > 0 {
             let (dt, _) = registers.remove(0);
