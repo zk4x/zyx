@@ -18,9 +18,10 @@ pub struct Optimizer {
     local_work_size_opt: WorkSizeOpt,
     loop_unrolling_opt: LoopUnrollingOpt,
     loop_split_opt: LoopSplitOpt,
+    global_work_size_split_opt: GlobalWorkSizeSplitOpt,
     //inner_loop_split_opt: InnerLoopSplitOpt,
     //inner_loop_swap_opt: InnerLoopSwapOpt, // a bit harder to know max number of optimizations
-    max_indices: [u64; 3],
+    max_indices: [u64; 4],
     // best optimization found so far
     best_optimization: Optimization,
     // time taken by kernel with the best optimization
@@ -44,14 +45,18 @@ impl Optimizer {
         let loop_opt_max_index = loop_unrolling_opt.max_index();
         let loop_split_opt = LoopSplitOpt::new(kernel, 3);
         let loop_split_opt_max_index = loop_split_opt.max_index();
+        let global_work_size_split_opt = GlobalWorkSizeSplitOpt::new(kernel, 3);
+        let global_work_size_split_opt_max_index = global_work_size_split_opt.max_index();
         Self {
             local_work_size_opt,
             loop_unrolling_opt,
             loop_split_opt,
+            global_work_size_split_opt,
             max_indices: [
                 local_work_size_opt_max_index,
                 loop_opt_max_index,
                 loop_split_opt_max_index,
+                global_work_size_split_opt_max_index,
             ],
             best_optimization: Optimization(0),
             best_time_nanos: u128::MAX,
@@ -119,13 +124,18 @@ impl Optimizer {
 impl Optimizer {
     #[must_use]
     pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization) -> bool {
-        let [local_work_size_opt_index, loop_opt_index, loop_split_opt_index] =
+        let [local_work_size_opt_index, loop_opt_index, loop_split_opt_index, global_work_size_split_opt_index] =
             optimization.into_indices(self.max_indices);
+
         if !self.local_work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
             return false;
         }
 
         if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
+            return false;
+        }
+
+        if !self.global_work_size_split_opt.apply_optimization(global_work_size_split_opt_index, kernel) {
             return false;
         }
 
@@ -640,5 +650,109 @@ fn test_generate_splits_fix() {
             "Split {:?} has product {} != {}",
             split, product, expected_product
         );
+    }
+}
+
+#[derive(Debug, Clone, DeBin, SerBin)]
+struct GlobalWorkSizeSplitOpt {
+    // For each global dimension, store possible split configurations
+    // [global_dim_index][split_configuration][split_dimensions]
+    global_splits: Vec<Vec<Vec<Dim>>>,
+}
+
+impl GlobalWorkSizeSplitOpt {
+    fn new(kernel: &Kernel, max_depth: usize) -> Self {
+        let mut global_splits = Vec::new();
+        let gws = kernel.shape();
+
+        // Generate splits for each global dimension
+        for &dim in &gws {
+            let splits = Self::generate_splits(&[dim], max_depth);
+            global_splits.push(splits);
+        }
+
+        GlobalWorkSizeSplitOpt { global_splits }
+    }
+
+    fn max_index(&self) -> u64 {
+        if self.global_splits.is_empty() {
+            return 1;
+        }
+        self.global_splits.iter().map(|splits| splits.len() as u64).product::<u64>() + 1
+    }
+
+    fn generate_splits(dims: &[Dim], max_depth: usize) -> Vec<Vec<Dim>> {
+        // Calculate the total product of all dimensions
+        let total_product: Dim = dims.iter().product();
+
+        // Generate all possible factorizations of the total product up to max_depth
+        let mut current = Vec::new();
+        let mut results = Vec::new();
+
+        // Inline factorization generation
+        fn find_factorizations(
+            remaining: Dim,
+            start: Dim,
+            max_depth: usize,
+            current: &mut Vec<Dim>,
+            results: &mut Vec<Vec<Dim>>,
+        ) {
+            if current.len() == max_depth || remaining == 1 {
+                if !current.is_empty() {
+                    results.push(current.clone());
+                }
+                return;
+            }
+
+            for i in start..=remaining {
+                if remaining % i == 0 {
+                    current.push(i);
+                    find_factorizations(remaining / i, i, max_depth, current, results);
+                    current.pop();
+                }
+            }
+        }
+
+        find_factorizations(total_product, 1, max_depth, &mut current, &mut results);
+
+        // Filter out splits that contain dimensions with length 1
+        results.retain(|split| !split.contains(&1));
+
+        // Only keep splits where the product equals the total product
+        results.retain(|split| split.iter().product::<Dim>() == total_product);
+
+        // Add the original dimensions as a valid option (no split)
+        results.push(dims.to_vec());
+
+        results
+    }
+
+    fn apply_optimization(&self, index: u64, kernel: &mut Kernel) -> bool {
+        if self.global_splits.is_empty() {
+            return true;
+        }
+
+        // Simple index calculation - no need for decode_index
+        let mut idx = index as usize;
+        for (dim_idx, splits) in self.global_splits.iter().enumerate() {
+            if idx < splits.len() {
+                let split_dims = splits[idx].clone();
+                
+                // Update ALL views in the kernel to split the global dimension
+                for op in &mut kernel.ops {
+                    match op {
+                        Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
+                            if view.shape().len() > dim_idx {
+                                view.reshape(dim_idx..dim_idx + 1, &split_dims);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                return true;
+            }
+            idx -= splits.len();
+        }
+        panic!("Index {index} out of bounds");
     }
 }
