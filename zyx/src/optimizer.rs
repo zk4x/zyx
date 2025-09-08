@@ -128,8 +128,6 @@ impl Optimizer {
         }
 
         kernel.unfold_reduces();
-        //println!();
-        //kernel.debug();
         kernel.define_globals();
         kernel.unfold_views();
 
@@ -234,11 +232,13 @@ impl WorkSizeOpt {
             return false;
         }
         for ((g, l), r) in gws.iter_mut().zip(&lws).zip(&rws) {
+            if !g.is_multiple_of(l * r) {
+                return false
+            }
             *g /= l * r;
         }
 
         let shape: Vec<Dim> = gws.iter().chain(&lws).chain(&rws).copied().collect();
-        println!("{shape:?}");
         let n = kernel.shape().len();
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
 
