@@ -891,7 +891,23 @@ impl Kernel {
                     let axes = get_axes(&self.ops);
                     let mut index = new_op(&mut self.ops, Op::Const(Constant::U32(0)));
                     let mut st = 1;
-                    let shape = self.shape();
+
+                    let shape = {
+                        let mut shape = Vec::new();
+                        for op in &self.ops {
+                            match op {
+                                Op::Loop { dim, .. } => {
+                                    shape.push(*dim);
+                                }
+                                Op::EndLoop => {
+                                    shape.pop();
+                                }
+                                _ => {}
+                            }
+                        }
+                        shape
+                    };
+
                     for (id, d) in shape.iter().enumerate().rev() {
                         let stride = Constant::U32(st as u32);
                         let x = if *d > 1 {
