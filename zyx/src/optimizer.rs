@@ -122,6 +122,10 @@ impl Optimizer {
         opt
     }
 
+    pub fn fully_optimized(&self) -> bool {
+        self.full_iteration >= self.max_iter
+    }
+
     fn random_search(&mut self) -> Option<Optimization> {
         if self.rand_iteration >= 200 {
             return None;
@@ -143,8 +147,11 @@ impl Optimizer {
             self.full_iteration += 1;
             if !self.tried.contains(&Optimization(temp)) && temp < self.max_iter {
                 return Some(Optimization(temp));
+            } else {
+                self.tried.remove(&Optimization(temp));
             }
         }
+        self.tried.clear();
         None
     }
 }

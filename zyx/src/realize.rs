@@ -140,7 +140,7 @@ impl Runtime {
             //println!("{to_eval:?}");
 
             for nid in order {
-                //println!("{nid} x {} -> {:?}", rcs[&nid], self.graph[nid]);
+                println!("{nid} x {} -> {:?}", rcs[&nid], self.graph[nid]);
                 let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
                     let dtype = self.graph.dtype(nid);
                     let shape = self.graph.shape(nid);
@@ -420,15 +420,13 @@ impl Runtime {
                                 outputs.get_mut(&kid).unwrap().extend(vec![nid; rcs[&nid] as usize]);
                                 let op = Op::Binary { x: op_id, y: op_idy, bop };
                                 kernels[kid].ops.push(op);
-                            } else if true {
+                            } else if stores.get(&kid).map(|x| x.is_empty()).unwrap_or(true) {
                                 // The issues is what to do if not mergeable (like both kernels have stores)
                                 // and op_id is not the last op in that kernel, then we don't know if there was
                                 // not some movement operation applied. Perhaps we have to check if RC > 1
                                 // before applying movement ops and not apply movement op in that case.
                                 // This is solved, because we never apply movement on kernel that contains ops
                                 // that will be used elsewhere.
-
-                                // TODO Binary must deduplicate loops, in reverse, those that are not reduced.
 
                                 let mut kernely = unsafe { kernels.remove_and_return(kidy) };
                                 let n = kernels[kid].ops.len();
@@ -448,10 +446,15 @@ impl Runtime {
                                 }
                                 kernels[kid].ops.extend(kernely.ops);
 
-                                if let Some(kidy_loads) = loads.remove(&kidy)
-                                    && let Some(kid_loads) = loads.get_mut(&kid)
-                                {
-                                    kid_loads.extend(kidy_loads);
+                                if let Some(kidy_loads) = loads.remove(&kidy) {
+                                    if let Some(kid_loads) = loads.get_mut(&kid) {
+                                        kid_loads.extend(kidy_loads);
+                                    } else {
+                                        loads.insert(kid, kidy_loads);
+                                    }
+                                }
+                                if let Some(kidy_stores) = stores.remove(&kidy) {
+                                    stores.insert(kid, kidy_stores);
                                 }
 
                                 remove_first(x, kid, &mut outputs);
@@ -482,16 +485,20 @@ impl Runtime {
                 visited.insert(nid, (kid, op_id));
 
                 //println!("n_outputs={}", kernels[kid].n_outputs);
-                //println!("n_kernels={:?}, visited={:?}", kernels.len(), visited);
-                //for (kid, kernel) in kernels.iter() {
-                //println!("{kid:?}, outputs={:?}", outputs[&kid]);
-                //kernels[kid].debug();
+                /*println!("n_kernels={:?}, visited={:?}", kernels.len(), visited);
+                if let Some(kstores) = stores.get(&kid) {
+                    println!("stores={kstores:?}");
+                }
+                for (kid, kernel) in kernels.iter() {
+                    println!("{kid:?}, outputs={:?}", outputs[&kid]);
+                    kernels[kid].debug();
+                }*/
                 //println!("{:?}", outputs[&kid]);
 
                 if to_eval.contains(&nid) {
                     //println!();
                     //kernels[kid].debug();
-                    //println!("{}", kernels[kid].n_outputs);
+                    //println!("Storing {nid}");
                     let dtype = self.graph.dtype(nid);
                     let rc = self.add_store(
                         nid,
@@ -526,9 +533,9 @@ impl Runtime {
                 {
                     let kernel = unsafe { kernels.remove_and_return(kid) };
                     realized_nodes.extend(&*stores[&kid]);
-                    let stores = stores.remove(&kid).unwrap();
+                    let kstores = stores.remove(&kid).unwrap();
                     if let Some(kernel_loads) = loads.remove(&kid) {
-                        self.launch_kernel(kernel, kernel_loads.clone(), stores)?;
+                        self.launch_kernel(kernel, kernel_loads.clone(), kstores)?;
 
                         // Delete unneeded intermediate tensors in memory pools
                         /*for tid in kernel_loads {
@@ -540,7 +547,7 @@ impl Runtime {
                             }
                         }*/
                     } else {
-                        self.launch_kernel(kernel, Vec::new(), stores)?;
+                        self.launch_kernel(kernel, Vec::new(), kstores)?;
                     }
                 }
             }
@@ -599,7 +606,11 @@ impl Runtime {
         visited.remove(&x).unwrap();
         virt_realized_nodes.insert(x);
         kernels[kid].ops.push(Op::StoreView { src: op_id, dtype });
+        /*if let Some(stores) = stores.get(&kid) {
+            println!("\nStoring, stores: {stores:?}");
+        }*/
         stores.entry(kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
+        //println!("Storing, stores: {:?}", stores[&kid]);
 
         // remove all references to x
         let xoutputs = outputs.get_mut(&kid).unwrap();
@@ -822,6 +833,9 @@ impl Runtime {
         // Then select first fastest device that has associated memory pool which fits all tensors used
         // as arguments for the kernel that are not yet allocated on that memory pool.
 
+        //println!("Loads: {loads:?}");
+        //println!("Stores: {stores:?}");
+
         let required_kernel_memory: Dim = stores
             .iter()
             .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim)
@@ -981,7 +995,7 @@ impl Runtime {
         }
 
         // Check if best optimization already found
-        if optimizer.next_optimization(u128::MAX).is_none() {
+        if optimizer.fully_optimized() {
             // done optimizing, loaded best from disk
             let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization());
             debug_assert!(opt_res);
