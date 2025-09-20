@@ -409,9 +409,9 @@ impl View {
         dim.st = 0;
     }*/
 
-    pub fn pad(&mut self, padding: &[(isize, isize)]) {
+    pub fn pad(&mut self, rank: Dim, padding: &[(isize, isize)]) {
         //println!("view: {:?} padding: {padding:?}", self.shape());
-        for (axis, &(lp, rp)) in (0..self.rank()).rev().zip(padding) {
+        for (axis, &(lp, rp)) in (0..rank).rev().zip(padding) {
             if lp != 0 || rp != 0 {
                 self.pad_axis(axis, lp, rp);
             }

@@ -304,7 +304,9 @@ impl Runtime {
                             outputs.insert(kid, vec![nid; rcs[&nid] as usize]);
 
                             let padding = self.graph.padding(nid);
-                            kernels[kid].apply_movement(|view| view.pad(padding));
+                            let rank = self.graph.shape(nid).len();
+                            //println!("Padding: {padding:?}");
+                            kernels[kid].apply_movement(|view| view.pad(rank, padding));
                             debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
                             (kid, op_id)
                         }
@@ -383,6 +385,7 @@ impl Runtime {
                             }
                             let op = Op::Reduce { x: op_id, rop, dims };
                             kernels[kid].ops.push(op);
+                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
                             (kid, kernels[kid].ops.len() - 1)
                         }
                         Node::Cast { x, dtype } => {
