@@ -57,7 +57,7 @@ fn reciprocal() -> Result<(), ZyxError> {
     ];
     let zdata: Vec<f32> = Tensor::from(data).reciprocal().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        println!("{}, {y}", 1./x);
+        println!("{}, {y}", 1. / x);
         assert!((1. / x).is_equal(y));
     }
     Ok(())
@@ -115,9 +115,7 @@ fn not() -> Result<(), ZyxError> {
 #[cfg(not(feature = "wgpu"))]
 #[test]
 fn nonzero() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.00, 1.780, 5.675, -8.521, -0.456, 1.215, 0.00, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.00, 1.780, 5.675, -8.521, -0.456, 1.215, 0.00, -4.128, -7.657];
     let z = Tensor::from(data).nonzero();
     assert_eq!(z, [true, false, true, true, true, true, true, false, true, true]);
     Ok(())

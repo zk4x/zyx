@@ -137,10 +137,10 @@ impl Runtime {
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
             //println!("{rcs:?}");
-            println!("{to_eval:?}");
+            //println!("{to_eval:?}");
 
             for nid in order {
-                println!("{nid} x {} -> {:?}", rcs[&nid], self.graph[nid]);
+                //println!("{nid} x {} -> {:?}", rcs[&nid], self.graph[nid]);
                 let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
                     let dtype = self.graph.dtype(nid);
                     let shape = self.graph.shape(nid);
@@ -517,7 +517,13 @@ impl Runtime {
 
             if kernels.len() > KernelId(0) {
                 let kids: Vec<KernelId> = kernels.ids().collect();
-                while let Some(kid) = kids.iter().find(|&&kid| loads.get(&kid).map(|loads| loads.iter().all(|x| realized_nodes.contains(x))).unwrap_or(true)).copied() {
+                while let Some(kid) = kids
+                    .iter()
+                    .find(|&&kid| {
+                        loads.get(&kid).map(|loads| loads.iter().all(|x| realized_nodes.contains(x))).unwrap_or(true)
+                    })
+                    .copied()
+                {
                     let kernel = unsafe { kernels.remove_and_return(kid) };
                     realized_nodes.extend(&*stores[&kid]);
                     let stores = stores.remove(&kid).unwrap();

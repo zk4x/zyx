@@ -6,7 +6,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, ROp, UOp},
     optimizer::Optimizer,
-    shape::Dim,
+    shape::{Axis, Dim},
     view::View,
 };
 use std::{
@@ -109,7 +109,7 @@ impl DeBin for Cache {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
         let len = usize::de_bin(offset, bytes)?;
         if len > bytes.len() - *offset {
-            return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset))
+            return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset));
         }
         let mut device_infos = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
@@ -120,7 +120,7 @@ impl DeBin for Cache {
 
         let len = usize::de_bin(offset, bytes)?;
         if len > bytes.len() - *offset {
-            return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset))
+            return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset));
         }
         let mut kernels = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
@@ -131,7 +131,7 @@ impl DeBin for Cache {
 
         let len = usize::de_bin(offset, bytes)?;
         if len > bytes.len() - *offset {
-            return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset))
+            return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset));
         }
         let mut optimizations = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
@@ -268,10 +268,13 @@ impl Kernel {
                 Op::LoadView { dtype, view } => println!("{i:>3}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}"),
                 Op::StoreView { src, dtype } => println!("{i:>3}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}"),
                 Op::Reduce { x, rop, dims } => {
-                    println!("{i:>3}{indent}{CYAN}REDUCE{RESET} {} {x}, dims={dims:?}", match rop {
-                        ROp::Sum => "SUM",
-                        ROp::Max => "MAX",
-                    });
+                    println!(
+                        "{i:>3}{indent}{CYAN}REDUCE{RESET} {} {x}, dims={dims:?}",
+                        match rop {
+                            ROp::Sum => "SUM",
+                            ROp::Max => "MAX",
+                        }
+                    );
                 }
                 Op::Define { dtype, scope, ro, len } => {
                     println!("{i:>3}{indent}{YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
@@ -361,9 +364,13 @@ impl Kernel {
         (flop, mr, mw)
     }
 
-    pub fn is_reduce(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::Reduce { .. })) }
+    pub fn is_reduce(&self) -> bool {
+        self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
+    }
 
-    pub fn contains_stores(&self) -> bool { self.ops.iter().any(|x| matches!(x, Op::StoreView { .. })) }
+    pub fn contains_stores(&self) -> bool {
+        self.ops.iter().any(|x| matches!(x, Op::StoreView { .. }))
+    }
 
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.iter().any(|op| matches!(op, Op::Loop { .. })) {
@@ -575,7 +582,8 @@ impl Kernel {
                     Op::Load { src, index } => {
                         debug_assert_ne!(*index, op_id);
                         if *index > op_id {
-                            *index += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *index + n).count() + n;
+                            *index +=
+                                inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *index + n).count() + n;
                         }
                         if *src == op_id {
                             *src = self.ops.len() + i;
@@ -592,7 +600,8 @@ impl Kernel {
                             *dst += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *dst + n).count() + n;
                         }
                         if *index > op_id {
-                            *index += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *index + n).count() + n;
+                            *index +=
+                                inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *index + n).count() + n;
                         }
                         if *x == op_id {
                             *x = self.ops.len() + i;
@@ -1178,7 +1187,7 @@ impl Kernel {
     }
 }
 
-fn get_axes(ops: &[Op]) -> Vec<OpId> {
+fn get_axes(ops: &[Op]) -> Vec<Axis> {
     let mut axes = Vec::new();
     for (i, op) in ops.iter().enumerate() {
         match op {
