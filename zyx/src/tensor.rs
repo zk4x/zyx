@@ -1129,6 +1129,59 @@ impl Tensor {
         (exp2x.clone() - one.clone()) / (exp2x + one)
     }
 
+    /// Converts angles from degrees to radians.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn deg2rad(&self) -> Tensor {
+        (self * (std::f64::consts::PI / 180.0)).cast(self.dtype())
+    }
+
+    /// Returns a boolean tensor where elements are close within a tolerance.
+    /// # Errors
+    /// Returns error if the tensors have non broadcasteable shapes.
+    pub fn isclose(&self, other: impl Into<Tensor>, rtol: impl Into<Tensor>, atol: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let other = other.into();
+        let rtol = rtol.into();
+        let atol = atol.into();
+        
+        let diff = (self - other.clone()).abs();
+        let tolerance = atol.clone() + other.mul(rtol);
+        diff.cmplt(tolerance)
+    }
+
+    /// Returns a boolean tensor where elements are infinite.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn isinf(&self) -> Tensor {
+        self.equal(f32::INFINITY).unwrap()
+    }
+
+    /// Returns a boolean tensor where elements are NaN.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn isnan(&self) -> Tensor {
+        self.equal(f32::NAN).unwrap()
+    }
+
+    /// Returns the base-10 logarithm of each element in the tensor.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn log10(&self) -> Tensor {
+        self.ln()/Tensor::from(10f32).ln()
+    }
+
+    /// Converts angles from radians to degrees.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn rad2deg(&self) -> Tensor {
+        (self * (180.0 / std::f64::consts::PI)).cast(self.dtype())
+    }
+
     /// Clamps the elements of this tensor within a specified range.
     ///
     /// Each element in the tensor is constrained to lie between the corresponding
