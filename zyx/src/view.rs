@@ -355,7 +355,6 @@ impl View {
     // If axes are shorter than inner, we just permute the first dimensions
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
-        // Version without allocation
         let inner = self.0.last_mut().unwrap();
         debug_assert!(
             inner.len() >= axes.len(),
@@ -369,10 +368,10 @@ impl View {
             self.shape()
         );
 
-        let mut temp = inner[axes[0]].clone();
+        // This version without allocation is wrong
+        /*let mut temp = inner[axes[0]].clone();
         let mut a = 0;
         std::mem::swap(&mut inner[a], &mut temp);
-
         for _ in 1..axes.len() {
             let mut i = 0;
             while a != axes[i] {
@@ -380,7 +379,15 @@ impl View {
             }
             std::mem::swap(&mut inner[i], &mut temp);
             a = i;
-        }
+        }*/
+
+        let temp_data: Vec<_> = (0..axes.len())
+            .map(|i| {
+                let src_idx = axes[i];
+                inner[src_idx].clone()
+            })
+            .collect();
+        *inner = temp_data;
     }
 
     pub(crate) fn expand(&mut self, shape: &[Dim]) {
