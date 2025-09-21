@@ -431,33 +431,92 @@ impl Runtime {
                             (kid, kernels[kid].ops.len() - 1)
                         }
                         Node::Binary { x, y, bop } => {
-                            //let (kid, op_id) = visited[&x];
-                            let (kid, op_id) = visited[&x];
-                            let (kidy, op_idy) = visited[&y];
-                            /*if nid.0 == 11 {
-                                for (id, kernel) in kernels.iter() {
-                                    println!("{id:?}");
-                                    kernel.debug();
-                                    println!();
-                                }
-                                println!("kid={kid:?}, kidy={kidy:?}");
-                            }*/
-                            /*println!("visited={visited:?}");
-                            println!("loads={loads:?}");
-                            println!("kid={kid:?}, kidy={kidy:?}");*/
+                            let (mut kid, mut op_id) = visited[&x];
+                            let (mut kidy, mut op_idy) = visited[&y];
+
+                            /*if let Some(loads) = loads.get(&kid) {
+                                println!("loads={loads:?}");
+                            }
+                            if let Some(stores) = stores.get(&kid) {
+                                println!("stores={stores:?}");
+                            }
+                            println!("outputs={:?}", outputs[&kid]);
+                            kernels[kid].debug();
+                            println!();
+                            if let Some(loads) = loads.get(&kidy) {
+                                println!("loads={loads:?}");
+                            }
+                            if let Some(stores) = stores.get(&kidy) {
+                                println!("stores={stores:?}");
+                            }
+                            println!("outputs={:?}", outputs[&kidy]);
+                            kernels[kidy].debug();
+                            println!();*/
+
+                            let kid_stores = stores.get(&kid).map(|x| !x.is_empty()).unwrap_or(false);
+                            let kidy_stores = stores.get(&kidy).map(|x| !x.is_empty()).unwrap_or(false);
+
                             if kid == kidy {
                                 remove_first(x, kid, &mut outputs);
                                 remove_first(y, kid, &mut outputs);
                                 outputs.get_mut(&kid).unwrap().extend(vec![nid; rcs[&nid] as usize]);
                                 let op = Op::Binary { x: op_id, y: op_idy, bop };
                                 kernels[kid].ops.push(op);
-                            } else if stores.get(&kid).map(|x| x.is_empty()).unwrap_or(true) {
-                                // The issues is what to do if not mergeable (like both kernels have stores)
-                                // and op_id is not the last op in that kernel, then we don't know if there was
-                                // not some movement operation applied. Perhaps we have to check if RC > 1
-                                // before applying movement ops and not apply movement op in that case.
-                                // This is solved, because we never apply movement on kernel that contains ops
-                                // that will be used elsewhere.
+                            } else {
+                                // TODO later use this, but this requires global memory sync inside of the kernel
+                                // as it loads and stores from the same kernel
+                                //if kid_stores && kidy_stores {
+                                if kid_stores || kidy_stores {
+                                    let dtype = self.graph.dtype(x);
+                                    self.add_store(
+                                        x,
+                                        kid,
+                                        op_id,
+                                        dtype,
+                                        &mut realized_nodes,
+                                        &mut virt_realized_nodes,
+                                        &mut kernels,
+                                        &mut loads,
+                                        &mut stores,
+                                        &mut visited,
+                                        &mut outputs,
+                                    )?;
+                                    let shape = self.graph.shape(x);
+                                    (kid, op_id) =
+                                        add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
+                                    visited.insert(x, (kid, op_id));
+                                    if outputs[&kid].len() > 1 {
+                                        remove_first(x, kid, &mut outputs);
+                                        duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
+                                    }
+                                    self.add_store(
+                                        y,
+                                        kidy,
+                                        op_id,
+                                        dtype,
+                                        &mut realized_nodes,
+                                        &mut virt_realized_nodes,
+                                        &mut kernels,
+                                        &mut loads,
+                                        &mut stores,
+                                        &mut visited,
+                                        &mut outputs,
+                                    )?;
+                                    let shape = self.graph.shape(y);
+                                    (kidy, op_idy) =
+                                        add_load(y, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&y]);
+                                    visited.insert(y, (kidy, op_idy));
+                                    if outputs[&kidy].len() > 1 {
+                                        remove_first(y, kidy, &mut outputs);
+                                        duplicate_kernel(&mut kidy, &mut kernels, &mut loads, &mut stores);
+                                    }
+                                }
+
+                                if !kid_stores && kidy_stores {
+                                    //println!("Swap x, y");
+                                    (kid, kidy) = (kidy, kid);
+                                    (op_id, op_idy) = (op_idy, op_id);
+                                }
 
                                 let mut kernely = unsafe { kernels.remove_and_return(kidy) };
                                 let n = kernels[kid].ops.len();
@@ -495,7 +554,11 @@ impl Runtime {
                                 xoutputs.extend(youtputs);
                                 xoutputs.extend(vec![nid; rcs[&nid] as usize]);
 
-                                let op = Op::Binary { x: op_id, y: op_idy + n, bop };
+                                let op = if !kid_stores && kidy_stores {
+                                    Op::Binary { x: op_idy + n, y: op_id, bop }
+                                } else {
+                                    Op::Binary { x: op_id, y: op_idy + n, bop }
+                                };
                                 kernels[kid].ops.push(op);
 
                                 // Fix visited
@@ -505,8 +568,6 @@ impl Runtime {
                                         *op_id += n;
                                     }
                                 }
-                            } else {
-                                todo!()
                             }
 
                             *rcs.get_mut(&x).unwrap() -= 1;
@@ -542,13 +603,20 @@ impl Runtime {
                 }
 
                 /*for (kid, kernel) in kernels.iter() {
+                    if let Some(loads) = loads.get(&kid) {
+                        println!("loads={loads:?}");
+                    }
+                    if let Some(stores) = stores.get(&kid) {
+                        println!("stores={stores:?}");
+                    }
                     println!("outputs={:?}", outputs[&kid]);
                     kernel.debug();
-                }*/
+                }
+                println!();*/
             }
 
             if kernels.len() > KernelId(0) {
-                let kids: Vec<KernelId> = kernels.ids().collect();
+                let mut kids: Vec<KernelId> = kernels.ids().collect();
                 while let Some(kid) = kids
                     .iter()
                     .find(|&&kid| {
@@ -556,9 +624,8 @@ impl Runtime {
                     })
                     .copied()
                 {
+                    kids.retain(|x| *x != kid);
                     let kernel = unsafe { kernels.remove_and_return(kid) };
-                    //println!("outputs={:?}", outputs[&kid]);
-                    //kernel.debug();
                     realized_nodes.extend(&*stores[&kid]);
                     let kstores = stores.remove(&kid).unwrap();
                     if let Some(kernel_loads) = loads.remove(&kid) {
@@ -582,10 +649,11 @@ impl Runtime {
             #[cfg(debug_assertions)]
             {
                 if kernels.len() > KernelId(0) {
+                    println!("realized_nodes={realized_nodes:?}");
                     println!("Unrealized kernels:");
                     for (kid, kernel) in kernels.iter() {
                         if let Some(loads) = loads.get(&kid) {
-                            println!("stores={loads:?}");
+                            println!("loads={loads:?}");
                         }
                         if let Some(stores) = stores.get(&kid) {
                             println!("stores={stores:?}");
