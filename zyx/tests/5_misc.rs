@@ -65,6 +65,16 @@ fn boolean_buffer() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn mix_expand_reduce() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
+    x = x.sum([1])?;
+    println!("{:?}", x.shape());
+    x = x.expand([2, 2])?;
+    assert_eq!(x, [[9i32, 7], [9, 7]]);
+    Ok(())
+}
+
+#[test]
 fn mix_pad_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
@@ -82,7 +92,7 @@ fn mix_permute_pad() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn mix_expand_reduce() -> Result<(), ZyxError> {
+fn mix_expand_reshape_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
     let y = x.expand([2, 2])?;
@@ -92,43 +102,6 @@ fn mix_expand_reduce() -> Result<(), ZyxError> {
     println!("{x}");
     assert_eq!(y, [[9i32, 7], [9, 7]]);
     assert_eq!(x, [[9i32, 9], [7, 7]]);
-    Ok(())
-}
-
-#[test]
-fn rope_3() -> Result<(), ZyxError> {
-    let xs = Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
-    let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
-    let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
-    let z = xs.rope(&cos, &sin)?.cast(DType::I32);
-    assert_eq!(z, [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]);
-    Ok(())
-}
-
-#[test]
-fn rope_4() -> Result<(), ZyxError> {
-    let z = {
-        let xs = Tensor::from([[1f32, 4., 2., 4., 4., 3.], [4., 2., 4., 4., 3., 4.]]).reshape([1, 1, 2, 6])?;
-        let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
-        let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
-        let sh = xs.shape();
-        let sin_freqs = sin.squeeze([0, 1]);
-        let cos_freqs = cos.squeeze([0, 1]);
-        let d = isize::try_from(*sh.last().unwrap()).unwrap();
-        let a = xs.get((.., .., .., ..d / 2)).unwrap();
-        //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);
-        let b = -xs.get((.., .., .., d / 2..)).unwrap();
-        //assert_eq!(b, [[[[-4f32, -4., -3.], [-4., -3., -4.]]]]);
-        let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
-        //assert_eq!(ro, [[[[5f32, 32., 10.], [32., 20., 24.]]]]);
-        let co = a * sin_freqs + b * cos_freqs;
-        //assert_eq!(co, [[[[-3f32, 0., -2.], [0., -4., 0.]]]]);
-        Tensor::cat([&co, &ro], -1).unwrap()
-    };
-    assert_eq!(
-        z.cast(DType::I32),
-        [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]
-    );
     Ok(())
 }
 
@@ -254,6 +227,43 @@ fn cat() -> Result<(), ZyxError> {
     assert_eq!(c, [[1, 2], [3, 4], [5, 6], [7, 8]]);
     let c = Tensor::cat([&a, &b], 1)?;
     assert_eq!(c, [[1, 2, 5, 6], [3, 4, 7, 8]]);
+    Ok(())
+}
+
+#[test]
+fn rope_3() -> Result<(), ZyxError> {
+    let z = {
+        let xs = Tensor::from([[1f32, 4., 2., 4., 4., 3.], [4., 2., 4., 4., 3., 4.]]).reshape([1, 1, 2, 6])?;
+        let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+        let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+        let sh = xs.shape();
+        let sin_freqs = sin.squeeze([0, 1]);
+        let cos_freqs = cos.squeeze([0, 1]);
+        let d = isize::try_from(*sh.last().unwrap()).unwrap();
+        let a = xs.get((.., .., .., ..d / 2)).unwrap();
+        //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);
+        let b = -xs.get((.., .., .., d / 2..)).unwrap();
+        //assert_eq!(b, [[[[-4f32, -4., -3.], [-4., -3., -4.]]]]);
+        let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
+        //assert_eq!(ro, [[[[5f32, 32., 10.], [32., 20., 24.]]]]);
+        let co = a * sin_freqs + b * cos_freqs;
+        //assert_eq!(co, [[[[-3f32, 0., -2.], [0., -4., 0.]]]]);
+        Tensor::cat([&co, &ro], -1).unwrap()
+    };
+    assert_eq!(
+        z.cast(DType::I32),
+        [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]
+    );
+    Ok(())
+}
+
+#[test]
+fn rope_4() -> Result<(), ZyxError> {
+    let xs = Tensor::from([1f32, 4., 2., 4., 4., 3., 4., 2., 4., 4., 3., 4.]).reshape([1, 1, 2, 6])?;
+    let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+    let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
+    let z = xs.rope(&cos, &sin)?.cast(DType::I32);
+    assert_eq!(z, [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]);
     Ok(())
 }
 
