@@ -584,6 +584,12 @@ impl Runtime {
                 if kernels.len() > KernelId(0) {
                     println!("Unrealized kernels:");
                     for (kid, kernel) in kernels.iter() {
+                        if let Some(loads) = loads.get(&kid) {
+                            println!("stores={loads:?}");
+                        }
+                        if let Some(stores) = stores.get(&kid) {
+                            println!("stores={stores:?}");
+                        }
                         println!("{kid:?}, outputs={:?}", outputs[&kid]);
                         kernel.debug();
                         println!();

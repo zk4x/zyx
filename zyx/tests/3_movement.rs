@@ -65,6 +65,8 @@ fn rope_1() -> Result<(), ZyxError> {
     let z = &a * &sin_freq - &b * &cos_freq;
     let z2 = a * sin_freq + b * cos_freq;
     let z = z.pad_zeros([(0, 2)])? + z2.pad_zeros([(2, 0)])?;
+    drop(x);
+    drop(z2);
     assert_eq!(z, [[8, 18, 4, 6], [36, 14, 6, 2]]);
     Ok(())
 }
