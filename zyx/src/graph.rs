@@ -134,7 +134,7 @@ impl Graph {
             match self.nodes[tensor_id].1 {
                 Node::Const { value } => return value.dtype(),
                 Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
-                Node::Binary { bop: BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or, .. } => {
+                Node::Binary { bop: BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::Eq | BOp::And | BOp::Or, .. } => {
                     return DType::Bool;
                 }
                 _ => {

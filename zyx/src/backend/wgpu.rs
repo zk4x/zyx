@@ -1,16 +1,16 @@
 use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
 use crate::{
-    DType,
+    DType, Map,
     backend::{BufferId, ProgramId},
     dtype::Constant,
     graph::{BOp, UOp},
-    kernel::{Kernel, Op, Scope},
+    kernel::{Kernel, Op, OpId, Scope},
     runtime::Pool,
     slab::Slab,
 };
 use nanoserde::DeJson;
 use pollster::FutureExt;
-use std::{fmt::Write, sync::Arc};
+use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc};
 use wgpu::{
     BufferDescriptor, BufferUsages, PollType, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource,
     util::DownloadBuffer,
@@ -264,6 +264,7 @@ impl WGPUDevice {
             }
         }
 
+        let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut n_global_ids = 0;
         let mut loop_id = 0;
         let mut indent = String::from("  ");
@@ -274,26 +275,37 @@ impl WGPUDevice {
             match op {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
                 &Op::Const(x) => {
+                    dtypes.insert(i, x.dtype());
                     writeln!(source, "{indent}const r{i}: {} = {};", x.dtype().wgsl(), x.wgsl()).unwrap();
                 }
                 &Op::Define { dtype, scope, ro: _, len } => {
+                    dtypes.insert(i, dtype);
                     if scope == Scope::Register {
                         writeln!(source, "{indent}var p{i}: array<{}, {len}>;", dtype.wgsl(),).unwrap();
                     }
                 }
                 &Op::Load { src, index } => {
+                    dtypes.insert(i, dtypes[&src]);
                     writeln!(source, "{indent}let r{i} = p{src}[r{index}];").unwrap();
                 }
                 &Op::Store { dst, x: src, index } => {
                     writeln!(source, "{indent}p{dst}[r{}] = r{};", index, src,).unwrap();
                 }
                 &Op::Cast { x, dtype } => {
+                    dtypes.insert(i, dtype);
                     writeln!(source, "{indent}let r{i} = {}(r{x});", dtype.wgsl()).unwrap();
                 }
                 &Op::Unary { x, uop } => {
+                    dtypes.insert(i, dtypes[&x]);
+                    let dtype = dtypes[&x];
                     match uop {
                         UOp::ReLU => {
-                            writeln!(source, "{indent}let r{i} = max(r{x}, 0);").unwrap();
+                            writeln!(
+                                source,
+                                "{indent}let r{i} = max(r{x}, {});",
+                                dtype.zero_constant().wgsl()
+                            )
+                            .unwrap();
                         }
                         UOp::Neg => writeln!(source, "{indent}let r{i} = -r{x};").unwrap(),
                         UOp::Exp2 => {
@@ -302,7 +314,7 @@ impl WGPUDevice {
                         }
                         UOp::Log2 => writeln!(source, "{indent}let r{i} = log2(r{x});").unwrap(),
                         UOp::Reciprocal => {
-                            writeln!(source, "{indent}let r{i} = 1/{x};").unwrap();
+                            writeln!(source, "{indent}let r{i} = {}/r{x};", dtype.one_constant().wgsl()).unwrap();
                         }
                         UOp::Sqrt => writeln!(source, "{indent}let r{i} = sqrt(r{x});").unwrap(),
                         UOp::Sin => writeln!(source, "{indent}let r{i} = sin(r{x});").unwrap(),
@@ -310,27 +322,35 @@ impl WGPUDevice {
                         UOp::Floor => writeln!(source, "{indent}let r{i} = floor(r{x});").unwrap(),
                     }
                 }
-                &Op::Binary { x, y, bop } => match bop {
-                    BOp::Add => writeln!(source, "{indent}let r{i} = r{x} + r{y};").unwrap(),
-                    BOp::Sub => writeln!(source, "{indent}let r{i} = r{x} - r{y};").unwrap(),
-                    BOp::Mul => writeln!(source, "{indent}let r{i} = r{x} * r{y};").unwrap(),
-                    BOp::Div => writeln!(source, "{indent}let r{i} = r{x} / r{y};").unwrap(),
-                    BOp::Pow => writeln!(source, "{indent}let r{i} = pow(r{x}, r{y});").unwrap(),
-                    BOp::Mod => writeln!(source, "{indent}let r{i} = r{x} % r{y};").unwrap(),
-                    BOp::Cmplt => writeln!(source, "{indent}let r{i} = r{x} < r{y};").unwrap(),
-                    BOp::Cmpgt => writeln!(source, "{indent}let r{i} = r{x} > r{y};").unwrap(),
-                    BOp::Maximum => writeln!(source, "{indent}let r{i} = max(r{x}, r{y});").unwrap(),
-                    BOp::Or => writeln!(source, "{indent}let r{i} = r{x} || r{y};").unwrap(),
-                    BOp::And => writeln!(source, "{indent}let r{i} = r{x} && r{y};").unwrap(),
-                    BOp::BitXor => writeln!(source, "{indent}let r{i} = r{x} ^ r{y};").unwrap(),
-                    BOp::BitOr => writeln!(source, "{indent}let r{i} = r{x} | r{y};").unwrap(),
-                    BOp::BitAnd => writeln!(source, "{indent}let r{i} = r{x} & r{y};").unwrap(),
-                    BOp::BitShiftLeft => writeln!(source, "{indent}r{i} = r{x} << r{y};").unwrap(),
-                    BOp::BitShiftRight => writeln!(source, "{indent}r{i} = r{x} >> r{y};").unwrap(),
-                    BOp::NotEq => writeln!(source, "{indent}r{i} = r{x} != r{y};").unwrap(),
-                    BOp::Eq => writeln!(source, "{indent}r{i} = r{x} == r{y};").unwrap(),
-                },
+                &Op::Binary { x, y, bop } => {
+                    if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::Eq | BOp::And | BOp::Or) {
+                        dtypes.insert(i, DType::Bool);
+                    } else {
+                        dtypes.insert(i, dtypes[&x]);
+                    }
+                    match bop {
+                        BOp::Add => writeln!(source, "{indent}let r{i} = r{x} + r{y};").unwrap(),
+                        BOp::Sub => writeln!(source, "{indent}let r{i} = r{x} - r{y};").unwrap(),
+                        BOp::Mul => writeln!(source, "{indent}let r{i} = r{x} * r{y};").unwrap(),
+                        BOp::Div => writeln!(source, "{indent}let r{i} = r{x} / r{y};").unwrap(),
+                        BOp::Pow => writeln!(source, "{indent}let r{i} = pow(r{x}, r{y});").unwrap(),
+                        BOp::Mod => writeln!(source, "{indent}let r{i} = r{x} % r{y};").unwrap(),
+                        BOp::Cmplt => writeln!(source, "{indent}let r{i} = r{x} < r{y};").unwrap(),
+                        BOp::Cmpgt => writeln!(source, "{indent}let r{i} = r{x} > r{y};").unwrap(),
+                        BOp::Maximum => writeln!(source, "{indent}let r{i} = max(r{x}, r{y});").unwrap(),
+                        BOp::Or => writeln!(source, "{indent}let r{i} = r{x} || r{y};").unwrap(),
+                        BOp::And => writeln!(source, "{indent}let r{i} = r{x} && r{y};").unwrap(),
+                        BOp::BitXor => writeln!(source, "{indent}let r{i} = r{x} ^ r{y};").unwrap(),
+                        BOp::BitOr => writeln!(source, "{indent}let r{i} = r{x} | r{y};").unwrap(),
+                        BOp::BitAnd => writeln!(source, "{indent}let r{i} = r{x} & r{y};").unwrap(),
+                        BOp::BitShiftLeft => writeln!(source, "{indent}let r{i} = r{x} << r{y};").unwrap(),
+                        BOp::BitShiftRight => writeln!(source, "{indent}let r{i} = r{x} >> r{y};").unwrap(),
+                        BOp::NotEq => writeln!(source, "{indent}let r{i} = r{x} != r{y};").unwrap(),
+                        BOp::Eq => writeln!(source, "{indent}let r{i} = r{x} == r{y};").unwrap(),
+                    }
+                }
                 &Op::Loop { dim, scope } => {
+                    dtypes.insert(i, DType::U32);
                     match scope {
                         Scope::Global => {
                             writeln!(source, "{indent}let r{i} = gidx[{loop_id}]; // 0..{dim}").unwrap();

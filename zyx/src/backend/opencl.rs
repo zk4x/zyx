@@ -403,7 +403,9 @@ impl OpenCLMemoryPool {
         unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization).unwrap();
     }
 
-    pub const fn free_bytes(&self) -> Dim { self.free_bytes }
+    pub const fn free_bytes(&self) -> Dim {
+        self.free_bytes
+    }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
@@ -597,11 +599,17 @@ impl OpenCLMemoryPool {
 }
 
 impl OpenCLDevice {
-    pub const fn deinitialize(&mut self) { let _ = self; }
+    pub const fn deinitialize(&mut self) {
+        let _ = self;
+    }
 
-    pub const fn info(&self) -> &DeviceInfo { &self.dev_info }
+    pub const fn info(&self) -> &DeviceInfo {
+        &self.dev_info
+    }
 
-    pub const fn memory_pool_id(&self) -> u32 { self.memory_pool_id }
+    pub const fn memory_pool_id(&self) -> u32 {
+        self.memory_pool_id
+    }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         fn new_reg(
@@ -690,7 +698,7 @@ impl OpenCLDevice {
         // first we will calculate those reference counts.
         for (i, op) in kernel.ops.iter().enumerate() {
             match op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => unreachable!(),
                 Op::Const(x) => {
                     dtypes.insert(i, x.dtype());
                 }
@@ -728,10 +736,6 @@ impl OpenCLDevice {
                     dtypes.insert(i, DType::U32);
                 }
                 Op::EndLoop => {}
-                &Op::Reduce { x, .. } => {
-                    dtypes.insert(i, dtypes[&x]);
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                }
             }
         }
 
@@ -1045,7 +1049,9 @@ impl OpenCLDevice {
         self.programs.remove(program_id);
     }
 
-    pub const fn free_compute(&self) -> u128 { self.dev_info.compute }
+    pub const fn free_compute(&self) -> u128 {
+        self.dev_info.compute
+    }
 }
 
 impl OpenCLStatus {

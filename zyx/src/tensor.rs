@@ -941,7 +941,9 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `max(0, input_element)`.
     #[must_use]
     pub fn relu(&self) -> Tensor {
-        return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) };
+        //return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) };
+        //self.cmpgt(0).unwrap() * self
+        self.cmpgt(0).unwrap().where_(self, 0).unwrap() // for whatever reason this is the fastest
     }
 
     /// Computes the reciprocal square root of each element in the input tensor.

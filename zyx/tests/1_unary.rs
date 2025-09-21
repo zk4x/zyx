@@ -105,7 +105,10 @@ fn not() -> Result<(), ZyxError> {
     let data: [f32; 10] = [
         -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
     ];
-    let zdata: Vec<f32> = (!Tensor::from(data)).try_into()?;
+    let y = !Tensor::from(data);
+    let x = y.cast(DType::F32);
+    drop(y); // We have to drop manually, because rust is very unreliable in calling destructors
+    let zdata: Vec<f32> = x.try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert_eq!(if *x != 0. { 0. } else { 1. }, y);
     }
