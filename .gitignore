@@ -1,5 +1,6 @@
 target
 zyx/.env
+zyx/.venv
 zyx/target
 .gitignore
 zyx/Cargo.lock

@@ -89,6 +89,7 @@ pub use tensor::Tensor;
 static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
 /// Bitflags for debugging
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(Debug, Clone, Copy)]
 pub struct DebugMask(u32);
 

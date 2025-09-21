@@ -3259,6 +3259,7 @@ impl Tensor {
     }*/
 }
 
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct DebugGuard {
     debug: DebugMask,
 }
