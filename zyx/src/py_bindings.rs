@@ -2,9 +2,9 @@
 
 #![allow(missing_docs)]
 
+use crate::DebugMask;
 use crate::shape::Dim;
 use crate::tensor::DebugGuard;
-use crate::DebugMask;
 use crate::{DType, GradientTape, Tensor, ZyxError, tensor::SAxis};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyIndexError;
@@ -553,8 +553,16 @@ impl Tensor {
             (Bound::Unbounded, Bound::Unbounded)
         } else {
             // Flatten specific range
-            let start = if start_axis < 0 { self.rank() as isize + start_axis } else { start_axis };
-            let end = if end_axis < 0 { self.rank() as isize + end_axis + 1 } else { end_axis + 1 };
+            let start = if start_axis < 0 {
+                self.rank() as isize + start_axis
+            } else {
+                start_axis
+            };
+            let end = if end_axis < 0 {
+                self.rank() as isize + end_axis + 1
+            } else {
+                end_axis + 1
+            };
             (Bound::Included(start as i32), Bound::Excluded(end as i32))
         };
         self.flatten(range)
@@ -565,7 +573,8 @@ impl Tensor {
     pub fn squeeze_py(&self, axes: Option<&Bound<'_, PyList>>) -> Tensor {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<SAxis> = axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
+                let axes: Vec<SAxis> =
+                    axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
                 self.squeeze(axes)
             }
             None => self.squeeze(vec![]), // Squeeze all dimensions of size 1
@@ -601,7 +610,8 @@ impl Tensor {
     pub fn max_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<SAxis> = axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
+                let axes: Vec<SAxis> =
+                    axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
                 self.max(axes)
             }
             None => self.max(vec![]), // Reduce all dimensions
@@ -613,7 +623,8 @@ impl Tensor {
     pub fn mean_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<SAxis> = axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
+                let axes: Vec<SAxis> =
+                    axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
                 self.mean(axes)
             }
             None => self.mean(vec![]), // Reduce all dimensions
@@ -625,7 +636,8 @@ impl Tensor {
     pub fn sum_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<SAxis> = axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
+                let axes: Vec<SAxis> =
+                    axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
                 self.sum(axes)
             }
             None => self.sum(vec![]), // Reduce all dimensions
@@ -637,7 +649,8 @@ impl Tensor {
     pub fn std_py(&self, axes: Option<&Bound<'_, PyList>>, correction: usize) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<SAxis> = axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
+                let axes: Vec<SAxis> =
+                    axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
                 self.std(axes, correction)
             }
             None => self.std(vec![], correction), // Reduce all dimensions
@@ -649,7 +662,8 @@ impl Tensor {
     pub fn var_py(&self, axes: Option<&Bound<'_, PyList>>, correction: usize) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<SAxis> = axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
+                let axes: Vec<SAxis> =
+                    axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
                 self.var(axes, correction)
             }
             None => self.var(vec![], correction), // Reduce all dimensions
@@ -908,7 +922,10 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "pad_zeros")]
     pub fn pad_zeros_py(&self, padding: &Bound<'_, PyList>) -> Result<Tensor, ZyxError> {
-        let padding: Vec<(isize, isize)> = padding.into_iter().map(|d| d.extract::<(isize, isize)>().expect("padding must be tuple of (isize, isize)")).collect();
+        let padding: Vec<(isize, isize)> = padding
+            .into_iter()
+            .map(|d| d.extract::<(isize, isize)>().expect("padding must be tuple of (isize, isize)"))
+            .collect();
         self.pad_zeros(padding)
     }
 
@@ -963,7 +980,8 @@ impl Tensor {
     pub fn product_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<SAxis> = axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
+                let axes: Vec<SAxis> =
+                    axes_list.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
                 self.product(axes)
             }
             None => self.product(vec![]), // Reduce all dimensions
@@ -1004,7 +1022,6 @@ impl Tensor {
         let axes: Vec<SAxis> = axes.into_iter().map(|d| d.extract::<SAxis>().expect("axes must be integers")).collect();
         self.var_kd(axes, correction)
     }
-
 
     fn __repr__(&self) -> String {
         format!("{self:?}")
@@ -1069,6 +1086,16 @@ impl Tensor {
             self.dot(rhs)
         } else {
             return Err(ZyxError::DTypeError("unsupported rhs for dot".into()));
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "matmul")]
+    fn matmul_py(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(rhs) = rhs.extract::<Self>() {
+            self.dot(rhs)
+        } else {
+            return Err(ZyxError::DTypeError("unsupported rhs for matmul".into()));
         }
     }
 
