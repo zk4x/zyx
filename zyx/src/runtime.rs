@@ -315,7 +315,7 @@ impl Runtime {
             })
             .collect();
         if mem_pools.is_empty() {
-            return Err(ZyxError::AllocationError);
+            return Err(ZyxError::AllocationError("no memory pool has been initialized.".into()));
         }
         //println!("Memory pools: {mem_pools:?}");
         // Pick memory pool with fastest device

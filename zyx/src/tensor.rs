@@ -2944,6 +2944,9 @@ impl Tensor {
         }
 
         let sh: Vec<usize> = self.shape();
+        //println!("shape={sh:?}");
+        //println!("sin_freqs={:?}", sin_freqs.shape());
+        //println!("cos_freqs={:?}", cos_freqs.shape());
         if sh.len() < 2 {
             return Err(ZyxError::ShapeError(
                 format!("RoPE requires input >= 2d, but current input is {}d", sh.len()).into(),
@@ -2953,9 +2956,8 @@ impl Tensor {
         let seq_len = sh[sh.len() - 2];
         let embed_dim = sh[sh.len() - 1];
 
-        let axes = 0..sh.len() as SAxis - 2;
-        let sin_freqs = sin_freqs.squeeze(axes.clone());
-        let cos_freqs = cos_freqs.squeeze(axes);
+        //let axes = 0..sh.len() as SAxis - 2;
+        //println!("Squeeze axes: {axes:?}");
 
         if sin_freqs.shape() != [seq_len, embed_dim / 2] || cos_freqs.shape() != [seq_len, embed_dim / 2] {
             return Err(ZyxError::ShapeError(
@@ -2970,6 +2972,9 @@ impl Tensor {
                 .into(),
             ));
         }
+
+        let sin_freqs = sin_freqs.reshape([1, seq_len, 1, embed_dim/2]).unwrap();
+        let cos_freqs = cos_freqs.reshape([1, seq_len, 1, embed_dim/2]).unwrap();
 
         let a = self.rget(..embed_dim as isize / 2).unwrap();
         let b = -self.rget(embed_dim as isize / 2..).unwrap();

@@ -947,6 +947,7 @@ impl Runtime {
         let mut dev_ids: Vec<usize> = (0..self.devices.len()).collect();
         dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
         dev_ids.reverse();
+        //println!("dev_ids={dev_ids:?}");
         let mut device_id = None;
         for dev_id in dev_ids {
             let mpid = self.devices[dev_id].memory_pool_id() as usize;
@@ -963,7 +964,7 @@ impl Runtime {
                     }
                 })
                 .sum::<Dim>();
-            //println!("Existing memory {existing_memory} B");
+            println!("Free memory {free_memory} B, existing memory {existing_memory} B");
             let required_memory = required_kernel_memory - existing_memory;
             if free_memory > required_memory {
                 device_id = Some(dev_id);
@@ -971,7 +972,12 @@ impl Runtime {
             }
         }
         // else
-        let Some(dev_id) = device_id else { return Err(ZyxError::AllocationError) };
+        let Some(dev_id) = device_id else {
+            return Err(ZyxError::AllocationError(
+                format!("no device has enough memory to store {required_kernel_memory} B for intermedite tensors.")
+                    .into(),
+            ));
+        };
         let _ = device_id;
         let mpid = self.devices[dev_id].memory_pool_id() as usize;
 

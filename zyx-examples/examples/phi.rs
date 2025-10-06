@@ -489,7 +489,7 @@ impl Model {
             .unwrap()
             .narrow(1, seq_len - 1, 1)
             .unwrap();
-        self.lm_head.forward(xs).unwrap().squeeze(0).unwrap()
+        self.lm_head.forward(xs).unwrap().squeeze([0])
     }
 
     pub fn clear_kv_cache(&mut self) {
@@ -843,7 +843,7 @@ impl TextGeneration {
             //Tensor::realize([&logits]).unwrap();
             //let res: String = self.tokenizer.decode_all().unwrap();
             //Tensor::plot_graph([], "phi")?;
-            let logits = logits.squeeze(0).unwrap().cast(DType::F32);
+            let logits = logits.squeeze([0]).cast(DType::F32);
             let logits = if self.repeat_penalty == 1. {
                 logits
             } else {
@@ -1043,7 +1043,7 @@ fn mmlu<P: AsRef<std::path::Path>>(
             let input = Tensor::from(tokens).unsqueeze(0).unwrap();
             model.clear_kv_cache();
             let logits = model.forward(&input);
-            let logits = logits.squeeze(0)?.cast(DType::F32);
+            let logits = logits.squeeze([0]).cast(DType::F32);
             let logits_v: Vec<f32> = logits.try_into().unwrap();
             let pr_a = logits_v[token_a as usize];
             let pr_b = logits_v[token_b as usize];

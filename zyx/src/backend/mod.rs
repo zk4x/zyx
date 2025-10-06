@@ -7,7 +7,12 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
 use crate::{
-    backend::hip::{HIPDevice, HIPMemoryPool}, error::{BackendError, ErrorStatus}, kernel::Kernel, runtime::Pool, shape::Dim, slab::SlabId
+    backend::hip::{HIPDevice, HIPMemoryPool},
+    error::{BackendError, ErrorStatus},
+    kernel::Kernel,
+    runtime::Pool,
+    shape::Dim,
+    slab::SlabId,
 };
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
@@ -20,8 +25,8 @@ use wgpu::{WGPUDevice, WGPUMemoryPool};
 mod cuda;
 mod disk;
 mod dummy;
-mod opencl;
 mod hip;
+mod opencl;
 /*#[cfg(feature = "vulkan")]
 mod vulkan;*/
 #[cfg(feature = "wgpu")]
@@ -31,34 +36,46 @@ mod wgpu;
 pub struct BufferId(u32);
 
 impl From<usize> for BufferId {
-    fn from(value: usize) -> Self { BufferId(u32::try_from(value).unwrap()) }
+    fn from(value: usize) -> Self {
+        BufferId(u32::try_from(value).unwrap())
+    }
 }
 
 impl From<BufferId> for usize {
-    fn from(value: BufferId) -> Self { value.0 as usize }
+    fn from(value: BufferId) -> Self {
+        value.0 as usize
+    }
 }
 
 impl SlabId for BufferId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) { self.0 += 1; }
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, DeBin, SerBin)]
 pub struct ProgramId(u32);
 
 impl From<usize> for ProgramId {
-    fn from(value: usize) -> Self { ProgramId(u32::try_from(value).unwrap()) }
+    fn from(value: usize) -> Self {
+        ProgramId(u32::try_from(value).unwrap())
+    }
 }
 
 impl From<ProgramId> for usize {
-    fn from(value: ProgramId) -> Self { value.0 as usize }
+    fn from(value: ProgramId) -> Self {
+        value.0 as usize
+    }
 }
 
 impl SlabId for ProgramId {
     const ZERO: Self = Self(0);
 
-    fn inc(&mut self) { self.0 += 1; }
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
 }
 
 pub fn initialize_backends(
@@ -212,7 +229,7 @@ impl MemoryPool {
         }
     }
 
-    pub const fn free_bytes(&self) -> Dim {
+    pub fn free_bytes(&self) -> Dim {
         match self {
             MemoryPool::Dummy(pool) => pool.free_bytes(),
             MemoryPool::Disk(pool) => pool.free_bytes(),

@@ -14,7 +14,7 @@ pub enum ZyxError {
     /// Error parsing some data
     ParseError(Box<str>),
     /// Memory allocation error
-    AllocationError,
+    AllocationError(Box<str>),
     /// There are no available backends
     NoBackendAvailable,
     /// Error returned by backends
@@ -30,7 +30,7 @@ impl std::fmt::Display for ZyxError {
             ZyxError::ParseError(e) => f.write_fmt(format_args!("IO {e}")),
             ZyxError::BackendConfig(e) => f.write_fmt(format_args!("Backend config {e:?}'")),
             ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),
-            ZyxError::AllocationError => f.write_fmt(format_args!("Allocation error")),
+            ZyxError::AllocationError(e) => f.write_fmt(format_args!("Allocation error {e}")),
             ZyxError::BackendError(e) => f.write_fmt(format_args!("Backend {e}")),
         }
     }

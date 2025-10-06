@@ -58,7 +58,7 @@ crate-type = ["lib"] #, "cdylib"]
 [features]
 default = [
     #"wgpu",
-    "py",
+    #"py",
 ]
 
 # Enables wgpu backend
