@@ -381,12 +381,10 @@ impl View {
             a = i;
         }*/
 
-        let temp_data: Vec<_> = (0..axes.len())
-            .map(|i| {
-                let src_idx = axes[i];
-                inner[src_idx].clone()
-            })
-            .collect();
+        let mut temp_data = inner.clone();
+        for i in 0..axes.len() {
+            temp_data[i] = inner[axes[i]].clone();
+        }
         *inner = temp_data;
     }
 

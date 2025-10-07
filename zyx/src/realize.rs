@@ -140,7 +140,13 @@ impl Runtime {
             println!("{to_eval:?}");
 
             for nid in order {
-                println!("{nid} x {} -> {:?}", rcs[&nid], self.graph[nid]);
+                println!(
+                    "{nid} x {} -> {:?}  {}  {:?}",
+                    rcs[&nid],
+                    self.graph[nid],
+                    self.graph.dtype(nid),
+                    self.graph.shape(nid)
+                );
                 let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
                     let dtype = self.graph.dtype(nid);
                     let shape = self.graph.shape(nid);

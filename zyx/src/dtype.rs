@@ -330,7 +330,7 @@ impl Constant {
         }
     }
 
-    /*#[allow(clippy::float_cmp)]
+    #[allow(clippy::float_cmp)]
     pub(crate) fn is_two(&self) -> bool {
         match *self {
             Constant::BF16(x) => bf16::from_le_bytes(x) == bf16::ONE + bf16::ONE,
@@ -347,7 +347,7 @@ impl Constant {
             Constant::I64(x) => i64::from_le_bytes(x) == 2,
             Constant::Bool(_) => false,
         }
-    }*/
+    }
 
     pub(super) fn cast(self, dtype: DType) -> Constant {
         match self {

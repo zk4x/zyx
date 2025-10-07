@@ -1140,11 +1140,16 @@ impl Tensor {
     /// Returns a boolean tensor where elements are close within a tolerance.
     /// # Errors
     /// Returns error if the tensors have non broadcasteable shapes.
-    pub fn isclose(&self, other: impl Into<Tensor>, rtol: impl Into<Tensor>, atol: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    pub fn isclose(
+        &self,
+        other: impl Into<Tensor>,
+        rtol: impl Into<Tensor>,
+        atol: impl Into<Tensor>,
+    ) -> Result<Tensor, ZyxError> {
         let other = other.into();
         let rtol = rtol.into();
         let atol = atol.into();
-        
+
         let diff = (self - other.clone()).abs();
         let tolerance = atol.clone() + other.mul(rtol);
         diff.cmplt(tolerance)
@@ -1171,7 +1176,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn log10(&self) -> Tensor {
-        self.ln()/Tensor::from(10f32).ln()
+        self.ln() / Tensor::from(10f32).ln()
     }
 
     /// Converts angles from radians to degrees.
@@ -1613,12 +1618,13 @@ impl Tensor {
     pub fn mean(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
         let shape = self.shape();
-        Ok(self.sum(axes.clone())?
-            / Tensor::from(
-                SAxis::try_from(into_axes(axes, shape.rank())?.into_iter().map(|a| shape[a as usize]).product::<Dim>())
-                    .unwrap(),
-            )
-            .cast(self.dtype()))
+        println!("axes={axes:?}, shape={shape:?}");
+        let n = i64::try_from(
+            into_axes(axes.clone(), shape.rank())?.into_iter().map(|a| shape[a as usize]).product::<Dim>(),
+        )
+        .unwrap();
+        println!("{n}");
+        Ok(self.sum(axes)? / Tensor::from(n).cast(self.dtype()))
     }
 
     /// Calculates the mean of this tensor along the specified axes and reshapes it using `reduce_kd_shape`.
@@ -2973,8 +2979,8 @@ impl Tensor {
             ));
         }
 
-        let sin_freqs = sin_freqs.reshape([1, seq_len, 1, embed_dim/2]).unwrap();
-        let cos_freqs = cos_freqs.reshape([1, seq_len, 1, embed_dim/2]).unwrap();
+        let sin_freqs = sin_freqs.reshape([1, seq_len, 1, embed_dim / 2]).unwrap();
+        let cos_freqs = cos_freqs.reshape([1, seq_len, 1, embed_dim / 2]).unwrap();
 
         let a = self.rget(..embed_dim as isize / 2).unwrap();
         let b = -self.rget(embed_dim as isize / 2..).unwrap();

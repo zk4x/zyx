@@ -656,7 +656,50 @@ fn graph_tensor_ordering() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn var() -> Result<(), ZyxError> {
+fn var1() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
+    let [n] = x.dims()?;
+    let mean = x.mean_kd([0])?;
+    let x = x - mean;
+    let squared = x.pow(2)?;
+    let summed = squared.sum([0])?;
+    let y = summed / n as u32;
+    assert_eq!(y, [2.25f32, 2.25, 2.25]);
+    Ok(())
+}
+
+#[test]
+fn mean1() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
+    let mean = x.mean_kd([1])?;
+    let y = x - mean;
+    assert_eq!(y, [[-1f32, 0., 1.], [-1., 0., 1.]]);
+    Ok(())
+}
+
+#[test]
+fn var2() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
+    let [n] = x.dims()?;
+    let mean = x.mean_kd([1])?;
+    let x = x - mean;
+    let squared = x.pow(2)?;
+    let summed = squared.sum([1])?;
+    let y = summed / n as u32;
+    assert_eq!(y, [0.666666f32, 0.666666]);
+    Ok(())
+}
+
+#[test]
+fn var3() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
+    let y = x.var([1], 0)?;
+    assert_eq!(y, [0.666666f32, 0.666666]);
+    Ok(())
+}
+
+#[test]
+fn var4() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
     let y = x.var([0], 0)?;
     assert_eq!(y, [2.25f32, 2.25, 2.25]);

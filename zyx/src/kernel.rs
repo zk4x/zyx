@@ -1174,7 +1174,15 @@ impl Kernel {
                                 remaps.insert(op_id, x);
                             }
                         }
-                        BOp::Pow => todo!(),
+                        BOp::Pow => {
+                            if cy.is_zero() {
+                                self.ops[op_id] = Op::Const(cy.dtype().one_constant());
+                            } else if cy.is_one() {
+                                remaps.insert(op_id, x);
+                            } else if cy.is_two() {
+                                self.ops[op_id] = Op::Binary { x, y: x, bop: BOp::Mul };
+                            }
+                        }
                         BOp::Mod => {
                             if cy.is_zero() {
                                 panic!("Modulo by zero constant.");

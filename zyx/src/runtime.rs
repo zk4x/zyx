@@ -491,6 +491,7 @@ impl Runtime {
     #[must_use]
     pub(super) fn sum_reduce(&mut self, x: TensorId, mut axes: Vec<Axis>) -> TensorId {
         let sh = self.shape(x);
+        axes.sort_unstable();
         if axes.is_empty() {
             axes = (0..sh.len() as Axis).collect();
         }
@@ -503,6 +504,7 @@ impl Runtime {
     #[must_use]
     pub(super) fn max_reduce(&mut self, x: TensorId, mut axes: Vec<Axis>) -> TensorId {
         let sh = self.shape(x);
+        axes.sort_unstable();
         if axes.is_empty() {
             axes = (0..sh.len() as Axis).collect();
         }
