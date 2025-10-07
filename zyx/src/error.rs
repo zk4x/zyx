@@ -21,6 +21,43 @@ pub enum ZyxError {
     BackendError(BackendError),
 }
 
+impl ZyxError {
+    #[track_caller]
+    pub(crate) fn shape_error(e: Box<str>) -> Self {
+        let location = std::panic::Location::caller();
+        use std::fmt::Write;
+        let mut e: String = e.into();
+        write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
+        Self::ShapeError(e.into())
+    }
+
+    #[track_caller]
+    pub(crate) fn dtype_error(e: Box<str>) -> Self {
+        let location = std::panic::Location::caller();
+        use std::fmt::Write;
+        let mut e: String = e.into();
+        write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
+        Self::DTypeError(e.into())
+    }
+
+    pub(crate) fn backend_config(e: &'static str) -> Self {
+        Self::BackendConfig(e)
+    }
+
+    pub(crate) fn io_error(e: std::io::Error) -> Self {
+        Self::IOError(e)
+    }
+
+    #[track_caller]
+    pub(crate) fn parse_error(e: Box<str>) -> Self {
+        let location = std::panic::Location::caller();
+        use std::fmt::Write;
+        let mut e: String = e.into();
+        write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
+        Self::ParseError(e.into())
+    }
+}
+
 impl std::fmt::Display for ZyxError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
