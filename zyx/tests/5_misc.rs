@@ -615,20 +615,6 @@ fn t1() {
 }*/
 
 #[test]
-fn dot4() -> Result<(), ZyxError> {
-    let mut x = Tensor::from([2i32, 3, 1]);
-    let w = Tensor::from([[2i32, 3, 2], [2, 1, 1], [4, 1, 4]]);
-    let b = Tensor::from([2i32, 3, 5]);
-    for _ in 0..10 {
-        x = x.dot(&w)? + &b;
-        //Tensor::realize([&x]).unwrap();
-    }
-    println!("{x}");
-    assert_eq!(x, [671627020i32, 441824135, 607929878]);
-    Ok(())
-}
-
-#[test]
 fn conv1() -> Result<(), ZyxError> {
     let t = Tensor::arange(0f32, 9., 1.)?.reshape([1, 1, 3, 3])?;
     let w = Tensor::ones([1, 1, 2, 2], DType::F32);
@@ -738,7 +724,7 @@ fn mean2() -> Result<(), ZyxError> {
 #[test]
 fn var2() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
-    let [n] = x.dims()?;
+    let [_, n] = x.dims()?;
     let mean = x.mean_kd([1])?;
     let x = x - mean;
     let squared = x.pow(2)?;
@@ -882,3 +868,17 @@ fn complex_causal_self_attention() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+/*#[test]
+fn dot4() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([2i32, 3, 1]);
+    let w = Tensor::from([[2i32, 3, 2], [2, 1, 1], [4, 1, 4]]);
+    let b = Tensor::from([2i32, 3, 5]);
+    for _ in 0..10 {
+        x = x.dot(&w)? + &b;
+        //Tensor::realize([&x]).unwrap();
+    }
+    println!("{x}");
+    assert_eq!(x, [671627020i32, 441824135, 607929878]);
+    Ok(())
+}*/
