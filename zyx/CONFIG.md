@@ -9,6 +9,9 @@ The create file device_config.json in that folder. $HOME/.config/zyx/device_conf
 Copy this into your device_config.json:
 ```json
 {
+  "dummy": {
+    "enabled": false
+  },
   "search": {
     "iterations": 100,
     "save_to_disk": true
@@ -36,4 +39,3 @@ WGSL currently can only be disabled or enabled and it runs only on one device. Y
 Vulkan backend is not yet written, so this is only placeholder in the config. Please ignore it.
 
 CUDA, HIP and OpenCL backends cannot be disabled using cargo features. They are always compiled into zyx. Each of those backends takes about 1000 loc, so it does not significantly increase compile times. These backends automatically at runtime search for required .so files.
-

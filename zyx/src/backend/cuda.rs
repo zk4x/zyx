@@ -846,6 +846,7 @@ impl CUDADevice {
                             writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().cu()).unwrap();
                         }
                         UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};").unwrap(),
+                        UOp::Not => todo!(),
                         UOp::Exp2 => {
                             //writeln!(source, "{indent}printf(\"%d\\n\", r{reg});").unwrap();
                             writeln!(source, "{indent}r{reg} = exp2({x});").unwrap();
@@ -1150,21 +1151,23 @@ impl CUDADevice {
                 &Op::Const(x) => {
                     constants.insert(i, x);
                 }
-                &Op::Define { dtype, scope, ro, len } => {
-                    match scope {
-                        Scope::Global => {
-                            writeln!(source, "{indent}ld.param.u64 %p{i}, [g{i}];");
-                        }
-                        Scope::Local => todo!(),
-                        Scope::Register => todo!(),
+                &Op::Define { dtype, scope, ro, len } => match scope {
+                    Scope::Global => {
+                        writeln!(source, "{indent}ld.param.u64 %p{i}, [g{i}];");
                     }
-                }
+                    Scope::Local => todo!(),
+                    Scope::Register => todo!(),
+                },
                 &Op::Load { src, index } => {
                     let dtype = dtypes[&src];
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
-                    writeln!(source, "{indent}shl.b64 %offset, %offset, {};", dtype.byte_size().ilog2());
+                    writeln!(
+                        source,
+                        "{indent}shl.b64 %offset, %offset, {};",
+                        dtype.byte_size().ilog2()
+                    );
                     writeln!(source, "{indent}add.u64 %address, %p{src}, %offset;");
                     writeln!(source, "{indent}ld.global.{} %r{reg}, [%address];", dtype.ptx());
                 }
@@ -1173,7 +1176,11 @@ impl CUDADevice {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
                     let src = get_var(src, &constants, &indices, &reg_map, &mut registers);
                     writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
-                    writeln!(source, "{indent}shl.b64 %offset, %offset, {};", dtype.byte_size().ilog2());
+                    writeln!(
+                        source,
+                        "{indent}shl.b64 %offset, %offset, {};",
+                        dtype.byte_size().ilog2()
+                    );
                     writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;");
                     writeln!(source, "{indent}st.global.{} [%address], {src};", dtype.ptx());
                 }
@@ -1187,6 +1194,7 @@ impl CUDADevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match uop {
+                        UOp::Not => todo!(),
                         UOp::ReLU => {
                             writeln!(source, "{indent}max.{} %r{reg}, {x}, 0.0;", dtype.ptx()).unwrap();
                         }
@@ -1222,63 +1230,57 @@ impl CUDADevice {
                     let yr = get_var(y, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match bop {
-                        BOp::Mul => {
-                            match dtype {
-                                DType::BF16 => todo!(),
-                                DType::F16 => todo!(),
-                                DType::F32 => todo!(),
-                                DType::F64 => todo!(),
-                                DType::U8 => todo!(),
-                                DType::U16 => todo!(),
-                                DType::U32 => {
-                                    writeln!(source, "{indent}mul.lo.u32 %r{reg}, {xr}, {yr};").unwrap();
-                                }
-                                DType::U64 => todo!(),
-                                DType::I8 => todo!(),
-                                DType::I16 => todo!(),
-                                DType::I32 => todo!(),
-                                DType::I64 => todo!(),
-                                DType::Bool => todo!(),
+                        BOp::Mul => match dtype {
+                            DType::BF16 => todo!(),
+                            DType::F16 => todo!(),
+                            DType::F32 => todo!(),
+                            DType::F64 => todo!(),
+                            DType::U8 => todo!(),
+                            DType::U16 => todo!(),
+                            DType::U32 => {
+                                writeln!(source, "{indent}mul.lo.u32 %r{reg}, {xr}, {yr};").unwrap();
                             }
-                        }
-                        BOp::Mod => {
-                            match dtype {
-                                DType::BF16 => todo!(),
-                                DType::F16 => todo!(),
-                                DType::F32 => todo!(),
-                                DType::F64 => todo!(),
-                                DType::U8 => todo!(),
-                                DType::U16 => todo!(),
-                                DType::U32 => {
-                                    writeln!(source, "{indent}rem.u32 %r{reg}, {xr}, {yr};").unwrap();
-                                }
-                                DType::U64 => todo!(),
-                                DType::I8 => todo!(),
-                                DType::I16 => todo!(),
-                                DType::I32 => todo!(),
-                                DType::I64 => todo!(),
-                                DType::Bool => todo!(),
+                            DType::U64 => todo!(),
+                            DType::I8 => todo!(),
+                            DType::I16 => todo!(),
+                            DType::I32 => todo!(),
+                            DType::I64 => todo!(),
+                            DType::Bool => todo!(),
+                        },
+                        BOp::Mod => match dtype {
+                            DType::BF16 => todo!(),
+                            DType::F16 => todo!(),
+                            DType::F32 => todo!(),
+                            DType::F64 => todo!(),
+                            DType::U8 => todo!(),
+                            DType::U16 => todo!(),
+                            DType::U32 => {
+                                writeln!(source, "{indent}rem.u32 %r{reg}, {xr}, {yr};").unwrap();
                             }
-                        }
-                        BOp::Add => {
-                            match dtype {
-                                DType::BF16 => todo!(),
-                                DType::F16 => todo!(),
-                                DType::F32 => todo!(),
-                                DType::F64 => todo!(),
-                                DType::U8 => todo!(),
-                                DType::U16 => todo!(),
-                                DType::U32 => {
-                                    writeln!(source, "{indent}add.u32 %r{reg}, {xr}, {yr};").unwrap();
-                                }
-                                DType::U64 => todo!(),
-                                DType::I8 => todo!(),
-                                DType::I16 => todo!(),
-                                DType::I32 => todo!(),
-                                DType::I64 => todo!(),
-                                DType::Bool => todo!(),
+                            DType::U64 => todo!(),
+                            DType::I8 => todo!(),
+                            DType::I16 => todo!(),
+                            DType::I32 => todo!(),
+                            DType::I64 => todo!(),
+                            DType::Bool => todo!(),
+                        },
+                        BOp::Add => match dtype {
+                            DType::BF16 => todo!(),
+                            DType::F16 => todo!(),
+                            DType::F32 => todo!(),
+                            DType::F64 => todo!(),
+                            DType::U8 => todo!(),
+                            DType::U16 => todo!(),
+                            DType::U32 => {
+                                writeln!(source, "{indent}add.u32 %r{reg}, {xr}, {yr};").unwrap();
                             }
-                        }
+                            DType::U64 => todo!(),
+                            DType::I8 => todo!(),
+                            DType::I16 => todo!(),
+                            DType::I32 => todo!(),
+                            DType::I64 => todo!(),
+                            DType::Bool => todo!(),
+                        },
                         BOp::NotEq => {
                             writeln!(source, "{indent}setp.ne.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
                         }
@@ -1345,7 +1347,9 @@ impl CUDADevice {
         let mut reg_str = format!("{indent}.reg .u64 %offset;\n{indent}.reg .s64 %address;\n");
 
         for (i, op) in kernel.ops.iter().enumerate() {
-            if let Op::Define { dtype, scope, ro, len } = op && *scope == Scope::Global {
+            if let Op::Define { dtype, scope, ro, len } = op
+                && *scope == Scope::Global
+            {
                 writeln!(reg_str, "{indent}.reg .u64 %p{i};").unwrap();
             }
         }

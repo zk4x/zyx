@@ -361,6 +361,7 @@ pub enum BOp {
 pub enum UOp {
     ReLU,
     Neg,
+    Not,
     Exp2,
     Log2,
     Reciprocal,

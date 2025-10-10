@@ -2209,12 +2209,12 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     #[allow(clippy::missing_panics_doc)]
     pub fn where_(&self, if_true: impl Into<Tensor>, if_false: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let dtype = self.dtype();
-        let (x, y) = Tensor::broadcast(self.clone(), if_true)?;
-        let (x, z) = Tensor::broadcast(x, if_false)?;
-        let (y, z) = Tensor::broadcast(y, z)?;
-        let x_nonzero = x.nonzero();
-        Ok(x_nonzero.cast(dtype) * y + (!x_nonzero).cast(dtype) * z)
+        let if_true = if_true.into();
+        let if_false = if_false.into();
+        let dtype = if_true.dtype();
+        let x = self.cast(dtype);
+        let (if_true, if_false) = Tensor::broadcast(if_true, if_false)?;
+        Ok(x.clone() * if_true + (Tensor::ones(if_false.shape(), dtype) - x) * if_false)
     }
 
     // loss functions

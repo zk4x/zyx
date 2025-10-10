@@ -703,6 +703,17 @@ fn complex_movement_reduce() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn mean1() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1i32, 2, 3], [4, 5, 6]]);
+    let mean = x.sum([1])? * 0.33333333f32;
+    //assert_eq!(mean, [2f32, 5.]);
+    let y = x - mean.reshape([2, 1])?;
+    //panic!("{y}");
+    assert_eq!(y, [[-1f32, 0., 1.], [-1., 0., 1.]]);
+    Ok(())
+}
+
+#[test]
 fn var1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
     let [n] = x.dims()?;
@@ -716,7 +727,7 @@ fn var1() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn mean1() -> Result<(), ZyxError> {
+fn mean2() -> Result<(), ZyxError> {
     let x = Tensor::from([[1i32, 2, 3], [4, 5, 6]]);
     let mean = x.mean_kd([1])?;
     let y = x - mean;

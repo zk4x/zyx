@@ -30,7 +30,9 @@ use std::hash::BuildHasherDefault;
 pub struct GradientTape {}
 
 impl Default for GradientTape {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GradientTape {
@@ -273,10 +275,24 @@ impl Runtime {
                         self.release(eq);
                     }
                     BOp::Cmplt => {
-                        panic!("Cmplt is not a differentiable operation.");
+                        todo!();
                     }
                     BOp::Cmpgt => {
-                        panic!("Cmpgt is not a differentiable operation.");
+                        if req_grad.contains(&x) {
+                            // grad_x = (x <= y) * grad
+                            // grad_x = (!(y > x)) * grad
+                            let y_gt_x = self.binary(y, x, BOp::Cmpgt);
+                            let n_y_gt_x = self.unary(y_gt_x, UOp::Not);
+                            let x_grad = self.binary(n_y_gt_x, grad, BOp::Mul);
+                            insert_or_add_grad(self, &mut grads, x, x_grad);
+                        }
+                        if req_grad.contains(&y) {
+                            // grad_y = (x > y) * grad
+                            let x_gt_y = self.binary(x, y, BOp::Cmpgt);
+                            let y_grad = self.binary(x_gt_y, grad, BOp::Mul);
+                            self.release(x_gt_y);
+                            insert_or_add_grad(self, &mut grads, y, y_grad);
+                        }
                     }
                     BOp::NotEq => {
                         panic!("NotEq is not a differentiable operation.");
@@ -311,6 +327,7 @@ impl Runtime {
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Unary { x, uop } => match uop {
+                    UOp::Not => todo!(),
                     UOp::Reciprocal => {
                         // -1/(x*x)
                         let x_2_inv = self.binary(nid, nid, BOp::Mul);

@@ -637,14 +637,17 @@ impl OpenCLDevice {
             constants: &Map<OpId, Constant>,
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
-            registers: &mut [(DType, u32)],
+            _registers: &mut [(DType, u32)],
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
                 c.ocl()
             } else if let Some(id) = indices.get(&op_id) {
                 format!("idx{id}")
             } else if let Some(reg) = reg_map.get(&op_id) {
-                registers[*reg].1 -= 1;
+                // TODO fix this with multi-level loops
+                // that is we cannot subtract reference count from variable defined
+                // in outer loop level
+                //registers[*reg].1 -= 1;
                 format!("r{reg}")
             } else {
                 unreachable!()
@@ -772,10 +775,15 @@ impl OpenCLDevice {
                     let dtype = dtypes[&src];
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    //writeln!(source, "printf(\"%d\\n\", r1);").unwrap();
                     writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
+                    /*if src == 16 && index == 4 {
+                        writeln!(source, "printf(\"r3=%d\\n\", r3);").unwrap();
+                    }*/
                 }
                 &Op::Store { dst, x: src, index } => {
+                    /*if dst == 2 {
+                        writeln!(source, "printf(\"r1=%d, r2=%d\\n\", r1, r2);").unwrap();
+                    }*/
                     writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",
@@ -794,6 +802,7 @@ impl OpenCLDevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match uop {
+                        UOp::Not => todo!(),
                         UOp::ReLU => {
                             writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl()).unwrap();
                         }
@@ -813,6 +822,9 @@ impl OpenCLDevice {
                     }
                 }
                 &Op::Binary { x, y, bop } => {
+                    /*if bop == BOp::Sub {
+                        writeln!(source, "printf(\"binary r2=%d, r3=%d\\n\", r2, r3);").unwrap();
+                    }*/
                     let dtype = dtypes[&i];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
