@@ -137,16 +137,16 @@ impl Runtime {
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
             //println!("{rcs:?}");
-            println!("{to_eval:?}");
+            //println!("{to_eval:?}");
 
             for nid in order {
-                println!(
+                /*println!(
                     "{nid} x {} -> {:?}  {}  {:?}",
                     rcs[&nid],
                     self.graph[nid],
                     self.graph.dtype(nid),
                     self.graph.shape(nid)
-                );
+                );*/
                 let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
                     let dtype = self.graph.dtype(nid);
                     let shape = self.graph.shape(nid);
@@ -970,7 +970,7 @@ impl Runtime {
                     }
                 })
                 .sum::<Dim>();
-            println!("Free memory {free_memory} B, existing memory {existing_memory} B");
+            //println!("Free memory {free_memory} B, existing memory {existing_memory} B");
             let required_memory = required_kernel_memory - existing_memory;
             if free_memory > required_memory {
                 device_id = Some(dev_id);

@@ -1119,7 +1119,11 @@ impl Kernel {
                                 remaps.insert(op_id, y);
                             }
                         }
-                        BOp::Sub => todo!(),
+                        BOp::Sub => {
+                            if cx.is_zero() {
+                                self.ops[op_id] = Op::Unary { x: y, uop: UOp::Neg };
+                            }
+                        }
                         BOp::Mul => {
                             if cx.is_zero() {
                                 remaps.insert(op_id, x);

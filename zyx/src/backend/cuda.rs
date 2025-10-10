@@ -526,8 +526,8 @@ impl CUDADevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
-        let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
+        let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
 
         let mut module = ptr::null_mut();
         if let Err(err) = unsafe {
@@ -1156,7 +1156,9 @@ impl CUDADevice {
                         writeln!(source, "{indent}ld.param.u64 %p{i}, [g{i}];");
                     }
                     Scope::Local => todo!(),
-                    Scope::Register => todo!(),
+                    Scope::Register => {
+                        writeln!(source, "{indent}.reg .f64 %p{i}_[0-{len}];");
+                    }
                 },
                 &Op::Load { src, index } => {
                     let dtype = dtypes[&src];
@@ -1277,7 +1279,9 @@ impl CUDADevice {
                             DType::U64 => todo!(),
                             DType::I8 => todo!(),
                             DType::I16 => todo!(),
-                            DType::I32 => todo!(),
+                            DType::I32 => {
+                                writeln!(source, "{indent}add.i32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
                             DType::I64 => todo!(),
                             DType::Bool => todo!(),
                         },
@@ -1335,6 +1339,13 @@ impl CUDADevice {
                     loop_id -= 1;
                 }
             }
+        }
+
+        while loop_id as usize > lws.len() + gws.len() {
+            indent.pop();
+            indent.pop();
+            loop_id -= 1;
+            writeln!(source, "{indent}}}").unwrap();
         }
 
         let mut max_loop_id = 0;
