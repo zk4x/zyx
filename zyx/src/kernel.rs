@@ -16,6 +16,7 @@ use std::{
 };
 
 pub type OpId = usize;
+pub const IDX_T: DType = DType::U32;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct Kernel {
@@ -707,7 +708,7 @@ impl Kernel {
                     let ops = &mut self.ops;
                     let axes = get_axes(&ops[0..op_id]);
                     let mut pc = new_op(ops, Op::Const(Constant::Bool(true)));
-                    let constant_zero = new_op(ops, Op::Const(Constant::U64(0u64.to_le_bytes())));
+                    let constant_zero = new_op(ops, Op::Const(Constant::idx(0)));
                     #[allow(unused)] // false positive
                     let mut offset = constant_zero;
                     let mut old_offset: Option<OpId> = None;
@@ -726,27 +727,24 @@ impl Kernel {
                                 let x = if t_ost == 1 {
                                     old_offset
                                 } else {
-                                    let ost_c = new_op(ops, Op::Const(Constant::U64(t_ost.to_le_bytes())));
+                                    let ost_c = new_op(ops, Op::Const(Constant::idx(t_ost)));
                                     new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
                                 };
                                 if dim.d == 1 {
                                     constant_zero
                                 } else {
-                                    let dimd_c = new_op(ops, Op::Const(Constant::U64((dim.d as u64).to_le_bytes())));
+                                    let dimd_c = new_op(ops, Op::Const(Constant::idx(dim.d as u64)));
                                     new_op(ops, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
                                 }
                             } else if dim.d == 1 {
-                                new_op(ops, Op::Const(Constant::U64(0u64.to_le_bytes())))
+                                new_op(ops, Op::Const(Constant::idx(0u64)))
                             } else {
                                 axes[a]
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
-                                let lp = new_op(
-                                    ops,
-                                    Op::Const(Constant::U64((dim.lp.unsigned_abs() as u64).to_le_bytes())),
-                                );
+                                let lp = new_op(ops, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
                                     new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Sub })
                                 } else {
@@ -757,22 +755,19 @@ impl Kernel {
                             };
 
                             if dim.st != 0 {
-                                let stride = new_op(ops, Op::Const(Constant::U64((dim.st as u64).to_le_bytes())));
+                                let stride = new_op(ops, Op::Const(Constant::idx(dim.st as u64)));
                                 let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
                                 offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
                             }
 
                             // Padding condition
                             if dim.lp > 0 {
-                                let lp = new_op(ops, Op::Const(Constant::U64(((dim.lp - 1) as u64).to_le_bytes())));
+                                let lp = new_op(ops, Op::Const(Constant::idx((dim.lp - 1) as u64)));
                                 let t = new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
                                 pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = new_op(
-                                    ops,
-                                    Op::Const(Constant::U64(((dim.d as isize - dim.rp) as u64).to_le_bytes())),
-                                );
+                                let rp = new_op(ops, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
                                 let t = new_op(ops, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
                                 pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
@@ -813,7 +808,7 @@ impl Kernel {
                     let ops = &mut self.ops;
                     let axes = get_axes(&ops[0..op_id]);
                     let mut pc = new_op(ops, Op::Const(Constant::Bool(true)));
-                    let constant_zero = new_op(ops, Op::Const(Constant::U64(0u64.to_le_bytes())));
+                    let constant_zero = new_op(ops, Op::Const(Constant::idx(0)));
                     let mut offset = constant_zero;
                     let mut old_offset: Option<OpId> = None;
                     //println!("View");
@@ -836,13 +831,13 @@ impl Kernel {
                                 let x = if t_ost == 1 {
                                     old_offset
                                 } else {
-                                    let ost_c = new_op(ops, Op::Const(Constant::U64(t_ost.to_le_bytes())));
+                                    let ost_c = new_op(ops, Op::Const(Constant::idx(t_ost)));
                                     new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
                                 };
                                 if dim.d == 1 {
                                     constant_zero
                                 } else {
-                                    let dimd_c = new_op(ops, Op::Const(Constant::U64((dim.d as u64).to_le_bytes())));
+                                    let dimd_c = new_op(ops, Op::Const(Constant::idx(dim.d as u64)));
                                     new_op(ops, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
                                 }
                             } else if dim.d == 1 {
@@ -853,10 +848,7 @@ impl Kernel {
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
-                                let lp = new_op(
-                                    ops,
-                                    Op::Const(Constant::U64((dim.lp.unsigned_abs() as u64).to_le_bytes())),
-                                );
+                                let lp = new_op(ops, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
                                     new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Sub })
                                 } else {
@@ -867,22 +859,19 @@ impl Kernel {
                             };
 
                             if dim.st != 0 {
-                                let stride = new_op(ops, Op::Const(Constant::U64((dim.st as u64).to_le_bytes())));
+                                let stride = new_op(ops, Op::Const(Constant::idx(dim.st as u64)));
                                 let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
                                 offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
                             }
 
                             // Padding condition
                             if dim.lp > 0 {
-                                let lp = new_op(ops, Op::Const(Constant::U64(((dim.lp - 1) as u64).to_le_bytes())));
+                                let lp = new_op(ops, Op::Const(Constant::idx((dim.lp - 1) as u64)));
                                 let t = new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
                                 pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = new_op(
-                                    ops,
-                                    Op::Const(Constant::U64(((dim.d as isize - dim.rp) as u64).to_le_bytes())),
-                                );
+                                let rp = new_op(ops, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
                                 let t = new_op(ops, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
                                 pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
@@ -890,7 +879,7 @@ impl Kernel {
                         old_offset = Some(offset);
                     }
 
-                    let pcu = new_op(ops, Op::Cast { x: pc, dtype: DType::U64 });
+                    let pcu = new_op(ops, Op::Cast { x: pc, dtype: IDX_T });
                     let offset = new_op(ops, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
 
                     let z = new_op(ops, Op::Load { src: load_id, index: offset });
@@ -910,7 +899,7 @@ impl Kernel {
                     let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
                     self.ops.pop();
                     let axes = get_axes(&self.ops);
-                    let mut index = new_op(&mut self.ops, Op::Const(Constant::U64(0u64.to_le_bytes())));
+                    let mut index = new_op(&mut self.ops, Op::Const(Constant::idx(0u64)));
                     let mut st = 1;
 
                     let shape = {
@@ -930,11 +919,11 @@ impl Kernel {
                     };
 
                     for (id, d) in shape.iter().enumerate().rev() {
-                        let stride = Constant::U64((st as u64).to_le_bytes());
+                        let stride = Constant::idx(st as u64);
                         let x = if *d > 1 {
                             axes[id]
                         } else {
-                            new_op(&mut self.ops, Op::Const(Constant::U64(0u64.to_le_bytes())))
+                            new_op(&mut self.ops, Op::Const(Constant::idx(0)))
                         };
                         let y = new_op(&mut self.ops, Op::Const(stride));
                         let x = new_op(&mut self.ops, Op::Binary { x, y, bop: BOp::Mul });

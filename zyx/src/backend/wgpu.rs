@@ -4,7 +4,7 @@ use crate::{
     backend::{BufferId, ProgramId},
     dtype::Constant,
     graph::{BOp, UOp},
-    kernel::{Kernel, Op, OpId, Scope},
+    kernel::{IDX_T, Kernel, Op, OpId, Scope},
     runtime::Pool,
     slab::Slab,
 };
@@ -299,6 +299,9 @@ impl WGPUDevice {
                     dtypes.insert(i, dtypes[&x]);
                     let dtype = dtypes[&x];
                     match uop {
+                        UOp::Not => {
+                            todo!();
+                        }
                         UOp::ReLU => {
                             writeln!(
                                 source,
@@ -350,7 +353,7 @@ impl WGPUDevice {
                     }
                 }
                 &Op::Loop { dim, scope } => {
-                    dtypes.insert(i, DType::U32);
+                    dtypes.insert(i, IDX_T);
                     match scope {
                         Scope::Global => {
                             writeln!(source, "{indent}let r{i} = gidx[{loop_id}]; // 0..{dim}").unwrap();

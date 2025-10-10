@@ -251,6 +251,23 @@ impl Constant {
         }
     }
 
+    // Create new constant for indexing purposes
+    pub(crate) fn idx<T: Scalar>(idx: T) -> Self {
+        use core::mem::transmute_copy as t;
+        match T::dtype() {
+            DType::I32 => {
+                let idx: i32 = unsafe { t(&idx) };
+                Self::U32(idx as u32)
+            }
+            DType::U32 => Self::U32(unsafe { t(&idx) }),
+            DType::U64 => {
+                let idx: u64 = unsafe { t(&idx) };
+                Self::U32(idx as u32)
+            }
+            x => unreachable!("{x}"),
+        }
+    }
+
     pub(crate) fn from_le_bytes(bytes: &[u8], dtype: DType) -> Self {
         match dtype {
             DType::BF16 => Self::BF16([bytes[0], bytes[1]]),
