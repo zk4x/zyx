@@ -1135,7 +1135,7 @@ impl Kernel {
                         BOp::Pow => {}
                         BOp::Mod => todo!(),
                         BOp::Cmplt => todo!(),
-                        BOp::Cmpgt => todo!(),
+                        BOp::Cmpgt => {}
                         BOp::Maximum => todo!(),
                         BOp::Or => todo!(),
                         BOp::And => todo!(),

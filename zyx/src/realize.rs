@@ -494,6 +494,7 @@ impl Runtime {
                                     if outputs[&kid].len() > 1 {
                                         remove_first(x, kid, &mut outputs);
                                         duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
+                                        outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
                                     }
                                     self.add_store(
                                         y,
@@ -511,18 +512,21 @@ impl Runtime {
                                     let shape = self.graph.shape(y);
                                     (kidy, op_idy) =
                                         add_load(y, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&y]);
+                                    //println!("kidy={:?}", kidy);
                                     visited.insert(y, (kidy, op_idy));
                                     if outputs[&kidy].len() > 1 {
                                         remove_first(y, kidy, &mut outputs);
                                         duplicate_kernel(&mut kidy, &mut kernels, &mut loads, &mut stores);
+                                        outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
                                     }
+                                    //println!("kidy={:?}", kidy);
                                 }
 
-                                if !kid_stores && kidy_stores {
+                                /*if !kid_stores && kidy_stores {
                                     //println!("Swap x, y");
                                     (kid, kidy) = (kidy, kid);
                                     (op_id, op_idy) = (op_idy, op_id);
-                                }
+                                }*/
 
                                 let mut kernely = unsafe { kernels.remove_and_return(kidy) };
                                 let n = kernels[kid].ops.len();
@@ -553,6 +557,7 @@ impl Runtime {
                                     stores.insert(kid, kidy_stores);
                                 }
 
+                                //println!("kid={:?} kidy={:?}", kid, kidy);
                                 remove_first(x, kid, &mut outputs);
                                 remove_first(y, kidy, &mut outputs);
                                 let youtputs = outputs.remove(&kidy).unwrap();
@@ -710,17 +715,22 @@ impl Runtime {
         visited: &mut Map<TensorId, (KernelId, OpId)>,
         outputs: &mut Map<KernelId, Vec<TensorId>>,
     ) -> Result<(), ZyxError> {
-        visited.remove(&x).unwrap();
-        virt_realized_nodes.insert(x);
-        kernels[kid].ops.push(Op::StoreView { src: op_id, dtype });
-        /*if let Some(stores) = stores.get(&kid) {
-            println!("\nStoring, stores: {stores:?}");
-        }*/
-        stores.entry(kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
-        //println!("Storing, stores: {:?}", stores[&kid]);
+        if virt_realized_nodes.contains(&x) {
+            visited.remove(&x).unwrap();
+            outputs.get_mut(&kid).unwrap().retain(|&elem| elem != x);
+        } else {
+            visited.remove(&x).unwrap();
+            virt_realized_nodes.insert(x);
+            kernels[kid].ops.push(Op::StoreView { src: op_id, dtype });
+            /*if let Some(stores) = stores.get(&kid) {
+                println!("\nStoring, stores: {stores:?}");
+            }*/
+            stores.entry(kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
+            //println!("Storing, stores: {:?}", stores[&kid]);
 
-        // remove all references to x
-        outputs.get_mut(&kid).unwrap().retain(|&elem| elem != x);
+            // remove all references to x
+            outputs.get_mut(&kid).unwrap().retain(|&elem| elem != x);
+        }
 
         //kernels[kid].debug();
         if outputs[&kid].is_empty()
@@ -1296,6 +1306,7 @@ fn duplicate_kernel(
 }
 
 fn remove_first(x: TensorId, kid: KernelId, outputs: &mut Map<KernelId, Vec<TensorId>>) {
+    //println!("removing tensor {x} from kernel {kid:?}");
     let outputs = outputs.get_mut(&kid).unwrap();
     outputs.iter().position(|elem| *elem == x).map(|i| outputs.remove(i));
 }

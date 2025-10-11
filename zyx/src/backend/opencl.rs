@@ -802,7 +802,9 @@ impl OpenCLDevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match uop {
-                        UOp::Not => todo!(),
+                        UOp::Not => {
+                            writeln!(source, "{indent}r{reg} = !{x};").unwrap();
+                        }
                         UOp::ReLU => {
                             writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl()).unwrap();
                         }
