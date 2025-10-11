@@ -6,6 +6,7 @@
 // TODO properly deallocate events
 
 use std::{
+    collections::HashSet,
     ffi::{c_char, c_int, c_uint, c_void},
     fmt::Write,
     hash::BuildHasherDefault,
@@ -526,8 +527,8 @@ impl CUDADevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
-        //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
+        //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
 
         let mut module = ptr::null_mut();
         if let Err(err) = unsafe {
@@ -1144,6 +1145,11 @@ impl CUDADevice {
         let mut loop_id = 0;
         let mut source = String::with_capacity(1000);
 
+        let mut loop_dims = Vec::new();
+
+        let mut preds = Vec::new();
+        let mut accs: HashSet<OpId> = HashSet::new();
+
         for (i, op) in kernel.ops.iter().enumerate() {
             //println!("{i} -> {op:?}");
             match op {
@@ -1157,39 +1163,86 @@ impl CUDADevice {
                     }
                     Scope::Local => todo!(),
                     Scope::Register => {
-                        writeln!(source, "{indent}.reg .f64 %p{i}_[0-{len}];");
+                        writeln!(
+                            source,
+                            "{indent}.local .align {} .{} %p{i}[{len}];",
+                            dtype.byte_size(),
+                            dtype.ptx()
+                        );
+                        accs.insert(i);
                     }
                 },
                 &Op::Load { src, index } => {
                     let dtype = dtypes[&src];
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
-                    writeln!(
-                        source,
-                        "{indent}shl.b64 %offset, %offset, {};",
-                        dtype.byte_size().ilog2()
-                    );
-                    writeln!(source, "{indent}add.u64 %address, %p{src}, %offset;");
-                    writeln!(source, "{indent}ld.global.{} %r{reg}, [%address];", dtype.ptx());
+                    if accs.contains(&index) {
+                        writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
+                        writeln!(
+                            source,
+                            "{indent}shl.b64 %offset, %offset, {};",
+                            dtype.byte_size().ilog2()
+                        );
+                        writeln!(source, "{indent}add.u64 %address, %p{src}, %offset;");
+                        writeln!(source, "{indent}ld.local.{} %r{reg}, [%address];", dtype.ptx());
+                    } else {
+                        writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
+                        writeln!(
+                            source,
+                            "{indent}shl.b64 %offset, %offset, {};",
+                            dtype.byte_size().ilog2()
+                        );
+                        writeln!(source, "{indent}add.u64 %address, %p{src}, %offset;");
+                        writeln!(source, "{indent}ld.global.{} %r{reg}, [%address];", dtype.ptx());
+                    }
                 }
                 &Op::Store { dst, x: src, index } => {
                     let dtype = dtypes[&src];
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
                     let src = get_var(src, &constants, &indices, &reg_map, &mut registers);
-                    writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
-                    writeln!(
-                        source,
-                        "{indent}shl.b64 %offset, %offset, {};",
-                        dtype.byte_size().ilog2()
-                    );
-                    writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;");
-                    writeln!(source, "{indent}st.global.{} [%address], {src};", dtype.ptx());
+                    if accs.contains(&index) {
+                        writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
+                        writeln!(
+                            source,
+                            "{indent}shl.b64 %offset, %offset, {};",
+                            dtype.byte_size().ilog2()
+                        );
+                        writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;");
+                        writeln!(source, "{indent}st.local.{} [%address], {src};", dtype.ptx());
+                    } else {
+                        writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
+                        writeln!(
+                            source,
+                            "{indent}shl.b64 %offset, %offset, {};",
+                            dtype.byte_size().ilog2()
+                        );
+                        writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;");
+                        writeln!(source, "{indent}st.global.{} [%address], {src};", dtype.ptx());
+                    }
                 }
                 &Op::Cast { x, dtype } => {
+                    let xdtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    writeln!(source, "{indent}r{reg} = ({}){x};", dtype.cu(),).unwrap();
+                    match (dtype, xdtype) {
+                        (DType::Bool, _) => {
+                            if dtype.is_float() {
+                                writeln!(source, "{indent}setp.ne.{} %r{reg}, {x}, 0.0;", xdtype.ptx()).unwrap();
+                            } else {
+                                writeln!(source, "{indent}setp.ne.{} %r{reg}, {x}, 0;", xdtype.ptx()).unwrap();
+                            }
+                        }
+                        (_, DType::Bool) => {
+                            if dtype.is_float() {
+                                writeln!(source, "{indent}selp.{} %r{reg}, 1.0, 0.0, {x};", dtype.ptx()).unwrap();
+                            } else {
+                                writeln!(source, "{indent}selp.{} %r{reg}, 1, 0, {x};", dtype.ptx()).unwrap();
+                            }
+                        }
+                        (_, _) => {
+                            writeln!(source, "{indent}cvt.rn.{}.{} %r{reg}, {x};", dtype.ptx(), xdtype.ptx()).unwrap();
+                        }
+                    }
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
@@ -1235,7 +1288,9 @@ impl CUDADevice {
                         BOp::Mul => match dtype {
                             DType::BF16 => todo!(),
                             DType::F16 => todo!(),
-                            DType::F32 => todo!(),
+                            DType::F32 => {
+                                writeln!(source, "{indent}mul.f32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
                             DType::F64 => todo!(),
                             DType::U8 => todo!(),
                             DType::U16 => todo!(),
@@ -1280,7 +1335,49 @@ impl CUDADevice {
                             DType::I8 => todo!(),
                             DType::I16 => todo!(),
                             DType::I32 => {
-                                writeln!(source, "{indent}add.i32 %r{reg}, {xr}, {yr};").unwrap();
+                                writeln!(source, "{indent}add.s32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
+                            DType::I64 => todo!(),
+                            DType::Bool => todo!(),
+                        },
+                        BOp::Sub => match dtype {
+                            DType::BF16 => todo!(),
+                            DType::F16 => todo!(),
+                            DType::F32 => {
+                                writeln!(source, "{indent}sub.f32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
+                            DType::F64 => todo!(),
+                            DType::U8 => todo!(),
+                            DType::U16 => todo!(),
+                            DType::U32 => {
+                                writeln!(source, "{indent}sub.u32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
+                            DType::U64 => todo!(),
+                            DType::I8 => todo!(),
+                            DType::I16 => todo!(),
+                            DType::I32 => {
+                                writeln!(source, "{indent}sub.s32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
+                            DType::I64 => todo!(),
+                            DType::Bool => todo!(),
+                        },
+                        BOp::Div => match dtype {
+                            DType::BF16 => todo!(),
+                            DType::F16 => todo!(),
+                            DType::F32 => {
+                                writeln!(source, "{indent}div.approx.f32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
+                            DType::F64 => todo!(),
+                            DType::U8 => todo!(),
+                            DType::U16 => todo!(),
+                            DType::U32 => {
+                                writeln!(source, "{indent}div.lo.u32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
+                            DType::U64 => todo!(),
+                            DType::I8 => todo!(),
+                            DType::I16 => todo!(),
+                            DType::I32 => {
+                                writeln!(source, "{indent}div.s32 %r{reg}, {xr}, {yr};").unwrap();
                             }
                             DType::I64 => todo!(),
                             DType::Bool => todo!(),
@@ -1288,10 +1385,20 @@ impl CUDADevice {
                         BOp::NotEq => {
                             writeln!(source, "{indent}setp.ne.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
                         }
+                        BOp::Cmplt => {
+                            writeln!(source, "{indent}setp.lt.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
+                        }
+                        BOp::Cmpgt => {
+                            writeln!(source, "{indent}setp.gt.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
+                        }
+                        BOp::Maximum => {
+                            writeln!(source, "{indent}max.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
+                        }
                         op => todo!("{op:?}"),
                     }
                 }
                 &Op::Loop { dim, scope } => {
+                    loop_dims.push(dim);
                     indices.insert(i, loop_id);
                     match scope {
                         Scope::Global => {
@@ -1322,30 +1429,46 @@ impl CUDADevice {
                             .unwrap();
                         }
                         Scope::Register => {
-                            writeln!(
-                                source,
-                                "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
-                            )
-                            .unwrap();
+                            preds.push(format!("{indent}.reg .pred %pre{loop_id};"));
+                            //writeln!(source, "{indent}.reg .pred %pre{loop_id};").unwrap();
+                            writeln!(source, "{indent}mov.u32 %idx{loop_id}, 0;").unwrap();
+                            writeln!(source, "{indent}LOOP_{loop_id}:").unwrap();
+
                             indent += "  ";
                         }
                     }
                     loop_id += 1;
                 }
                 Op::EndLoop => {
-                    indent.pop();
-                    indent.pop();
-                    writeln!(source, "{indent}}}").unwrap();
                     loop_id -= 1;
+                    let dim = loop_dims.pop().unwrap();
+                    writeln!(source, "{indent}add.u32 %idx{loop_id}, %idx{loop_id}, 1;").unwrap();
+                    writeln!(
+                        source,
+                        "{indent}setp.lt.u32 %pre{loop_id}, %idx{loop_id}, {};",
+                        Constant::idx(dim as u64).cu()
+                    )
+                    .unwrap();
+                    indent.pop();
+                    indent.pop();
+                    writeln!(source, "{indent}@%pre{loop_id} bra LOOP_{loop_id};").unwrap();
                 }
             }
         }
 
         while loop_id as usize > lws.len() + gws.len() {
-            indent.pop();
-            indent.pop();
             loop_id -= 1;
-            writeln!(source, "{indent}}}").unwrap();
+            let dim = loop_dims.pop().unwrap();
+            writeln!(source, "{indent}add.u32 %idx{loop_id}, %idx{loop_id}, 1;").unwrap();
+            writeln!(
+                source,
+                "{indent}setp.lt.u32 %pre{loop_id}, %idx{loop_id}, {};",
+                Constant::idx(dim as u64).cu()
+            )
+            .unwrap();
+            indent.pop();
+            indent.pop();
+            writeln!(source, "{indent}@%pre{loop_id} bra LOOP_{loop_id};").unwrap();
         }
 
         let mut max_loop_id = 0;
@@ -1356,6 +1479,10 @@ impl CUDADevice {
         }
 
         let mut reg_str = format!("{indent}.reg .u64 %offset;\n{indent}.reg .s64 %address;\n");
+
+        for pred in preds {
+            writeln!(reg_str, "{pred}").unwrap();
+        }
 
         for (i, op) in kernel.ops.iter().enumerate() {
             if let Op::Define { dtype, scope, ro, len } = op
@@ -1637,16 +1764,26 @@ impl DType {
 
 impl Constant {
     fn cu(&self) -> String {
+        fn format_precise(val: impl std::fmt::Display, decimals: usize) -> String {
+            // Use 9 decimal digits, which is enough for full f32 precision
+            let s = format!("{:.*}", decimals, val);
+            let s = s.trim_end_matches('0').trim_end_matches('.');
+            if s.contains(".") {
+                s.to_string()
+            } else {
+                format!("{s}.0")
+            }
+        }
         match self {
             &Self::BF16(x) => format!("{}f", half::bf16::from_le_bytes(x)),
-            &Self::F16(x) => format!("__float2half({:.6}f)", half::f16::from_le_bytes(x)),
-            &Self::F32(x) => format!("{:.16}f", f32::from_le_bytes(x)),
-            &Self::F64(x) => format!("{:.16}", f64::from_le_bytes(x)),
+            &Self::F16(x) => format!("__float2half({:.6})", half::f16::from_le_bytes(x)),
+            &Self::F32(x) => format!("{}", format_precise(f32::from_le_bytes(x), 9)),
+            &Self::F64(x) => format!("{}", format_precise(f64::from_le_bytes(x), 18)),
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),
             Self::U16(x) => format!("{x}"),
-            Self::U32(x) => format!("{x}"),
+            Self::U32(x) => format!("{x}U"),
             &Self::U64(x) => format!("{}", u64::from_le_bytes(x)),
             Self::I32(x) => format!("{x}"),
             &Self::I64(x) => format!("{}", i64::from_le_bytes(x)),
