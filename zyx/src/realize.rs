@@ -98,6 +98,21 @@ impl<'a> KernelManager<'a> {
         self.virt_realized_nodes.contains(&nid)
     }
 
+    fn duplicate_kernel(&mut self, kid: &mut KernelId, x: TensorId) {
+        remove_first(x, *kid, &mut self.outputs);
+        //println!("Duplicating");
+        let kernel = self.kernels[*kid].clone();
+        //kernel.n_outputs -= 1;
+        let nkid = self.kernels.push(kernel);
+        if let Some(loaded_tensors) = self.loads.get(kid) {
+            self.loads.insert(nkid, loaded_tensors.clone());
+        }
+        if let Some(stored_tensors) = self.stores.get(kid) {
+            self.stores.insert(nkid, stored_tensors.clone());
+        }
+        *kid = nkid;
+    }
+
     fn create_load_kernel(&mut self, nid: TensorId) -> (KernelId, OpId) {
         //println!("ADDING LOAD for {x} x {}", rc);
         let shape = self.graph.shape(nid);
@@ -129,12 +144,10 @@ impl<'a> KernelManager<'a> {
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
                 if self.outputs[&kid].len() > 1 {
-                    remove_first(x, kid, &mut self.outputs);
-                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                    self.duplicate_kernel(&mut kid, x);
                 }
             } else {
-                remove_first(x, kid, &mut self.outputs);
-                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                self.duplicate_kernel(&mut kid, x);
             }
         }
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
@@ -154,12 +167,10 @@ impl<'a> KernelManager<'a> {
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
                 if self.outputs[&kid].len() > 1 {
-                    remove_first(x, kid, &mut self.outputs);
-                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                    self.duplicate_kernel(&mut kid, x);
                 }
             } else {
-                remove_first(x, kid, &mut self.outputs);
-                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                self.duplicate_kernel(&mut kid, x);
             }
         }
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
@@ -189,12 +200,10 @@ impl<'a> KernelManager<'a> {
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
                 if self.outputs[&kid].len() > 1 {
-                    remove_first(x, kid, &mut self.outputs);
-                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                    self.duplicate_kernel(&mut kid, x);
                 }
             } else {
-                remove_first(x, kid, &mut self.outputs);
-                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                self.duplicate_kernel(&mut kid, x);
             }
         }
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
@@ -216,12 +225,10 @@ impl<'a> KernelManager<'a> {
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
                 if self.outputs[&kid].len() > 1 {
-                    remove_first(x, kid, &mut self.outputs);
-                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                    self.duplicate_kernel(&mut kid, x);
                 }
             } else {
-                remove_first(x, kid, &mut self.outputs);
-                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                self.duplicate_kernel(&mut kid, x);
             }
         }
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
@@ -247,12 +254,10 @@ impl<'a> KernelManager<'a> {
                 (kid, op_id) = self.create_load_kernel(x);
                 self.visited.insert(x, (kid, op_id));
                 if self.outputs[&kid].len() > 1 {
-                    remove_first(x, kid, &mut self.outputs);
-                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                    self.duplicate_kernel(&mut kid, x);
                 }
             } else {
-                remove_first(x, kid, &mut self.outputs);
-                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                self.duplicate_kernel(&mut kid, x);
             }
         }
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
@@ -363,16 +368,14 @@ impl<'a> KernelManager<'a> {
                     self.add_store(x)?;
                     (kid, op_id) = self.create_load_kernel(x);
                     if self.outputs[&kid].len() > 1 {
-                        remove_first(x, kid, &mut self.outputs);
-                        duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                        self.duplicate_kernel(&mut kid, x);
                         self.outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
                     }
                     self.add_store(y)?;
                     (kidy, op_idy) = self.create_load_kernel(y);
                     //println!("kidy={:?}", kidy);
                     if self.outputs[&kidy].len() > 1 {
-                        remove_first(y, kidy, &mut self.outputs);
-                        duplicate_kernel(&mut kidy, &mut self.kernels, &mut self.loads, &mut self.stores);
+                        self.duplicate_kernel(&mut kidy, y);
                         self.outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
                     }
                     //println!("kidy={:?}", kidy);
@@ -381,8 +384,7 @@ impl<'a> KernelManager<'a> {
                     self.add_store(x)?;
                     (kid, op_id) = self.create_load_kernel(x);
                     if self.outputs[&kid].len() > 1 {
-                        remove_first(x, kid, &mut self.outputs);
-                        duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                        self.duplicate_kernel(&mut kid, x);
                         self.outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
                     }
                 }
@@ -391,8 +393,7 @@ impl<'a> KernelManager<'a> {
                     (kidy, op_idy) = self.create_load_kernel(y);
                     //println!("kidy={:?}", kidy);
                     if self.outputs[&kidy].len() > 1 {
-                        remove_first(y, kidy, &mut self.outputs);
-                        duplicate_kernel(&mut kidy, &mut self.kernels, &mut self.loads, &mut self.stores);
+                        self.duplicate_kernel(&mut kidy, y);
                         self.outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
                     }
                     //println!("kidy={:?}", kidy);
