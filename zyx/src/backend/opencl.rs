@@ -615,19 +615,20 @@ impl OpenCLDevice {
         fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<(DType, u32)>,
+            registers: &mut Vec<(DType, u32, u8)>,
             dtype: DType,
             rc: u32,
+            current_loop_level: u8,
         ) -> usize {
-            for (i, (dt, nrc)) in registers.iter_mut().enumerate() {
-                if *nrc == 0 && *dt == dtype {
+            for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
+                if *nrc == 0 && *dt == dtype && *loop_level >= current_loop_level {
                     reg_map.insert(op_id, i);
                     registers[i].1 = rc;
                     return i;
                 }
             }
             let i = registers.len();
-            registers.push((dtype, rc));
+            registers.push((dtype, rc, current_loop_level));
             reg_map.insert(op_id, i);
             i
         }
@@ -637,17 +638,14 @@ impl OpenCLDevice {
             constants: &Map<OpId, Constant>,
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
-            _registers: &mut [(DType, u32)],
+            registers: &mut [(DType, u32, u8)],
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
                 c.ocl()
             } else if let Some(id) = indices.get(&op_id) {
                 format!("idx{id}")
             } else if let Some(reg) = reg_map.get(&op_id) {
-                // TODO fix this with multi-level loops
-                // that is we cannot subtract reference count from variable defined
-                // in outer loop level
-                //registers[*reg].1 -= 1;
+                registers[*reg].1 -= 1;
                 format!("r{reg}")
             } else {
                 unreachable!()
@@ -743,7 +741,7 @@ impl OpenCLDevice {
         }
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
-        let mut registers: Vec<(DType, u32)> = Vec::new();
+        let mut registers: Vec<(DType, u32, u8)> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -774,7 +772,7 @@ impl OpenCLDevice {
                 &Op::Load { src, index } => {
                     let dtype = dtypes[&src];
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
                     writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
                     /*if src == 16 && index == 4 {
                         writeln!(source, "printf(\"r3=%d\\n\", r3);").unwrap();
@@ -794,13 +792,13 @@ impl OpenCLDevice {
                 }
                 &Op::Cast { x, dtype } => {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
                     writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl(),).unwrap();
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
                     match uop {
                         UOp::Not => {
                             writeln!(source, "{indent}r{reg} = !{x};").unwrap();
@@ -830,7 +828,7 @@ impl OpenCLDevice {
                     let dtype = dtypes[&i];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
+                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
                     match bop {
                         BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};").unwrap(),
                         BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),
@@ -900,11 +898,11 @@ impl OpenCLDevice {
 
         let mut reg_str = String::new();
         if registers.len() > 0 {
-            let (dt, _) = registers.remove(0);
+            let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
             write!(reg_str, "{indent}{} r0", dt.ocl()).unwrap();
             let mut i = 1;
-            for (dt, _) in registers {
+            for (dt, _, _) in registers {
                 if dt == prev_dt {
                     write!(reg_str, ", r{i}").unwrap();
                 } else {
