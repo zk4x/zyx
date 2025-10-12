@@ -1131,8 +1131,23 @@ impl Kernel {
                                 remaps.insert(op_id, y);
                             }
                         }
-                        BOp::Div => todo!(),
-                        BOp::Pow => {}
+                        BOp::Div => {
+                            if cx.is_zero() {
+                                remaps.insert(op_id, x);
+                            } else if cx.is_one() {
+                                self.ops[op_id] = Op::Unary { x: y, uop: UOp::Reciprocal };
+                            }
+                        }
+                        BOp::Pow => {
+                            if cx.is_zero() {
+                                remaps.insert(op_id, x);
+                            } else if cx.is_one() {
+                                remaps.insert(op_id, x);
+                            } //else if cx.is_two() && cx.dtype().is_shiftable() {
+                            //self.ops.insert(op_id, Op::Constant(cx.dtype().one())); // but we can't insert with remaps
+                            //self.ops[op_id] = Op::Binary { x, y, bop: BOp::BitShiftLeft };
+                            //}
+                        }
                         BOp::Mod => todo!(),
                         BOp::Cmplt => todo!(),
                         BOp::Cmpgt => {}

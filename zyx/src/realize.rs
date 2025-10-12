@@ -1119,11 +1119,11 @@ impl Runtime {
 
         // Get a list of all arg buffers. These must be specifically in order as they are mentioned in kernel ops
         let mut args = Vec::new();
-        for tid in loads {
-            args.push(self.pools[mpid].buffer_map[&tid]);
+        for tid in &loads {
+            args.push(self.pools[mpid].buffer_map[tid]);
         }
         for tid in &stores {
-            args.push(self.pools[mpid].buffer_map[&tid]);
+            args.push(self.pools[mpid].buffer_map[tid]);
         }
 
         /***** CACHE and OPTIMIZATION SEARCH *****/
@@ -1170,7 +1170,7 @@ impl Runtime {
 
         if self.debug.sched() {
             println!(
-                "Optimizing kernel stores {stores:?}, max iterations: {}",
+                "Optimizing kernel stores {stores:?}, loads {loads:?}, max iterations: {}",
                 optimizer.max_iters()
             );
             kernel.debug();

@@ -95,7 +95,7 @@ impl DType {
         }
     }
 
-    /*#[must_use]
+    #[must_use]
     pub(super) const fn is_shiftable(self) -> bool {
         match self {
             Self::BF16
@@ -109,7 +109,7 @@ impl DType {
             | Self::I64 => false,
             Self::U8 | Self::U16 | Self::U32 | Self::U64 => true,
         }
-    }*/
+    }
 
     // TODO remove this in favor of bit_size, since we need to support quantized dtypes
     /// Get the size of this dtype in bytes
