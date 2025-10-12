@@ -1146,6 +1146,9 @@ impl Runtime {
         if let Some(&kid) = self.cache.kernels.get(&kernel) {
             // If it has been compiled for the device
             if let Some(&program_id) = self.cache.programs.get(&(kid, dev_info_id)) {
+                if self.debug.kmd() {
+                    println!("Kernel launch from memory pool {} with args: {:?}", mpid, args);
+                }
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 self.pools[mpid].events.insert(output_buffers, event);
                 // TODO Deallocate loads that are not used by any other kernel
@@ -1184,6 +1187,9 @@ impl Runtime {
                 println!();
             }
             let program_id = device.compile(&kernel, self.debug.asm())?;
+            if self.debug.kmd() {
+                println!("Kernel launch from memory pool {} with args: {:?}", mpid, args);
+            }
             let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
             self.pools[mpid].events.insert(output_buffers, event);
             return Ok(());
@@ -1209,6 +1215,9 @@ impl Runtime {
 
             let program_id = device.compile(&okernel, self.debug.asm())?;
             let nanos = std::time::Instant::now();
+            if self.debug.kmd() {
+                println!("Kernel launch from memory pool {} with args: {:?}", mpid, args);
+            }
             let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
             pool.pool.sync_events(vec![event])?;
             let nanos = nanos.elapsed().as_nanos();

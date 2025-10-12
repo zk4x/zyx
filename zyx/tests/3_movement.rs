@@ -68,18 +68,19 @@ fn rope_1() -> Result<(), ZyxError> {
     drop(x);
     //drop(z);
     drop(z2);
-    //Tensor::plot_graph([], "graph")?;
+    Tensor::plot_graph([], "graph")?;
+    Tensor::realize([&z, &z3])?;
+    assert_eq!(z, [[8, 18], [36, 14]]);
     assert_eq!(z3, [[8, 18, 4, 6], [36, 14, 6, 2]]);
     Ok(())
 }
 
-// TODO make sure this test works
-/*#[test]
+#[test]
 fn rope_2() -> Result<(), ZyxError> {
     let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8]).reshape([1, 2, 4])?;
     let base = 10000f32;
 
-    let [batch_size, seq_len, embed_dim] = x.dims()?;
+    let [_batch_size, seq_len, embed_dim] = x.dims()?;
 
     assert_eq!(embed_dim % 2, 0, "Embedding dimension should be even for RoPE.");
 
@@ -101,10 +102,6 @@ fn rope_2() -> Result<(), ZyxError> {
     //println!("{sin_enc}\n{cos_enc}");
     //panic!();
 
-    // Now, interleave sin and cos values for the full embedding (pairing them)
-    // sin_enc -> even dimensions, cos_enc -> odd dimensions
-    let sin_enc = sin_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
-    let cos_enc = cos_enc.unsqueeze(0)?.expand_axis(0, batch_size)?; // Expand for batch size
     //drop(pos_enc);
     //Tensor::realize([&sin_enc, &cos_enc])?;
     //println!("{sin_enc}\n{cos_enc}");
@@ -118,4 +115,4 @@ fn rope_2() -> Result<(), ZyxError> {
     assert_eq!(x, [[[1.0, 2.0, 3.0, 4.0], [-2.347314, 7.449169, 10.087157, 3.353991]]]);
 
     Ok(())
-}*/
+}

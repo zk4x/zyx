@@ -96,23 +96,39 @@ pub struct DebugMask(u32);
 impl DebugMask {
     /// Is device debugging enabled?
     #[must_use]
-    pub const fn dev(&self) -> bool { self.0 % 2 == 1 }
+    pub const fn dev(&self) -> bool {
+        self.0 % 2 == 1
+    }
 
     /// Is performance debugging enabled?
     #[must_use]
-    pub const fn perf(&self) -> bool { (self.0 >> 1) % 2 == 1 }
+    pub const fn perf(&self) -> bool {
+        (self.0 >> 1) % 2 == 1
+    }
 
     /// Is scheduler debugging enabled?
     #[must_use]
-    pub const fn sched(&self) -> bool { (self.0 >> 2) % 2 == 1 }
+    pub const fn sched(&self) -> bool {
+        (self.0 >> 2) % 2 == 1
+    }
 
     /// Is debugging of IR enabled?
     #[must_use]
-    pub const fn ir(&self) -> bool { (self.0 >> 3) % 2 == 1 }
+    pub const fn ir(&self) -> bool {
+        (self.0 >> 3) % 2 == 1
+    }
 
     /// Is assembly debugging enabled?
     #[must_use]
-    pub const fn asm(&self) -> bool { (self.0 >> 4) % 2 == 1 }
+    pub const fn asm(&self) -> bool {
+        (self.0 >> 4) % 2 == 1
+    }
+
+    /// Is kernel launch and memory movement debugging enabled?
+    #[must_use]
+    pub const fn kmd(&self) -> bool {
+        (self.0 >> 5) % 2 == 1
+    }
 }
 
 /// Save tensors or modules
