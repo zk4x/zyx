@@ -140,13 +140,13 @@ impl Runtime {
             //println!("{to_eval:?}");
 
             for nid in order {
-                /*println!(
+                println!(
                     "{nid} x {} -> {:?}  {}  {:?}",
                     rcs[&nid],
                     self.graph[nid],
                     self.graph.dtype(nid),
                     self.graph.shape(nid)
-                );*/
+                );
                 let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
                     let dtype = self.graph.dtype(nid);
                     let shape = self.graph.shape(nid);
@@ -472,54 +472,109 @@ impl Runtime {
                                 // TODO later use this, but this requires global memory sync inside of the kernel
                                 // as it loads and stores from the same kernel
                                 //if kid_stores && kidy_stores {
-                                if kid_stores || kidy_stores {
-                                    let dtype = self.graph.dtype(x);
-                                    self.add_store(
-                                        x,
-                                        kid,
-                                        op_id,
-                                        dtype,
-                                        &mut realized_nodes,
-                                        &mut virt_realized_nodes,
-                                        &mut kernels,
-                                        &mut loads,
-                                        &mut stores,
-                                        &mut visited,
-                                        &mut outputs,
-                                    )?;
-                                    let shape = self.graph.shape(x);
-                                    (kid, op_id) =
-                                        add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
-                                    visited.insert(x, (kid, op_id));
-                                    if outputs[&kid].len() > 1 {
-                                        remove_first(x, kid, &mut outputs);
-                                        duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                        outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
+                                match (kid_stores, kidy_stores) {
+                                    (true, true) => {
+                                        let dtype = self.graph.dtype(x);
+                                        self.add_store(
+                                            x,
+                                            kid,
+                                            op_id,
+                                            dtype,
+                                            &mut realized_nodes,
+                                            &mut virt_realized_nodes,
+                                            &mut kernels,
+                                            &mut loads,
+                                            &mut stores,
+                                            &mut visited,
+                                            &mut outputs,
+                                        )?;
+                                        let shape = self.graph.shape(x);
+                                        (kid, op_id) =
+                                            add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
+                                        visited.insert(x, (kid, op_id));
+                                        if outputs[&kid].len() > 1 {
+                                            remove_first(x, kid, &mut outputs);
+                                            duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
+                                            outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
+                                        }
+                                        self.add_store(
+                                            y,
+                                            kidy,
+                                            op_id,
+                                            dtype,
+                                            &mut realized_nodes,
+                                            &mut virt_realized_nodes,
+                                            &mut kernels,
+                                            &mut loads,
+                                            &mut stores,
+                                            &mut visited,
+                                            &mut outputs,
+                                        )?;
+                                        let shape = self.graph.shape(y);
+                                        (kidy, op_idy) =
+                                            add_load(y, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&y]);
+                                        //println!("kidy={:?}", kidy);
+                                        visited.insert(y, (kidy, op_idy));
+                                        if outputs[&kidy].len() > 1 {
+                                            remove_first(y, kidy, &mut outputs);
+                                            duplicate_kernel(&mut kidy, &mut kernels, &mut loads, &mut stores);
+                                            outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
+                                        }
+                                        //println!("kidy={:?}", kidy);
                                     }
-                                    self.add_store(
-                                        y,
-                                        kidy,
-                                        op_id,
-                                        dtype,
-                                        &mut realized_nodes,
-                                        &mut virt_realized_nodes,
-                                        &mut kernels,
-                                        &mut loads,
-                                        &mut stores,
-                                        &mut visited,
-                                        &mut outputs,
-                                    )?;
-                                    let shape = self.graph.shape(y);
-                                    (kidy, op_idy) =
-                                        add_load(y, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&y]);
-                                    //println!("kidy={:?}", kidy);
-                                    visited.insert(y, (kidy, op_idy));
-                                    if outputs[&kidy].len() > 1 {
-                                        remove_first(y, kidy, &mut outputs);
-                                        duplicate_kernel(&mut kidy, &mut kernels, &mut loads, &mut stores);
-                                        outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
+                                    (true, false) => {
+                                        let dtype = self.graph.dtype(x);
+                                        self.add_store(
+                                            x,
+                                            kid,
+                                            op_id,
+                                            dtype,
+                                            &mut realized_nodes,
+                                            &mut virt_realized_nodes,
+                                            &mut kernels,
+                                            &mut loads,
+                                            &mut stores,
+                                            &mut visited,
+                                            &mut outputs,
+                                        )?;
+                                        let shape = self.graph.shape(x);
+                                        (kid, op_id) =
+                                            add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
+                                        visited.insert(x, (kid, op_id));
+                                        if outputs[&kid].len() > 1 {
+                                            remove_first(x, kid, &mut outputs);
+                                            duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
+                                            outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
+                                        }
                                     }
-                                    //println!("kidy={:?}", kidy);
+                                    (false, true) => {
+                                        let dtype = self.graph.dtype(x);
+                                        self.add_store(
+                                            y,
+                                            kidy,
+                                            op_id,
+                                            dtype,
+                                            &mut realized_nodes,
+                                            &mut virt_realized_nodes,
+                                            &mut kernels,
+                                            &mut loads,
+                                            &mut stores,
+                                            &mut visited,
+                                            &mut outputs,
+                                        )?;
+                                        let shape = self.graph.shape(y);
+                                        (kidy, op_idy) =
+                                            add_load(y, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&y]);
+                                        //println!("kidy={:?}", kidy);
+                                        visited.insert(y, (kidy, op_idy));
+                                        if outputs[&kidy].len() > 1 {
+                                            remove_first(y, kidy, &mut outputs);
+                                            duplicate_kernel(&mut kidy, &mut kernels, &mut loads, &mut stores);
+                                            outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
+                                        }
+                                        //println!("kidy={:?}", kidy);
+                                    }
+                                    (false, false) => {}
                                 }
 
                                 /*if !kid_stores && kidy_stores {
@@ -1067,7 +1122,7 @@ impl Runtime {
         for tid in loads {
             args.push(self.pools[mpid].buffer_map[&tid]);
         }
-        for tid in stores {
+        for tid in &stores {
             args.push(self.pools[mpid].buffer_map[&tid]);
         }
 
@@ -1111,7 +1166,10 @@ impl Runtime {
         }
 
         if self.debug.sched() {
-            println!("Optimizing kernel, max iterations: {}", optimizer.max_iters());
+            println!(
+                "Optimizing kernel stores {stores:?}, max iterations: {}",
+                optimizer.max_iters()
+            );
             kernel.debug();
         }
 
