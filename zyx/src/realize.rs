@@ -3,20 +3,21 @@
 use nanoserde::SerBin;
 
 use crate::{
-    DType, Map, Set, ZyxError,
-    backend::ProgramId,
+    DType, DebugMask, Map, Set, ZyxError,
+    backend::{Device, ProgramId, SearchConfig},
+    dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::Node,
-    kernel::{Kernel, Op, OpId, get_perf},
+    graph::{BOp, Graph, Node, ROp, UOp},
+    kernel::{Cache, Kernel, Op, OpId, get_perf},
     optimizer::Optimizer,
     prog_bar::ProgressBar,
-    runtime::Runtime,
+    runtime::{Pool, Runtime},
     shape::Dim,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
 };
-use std::{collections::BTreeSet, hash::BuildHasherDefault};
+use std::{collections::BTreeSet, hash::BuildHasherDefault, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KernelId(u32);
@@ -41,761 +42,459 @@ impl From<KernelId> for usize {
     }
 }
 
-impl Runtime {
-    // 1. gets a set of tensors which need to be processed and in which order
-    // 2. generates kernels from them
-    // 3. assigns those kernels to devices, compiles and launches them
-    #[allow(clippy::cognitive_complexity)]
-    pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
-        let (to_eval, mut realized_nodes, order, rcs, new_leafs, mut to_delete) = {
-            let begin = std::time::Instant::now();
-            let realized_nodes: Set<TensorId> =
-                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
-            let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
-            if to_eval.is_empty() {
-                return Ok(());
-            }
-            if self.devices.is_empty() {
-                self.initialize_devices()?;
-            }
+struct KernelManager<'a> {
+    // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
+    virt_realized_nodes: Set<TensorId>,
+    realized_nodes: Set<TensorId>,
+    kernels: Slab<KernelId, Kernel>,
+    visited: Map<TensorId, (KernelId, OpId)>,
+    outputs: Map<KernelId, Vec<TensorId>>,
+    loads: Map<KernelId, Vec<TensorId>>,
+    stores: Map<KernelId, Vec<TensorId>>,
+    rcs: Map<TensorId, u32>,
+    graph: &'a Graph,
+    pools: &'a mut [Pool],
+    devices: &'a mut [Device],
+    cache: &'a mut Cache,
+    search_config: &'a SearchConfig,
+    config_dir: &'a Option<PathBuf>,
+    debug: &'a DebugMask,
+}
 
-            let (order, to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
-                self.graph_order_with_gradient(&realized_nodes, &mut to_eval)
-            } else {
-                self.graph_order(&realized_nodes, &mut to_eval)
-            };
-            let elapsed = begin.elapsed();
-            if self.debug.perf() {
-                println!(
-                    "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape={}",
-                    elapsed.as_micros(),
-                    order.len(),
-                    usize::from(self.graph.nodes.len()),
-                    self.graph.gradient_tape.is_some(),
-                );
-            }
-            (to_eval, realized_nodes, order, rcs, new_leafs, to_delete)
-        };
-
-        {
-            let mut rcs = if rcs.is_empty() {
-                let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-                // to_eval are not in rcs
-                for &nid in &order {
-                    if !realized_nodes.contains(&nid) {
-                        for nid in self.graph[nid].parameters() {
-                            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                        }
-                    }
-                }
-                rcs
-            } else {
-                rcs
-            };
-
-            #[cfg(debug_assertions)]
-            {
-                let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
-                // to_eval are not in rcs
-                for &nid in &order {
-                    if !realized_nodes.contains(&nid) {
-                        for nid in self.graph[nid].parameters() {
-                            rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                        }
-                    }
-                }
-                if rcs2 != rcs {
-                    println!("Realized nodes: {realized_nodes:?}");
-                    for &nid in &order {
-                        println!(
-                            "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}",
-                            self.graph[nid],
-                            self.graph.shape(nid),
-                            rcs.get(&nid).copied().unwrap_or(0),
-                            rcs2.get(&nid).copied().unwrap_or(0),
-                        );
-                    }
-                    panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
-                }
-            }
-
-            for &nid in &to_eval {
-                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-
-            let begin = std::time::Instant::now();
-
+impl<'a> KernelManager<'a> {
+    fn new(
+        realized_nodes: Set<TensorId>,
+        rcs: Map<TensorId, u32>,
+        graph: &'a Graph,
+        pools: &'a mut [Pool],
+        devices: &'a mut [Device],
+        cache: &'a mut Cache,
+        search_config: &'a SearchConfig,
+        config_dir: &'a Option<PathBuf>,
+        debug: &'a DebugMask,
+    ) -> Self {
+        Self {
             // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
-            let mut virt_realized_nodes = realized_nodes.clone();
-
-            let mut kernels: Slab<KernelId, Kernel> = Slab::with_capacity(30);
-            let mut visited: Map<TensorId, (KernelId, OpId)> =
-                Map::with_capacity_and_hasher(order.len() + 2, BuildHasherDefault::new());
-            let mut outputs: Map<KernelId, Vec<TensorId>> = Map::with_hasher(BuildHasherDefault::new());
-            let mut loads: Map<KernelId, Vec<TensorId>> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-            let mut stores: Map<KernelId, Vec<TensorId>> =
-                Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-
-            //println!("{rcs:?}");
-            //println!("{to_eval:?}");
-
-            for nid in order {
-                println!(
-                    "{nid} x {} -> {:?}  {}  {:?}",
-                    rcs[&nid],
-                    self.graph[nid],
-                    self.graph.dtype(nid),
-                    self.graph.shape(nid)
-                );
-                let (kid, op_id) = if virt_realized_nodes.contains(&nid) {
-                    let dtype = self.graph.dtype(nid);
-                    let shape = self.graph.shape(nid);
-                    /*let view = View::contiguous(shape);
-                    let op = Op::LoadView { dtype, view };
-                    let kernel = Kernel { ops: vec![op], n_outputs: rcs[&nid] };
-                    let kid = kernels.push(kernel);
-                    loads.insert(kid, vec![nid]);
-                    (kid, 0)*/
-                    add_load(nid, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&nid])
-                } else {
-                    match self.graph[nid] {
-                        Node::Leaf { .. } => unreachable!(),
-                        Node::Const { value } => {
-                            let view = View::contiguous(&[1]);
-                            let op = Op::ConstView { value, view };
-                            let kernel = Kernel { ops: vec![op] };
-                            let kid = kernels.push(kernel);
-                            outputs.insert(kid, vec![nid; rcs[&nid] as usize]);
-                            (kid, 0)
-                        }
-                        Node::Expand { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
-                            // TODO instead of sotre add expand op that inserts loop in IR
-                            if outputs[&kid].len() > 1 {
-                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
-                                    let dtype = self.graph.dtype(x);
-                                    self.add_store(
-                                        x,
-                                        kid,
-                                        op_id,
-                                        dtype,
-                                        &mut realized_nodes,
-                                        &mut virt_realized_nodes,
-                                        &mut kernels,
-                                        &mut loads,
-                                        &mut stores,
-                                        &mut visited,
-                                        &mut outputs,
-                                    )?;
-                                    let shape = self.graph.shape(x);
-                                    (kid, op_id) =
-                                        add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
-                                    visited.insert(x, (kid, op_id));
-                                    if outputs[&kid].len() > 1 {
-                                        remove_first(x, kid, &mut outputs);
-                                        duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                    }
-                                } else {
-                                    remove_first(x, kid, &mut outputs);
-                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                }
-                            }
-                            outputs.insert(kid, vec![nid; rcs[&nid] as usize]);
-                            let shape = self.graph.shape(nid);
-                            kernels[kid].apply_movement(|view| view.expand(shape));
-                            *rcs.get_mut(&x).unwrap() -= 1;
-                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
-                            (kid, op_id)
-                        }
-                        Node::Permute { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
-                            // TODO instead of store add permute op that swaps indices in IR
-                            if outputs[&kid].len() > 1 {
-                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
-                                    let dtype = self.graph.dtype(x);
-                                    self.add_store(
-                                        x,
-                                        kid,
-                                        op_id,
-                                        dtype,
-                                        &mut realized_nodes,
-                                        &mut virt_realized_nodes,
-                                        &mut kernels,
-                                        &mut loads,
-                                        &mut stores,
-                                        &mut visited,
-                                        &mut outputs,
-                                    )?;
-                                    let shape = self.graph.shape(x);
-                                    (kid, op_id) =
-                                        add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
-                                    visited.insert(x, (kid, op_id));
-                                    if outputs[&kid].len() > 1 {
-                                        remove_first(x, kid, &mut outputs);
-                                        duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                    }
-                                } else {
-                                    remove_first(x, kid, &mut outputs);
-                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                }
-                            }
-                            outputs.insert(kid, vec![nid; rcs[&nid] as usize]);
-                            let axes = self.graph.axes(nid);
-                            kernels[kid].apply_movement(|view| view.permute(axes));
-                            *rcs.get_mut(&x).unwrap() -= 1;
-                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
-                            (kid, op_id)
-                        }
-                        Node::Reshape { x } => {
-                            #[cfg(debug_assertions)]
-                            if !visited.contains_key(&x) {
-                                panic!("Missing tensor {x} in visited.");
-                            }
-                            let (mut kid, mut op_id) = visited[&x];
-
-                            // TODO duplicate or store only if this is not mergeable.
-                            // Otherwise if it is like unsqueeze or splitting two dims
-                            // or fusing two dims, it can be represented by a custom
-                            // op that is unfoldable into indices, since it does not change
-                            // global work size.
-
-                            if outputs[&kid].len() > 1 {
-                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
-                                    let dtype = self.graph.dtype(x);
-                                    self.add_store(
-                                        x,
-                                        kid,
-                                        op_id,
-                                        dtype,
-                                        &mut realized_nodes,
-                                        &mut virt_realized_nodes,
-                                        &mut kernels,
-                                        &mut loads,
-                                        &mut stores,
-                                        &mut visited,
-                                        &mut outputs,
-                                    )?;
-                                    let shape = self.graph.shape(x);
-                                    (kid, op_id) =
-                                        add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
-                                    visited.insert(x, (kid, op_id));
-                                    if outputs[&kid].len() > 1 {
-                                        remove_first(x, kid, &mut outputs);
-                                        duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                    }
-                                } else {
-                                    remove_first(x, kid, &mut outputs);
-                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                }
-                            }
-                            outputs.insert(kid, vec![nid; rcs[&nid] as usize]);
-                            let n = self.graph.shape(x).len();
-                            let shape = self.graph.shape(nid);
-                            kernels[kid].apply_movement(|view| view.reshape(0..n, shape));
-                            *rcs.get_mut(&x).unwrap() -= 1;
-                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
-                            (kid, op_id)
-                        }
-                        Node::Pad { x } => {
-                            let (mut kid, mut op_id) = visited[&x];
-
-                            // TODO instead of duplication add pad op that adds if statement into ir (e.g. if idx < padding)
-                            if outputs[&kid].len() > 1 {
-                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
-                                    let dtype = self.graph.dtype(x);
-                                    self.add_store(
-                                        x,
-                                        kid,
-                                        op_id,
-                                        dtype,
-                                        &mut realized_nodes,
-                                        &mut virt_realized_nodes,
-                                        &mut kernels,
-                                        &mut loads,
-                                        &mut stores,
-                                        &mut visited,
-                                        &mut outputs,
-                                    )?;
-                                    let shape = self.graph.shape(x);
-                                    (kid, op_id) =
-                                        add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
-                                    visited.insert(x, (kid, op_id));
-                                    if outputs[&kid].len() > 1 {
-                                        remove_first(x, kid, &mut outputs);
-                                        duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                    }
-                                } else {
-                                    remove_first(x, kid, &mut outputs);
-                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                }
-                            }
-                            outputs.insert(kid, vec![nid; rcs[&nid] as usize]);
-                            let padding = self.graph.padding(nid);
-                            let rank = self.graph.shape(nid).len();
-                            kernels[kid].apply_movement(|view| view.pad(rank, padding));
-                            *rcs.get_mut(&x).unwrap() -= 1;
-                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
-                            (kid, op_id)
-                        }
-                        Node::Reduce { x, rop } => {
-                            // Don't apply reduce if the kernel already contains reduce
-                            // and the resulting shape's dimension is less than 256
-                            let (mut kid, mut op_id) = visited[&x];
-
-                            // If the kernel has more than one output, or rc of x is more than one,
-                            // we have to either copy it (if it is small), or store x (if kid is big)
-                            if outputs[&kid].len() > 1 {
-                                if kernels[kid].is_reduce() || kernels[kid].contains_stores() {
-                                    let dtype = self.graph.dtype(x);
-                                    self.add_store(
-                                        x,
-                                        kid,
-                                        op_id,
-                                        dtype,
-                                        &mut realized_nodes,
-                                        &mut virt_realized_nodes,
-                                        &mut kernels,
-                                        &mut loads,
-                                        &mut stores,
-                                        &mut visited,
-                                        &mut outputs,
-                                    )?;
-                                    let shape = self.graph.shape(x);
-                                    (kid, op_id) =
-                                        add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
-                                    visited.insert(x, (kid, op_id));
-                                    if outputs[&kid].len() > 1 {
-                                        remove_first(x, kid, &mut outputs);
-                                        duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                    }
-                                } else {
-                                    remove_first(x, kid, &mut outputs);
-                                    duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                }
-                            }
-                            outputs.insert(kid, vec![nid; rcs[&nid] as usize]);
-
-                            /*for kernel in kernels.iter() {
-                                println!("{:?}, {}", kernel.0, kernel.1.n_outputs);
-                            }*/
-
-                            let axes = self.graph.axes(nid);
-                            #[cfg(debug_assertions)]
-                            {
-                                use crate::shape::Axis;
-                                let mut sorted_axes: Vec<Axis> = axes.into();
-                                sorted_axes.sort_unstable();
-                                debug_assert_eq!(axes, sorted_axes, "Reduce axes must be sorted.");
-                            }
-
-                            //kernels[kid].debug();
-                            //println!("{axes:?}");
-
-                            let shape = self.graph.shape(x);
-                            {
-                                // Permute before reduce so that reduce axes are last
-                                let n = shape.len();
-                                let mut permute_axes = Vec::with_capacity(n);
-                                let max_axis = *axes.last().unwrap();
-                                let mut ai = 0;
-                                for i in 0..=max_axis {
-                                    if axes[ai] == i {
-                                        ai += 1;
-                                    } else {
-                                        permute_axes.push(i);
-                                    }
-                                }
-                                permute_axes.extend(max_axis + 1..n);
-                                permute_axes.extend_from_slice(axes);
-                                kernels[kid].apply_movement(|v| v.permute(&permute_axes));
-                            }
-
-                            let dims = axes.iter().map(|&a| shape[a]).collect();
-                            if shape == dims {
-                                kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
-                            }
-                            let op = Op::Reduce { x: op_id, rop, dims };
-                            kernels[kid].ops.push(op);
-                            *rcs.get_mut(&x).unwrap() -= 1;
-                            debug_assert_eq!(self.graph.shape(nid), kernels[kid].shape());
-                            (kid, kernels[kid].ops.len() - 1)
-                        }
-                        Node::Cast { x, dtype } => {
-                            let (kid, op_id) = visited[&x];
-                            kernels[kid].ops.push(Op::Cast { x: op_id, dtype });
-                            remove_first(x, kid, &mut outputs);
-                            outputs.get_mut(&kid).unwrap().extend(vec![nid; rcs[&nid] as usize]);
-                            *rcs.get_mut(&x).unwrap() -= 1;
-                            (kid, kernels[kid].ops.len() - 1)
-                        }
-                        Node::Unary { x, uop } => {
-                            let (kid, op_id) = visited[&x];
-                            kernels[kid].ops.push(Op::Unary { x: op_id, uop });
-                            remove_first(x, kid, &mut outputs);
-                            outputs.get_mut(&kid).unwrap().extend(vec![nid; rcs[&nid] as usize]);
-                            *rcs.get_mut(&x).unwrap() -= 1;
-                            (kid, kernels[kid].ops.len() - 1)
-                        }
-                        Node::Binary { x, y, bop } => {
-                            let (mut kid, mut op_id) = visited[&x];
-                            let (mut kidy, mut op_idy) = visited[&y];
-
-                            /*if let Some(loads) = loads.get(&kid) {
-                                println!("loads={loads:?}");
-                            }
-                            if let Some(stores) = stores.get(&kid) {
-                                println!("stores={stores:?}");
-                            }
-                            println!("outputs={:?}", outputs[&kid]);
-                            kernels[kid].debug();
-                            println!();
-                            if let Some(loads) = loads.get(&kidy) {
-                                println!("loads={loads:?}");
-                            }
-                            if let Some(stores) = stores.get(&kidy) {
-                                println!("stores={stores:?}");
-                            }
-                            println!("outputs={:?}", outputs[&kidy]);
-                            kernels[kidy].debug();
-                            println!();*/
-
-                            let kid_stores = stores.get(&kid).map(|x| !x.is_empty()).unwrap_or(false);
-                            let kidy_stores = stores.get(&kidy).map(|x| !x.is_empty()).unwrap_or(false);
-
-                            if kid == kidy {
-                                remove_first(x, kid, &mut outputs);
-                                remove_first(y, kid, &mut outputs);
-                                outputs.get_mut(&kid).unwrap().extend(vec![nid; rcs[&nid] as usize]);
-                                let op = Op::Binary { x: op_id, y: op_idy, bop };
-                                kernels[kid].ops.push(op);
-                            } else {
-                                // TODO later use this, but this requires global memory sync inside of the kernel
-                                // as it loads and stores from the same kernel
-                                //if kid_stores && kidy_stores {
-                                match (kid_stores, kidy_stores) {
-                                    (true, true) => {
-                                        let dtype = self.graph.dtype(x);
-                                        self.add_store(
-                                            x,
-                                            kid,
-                                            op_id,
-                                            dtype,
-                                            &mut realized_nodes,
-                                            &mut virt_realized_nodes,
-                                            &mut kernels,
-                                            &mut loads,
-                                            &mut stores,
-                                            &mut visited,
-                                            &mut outputs,
-                                        )?;
-                                        let shape = self.graph.shape(x);
-                                        (kid, op_id) =
-                                            add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
-                                        visited.insert(x, (kid, op_id));
-                                        if outputs[&kid].len() > 1 {
-                                            remove_first(x, kid, &mut outputs);
-                                            duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                            outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
-                                        }
-                                        self.add_store(
-                                            y,
-                                            kidy,
-                                            op_id,
-                                            dtype,
-                                            &mut realized_nodes,
-                                            &mut virt_realized_nodes,
-                                            &mut kernels,
-                                            &mut loads,
-                                            &mut stores,
-                                            &mut visited,
-                                            &mut outputs,
-                                        )?;
-                                        let shape = self.graph.shape(y);
-                                        (kidy, op_idy) =
-                                            add_load(y, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&y]);
-                                        //println!("kidy={:?}", kidy);
-                                        visited.insert(y, (kidy, op_idy));
-                                        if outputs[&kidy].len() > 1 {
-                                            remove_first(y, kidy, &mut outputs);
-                                            duplicate_kernel(&mut kidy, &mut kernels, &mut loads, &mut stores);
-                                            outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
-                                        }
-                                        //println!("kidy={:?}", kidy);
-                                    }
-                                    (true, false) => {
-                                        let dtype = self.graph.dtype(x);
-                                        self.add_store(
-                                            x,
-                                            kid,
-                                            op_id,
-                                            dtype,
-                                            &mut realized_nodes,
-                                            &mut virt_realized_nodes,
-                                            &mut kernels,
-                                            &mut loads,
-                                            &mut stores,
-                                            &mut visited,
-                                            &mut outputs,
-                                        )?;
-                                        let shape = self.graph.shape(x);
-                                        (kid, op_id) =
-                                            add_load(x, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&x]);
-                                        visited.insert(x, (kid, op_id));
-                                        if outputs[&kid].len() > 1 {
-                                            remove_first(x, kid, &mut outputs);
-                                            duplicate_kernel(&mut kid, &mut kernels, &mut loads, &mut stores);
-                                            outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
-                                        }
-                                    }
-                                    (false, true) => {
-                                        let dtype = self.graph.dtype(x);
-                                        self.add_store(
-                                            y,
-                                            kidy,
-                                            op_id,
-                                            dtype,
-                                            &mut realized_nodes,
-                                            &mut virt_realized_nodes,
-                                            &mut kernels,
-                                            &mut loads,
-                                            &mut stores,
-                                            &mut visited,
-                                            &mut outputs,
-                                        )?;
-                                        let shape = self.graph.shape(y);
-                                        (kidy, op_idy) =
-                                            add_load(y, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&y]);
-                                        //println!("kidy={:?}", kidy);
-                                        visited.insert(y, (kidy, op_idy));
-                                        if outputs[&kidy].len() > 1 {
-                                            remove_first(y, kidy, &mut outputs);
-                                            duplicate_kernel(&mut kidy, &mut kernels, &mut loads, &mut stores);
-                                            outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
-                                        }
-                                        //println!("kidy={:?}", kidy);
-                                    }
-                                    (false, false) => {}
-                                }
-
-                                /*if !kid_stores && kidy_stores {
-                                    //println!("Swap x, y");
-                                    (kid, kidy) = (kidy, kid);
-                                    (op_id, op_idy) = (op_idy, op_id);
-                                }*/
-
-                                let mut kernely = unsafe { kernels.remove_and_return(kidy) };
-                                let n = kernels[kid].ops.len();
-                                for op in &mut kernely.ops {
-                                    match op {
-                                        Op::ConstView { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
-                                        Op::StoreView { src: x, .. }
-                                        | Op::Cast { x, .. }
-                                        | Op::Unary { x, .. }
-                                        | Op::Reduce { x, .. } => *x += n,
-                                        Op::Binary { x, y, .. } => {
-                                            *x += n;
-                                            *y += n;
-                                        }
-                                        _ => unreachable!(),
-                                    }
-                                }
-                                kernels[kid].ops.extend(kernely.ops);
-
-                                if let Some(kidy_loads) = loads.remove(&kidy) {
-                                    if let Some(kid_loads) = loads.get_mut(&kid) {
-                                        kid_loads.extend(kidy_loads);
-                                    } else {
-                                        loads.insert(kid, kidy_loads);
-                                    }
-                                }
-                                if let Some(kidy_stores) = stores.remove(&kidy) {
-                                    stores.insert(kid, kidy_stores);
-                                }
-
-                                //println!("kid={:?} kidy={:?}", kid, kidy);
-                                remove_first(x, kid, &mut outputs);
-                                remove_first(y, kidy, &mut outputs);
-                                let youtputs = outputs.remove(&kidy).unwrap();
-                                let xoutputs = outputs.get_mut(&kid).unwrap();
-                                xoutputs.extend(youtputs);
-                                xoutputs.extend(vec![nid; rcs[&nid] as usize]);
-
-                                let op = if !kid_stores && kidy_stores {
-                                    Op::Binary { x: op_idy + n, y: op_id, bop }
-                                } else {
-                                    Op::Binary { x: op_id, y: op_idy + n, bop }
-                                };
-                                kernels[kid].ops.push(op);
-
-                                // Fix visited
-                                for (_, (kidm, op_id)) in &mut visited {
-                                    if *kidm == kidy {
-                                        *kidm = kid;
-                                        *op_id += n;
-                                    }
-                                }
-                            }
-
-                            *rcs.get_mut(&x).unwrap() -= 1;
-                            *rcs.get_mut(&y).unwrap() -= 1;
-                            (kid, kernels[kid].ops.len() - 1)
-                        }
-                    }
-                };
-                visited.insert(nid, (kid, op_id));
-
-                if to_eval.contains(&nid) {
-                    let dtype = self.graph.dtype(nid);
-                    self.add_store(
-                        nid,
-                        kid,
-                        op_id,
-                        dtype,
-                        &mut realized_nodes,
-                        &mut virt_realized_nodes,
-                        &mut kernels,
-                        &mut loads,
-                        &mut stores,
-                        &mut visited,
-                        &mut outputs,
-                    )?;
-                    *rcs.get_mut(&nid).unwrap() -= 1;
-                    if rcs[&nid] > 0 {
-                        let shape = self.graph.shape(nid);
-                        let (kid, op_id) =
-                            add_load(nid, shape, dtype, &mut kernels, &mut loads, &mut outputs, rcs[&nid]);
-                        visited.insert(nid, (kid, op_id));
-                    }
-                }
-
-                /*for (kid, kernel) in kernels.iter() {
-                    if let Some(loads) = loads.get(&kid) {
-                        println!("loads={loads:?}");
-                    }
-                    if let Some(stores) = stores.get(&kid) {
-                        println!("stores={stores:?}");
-                    }
-                    println!("outputs={:?}", outputs[&kid]);
-                    kernel.debug();
-                }
-                println!();*/
-            }
-
-            if kernels.len() > KernelId(0) {
-                let mut kids: Vec<KernelId> = kernels.ids().collect();
-                while let Some(kid) = kids
-                    .iter()
-                    .find(|&&kid| {
-                        loads.get(&kid).map(|loads| loads.iter().all(|x| realized_nodes.contains(x))).unwrap_or(true)
-                    })
-                    .copied()
-                {
-                    kids.retain(|x| *x != kid);
-                    let kernel = unsafe { kernels.remove_and_return(kid) };
-                    realized_nodes.extend(&*stores[&kid]);
-                    let kstores = stores.remove(&kid).unwrap();
-                    if let Some(kernel_loads) = loads.remove(&kid) {
-                        self.launch_kernel(kernel, kernel_loads.clone(), kstores)?;
-
-                        // Delete unneeded intermediate tensors in memory pools
-                        /*for tid in kernel_loads {
-                            if !loads.values().any(|loads| loads.contains(&tid)) {
-                                // drop tid from memory pools
-                                let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
-                                to_remove.insert(tid);
-                                self.deallocate_tensors(&to_remove);
-                            }
-                        }*/
-                    } else {
-                        self.launch_kernel(kernel, Vec::new(), kstores)?;
-                    }
-                }
-            }
-
-            #[cfg(debug_assertions)]
-            {
-                if kernels.len() > KernelId(0) {
-                    println!("realized_nodes={realized_nodes:?}");
-                    println!("Unrealized kernels:");
-                    for (kid, kernel) in kernels.iter() {
-                        if let Some(loads) = loads.get(&kid) {
-                            println!("loads={loads:?}");
-                        }
-                        if let Some(stores) = stores.get(&kid) {
-                            println!("stores={stores:?}");
-                        }
-                        println!("{kid:?}, outputs={:?}", outputs[&kid]);
-                        kernel.debug();
-                        println!();
-                    }
-                    panic!();
-                }
-                debug_assert!(to_eval.is_subset(&realized_nodes));
-            }
-
-            let elapsed = begin.elapsed();
-            if self.debug.perf() {
-                println!("Kernelizer took {} μs", elapsed.as_micros());
-            }
+            virt_realized_nodes: realized_nodes.clone(),
+            realized_nodes,
+            kernels: Slab::with_capacity(30),
+            visited: Map::with_capacity_and_hasher(100, BuildHasherDefault::new()),
+            outputs: Map::with_hasher(BuildHasherDefault::new()),
+            loads: Map::with_capacity_and_hasher(100, BuildHasherDefault::new()),
+            stores: Map::with_capacity_and_hasher(100, BuildHasherDefault::new()),
+            rcs,
+            graph,
+            pools,
+            devices,
+            cache,
+            search_config,
+            config_dir,
+            debug,
         }
-
-        // Deallocate tensors from devices, new_leafs can be deallocated too
-        self.deallocate_tensors(&to_delete);
-
-        // Remove evaluated part of graph unless needed for backpropagation
-        for tensor in new_leafs {
-            self.graph.add_shape(tensor);
-            self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
-            to_delete.remove(&tensor);
-        }
-        // Delete nodes, but do not use release function (don't deallocate again),
-        // only remove it from graph.nodes
-        self.graph.delete_tensors(&to_delete);
-
-        Ok(())
     }
 
-    /// Stores x and returns remaining reference count to x
-    fn add_store(
-        &mut self,
-        x: TensorId,
-        kid: KernelId,
-        op_id: usize,
-        dtype: DType,
-        realized_nodes: &mut Set<TensorId>,
-        virt_realized_nodes: &mut Set<TensorId>,
-        kernels: &mut Slab<KernelId, Kernel>,
-        loads: &mut Map<KernelId, Vec<TensorId>>,
-        stores: &mut Map<KernelId, Vec<TensorId>>,
-        visited: &mut Map<TensorId, (KernelId, OpId)>,
-        outputs: &mut Map<KernelId, Vec<TensorId>>,
-    ) -> Result<(), ZyxError> {
-        if virt_realized_nodes.contains(&x) {
-            visited.remove(&x).unwrap();
-            outputs.get_mut(&kid).unwrap().retain(|&elem| elem != x);
-        } else {
-            visited.remove(&x).unwrap();
-            virt_realized_nodes.insert(x);
-            kernels[kid].ops.push(Op::StoreView { src: op_id, dtype });
-            /*if let Some(stores) = stores.get(&kid) {
-                println!("\nStoring, stores: {stores:?}");
-            }*/
-            stores.entry(kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
-            //println!("Storing, stores: {:?}", stores[&kid]);
+    fn is_virt_realized(&self, nid: TensorId) -> bool {
+        self.virt_realized_nodes.contains(&nid)
+    }
 
-            // remove all references to x
-            outputs.get_mut(&kid).unwrap().retain(|&elem| elem != x);
+    fn create_load_kernel(&mut self, nid: TensorId) -> (KernelId, OpId) {
+        //println!("ADDING LOAD for {x} x {}", rc);
+        let shape = self.graph.shape(nid);
+        let dtype = self.graph.dtype(nid);
+        let view = View::contiguous(shape);
+        let op = Op::LoadView { dtype, view };
+        let kernel = Kernel { ops: vec![op] };
+        let kid = self.kernels.push(kernel);
+        self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
+        self.loads.insert(kid, vec![nid]);
+        (kid, 0)
+    }
+
+    fn create_const_kernel(&mut self, nid: TensorId, value: Constant) -> (KernelId, OpId) {
+        let view = View::contiguous(&[1]);
+        let op = Op::ConstView { value, view };
+        let kernel = Kernel { ops: vec![op] };
+        let kid = self.kernels.push(kernel);
+        self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
+        (kid, 0)
+    }
+
+    fn add_expand_op(&mut self, nid: TensorId, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
+        // TODO instead of store add expand op that inserts loop in IR
+        let (mut kid, mut op_id) = self.visited[&x];
+        if self.outputs[&kid].len() > 1 {
+            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
+                self.add_store(x, kid, op_id)?;
+                (kid, op_id) = self.create_load_kernel(x);
+                self.visited.insert(x, (kid, op_id));
+                if self.outputs[&kid].len() > 1 {
+                    remove_first(x, kid, &mut self.outputs);
+                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                }
+            } else {
+                remove_first(x, kid, &mut self.outputs);
+                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+            }
+        }
+        self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
+        let shape = self.graph.shape(nid);
+        self.kernels[kid].apply_movement(|view| view.expand(shape));
+        *self.rcs.get_mut(&x).unwrap() -= 1;
+        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
+        Ok((kid, op_id))
+    }
+
+    fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
+        let (mut kid, mut op_id) = self.visited[&x];
+        // TODO instead of store add permute op that swaps indices in IR
+        if self.outputs[&kid].len() > 1 {
+            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
+                self.add_store(x, kid, op_id)?;
+                (kid, op_id) = self.create_load_kernel(x);
+                self.visited.insert(x, (kid, op_id));
+                if self.outputs[&kid].len() > 1 {
+                    remove_first(x, kid, &mut self.outputs);
+                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                }
+            } else {
+                remove_first(x, kid, &mut self.outputs);
+                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+            }
+        }
+        self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
+        let axes = self.graph.axes(nid);
+        self.kernels[kid].apply_movement(|view| view.permute(axes));
+        *self.rcs.get_mut(&x).unwrap() -= 1;
+        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
+        Ok((kid, op_id))
+    }
+
+    fn add_reshape_op(&mut self, nid: TensorId, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
+        #[cfg(debug_assertions)]
+        if !self.visited.contains_key(&x) {
+            panic!("Missing tensor {x} in visited.");
+        }
+        let (mut kid, mut op_id) = self.visited[&x];
+
+        // TODO duplicate or store only if this is not mergeable.
+        // Otherwise if it is like unsqueeze or splitting two dims
+        // or fusing two dims, it can be represented by a custom
+        // op that is unfoldable into indices, since it does not change
+        // global work size.
+
+        if self.outputs[&kid].len() > 1 {
+            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
+                self.add_store(x, kid, op_id)?;
+                (kid, op_id) = self.create_load_kernel(x);
+                self.visited.insert(x, (kid, op_id));
+                if self.outputs[&kid].len() > 1 {
+                    remove_first(x, kid, &mut self.outputs);
+                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                }
+            } else {
+                remove_first(x, kid, &mut self.outputs);
+                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+            }
+        }
+        self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
+        let n = self.graph.shape(x).len();
+        let shape = self.graph.shape(nid);
+        self.kernels[kid].apply_movement(|view| view.reshape(0..n, shape));
+        *self.rcs.get_mut(&x).unwrap() -= 1;
+        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
+        Ok((kid, op_id))
+    }
+
+    fn add_pad_op(&mut self, nid: TensorId, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
+        let (mut kid, mut op_id) = self.visited[&x];
+
+        // TODO instead of duplication add pad op that adds if statement into ir (e.g. if idx < padding)
+        if self.outputs[&kid].len() > 1 {
+            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
+                self.add_store(x, kid, op_id)?;
+                (kid, op_id) = self.create_load_kernel(x);
+                self.visited.insert(x, (kid, op_id));
+                if self.outputs[&kid].len() > 1 {
+                    remove_first(x, kid, &mut self.outputs);
+                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                }
+            } else {
+                remove_first(x, kid, &mut self.outputs);
+                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+            }
+        }
+        self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
+        let padding = self.graph.padding(nid);
+        let rank = self.graph.shape(nid).len();
+        self.kernels[kid].apply_movement(|view| view.pad(rank, padding));
+        *self.rcs.get_mut(&x).unwrap() -= 1;
+        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
+        Ok((kid, op_id))
+    }
+
+    fn add_reduce_op(&mut self, nid: TensorId, x: TensorId, rop: ROp) -> Result<(KernelId, OpId), ZyxError> {
+        // Don't apply reduce if the kernel already contains reduce
+        // and the resulting shape's dimension is less than 256
+        let (mut kid, mut op_id) = self.visited[&x];
+
+        // If the kernel has more than one output, or rc of x is more than one,
+        // we have to either copy it (if it is small), or store x (if kid is big)
+        if self.outputs[&kid].len() > 1 {
+            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
+                self.add_store(x, kid, op_id)?;
+                (kid, op_id) = self.create_load_kernel(x);
+                self.visited.insert(x, (kid, op_id));
+                if self.outputs[&kid].len() > 1 {
+                    remove_first(x, kid, &mut self.outputs);
+                    duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                }
+            } else {
+                remove_first(x, kid, &mut self.outputs);
+                duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+            }
+        }
+        self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
+
+        /*for kernel in kernels.iter() {
+            println!("{:?}, {}", kernel.0, kernel.1.n_outputs);
+        }*/
+
+        let axes = self.graph.axes(nid);
+        #[cfg(debug_assertions)]
+        {
+            use crate::shape::Axis;
+            let mut sorted_axes: Vec<Axis> = axes.into();
+            sorted_axes.sort_unstable();
+            debug_assert_eq!(axes, sorted_axes, "Reduce axes must be sorted.");
         }
 
         //kernels[kid].debug();
-        if outputs[&kid].is_empty()
-            && loads.get(&kid).map(|loads| loads.iter().all(|x| realized_nodes.contains(x))).unwrap_or(true)
+        //println!("{axes:?}");
+
+        let shape = self.graph.shape(x);
         {
-            outputs.remove(&kid);
-            let kernel = unsafe { kernels.remove_and_return(kid) };
-            realized_nodes.extend(&*stores[&kid]);
-            let stores = stores.remove(&kid).unwrap();
-            if let Some(kernel_loads) = loads.remove(&kid) {
+            // Permute before reduce so that reduce axes are last
+            let n = shape.len();
+            let mut permute_axes = Vec::with_capacity(n);
+            let max_axis = *axes.last().unwrap();
+            let mut ai = 0;
+            for i in 0..=max_axis {
+                if axes[ai] == i {
+                    ai += 1;
+                } else {
+                    permute_axes.push(i);
+                }
+            }
+            permute_axes.extend(max_axis + 1..n);
+            permute_axes.extend_from_slice(axes);
+            self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
+        }
+
+        let dims = axes.iter().map(|&a| shape[a]).collect();
+        if shape == dims {
+            self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
+        }
+        let op = Op::Reduce { x: op_id, rop, dims };
+        self.kernels[kid].ops.push(op);
+        *self.rcs.get_mut(&x).unwrap() -= 1;
+        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
+        Ok((kid, self.kernels[kid].ops.len() - 1))
+    }
+
+    fn add_cast_op(&mut self, nid: TensorId, x: TensorId, dtype: DType) -> (KernelId, OpId) {
+        let (kid, op_id) = self.visited[&x];
+        self.kernels[kid].ops.push(Op::Cast { x: op_id, dtype });
+        remove_first(x, kid, &mut self.outputs);
+        self.outputs.get_mut(&kid).unwrap().extend(vec![nid; self.rcs[&nid] as usize]);
+        *self.rcs.get_mut(&x).unwrap() -= 1;
+        (kid, self.kernels[kid].ops.len() - 1)
+    }
+
+    fn add_unary_op(&mut self, nid: TensorId, x: TensorId, uop: UOp) -> (KernelId, OpId) {
+        let (kid, op_id) = self.visited[&x];
+        self.kernels[kid].ops.push(Op::Unary { x: op_id, uop });
+        remove_first(x, kid, &mut self.outputs);
+        self.outputs.get_mut(&kid).unwrap().extend(vec![nid; self.rcs[&nid] as usize]);
+        *self.rcs.get_mut(&x).unwrap() -= 1;
+        (kid, self.kernels[kid].ops.len() - 1)
+    }
+
+    fn add_binary_op(
+        &mut self,
+        nid: TensorId,
+        x: TensorId,
+        y: TensorId,
+        bop: BOp,
+    ) -> Result<(KernelId, OpId), ZyxError> {
+        let (mut kid, mut op_id) = self.visited[&x];
+        let (mut kidy, mut op_idy) = self.visited[&y];
+
+        /*if let Some(loads) = loads.get(&kid) {
+            println!("loads={loads:?}");
+        }
+        if let Some(stores) = stores.get(&kid) {
+            println!("stores={stores:?}");
+        }
+        println!("outputs={:?}", outputs[&kid]);
+        kernels[kid].debug();
+        println!();
+        if let Some(loads) = loads.get(&kidy) {
+            println!("loads={loads:?}");
+        }
+        if let Some(stores) = stores.get(&kidy) {
+            println!("stores={stores:?}");
+        }
+        println!("outputs={:?}", outputs[&kidy]);
+        kernels[kidy].debug();
+        println!();*/
+
+        let kid_stores = self.stores.get(&kid).map(|x| !x.is_empty()).unwrap_or(false);
+        let kidy_stores = self.stores.get(&kidy).map(|x| !x.is_empty()).unwrap_or(false);
+
+        if kid == kidy {
+            remove_first(x, kid, &mut self.outputs);
+            remove_first(y, kid, &mut self.outputs);
+            self.outputs.get_mut(&kid).unwrap().extend(vec![nid; self.rcs[&nid] as usize]);
+            let op = Op::Binary { x: op_id, y: op_idy, bop };
+            self.kernels[kid].ops.push(op);
+        } else {
+            // TODO later use this, but this requires global memory sync inside of the kernel
+            // as it loads and stores from the same kernel
+            //if kid_stores && kidy_stores {
+            match (kid_stores, kidy_stores) {
+                (true, true) => {
+                    self.add_store(x, kid, op_id)?;
+                    (kid, op_id) = self.create_load_kernel(x);
+                    self.visited.insert(x, (kid, op_id));
+                    if self.outputs[&kid].len() > 1 {
+                        remove_first(x, kid, &mut self.outputs);
+                        duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                        self.outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
+                    }
+                    self.add_store(y, kidy, op_id)?;
+                    (kidy, op_idy) = self.create_load_kernel(y);
+                    //println!("kidy={:?}", kidy);
+                    self.visited.insert(y, (kidy, op_idy));
+                    if self.outputs[&kidy].len() > 1 {
+                        remove_first(y, kidy, &mut self.outputs);
+                        duplicate_kernel(&mut kidy, &mut self.kernels, &mut self.loads, &mut self.stores);
+                        self.outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
+                    }
+                    //println!("kidy={:?}", kidy);
+                }
+                (true, false) => {
+                    self.add_store(x, kid, op_id)?;
+                    (kid, op_id) = self.create_load_kernel(x);
+                    self.visited.insert(x, (kid, op_id));
+                    if self.outputs[&kid].len() > 1 {
+                        remove_first(x, kid, &mut self.outputs);
+                        duplicate_kernel(&mut kid, &mut self.kernels, &mut self.loads, &mut self.stores);
+                        self.outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
+                    }
+                }
+                (false, true) => {
+                    self.add_store(y, kidy, op_id)?;
+                    (kidy, op_idy) = self.create_load_kernel(y);
+                    //println!("kidy={:?}", kidy);
+                    self.visited.insert(y, (kidy, op_idy));
+                    if self.outputs[&kidy].len() > 1 {
+                        remove_first(y, kidy, &mut self.outputs);
+                        duplicate_kernel(&mut kidy, &mut self.kernels, &mut self.loads, &mut self.stores);
+                        self.outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
+                    }
+                    //println!("kidy={:?}", kidy);
+                }
+                (false, false) => {}
+            }
+
+            /*if !kid_stores && kidy_stores {
+                //println!("Swap x, y");
+                (kid, kidy) = (kidy, kid);
+                (op_id, op_idy) = (op_idy, op_id);
+            }*/
+
+            let mut kernely = unsafe { self.kernels.remove_and_return(kidy) };
+            let n = self.kernels[kid].ops.len();
+            for op in &mut kernely.ops {
+                match op {
+                    Op::ConstView { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
+                    Op::StoreView { src: x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
+                        *x += n
+                    }
+                    Op::Binary { x, y, .. } => {
+                        *x += n;
+                        *y += n;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            self.kernels[kid].ops.extend(kernely.ops);
+
+            if let Some(kidy_loads) = self.loads.remove(&kidy) {
+                if let Some(kid_loads) = self.loads.get_mut(&kid) {
+                    kid_loads.extend(kidy_loads);
+                } else {
+                    self.loads.insert(kid, kidy_loads);
+                }
+            }
+            if let Some(kidy_stores) = self.stores.remove(&kidy) {
+                self.stores.insert(kid, kidy_stores);
+            }
+
+            //println!("kid={:?} kidy={:?}", kid, kidy);
+            remove_first(x, kid, &mut self.outputs);
+            remove_first(y, kidy, &mut self.outputs);
+            let youtputs = self.outputs.remove(&kidy).unwrap();
+            let xoutputs = self.outputs.get_mut(&kid).unwrap();
+            xoutputs.extend(youtputs);
+            xoutputs.extend(vec![nid; self.rcs[&nid] as usize]);
+
+            let op = if !kid_stores && kidy_stores {
+                Op::Binary { x: op_idy + n, y: op_id, bop }
+            } else {
+                Op::Binary { x: op_id, y: op_idy + n, bop }
+            };
+            self.kernels[kid].ops.push(op);
+
+            // Fix visited
+            for (_, (kidm, op_id)) in &mut self.visited {
+                if *kidm == kidy {
+                    *kidm = kid;
+                    *op_id += n;
+                }
+            }
+        }
+
+        *self.rcs.get_mut(&x).unwrap() -= 1;
+        *self.rcs.get_mut(&y).unwrap() -= 1;
+        Ok((kid, self.kernels[kid].ops.len() - 1))
+    }
+
+    /// Stores x and returns remaining reference count to x
+    fn add_store(&mut self, x: TensorId, kid: KernelId, op_id: usize) -> Result<(), ZyxError> {
+        if self.virt_realized_nodes.contains(&x) {
+            self.visited.remove(&x).unwrap();
+            self.outputs.get_mut(&kid).unwrap().retain(|&elem| elem != x);
+        } else {
+            self.visited.remove(&x).unwrap();
+            self.virt_realized_nodes.insert(x);
+            let dtype = self.graph.dtype(x);
+            self.kernels[kid].ops.push(Op::StoreView { src: op_id, dtype });
+            self.stores.entry(kid).and_modify(|vec| vec.push(x)).or_insert_with(|| vec![x]);
+
+            // remove all references to x
+            self.outputs.get_mut(&kid).unwrap().retain(|&elem| elem != x);
+        }
+
+        //kernels[kid].debug();
+        if self.outputs[&kid].is_empty()
+            && self.loads.get(&kid).map(|loads| loads.iter().all(|x| self.realized_nodes.contains(x))).unwrap_or(true)
+        {
+            self.outputs.remove(&kid);
+            let kernel = unsafe { self.kernels.remove_and_return(kid) };
+            self.realized_nodes.extend(&*self.stores[&kid]);
+            let stores = self.stores.remove(&kid).unwrap();
+            if let Some(kernel_loads) = self.loads.remove(&kid) {
                 self.launch_kernel(kernel, kernel_loads.clone(), stores)?;
 
                 // Delete unneeded intermediate tensors in memory pools
@@ -815,183 +514,6 @@ impl Runtime {
         Ok(())
     }
 
-    fn graph_order(
-        &self,
-        realized_nodes: &Set<TensorId>,
-        to_eval: &mut Set<TensorId>,
-    ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
-        let old_to_eval = to_eval.clone();
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        while let Some(nid) = params.pop() {
-            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                if !realized_nodes.contains(&nid) {
-                    params.extend(self.graph.nodes[nid].1.parameters());
-                }
-                1
-            });
-        }
-        // Order them using rcs reference counts
-        let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        let mut new_leafs = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
-        let mut order = Vec::new();
-        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        while let Some(nid) = params.pop()
-            && let Some(&rc) = rcs.get(&nid)
-        {
-            if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                order.push(nid);
-                let node = &self.graph.nodes[nid];
-                if node.0 > rc {
-                    new_leafs.insert(nid);
-                    if !realized_nodes.contains(&nid) {
-                        to_eval.insert(nid);
-                    }
-                } else if !to_eval.contains(&nid) {
-                    to_delete.insert(nid);
-                } else {
-                    new_leafs.insert(nid);
-                }
-                if !realized_nodes.contains(&nid) {
-                    params.extend(node.1.parameters());
-                }
-            }
-        }
-        order.reverse();
-        for x in &old_to_eval {
-            *rcs.get_mut(x).unwrap() -= 1;
-            if *rcs.get(x).unwrap() == 0 {
-                rcs.remove(x);
-            }
-        }
-        //println!("Order {order:?}");
-        //println!("ToEval {to_eval:?}");
-        //println!("ToDelete {to_delete:?}");
-        //println!("NewLeafs {new_leafs:?}");
-        (order, to_delete, new_leafs, rcs)
-    }
-
-    fn graph_order_with_gradient(
-        &self,
-        realized_nodes: &Set<TensorId>,
-        to_eval: &mut Set<TensorId>,
-    ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
-        // Get order for evaluation using DFS with ref counting to resolve
-        // nodes with more than one parent.
-        let (outside_nodes, mut order) = {
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            while let Some(nid) = params.pop() {
-                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                    params.extend(self.graph.nodes[nid].1.parameters());
-                    1
-                });
-            }
-            // Order them using rcs reference counts
-            let mut order = Vec::new();
-            let mut internal_rcs: Map<TensorId, u32> =
-                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            let mut outside_nodes = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            while let Some(nid) = params.pop()
-                && let Some(&rc) = rcs.get(&nid)
-            {
-                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                    order.push(nid);
-                    let node = &self.graph.nodes[nid];
-                    params.extend(node.1.parameters());
-                    if node.0 > rc {
-                        outside_nodes.insert(nid);
-                    }
-                }
-            }
-            outside_nodes.extend(to_eval.clone());
-            order.reverse();
-            (outside_nodes, order)
-        };
-        //println!("Outside nodes: {outside_nodes:?}");
-        // Constant folding and deleting unused parts of graph
-        let mut new_leafs = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        for &nid in &order {
-            let node = &self.graph.nodes[nid].1;
-            match node.num_parameters() {
-                0 => {
-                    if !outside_nodes.contains(&nid) {
-                        to_delete.insert(nid);
-                    }
-                }
-                1 => {
-                    let x = node.param1();
-                    if to_delete.contains(&x) {
-                        if outside_nodes.contains(&nid) {
-                            to_eval.insert(nid);
-                            new_leafs.insert(nid);
-                        } else {
-                            to_delete.insert(nid);
-                        }
-                    }
-                }
-                2 => {
-                    let (x, y) = node.param2();
-                    let xc = to_delete.contains(&x);
-                    let yc = to_delete.contains(&y);
-                    match (xc, yc) {
-                        (true, true) => {
-                            if outside_nodes.contains(&nid) {
-                                to_eval.insert(nid);
-                                new_leafs.insert(nid);
-                            } else {
-                                to_delete.insert(nid);
-                            }
-                        }
-                        (true, false) => {
-                            to_eval.insert(nid);
-                            new_leafs.insert(x);
-                        }
-                        (false, true) => {
-                            to_eval.insert(nid);
-                            new_leafs.insert(y);
-                        }
-                        (false, false) => {}
-                    }
-                }
-                _ => unreachable!(),
-            }
-        }
-        //println!("To eval: {to_eval:?}");
-        //println!("New leafs: {new_leafs:?}");
-        //println!("To delete: {to_delete:?}");
-        let to_eval: Set<TensorId> = to_eval.difference(realized_nodes).copied().collect();
-        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        while let Some(nid) = params.pop() {
-            if let Some(rc) = rcs.get_mut(&nid) {
-                *rc += 1;
-            } else {
-                rcs.insert(nid, 1);
-                if !realized_nodes.contains(&nid) {
-                    params.extend(self.graph.nodes[nid].1.parameters());
-                }
-            }
-        }
-        /*for x in &to_eval {
-            *rcs.get_mut(x).unwrap() -= 1;
-            if *rcs.get(x).unwrap() == 0 {
-                rcs.remove(x);
-            }
-        }*/
-        order.retain(|x| rcs.contains_key(x));
-        // Currently rcs with gradient tape cannot be used by scheduler, so we give it empty ids
-        (
-            order,
-            to_delete,
-            new_leafs,
-            Map::with_hasher(BuildHasherDefault::default()),
-        )
-    }
-
     fn launch_kernel(
         &mut self,
         mut kernel: Kernel,
@@ -1008,11 +530,11 @@ impl Runtime {
 
         let required_kernel_memory: Dim = stores
             .iter()
-            .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim)
+            .map(|&tid| self.graph.shape(tid).iter().product::<Dim>() * self.graph.dtype(tid).byte_size() as Dim)
             .sum::<Dim>()
             + loads
                 .iter()
-                .map(|&tid| self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim)
+                .map(|&tid| self.graph.shape(tid).iter().product::<Dim>() * self.graph.dtype(tid).byte_size() as Dim)
                 .sum::<Dim>();
         //println!("Kernel requires {required_kernel_memory} B");
         let mut dev_ids: Vec<usize> = (0..self.devices.len()).collect();
@@ -1029,7 +551,7 @@ impl Runtime {
                 .iter()
                 .map(|tid| {
                     if self.pools[mpid].buffer_map.contains_key(tid) {
-                        self.shape(*tid).iter().product::<Dim>() * self.dtype(*tid).byte_size() as Dim
+                        self.graph.shape(*tid).iter().product::<Dim>() * self.graph.dtype(*tid).byte_size() as Dim
                     } else {
                         0
                     }
@@ -1110,7 +632,7 @@ impl Runtime {
         // Allocate space for all stores (outputs)
         let mut output_buffers = BTreeSet::new();
         for &tid in &stores {
-            let bytes = self.shape(tid).iter().product::<Dim>() * self.dtype(tid).byte_size() as Dim;
+            let bytes = self.graph.shape(tid).iter().product::<Dim>() * self.graph.dtype(tid).byte_size() as Dim;
             let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
             self.pools[mpid].buffer_map.insert(tid, buffer_id);
             event_wait_list.push(event);
@@ -1334,23 +856,406 @@ impl Runtime {
     }
 }
 
-fn add_load(
-    x: TensorId,
-    shape: &[Dim],
-    dtype: DType,
-    kernels: &mut Slab<KernelId, Kernel>,
-    loads: &mut Map<KernelId, Vec<TensorId>>,
-    outputs: &mut Map<KernelId, Vec<TensorId>>,
-    rc: u32,
-) -> (KernelId, OpId) {
-    //println!("ADDING LOAD for {x} x {}", rc);
-    let view = View::contiguous(shape);
-    let op = Op::LoadView { dtype, view };
-    let kernel = Kernel { ops: vec![op] };
-    let kid = kernels.push(kernel);
-    outputs.insert(kid, vec![x; rc as usize]);
-    loads.insert(kid, vec![x]);
-    (kid, 0)
+impl Runtime {
+    // 1. gets a set of tensors which need to be processed and in which order
+    // 2. generates kernels from them
+    // 3. assigns those kernels to devices, compiles and launches them
+    #[allow(clippy::cognitive_complexity)]
+    pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+        let (to_eval, mut realized_nodes, order, rcs, new_leafs, mut to_delete) = {
+            let begin = std::time::Instant::now();
+            let realized_nodes: Set<TensorId> =
+                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+            if to_eval.is_empty() {
+                return Ok(());
+            }
+            if self.devices.is_empty() {
+                self.initialize_devices()?;
+            }
+
+            let (order, to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
+                self.graph_order_with_gradient(&realized_nodes, &mut to_eval)
+            } else {
+                self.graph_order(&realized_nodes, &mut to_eval)
+            };
+            let elapsed = begin.elapsed();
+            if self.debug.perf() {
+                println!(
+                    "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape={}",
+                    elapsed.as_micros(),
+                    order.len(),
+                    usize::from(self.graph.nodes.len()),
+                    self.graph.gradient_tape.is_some(),
+                );
+            }
+            (to_eval, realized_nodes, order, rcs, new_leafs, to_delete)
+        };
+
+        {
+            let mut rcs = if rcs.is_empty() {
+                let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+                // to_eval are not in rcs
+                for &nid in &order {
+                    if !realized_nodes.contains(&nid) {
+                        for nid in self.graph[nid].parameters() {
+                            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                        }
+                    }
+                }
+                rcs
+            } else {
+                rcs
+            };
+
+            #[cfg(debug_assertions)]
+            {
+                let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
+                // to_eval are not in rcs
+                for &nid in &order {
+                    if !realized_nodes.contains(&nid) {
+                        for nid in self.graph[nid].parameters() {
+                            rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                        }
+                    }
+                }
+                if rcs2 != rcs {
+                    println!("Realized nodes: {realized_nodes:?}");
+                    for &nid in &order {
+                        println!(
+                            "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}",
+                            self.graph[nid],
+                            self.graph.shape(nid),
+                            rcs.get(&nid).copied().unwrap_or(0),
+                            rcs2.get(&nid).copied().unwrap_or(0),
+                        );
+                    }
+                    panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
+                }
+            }
+
+            for &nid in &to_eval {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+
+            let begin = std::time::Instant::now();
+
+            let mut km = KernelManager::new(
+                realized_nodes,
+                rcs,
+                &self.graph,
+                &mut self.pools,
+                &mut self.devices,
+                &mut self.cache,
+                &self.search_config,
+                &self.config_dir,
+                &self.debug,
+            );
+
+            //println!("{rcs:?}");
+            //println!("{to_eval:?}");
+
+            for nid in order {
+                /*println!(
+                    "{nid} x {} -> {:?}  {}  {:?}",
+                    km.rcs[&nid],
+                    self.graph[nid],
+                    self.graph.dtype(nid),
+                    self.graph.shape(nid)
+                );*/
+                let (kid, op_id) = if km.is_virt_realized(nid) {
+                    km.create_load_kernel(nid)
+                } else {
+                    match self.graph[nid] {
+                        Node::Leaf { .. } => unreachable!(),
+                        Node::Const { value } => km.create_const_kernel(nid, value),
+                        Node::Expand { x } => km.add_expand_op(nid, x)?,
+                        Node::Permute { x } => km.add_permute_op(nid, x)?,
+                        Node::Reshape { x } => km.add_reshape_op(nid, x)?,
+                        Node::Pad { x } => km.add_pad_op(nid, x)?,
+                        Node::Reduce { x, rop } => km.add_reduce_op(nid, x, rop)?,
+                        Node::Cast { x, dtype } => km.add_cast_op(nid, x, dtype),
+                        Node::Unary { x, uop } => km.add_unary_op(nid, x, uop),
+                        Node::Binary { x, y, bop } => km.add_binary_op(nid, x, y, bop)?,
+                    }
+                };
+                km.visited.insert(nid, (kid, op_id));
+
+                if to_eval.contains(&nid) {
+                    km.add_store(nid, kid, op_id)?;
+                    *km.rcs.get_mut(&nid).unwrap() -= 1;
+                    if km.rcs[&nid] > 0 {
+                        let (kid, op_id) = km.create_load_kernel(nid);
+                        km.visited.insert(nid, (kid, op_id));
+                    }
+                }
+
+                /*for (kid, kernel) in kernels.iter() {
+                    if let Some(loads) = loads.get(&kid) {
+                        println!("loads={loads:?}");
+                    }
+                    if let Some(stores) = stores.get(&kid) {
+                        println!("stores={stores:?}");
+                    }
+                    println!("outputs={:?}", outputs[&kid]);
+                    kernel.debug();
+                }
+                println!();*/
+            }
+
+            if km.kernels.len() > KernelId(0) {
+                let mut kids: Vec<KernelId> = km.kernels.ids().collect();
+                while let Some(kid) = kids
+                    .iter()
+                    .find(|&&kid| {
+                        km.loads
+                            .get(&kid)
+                            .map(|loads| loads.iter().all(|x| km.realized_nodes.contains(x)))
+                            .unwrap_or(true)
+                    })
+                    .copied()
+                {
+                    kids.retain(|x| *x != kid);
+                    let kernel = unsafe { km.kernels.remove_and_return(kid) };
+                    km.realized_nodes.extend(&*km.stores[&kid]);
+                    let kstores = km.stores.remove(&kid).unwrap();
+                    if let Some(kernel_loads) = km.loads.remove(&kid) {
+                        km.launch_kernel(kernel, kernel_loads.clone(), kstores)?;
+
+                        // Delete unneeded intermediate tensors in memory pools
+                        /*for tid in kernel_loads {
+                            if !loads.values().any(|loads| loads.contains(&tid)) {
+                                // drop tid from memory pools
+                                let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
+                                to_remove.insert(tid);
+                                self.deallocate_tensors(&to_remove);
+                            }
+                        }*/
+                    } else {
+                        km.launch_kernel(kernel, Vec::new(), kstores)?;
+                    }
+                }
+            }
+
+            #[cfg(debug_assertions)]
+            {
+                if km.kernels.len() > KernelId(0) {
+                    println!("realized_nodes={:?}", km.realized_nodes);
+                    println!("Unrealized kernels:");
+                    for (kid, kernel) in km.kernels.iter() {
+                        if let Some(loads) = km.loads.get(&kid) {
+                            println!("loads={loads:?}");
+                        }
+                        if let Some(stores) = km.stores.get(&kid) {
+                            println!("stores={stores:?}");
+                        }
+                        println!("{kid:?}, outputs={:?}", km.outputs[&kid]);
+                        kernel.debug();
+                        println!();
+                    }
+                    panic!();
+                }
+                debug_assert!(to_eval.is_subset(&km.realized_nodes));
+            }
+
+            let elapsed = begin.elapsed();
+            if self.debug.perf() {
+                println!("Kernelizer took {} μs", elapsed.as_micros());
+            }
+        }
+
+        // Deallocate tensors from devices, new_leafs can be deallocated too
+        self.deallocate_tensors(&to_delete);
+
+        // Remove evaluated part of graph unless needed for backpropagation
+        for tensor in new_leafs {
+            self.graph.add_shape(tensor);
+            self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
+            to_delete.remove(&tensor);
+        }
+        // Delete nodes, but do not use release function (don't deallocate again),
+        // only remove it from graph.nodes
+        self.graph.delete_tensors(&to_delete);
+
+        Ok(())
+    }
+
+    fn graph_order(
+        &self,
+        realized_nodes: &Set<TensorId>,
+        to_eval: &mut Set<TensorId>,
+    ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
+        let old_to_eval = to_eval.clone();
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                if !realized_nodes.contains(&nid) {
+                    params.extend(self.graph.nodes[nid].1.parameters());
+                }
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut new_leafs = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
+        let mut order = Vec::new();
+        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        while let Some(nid) = params.pop()
+            && let Some(&rc) = rcs.get(&nid)
+        {
+            if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                order.push(nid);
+                let node = &self.graph.nodes[nid];
+                if node.0 > rc {
+                    new_leafs.insert(nid);
+                    if !realized_nodes.contains(&nid) {
+                        to_eval.insert(nid);
+                    }
+                } else if !to_eval.contains(&nid) {
+                    to_delete.insert(nid);
+                } else {
+                    new_leafs.insert(nid);
+                }
+                if !realized_nodes.contains(&nid) {
+                    params.extend(node.1.parameters());
+                }
+            }
+        }
+        order.reverse();
+        for x in &old_to_eval {
+            *rcs.get_mut(x).unwrap() -= 1;
+            if *rcs.get(x).unwrap() == 0 {
+                rcs.remove(x);
+            }
+        }
+        //println!("Order {order:?}");
+        //println!("ToEval {to_eval:?}");
+        //println!("ToDelete {to_delete:?}");
+        //println!("NewLeafs {new_leafs:?}");
+        (order, to_delete, new_leafs, rcs)
+    }
+
+    fn graph_order_with_gradient(
+        &self,
+        realized_nodes: &Set<TensorId>,
+        to_eval: &mut Set<TensorId>,
+    ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
+        // Get order for evaluation using DFS with ref counting to resolve
+        // nodes with more than one parent.
+        let (outside_nodes, mut order) = {
+            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+            let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            while let Some(nid) = params.pop() {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                    params.extend(self.graph.nodes[nid].1.parameters());
+                    1
+                });
+            }
+            // Order them using rcs reference counts
+            let mut order = Vec::new();
+            let mut internal_rcs: Map<TensorId, u32> =
+                Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            let mut outside_nodes = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+            while let Some(nid) = params.pop()
+                && let Some(&rc) = rcs.get(&nid)
+            {
+                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    let node = &self.graph.nodes[nid];
+                    params.extend(node.1.parameters());
+                    if node.0 > rc {
+                        outside_nodes.insert(nid);
+                    }
+                }
+            }
+            outside_nodes.extend(to_eval.clone());
+            order.reverse();
+            (outside_nodes, order)
+        };
+        //println!("Outside nodes: {outside_nodes:?}");
+        // Constant folding and deleting unused parts of graph
+        let mut new_leafs = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        for &nid in &order {
+            let node = &self.graph.nodes[nid].1;
+            match node.num_parameters() {
+                0 => {
+                    if !outside_nodes.contains(&nid) {
+                        to_delete.insert(nid);
+                    }
+                }
+                1 => {
+                    let x = node.param1();
+                    if to_delete.contains(&x) {
+                        if outside_nodes.contains(&nid) {
+                            to_eval.insert(nid);
+                            new_leafs.insert(nid);
+                        } else {
+                            to_delete.insert(nid);
+                        }
+                    }
+                }
+                2 => {
+                    let (x, y) = node.param2();
+                    let xc = to_delete.contains(&x);
+                    let yc = to_delete.contains(&y);
+                    match (xc, yc) {
+                        (true, true) => {
+                            if outside_nodes.contains(&nid) {
+                                to_eval.insert(nid);
+                                new_leafs.insert(nid);
+                            } else {
+                                to_delete.insert(nid);
+                            }
+                        }
+                        (true, false) => {
+                            to_eval.insert(nid);
+                            new_leafs.insert(x);
+                        }
+                        (false, true) => {
+                            to_eval.insert(nid);
+                            new_leafs.insert(y);
+                        }
+                        (false, false) => {}
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        //println!("To eval: {to_eval:?}");
+        //println!("New leafs: {new_leafs:?}");
+        //println!("To delete: {to_delete:?}");
+        let to_eval: Set<TensorId> = to_eval.difference(realized_nodes).copied().collect();
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if let Some(rc) = rcs.get_mut(&nid) {
+                *rc += 1;
+            } else {
+                rcs.insert(nid, 1);
+                if !realized_nodes.contains(&nid) {
+                    params.extend(self.graph.nodes[nid].1.parameters());
+                }
+            }
+        }
+        /*for x in &to_eval {
+            *rcs.get_mut(x).unwrap() -= 1;
+            if *rcs.get(x).unwrap() == 0 {
+                rcs.remove(x);
+            }
+        }*/
+        order.retain(|x| rcs.contains_key(x));
+        // Currently rcs with gradient tape cannot be used by scheduler, so we give it empty ids
+        (
+            order,
+            to_delete,
+            new_leafs,
+            Map::with_hasher(BuildHasherDefault::default()),
+        )
+    }
 }
 
 fn duplicate_kernel(
