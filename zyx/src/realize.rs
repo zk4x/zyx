@@ -857,7 +857,7 @@ impl Runtime {
     // 2. generates kernels from them
     // 3. assigns those kernels to devices, compiles and launches them
     #[allow(clippy::cognitive_complexity)]
-    pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+    pub fn realize2(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let (to_eval, realized_nodes, order, rcs, new_leafs, mut to_delete) = {
             let begin = std::time::Instant::now();
             let realized_nodes: Set<TensorId> =
