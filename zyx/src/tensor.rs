@@ -30,6 +30,16 @@ pub type SAxis = i32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TensorId(u32);
 
+impl TensorId {
+    pub fn null() -> Self {
+        Self(u32::MAX)
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.0 == u32::MAX
+    }
+}
+
 impl From<usize> for TensorId {
     fn from(value: usize) -> Self {
         TensorId(value as u32)

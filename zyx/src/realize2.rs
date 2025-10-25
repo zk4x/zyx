@@ -5,7 +5,7 @@ use std::{collections::BTreeSet, hash::BuildHasherDefault, time::Instant};
 use nanoserde::SerBin;
 
 use crate::{
-    Map, Set, ZyxError,
+    DType, Map, Set, ZyxError,
     backend::ProgramId,
     error::{BackendError, ErrorStatus},
     graph::{Graph, Node},
@@ -197,14 +197,62 @@ impl<'a> KernelManager<'a> {
 
 impl Runtime {
     pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
-        let mut kernel_manager = KernelManager::new(self, to_eval);
         let time = Instant::now();
 
-        // Process tensors in reverse order
-        for &tensor_id in to_eval {
-            let (_, kernel, _) = kernel_manager.parse_backward(tensor_id, false, Vec::new())?;
-            kernel.debug();
+        let realized_nodes: Set<TensorId> =
+            self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+
+        // Get ref counts
+        let mut queue: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        while let Some(nid) = queue.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                queue.extend(self.graph.nodes[nid].1.parameters());
+                1
+            });
         }
+
+        // kernel, parent -> child
+        let mut kernels: Map<TensorId, (Kernel, OpId)> = Map::default();
+        let mut queue: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut rcs2: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+
+        while let Some(nid) = queue.pop() {
+            if *rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                queue.extend(self.graph.nodes[nid].1.parameters());
+                1
+            }) != rcs[&nid]
+            {
+                continue;
+            }
+            if rcs[&nid] > 1 {}
+
+            if realized_nodes.contains(&nid) {
+                let op = Op::LoadView { dtype: todo!(), view: todo!() };
+                let kernel = Kernel { ops: vec![op] };
+                kernels.insert(nid, (kernel, 0));
+            } else {
+                match self.graph[nid] {
+                    Node::Const { value } => {
+                        todo!();
+                    }
+                    Node::Leaf { dtype } => unreachable!(),
+                    Node::Cast { x, dtype } => todo!(),
+                    Node::Unary { x, uop } => {
+                        let (kernel, x) = kernels.remove(&x).unwrap();
+                        let op = Op::Unary { x, uop };
+                        kernels.insert(nid, (kernel, kernel.ops.len() - 1));
+                    }
+                    Node::Binary { bop, x, y } => todo!(),
+                    Node::Reduce { x, rop } => todo!(),
+                    Node::Expand { x } => todo!(),
+                    Node::Permute { x } => todo!(),
+                    Node::Reshape { x } => todo!(),
+                    Node::Pad { x } => todo!(),
+                }
+            }
+        }
+
         panic!("Kernelizer took {}us", time.elapsed().as_micros());
 
         // Execute kernels
