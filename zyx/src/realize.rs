@@ -98,8 +98,24 @@ impl<'a> KernelManager<'a> {
         self.virt_realized_nodes.contains(&nid)
     }
 
+    fn duplicate_or_store(&mut self, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
+        let (mut kid, mut op_id) = self.visited[&x];
+        if self.outputs[&kid].len() > 1 || self.kernels[kid].contains_stores() {
+            if self.kernels[kid].is_reduce() {
+                self.add_store(x)?;
+                (kid, op_id) = self.create_load_kernel(x);
+                if self.outputs[&kid].len() > 1 {
+                    self.duplicate_kernel(&mut kid, x);
+                }
+            } else {
+                self.duplicate_kernel(&mut kid, x);
+            }
+        }
+        Ok((kid, op_id))
+    }
+
     fn duplicate_kernel(&mut self, kid: &mut KernelId, x: TensorId) {
-        remove_first(x, *kid, &mut self.outputs);
+        self.remove_first_output(x, *kid);
         //println!("Duplicating");
         let kernel = self.kernels[*kid].clone();
         //kernel.n_outputs -= 1;
@@ -111,6 +127,12 @@ impl<'a> KernelManager<'a> {
             self.stores.insert(nkid, stored_tensors.clone());
         }
         *kid = nkid;
+    }
+
+    fn remove_first_output(&mut self, x: TensorId, kid: KernelId) {
+        //println!("removing tensor {x} from kernel {kid:?}");
+        let outputs = self.outputs.get_mut(&kid).unwrap();
+        outputs.iter().position(|elem| *elem == x).map(|i| outputs.remove(i));
     }
 
     fn create_load_kernel(&mut self, nid: TensorId) -> (KernelId, OpId) {
@@ -138,18 +160,7 @@ impl<'a> KernelManager<'a> {
 
     fn add_expand_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add expand op that inserts loop in IR
-        let (mut kid, mut op_id) = self.visited[&x];
-        if self.outputs[&kid].len() > 1 {
-            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
-                self.add_store(x)?;
-                (kid, op_id) = self.create_load_kernel(x);
-                if self.outputs[&kid].len() > 1 {
-                    self.duplicate_kernel(&mut kid, x);
-                }
-            } else {
-                self.duplicate_kernel(&mut kid, x);
-            }
-        }
+        let (kid, op_id) = self.duplicate_or_store(x)?;
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
         let shape = self.graph.shape(nid);
         self.kernels[kid].apply_movement(|view| view.expand(shape));
@@ -160,19 +171,8 @@ impl<'a> KernelManager<'a> {
     }
 
     fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
-        let (mut kid, mut op_id) = self.visited[&x];
         // TODO instead of store add permute op that swaps indices in IR
-        if self.outputs[&kid].len() > 1 {
-            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
-                self.add_store(x)?;
-                (kid, op_id) = self.create_load_kernel(x);
-                if self.outputs[&kid].len() > 1 {
-                    self.duplicate_kernel(&mut kid, x);
-                }
-            } else {
-                self.duplicate_kernel(&mut kid, x);
-            }
-        }
+        let (kid, op_id) = self.duplicate_or_store(x)?;
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
         let axes = self.graph.axes(nid);
         self.kernels[kid].apply_movement(|view| view.permute(axes));
@@ -187,25 +187,12 @@ impl<'a> KernelManager<'a> {
         if !self.visited.contains_key(&x) {
             panic!("Missing tensor {x} in visited.");
         }
-        let (mut kid, mut op_id) = self.visited[&x];
-
         // TODO duplicate or store only if this is not mergeable.
         // Otherwise if it is like unsqueeze or splitting two dims
         // or fusing two dims, it can be represented by a custom
         // op that is unfoldable into indices, since it does not change
         // global work size.
-
-        if self.outputs[&kid].len() > 1 {
-            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
-                self.add_store(x)?;
-                (kid, op_id) = self.create_load_kernel(x);
-                if self.outputs[&kid].len() > 1 {
-                    self.duplicate_kernel(&mut kid, x);
-                }
-            } else {
-                self.duplicate_kernel(&mut kid, x);
-            }
-        }
+        let (kid, op_id) = self.duplicate_or_store(x)?;
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
         let n = self.graph.shape(x).len();
         let shape = self.graph.shape(nid);
@@ -217,20 +204,8 @@ impl<'a> KernelManager<'a> {
     }
 
     fn add_pad_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
-        let (mut kid, mut op_id) = self.visited[&x];
-
         // TODO instead of duplication add pad op that adds if statement into ir (e.g. if idx < padding)
-        if self.outputs[&kid].len() > 1 {
-            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
-                self.add_store(x)?;
-                (kid, op_id) = self.create_load_kernel(x);
-                if self.outputs[&kid].len() > 1 {
-                    self.duplicate_kernel(&mut kid, x);
-                }
-            } else {
-                self.duplicate_kernel(&mut kid, x);
-            }
-        }
+        let (kid, op_id) = self.duplicate_or_store(x)?;
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
         let padding = self.graph.padding(nid);
         let rank = self.graph.shape(nid).len();
@@ -244,22 +219,10 @@ impl<'a> KernelManager<'a> {
     fn add_reduce_op(&mut self, nid: TensorId, x: TensorId, rop: ROp) -> Result<(), ZyxError> {
         // Don't apply reduce if the kernel already contains reduce
         // and the resulting shape's dimension is less than 256
-        let (mut kid, mut op_id) = self.visited[&x];
 
         // If the kernel has more than one output, or rc of x is more than one,
         // we have to either copy it (if it is small), or store x (if kid is big)
-        if self.outputs[&kid].len() > 1 {
-            if self.kernels[kid].is_reduce() || self.kernels[kid].contains_stores() {
-                self.add_store(x)?;
-                (kid, op_id) = self.create_load_kernel(x);
-                self.visited.insert(x, (kid, op_id));
-                if self.outputs[&kid].len() > 1 {
-                    self.duplicate_kernel(&mut kid, x);
-                }
-            } else {
-                self.duplicate_kernel(&mut kid, x);
-            }
-        }
+        let (kid, op_id) = self.duplicate_or_store(x)?;
         self.outputs.insert(kid, vec![nid; self.rcs[&nid] as usize]);
 
         /*for kernel in kernels.iter() {
@@ -312,7 +275,7 @@ impl<'a> KernelManager<'a> {
     fn add_cast_op(&mut self, nid: TensorId, x: TensorId, dtype: DType) {
         let (kid, op_id) = self.visited[&x];
         self.kernels[kid].ops.push(Op::Cast { x: op_id, dtype });
-        remove_first(x, kid, &mut self.outputs);
+        self.remove_first_output(x, kid);
         self.outputs.get_mut(&kid).unwrap().extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
         self.visited.insert(nid, (kid, self.kernels[kid].ops.len() - 1));
@@ -321,7 +284,7 @@ impl<'a> KernelManager<'a> {
     fn add_unary_op(&mut self, nid: TensorId, x: TensorId, uop: UOp) {
         let (kid, op_id) = self.visited[&x];
         self.kernels[kid].ops.push(Op::Unary { x: op_id, uop });
-        remove_first(x, kid, &mut self.outputs);
+        self.remove_first_output(x, kid);
         self.outputs.get_mut(&kid).unwrap().extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
         self.visited.insert(nid, (kid, self.kernels[kid].ops.len() - 1));
@@ -354,8 +317,8 @@ impl<'a> KernelManager<'a> {
         let kidy_stores = self.stores.get(&kidy).map(|x| !x.is_empty()).unwrap_or(false);
 
         if kid == kidy {
-            remove_first(x, kid, &mut self.outputs);
-            remove_first(y, kid, &mut self.outputs);
+            self.remove_first_output(x, kid);
+            self.remove_first_output(y, kid);
             self.outputs.get_mut(&kid).unwrap().extend(vec![nid; self.rcs[&nid] as usize]);
             let op = Op::Binary { x: op_id, y: op_idy, bop };
             self.kernels[kid].ops.push(op);
@@ -436,8 +399,8 @@ impl<'a> KernelManager<'a> {
             }
 
             //println!("kid={:?} kidy={:?}", kid, kidy);
-            remove_first(x, kid, &mut self.outputs);
-            remove_first(y, kidy, &mut self.outputs);
+            self.remove_first_output(x, kid);
+            self.remove_first_output(y, kidy);
             let youtputs = self.outputs.remove(&kidy).unwrap();
             let xoutputs = self.outputs.get_mut(&kid).unwrap();
             xoutputs.extend(youtputs);
@@ -857,7 +820,7 @@ impl Runtime {
     // 2. generates kernels from them
     // 3. assigns those kernels to devices, compiles and launches them
     #[allow(clippy::cognitive_complexity)]
-    pub fn realize2(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+    pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let (to_eval, realized_nodes, order, rcs, new_leafs, mut to_delete) = {
             let begin = std::time::Instant::now();
             let realized_nodes: Set<TensorId> =
@@ -949,16 +912,16 @@ impl Runtime {
             );
 
             //println!("{rcs:?}");
-            println!("to_eval: {to_eval:?}");
+            //println!("to_eval: {to_eval:?}");
 
             for nid in order {
-                println!(
+                /*println!(
                     "{nid} x {} -> {:?}  {}  {:?}",
                     km.rcs[&nid],
                     self.graph[nid],
                     self.graph.dtype(nid),
                     self.graph.shape(nid)
-                );
+                );*/
                 if km.is_virt_realized(nid) {
                     km.create_load_kernel(nid);
                 } else {
@@ -1250,29 +1213,4 @@ impl Runtime {
             Map::with_hasher(BuildHasherDefault::default()),
         )
     }
-}
-
-fn duplicate_kernel(
-    kid: &mut KernelId,
-    kernels: &mut Slab<KernelId, Kernel>,
-    loads: &mut Map<KernelId, Vec<TensorId>>,
-    stores: &mut Map<KernelId, Vec<TensorId>>,
-) {
-    //println!("Duplicating");
-    let kernel = kernels[*kid].clone();
-    //kernel.n_outputs -= 1;
-    let nkid = kernels.push(kernel);
-    if let Some(loaded_tensors) = loads.get(kid) {
-        loads.insert(nkid, loaded_tensors.clone());
-    }
-    if let Some(stored_tensors) = stores.get(kid) {
-        stores.insert(nkid, stored_tensors.clone());
-    }
-    *kid = nkid;
-}
-
-fn remove_first(x: TensorId, kid: KernelId, outputs: &mut Map<KernelId, Vec<TensorId>>) {
-    //println!("removing tensor {x} from kernel {kid:?}");
-    let outputs = outputs.get_mut(&kid).unwrap();
-    outputs.iter().position(|elem| *elem == x).map(|i| outputs.remove(i));
 }

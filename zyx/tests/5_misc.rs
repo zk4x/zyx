@@ -57,7 +57,6 @@ fn fuse_5() -> Result<(), ZyxError> {
     x = x.reshape([2, 3])?;
     y = y.t();
     Tensor::realize([&x, &y])?;
-    panic!();
     Ok(())
 }
 
@@ -68,7 +67,6 @@ fn fuse_6() -> Result<(), ZyxError> {
     let y = x.log2();
     let x = x.exp2();
     Tensor::realize([&x, &y])?;
-    panic!();
     Ok(())
 }
 

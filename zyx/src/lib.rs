@@ -72,7 +72,6 @@ mod autograd;
 mod chasher;
 mod prog_bar;
 mod realize;
-mod realize2;
 mod view;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
