@@ -1,11 +1,22 @@
 //! Converts graph to kernels and schedules them to devices
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, hash::BuildHasherDefault, time::Instant};
 
 use nanoserde::SerBin;
 
 use crate::{
-    backend::ProgramId, error::{BackendError, ErrorStatus}, graph::Node, kernel::{get_perf, Kernel, Op, OpId}, optimizer::Optimizer, prog_bar::ProgressBar, runtime::Runtime, shape::Dim, slab::{Slab, SlabId}, tensor::TensorId, view::View, Set, ZyxError
+    Map, Set, ZyxError,
+    backend::ProgramId,
+    error::{BackendError, ErrorStatus},
+    graph::{Graph, Node},
+    kernel::{Kernel, Op, OpId, get_perf},
+    optimizer::Optimizer,
+    prog_bar::ProgressBar,
+    runtime::Runtime,
+    shape::{Axis, Dim},
+    slab::{Slab, SlabId},
+    tensor::TensorId,
+    view::View,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -29,57 +40,41 @@ impl From<KernelId> for usize {
     }
 }
 
-impl Runtime {
-    pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
-        // Create a separate scope to handle the graph processing
-        {
-            let mut kernels = Slab::new();
-            let mut visited = std::collections::HashSet::new();
-            let mut movement_ops = std::collections::HashMap::new();
-            let mut tensor_to_kernel = std::collections::HashMap::new();
+#[derive(Debug, Clone)]
+enum MovementOp {
+    Expand { shape: Vec<Dim> },
+    Reshape { shape: Vec<Dim> },
+    Permute { axes: Vec<Axis> },
+    Pad { padding: Vec<(isize, isize)> },
+}
 
-            // Process tensors in reverse order
-            for &tensor_id in to_eval {
-                let (_, kernel) = self.parse_backward(
-                    tensor_id,
-                    &to_eval,
-                    &mut kernels,
-                    &mut visited,
-                    &mut movement_ops,
-                    &mut tensor_to_kernel,
-                    false,
-                )?;
-                kernel.debug();
-            }
-            panic!();
+struct KernelManager<'a> {
+    graph: &'a Graph,
+    to_eval: &'a Set<TensorId>,
+    realized_nodes: Set<TensorId>,
+    kernels: Slab<KernelId, Kernel>,
+    visited: Map<TensorId, bool>, // tensor_id -> is_expensive node (contains reduce)
+                                  //movement_ops: Map<TensorId, Vec<MovementOp>>,
+}
 
-            // Execute kernels
-            for (_, kernel) in kernels.iter() {
-                let kernel = kernel.clone();
-                let loads = Vec::new(); // For backward pass, we don't need loads
-                let stores = Vec::new(); // For backward pass, we don't need stores
-                println!("Executing kernel with {} ops", kernel.ops.len());
-                self.launch_kernel(kernel, loads, stores)?;
-            }
+impl<'a> KernelManager<'a> {
+    fn new(runtime: &'a Runtime, to_eval: &'a Set<TensorId>) -> Self {
+        Self {
+            graph: &runtime.graph,
+            to_eval,
+            realized_nodes: runtime.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect(),
+            kernels: Slab::with_capacity(100),
+            visited: Map::with_capacity_and_hasher(1000, BuildHasherDefault::new()),
+            //movement_ops: Map::with_hasher(BuildHasherDefault::new()),
         }
-
-        Ok(())
     }
 
     fn parse_backward(
         &mut self,
         nid: TensorId,
-        to_eval: &Set<TensorId>,
-        kernels: &mut Slab<KernelId, Kernel>,
-        visited: &mut std::collections::HashSet<TensorId>,
-        movement_ops: &mut std::collections::HashMap<TensorId, Vec<View>>,
-        tensor_to_kernel: &mut std::collections::HashMap<TensorId, (KernelId, usize)>,
         coming_from_store: bool,
-    ) -> Result<(OpId, Kernel), ZyxError> {
-        if visited.contains(&nid) {
-            todo!()
-        }
-
+        mut mops: Vec<MovementOp>,
+    ) -> Result<(OpId, Kernel, bool), ZyxError> {
         println!(
             "{nid} -> {:?}  {}  {:?}",
             self.graph[nid],
@@ -87,51 +82,141 @@ impl Runtime {
             self.graph.shape(nid)
         );
 
-        if to_eval.contains(&nid) && !coming_from_store {
-            let dtype = self.dtype(nid);
-            let (src, mut kernel) = self.parse_backward(nid, to_eval, kernels, visited, movement_ops, tensor_to_kernel, true)?;
+        if let Some(expensive_node) = self.visited.get(&nid)
+            && !coming_from_store
+            && *expensive_node
+        {
+            todo!();
+            // First check in which kernel it was already realized and add to that kernel if our ops that we
+            // are adding are not too complex or the source did not apply movement ops that would invalidate it.
+            // Otherwise we have to realize this tensor and somehow split the existing kernel.
+
+            // Movement ops can be applied on the storeview side if there is expensive subgraph, otherwise they
+            // are applied on loads.
+        }
+
+        if self.realized_nodes.contains(&nid) {
+            let mut view = View::contiguous(self.graph.shape(nid));
+            // Replay movement ops on the view
+            for mop in mops.iter().rev() {
+                match mop {
+                    MovementOp::Expand { shape } => view.expand(shape),
+                    MovementOp::Reshape { shape } => view.reshape(0..shape.len(), &shape),
+                    MovementOp::Permute { axes } => view.permute(axes),
+                    MovementOp::Pad { padding } => view.pad(padding.len(), padding),
+                }
+            }
+            let dtype = self.graph.dtype(nid);
+            let ops = vec![Op::LoadView { dtype, view }];
+            let kernel = Kernel { ops };
+            let src = 0;
+            self.visited.insert(nid, false);
+            return Ok((src, kernel, false));
+        }
+
+        if self.to_eval.contains(&nid) && !coming_from_store {
+            let dtype = self.graph.dtype(nid);
+            let (src, mut kernel, expensive) = self.parse_backward(nid, true, mops)?;
             let op = Op::StoreView { src, dtype };
             let src = kernel.ops.len();
             kernel.ops.push(op);
-            return Ok((src, kernel));
+            self.visited.insert(nid, expensive);
+            return Ok((src, kernel, expensive));
         } else {
             let node = self.graph.nodes[nid].1.clone();
 
             match node {
                 Node::Const { value } => {}
-                Node::Leaf { dtype } => {
-                    let view = View::contiguous(self.shape(nid));
-                    let ops = vec![Op::LoadView { dtype, view }];
-                    let kernel = Kernel { ops };
-                    let src = 0;
-                    return Ok((src, kernel));
+                Node::Leaf { .. } => {
+                    unreachable!();
                 }
                 Node::Unary { x, uop } => {
-                    let (x, mut kernel) = self.parse_backward(x, to_eval, kernels, visited, movement_ops, tensor_to_kernel, false)?;
-                    let op = Op::Unary { x, uop };
-                    let src = kernel.ops.len();
-                    kernel.ops.push(op);
-                    return Ok((src, kernel));
+                    let (x, mut kernel, expensive) = self.parse_backward(x, false, mops)?;
+                    kernel.ops.push(Op::Unary { x, uop });
+                    self.visited.insert(nid, expensive);
+                    return Ok((kernel.ops.len() - 1, kernel, expensive));
+                }
+                Node::Cast { x, dtype } => {
+                    let (x, mut kernel, expensive) = self.parse_backward(x, false, mops)?;
+                    kernel.ops.push(Op::Cast { x, dtype });
+                    self.visited.insert(nid, expensive);
+                    return Ok((kernel.ops.len() - 1, kernel, expensive));
                 }
                 Node::Binary { x, y, bop } => {
-                    let (x, mut kernel) = self.parse_backward(x, to_eval, kernels, visited, movement_ops, tensor_to_kernel, false)?;
-                    let (y, kernel_y) = self.parse_backward(y, to_eval, kernels, visited, movement_ops, tensor_to_kernel, false)?;
+                    let (x, mut kernel, expensive) = self.parse_backward(x, false, mops.clone())?;
+                    let (y, kernel_y, expensive_y) = self.parse_backward(y, false, mops)?;
+                    let expensive = expensive || expensive_y;
                     // TODO increment kernel_y.ops and y
                     kernel.ops.extend(kernel_y.ops);
-                    let op = Op::Binary { x, y, bop };
-                    let src = kernel.ops.len();
-                    kernel.ops.push(op);
-                    return Ok((src, kernel));
+                    kernel.ops.push(Op::Binary { x, y, bop });
+                    self.visited.insert(nid, expensive);
+                    return Ok((kernel.ops.len() - 1, kernel, expensive));
                 }
-                Node::Cast { x, dtype } => {}
-                Node::Reshape { x } => {}
-                Node::Permute { x } => {}
-                Node::Expand { x } => {}
-                Node::Pad { x } => {}
-                Node::Reduce { x, .. } => {}
+                Node::Reshape { x } => {
+                    let shape = self.graph.shape(nid).into();
+                    mops.push(MovementOp::Reshape { shape });
+                    let (src, kernel, expensive) = self.parse_backward(x, false, mops)?;
+                    self.visited.insert(nid, expensive);
+                    return Ok((src, kernel, expensive));
+                }
+                Node::Permute { x } => {
+                    let axes = self.graph.axes(nid).into();
+                    mops.push(MovementOp::Permute { axes });
+                    let (src, kernel, expensive) = self.parse_backward(x, false, mops)?;
+                    self.visited.insert(nid, expensive);
+                    return Ok((src, kernel, expensive));
+                }
+                Node::Expand { x } => {
+                    let shape = self.graph.shape(nid).into();
+                    mops.push(MovementOp::Expand { shape });
+                    let (src, kernel, expensive) = self.parse_backward(x, false, mops)?;
+                    self.visited.insert(nid, expensive);
+                    return Ok((src, kernel, expensive));
+                }
+                Node::Pad { x } => {
+                    let padding = self.graph.padding(nid).into();
+                    mops.push(MovementOp::Pad { padding });
+                    let (src, kernel, expensive) = self.parse_backward(x, false, mops)?;
+                    self.visited.insert(nid, expensive);
+                    return Ok((src, kernel, expensive));
+                }
+                Node::Reduce { x, rop } => {
+                    let shape = self.graph.axes(x);
+                    let axes = self.graph.axes(nid);
+                    let dims = axes.iter().map(|&a| shape[a]).collect();
+                    let (x, mut kernel, _) = self.parse_backward(x, false, mops)?;
+                    kernel.ops.push(Op::Reduce { x, rop, dims });
+                    self.visited.insert(nid, true);
+                    return Ok((kernel.ops.len() - 1, kernel, true));
+                }
             }
         }
         todo!()
+    }
+}
+
+impl Runtime {
+    pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+        let mut kernel_manager = KernelManager::new(self, to_eval);
+        let time = Instant::now();
+
+        // Process tensors in reverse order
+        for &tensor_id in to_eval {
+            let (_, kernel, _) = kernel_manager.parse_backward(tensor_id, false, Vec::new())?;
+            kernel.debug();
+        }
+        panic!("Kernelizer took {}us", time.elapsed().as_micros());
+
+        // Execute kernels
+        for (_, kernel) in kernel_manager.kernels.iter() {
+            let kernel = kernel.clone();
+            let loads = Vec::new(); // For backward pass, we don't need loads
+            let stores = Vec::new(); // For backward pass, we don't need stores
+            println!("Executing kernel with {} ops", kernel.ops.len());
+            self.launch_kernel(kernel, loads, stores)?;
+        }
+
+        Ok(())
     }
 
     fn launch_kernel(

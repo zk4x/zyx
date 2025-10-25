@@ -49,6 +49,30 @@ fn fuse_4() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn fuse_5() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
+    x = x.t();
+    let mut y = x.log2();
+    x = x.exp2();
+    x = x.reshape([2, 3])?;
+    y = y.t();
+    Tensor::realize([&x, &y])?;
+    panic!();
+    Ok(())
+}
+
+#[test]
+fn fuse_6() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
+    x = x.sum([1])?;
+    let y = x.log2();
+    let x = x.exp2();
+    Tensor::realize([&x, &y])?;
+    panic!();
+    Ok(())
+}
+
+#[test]
 fn matmul_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     let y = Tensor::from([[2, 4], [3, 1], [5, 1]]);

@@ -21,7 +21,6 @@ pub const IDX_T: DType = DType::U32;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct Kernel {
     pub ops: Vec<Op>,
-    //pub n_outputs: u32, // TODO remove this from here
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]

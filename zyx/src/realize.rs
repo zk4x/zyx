@@ -949,16 +949,16 @@ impl Runtime {
             );
 
             //println!("{rcs:?}");
-            //println!("{to_eval:?}");
+            println!("to_eval: {to_eval:?}");
 
             for nid in order {
-                /*println!(
+                println!(
                     "{nid} x {} -> {:?}  {}  {:?}",
                     km.rcs[&nid],
                     self.graph[nid],
                     self.graph.dtype(nid),
                     self.graph.shape(nid)
-                );*/
+                );
                 if km.is_virt_realized(nid) {
                     km.create_load_kernel(nid);
                 } else {
