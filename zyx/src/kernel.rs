@@ -53,6 +53,7 @@ pub enum Op {
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
+    Null,
 }
 
 // This is SSA representation. All ops return immutable variables.
@@ -295,6 +296,7 @@ impl Kernel {
                     indent.pop();
                     println!("{i:>3}{indent}{BLUE}ENDLOOP{RESET}");
                 }
+                Op::Null => {}
             }
         }
     }
@@ -347,6 +349,7 @@ impl Kernel {
                 Op::Loop { .. } => unreachable!(),
                 Op::EndLoop => unreachable!(),
                 Op::Store { .. } => unreachable!(),
+                Op::Null => unreachable!(),
             };
             visited.insert(x, n);
             (f, r, w)
@@ -493,6 +496,7 @@ impl Kernel {
                             min_param = y;
                         }
                     }
+                    Op::Null => unreachable!(),
                 }
             }
             //println!("op_id={op_id}, min_param={min_param}");
@@ -554,7 +558,12 @@ impl Kernel {
             let mut i = 0;
             while i < tail.len() {
                 match &mut tail[i] {
-                    Op::ConstView { .. } | Op::LoadView { .. } | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => {}
+                    Op::ConstView { .. }
+                    | Op::LoadView { .. }
+                    | Op::Define { .. }
+                    | Op::Loop { .. }
+                    | Op::EndLoop
+                    | Op::Null => {}
                     Op::StoreView { src, .. } => {
                         if *src == op_id {
                             *src = self.ops.len() + i;
@@ -958,7 +967,8 @@ impl Kernel {
                 | Op::StoreView { .. }
                 | Op::Loop { .. }
                 | Op::Define { .. }
-                | Op::EndLoop => {}
+                | Op::EndLoop
+                | Op::Null => {}
                 Op::Load { src, index } => {
                     if *src >= range.start {
                         *src -= n;
@@ -1006,7 +1016,7 @@ impl Kernel {
         while let Some(param) = params.pop() {
             if needed.insert(param) {
                 match self.ops[param] {
-                    Op::Const(..) | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => {}
+                    Op::Const(..) | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop | Op::Null => {}
                     Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } => unreachable!(),
                     Op::Load { src, index } => {
                         params.push(src);
@@ -1097,7 +1107,8 @@ impl Kernel {
                 | Op::Store { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop
-                | Op::Define { .. } => {}
+                | Op::Define { .. }
+                | Op::Null => {}
                 Op::Cast { x, dtype } => {
                     if let Op::Const(x) = self.ops[x] {
                         self.ops[op_id] = Op::Const(x.cast(dtype));
@@ -1257,7 +1268,8 @@ pub fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
             | Op::LoadView { .. }
             | Op::Loop { .. }
             | Op::Define { .. }
-            | Op::EndLoop => {}
+            | Op::EndLoop
+            | Op::Null => {}
             Op::StoreView { src, .. } => {
                 h(src);
             }
@@ -1292,7 +1304,8 @@ fn remap(ops: &mut [Op], remap: &Map<OpId, OpId>) {
             | Op::Const(_)
             | Op::Loop { .. }
             | Op::EndLoop
-            | Op::Define { .. } => {}
+            | Op::Define { .. }
+            | Op::Null => {}
             Op::StoreView { src, .. } => {
                 h(src);
             }

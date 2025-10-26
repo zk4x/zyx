@@ -56,7 +56,7 @@ especially for large kernels.
 ### 5. Kernel compilation
 
 Finally kernels are compiled into respective backends - CUDA, OpenCL, WGPU, ...
-Compilation from IR into backends is straightforward and usually the whole function is about 100 lines of code
+Compilation from IR into backends is straightforward and usually the whole mapping function is about 100 lines of code
 per backend.
 
 ## Conclusion
@@ -72,7 +72,7 @@ We can classify kernels into three categories:
 
 ## 1. kernels without loops (only global and local work size) - these are rare (due to kernelizer being good at fusion) and simple to optimize. For now just having work size search is enough.
 
-## 2. kernels with large global work size (roughly >32)
+## 2. kernels with inner loop and large global work size (roughly >32)
 
 This includes matmul and convolution
 
@@ -84,7 +84,7 @@ Possible optimizations:
 - other ...
 
 
-## 3. kernels with small global work size (about <32)
+## 3. kernels with inner loop and small global work size (about <32)
 
 These are pure reduce kernels
 

@@ -699,7 +699,9 @@ impl OpenCLDevice {
         // first we will calculate those reference counts.
         for (i, op) in kernel.ops.iter().enumerate() {
             match op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } | Op::Null => {
+                    unreachable!()
+                }
                 Op::Const(x) => {
                     dtypes.insert(i, x.dtype());
                 }
@@ -754,7 +756,9 @@ impl OpenCLDevice {
         for (i, op) in kernel.ops.iter().enumerate() {
             //println!("{i} -> {op:?}");
             match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Null => {
+                    unreachable!()
+                }
                 &Op::Const(x) => {
                     constants.insert(i, x);
                 }

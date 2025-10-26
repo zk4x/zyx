@@ -19,7 +19,7 @@ impl RMSNorm {
         }
     }
 
-    ///RMSNorm forward function
+    /// RMSNorm forward function
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
         let dtype = x.dtype();

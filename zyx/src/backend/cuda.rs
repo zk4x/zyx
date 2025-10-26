@@ -745,7 +745,7 @@ impl CUDADevice {
         // first we will calculate those reference counts.
         for (i, op) in kernel.ops.iter().enumerate() {
             match op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Null => unreachable!(),
                 Op::Const(x) => {
                     dtypes.insert(i, x.dtype());
                 }
@@ -803,7 +803,9 @@ impl CUDADevice {
         for (i, op) in kernel.ops.iter().enumerate() {
             //println!("{i} -> {op:?}");
             match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Null => {
+                    unreachable!()
+                }
                 &Op::Const(x) => {
                     constants.insert(i, x);
                 }
@@ -1153,7 +1155,9 @@ impl CUDADevice {
         for (i, op) in kernel.ops.iter().enumerate() {
             //println!("{i} -> {op:?}");
             match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Null => {
+                    unreachable!()
+                }
                 &Op::Const(x) => {
                     constants.insert(i, x);
                 }
@@ -1940,7 +1944,7 @@ fn get_dtypes(kernel: &Kernel) -> (Map<OpId, u32>, Map<OpId, DType>) {
     // first we will calculate those reference counts.
     for (i, op) in kernel.ops.iter().enumerate() {
         match op {
-            Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } => unreachable!(),
+            Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Null => unreachable!(),
             Op::Const(x) => {
                 dtypes.insert(i, x.dtype());
             }

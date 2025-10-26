@@ -764,9 +764,6 @@ impl Tensor {
     /// This function randomly sets elements of the input tensor to zero based on the provided probability.
     /// The output tensor has the same shape as the input tensor. Elements are preserved with probability `1 - probability`
     /// and set to zero with probability `probability`.
-    ///
-    /// # Errors
-    /// Returns device error if the device failed to allocate memory for tensor.
     #[allow(clippy::missing_panics_doc)]
     pub fn dropout<P: Scalar + Float>(&self, probability: P) -> Tensor {
         if Tensor::training() {

@@ -31,11 +31,7 @@ impl CausalSelfAttention {
     /// Forward pass of causal self attention
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x: Tensor = x.into();
-        let [b, t, c] = x.shape()[..] else {
-            return Err(ZyxError::ShapeError(
-                "x must have exactly 3 dims, b, t, c".into(),
-            ));
-        };
+        let [b, t, c] = x.dims::<3>()?;
         let mut splits = self.c_attn.forward(x)?.split([c, c, c], 2)?;
         let mut v = splits.pop().unwrap();
         let mut k = splits.pop().unwrap();
@@ -62,7 +58,7 @@ impl CausalSelfAttention {
         att = att.softmax([-1])?;
         //println!("{att}");
         // TODO enable dropout
-        //att = att.dropout(self.dropout_p)?;
+        att = att.dropout(self.dropout_p);
         let mut y = att.dot(v)?;
         y = y.transpose(1, 2)?.reshape([b, t, c])?;
         y = self.c_proj.forward(y)?;

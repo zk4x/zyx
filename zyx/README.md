@@ -45,9 +45,9 @@ let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
 
 ## Backends
 
-- [x] `CUDA`
+- [x] `CUDA (PTX)`
 - [x] `OpenCL`
-- [x] `WGPU`
+- [x] `WGPU (WGSL)`
 
 Please look at file [DEVICE_CONFIG.md](https://github.com/zk4x/zyx/blob/main/zyx/DEVICE_CONFIG.md)
 for detailed info how to tell Zyx which hardware it should utilize.
@@ -81,8 +81,8 @@ impl TinyNet {
 }
 
 let mut net = TinyNet {
-    l0: Linear::init(3, 1024, true, DType::F16)?,
-    l1: Linear::init(1024, 2, true, DType::F16)?,
+    l0: Linear::new(3, 1024, true, DType::F16)?,
+    l1: Linear::new(1024, 2, true, DType::F16)?,
     lr: 0.01,
 };
 
@@ -114,7 +114,7 @@ Tensors do not get realized automatically. Realization happens only when user ac
 ```rust ignore
 Tensor::realize([&x, &y]).unwrap();
 ```
-If you do not know when to realize tensors, just do it after updating them with optimizer.
+If you do not know when to realize tensors, just do it after updating model weights.
 ```rust ignore
 sgd.update(&mut model, grads);
 Tensor::realize(&model).unwrap();
@@ -122,8 +122,8 @@ Tensor::realize(&model).unwrap();
 
 ## Error handling
 
-In case of incorrect user input and incorrect hardware behavior, zyx returns results.
-Every panic is a bug.
+In case of incorrect user input, zyx returns results. Panics are reserved for OOM and hardware issues that are not recoverable.
+There are minimal exceptions to this rule, such as binary ops, which will panic if they cannot be broadcasted to a common shape.
 
 ## Goals
 
@@ -153,18 +153,18 @@ Zyx uses some unsafe code, due to FFI/hardware access.
 
 Zyx brings it's own runtime. It is a single global struct behind mutex.
 Tensors are indices into graph stored in this runtime.
-The equivavlent solution would be to use Arc everywhere,
+The equivalent solution would be to use Arc everywhere,
 without global struct, but it would be slightly slower.
 
 ## Dependencies
 
-Zyx tries to use 0 dependencies, but we are not reinventing the wheel, so we use json for config
+Zyx tries to use 0 dependencies, but we are not reinventing the wheel, so we use nanoserde for config
 parsing, libloading to dynamically load backend dynamic library files (i.e. libcuda.so) and half
-for numbers. All dependencies are carefully considered and are used only if deemed absolutely necessary,
+for f16 and bf16 support. All dependencies are carefully considered and are used only if deemed absolutely necessary,
 that is only if they do one thing and do it well.
 
 Optional dependencies do not have size limits, so zyx can bring lot of features with those.
-This is namely WGPU, which has 3 million lines of code.
+This is namely WGPU, which has millions of lines of code with it's dependencies.
 
 ## Code of conduct
 

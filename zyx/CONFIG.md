@@ -32,7 +32,7 @@ Copy this into your device_config.json:
   }
 }
 ```
-Then put numbers beginning at zero into hip, cuda and or opencl configuration ids. In the above example, zyx will utilize cuda device with id 0.
+Then put numbers starting at zero into hip, cuda and or opencl configuration ids. In the above example, zyx will utilize cuda device with id 0.
 
 WGSL currently can only be disabled or enabled and it runs only on one device. You can change use_wgsl to false in order to disable wgsl backend, or you can disable feature wgsl to do the same.
 

@@ -7,8 +7,6 @@ pub enum ZyxError {
     ShapeError(Box<str>),
     /// Wrong dtype for given operation
     DTypeError(Box<str>),
-    /// Backend configuration error
-    BackendConfig(&'static str),
     /// Error from file operations
     IOError(std::io::Error),
     /// Error parsing some data
@@ -40,14 +38,6 @@ impl ZyxError {
         Self::DTypeError(e.into())
     }
 
-    pub(crate) fn backend_config(e: &'static str) -> Self {
-        Self::BackendConfig(e)
-    }
-
-    pub(crate) fn io_error(e: std::io::Error) -> Self {
-        Self::IOError(e)
-    }
-
     #[track_caller]
     pub(crate) fn parse_error(e: Box<str>) -> Self {
         let location = std::panic::Location::caller();
@@ -65,7 +55,6 @@ impl std::fmt::Display for ZyxError {
             ZyxError::DTypeError(e) => f.write_fmt(format_args!("Wrong dtype {e:?}")),
             ZyxError::IOError(e) => f.write_fmt(format_args!("IO {e}")),
             ZyxError::ParseError(e) => f.write_fmt(format_args!("IO {e}")),
-            ZyxError::BackendConfig(e) => f.write_fmt(format_args!("Backend config {e:?}'")),
             ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),
             ZyxError::AllocationError(e) => f.write_fmt(format_args!("Allocation error {e}")),
             ZyxError::BackendError(e) => f.write_fmt(format_args!("Backend {e}")),
@@ -76,6 +65,7 @@ impl std::fmt::Display for ZyxError {
 impl std::error::Error for ZyxError {}
 
 impl From<std::io::Error> for ZyxError {
+    #[track_caller]
     fn from(value: std::io::Error) -> Self {
         Self::IOError(value)
     }

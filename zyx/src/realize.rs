@@ -105,18 +105,21 @@ impl<'a> KernelManager<'a> {
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
                 if self.outputs[&kid].len() > 1 {
-                    self.duplicate_kernel(&mut kid, x);
+                    self.duplicate_kernel(x, &mut kid);
                 }
             } else {
-                self.duplicate_kernel(&mut kid, x);
+                self.duplicate_kernel(x, &mut kid);
             }
         }
         Ok((kid, op_id))
     }
 
-    fn duplicate_kernel(&mut self, kid: &mut KernelId, x: TensorId) {
+    fn duplicate_kernel(&mut self, x: TensorId, kid: &mut KernelId) {
         self.remove_first_output(x, *kid);
         //println!("Duplicating");
+        // TODO instead of copy of the whole kernel, copy only relevant ops
+        // and remove these ops from the original if not needed.
+
         let kernel = self.kernels[*kid].clone();
         //kernel.n_outputs -= 1;
         let nkid = self.kernels.push(kernel);
@@ -331,14 +334,14 @@ impl<'a> KernelManager<'a> {
                     self.add_store(x)?;
                     (kid, op_id) = self.create_load_kernel(x);
                     if self.outputs[&kid].len() > 1 {
-                        self.duplicate_kernel(&mut kid, x);
+                        self.duplicate_kernel(x, &mut kid);
                         self.outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
                     }
                     self.add_store(y)?;
                     (kidy, op_idy) = self.create_load_kernel(y);
                     //println!("kidy={:?}", kidy);
                     if self.outputs[&kidy].len() > 1 {
-                        self.duplicate_kernel(&mut kidy, y);
+                        self.duplicate_kernel(y, &mut kidy);
                         self.outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
                     }
                     //println!("kidy={:?}", kidy);
@@ -347,7 +350,7 @@ impl<'a> KernelManager<'a> {
                     self.add_store(x)?;
                     (kid, op_id) = self.create_load_kernel(x);
                     if self.outputs[&kid].len() > 1 {
-                        self.duplicate_kernel(&mut kid, x);
+                        self.duplicate_kernel(x, &mut kid);
                         self.outputs.entry(kid).and_modify(|b| b.push(x)).or_insert_with(|| vec![x]);
                     }
                 }
@@ -356,7 +359,7 @@ impl<'a> KernelManager<'a> {
                     (kidy, op_idy) = self.create_load_kernel(y);
                     //println!("kidy={:?}", kidy);
                     if self.outputs[&kidy].len() > 1 {
-                        self.duplicate_kernel(&mut kidy, y);
+                        self.duplicate_kernel(y, &mut kidy);
                         self.outputs.entry(kidy).and_modify(|b| b.push(y)).or_insert_with(|| vec![y]);
                     }
                     //println!("kidy={:?}", kidy);
