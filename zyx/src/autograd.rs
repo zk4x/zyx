@@ -54,7 +54,7 @@ impl GradientTape {
     /// If you want to keep tracing, use [`gradient_persistent`](GradientTape::gradient_persistent)
     #[must_use]
     pub fn gradient<'a>(&self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
-        let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
+        let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id()).collect();
         //println!("Sources: {sources:?}");
         let mut rt = RT.lock();
         let grads: Map<TensorId, TensorId> = rt.gradient(target.id(), &sources.iter().copied().collect());
@@ -77,7 +77,7 @@ impl GradientTape {
         target: &Tensor,
         sources: impl IntoIterator<Item = &'a Tensor>,
     ) -> Vec<Option<Tensor>> {
-        let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id).collect();
+        let sources: Vec<TensorId> = sources.into_iter().map(|t| t.id()).collect();
         //println!("Sources: {sources:?}");
         let grads: Map<TensorId, TensorId> = RT.lock().gradient(target.id(), &sources.iter().copied().collect());
         sources

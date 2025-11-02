@@ -59,10 +59,6 @@ impl KMKernel {
         self.kernel.is_reduce()
     }
 
-    fn iter_mut(&mut self) -> std::slice::IterMut<'_, Op> {
-        self.kernel.ops.iter_mut()
-    }
-
     fn apply_movement(&mut self, func: impl Fn(&mut View)) {
         self.kernel.apply_movement(func);
     }
@@ -157,7 +153,7 @@ impl std::ops::Index<OpId> for KMKernel {
     }
 }
 
-struct KernelManager<'a> {
+struct Kernelizer<'a> {
     // TODO merge as many of these as possible. Perhaps start by mergins rcs and visited
     // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
     virt_realized_nodes: Set<TensorId>,
@@ -174,7 +170,7 @@ struct KernelManager<'a> {
     debug: &'a DebugMask,
 }
 
-impl<'a> KernelManager<'a> {
+impl<'a> Kernelizer<'a> {
     fn new(
         realized_nodes: Set<TensorId>,
         rcs: Map<TensorId, u32>,
@@ -241,9 +237,9 @@ impl<'a> KernelManager<'a> {
         // and remove these ops from the original if not needed.
         let mut kernel = self.kernels[kid].clone();
         kernel.outputs = vec![x];
-        kernel.drop_unused_ops(&self.visited);
+        //kernel.drop_unused_ops(&self.visited);
         self.kernels[kid].remove_first_output(x);
-        self.kernels[kid].drop_unused_ops(&self.visited);
+        //self.kernels[kid].drop_unused_ops(&self.visited);
         self.kernels.push(kernel)
     }
 
@@ -992,7 +988,7 @@ impl Runtime {
 
             let begin = std::time::Instant::now();
 
-            let mut km = KernelManager::new(
+            let mut km = Kernelizer::new(
                 realized_nodes,
                 rcs,
                 &self.graph,
