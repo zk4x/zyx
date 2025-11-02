@@ -40,13 +40,7 @@ pub enum Op {
     //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
     //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
     //PadIndex(OpId, isize, isize), // Pad index with padding
-
-    // ops that only exist after unfolding views and reduces
-    Const(Constant),
-    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
-    Load { src: OpId, index: OpId },
-    Loop { dim: Dim, scope: Scope },
-    EndLoop,
+    //Unsqueeze { axis: Axis, dim: Dim } // Inserts a new loop at given axis
 
     // ops that exist in both
     Store { dst: OpId, x: OpId, index: OpId },
@@ -54,6 +48,13 @@ pub enum Op {
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
     Null,
+
+    // ops that only exist after unfolding views and reduces
+    Const(Constant),
+    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
+    Load { src: OpId, index: OpId },
+    Loop { dim: Dim, scope: Scope },
+    EndLoop,
 }
 
 // This is SSA representation. All ops return immutable variables.
