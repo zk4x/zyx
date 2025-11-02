@@ -181,6 +181,14 @@ impl<Id: SlabId, T> Slab<Id, T> {
     pub(crate) fn len(&self) -> Id {
         Id::from(self.values.len() - self.empty.len())
     }
+
+    pub fn get_mut(&mut self, index: Id) -> Option<&mut T> {
+        if self.empty.contains(&index) {
+            return None
+        }
+        let idx = index.into();
+        self.values.get_mut(idx).map(|e| unsafe { e.assume_init_mut() })
+    }
 }
 
 impl<Id: SlabId, T> Index<Id> for Slab<Id, T> {

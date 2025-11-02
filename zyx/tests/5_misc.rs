@@ -398,15 +398,6 @@ fn var1() -> Result<(), ZyxError> {
     Ok(())
 }*/
 
-#[cfg(not(feature = "wgpu"))]
-#[test]
-fn fp16() -> Result<(), ZyxError> {
-    let x = Tensor::from([0., 1., 2.]).cast(DType::F16);
-    let x = x.exp2();
-    println!("{x}");
-    Ok(())
-}
-
 #[test]
 fn dot_pad() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);

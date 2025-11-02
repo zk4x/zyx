@@ -3,6 +3,7 @@
 use nanoserde::SerBin;
 
 use crate::{
+    RED, RESET,
     DType, DebugMask, Map, Set, ZyxError,
     backend::{Device, ProgramId, SearchConfig},
     dtype::Constant,
@@ -76,6 +77,9 @@ impl KMKernel {
     }
 
     fn debug(&self) {
+        println!("loads={:?}", self.loads);
+        println!("stores={:?}", self.stores);
+        println!("outputs={:?}", self.outputs);
         self.kernel.debug();
     }
 
@@ -103,6 +107,12 @@ impl KMKernel {
             if !is_required {
                 *op = Op::Null;
             }
+        }
+        self.loads = loaded_tensors;
+        #[cfg(debug_assertions)]
+        if self.loads.len() != self.kernel.ops.iter().filter(|op| matches!(op, Op::LoadView { .. })).count() {
+            self.debug();
+            panic!();
         }
     }
 
@@ -199,6 +209,14 @@ impl<'a> Kernelizer<'a> {
         }
     }
 
+    #[allow(unused)]
+    fn debug(&self) {
+        for kernel in self.kernels.values() {
+            kernel.debug();
+        }
+        println!();
+    }
+
     fn is_virt_realized(&self, nid: TensorId) -> bool {
         self.virt_realized_nodes.contains(&nid)
     }
@@ -237,9 +255,10 @@ impl<'a> Kernelizer<'a> {
         // and remove these ops from the original if not needed.
         let mut kernel = self.kernels[kid].clone();
         kernel.outputs = vec![x];
-        //kernel.drop_unused_ops(&self.visited);
+        kernel.drop_unused_ops(&self.visited);
         self.kernels[kid].remove_first_output(x);
-        //self.kernels[kid].drop_unused_ops(&self.visited);
+        self.kernels[kid].drop_unused_ops(&self.visited);
+        //self.debug();
         self.kernels.push(kernel)
     }
 
@@ -273,9 +292,12 @@ impl<'a> Kernelizer<'a> {
         // TODO instead of store add expand op that inserts loop in IR
         let (kid, op_id) = self.duplicate_or_store(x)?;
         let shape = self.graph.shape(nid);
-        self.kernels[kid].apply_movement(|view| view.expand(shape));
+        let kernel = &mut self.kernels[kid];
+        kernel.apply_movement(|view| view.expand(shape));
+        kernel.remove_first_output(x);
+        kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -284,9 +306,12 @@ impl<'a> Kernelizer<'a> {
         // TODO instead of store add permute op that swaps indices in IR
         let (kid, op_id) = self.duplicate_or_store(x)?;
         let axes = self.graph.axes(nid);
-        self.kernels[kid].apply_movement(|view| view.permute(axes));
+        let kernel = &mut self.kernels[kid];
+        kernel.apply_movement(|view| view.permute(axes));
+        kernel.remove_first_output(x);
+        kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -304,9 +329,12 @@ impl<'a> Kernelizer<'a> {
         let (kid, op_id) = self.duplicate_or_store(x)?;
         let n = self.graph.shape(x).len();
         let shape = self.graph.shape(nid);
-        self.kernels[kid].apply_movement(|view| view.reshape(0..n, shape));
+        let kernel = &mut self.kernels[kid];
+        kernel.apply_movement(|view| view.reshape(0..n, shape));
+        kernel.remove_first_output(x);
+        kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -316,9 +344,12 @@ impl<'a> Kernelizer<'a> {
         let (kid, op_id) = self.duplicate_or_store(x)?;
         let padding = self.graph.padding(nid);
         let rank = self.graph.shape(nid).len();
-        self.kernels[kid].apply_movement(|view| view.pad(rank, padding));
+        let kernel = &mut self.kernels[kid];
+        kernel.apply_movement(|view| view.pad(rank, padding));
+        kernel.remove_first_output(x);
+        kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -330,6 +361,7 @@ impl<'a> Kernelizer<'a> {
         // If the kernel has more than one output, or rc of x is more than one,
         // we have to either copy it (if it is small), or store x (if kid is big)
         let (kid, op_id) = self.duplicate_or_store(x)?;
+        //self.debug();
 
         /*for kernel in kernels.iter() {
             println!("{:?}, {}", kernel.0, kernel.1.n_outputs);
@@ -370,11 +402,13 @@ impl<'a> Kernelizer<'a> {
         if shape == dims {
             self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
         }
-        let op = Op::Reduce { x: op_id, rop, dims };
-        self.kernels[kid].push(op);
+        let kernel = &mut self.kernels[kid];
+        kernel.push(Op::Reduce { x: op_id, rop, dims });
+        kernel.remove_first_output(x);
+        kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
-        self.visited.insert(nid, (kid, self.kernels[kid].last_op_id()));
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
+        self.visited.insert(nid, (kid, kernel.last_op_id()));
         Ok(())
     }
 
@@ -483,7 +517,7 @@ impl<'a> Kernelizer<'a> {
             let n = self.kernels[kid].kernel.ops.len();
             for op in kernel.ops.iter_mut() {
                 match op {
-                    Op::ConstView { .. } | Op::LoadView { .. } | Op::Loop { .. } => {}
+                    Op::ConstView { .. } | Op::LoadView { .. } | Op::Loop { .. } | Op::Null => {}
                     Op::StoreView { src: x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
                         *x += n
                     }
@@ -491,7 +525,7 @@ impl<'a> Kernelizer<'a> {
                         *x += n;
                         *y += n;
                     }
-                    _ => unreachable!(),
+                    op => unreachable!("{op:?}"),
                 }
             }
             self.kernels[kid].kernel.ops.extend(kernel.ops);
@@ -988,7 +1022,7 @@ impl Runtime {
 
             let begin = std::time::Instant::now();
 
-            let mut km = Kernelizer::new(
+            let mut kernelizer = Kernelizer::new(
                 realized_nodes,
                 rcs,
                 &self.graph,
@@ -1001,66 +1035,57 @@ impl Runtime {
             );
 
             //println!("{rcs:?}");
-            println!("to_eval: {to_eval:?}");
+            //println!("to_eval: {to_eval:?}");
 
             for nid in order {
-                println!(
-                    "{nid} x {} -> {:?}  {}  {:?}",
-                    km.rcs[&nid],
+                /*println!(
+                    "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
+                    if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
+                    kernelizer.rcs[&nid],
                     self.graph[nid],
                     self.graph.dtype(nid),
                     self.graph.shape(nid)
-                );
-                if km.is_virt_realized(nid) {
-                    km.create_load_kernel(nid);
+                );*/
+                if kernelizer.is_virt_realized(nid) {
+                    kernelizer.create_load_kernel(nid);
                 } else {
                     match self.graph[nid] {
                         Node::Leaf { .. } => unreachable!(),
-                        Node::Const { value } => km.create_const_kernel(nid, value),
-                        Node::Cast { x, dtype } => km.add_cast_op(nid, x, dtype),
-                        Node::Unary { x, uop } => km.add_unary_op(nid, x, uop),
-                        Node::Expand { x } => km.add_expand_op(nid, x)?,
-                        Node::Permute { x } => km.add_permute_op(nid, x)?,
-                        Node::Reshape { x } => km.add_reshape_op(nid, x)?,
-                        Node::Pad { x } => km.add_pad_op(nid, x)?,
-                        Node::Reduce { x, rop } => km.add_reduce_op(nid, x, rop)?,
-                        Node::Binary { x, y, bop } => km.add_binary_op(nid, x, y, bop)?,
+                        Node::Const { value } => kernelizer.create_const_kernel(nid, value),
+                        Node::Cast { x, dtype } => kernelizer.add_cast_op(nid, x, dtype),
+                        Node::Unary { x, uop } => kernelizer.add_unary_op(nid, x, uop),
+                        Node::Expand { x } => kernelizer.add_expand_op(nid, x)?,
+                        Node::Permute { x } => kernelizer.add_permute_op(nid, x)?,
+                        Node::Reshape { x } => kernelizer.add_reshape_op(nid, x)?,
+                        Node::Pad { x } => kernelizer.add_pad_op(nid, x)?,
+                        Node::Reduce { x, rop } => kernelizer.add_reduce_op(nid, x, rop)?,
+                        Node::Binary { x, y, bop } => kernelizer.add_binary_op(nid, x, y, bop)?,
                     };
                 }
 
                 if to_eval.contains(&nid) {
-                    km.add_store(nid)?;
-                    *km.rcs.get_mut(&nid).unwrap() -= 1;
-                    if km.rcs[&nid] > 0 {
-                        km.create_load_kernel(nid);
+                    kernelizer.add_store(nid)?;
+                    *kernelizer.rcs.get_mut(&nid).unwrap() -= 1;
+                    if kernelizer.rcs[&nid] > 0 {
+                        kernelizer.create_load_kernel(nid);
                     }
                 }
 
-                /*for (kid, kernel) in kernels.iter() {
-                    if let Some(loads) = loads.get(&kid) {
-                        println!("loads={loads:?}");
-                    }
-                    if let Some(stores) = stores.get(&kid) {
-                        println!("stores={stores:?}");
-                    }
-                    println!("outputs={:?}", outputs[&kid]);
-                    kernel.debug();
-                }
-                println!();*/
+                //kernelizer.debug();
             }
 
-            if km.kernels.len() > KernelId(0) {
-                let mut kids: Vec<KernelId> = km.kernels.ids().collect();
+            if kernelizer.kernels.len() > KernelId(0) {
+                let mut kids: Vec<KernelId> = kernelizer.kernels.ids().collect();
                 while let Some(kid) = kids
                     .iter()
-                    .find(|&&kid| km.kernels[kid].loads.iter().all(|x| km.realized_nodes.contains(x)))
+                    .find(|&&kid| kernelizer.kernels[kid].loads.iter().all(|x| kernelizer.realized_nodes.contains(x)))
                     .copied()
                 {
                     kids.retain(|x| *x != kid);
-                    let kernel = unsafe { km.kernels.remove_and_return(kid) };
+                    let kernel = unsafe { kernelizer.kernels.remove_and_return(kid) };
                     let stores = kernel.stores.clone();
-                    km.launch_kernel(kernel)?;
-                    km.realized_nodes.extend(stores);
+                    kernelizer.launch_kernel(kernel)?;
+                    kernelizer.realized_nodes.extend(stores);
 
                     // Delete unneeded intermediate tensors in memory pools
                     /*for tid in kernel_loads {
@@ -1076,10 +1101,10 @@ impl Runtime {
 
             #[cfg(debug_assertions)]
             {
-                if km.kernels.len() > KernelId(0) {
-                    println!("realized_nodes={:?}", km.realized_nodes);
+                if kernelizer.kernels.len() > KernelId(0) {
+                    println!("realized_nodes={:?}", kernelizer.realized_nodes);
                     println!("Unrealized kernels:");
-                    for (kid, kernel) in km.kernels.iter() {
+                    for (kid, kernel) in kernelizer.kernels.iter() {
                         println!("loads={:?}", kernel.loads);
                         println!("stores={:?}", kernel.stores);
                         println!("{kid:?}, outputs={:?}", kernel.outputs);
@@ -1088,7 +1113,7 @@ impl Runtime {
                     }
                     panic!();
                 }
-                debug_assert!(to_eval.is_subset(&km.realized_nodes));
+                debug_assert!(to_eval.is_subset(&kernelizer.realized_nodes));
             }
 
             let elapsed = begin.elapsed();

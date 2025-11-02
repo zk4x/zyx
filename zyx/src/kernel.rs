@@ -1,6 +1,7 @@
 use nanoserde::{DeBin, SerBin};
 
 use crate::{
+    CYAN, RED, RESET, YELLOW, MAGENTA, GREEN, BLUE,
     DType, Map, Set,
     backend::{Device, DeviceInfo, ProgramId},
     dtype::Constant,
@@ -256,13 +257,6 @@ impl Kernel {
 
     pub fn debug(&self) {
         //println!("Kernel shape {:?}", self.shape);
-        const RED: &str = "\x1b[31m";
-        const GREEN: &str = "\x1b[32m";
-        const YELLOW: &str = "\x1b[33m";
-        const BLUE: &str = "\x1b[34m";
-        const MAGENTA: &str = "\x1b[35m";
-        const CYAN: &str = "\x1b[36m";
-        const RESET: &str = "\x1b[0m";
         let mut indent = String::from(" ");
         for (i, op) in self.ops.iter().enumerate() {
             match op {

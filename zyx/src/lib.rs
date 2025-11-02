@@ -131,6 +131,14 @@ impl DebugMask {
     }
 }
 
+const RED: &str = "\x1b[31m";
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const BLUE: &str = "\x1b[34m";
+const MAGENTA: &str = "\x1b[35m";
+const CYAN: &str = "\x1b[36m";
+const RESET: &str = "\x1b[0m";
+
 /// Save tensors or modules
 pub trait TensorSave {
     /// Save tensors or modules

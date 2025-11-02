@@ -18,6 +18,7 @@ impl<T> Mutex<T> {
 }
 
 // Spinlock is better for debugging, but std::mutex::Mutex is better for release
+// Spinlock is also much faster
 /*use std::{
     cell::UnsafeCell,
     sync::atomic::{AtomicBool, Ordering},
@@ -70,13 +71,41 @@ impl<T> Mutex<T> {
                 //core::sync::atomic::spin_loop_hint();
                 //std::thread::sleep(std::time::Duration::from_secs(1));
                 core::hint::spin_loop();
-                debug_assert!(i > N, "Failed to unlock mutex after {N} tries. Panicking in order to avoid deadlock.");
                 i += 1;
+                debug_assert!(i > N, "Failed to unlock mutex after {N} tries. Panicking in order to avoid deadlock.");
             }
-            debug_assert!(
+            /*debug_assert!(
                 i > N,
                 "Failed to unlock mutex after million tries. Panicking in order to avoid deadlock."
-            );
+            );*/
+        }
+    }
+
+    pub(super) fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+        const N: usize = 1_000;
+
+        let mut i = 0;
+        loop {
+            if self
+                .lock
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Some(MutexGuard {
+                    lock: &self.lock,
+                    data: &self.data,
+                });
+            }
+
+            while self.lock.load(Ordering::Relaxed) {
+                //core::sync::atomic::spin_loop_hint();
+                //std::thread::sleep(std::time::Duration::from_secs(1));
+                core::hint::spin_loop();
+                i += 1;
+                if i > N {
+                    return None;
+                }
+            }
         }
     }
 }

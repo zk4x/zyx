@@ -38,12 +38,13 @@ pub struct Optimizer {
 impl Optimizer {
     #[must_use]
     pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization) -> bool {
-        let [local_work_size_opt_index, loop_opt_index, loop_split_opt_index] =
+        let [local_work_size_opt_index, loop_opt_index, _loop_split_opt_index] =
             optimization.into_indices(self.max_indices);
 
         if !self.local_work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
             return false;
         }
+        //kernel.debug();
 
         /*if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
             return false;

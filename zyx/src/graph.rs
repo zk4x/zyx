@@ -50,19 +50,21 @@ impl Graph {
         let mut to_remove = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
         while let Some(x) = params.pop() {
             //println!("Releasing {x}");
-            let node = &mut self.nodes[x];
-            node.0 -= 1;
-            if node.0 == 0 {
-                //println!("Dropping {x}");
-                params.extend(node.1.parameters());
-                to_remove.insert(x);
-                self.nodes.remove(x);
-                self.shapes.remove(&x);
-                if let Some(tape) = self.gradient_tape.as_mut() {
-                    tape.remove(&x);
+            if let Some((rc, node)) = self.nodes.get_mut(x) {
+                let a = rc.saturating_sub(1);
+                *rc = a;
+                if a == 0 {
+                    //println!("Dropping {x}");
+                    params.extend(node.parameters());
+                    to_remove.insert(x);
+                    self.nodes.remove(x);
+                    self.shapes.remove(&x);
+                    if let Some(tape) = self.gradient_tape.as_mut() {
+                        tape.remove(&x);
+                    }
+                    self.axes.remove(&x);
+                    self.paddings.remove(&x);
                 }
-                self.axes.remove(&x);
-                self.paddings.remove(&x);
             }
         }
         to_remove

@@ -85,7 +85,7 @@
   - [x] pad_2
   - [x] reshape_permute_1
   - [x] rope_1
-  - [ ] rope_2
+  - [x] rope_2
   - [x] softmax_1
   - [ ] padding on elementwise kernel
   - [ ] expand on elementwise kernel

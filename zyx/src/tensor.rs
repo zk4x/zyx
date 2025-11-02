@@ -2453,7 +2453,7 @@ impl Tensor {
     pub fn squeeze(&self, axes: impl IntoIterator<Item = SAxis>) -> Tensor {
         let shape = self.shape();
         let mut naxes = Vec::new();
-        for axis in axes.into_iter() {
+        for axis in axes.into_iter().take(shape.len()) {
             if let Ok(axis) = into_axis(axis, shape.len()) {
                 naxes.push(axis);
             }
