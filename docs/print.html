@@ -418,10 +418,240 @@ model.save("model.safetensors")?;
 </span><span class="boring">fn main() {
 </span>let tensors = Tensor::load("my_tensors.safetensors")?;
 <span class="boring">}</span></code></pre></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="library-vs-framework"><a class="header" href="#library-vs-framework">Library vs. Framework</a></h1>
-<p>Zyx aspires to be just a library, not a framework. The difference is that libraries plug into your workflow, while frameworks impose a certain workflow on you.</p>
-<p>Some ML libraries force you to do the training loop in their way, sometimes forcing you to statically define the whole graph beforehand and then just call .train() or .fit() to run the whole training loop. This method discourages debugging and makes trial and error development difficult. Because of this, dynamic PyTorch is the most used ML library these days.</p>
-<p>Zyx aspires to be even more dynamic than PyTorch, because it does not require you to specify which tensors require gradient beforehand. Instead, you specify which gradients you want to calculate when you call backward function.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="library-vs-framework-the-zyx-philosophy"><a class="header" href="#library-vs-framework-the-zyx-philosophy">Library vs. Framework: The Zyx Philosophy</a></h1>
+<h2 id="core-philosophy"><a class="header" href="#core-philosophy">Core Philosophy</a></h2>
+<p>Zyx is designed as a <strong>library</strong>, not a framework. This distinction is critical for developers who value flexibility and control over their machine learning workflows. While frameworks impose rigid structures and design patterns, libraries like Zyx adapt to your needs, enabling seamless integration into any project architecture.</p>
+<p>This philosophy manifests in several key ways:</p>
+<ul>
+<li><strong>No scaffolding requirements</strong>: Zyx doesn't force you to follow specific project templates or directory structures</li>
+<li><strong>No global state</strong>: Unlike frameworks that maintain persistent runtime state, Zyx operations are localized to individual tensors</li>
+<li><strong>No enforced abstractions</strong>: You're free to build your own abstractions without fighting framework conventions</li>
+</ul>
+<h2 id="technical-advantages"><a class="header" href="#technical-advantages">Technical Advantages</a></h2>
+<h3 id="1-zero-design-enforcement"><a class="header" href="#1-zero-design-enforcement">1. Zero Design Enforcement</a></h3>
+<p>Zyx avoids dictating how you structure your code. This means:</p>
+<ul>
+<li><strong>No mandatory base classes</strong>: You're not required to implement predefined interfaces.</li>
+<li><strong>No opinionated training loops</strong>: Unlike many ML frameworks that provide a single <code>fit()</code> or <code>train()</code> method, Zyx allows you to build custom training loops tailored to your application's requirements.</li>
+<li><strong>No static graph requirements</strong>: Zyx's tape-based autograd system (see <a href="autograd.html">autograd documentation</a>) records gradients only when needed, without requiring upfront graph definitions.</li>
+</ul>
+<h3 id="2-minimal-compilation-footprint"><a class="header" href="#2-minimal-compilation-footprint">2. Minimal Compilation Footprint</a></h3>
+<p>Zyx is engineered to be <strong>tiny when compiled</strong>, making it ideal for users who want to keep their disk free. It's just a few MB.</p>
+<p>This lightweight nature stems from:</p>
+<ul>
+<li><strong>No code generation</strong>: Zyx avoids macros that expand into large codebases</li>
+<li><strong>No feature flags bloat</strong>: Most functionality and hardware works without enabling any features</li>
+<li><strong>No unnecessary abstractions</strong>: Extensive ops support, without traits or generics</li>
+</ul>
+<p>The benefits are tangible:</p>
+<ul>
+<li><strong>Embedded systems</strong>: Deploy ML capabilities in resource-constrained environments</li>
+<li><strong>Edge computing</strong>: Run inference on devices with limited storage capacity</li>
+<li><strong>Fast iteration</strong>: Quick recompilation during development cycles</li>
+<li><strong>No generic/lifetime headaches</strong>: Spend time writing your code, not refactoring to fit into the framework</li>
+</ul>
+<h3 id="3-dependency-management"><a class="header" href="#3-dependency-management">3. Dependency Management</a></h3>
+<p>Zyx maintains a <strong>minimal dependency profile</strong>:</p>
+<ul>
+<li><strong>Core dependencies</strong>: Only essential libraries like <code>nanoserde</code> for config parsing and <code>libloading</code> for dynamic backend loading.</li>
+<li><strong>Optional features</strong>: Big dependencies (e.g., WGPU backend) are available as features that can be enabled when needed.</li>
+<li><strong>No dependency bloat</strong>: Zyx avoids unnecessary dependencies that could increase binary size or complexity.</li>
+</ul>
+<p>This approach offers several advantages:</p>
+<ul>
+<li><strong>Reduced security surface</strong>: Fewer dependencies mean fewer potential vulnerabilities</li>
+<li><strong>Simpler builds</strong>: Minimal dependency chain reduces compilation issues</li>
+<li><strong>Smaller binaries</strong>: No transitive dependencies bloating your final executable</li>
+</ul>
+<h3 id="4-tensor-design-without-generics"><a class="header" href="#4-tensor-design-without-generics">4. Tensor Design Without Generics</a></h3>
+<p>Zyx's tensor implementation avoids pervasive generics, which offers several benefits:</p>
+<ul>
+<li><strong>No type parameter propagation</strong>: Unlike systems that require generic parameters throughout the codebase, Zyx's tensors have fixed types.</li>
+<li><strong>Simpler API</strong>: Developers don't need to manage complex generic type signatures across operations.</li>
+<li><strong>Easier integration</strong>: Tensors can be used in more contexts without requiring generic type alignment.</li>
+</ul>
+<p>This design choice has practical implications:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Zyx tensor operation
+impl CustomModel {
+    fn forward(&amp;self, x: &amp;Tensor) -&gt; Tensor {
+        let x = self.layer1.forward(x).unwrap().relu();
+        self.layer2.forward(&amp;x).unwrap()
+    }
+}
+
+// Hypothetical generic-based approach
+impl&lt;T: DType, B: Backend&gt; CustomModel&lt;T, B&gt; {
+    fn forward&lt;S: Shape&gt;(&amp;self, x: &amp;Tensor&lt;S, T, B&gt;) -&gt; Tensor&lt;S, T, B&gt; {
+        let x = self.layer1.forward(x).unwrap().relu();
+        self.layer2.forward(&amp;x).unwrap()
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="practical-usage-scenarios"><a class="header" href="#practical-usage-scenarios">Practical Usage Scenarios</a></h2>
+<h3 id="general-linear-algebra-library"><a class="header" href="#general-linear-algebra-library">General Linear Algebra Library</a></h3>
+<p>Zyx's design allows it to function as a general-purpose linear algebra library:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, DType};
+
+// Basic tensor operations
+let a = Tensor::from([1.0, 2.0, 3.0]);
+let b = Tensor::from([4.0, 5.0, 6.0]);
+let c = a + b;  // Element-wise addition
+let d = c * 2.0;  // Scalar multiplication
+<span class="boring">}</span></code></pre></pre>
+<p>This example demonstrates how Zyx can be used for standard tensor operations without any framework-specific boilerplate.</p>
+<h3 id="custom-training-loop-integration"><a class="header" href="#custom-training-loop-integration">Custom Training Loop Integration</a></h3>
+<p>The library approach makes custom modules and training the default:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, DType, GradientTape};
+use zyx_nn::{Linear, Module};
+use zyx_optim::SGD;
+
+#[derive(Module)]
+struct CustomModel {
+    layer1: Linear,
+    layer2: Linear,
+    learning_rate: f32,
+}
+
+impl CustomModel {
+    fn forward(&amp;self, x: &amp;Tensor) -&gt; Tensor {
+        let x = self.layer1.forward(x).unwrap().relu();
+        self.layer2.forward(&amp;x).unwrap()
+    }
+}
+
+fn train_step(model: &amp;mut CustomModel, optimizer: &amp;mut SGD, inputs: &amp;Tensor, targets: &amp;Tensor) -&gt; f32 {
+    let tape = GradientTape::new();
+    let outputs = model.forward(inputs);
+    let loss = outputs.mse_loss(targets).unwrap();
+    
+    let gradients = tape.gradient(&amp;loss, model);
+    optimizer.update(model, gradients);
+    
+    loss.item()
+}
+<span class="boring">}</span></code></pre></pre>
+<p>This demonstrates how Zyx components can be integrated into a custom training workflow without framework constraints.</p>
+<h3 id="memory-efficient-deployment"><a class="header" href="#memory-efficient-deployment">Memory-Efficient Deployment</a></h3>
+<p>Zyx's minimal footprint makes it suitable for deployment scenarios:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// In a deployment context
+use zyx::{Tensor, DType};
+
+fn process_input(input: &amp;[f32]) -&gt; Vec&lt;f32&gt; {
+    let tensor = Tensor::from_slice(input, [1, input.len()]);
+    let processed = tensor.sigmoid();  // Example activation
+    processed.try_into().unwrap()
+}
+<span class="boring">}</span></code></pre></pre>
+<p>This example shows how Zyx can be used in deployment without carrying framework-specific runtime overhead.</p>
+<h2 id="comparative-analysis"><a class="header" href="#comparative-analysis">Comparative Analysis</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>Feature</th><th>Traditional Frameworks</th><th>Zyx Library</th></tr></thead><tbody>
+<tr><td>Graph definition</td><td>Static upfront</td><td>Dynamic, on-demand</td></tr>
+<tr><td>Training loop</td><td>Predefined <code>fit()</code> method</td><td>Custom implementation</td></tr>
+<tr><td>Memory usage</td><td>High (stores intermediates)</td><td>Optimized (tape-based)</td></tr>
+<tr><td>Compilation size</td><td>Large binaries</td><td>Minimal footprint</td></tr>
+<tr><td>Dependency chain</td><td>Complex</td><td>Minimal, focused</td></tr>
+<tr><td>Generic type usage</td><td>Pervasive</td><td>Avoided</td></tr>
+<tr><td>Debugging flexibility</td><td>Limited</td><td>Full control</td></tr>
+<tr><td>Hardware utilization</td><td>Framework-bound</td><td>User-controlled</td></tr>
+</tbody></table>
+</div>
+<h2 id="technical-implementation-details"><a class="header" href="#technical-implementation-details">Technical Implementation Details</a></h2>
+<h3 id="lazy-execution-model"><a class="header" href="#lazy-execution-model">Lazy Execution Model</a></h3>
+<p>Zyx's lazy execution model contributes to its lightweight nature:</p>
+<ul>
+<li>Tensors aren't realized until explicitly requested</li>
+<li>Computation graphs are built only when needed</li>
+<li>Memory allocation is optimized through deferred execution</li>
+</ul>
+<p>This approach enables efficient memory usage while maintaining flexibility:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let tape = GradientTape::new();
+let x = Tensor::randn([1024, 1024], DType::F32);
+let y = x.relu();  // Not computed yet
+let z = y * 2.0;    // Still just building the graph
+
+// Computation happens here
+Tensor::realize([&amp;z]).unwrap();
+<span class="boring">}</span></code></pre></pre>
+<h3 id="backend-agnosticism"><a class="header" href="#backend-agnosticism">Backend Agnosticism</a></h3>
+<p>Zyx supports multiple backends without framework-level constraints:</p>
+<ul>
+<li>CUDA (PTX)</li>
+<li>OpenCL</li>
+<li>WGPU (WGSL)</li>
+</ul>
+<p>This allows users to choose hardware acceleration without being tied to framework-specific configuration. Developers don't need to be concerned where models will be deployed. Hardware is abstracted away as much as possible. But we are aware of leaky abstractions. Zyx works similarly to standard language compilers - code written in Rust can be deployed to many hardware targets, but knowledge of hardware quirks is still necessary when optimizing performance.</p>
+<h3 id="error-handling-philosophy"><a class="header" href="#error-handling-philosophy">Error Handling Philosophy</a></h3>
+<p>Zyx's error handling aligns with its library approach:</p>
+<ul>
+<li>Returns <code>Result</code> types for recoverable errors</li>
+<li>Uses <code>panic!</code> only for unrecoverable hardware issues or internal bugs</li>
+<li>Allows integration with both simple and complex error handling systems</li>
+</ul>
+<p>This approach provides flexibility:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Simple error handling
+let tape = GradientTape::new();
+let x = Tensor::randn([1024, 1024], DType::F32);
+let y = x.relu();  // No Result type needed for non-fallible operations
+
+// Complex error handling
+fn safe_operation() -&gt; Result&lt;(), ZyxError&gt; {
+    let tape = GradientTape::new();
+    let x = Tensor::randn([1024, 1024], DType::F32)?; // Result will be returned on allocation failure
+    let y = x.relu();
+    let z = tape.gradient(&amp;y, &amp;[&amp;x]);
+    Ok(())
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="why-this-matters"><a class="header" href="#why-this-matters">Why This Matters</a></h2>
+<h3 id="for-researchers"><a class="header" href="#for-researchers">For Researchers</a></h3>
+<p>The library model enables:</p>
+<ul>
+<li><strong>Rapid experimentation</strong>: Modify code without framework constraints</li>
+<li><strong>Custom optimization strategies</strong>: Implement domain-specific optimizations</li>
+<li><strong>Fine-grained control</strong>: Debug and inspect every computation step</li>
+</ul>
+<h3 id="for-engineers"><a class="header" href="#for-engineers">For Engineers</a></h3>
+<p>When integrating ML into existing systems:</p>
+<ul>
+<li><strong>No architecture changes</strong>: Zyx adapts to your codebase, not vice versa</li>
+<li><strong>Minimal binary impact</strong>: Add ML capabilities without bloating your executable</li>
+<li><strong>Simplified dependency management</strong>: Avoid complex framework dependency trees</li>
+</ul>
+<h3 id="for-deployments"><a class="header" href="#for-deployments">For Deployments</a></h3>
+<p>Zyx's design shines in production:</p>
+<ul>
+<li><strong>Small footprint</strong>: Ideal for edge devices with limited storage</li>
+<li><strong>Flexible execution</strong>: Choose hardware acceleration based on deployment environment</li>
+<li><strong>Simple error handling</strong>: Integrate with your existing error management system</li>
+</ul>
+<h2 id="conclusion"><a class="header" href="#conclusion">Conclusion</a></h2>
+<p>Zyx's library-first design avoids framework-level constraints while offering:</p>
+<ol>
+<li><strong>Flexibility</strong> in code organization</li>
+<li><strong>Minimal compilation footprint</strong> for efficient deployment</li>
+<li><strong>Simplified tensor operations</strong> without generic type propagation</li>
+<li><strong>Custom workflow support</strong> for both research and production environments</li>
+<li><strong>Backend agnosticism</strong> with hardware flexibility</li>
+</ol>
+<p>This approach makes Zyx suitable for:</p>
+<ul>
+<li>Researchers needing custom training dynamics</li>
+<li>Engineers integrating ML or linear algebra routines into existing systems</li>
+<li>Developers working in resource-constrained environments</li>
+</ul>
+<p>The library model enables Zyx to be both powerful and lightweight, providing the best of both worlds for modern machine learning and linear algebra needs.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="execution-model"><a class="header" href="#execution-model">Execution Model</a></h1>
 <p>PyTorch executes most of the ops immediatelly. This straightforward, but it means that in order to be able to backpropagate, it needs to know which tensors must be stored in memory. Zyx uses lazy execution. It does not evaluate anything until user explicitly requests the data. This would not work for training/inference loops, so zyx uses caching mechanism that detects repetition of parts of graph and once any part of graph is repeated more than once, the whole graph get evaluated in order to remove no longer needed nodes (node is internal representation of unrealized tensor, takes only few bytes).</p>
 <p>This is cool by itself, because it means that zyx is as dynamic as pytorch while allowing for optimizations only possible in static graphs, but it also allows zyx to be more dynamic than PyTorch, because there is no longer need to specify which tensors require gradient, as you can see in <a href="autograd.html">autograd</a> chapter.</p>
