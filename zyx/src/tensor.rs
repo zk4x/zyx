@@ -172,7 +172,7 @@ impl Tensor {
     /// # Examples
     ///
     /// ```rust
-    /// use crate::tensor::Tensor;
+    /// use zyx::Tensor;
     ///
     /// let t = Tensor::from([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]);
     /// assert_eq!(t.shape(), vec![2, 4]);
@@ -203,7 +203,6 @@ impl Tensor {
     ///
     /// ```
     /// # use zyx::Tensor;
-    /// use zyx::Tensor;
     /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
     /// let [d1, d2] = t.dims().unwrap();
     /// assert_eq!(d1, 2);
@@ -238,7 +237,6 @@ impl Tensor {
     ///
     /// ```
     /// # use zyx::Tensor;
-    /// use zyx::Tensor;
     /// let t = Tensor::from([[2, 3, 2], [4, 5, 1]]);
     /// let [d2] = t.rdims().unwrap();
     /// assert_eq!(d2, 3);
@@ -246,15 +244,17 @@ impl Tensor {
     pub fn rdims<const N: usize>(&self) -> Result<[Dim; N], ZyxError> {
         let rt = RT.lock();
         let shape = rt.shape(self.id);
+
         if N > shape.len() {
-            Err(ZyxError::shape_error(
+            return Err(ZyxError::shape_error(
                 format!("Requested {N} dims, but tensor only has rank of {}", shape.len()).into(),
-            ))
-        } else {
-            let mut last_dims = [0; N];
-            last_dims.copy_from_slice(&shape[shape.len() - 3..]);
-            Ok(last_dims)
+            ));
         }
+
+        let slice = &shape[shape.len() - N..];
+        let mut last_dims = [1; N];
+        last_dims.copy_from_slice(slice);
+        Ok(last_dims)
     }
 
     /// Returns the total number of elements in the tensor.
@@ -1911,6 +1911,7 @@ impl Tensor {
     /// # Examples
     ///
     /// ```rust
+    /// # use zyx::{Tensor, DType};
     /// let x = Tensor::randn([3, 4, 5], DType::F32)?;
     ///
     /// // Select first item from first dimension
@@ -1926,12 +1927,13 @@ impl Tensor {
     /// let d = x.get((0, .., -1))?.get(0)?;
     ///
     /// // Use a slice of ranges
-    /// let slice = &[0..2, 1..4];
+    /// let slice = [0..2, 1..4];
     /// let e = x.get(slice)?;
     ///
     /// // Use a vector of ranges dynamically
     /// let ranges = vec![0..2, 0..4, 1..5];
     /// let f = x.get(ranges)?;
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Notes
@@ -2763,14 +2765,42 @@ impl Tensor {
         Ok(xup)
     }
 
-    /// Convolution, works for any number of dimensions
+    /// Performs an *N*-dimensional convolution on the tensor.
+    ///
+    /// This method supports arbitrary dimensionality (1D, 2D, 3D, etc.) and
+    /// optional grouping, stride, dilation, and padding parameters.
+    ///
+    /// # Parameters
+    /// - `weight`: Convolution kernel tensor of shape `[out_channels, in_channels / groups, ...]`.
+    /// - `bias`: Optional bias tensor added to the output. Use `None` for no bias.
+    /// - `groups`: Number of groups to divide the input and output channels into.
+    /// - `stride`: Stride (step size) of the convolution, given per spatial dimension.
+    /// - `dilation`: Spacing between kernel elements, given per spatial dimension.
+    /// - `padding`: Number of padding elements added to each side per spatial dimension.
+    ///
+    /// # Returns
+    /// A new [`Tensor`] containing the result of the convolution.
+    ///
+    /// # Example
     /// ```
-    /// let t = Tensor.arange(9).reshape([1, 1, 3, 3]);
-    /// let w = Tensor.ones([1, 1, 2, 2])
-    /// println!("{}", t.conv(w))
+    /// # use zyx::{Tensor, DType};
+    ///
+    /// // Input tensor: shape [1, 1, 3, 3]
+    /// let t = Tensor::arange(0, 9, 1)?
+    ///     .reshape([1, 1, 3, 3])?;
+    ///
+    /// // Kernel tensor: shape [1, 1, 2, 2]
+    /// let w = Tensor::ones([1, 1, 2, 2], DType::F32);
+    ///
+    /// // Perform convolution (no bias, 1 group, stride=1, dilation=1, padding=0)
+    /// let out = t.conv(&w, None, 1, [1, 1], [1, 1], [0, 0])?;
+    ///
+    /// println!("{out}");
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
+    ///
     /// # Errors
-    /// Returns error if shapes are not compatible.
+    /// Returns an error if the tensor shapes are incompatible for convolution.
     #[allow(clippy::missing_panics_doc)]
     pub fn conv(
         &self,
@@ -2808,7 +2838,21 @@ impl Tensor {
                 format!("conv requires weight rank >= 2, but rank = {}", weight.rank()).into(),
             ));
         };
+        if let Some(bias) = bias {
+            if bias.shape().iter().product::<usize>() != cout {
+                return Err(ZyxError::shape_error(
+                    format!("Bias length {} does not match output channels {}", bias.shape().iter().product::<usize>(), cout).into(),
+                ));
+            }
+        }
+
         let hw = &weight.shape()[2..];
+
+        let stride: Vec<usize> = stride.into_shape().collect();
+        let dilation: Vec<usize> = dilation.into_shape().collect();
+        if stride.len() != hw.len() || dilation.len() != hw.len() {
+            return Err(ZyxError::shape_error("Stride/dilation length must match kernel spatial dimensions".into()));
+        }
 
         let padding_ = resolve_pool_pads(padding.into_shape().collect(), hw.len());
 
@@ -2831,7 +2875,6 @@ impl Tensor {
             .unwrap();
         let rcout = cout / groups;
         let oyx = &x.shape()[2..x.shape().len() - hw.len()];
-        println!("{oyx:?}");
 
         // for now without winograd
         let shape: Vec<usize> = [bs, groups, cin, 1].iter().chain(oyx).chain(hw).copied().collect();
@@ -3966,6 +4009,18 @@ impl IntoIndex for Vec<Range<isize>> {
 impl<I: IntoRange> IntoIndex for &[I] {
     fn into_index(self) -> impl Iterator<Item = Range<isize>> {
         self.iter().cloned().map(IntoRange::into_range)
+    }
+}
+
+impl<I: IntoRange, const N: usize> IntoIndex for &[I; N] {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
+        self.iter().cloned().map(IntoRange::into_range)
+    }
+}
+
+impl<I: IntoRange, const N: usize> IntoIndex for [I; N] {
+    fn into_index(self) -> impl Iterator<Item = Range<isize>> {
+        self.into_iter().map(IntoRange::into_range)
     }
 }
 

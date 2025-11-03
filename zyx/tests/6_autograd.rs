@@ -253,9 +253,9 @@ fn grad_linear_2() -> Result<(), ZyxError> {
 }
 
 // TODO this fails likely due to runtime realize graph creation issue, but perhaps it's scheduler
-/*#[test]
+#[test]
 fn grad_t6() -> Result<(), ZyxError> {
-    use zyx::GradientTape;
+    use zyx::{GradientTape, DType};
     let x = Tensor::randn([8, 1024, 1024], DType::F32).unwrap();
     let y = Tensor::uniform([8, 1024, 1024], -1f32..4f32).unwrap();
     let b = Tensor::zeros([1024], DType::F32);
@@ -271,4 +271,4 @@ fn grad_t6() -> Result<(), ZyxError> {
     println!("{bb_grad}");
 
     Ok(())
-}*/
+}

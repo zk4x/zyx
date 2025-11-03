@@ -3,7 +3,6 @@
 use nanoserde::SerBin;
 
 use crate::{
-    RED, RESET,
     DType, DebugMask, Map, Set, ZyxError,
     backend::{Device, ProgramId, SearchConfig},
     dtype::Constant,
@@ -1020,6 +1019,10 @@ impl Runtime {
                 rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
             }
 
+            //println!("{rcs:?}");
+            println!("realized_nodes: {realized_nodes:?}");
+            println!("to_eval: {to_eval:?}");
+
             let begin = std::time::Instant::now();
 
             let mut kernelizer = Kernelizer::new(
@@ -1034,18 +1037,16 @@ impl Runtime {
                 &self.debug,
             );
 
-            //println!("{rcs:?}");
-            //println!("to_eval: {to_eval:?}");
-
             for nid in order {
-                /*println!(
+                use crate::{RED, RESET};
+                println!(
                     "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
                     if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
                     kernelizer.rcs[&nid],
                     self.graph[nid],
                     self.graph.dtype(nid),
                     self.graph.shape(nid)
-                );*/
+                );
                 if kernelizer.is_virt_realized(nid) {
                     kernelizer.create_load_kernel(nid);
                 } else {
@@ -1160,24 +1161,24 @@ impl Runtime {
         let mut order = Vec::new();
         let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        while let Some(nid) = params.pop()
-            && let Some(&rc) = rcs.get(&nid)
-        {
-            if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                order.push(nid);
-                let node = &self.graph.nodes[nid];
-                if node.0 > rc {
-                    new_leafs.insert(nid);
-                    if !realized_nodes.contains(&nid) {
-                        to_eval.insert(nid);
+        while let Some(nid) = params.pop() {
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    let node = &self.graph.nodes[nid];
+                    if node.0 > rc {
+                        new_leafs.insert(nid);
+                        if !realized_nodes.contains(&nid) {
+                            to_eval.insert(nid);
+                        }
+                    } else if !to_eval.contains(&nid) {
+                        to_delete.insert(nid);
+                    } else {
+                        new_leafs.insert(nid);
                     }
-                } else if !to_eval.contains(&nid) {
-                    to_delete.insert(nid);
-                } else {
-                    new_leafs.insert(nid);
-                }
-                if !realized_nodes.contains(&nid) {
-                    params.extend(node.1.parameters());
+                    if !realized_nodes.contains(&nid) {
+                        params.extend(node.1.parameters());
+                    }
                 }
             }
         }
@@ -1217,15 +1218,15 @@ impl Runtime {
                 Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
             let mut outside_nodes = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
             let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-            while let Some(nid) = params.pop()
-                && let Some(&rc) = rcs.get(&nid)
-            {
-                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                    order.push(nid);
-                    let node = &self.graph.nodes[nid];
-                    params.extend(node.1.parameters());
-                    if node.0 > rc {
-                        outside_nodes.insert(nid);
+            while let Some(nid) = params.pop() {
+                if let Some(&rc) = rcs.get(&nid) {
+                    if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                        order.push(nid);
+                        let node = &self.graph.nodes[nid];
+                        params.extend(node.1.parameters());
+                        if node.0 > rc {
+                            outside_nodes.insert(nid);
+                        }
                     }
                 }
             }
@@ -1286,7 +1287,7 @@ impl Runtime {
         //println!("To eval: {to_eval:?}");
         //println!("New leafs: {new_leafs:?}");
         //println!("To delete: {to_delete:?}");
-        let to_eval: Set<TensorId> = to_eval.difference(realized_nodes).copied().collect();
+        *to_eval = to_eval.difference(realized_nodes).copied().collect();
         let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
         let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
         while let Some(nid) = params.pop() {

@@ -170,7 +170,15 @@ impl Graph {
         panic!("Shape of {tensor_id:?} could not be found. This is internal bug.")
     }
 
+    #[allow(unused)]
+    fn debug(&self) {
+        for (nid, (rc, node)) in self.nodes.iter() {
+            println!("{nid} x {rc} -> {node:?}");
+        }
+    }
+
     pub(super) fn build_topo(&self, x: TensorId, sources: &Set<TensorId>) -> Vec<TensorId> {
+        //self.debug();
         let Some(tape) = self.gradient_tape.as_ref() else { return Vec::new() };
         //for (id, (rc, node)) in self.nodes.iter() { println!("{id} x {rc}  {node:?}"); }
         //println!("Gradient tape: {tape:?}");
@@ -180,7 +188,7 @@ impl Graph {
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 if !sources.contains(&nid)
-                    && !matches!(self.nodes[nid].1, Node::Binary { bop: BOp::Cmplt, .. })
+                    //&& !matches!(self.nodes[nid].1, Node::Binary { bop: BOp::Cmplt, .. })
                     && tape.contains(&nid)
                 {
                     params.extend(self.nodes[nid].1.parameters());
@@ -192,15 +200,14 @@ impl Graph {
         let mut order = Vec::new();
         let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut params: Vec<TensorId> = vec![x];
-        while let Some(nid) = params.pop()
-            && let Some(&rc) = rcs.get(&nid)
-        {
-            if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                order.push(nid);
-                params.extend(self.nodes[nid].1.parameters());
+        while let Some(nid) = params.pop() {
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    params.extend(self.nodes[nid].1.parameters());
+                }
             }
         }
-        //println!("order {order:?}");
         // Build topo, this way it ensures that grad is not used in backprop
         // before it was insert_or_add by all parents.
         let mut topo = Vec::new();

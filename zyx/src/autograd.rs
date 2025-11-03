@@ -124,6 +124,7 @@ impl Runtime {
                 }
             }
         }
+        //println!("sources={sources:?}");
 
         // Does not allocate new tensors, only constant and op nodes
         let topo = self.graph.build_topo(x, sources);
