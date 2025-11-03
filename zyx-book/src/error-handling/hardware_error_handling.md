@@ -1,0 +1,1 @@
+# Hardware-specific Error Handling

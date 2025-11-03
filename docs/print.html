@@ -176,248 +176,21 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="zyx-book"><a class="header" href="#zyx-book">Zyx book</a></h1>
+                        <h1 id="introduction"><a class="header" href="#introduction">Introduction</a></h1>
 <p>This book is an introductory to machine learning with zyx library.</p>
 <p>It is meant to serve as a tutorial and provide examples of working with zyx. For documentation, please see:</p>
 <ul>
-<li><a href="https://docs.rs/zyx-core/latest/zyx-core">core</a></li>
+<li><a href="https://docs.rs/zyx/latest/zyx">zyx</a></li>
 <li><a href="https://docs.rs/zyx-optim/latest/zyx-optim">optimizers</a></li>
 <li><a href="https://docs.rs/zyx-nn/latest/zyx-nn">neural network modules</a></li>
 </ul>
-<p>For documentation on zyx backends:</p>
-<ul>
-<li><a href="https://docs.rs/zyx-cpu/latest/zyx-cpu">cpu</a></li>
-<li><a href="https://docs.rs/zyx-opencl/latest/zyx-opencl">opencl</a></li>
-<li><a href="https://docs.rs/zyx-cpu/latest/zyx-torch">torch</a></li>
-</ul>
 <p>If you are already familiar with machine learning and want the quickest possible tutorial, please see <a href="https://www.github.com/zk4x/zyx">README</a>.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="why-create-zyx"><a class="header" href="#why-create-zyx">Why create zyx?</a></h1>
-<p>Zyx was created as a learning exercise to understand machine learning from low level, close to the metal perspective.
-As the time went on, I saw the lack of good ML libraries in Rust ecosystem which meant that if zyx got completed,
-other people could use it too.</p>
-<p>When researching architecture of other ML libraries, in particular the most popular ones - pytorch and tensorflow,
-I found that their creators made certain compromises in order to simplify the development and reach the widest
-possible audience.</p>
-<p>These days we have a pretty good perspective on what a good ML library should look like. It should run on all hardware
-with solid performance, it should not take too much disk space or memory and it should be easy to use.
-Crucially it does not need to support many operations, just a few unary, binary, movement and reduce operations
-are plenty, as shown by tinygrad.</p>
-<p>In zyx, core operations are rarely added, but adding backends is very simple. Zyx automatically optimizes
-for backpropagation and uses as little memory as possible during both training and inference.</p>
-<p>And as for the ease of use? I want you to be the judge of that.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="first-tensors"><a class="header" href="#first-tensors">First tensors</a></h1>
-<p>In this chapter we go over tensor initialization and running your first operations.</p>
-<h2 id="choosing-your-backend"><a class="header" href="#choosing-your-backend">Choosing your backend</a></h2>
-<p>Zyx automatically chooses the best backend for you.</p>
-<h2 id="tensor-1"><a class="header" href="#tensor-1">Tensor #1</a></h2>
-<p>Now we can create your first tensor with zyx.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let x = dev.tensor([[[3, 2]], [[3, 4]]]);
-<span class="boring">}</span></code></pre></pre>
-<p>Tensor is multidimensional array. We can ask how many dimensions it has.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>assert_eq!(x.rank(), 3);
-<span class="boring">}</span></code></pre></pre>
-<p>And also what those dimensions are.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>assert_eq!(x.shape(), [2, 1, 2]);
-<span class="boring">}</span></code></pre></pre>
-<p>Tensors can only hold data of a single type. In this case, it is i32.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>assert_eq!(x.dtype(), DType::I32);
-<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="why-zyx"><a class="header" href="#why-zyx">Why zyx?</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="first-tensors"><a class="header" href="#first-tensors">First Tensors</a></h1>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="tensor-operations"><a class="header" href="#tensor-operations">Tensor Operations</a></h1>
-<p>Zyx supports most important operations used in other ML libraries.</p>
-<p>Examples. For full list, please check tensor's <a href="https://docs.rs/zyx-core/latest/zyx-core/tensor/struct.Tensor.html">documentation</a>.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let x = Tensor::randn([1024, 1024], DType::F32);
-let y = Tensor::randn([1024, 1024], DType::F32);
-
-let z = x.exp();
-let z = x.relu();
-let z = x.sin();
-let z = x.tanh();
-
-let z = &amp;x + &amp;y;
-let z = &amp;x - &amp;y;
-let z = &amp;x * &amp;y;
-let z = &amp;x / &amp;y;
-let z = x.pow(&amp;y);
-let z = x.cmplt(&amp;y);
-let z = x.dot(&amp;y);
-<span class="boring">}</span></code></pre></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="automatic-differentiation-in-zyx"><a class="header" href="#automatic-differentiation-in-zyx">Automatic Differentiation in Zyx</a></h1>
-<h2 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h2>
-<p>Zyx implements automatic differentiation through an explicit gradient tape system. Any differentiable mathematical operation can be automatically tracked and differentiated, including functions like ReLU that have points of non-differentiability in traditional calculus.</p>
-<h2 id="example-workflow"><a class="header" href="#example-workflow">Example Workflow</a></h2>
-<h3 id="forward-pass-with-gradient-tape"><a class="header" href="#forward-pass-with-gradient-tape">Forward Pass with Gradient Tape</a></h3>
-<p>Create a gradient tape and perform tensor operations:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx::{Tensor, GradientTape, DType};
-
-let tape = GradientTape::new();
-let x = Tensor::randn([1024, 1024], DType::F32);
-let y = Tensor::from([2, 3, 1]);
-let z = (x + y.pad([(1000, 21)], 8)) * x;
-<span class="boring">}</span></code></pre></pre>
-<h3 id="backward-pass-via-gradient-tape"><a class="header" href="#backward-pass-via-gradient-tape">Backward Pass via Gradient Tape</a></h3>
-<p>Compute gradients using the tape:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let grads = tape.gradient(&amp;z, &amp;[&amp;x, &amp;y]);
-<span class="boring">}</span></code></pre></pre>
-<h3 id="gradient-handling"><a class="header" href="#gradient-handling">Gradient Handling</a></h3>
-<p>The <code>gradient</code> method returns <code>Vec&lt;Option&lt;Tensor&gt;&gt;</code> where <code>None</code> indicates no computational path:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let tape = GradientTape::new();
-let x = Tensor::randn([2, 3], DType::F32);
-let y = Tensor::randn([2, 3], DType::F32);
-let z = y.exp();
-let grads = tape.gradient(&amp;z, &amp;[&amp;x]);
-assert_eq!(grads, vec![None]);  // No gradient for x since z doesn't depend on it
-<span class="boring">}</span></code></pre></pre>
-<h2 id="performance-advantages"><a class="header" href="#performance-advantages">Performance Advantages</a></h2>
-<h3 id="tape-based-computation"><a class="header" href="#tape-based-computation">Tape-Based Computation</a></h3>
-<p>Zyx's autograd system:</p>
-<ul>
-<li>Uses an explicit <code>GradientTape</code> to record operations</li>
-<li>Only computes gradients when explicitly requested</li>
-<li>Optimizes memory usage through lazy evaluation</li>
-<li>Supports higher-order derivatives with persistent gradient tapes</li>
-</ul>
-<p>This architecture enables efficient differentiation while maintaining flexibility for complex computational graphs.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="optimizers"><a class="header" href="#optimizers">Optimizers</a></h1>
-<pre><code class="language-shell">cargo add zyx-optim
-</code></pre>
-<p>Optimizers take gradients calculated as your loss w.r.t. your parameters and update those parameters
-so that the next time you run your model with the same inputs, the loss will be lower.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let mut optim = zyx_optim::SGD { ..Default::default() };
-let grads = loss.backward();
-optim.update(&amp;mut model, grads);
-<span class="boring">}</span></code></pre></pre>
-<p>Zyx has multiple optimizers. All are accessible from crate <a href="https://docs.rs/zyx-optim/latest/zyx-optim/index.html">zyx-optim</a>.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="creating-modules"><a class="header" href="#creating-modules">Creating Modules</a></h1>
-<pre><code class="language-shell">cargo add zyx-nn
-</code></pre>
-<p>Zyx only has statefull modules. That is all modules must store one or more tensors. One of the simplest modules
-is <a href="https://docs.rs/zyx-nn/latest/zyx-nn/struct.Linear.html">linear layer</a>.</p>
-<p>In order to initialize modules, you need a device. Modules have traits implemented for all backends to allow for more ergonomic API:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use zyx_nn::Linear;
-let l0 = Linear::new(1024, 128, DType::F32);
-<span class="boring">}</span></code></pre></pre>
-<h2 id="custom-modules"><a class="header" href="#custom-modules">Custom Modules</a></h2>
-<p>Custom modules are easy to create, you only need to import Backend trait from core.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>struct MyModule {
-    l0: Linear,
-    l1: Linear,
-}
-<span class="boring">}</span></code></pre></pre>
-<p>For modules to be useful, they need forward function.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>impl MyModule {
-    fn forward(&amp;self, x: impl Into&lt;Tensor&gt;) -&gt; Tensor {
-        let x = self.l0.forward(x).relu();
-        self.l1.forward(x).sigmoid()
-    }
-}
-<span class="boring">}</span></code></pre></pre>
-<p>Since relu is stateless, it is not a module, it is just a function on tensor.</p>
-<p>Modules can be initialized with any device.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let dev = zyx_cpu::device()?;
-
-let my_module = MyModule {
-    l0: Linear::new(1024, 512, DType::F32),
-    l1: Linear::new(512, 128, DType::F32),
-};
-<span class="boring">}</span></code></pre></pre>
-<p>Also you need to implement IntoIterator&lt;Item = &amp;Tensor&gt; to be able to easily save and IntoIterator&lt;Item = &amp;mut Tensor&gt;
-to backpropagate over parameters of the module and to load these parameters into the model.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>impl&lt;'a&gt; IntoIterator for &amp;'a MyModule {
-    type Item = &amp;'a Tensor;
-    type IntoIter = impl IntoIterator&lt;Item = Self::Item&gt;;
-    fn into_iter(self) -&gt; Self::IntoIter {
-        self.l0.into_iter().chain(self.l1)
-    }
-}
-
-impl&lt;'a&gt; IntoIterator for &amp;'a mut MyModule {
-    type Item = &amp;'a mut Tensor;
-    type IntoIter = impl IntoIterator&lt;Item = Self::Item&gt;;
-    fn into_iter(self) -&gt; Self::IntoIter {
-        self.l0.into_iter().chain(self.l1)
-    }
-}
-<span class="boring">}</span></code></pre></pre>
-<p>Both implementations of IntoIterator could be done using procedural macro Module.
-So you can choose this simpler method if you prefer.</p>
-<pre><code class="language-shell">cargo add zyx_derive
-</code></pre>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>#[derive(Module)]
-struct MyModule {
-    l0: Linear,
-    l1: Linear,
-}
-<span class="boring">}</span></code></pre></pre>
-<p>Forward function is used for inference.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let input = Tensor::randn([8, 1024], DType::F32);
-
-let out = my_module.forward(&amp;input);
-<span class="boring">}</span></code></pre></pre>
-<p>Backpropagation is provided automatically.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let input = Tensor::randn([8, 1024], DType::F32);
-let label = Tensor::randn([8, 128], DType::F32);
-
-let epochs = 100;
-for _ in 0..epochs {
-    let out = my_module.forward(&amp;input);
-    let loss = (out - label).pow(2);
-    loss.backward(&amp;my_module);
-}
-<span class="boring">}</span></code></pre></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="disk-io"><a class="header" href="#disk-io">Disk IO</a></h1>
-<p>Zyx does not have special trait for modules. Instead all modules implement IntoIterator&lt;&amp;Tensor&gt; and IntoIterator&lt;&amp;mut Tensor&gt;.</p>
-<p>Anything that implements the first trait can be saved.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let model = Linear::new(1024, 128, DType::F32);
-
-model.save("model.safetensors")?;
-<span class="boring">}</span></code></pre></pre>
-<p>Zyx uses safetensors format for saving tensors.</p>
-<p>Loading is similar.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let mut model = Linear::load("model.safetensors")?;
-<span class="boring">}</span></code></pre></pre>
-<p>If you don't know the structure of tensors saved on disks, you can load them like this.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let tensors = Tensor::load("my_tensors.safetensors")?;
-<span class="boring">}</span></code></pre></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="execution-model"><a class="header" href="#execution-model">Execution Model</a></h1>
+<p>PyTorch executes most of the ops immediatelly. This straightforward, but it means that in order to be able to backpropagate, it needs to know which tensors must be stored in memory. Zyx uses lazy execution. It does not evaluate anything until user explicitly requests the data. This would not work for training/inference loops, so zyx uses caching mechanism that detects repetition of parts of graph and once any part of graph is repeated more than once, the whole graph get evaluated in order to remove no longer needed nodes (node is internal representation of unrealized tensor, takes only few bytes).</p>
+<p>This is cool by itself, because it means that zyx is as dynamic as pytorch while allowing for optimizations only possible in static graphs, but it also allows zyx to be more dynamic than PyTorch, because there is no longer need to specify which tensors require gradient, as you can see in <a href="getting-started/autograd.html">autograd</a> chapter.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="library-vs-framework-the-zyx-philosophy"><a class="header" href="#library-vs-framework-the-zyx-philosophy">Library vs. Framework: The Zyx Philosophy</a></h1>
 <h2 id="core-philosophy"><a class="header" href="#core-philosophy">Core Philosophy</a></h2>
 <p>Zyx is designed as a <strong>library</strong>, not a framework. This distinction is critical for developers who value flexibility and control over their machine learning workflows. While frameworks impose rigid structures and design patterns, libraries like Zyx adapt to your needs, enabling seamless integration into any project architecture.</p>
@@ -433,7 +206,7 @@ model.save("model.safetensors")?;
 <ul>
 <li><strong>No mandatory base classes</strong>: You're not required to implement predefined interfaces.</li>
 <li><strong>No opinionated training loops</strong>: Unlike many ML frameworks that provide a single <code>fit()</code> or <code>train()</code> method, Zyx allows you to build custom training loops tailored to your application's requirements.</li>
-<li><strong>No static graph requirements</strong>: Zyx's tape-based autograd system (see <a href="autograd.html">autograd documentation</a>) records gradients only when needed, without requiring upfront graph definitions.</li>
+<li><strong>No static graph requirements</strong>: Zyx's tape-based autograd system (see <a href="getting-started/autograd.html">autograd documentation</a>) records gradients only when needed, without requiring upfront graph definitions.</li>
 </ul>
 <h3 id="2-minimal-compilation-footprint"><a class="header" href="#2-minimal-compilation-footprint">2. Minimal Compilation Footprint</a></h3>
 <p>Zyx is engineered to be <strong>tiny when compiled</strong>, making it ideal for users who want to keep their disk free. It's just a few MB.</p>
@@ -652,10 +425,1017 @@ fn safe_operation() -&gt; Result&lt;(), ZyxError&gt; {
 <li>Developers working in resource-constrained environments</li>
 </ul>
 <p>The library model enables Zyx to be both powerful and lightweight, providing the best of both worlds for modern machine learning and linear algebra needs.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="execution-model"><a class="header" href="#execution-model">Execution Model</a></h1>
-<p>PyTorch executes most of the ops immediatelly. This straightforward, but it means that in order to be able to backpropagate, it needs to know which tensors must be stored in memory. Zyx uses lazy execution. It does not evaluate anything until user explicitly requests the data. This would not work for training/inference loops, so zyx uses caching mechanism that detects repetition of parts of graph and once any part of graph is repeated more than once, the whole graph get evaluated in order to remove no longer needed nodes (node is internal representation of unrealized tensor, takes only few bytes).</p>
-<p>This is cool by itself, because it means that zyx is as dynamic as pytorch while allowing for optimizations only possible in static graphs, but it also allows zyx to be more dynamic than PyTorch, because there is no longer need to specify which tensors require gradient, as you can see in <a href="autograd.html">autograd</a> chapter.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="mathematical-foundations"><a class="header" href="#mathematical-foundations">Mathematical Foundations</a></h1>
+<p>This chapter provides the essential mathematical background needed for understanding machine learning with Zyx. We'll cover the key mathematical concepts that form the foundation of neural networks and deep learning.</p>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>Machine learning is fundamentally applied mathematics. To understand how neural networks work and how to effectively use Zyx, you need a solid grasp of:</p>
+<ul>
+<li>Linear algebra: The language of neural networks</li>
+<li>Calculus: The mathematics of optimization</li>
+<li>Probability and statistics: The mathematics of uncertainty</li>
+<li>Optimization theory: The mathematics of learning</li>
+</ul>
+<h2 id="linear-algebra-review"><a class="header" href="#linear-algebra-review">Linear Algebra Review</a></h2>
+<p>Linear algebra is the mathematical foundation of machine learning. Neural networks are essentially complex functions composed of linear transformations and nonlinear activations.</p>
+<h3 id="vectors-and-matrices"><a class="header" href="#vectors-and-matrices">Vectors and Matrices</a></h3>
+<p>Vectors are one-dimensional arrays of numbers, while matrices are two-dimensional arrays. In Zyx, these are represented as tensors.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, DType};
+
+// Vector (1D tensor)
+let vector = Tensor::from([1.0, 2.0, 3.0]);
+assert_eq!(vector.shape(), [3]);
+
+// Matrix (2D tensor)
+let matrix = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+assert_eq!(matrix.shape(), [2, 2]);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="key-operations"><a class="header" href="#key-operations">Key Operations</a></h3>
+<h4 id="matrix-multiplication"><a class="header" href="#matrix-multiplication">Matrix Multiplication</a></h4>
+<p>Matrix multiplication is the fundamental operation in neural networks. In Zyx, this is done using the <code>dot</code> method.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let a = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+let b = Tensor::from([[5.0, 6.0], [7.0, 8.0]]);
+
+// Matrix multiplication
+let c = a.dot(&amp;b);
+// Result: [[19.0, 22.0], [43.0, 50.0]]
+<span class="boring">}</span></code></pre></pre>
+<h4 id="transposition"><a class="header" href="#transposition">Transposition</a></h4>
+<p>Transposing a matrix swaps its rows and columns.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let matrix = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+let transposed = matrix.t();
+// Result: [[1.0, 3.0], [2.0, 4.0]]
+<span class="boring">}</span></code></pre></pre>
+<h4 id="element-wise-operations"><a class="header" href="#element-wise-operations">Element-wise Operations</a></h4>
+<p>Element-wise operations apply the same operation to each element independently.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let a = Tensor::from([1.0, 2.0, 3.0]);
+let b = Tensor::from([4.0, 5.0, 6.0]);
+
+// Element-wise addition
+let c = &amp;a + &amp;b;  // [5.0, 7.0, 9.0]
+
+// Element-wise multiplication
+let d = &amp;a * &amp;b;  // [4.0, 10.0, 18.0]
+<span class="boring">}</span></code></pre></pre>
+<h3 id="tensor-properties"><a class="header" href="#tensor-properties">Tensor Properties</a></h3>
+<h4 id="rank-and-shape"><a class="header" href="#rank-and-shape">Rank and Shape</a></h4>
+<p>The rank of a tensor is the number of dimensions, and the shape describes the size of each dimension.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let tensor = Tensor::randn([2, 3, 4], DType::F32);
+
+assert_eq!(tensor.rank(), 3);  // 3D tensor
+assert_eq!(tensor.shape(), [2, 3, 4]);  // 2x3x4 tensor
+<span class="boring">}</span></code></pre></pre>
+<h4 id="broadcasting"><a class="header" href="#broadcasting">Broadcasting</a></h4>
+<p>Broadcasting allows operations between tensors of different shapes by automatically expanding dimensions.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let matrix = Tensor::randn([3, 3], DType::F32);
+let vector = Tensor::from([1.0, 2.0, 3.0]);
+
+// Vector will be broadcasted to match matrix shape
+let result = matrix + &amp;vector;
+<span class="boring">}</span></code></pre></pre>
+<h2 id="calculus-for-machine-learning"><a class="header" href="#calculus-for-machine-learning">Calculus for Machine Learning</a></h2>
+<p>Calculus provides the tools for optimization and understanding how neural networks learn.</p>
+<h3 id="derivatives-and-gradients"><a class="header" href="#derivatives-and-gradients">Derivatives and Gradients</a></h3>
+<p>The derivative measures how a function changes as its input changes. In neural networks, we use gradients (multidimensional derivatives) to update parameters.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, GradientTape};
+
+// Forward pass
+let tape = GradientTape::new();
+let x = Tensor::from([2.0, 3.0]);
+let y = x.pow(2);  // y = x^2
+
+// Backward pass to compute gradients
+let grads = tape.gradient(&amp;y, &amp;[&amp;x]);
+// dy/dx = 2*x = [4.0, 6.0]
+<span class="boring">}</span></code></pre></pre>
+<h3 id="chain-rule"><a class="header" href="#chain-rule">Chain Rule</a></h3>
+<p>The chain rule allows us to compute gradients through composed functions, which is essential for backpropagation.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// f(g(x)) where f(y) = y^2 and g(x) = x + 1
+let tape = GradientTape::new();
+let x = Tensor::from([2.0]);
+let g = x + 1.0;  // g(x) = x + 1
+let f = g.pow(2);  // f(g) = g^2
+
+// df/dx = df/dg * dg/dx = 2g * 1 = 2(x + 1)
+let grads = tape.gradient(&amp;f, &amp;[&amp;x]);
+// Result: [6.0] (since 2*(2 + 1) = 6)
+<span class="boring">}</span></code></pre></pre>
+<h3 id="partial-derivatives"><a class="header" href="#partial-derivatives">Partial Derivatives</a></h3>
+<p>Partial derivatives measure how a function changes with respect to one variable while holding others constant.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// f(x, y) = x^2 + y^2
+let tape = GradientTape::new();
+let x = Tensor::from([2.0]);
+let y = Tensor::from([3.0]);
+let f = x.pow(2) + y.pow(2);
+
+// df/dx = 2x = 4.0
+// df/dy = 2y = 6.0
+let grads = tape.gradient(&amp;f, &amp;[&amp;x, &amp;y]);
+<span class="boring">}</span></code></pre></pre>
+<h2 id="probability-and-statistics"><a class="header" href="#probability-and-statistics">Probability and Statistics</a></h2>
+<p>Probability and statistics provide the framework for understanding uncertainty and making predictions.</p>
+<h3 id="probability-distributions"><a class="header" href="#probability-distributions">Probability Distributions</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Normal distribution
+let normal = Tensor::randn([1000], DType::F32);
+
+// Uniform distribution
+let uniform = Tensor::rand([1000], DType::F32);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="statistical-measures"><a class="header" href="#statistical-measures">Statistical Measures</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Mean
+let mean = normal.mean();
+
+// Variance and standard deviation
+let variance = normal.var();
+let std_dev = normal.std();
+
+// Percentiles
+let p50 = normal.quantile(0.5);  // Median
+let p95 = normal.quantile(0.95);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="cross-entropy"><a class="header" href="#cross-entropy">Cross-Entropy</a></h3>
+<p>Cross-entropy is commonly used as a loss function for classification tasks.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Softmax and cross-entropy
+let logits = Tensor::randn([10], DType::F32);  // 10 classes
+let targets = Tensor::from([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);  # One-hot
+
+// Softmax probabilities
+let probs = logits.softmax();
+
+// Cross-entropy loss
+let loss = -(&amp;targets * probs.ln()).sum();
+<span class="boring">}</span></code></pre></pre>
+<h2 id="optimization-theory"><a class="header" href="#optimization-theory">Optimization Theory</a></h2>
+<p>Optimization theory provides the mathematical foundation for training neural networks.</p>
+<h3 id="gradient-descent"><a class="header" href="#gradient-descent">Gradient Descent</a></h3>
+<p>Gradient descent is the fundamental optimization algorithm used in neural networks.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Simple gradient descent implementation
+fn gradient_descent(
+    params: &amp;mut Tensor,
+    gradients: &amp;Tensor,
+    learning_rate: f32
+) {
+    // Update parameters: params = params - learning_rate * gradients
+    *params = params - &amp;gradients * learning_rate;
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="learning-rate-scheduling"><a class="header" href="#learning-rate-scheduling">Learning Rate Scheduling</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Exponential decay learning rate
+fn exponential_decay(epoch: i32, initial_lr: f32, decay_rate: f32) -&gt; f32 {
+    initial_lr * decay_rate.powi(epoch)
+}
+
+// Step decay learning rate
+fn step_decay(epoch: i32, initial_lr: f32, step_size: i32, decay_rate: f32) -&gt; f32 {
+    initial_lr * decay_rate.powi(epoch / step_size)
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="momentum"><a class="header" href="#momentum">Momentum</a></h3>
+<p>Momentum helps accelerate gradient descent in relevant directions and dampens oscillations.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Momentum-based parameter update
+struct Momentum {
+    velocity: Tensor,
+    momentum: f32,
+}
+
+impl Momentum {
+    fn new(shape: &amp;[usize], momentum: f32) -&gt; Self {
+        Self {
+            velocity: Tensor::zeros(shape, DType::F32),
+            momentum,
+        }
+    }
+
+    fn update(&amp;mut self, params: &amp;mut Tensor, gradients: &amp;Tensor, learning_rate: f32) {
+        // Update velocity: v = momentum * v + learning_rate * gradients
+        self.velocity = &amp;self.velocity * self.momentum + gradients * learning_rate;
+        
+        // Update parameters: params = params - velocity
+        *params = params - &amp;self.velocity;
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="adaptive-learning-rates"><a class="header" href="#adaptive-learning-rates">Adaptive Learning Rates</a></h3>
+<p>Adaptive optimizers like Adam adjust learning rates for each parameter individually.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Simplified Adam optimizer
+struct Adam {
+    m: Tensor,  // First moment (momentum)
+    v: Tensor,  // Second moment (RMSProp)
+    t: i32,     // Time step
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+}
+
+impl Adam {
+    fn new(shape: &amp;[usize]) -&gt; Self {
+        Self {
+            m: Tensor::zeros(shape, DType::F32),
+            v: Tensor::zeros(shape, DType::F32),
+            t: 0,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+        }
+    }
+
+    fn update(&amp;mut self, params: &amp;mut Tensor, gradients: &amp;Tensor, learning_rate: f32) {
+        self.t += 1;
+        
+        // Update biased first moment estimate
+        self.m = &amp;self.m * self.beta1 + gradients * (1.0 - self.beta1);
+        
+        // Update biased second raw moment estimate
+        self.v = &amp;self.v * self.beta2 + gradients.pow(2) * (1.0 - self.beta2);
+        
+        // Compute bias-corrected first moment estimate
+        let m_hat = &amp;self.m / (1.0 - self.beta1.powi(self.t));
+        
+        // Compute bias-corrected second raw moment estimate
+        let v_hat = &amp;self.v / (1.0 - self.beta2.powi(self.t));
+        
+        // Update parameters
+        let update = m_hat / (&amp;v_hat.sqrt() + self.eps);
+        *params = params - &amp;update * learning_rate;
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="mathematical-concepts-in-zyx"><a class="header" href="#mathematical-concepts-in-zyx">Mathematical Concepts in Zyx</a></h2>
+<h3 id="vectorization"><a class="header" href="#vectorization">Vectorization</a></h3>
+<p>Zyx automatically handles vectorization of operations, allowing you to work with batches of data efficiently.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Batch processing
+let batch = Tensor::randn([32, 784], DType::F32);  // 32 samples, 784 features each
+let weights = Tensor::randn([784, 10], DType::F32);  // 784 input features, 10 output classes
+
+// Process entire batch at once
+let logits = batch.dot(&amp;weights);  // [32, 10]
+<span class="boring">}</span></code></pre></pre>
+<h3 id="automatic-differentiation"><a class="header" href="#automatic-differentiation">Automatic Differentiation</a></h3>
+<p>Zyx's automatic differentiation system handles the complex mathematics of backpropagation automatically.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Complex computation graph
+let tape = GradientTape::new();
+let x = Tensor::randn([100, 100], DType::F32);
+let y = x.relu().mm(&amp;x.t()).softmax();
+let loss = y.sum();
+
+// Automatic gradient computation
+let gradients = tape.gradient(&amp;loss, &amp;[&amp;x]);
+<span class="boring">}</span></code></pre></pre>
+<h2 id="practical-examples"><a class="header" href="#practical-examples">Practical Examples</a></h2>
+<h3 id="linear-regression"><a class="header" href="#linear-regression">Linear Regression</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Linear regression: y = Wx + b
+fn linear_regression(x: &amp;Tensor, w: &amp;Tensor, b: &amp;Tensor) -&gt; Tensor {
+    x.dot(w) + b
+}
+
+// Mean squared loss
+fn mse_loss(predictions: &amp;Tensor, targets: &amp;Tensor) -&gt; Tensor {
+    (predictions - targets).pow(2).mean()
+}
+
+// Training loop
+fn train_linear_regression() {
+    let x_train = Tensor::randn([100, 10], DType::F32);
+    let y_train = Tensor::randn([100, 1], DType::F32);
+    
+    let mut w = Tensor::randn([10, 1], DType::F32);
+    let mut b = Tensor::zeros([1], DType::F32);
+    
+    let learning_rate = 0.01;
+    let epochs = 1000;
+    
+    for epoch in 0..epochs {
+        let tape = GradientTape::new();
+        let predictions = linear_regression(&amp;x_train, &amp;w, &amp;b);
+        let loss = mse_loss(&amp;predictions, &amp;y_train);
+        
+        let gradients = tape.gradient(&amp;loss, [&amp;w, &amp;b]);
+        
+        // Update parameters
+        w = w - &amp;gradients[0] * learning_rate;
+        b = b - &amp;gradients[1] * learning_rate;
+        
+        if epoch % 100 == 0 {
+            println!("Epoch {}: Loss = {}", epoch, loss.item());
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="logistic-regression"><a class="header" href="#logistic-regression">Logistic Regression</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Logistic regression with sigmoid activation
+fn logistic_regression(x: &amp;Tensor, w: &amp;Tensor, b: &amp;Tensor) -&gt; Tensor {
+    let logits = x.dot(w) + b;
+    logits.sigmoid()
+}
+
+// Binary cross-entropy loss
+fn binary_cross_entropy(predictions: &amp;Tensor, targets: &amp;Tensor) -&gt; Tensor {
+    -(&amp;targets * predictions.ln() + &amp;(1.0 - targets) * (1.0 - predictions).ln()).mean()
+}
+
+// Training loop
+fn train_logistic_regression() {
+    let x_train = Tensor::randn([1000, 20], DType::F32);
+    let y_train = Tensor::randn([1000, 1], DType::F32);  # Binary labels
+    
+    let mut w = Tensor::randn([20, 1], DType::F32);
+    let mut b = Tensor::zeros([1], DType::F32);
+    
+    let learning_rate = 0.1;
+    let epochs = 100;
+    
+    for epoch in 0..epochs {
+        let tape = GradientTape::new();
+        let predictions = logistic_regression(&amp;x_train, &amp;w, &amp;b);
+        let loss = binary_cross_entropy(&amp;predictions, &amp;y_train);
+        
+        let gradients = tape.gradient(&amp;loss, [&amp;w, &amp;b]);
+        
+        // Update parameters
+        w = w - &amp;gradients[0] * learning_rate;
+        b = b - &amp;gradients[1] * learning_rate;
+        
+        if epoch % 10 == 0 {
+            let accuracy = (&amp;predictions &gt; 0.5).eq(&amp;y_train).mean();
+            println!("Epoch {}: Loss = {:.4}, Accuracy = {:.4}", 
+                    epoch, loss.item(), accuracy.item());
+        }
+    }
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
+<p>The mathematical foundations covered in this chapter are essential for understanding and working with machine learning in Zyx:</p>
+<ul>
+<li><strong>Linear algebra</strong> provides the language for representing and manipulating data</li>
+<li><strong>Calculus</strong> gives us the tools for optimization and learning</li>
+<li><strong>Probability and statistics</strong> help us handle uncertainty and measure performance</li>
+<li><strong>Optimization theory</strong> provides the algorithms for training neural networks</li>
+</ul>
+<p>With this mathematical foundation, you're ready to dive deeper into neural networks and start building sophisticated machine learning models with Zyx.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="linear-algebra-review-1"><a class="header" href="#linear-algebra-review-1">Linear Algebra Review</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="calculus-for-machine-learning-1"><a class="header" href="#calculus-for-machine-learning-1">Calculus for Machine Learning</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="probability-and-statistics-1"><a class="header" href="#probability-and-statistics-1">Probability and Statistics</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="optimization-theory-1"><a class="header" href="#optimization-theory-1">Optimization Theory</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="core-zyx-features"><a class="header" href="#core-zyx-features">Core Zyx Features</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="automatic-differentiation-1"><a class="header" href="#automatic-differentiation-1">Automatic Differentiation</a></h1>
+<h2 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h2>
+<p>Zyx implements automatic differentiation through an explicit gradient tape system. Any differentiable mathematical operation can be automatically tracked and differentiated, including functions like ReLU that have points of non-differentiability in traditional calculus.</p>
+<h2 id="example-workflow"><a class="header" href="#example-workflow">Example Workflow</a></h2>
+<h3 id="forward-pass-with-gradient-tape"><a class="header" href="#forward-pass-with-gradient-tape">Forward Pass with Gradient Tape</a></h3>
+<p>Create a gradient tape and perform tensor operations:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, GradientTape, DType};
+
+let tape = GradientTape::new();
+let x = Tensor::randn([1024, 1024], DType::F32);
+let y = Tensor::from([2, 3, 1]);
+let z = (x + y.pad([(1000, 21)], 8)) * x;
+<span class="boring">}</span></code></pre></pre>
+<h3 id="backward-pass-via-gradient-tape"><a class="header" href="#backward-pass-via-gradient-tape">Backward Pass via Gradient Tape</a></h3>
+<p>Compute gradients using the tape:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let grads = tape.gradient(&amp;z, &amp;[&amp;x, &amp;y]);
+<span class="boring">}</span></code></pre></pre>
+<h3 id="gradient-handling"><a class="header" href="#gradient-handling">Gradient Handling</a></h3>
+<p>The <code>gradient</code> method returns <code>Vec&lt;Option&lt;Tensor&gt;&gt;</code> where <code>None</code> indicates no computational path:</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let tape = GradientTape::new();
+let x = Tensor::randn([2, 3], DType::F32);
+let y = Tensor::randn([2, 3], DType::F32);
+let z = y.exp();
+let grads = tape.gradient(&amp;z, &amp;[&amp;x]);
+assert_eq!(grads, vec![None]);  // No gradient for x since z doesn't depend on it
+<span class="boring">}</span></code></pre></pre>
+<h2 id="performance-advantages"><a class="header" href="#performance-advantages">Performance Advantages</a></h2>
+<h3 id="tape-based-computation"><a class="header" href="#tape-based-computation">Tape-Based Computation</a></h3>
+<p>Zyx's autograd system:</p>
+<ul>
+<li>Uses an explicit <code>GradientTape</code> to record operations</li>
+<li>Only computes gradients when explicitly requested</li>
+<li>Optimizes memory usage through lazy evaluation</li>
+<li>Supports higher-order derivatives with persistent gradient tapes</li>
+</ul>
+<p>This architecture enables efficient differentiation while maintaining flexibility for complex computational graphs.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="optimizers"><a class="header" href="#optimizers">Optimizers</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="creating-modules"><a class="header" href="#creating-modules">Creating Modules</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="disk-io"><a class="header" href="#disk-io">Disk IO</a></h1>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="runtime"><a class="header" href="#runtime">Runtime</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="neural-network-fundamentals"><a class="header" href="#neural-network-fundamentals">Neural Network Fundamentals</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="perceptrons-and-basic-networks"><a class="header" href="#perceptrons-and-basic-networks">Perceptrons and Basic Networks</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="activation-functions"><a class="header" href="#activation-functions">Activation Functions</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="loss-functions"><a class="header" href="#loss-functions">Loss Functions</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="backpropagation-algorithm"><a class="header" href="#backpropagation-algorithm">Backpropagation Algorithm</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="network-architecture-design"><a class="header" href="#network-architecture-design">Network Architecture Design</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="practical-ml-workflows"><a class="header" href="#practical-ml-workflows">Practical ML Workflows</a></h1>
+<p>Machine learning projects follow structured workflows that ensure reproducibility, efficiency, and reliable results. This chapter covers the essential workflows for building, training, and deploying machine learning models using Zyx.</p>
+<h2 id="the-ml-project-lifecycle"><a class="header" href="#the-ml-project-lifecycle">The ML Project Lifecycle</a></h2>
+<p>A typical machine learning project follows these key stages:</p>
+<ol>
+<li><strong>Data Collection and Preparation</strong>: Gathering and cleaning data</li>
+<li><strong>Exploratory Data Analysis</strong>: Understanding data patterns and characteristics</li>
+<li><strong>Feature Engineering</strong>: Creating meaningful input representations</li>
+<li><strong>Model Selection and Training</strong>: Choosing appropriate algorithms and training</li>
+<li><strong>Evaluation and Validation</strong>: Assessing model performance</li>
+<li><strong>Deployment and Monitoring</strong>: Putting models into production</li>
+</ol>
+<h2 id="key-workflow-principles"><a class="header" href="#key-workflow-principles">Key Workflow Principles</a></h2>
+<h3 id="reproducibility"><a class="header" href="#reproducibility">Reproducibility</a></h3>
+<p>Ensure your experiments can be reproduced by setting random seeds and documenting all steps. Reproducibility is crucial for debugging and validating results.</p>
+<h3 id="version-control"><a class="header" href="#version-control">Version Control</a></h3>
+<p>Track your experiments and data using version control systems. This allows you to revert to previous states and compare different approaches systematically.</p>
+<h3 id="experiment-tracking"><a class="header" href="#experiment-tracking">Experiment Tracking</a></h3>
+<p>Monitor your training progress by tracking loss and metrics over time. This helps identify when to stop training and when to adjust hyperparameters.</p>
+<h2 id="workflow-tools-in-zyx"><a class="header" href="#workflow-tools-in-zyx">Workflow Tools in Zyx</a></h2>
+<p>Zyx provides tools to streamline your ML workflows. The most important aspect is ensuring reproducibility through proper random seed management.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, DType};
+
+// Set random seeds for reproducibility
+fn setup_reproducible_environment() {
+    // Set global random seed for reproducible results
+    Tensor::manual_seed(42);
+    
+    // Now all random operations will produce the same results
+    let random_data = Tensor::randn([100, 10], DType::F32);
+    // This will always produce the same tensor when run with seed 42
+}
+<span class="boring">}</span></code></pre></pre>
+<p>This simple seed setting ensures that all random operations in your ML pipeline produce consistent results, making your experiments reproducible and debuggable.</p>
+<h2 id="best-practices"><a class="header" href="#best-practices">Best Practices</a></h2>
+<h3 id="data-management"><a class="header" href="#data-management">Data Management</a></h3>
+<p>Split data into training, validation, and test sets. Use data augmentation for training data and handle missing values appropriately.</p>
+<h3 id="model-training"><a class="header" href="#model-training">Model Training</a></h3>
+<p>Monitor both training and validation loss to detect overfitting. Use early stopping and save checkpoints during training.</p>
+<h3 id="experimentation"><a class="header" href="#experimentation">Experimentation</a></h3>
+<p>Keep detailed records of experiments, use consistent evaluation metrics, and compare baselines before complex models.</p>
+<h2 id="summary-1"><a class="header" href="#summary-1">Summary</a></h2>
+<p>Effective ML workflows are crucial for successful machine learning projects. By following structured approaches and using Zyx's tools like manual seed setting, you can build reproducible, efficient, and reliable machine learning systems.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="data-preprocessing"><a class="header" href="#data-preprocessing">Data Preprocessing</a></h1>
+<p>Data preprocessing is a critical step in machine learning that transforms raw data into a clean, usable format for model training. Proper preprocessing can significantly impact model performance and is often the most time-consuming part of the ML pipeline.</p>
+<h2 id="why-data-preprocessing-matters"><a class="header" href="#why-data-preprocessing-matters">Why Data Preprocessing Matters</a></h2>
+<p>Raw data is rarely ready for machine learning models. It often contains:</p>
+<ul>
+<li>Missing values</li>
+<li>Outliers and anomalies</li>
+<li>Inconsistent scales and distributions</li>
+<li>Categorical variables that need encoding</li>
+<li>Noise and irrelevant features</li>
+</ul>
+<p>Effective preprocessing addresses these issues, ensuring that models can learn meaningful patterns from the data.</p>
+<h2 id="common-preprocessing-techniques"><a class="header" href="#common-preprocessing-techniques">Common Preprocessing Techniques</a></h2>
+<h3 id="normalization-and-standardization"><a class="header" href="#normalization-and-standardization">Normalization and Standardization</a></h3>
+<p>Normalization scales features to a range [0, 1], while standardization transforms data to have zero mean and unit variance.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, DType};
+
+// Normalize data to [0, 1] range
+fn normalize_data(data: &amp;Tensor) -&gt; Tensor {
+    let min = data.min();
+    let max = data.max();
+    (data - min) / (max - min)
+}
+
+// Standardize data (zero mean, unit variance)
+fn standardize_data(data: &amp;Tensor) -&gt; Tensor {
+    let mean = data.mean();
+    let std = data.std();
+    (data - mean) / std
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="handling-missing-values"><a class="header" href="#handling-missing-values">Handling Missing Values</a></h3>
+<p>Missing values can be handled through imputation or removal. Common strategies include:</p>
+<ul>
+<li>Mean/median/mode imputation</li>
+<li>Forward/backward filling</li>
+<li>Predictive imputation</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Fill missing values with mean
+fn fill_missing_with_mean(data: &amp;Tensor) -&gt; Tensor {
+    let mean = data.mean();
+    // Create mask for missing values (assuming NaN represents missing)
+    let mask = data.is_nan();
+    data * !mask.clone() + mean * mask
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="categorical-encoding"><a class="header" href="#categorical-encoding">Categorical Encoding</a></h3>
+<p>Categorical variables need to be converted to numerical format. Common approaches include:</p>
+<ul>
+<li>One-hot encoding</li>
+<li>Label encoding</li>
+<li>Target encoding</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// One-hot encode categorical data
+fn one_hot_encode(data: &amp;Tensor, num_classes: i32) -&gt; Tensor {
+    let shape = [data.shape()[0], num_classes as usize];
+    let mut encoded = Tensor::zeros(shape, DType::F32);
+    
+    for i in 0..data.shape()[0] {
+        let class = data[[i]].item::&lt;i32&gt;().unwrap() as usize;
+        encoded[[i, class]] = 1.0;
+    }
+    encoded
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="feature-scaling"><a class="header" href="#feature-scaling">Feature Scaling</a></h3>
+<p>Different features may have different scales, which can bias models. Feature scaling ensures all features contribute equally.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Min-max scaling to specific range
+fn min_max_scale(data: &amp;Tensor, new_min: f32, new_max: f32) -&gt; Tensor {
+    let current_min = data.min();
+    let current_max = data.max();
+    new_min + (data - current_min) * (new_max - new_min) / (current_max - current_min)
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="data-quality-assessment"><a class="header" href="#data-quality-assessment">Data Quality Assessment</a></h2>
+<p>Before preprocessing, assess data quality by examining:</p>
+<ul>
+<li>Distribution of each feature</li>
+<li>Presence of outliers</li>
+<li>Missing value patterns</li>
+<li>Correlation between features</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Basic data quality assessment
+fn assess_data_quality(data: &amp;Tensor) {
+    println!("Data shape: {:?}", data.shape());
+    println!("Missing values: {}", data.is_nan().sum().item::&lt;i32&gt;());
+    println!("Mean: {:.4}", data.mean().item());
+    println!("Std: {:.4}", data.std().item());
+    println!("Min: {:.4}", data.min().item());
+    println!("Max: {:.4}", data.max().item());
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="advanced-preprocessing-techniques"><a class="header" href="#advanced-preprocessing-techniques">Advanced Preprocessing Techniques</a></h2>
+<h3 id="feature-engineering"><a class="header" href="#feature-engineering">Feature Engineering</a></h3>
+<p>Create new features that may be more predictive than the original ones:</p>
+<ul>
+<li>Polynomial features</li>
+<li>Interaction terms</li>
+<li>Domain-specific transformations</li>
+</ul>
+<h3 id="dimensionality-reduction"><a class="header" href="#dimensionality-reduction">Dimensionality Reduction</a></h3>
+<p>Reduce the number of features while preserving important information:</p>
+<ul>
+<li>Principal Component Analysis (PCA)</li>
+<li>t-SNE</li>
+<li>Autoencoders</li>
+</ul>
+<h3 id="data-augmentation"><a class="header" href="#data-augmentation">Data Augmentation</a></h3>
+<p>artificially expand training data by creating modified versions of existing samples.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Simple data augmentation for images
+fn augment_image(image: &amp;Tensor) -&gt; Tensor {
+    // Random horizontal flip
+    let flipped = image.flip(1);
+    
+    // Random rotation (simplified example)
+    // In practice, you'd use more sophisticated rotation
+    flipped
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="best-practices-1"><a class="header" href="#best-practices-1">Best Practices</a></h2>
+<ol>
+<li><strong>Fit on training data only</strong>: Preprocessing parameters should be learned from training data and applied to validation/test data</li>
+<li><strong>Handle data leakage</strong>: Ensure information from validation/test sets doesn't leak into training</li>
+<li><strong>Document preprocessing</strong>: Keep track of all preprocessing steps for reproducibility</li>
+<li><strong>Validate preprocessing</strong>: Check that preprocessing doesn't introduce artifacts or distort data</li>
+</ol>
+<h2 id="summary-2"><a class="header" href="#summary-2">Summary</a></h2>
+<p>Data preprocessing is essential for building effective machine learning models. By properly normalizing, cleaning, and transforming your data, you create the foundation for successful model training and deployment.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="trainvalidationtest-splits"><a class="header" href="#trainvalidationtest-splits">Train/Validation/Test Splits</a></h1>
+<p>Proper data splitting is crucial for building robust machine learning models. The way you split your data determines how well your model will generalize to unseen data and helps prevent overfitting.</p>
+<h2 id="why-data-splitting-matters"><a class="header" href="#why-data-splitting-matters">Why Data Splitting Matters</a></h2>
+<p>Data splitting allows you to:</p>
+<ul>
+<li><strong>Train models</strong> on a portion of your data</li>
+<li><strong>Validate</strong> model performance during development</li>
+<li><strong>Test</strong> final model performance on unseen data</li>
+</ul>
+<p>Without proper splitting, you risk overfitting to your training data and getting an overly optimistic view of your model's performance.</p>
+<h2 id="common-splitting-strategies"><a class="header" href="#common-splitting-strategies">Common Splitting Strategies</a></h2>
+<h3 id="simple-random-split"><a class="header" href="#simple-random-split">Simple Random Split</a></h3>
+<p>The most basic approach where data is randomly divided into sets.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, DType};
+
+// Simple random split
+fn random_split(data: &amp;Tensor, labels: &amp;Tensor, train_ratio: f32) -&gt; (Tensor, Tensor, Tensor, Tensor) {
+    let n_samples = data.shape()[0];
+    let n_train = (n_samples as f32 * train_ratio) as usize;
+    
+    // Shuffle indices
+    let mut indices: Vec&lt;usize&gt; = (0..n_samples).collect();
+    indices.shuffle(&amp;mut rand::thread_rng());
+    
+    // Split indices
+    let train_indices = &amp;indices[..n_train];
+    let test_indices = &amp;indices[n_train..];
+    
+    // Create masks
+    let mut train_mask = Tensor::zeros([n_samples], DType::F32);
+    let mut test_mask = Tensor::zeros([n_samples], DType::F32);
+    
+    for &amp;idx in train_indices {
+        train_mask[[idx]] = 1.0;
+    }
+    for &amp;idx in test_indices {
+        test_mask[[idx]] = 1.0;
+    }
+    
+    // Apply masks
+    let train_data = data * &amp;train_mask.unsqueeze(1);
+    let train_labels = labels * &amp;train_mask.unsqueeze(1);
+    let test_data = data * &amp;test_mask.unsqueeze(1);
+    let test_labels = labels * &amp;test_mask.unsqueeze(1);
+    
+    (train_data, train_labels, test_data, test_labels)
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="stratified-split"><a class="header" href="#stratified-split">Stratified Split</a></h3>
+<p>For classification tasks, stratified splitting ensures class distribution is preserved in each split.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Stratified split for classification
+fn stratified_split(
+    data: &amp;Tensor, 
+    labels: &amp;Tensor, 
+    train_ratio: f32
+) -&gt; (Tensor, Tensor, Tensor, Tensor) {
+    let n_samples = data.shape()[0];
+    let n_classes = labels.max().item::&lt;i32&gt;() + 1;
+    
+    let mut class_indices: Vec&lt;Vec&lt;usize&gt;&gt; = (0..n_classes).map(|_| Vec::new()).collect();
+    
+    // Group indices by class
+    for i in 0..n_samples {
+        let class = labels[[i]].item::&lt;i32&gt;().unwrap() as usize;
+        class_indices[class].push(i);
+    }
+    
+    // Split each class
+    let mut train_indices = Vec::new();
+    let mut test_indices = Vec::new();
+    
+    for class_indices in &amp;class_indices {
+        let n_class = class_indices.len();
+        let n_train = (n_class as f32 * train_ratio) as usize;
+        
+        let train_part = &amp;class_indices[..n_train];
+        let test_part = &amp;class_indices[n_train..];
+        
+        train_indices.extend_from_slice(train_part);
+        test_indices.extend_from_slice(test_part);
+    }
+    
+    // Create final splits
+    let train_data = select_rows(data, &amp;train_indices);
+    let train_labels = select_rows(labels, &amp;train_indices);
+    let test_data = select_rows(data, &amp;test_indices);
+    let test_labels = select_rows(labels, &amp;test_indices);
+    
+    (train_data, train_labels, test_data, test_labels)
+}
+
+// Helper function to select rows by indices
+fn select_rows(data: &amp;Tensor, indices: &amp;[usize]) -&gt; Tensor {
+    let mut result = Tensor::zeros([indices.len(), data.shape()[1]], data.dtype());
+    for (i, &amp;idx) in indices.iter().enumerate() {
+        result.slice(i..=i, 0..=data.shape()[1] - 1).copy_(data.slice(idx..=idx, 0..=data.shape()[1] - 1));
+    }
+    result
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="time-series-split"><a class="header" href="#time-series-split">Time Series Split</a></h3>
+<p>For time-dependent data, use temporal splits to prevent data leakage.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Time series split
+fn time_series_split(data: &amp;Tensor, labels: &amp;Tensor, train_ratio: f32) -&gt; (Tensor, Tensor, Tensor, Tensor) {
+    let n_samples = data.shape()[0];
+    let split_point = (n_samples as f32 * train_ratio) as usize;
+    
+    let train_data = data.slice(0..=split_point - 1, 0..=data.shape()[1] - 1);
+    let train_labels = labels.slice(0..=split_point - 1, 0..=labels.shape()[1] - 1);
+    let test_data = data.slice(split_point..=n_samples - 1, 0..=data.shape()[1] - 1);
+    let test_labels = labels.slice(split_point..=n_samples - 1, 0..=labels.shape()[1] - 1);
+    
+    (train_data, train_labels, test_data, test_labels)
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="cross-validation"><a class="header" href="#cross-validation">Cross-Validation</a></h2>
+<p>Cross-validation provides more robust performance estimates by using multiple train/test splits.</p>
+<h3 id="k-fold-cross-validation"><a class="header" href="#k-fold-cross-validation">K-Fold Cross-Validation</a></h3>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// K-fold cross validation
+fn k_fold_cross_validation(
+    data: &amp;Tensor,
+    labels: &amp;Tensor,
+    k: i32,
+    model_factory: fn() -&gt; Box&lt;dyn Module&gt;,
+    epochs: i32
+) -&gt; f32 {
+    let n_samples = data.shape()[0];
+    let fold_size = n_samples / k as usize;
+    let mut scores = Vec::new();
+    
+    for fold in 0..k {
+        let start = fold as usize * fold_size;
+        let end = if fold == k - 1 { n_samples } else { start + fold_size };
+        
+        // Create validation fold
+        let val_data = data.slice(start..=end - 1, 0..=data.shape()[1] - 1);
+        let val_labels = labels.slice(start..=end - 1, 0..=labels.shape()[1] - 1);
+        
+        // Create training folds (all other folds)
+        let mut train_data = Tensor::zeros([n_samples - fold_size, data.shape()[1]], data.dtype());
+        let mut train_labels = Tensor::zeros([n_samples - fold_size, labels.shape()[1]], labels.dtype());
+        let mut train_idx = 0;
+        
+        for other_fold in 0..k {
+            if other_fold == fold { continue; }
+            
+            let other_start = other_fold as usize * fold_size;
+            let other_end = if other_fold == k - 1 { n_samples } else { other_start + fold_size };
+            
+            let other_data = data.slice(other_start..=other_end - 1, 0..=data.shape()[1] - 1);
+            let other_labels = labels.slice(other_start..=other_end - 1, 0..=labels.shape()[1] - 1);
+            
+            train_data.slice(train_idx..=train_idx + other_data.shape()[0] - 1, 0..=data.shape()[1] - 1).copy_(&amp;other_data);
+            train_labels.slice(train_idx..=train_idx + other_labels.shape()[0] - 1, 0..=labels.shape()[1] - 1).copy_(&amp;other_labels);
+            train_idx += other_data.shape()[0];
+        }
+        
+        // Train and evaluate model
+        let mut model = model_factory();
+        train_model(&amp;mut model, &amp;train_data, &amp;train_labels, epochs);
+        let score = evaluate_model(&amp;model, &amp;val_data, &amp;val_labels);
+        scores.push(score);
+    }
+    
+    // Return average score
+    scores.iter().sum::&lt;f32&gt;() / scores.len() as f32
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="split-ratios"><a class="header" href="#split-ratios">Split Ratios</a></h2>
+<p>Common split ratios include:</p>
+<ul>
+<li><strong>70/15/15</strong>: Training/Validation/Test</li>
+<li><strong>80/10/10</strong>: Training/Validation/Test</li>
+<li><strong>60/20/20</strong>: Training/Validation/Test</li>
+<li><strong>80/20</strong>: Training/Test (when validation isn't needed)</li>
+</ul>
+<p>The choice depends on:</p>
+<ul>
+<li>Dataset size (larger datasets can afford smaller validation/test sets)</li>
+<li>Model complexity (complex models need more training data)</li>
+<li>Task requirements (critical applications may need larger test sets)</li>
+</ul>
+<h2 id="best-practices-2"><a class="header" href="#best-practices-2">Best Practices</a></h2>
+<ol>
+<li><strong>Always split before preprocessing</strong>: Fit preprocessing parameters on training data only</li>
+<li><strong>Use stratified splits</strong> for classification tasks</li>
+<li><strong>Shuffle data</strong> before splitting (except for time series)</li>
+<li><strong>Document your splits</strong> for reproducibility</li>
+<li><strong>Use consistent splits</strong> across experiments</li>
+</ol>
+<h2 id="summary-3"><a class="header" href="#summary-3">Summary</a></h2>
+<p>Proper data splitting is essential for building reliable machine learning models. By choosing the right splitting strategy and ratios, you ensure your model generalizes well to unseen data and provides accurate performance estimates.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="cross-validation-techniques"><a class="header" href="#cross-validation-techniques">Cross-Validation Techniques</a></h1>
+<p>Cross-validation is a robust technique for estimating model performance and selecting the best model. It provides more reliable performance estimates than a single train/test split by using multiple different splits of the data.</p>
+<h2 id="why-cross-validation-matters"><a class="header" href="#why-cross-validation-matters">Why Cross-Validation Matters</a></h2>
+<p>Single train/test splits can be misleading due to:</p>
+<ul>
+<li>Random variation in the split</li>
+<li>Unrepresentative splits</li>
+<li>Overfitting to the specific test set</li>
+</ul>
+<p>Cross-validation addresses these issues by:</p>
+<ul>
+<li>Using multiple different train/test splits</li>
+<li>Averaging performance across all splits</li>
+<li>Providing more stable performance estimates</li>
+</ul>
+<h2 id="k-fold-cross-validation-1"><a class="header" href="#k-fold-cross-validation-1">K-Fold Cross-Validation</a></h2>
+<p>The most common cross-validation method, where data is divided into K equal parts. Each fold serves as the test set once, while the remaining K-1 folds form the training set.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, DType};
+
+// Simple K-fold cross-validation
+fn k_fold_cross_validation(data: &amp;Tensor, k: i32) -&gt; f32 {
+    let n_samples = data.shape()[0];
+    let fold_size = n_samples / k as usize;
+    let mut scores = Vec::new();
+    
+    for fold in 0..k {
+        let start = fold as usize * fold_size;
+        let end = if fold == k - 1 { n_samples } else { start + fold_size };
+        
+        // Create validation fold
+        let val_data = data.slice(start..=end - 1, 0..=data.shape()[1] - 1);
+        
+        // Train on remaining folds and evaluate
+        let score = train_and_evaluate(val_data);
+        scores.push(score);
+    }
+    
+    // Return average score
+    scores.iter().sum::&lt;f32&gt;() / scores.len() as f32
+}
+<span class="boring">}</span></code></pre></pre>
+<h2 id="common-cross-validation-methods"><a class="header" href="#common-cross-validation-methods">Common Cross-Validation Methods</a></h2>
+<h3 id="stratified-k-fold"><a class="header" href="#stratified-k-fold">Stratified K-Fold</a></h3>
+<p>For classification tasks, stratified K-fold ensures each fold has the same class distribution as the original dataset. This prevents situations where some folds might lack certain classes.</p>
+<h3 id="leave-one-out-cross-validation-loocv"><a class="header" href="#leave-one-out-cross-validation-loocv">Leave-One-Out Cross-Validation (LOOCV)</a></h3>
+<p>A special case where each sample is used once as test data. Provides unbiased estimates but is computationally expensive.</p>
+<h3 id="time-series-cross-validation"><a class="header" href="#time-series-cross-validation">Time Series Cross-Validation</a></h3>
+<p>For time-dependent data, uses specialized splits that respect temporal order to prevent data leakage.</p>
+<h2 id="choosing-the-right-method"><a class="header" href="#choosing-the-right-method">Choosing the Right Method</a></h2>
+<ul>
+<li><strong>K-Fold (K=5 or 10)</strong>: Good balance for most problems</li>
+<li><strong>Stratified K-Fold</strong>: Best for classification</li>
+<li><strong>LOOCV</strong>: Small datasets where you need unbiased estimates</li>
+<li><strong>Time Series CV</strong>: Temporal data where order matters</li>
+</ul>
+<h2 id="best-practices-3"><a class="header" href="#best-practices-3">Best Practices</a></h2>
+<ol>
+<li><strong>Use stratified K-fold</strong> for classification tasks</li>
+<li><strong>Consider computational cost</strong> - LOOCV is unbiased but expensive</li>
+<li><strong>Use time series CV</strong> for temporal data</li>
+<li><strong>Document your CV strategy</strong> for reproducibility</li>
+</ol>
+<h2 id="summary-4"><a class="header" href="#summary-4">Summary</a></h2>
+<p>Cross-validation provides robust performance estimates and helps select the best model. By choosing the appropriate method for your data type and problem, you can build more reliable and generalizable machine learning models.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="hyperparameter-tuning"><a class="header" href="#hyperparameter-tuning">Hyperparameter Tuning</a></h1>
+<p>Hyperparameter tuning is the process of finding the optimal settings for your model's hyperparameters - the parameters that are learned during training. Proper tuning can significantly improve model performance and is essential for building effective machine learning systems.</p>
+<h2 id="what-are-hyperparameters"><a class="header" href="#what-are-hyperparameters">What Are Hyperparameters?</a></h2>
+<p>Hyperparameters are settings that control the learning process and model architecture. Unlike model parameters (weights), they are not learned from the data. Common hyperparameters include:</p>
+<ul>
+<li>Learning rate</li>
+<li>Number of layers and neurons</li>
+<li>Batch size</li>
+<li>Number of epochs</li>
+<li>Regularization strength</li>
+<li>Dropout rate</li>
+</ul>
+<h2 id="why-hyperparameter-tuning-matters"><a class="header" href="#why-hyperparameter-tuning-matters">Why Hyperparameter Tuning Matters</a></h2>
+<p>Proper hyperparameter tuning can:</p>
+<ul>
+<li>Improve model performance by 10-50%</li>
+<li>Prevent overfitting and underfitting</li>
+<li>Speed up convergence</li>
+<li>Make models more robust</li>
+</ul>
+<h2 id="common-tuning-strategies"><a class="header" href="#common-tuning-strategies">Common Tuning Strategies</a></h2>
+<h3 id="grid-search"><a class="header" href="#grid-search">Grid Search</a></h3>
+<p>Grid search exhaustively tries all possible combinations of hyperparameters.</p>
+<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use zyx::{Tensor, DType};
+
+// Simple grid search for hyperparameter tuning
+fn grid_search(
+    param_grid: &amp;[(f32, f32, f32)],  // (start, end, step) for each parameter
+    model_factory: fn(f32) -&gt; Box&lt;dyn Module&gt;,
+    data: &amp;Tensor,
+    labels: &amp;Tensor
+) -&gt; (f32, f32) {
+    let mut best_score = f32::NEG_INFINITY;
+    let mut best_params = (0.0, 0.0);
+    
+    for lr in (0.0..1.0).step_by(10) {
+        for reg in (0.0..0.1).step_by(5) {
+            // Create model with current hyperparameters
+            let model = model_factory(lr);
+            
+            // Train and evaluate
+            let score = train_and_evaluate(&amp;model, data, labels);
+            
+            // Update best parameters if needed
+            if score &gt; best_score {
+                best_score = score;
+                best_params = (lr, reg);
+            }
+        }
+    }
+    
+    best_params
+}
+<span class="boring">}</span></code></pre></pre>
+<h3 id="random-search"><a class="header" href="#random-search">Random Search</a></h3>
+<p>Random search samples random combinations of hyperparameters, often more efficient than grid search.</p>
+<h3 id="bayesian-optimization"><a class="header" href="#bayesian-optimization">Bayesian Optimization</a></h3>
+<p>Uses probabilistic models to find optimal hyperparameters more efficiently.</p>
+<h2 id="best-practices-for-hyperparameter-tuning"><a class="header" href="#best-practices-for-hyperparameter-tuning">Best Practices for Hyperparameter Tuning</a></h2>
+<ol>
+<li><strong>Use a validation set</strong>: Never tune hyperparameters on the test set</li>
+<li><strong>Start with reasonable defaults</strong>: Use known good starting points</li>
+<li><strong>Tune one parameter at a time</strong>: Isolate the effect of each parameter</li>
+<li><strong>Use logarithmic scales</strong>: Many hyperparameters work better on log scales</li>
+<li><strong>Document everything</strong>: Keep track of all experiments</li>
+</ol>
+<h2 id="hyperparameter-ranges"><a class="header" href="#hyperparameter-ranges">Hyperparameter Ranges</a></h2>
+<p>Common ranges to start with:</p>
+<ul>
+<li><strong>Learning rate</strong>: 0.0001 to 0.1 (logarithmic scale)</li>
+<li><strong>Batch size</strong>: 16 to 256 (powers of 2)</li>
+<li><strong>Number of layers</strong>: 1 to 10</li>
+<li><strong>Regularization</strong>: 0.0001 to 0.1 (logarithmic scale)</li>
+</ul>
+<h2 id="automated-tuning-tools"><a class="header" href="#automated-tuning-tools">Automated Tuning Tools</a></h2>
+<p>Consider using automated tuning tools like:</p>
+<ul>
+<li>Optuna</li>
+<li>Hyperopt</li>
+<li>Ray Tune</li>
+<li>Scikit-learn's GridSearchCV</li>
+</ul>
+<h2 id="summary-5"><a class="header" href="#summary-5">Summary</a></h2>
+<p>Hyperparameter tuning is crucial for building high-performance machine learning models. By systematically exploring different hyperparameter combinations and following best practices, you can find optimal settings that maximize your model's performance.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="model-evaluation-metrics"><a class="header" href="#model-evaluation-metrics">Model Evaluation Metrics</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="computer-vision-with-zyx"><a class="header" href="#computer-vision-with-zyx">Computer Vision with Zyx</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="convolutional-neural-networks"><a class="header" href="#convolutional-neural-networks">Convolutional Neural Networks</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="image-classification"><a class="header" href="#image-classification">Image Classification</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="object-detection-basics"><a class="header" href="#object-detection-basics">Object Detection Basics</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="image-segmentation"><a class="header" href="#image-segmentation">Image Segmentation</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="transfer-learning-for-cv"><a class="header" href="#transfer-learning-for-cv">Transfer Learning for CV</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="natural-language-processing"><a class="header" href="#natural-language-processing">Natural Language Processing</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="recurrent-neural-networks"><a class="header" href="#recurrent-neural-networks">Recurrent Neural Networks</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="lstms-and-grus"><a class="header" href="#lstms-and-grus">LSTMs and GRUs</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="attention-mechanisms"><a class="header" href="#attention-mechanisms">Attention Mechanisms</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="transformer-architecture"><a class="header" href="#transformer-architecture">Transformer Architecture</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="text-classification-and-generation"><a class="header" href="#text-classification-and-generation">Text Classification and Generation</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="advanced-architectures"><a class="header" href="#advanced-architectures">Advanced Architectures</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="generative-adversarial-networks"><a class="header" href="#generative-adversarial-networks">Generative Adversarial Networks</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="variational-autoencoders"><a class="header" href="#variational-autoencoders">Variational Autoencoders</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="reinforcement-learning-basics"><a class="header" href="#reinforcement-learning-basics">Reinforcement Learning Basics</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="graph-neural-networks"><a class="header" href="#graph-neural-networks">Graph Neural Networks</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="multi-modal-learning"><a class="header" href="#multi-modal-learning">Multi-modal Learning</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="self-supervised-learning"><a class="header" href="#self-supervised-learning">Self-supervised Learning</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="production-deployment"><a class="header" href="#production-deployment">Production Deployment</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="model-optimization-and-quantization"><a class="header" href="#model-optimization-and-quantization">Model Optimization and Quantization</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="onnx-export-and-import"><a class="header" href="#onnx-export-and-import">ONNX Export and Import</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="serving-models-with-rest-apis"><a class="header" href="#serving-models-with-rest-apis">Serving Models with REST APIs</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="edge-deployment-strategies"><a class="header" href="#edge-deployment-strategies">Edge Deployment Strategies</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="performance-monitoring"><a class="header" href="#performance-monitoring">Performance Monitoring</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="best-practices-and-patterns"><a class="header" href="#best-practices-and-patterns">Best Practices and Patterns</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="code-organization-and-structure"><a class="header" href="#code-organization-and-structure">Code Organization and Structure</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="testing-ml-models"><a class="header" href="#testing-ml-models">Testing ML Models</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="debugging-techniques"><a class="header" href="#debugging-techniques">Debugging Techniques</a></h1>
 <p>Zyx removes a number of PyTorch errors. Zyx tensors are immutable, so there is no:</p>
 <ul>
 <li>RuntimeError: one of the variables needed for gradient computation has been modified by an inplace operation: ... , which is output 0 of TBackward, is at version 2; expected version 1 instead. Hint: the backtrace further above shows the operation that failed to compute its gradient. The variable in question was changed in there or anywhere later. Good luck!</li>
@@ -686,54 +1466,33 @@ fs::write("graph.dot", dot_graph).unwrap();
 </span>let dot_graph = Tensor::plot_graph(grads.chain([&amp;loss]));
 <span class="boring">}</span></code></pre></pre>
 <p>Zyx will order nodes automatically, so there is no difference in the order in which tensors are stored in the iterator.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="runtime"><a class="header" href="#runtime">Runtime</a></h1>
-<p>This is explanation of how zyx works under the hood.
-Struct runtime holds the global state of zyx.</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>struct Runtime {
-    graph: Graph,
-    compiled_graphs: BTreeMap&lt;Graph, CompiledGraph&gt;,
-    opencl: Option&lt;OpenCLBackend&gt;,
-    devices: Vec&lt;Device&gt;,
-    memory_pools: Vec&lt;MemoryPool&gt;,
-    .. // less important fields
-}
-<span class="boring">}</span></code></pre></pre>
-<p>Runtime stores this information:</p>
-<ol>
-<li>the current graph of tensor ops as called by the user</li>
-<li>cached compiled graphs</li>
-<li>all backends</li>
-<li>all devices, which contain executable programs</li>
-<li>all memory pools, which contain memory buffers</li>
-</ol>
-<p>What runtime does:</p>
-<ol>
-<li>converts tensor ops into graph nodes</li>
-<li>tensor backpropagation by adding more nodes to graph</li>
-<li>stores tensors on devices</li>
-<li>passes graph into scheduler for compilation and caches compiled graph</li>
-<li>launches compiled graphs</li>
-</ol>
-<h2 id="backend-model"><a class="header" href="#backend-model">Backend model</a></h2>
-<p>Each backend needs to provide six structs:</p>
-<pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>struct XBackend { .. }
-struct XError { .. }
-struct XMemoryPool { .. }
-struct XBuffer { .. }
-struct XDevice { .. }
-struct XProgram { .. }
-<span class="boring">}</span></code></pre></pre>
-<p>XBackend is the global state of each backend.
-XError is enum of possible errors.
-XMemoryPool is representation of memory pool accessible by that backend.
-XBuffer is buffer stored in XMemoryPool.
-XDevice is compute device capable of executing XPrograms.</p>
-<p>Each backend can allocate memory, deallocate memory, copy memory between devices and host,
-compile programs from IRKernels, launch them using devices and release resources that are not in use anymore.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="performance-optimization"><a class="header" href="#performance-optimization">Performance Optimization</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="documentation-practices"><a class="header" href="#documentation-practices">Documentation Practices</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="comparison-with-other-frameworks"><a class="header" href="#comparison-with-other-frameworks">Comparison with Other Frameworks</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="zyx-vs-pytorch"><a class="header" href="#zyx-vs-pytorch">Zyx vs PyTorch</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="zyx-vs-tensorflow"><a class="header" href="#zyx-vs-tensorflow">Zyx vs TensorFlow</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="zyx-vs-jax"><a class="header" href="#zyx-vs-jax">Zyx vs JAX</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="when-to-choose-zyx"><a class="header" href="#when-to-choose-zyx">When to Choose Zyx</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="migration-guides"><a class="header" href="#migration-guides">Migration Guides</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="technical-deep-dives"><a class="header" href="#technical-deep-dives">Technical Deep Dives</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="backend-deep-dive"><a class="header" href="#backend-deep-dive">Backend Deep Dive</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="cpu-backend-optimization"><a class="header" href="#cpu-backend-optimization">CPU Backend Optimization</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="cuda-backend-development"><a class="header" href="#cuda-backend-development">CUDA Backend Development</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="opencl-backend-usage"><a class="header" href="#opencl-backend-usage">OpenCL Backend Usage</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="webgpu-integration"><a class="header" href="#webgpu-integration">WebGPU Integration</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="custom-kernel-development"><a class="header" href="#custom-kernel-development">Custom Kernel Development</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="performance-and-optimization"><a class="header" href="#performance-and-optimization">Performance and Optimization</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="profiling-and-benchmarking"><a class="header" href="#profiling-and-benchmarking">Profiling and Benchmarking</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="memory-optimization-techniques"><a class="header" href="#memory-optimization-techniques">Memory Optimization Techniques</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="computational-graph-optimization"><a class="header" href="#computational-graph-optimization">Computational Graph Optimization</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="parallel-processing-strategies"><a class="header" href="#parallel-processing-strategies">Parallel Processing Strategies</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="hardware-specific-optimizations"><a class="header" href="#hardware-specific-optimizations">Hardware-specific Optimizations</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="advanced-error-handling"><a class="header" href="#advanced-error-handling">Advanced Error Handling</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="debugging-complex-computational-graphs"><a class="header" href="#debugging-complex-computational-graphs">Debugging Complex Computational Graphs</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="memory-leak-detection"><a class="header" href="#memory-leak-detection">Memory Leak Detection</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="numerical-stability-issues"><a class="header" href="#numerical-stability-issues">Numerical Stability Issues</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="hardware-specific-error-handling"><a class="header" href="#hardware-specific-error-handling">Hardware-specific Error Handling</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="recovery-strategies"><a class="header" href="#recovery-strategies">Recovery Strategies</a></h1>
 
                     </main>
 
