@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light" dir="ltr">
+<html lang="en" class="light sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -7,7 +7,7 @@
 
 
         <!-- Custom HTML head -->
-        
+
         <meta name="description" content="">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
@@ -24,26 +24,41 @@
         <link rel="stylesheet" href="fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" href="highlight.css">
-        <link rel="stylesheet" href="tomorrow-night.css">
-        <link rel="stylesheet" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
-    </head>
-    <body class="sidebar-visible no-js">
-    <div id="body-container">
-        <!-- Provide site root to javascript -->
-        <script>
-            var path_to_root = "";
-            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
-        </script>
 
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
         <!-- Work around some values being stored in localStorage wrapped in quotes -->
         <script>
             try {
-                var theme = localStorage.getItem('mdbook-theme');
-                var sidebar = localStorage.getItem('mdbook-sidebar');
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
 
                 if (theme.startsWith('"') && theme.endsWith('"')) {
                     localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
@@ -57,70 +72,51 @@
 
         <!-- Set the theme before any content is loaded, prevents flash -->
         <script>
-            var theme;
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
-            var html = document.querySelector('html');
+            const html = document.documentElement;
             html.classList.remove('light')
             html.classList.add(theme);
-            var body = document.querySelector('body');
-            body.classList.remove('no-js')
-            body.classList.add('js');
+            html.classList.add("js");
         </script>
 
         <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
 
         <!-- Hide / unhide sidebar before it is displayed -->
         <script>
-            var body = document.querySelector('body');
-            var sidebar = null;
-            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
             if (document.body.clientWidth >= 1080) {
                 try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
                 sidebar = sidebar || 'visible';
             } else {
                 sidebar = 'hidden';
+                sidebar_toggle.checked = false;
             }
-            sidebar_toggle.checked = sidebar === 'visible';
-            body.classList.remove('sidebar-visible');
-            body.classList.add("sidebar-" + sidebar);
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
         </script>
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
-            <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="intro.html">Introduction</a></li><li class="chapter-item expanded "><a href="why_zyx.html"><strong aria-hidden="true">1.</strong> Why zyx?</a></li><li class="chapter-item expanded "><a href="first_tensors.html"><strong aria-hidden="true">2.</strong> First Tensors</a></li><li class="chapter-item expanded "><a href="tensor_ops.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="autograd.html"><strong aria-hidden="true">4.</strong> Automatic differentiation</a></li><li class="chapter-item expanded "><a href="optimizers.html"><strong aria-hidden="true">5.</strong> Optimizers</a></li><li class="chapter-item expanded "><a href="creating_modules.html" class="active"><strong aria-hidden="true">6.</strong> Creating Modules</a></li><li class="chapter-item expanded "><a href="disk_io.html"><strong aria-hidden="true">7.</strong> Disk IO</a></li><li class="chapter-item expanded "><a href="library_vs_framework.html"><strong aria-hidden="true">8.</strong> Library vs. Framework</a></li><li class="chapter-item expanded "><a href="execution_model.html"><strong aria-hidden="true">9.</strong> Execution Model</a></li><li class="chapter-item expanded "><a href="debugging.html"><strong aria-hidden="true">10.</strong> Debugging</a></li></ol>
-            </div>
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
             </div>
         </nav>
 
-        <!-- Track and set sidebar scroll position -->
-        <script>
-            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
-            sidebarScrollbox.addEventListener('click', function(e) {
-                if (e.target.tagName === 'A') {
-                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
-                }
-            }, { passive: true });
-            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
-            sessionStorage.removeItem('sidebar-scroll');
-            if (sidebarScrollTop) {
-                // preserve sidebar scroll position when navigating via links within sidebar
-                sidebarScrollbox.scrollTop = sidebarScrollTop;
-            } else {
-                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
-                var activeSection = document.querySelector('#sidebar .active');
-                if (activeSection) {
-                    activeSection.scrollIntoView({ block: 'center' });
-                }
-            }
-        </script>
-
         <div id="page-wrapper" class="page-wrapper">
 
             <div class="page">
-                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar-hover-placeholder"></div>
                 <div id="menu-bar" class="menu-bar sticky">
                     <div class="left-buttons">
                         <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
@@ -130,13 +126,14 @@
                             <i class="fa fa-paint-brush"></i>
                         </button>
                         <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
                         </ul>
-                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
                             <i class="fa fa-search"></i>
                         </button>
                     </div>
@@ -153,7 +150,12 @@
 
                 <div id="search-wrapper" class="hidden">
                     <form id="searchbar-outer" class="searchbar-outer">
-                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
                     </form>
                     <div id="searchresults-outer" class="searchresults-outer hidden">
                         <div id="searchresults-header" class="searchresults-header"></div>
@@ -181,24 +183,23 @@ is <a href="https://docs.rs/zyx-nn/latest/zyx-nn/struct.Linear.html">linear laye
 <p>In order to initialize modules, you need a device. Modules have traits implemented for all backends to allow for more ergonomic API:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let l0 = dev.linear(1024, 128);
+</span>use zyx_nn::Linear;
+let l0 = Linear::new(1024, 128, DType::F32);
 <span class="boring">}</span></code></pre></pre>
 <h2 id="custom-modules"><a class="header" href="#custom-modules">Custom Modules</a></h2>
 <p>Custom modules are easy to create, you only need to import Backend trait from core.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use zyx_core::backend::Backend;
-struct MyModule&lt;B: Backend&gt; {
-    l0: Linear&lt;B&gt;,
-    l1: Linear&lt;B&gt;,
+</span>struct MyModule {
+    l0: Linear,
+    l1: Linear,
 }
 <span class="boring">}</span></code></pre></pre>
 <p>For modules to be useful, they need forward function.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use zyx_core::tensor::IntoTensor;
-impl&lt;B: Backend&gt; MyModule&lt;B&gt; {
-    fn forward(&amp;self, x: impl IntoTensor&lt;B&gt;) -&gt; Tensor&lt;B&gt; {
+</span>impl MyModule {
+    fn forward(&amp;self, x: impl Into&lt;Tensor&gt;) -&gt; Tensor {
         let x = self.l0.forward(x).relu();
         self.l1.forward(x).sigmoid()
     }
@@ -211,24 +212,24 @@ impl&lt;B: Backend&gt; MyModule&lt;B&gt; {
 </span>let dev = zyx_cpu::device()?;
 
 let my_module = MyModule {
-    l0: dev.linear(1024, 512),
-    l1: dev.linear(512, 128),
+    l0: Linear::new(1024, 512, DType::F32),
+    l1: Linear::new(512, 128, DType::F32),
 };
 <span class="boring">}</span></code></pre></pre>
 <p>Also you need to implement IntoIterator&lt;Item = &amp;Tensor&gt; to be able to easily save and IntoIterator&lt;Item = &amp;mut Tensor&gt;
 to backpropagate over parameters of the module and to load these parameters into the model.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>impl&lt;'a, B: Backend&gt; IntoIterator for &amp;'a MyModule&lt;B&gt; {
-    type Item = &amp;'a Tensor&lt;B&gt;;
+</span>impl&lt;'a&gt; IntoIterator for &amp;'a MyModule {
+    type Item = &amp;'a Tensor;
     type IntoIter = impl IntoIterator&lt;Item = Self::Item&gt;;
     fn into_iter(self) -&gt; Self::IntoIter {
         self.l0.into_iter().chain(self.l1)
     }
 }
 
-impl&lt;'a, B: Backend&gt; IntoIterator for &amp;'a mut MyModule&lt;B&gt; {
-    type Item = &amp;'a mut Tensor&lt;B&gt;;
+impl&lt;'a&gt; IntoIterator for &amp;'a mut MyModule {
+    type Item = &amp;'a mut Tensor;
     type IntoIter = impl IntoIterator&lt;Item = Self::Item&gt;;
     fn into_iter(self) -&gt; Self::IntoIter {
         self.l0.into_iter().chain(self.l1)
@@ -242,23 +243,23 @@ So you can choose this simpler method if you prefer.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>#[derive(Module)]
-struct MyModule&lt;B: Backend&gt; {
-    l0: Linear&lt;B&gt;,
-    l1: Linear&lt;B&gt;,
+struct MyModule {
+    l0: Linear,
+    l1: Linear,
 }
 <span class="boring">}</span></code></pre></pre>
 <p>Forward function is used for inference.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let input = dev.randn([8, 1024], DType::F32);
+</span>let input = Tensor::randn([8, 1024], DType::F32);
 
 let out = my_module.forward(&amp;input);
 <span class="boring">}</span></code></pre></pre>
 <p>Backpropagation is provided automatically.</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let input = dev.randn([8, 1024], DType::F32);
-let label = dev.randn([8, 128], DType::F32);
+</span>let input = Tensor::randn([8, 1024], DType::F32);
+let label = Tensor::randn([8, 128], DType::F32);
 
 let epochs = 100;
 for _ in 0..epochs {
@@ -297,6 +298,22 @@ for _ in 0..epochs {
 
         </div>
 
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
 
 
 
@@ -314,6 +331,7 @@ for _ in 0..epochs {
         <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
+
 
 
     </div>

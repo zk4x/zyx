@@ -1,5 +1,5 @@
 <!DOCTYPE HTML>
-<html lang="en" class="light" dir="ltr">
+<html lang="en" class="light sidebar-visible" dir="ltr">
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
@@ -7,7 +7,7 @@
 
 
         <!-- Custom HTML head -->
-        
+
         <meta name="description" content="">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
@@ -24,26 +24,41 @@
         <link rel="stylesheet" href="fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" href="highlight.css">
-        <link rel="stylesheet" href="tomorrow-night.css">
-        <link rel="stylesheet" href="ayu-highlight.css">
+        <link rel="stylesheet" id="highlight-css" href="highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
 
-    </head>
-    <body class="sidebar-visible no-js">
-    <div id="body-container">
-        <!-- Provide site root to javascript -->
-        <script>
-            var path_to_root = "";
-            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
-        </script>
 
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="body-container">
         <!-- Work around some values being stored in localStorage wrapped in quotes -->
         <script>
             try {
-                var theme = localStorage.getItem('mdbook-theme');
-                var sidebar = localStorage.getItem('mdbook-sidebar');
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
 
                 if (theme.startsWith('"') && theme.endsWith('"')) {
                     localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
@@ -57,70 +72,51 @@
 
         <!-- Set the theme before any content is loaded, prevents flash -->
         <script>
-            var theme;
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
             try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
             if (theme === null || theme === undefined) { theme = default_theme; }
-            var html = document.querySelector('html');
+            const html = document.documentElement;
             html.classList.remove('light')
             html.classList.add(theme);
-            var body = document.querySelector('body');
-            body.classList.remove('no-js')
-            body.classList.add('js');
+            html.classList.add("js");
         </script>
 
         <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
 
         <!-- Hide / unhide sidebar before it is displayed -->
         <script>
-            var body = document.querySelector('body');
-            var sidebar = null;
-            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
             if (document.body.clientWidth >= 1080) {
                 try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
                 sidebar = sidebar || 'visible';
             } else {
                 sidebar = 'hidden';
+                sidebar_toggle.checked = false;
             }
-            sidebar_toggle.checked = sidebar === 'visible';
-            body.classList.remove('sidebar-visible');
-            body.classList.add("sidebar-" + sidebar);
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
         </script>
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
-            <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="intro.html">Introduction</a></li><li class="chapter-item expanded "><a href="why_zyx.html"><strong aria-hidden="true">1.</strong> Why zyx?</a></li><li class="chapter-item expanded "><a href="first_tensors.html"><strong aria-hidden="true">2.</strong> First Tensors</a></li><li class="chapter-item expanded "><a href="tensor_ops.html"><strong aria-hidden="true">3.</strong> Tensor Operations</a></li><li class="chapter-item expanded "><a href="autograd.html" class="active"><strong aria-hidden="true">4.</strong> Automatic differentiation</a></li><li class="chapter-item expanded "><a href="optimizers.html"><strong aria-hidden="true">5.</strong> Optimizers</a></li><li class="chapter-item expanded "><a href="creating_modules.html"><strong aria-hidden="true">6.</strong> Creating Modules</a></li><li class="chapter-item expanded "><a href="disk_io.html"><strong aria-hidden="true">7.</strong> Disk IO</a></li><li class="chapter-item expanded "><a href="library_vs_framework.html"><strong aria-hidden="true">8.</strong> Library vs. Framework</a></li><li class="chapter-item expanded "><a href="execution_model.html"><strong aria-hidden="true">9.</strong> Execution Model</a></li><li class="chapter-item expanded "><a href="debugging.html"><strong aria-hidden="true">10.</strong> Debugging</a></li></ol>
-            </div>
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle">
                 <div class="sidebar-resize-indicator"></div>
             </div>
         </nav>
 
-        <!-- Track and set sidebar scroll position -->
-        <script>
-            var sidebarScrollbox = document.querySelector('#sidebar .sidebar-scrollbox');
-            sidebarScrollbox.addEventListener('click', function(e) {
-                if (e.target.tagName === 'A') {
-                    sessionStorage.setItem('sidebar-scroll', sidebarScrollbox.scrollTop);
-                }
-            }, { passive: true });
-            var sidebarScrollTop = sessionStorage.getItem('sidebar-scroll');
-            sessionStorage.removeItem('sidebar-scroll');
-            if (sidebarScrollTop) {
-                // preserve sidebar scroll position when navigating via links within sidebar
-                sidebarScrollbox.scrollTop = sidebarScrollTop;
-            } else {
-                // scroll sidebar to current active section when navigating via "next/previous chapter" buttons
-                var activeSection = document.querySelector('#sidebar .active');
-                if (activeSection) {
-                    activeSection.scrollIntoView({ block: 'center' });
-                }
-            }
-        </script>
-
         <div id="page-wrapper" class="page-wrapper">
 
             <div class="page">
-                                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar-hover-placeholder"></div>
                 <div id="menu-bar" class="menu-bar sticky">
                     <div class="left-buttons">
                         <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
@@ -130,13 +126,14 @@
                             <i class="fa fa-paint-brush"></i>
                         </button>
                         <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="default_theme">Auto</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
                             <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
                         </ul>
-                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                        <button id="search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="searchbar">
                             <i class="fa fa-search"></i>
                         </button>
                     </div>
@@ -153,7 +150,12 @@
 
                 <div id="search-wrapper" class="hidden">
                     <form id="searchbar-outer" class="searchbar-outer">
-                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                        <div class="search-wrapper">
+                            <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <i class="fa fa-spinner fa-spin"></i>
+                            </div>
+                        </div>
                     </form>
                     <div id="searchresults-outer" class="searchresults-outer hidden">
                         <div id="searchresults-header" class="searchresults-header"></div>
@@ -173,40 +175,48 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="automatic-differentiation"><a class="header" href="#automatic-differentiation">Automatic differentiation</a></h1>
-<p>Everything that is differentiable in math is differentiable in zyx (sometimes even functions that are not differentiable in math, like ReLU at 0).</p>
-<h2 id="example"><a class="header" href="#example">Example</a></h2>
-<p>You can just do any operations with your tensors.</p>
+                        <h1 id="automatic-differentiation-in-zyx"><a class="header" href="#automatic-differentiation-in-zyx">Automatic Differentiation in Zyx</a></h1>
+<h2 id="core-concepts"><a class="header" href="#core-concepts">Core Concepts</a></h2>
+<p>Zyx implements automatic differentiation through an explicit gradient tape system. Any differentiable mathematical operation can be automatically tracked and differentiated, including functions like ReLU that have points of non-differentiability in traditional calculus.</p>
+<h2 id="example-workflow"><a class="header" href="#example-workflow">Example Workflow</a></h2>
+<h3 id="forward-pass-with-gradient-tape"><a class="header" href="#forward-pass-with-gradient-tape">Forward Pass with Gradient Tape</a></h3>
+<p>Create a gradient tape and perform tensor operations:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span><span class="boring">use zyx_opencl;
-</span><span class="boring">let dev = zyx_opencl::device()?;
-</span>let x = dev.randn([1024, 1024], DType::F32);
-let y = dev.tensor([2, 3, 1]);
+</span>use zyx::{Tensor, GradientTape, DType};
+
+let tape = GradientTape::new();
+let x = Tensor::randn([1024, 1024], DType::F32);
+let y = Tensor::from([2, 3, 1]);
 let z = (x + y.pad([(1000, 21)], 8)) * x;
 <span class="boring">}</span></code></pre></pre>
-<p>At any point in time, you can differentiate any tensor w.r.t. any other tensor or set of tensors. This example differentiates
-z w.r.t. x and y.</p>
+<h3 id="backward-pass-via-gradient-tape"><a class="header" href="#backward-pass-via-gradient-tape">Backward Pass via Gradient Tape</a></h3>
+<p>Compute gradients using the tape:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let grads = z.backward([&amp;x, &amp;y]);
+</span>let grads = tape.gradient(&amp;z, &amp;[&amp;x, &amp;y]);
 <span class="boring">}</span></code></pre></pre>
-<p>Backward function return Vec&lt;Option<Tensor>&gt;. Grads can contain some None values, if there is no direct connection
-between dependent and independent variables.</p>
+<h3 id="gradient-handling"><a class="header" href="#gradient-handling">Gradient Handling</a></h3>
+<p>The <code>gradient</code> method returns <code>Vec&lt;Option&lt;Tensor&gt;&gt;</code> where <code>None</code> indicates no computational path:</p>
 <pre><pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let x = dev.randn([2, 3], DType::F32);
-let y = dev.randn([2, 3], DType::F32);
+</span>let tape = GradientTape::new();
+let x = Tensor::randn([2, 3], DType::F32);
+let y = Tensor::randn([2, 3], DType::F32);
 let z = y.exp();
-let grads = z.backward([&amp;x]);
-assert_eq!(grads, vec![None]);
+let grads = tape.gradient(&amp;z, &amp;[&amp;x]);
+assert_eq!(grads, vec![None]);  // No gradient for x since z doesn't depend on it
 <span class="boring">}</span></code></pre></pre>
-<h2 id="performance"><a class="header" href="#performance">Performance</a></h2>
-<p>Some other ML libraries require users to provide additional information in order to make backpropagation efficient. This
-is needed, because they store intermediate tensors in memory in order to be able to backpropagate. Zyx does not store
-anything in memory. Instead, zyx stores a graph of operations, which takes just a few MB even for millions of tensors
-and calculation is done only when user accessses the data, for example when saving to the disk. During backpropagation
-the graph is traversed and new tensors are added to the graph.</p>
+<h2 id="performance-advantages"><a class="header" href="#performance-advantages">Performance Advantages</a></h2>
+<h3 id="tape-based-computation"><a class="header" href="#tape-based-computation">Tape-Based Computation</a></h3>
+<p>Zyx's autograd system:</p>
+<ul>
+<li>Uses an explicit <code>GradientTape</code> to record operations</li>
+<li>Only computes gradients when explicitly requested</li>
+<li>Optimizes memory usage through lazy evaluation</li>
+<li>Supports higher-order derivatives with persistent gradient tapes</li>
+</ul>
+<p>This architecture enables efficient differentiation while maintaining flexibility for complex computational graphs.</p>
 
                     </main>
 
@@ -237,6 +247,22 @@ the graph is traversed and new tensors are added to the graph.</p>
 
         </div>
 
+        <!-- Livereload script (if served using the cli tool) -->
+        <script>
+            const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsAddress = wsProtocol + "//" + location.host + "/" + "__livereload";
+            const socket = new WebSocket(wsAddress);
+            socket.onmessage = function (event) {
+                if (event.data === "reload") {
+                    socket.close();
+                    location.reload();
+                }
+            };
+
+            window.onbeforeunload = function() {
+                socket.close();
+            }
+        </script>
 
 
 
@@ -254,6 +280,7 @@ the graph is traversed and new tensors are added to the graph.</p>
         <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
+
 
 
     </div>

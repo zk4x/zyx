@@ -215,3 +215,6 @@ There are many measurements, good ones are for example:
 3. Fragility - how many other lines of code need to be changed in response to change in one line of code
 4. Call stack depth - at least limit it to max 20 functions deep per module, 5 functions deep is average
 
+## Why does it take so much to write code?
+
+As this document has been quite long, I'll be brief on this one. IDK...
