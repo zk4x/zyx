@@ -957,6 +957,7 @@ impl Runtime {
 
             let (order, to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
                 self.graph_order_with_gradient(&realized_nodes, &mut to_eval)
+                //self.graph_order(&realized_nodes, &mut to_eval)
             } else {
                 self.graph_order(&realized_nodes, &mut to_eval)
             };
@@ -1020,8 +1021,8 @@ impl Runtime {
             }
 
             //println!("{rcs:?}");
-            println!("realized_nodes: {realized_nodes:?}");
-            println!("to_eval: {to_eval:?}");
+            //println!("realized_nodes: {realized_nodes:?}");
+            //println!("to_eval: {to_eval:?}");
 
             let begin = std::time::Instant::now();
 
@@ -1038,7 +1039,7 @@ impl Runtime {
             );
 
             for nid in order {
-                use crate::{RED, RESET};
+                /*use crate::{RED, RESET};
                 println!(
                     "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
                     if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
@@ -1046,7 +1047,7 @@ impl Runtime {
                     self.graph[nid],
                     self.graph.dtype(nid),
                     self.graph.shape(nid)
-                );
+                );*/
                 if kernelizer.is_virt_realized(nid) {
                     kernelizer.create_load_kernel(nid);
                 } else {

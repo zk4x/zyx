@@ -241,6 +241,40 @@ impl Runtime {
                             self.release(xpowy_log2_one_elog2);
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
+                        /*if req_grad.contains(&x) {
+                             // x_grad = grad * y * x^(y-1)
+                             let ones = self.ones(self.shape(y).into(), self.dtype(y));
+                             let y_1 = self.binary(y, ones, BOp::Sub);
+                             self.release(ones);
+                             // Cast x to float to ensure pow works correctly
+                             let x_f = self.cast(x, crate::DType::F32);
+                             let pow_y_1 = self.binary(x_f, y_1, BOp::Pow);
+                             self.release(x_f);
+                             self.release(y_1);
+                             let y_mul = self.binary(y, pow_y_1, BOp::Mul);
+                             self.release(pow_y_1);
+                             let x_grad = self.binary(grad, y_mul, BOp::Mul);
+                             self.release(y_mul);
+                             insert_or_add_grad(self, &mut grads, x, x_grad);
+                         }
+                         if req_grad.contains(&y) {
+                             let x_f = self.cast(x, crate::DType::F32);
+                             let pow_xy = self.binary(x_f, y, BOp::Pow);
+                             self.release(x_f);
+                             let log2_x = self.unary(x_f, UOp::Log2);
+                             self.release(pow_xy);
+                             let one_elog2 = self.constant(std::f32::consts::LN_2);
+                             let one_elog2_ex = self.expand(x, self.shape(x).into()).unwrap();
+                             self.release(one_elog2);
+                             let ln_x = self.binary(log2_x, one_elog2_ex, BOp::Mul);
+                             self.release(log2_x);
+                             self.release(one_elog2_ex);
+                             let xpowy_log = self.binary(pow_xy, ln_x, BOp::Mul);
+                             self.release(pow_xy);
+                             self.release(ln_x);
+                             let y_grad = self.binary(grad, xpowy_log, BOp::Mul);
+                             insert_or_add_grad(self, &mut grads, y, y_grad);
+                         }*/
                     }
                     BOp::Maximum => {
                         //# Create masks for where x > y, x < y, and x == y
@@ -275,53 +309,17 @@ impl Runtime {
                         }
                         self.release(eq);
                     }
-                    BOp::Cmplt => {
-                        todo!();
-                    }
-                    BOp::Cmpgt => {
-                        if req_grad.contains(&x) {
-                            // grad_x = (x <= y) * grad
-                            // grad_x = (!(y > x)) * grad
-                            let y_gt_x = self.binary(y, x, BOp::Cmpgt);
-                            let n_y_gt_x = self.unary(y_gt_x, UOp::Not);
-                            let x_grad = self.binary(n_y_gt_x, grad, BOp::Mul);
-                            insert_or_add_grad(self, &mut grads, x, x_grad);
-                        }
-                        if req_grad.contains(&y) {
-                            // grad_y = (x > y) * grad
-                            let x_gt_y = self.binary(x, y, BOp::Cmpgt);
-                            let y_grad = self.binary(x_gt_y, grad, BOp::Mul);
-                            self.release(x_gt_y);
-                            insert_or_add_grad(self, &mut grads, y, y_grad);
-                        }
-                    }
-                    BOp::NotEq => {
-                        panic!("NotEq is not a differentiable operation.");
-                    }
-                    BOp::Eq => {
-                        panic!("Eq is not a differentiable operation.");
-                    }
-                    BOp::Or => {
-                        panic!("Or is not a differentiable operation.");
-                    }
-                    BOp::And => {
-                        panic!("And is not a differentiable operation.");
-                    }
-                    BOp::BitAnd => {
-                        panic!("BitAnd is not a differentiable operation.");
-                    }
-                    BOp::BitOr => {
-                        panic!("BitOr is not a differentiable operation.");
-                    }
-                    BOp::BitXor => {
-                        panic!("BitXor is not a differentiable operation.");
-                    }
-                    BOp::BitShiftLeft => {
-                        panic!("BitShiftLeft is not a differentiable operation.");
-                    }
-                    BOp::BitShiftRight => {
-                        panic!("BitShiftRight is not a differentiable operation.");
-                    }
+                    BOp::Cmplt => {}
+                    BOp::Cmpgt => {}
+                    BOp::NotEq => {}
+                    BOp::Eq => {}
+                    BOp::Or => {}
+                    BOp::And => {}
+                    BOp::BitAnd => {}
+                    BOp::BitOr => {}
+                    BOp::BitXor => {}
+                    BOp::BitShiftLeft => {}
+                    BOp::BitShiftRight => {}
                 },
                 Node::Cast { x, .. } => {
                     let grad = self.cast(grad, self.dtype(x));

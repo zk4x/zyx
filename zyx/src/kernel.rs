@@ -1003,7 +1003,8 @@ impl Kernel {
     pub fn dead_code_elimination(&mut self) {
         let mut params = Vec::new();
         for op_id in 0..self.ops.len() {
-            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. } | Op::EndLoop) {
+            // TODO remove Op::Load from here, it has no reason to be here other than compatibility with predefined loads
+            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. } | Op::EndLoop | Op::Load { .. }) {
                 params.push(op_id);
             }
         }

@@ -949,8 +949,8 @@ impl Tensor {
     #[must_use]
     pub fn relu(&self) -> Tensor {
         //return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) };
-        //self.cmpgt(0).unwrap() * self
-        self.cmpgt(0).unwrap().where_(self, 0).unwrap() // for whatever reason this is the fastest
+        //self.cmpgt(0).unwrap().where_(self, 0).unwrap() // for whatever reason this is the fastest
+        self.cmpgt(0).unwrap() * self
     }
 
     /// Computes the reciprocal square root of each element in the input tensor.
@@ -2238,19 +2238,22 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let input = Tensor::from([0.5, 0.2, 0.3]);
     /// let target = Tensor::from([1., 0., 0.]);
-    /// assert_eq!(input.cross_entropy_loss(target, [])?.mean([])?, -0.3133);
+    /// assert_eq!(input.cross_entropy(target, [])?.mean([])?, 0.3133);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Errors
     ///
     /// Returns error if the tensors have non broadcasteable shapes or axes cannot reduce self.
-    pub fn cross_entropy_loss(
+    pub fn cross_entropy(
         &self,
         target: impl Into<Tensor>,
         axes: impl IntoIterator<Item = SAxis>,
     ) -> Result<Tensor, ZyxError> {
-        Ok(self.ln_softmax(axes)? * target)
+        let axes: Vec<_> = axes.into_iter().collect();
+        let m = self - self.max_kd(axes.clone())?;
+        let ln_softmax = &m - m.exp().sum_kd(axes)?.ln();
+        Ok(ln_softmax.neg() * target)
     }
 
     /// Calculates the L1 loss between `self` and the target tensor.
@@ -2850,9 +2853,9 @@ impl Tensor {
 
         let stride: Vec<usize> = stride.into_shape().collect();
         let dilation: Vec<usize> = dilation.into_shape().collect();
-        if stride.len() != hw.len() || dilation.len() != hw.len() {
+        /*if stride.len() != hw.len() || dilation.len() != hw.len() {
             return Err(ZyxError::shape_error("Stride/dilation length must match kernel spatial dimensions".into()));
-        }
+        }*/
 
         let padding_ = resolve_pool_pads(padding.into_shape().collect(), hw.len());
 

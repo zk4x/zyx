@@ -774,10 +774,12 @@ impl OpenCLDevice {
                     }
                 }
                 &Op::Load { src, index } => {
-                    let dtype = dtypes[&src];
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
-                    writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
+                    if let Some(&rc) = rcs.get(&i) {
+                        let dtype = dtypes[&src];
+                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
+                        let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rc, loop_id);
+                        writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
+                    }
                     /*if src == 16 && index == 4 {
                         writeln!(source, "printf(\"r3=%d\\n\", r3);").unwrap();
                     }*/
@@ -838,7 +840,7 @@ impl OpenCLDevice {
                         BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),
                         BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};").unwrap(),
                         BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};").unwrap(),
-                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow({x}, {y});").unwrap(),
+                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow((double){x}, (double){y});").unwrap(),
                         BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};").unwrap(),
                         BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};").unwrap(),
                         BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};").unwrap(),
