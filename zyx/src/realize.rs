@@ -11,7 +11,7 @@ use crate::{
     kernel::{Cache, Kernel, Op, OpId, get_perf},
     optimizer::Optimizer,
     prog_bar::ProgressBar,
-    runtime::{Pool, Runtime},
+    runtime::{Pool, Runtime, deallocate_tensors},
     shape::Dim,
     slab::{Slab, SlabId},
     tensor::TensorId,
@@ -583,18 +583,18 @@ impl<'a> Kernelizer<'a> {
             && self.kernels[kid].loads.iter().all(|x| self.realized_nodes.contains(x))
         {
             let kernel = unsafe { self.kernels.remove_and_return(kid) };
+            //let loads = kernel.loads.clone();
             let stores = kernel.stores.clone();
             self.launch_kernel(kernel)?;
             self.realized_nodes.extend(stores);
-            // Delete unneeded intermediate tensors in memory pools
-            /*for tid in kernel_loads {
-                if !loads.values().any(|loads| loads.contains(&tid)) {
-                    // drop tid from memory pools
-                    let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
+            // Delete unneeded intermediate tensors from memory pools
+            /*let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
+            for tid in loads {
+                if !self.kernels.values().any(|kernel| kernel.loads.contains(&tid)) {
                     to_remove.insert(tid);
-                    self.deallocate_tensors(&to_remove);
                 }
-            }*/
+            }
+            deallocate_tensors(&to_remove, self.pools);*/
         }
         //println!("ADDED STORE for {x} x {xrc_rem}");
         Ok(())
@@ -1041,8 +1041,8 @@ impl Runtime {
             );
 
             for nid in order {
-                /*use crate::{RED, RESET};
-                println!(
+                //use crate::{RED, RESET};
+                /*println!(
                     "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
                     if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
                     kernelizer.rcs[&nid],
@@ -1087,19 +1087,19 @@ impl Runtime {
                 {
                     kids.retain(|x| *x != kid);
                     let kernel = unsafe { kernelizer.kernels.remove_and_return(kid) };
+                    let loads = kernel.loads.clone();
                     let stores = kernel.stores.clone();
                     kernelizer.launch_kernel(kernel)?;
                     kernelizer.realized_nodes.extend(stores);
 
                     // Delete unneeded intermediate tensors in memory pools
-                    /*for tid in kernel_loads {
-                        if !loads.values().any(|loads| loads.contains(&tid)) {
-                            // drop tid from memory pools
-                            let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
+                    let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
+                    for tid in loads {
+                        if !kernelizer.kernels.values().any(|kernel| kernel.loads.contains(&tid)) {
                             to_remove.insert(tid);
-                            self.deallocate_tensors(&to_remove);
                         }
-                    }*/
+                    }
+                    deallocate_tensors(&to_remove, kernelizer.pools);
                 }
             }
 

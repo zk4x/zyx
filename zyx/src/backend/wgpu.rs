@@ -273,7 +273,9 @@ impl WGPUDevice {
         for (i, op) in kernel.ops.iter().enumerate() {
             //println!("{i} -> {op:?}");
             match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Null => {
+                    unreachable!()
+                }
                 &Op::Const(x) => {
                     dtypes.insert(i, x.dtype());
                     writeln!(source, "{indent}const r{i}: {} = {};", x.dtype().wgsl(), x.wgsl()).unwrap();
@@ -299,7 +301,7 @@ impl WGPUDevice {
                     dtypes.insert(i, dtypes[&x]);
                     let dtype = dtypes[&x];
                     match uop {
-                        UOp::Not => {
+                        UOp::BitNot => {
                             todo!();
                         }
                         UOp::ReLU => {

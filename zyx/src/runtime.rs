@@ -574,28 +574,32 @@ impl Runtime {
     }
 
     pub fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) {
-        // This is basically tracing GC, seems faster than reference counting
-        // remove all buffers that are not used by any tensors
-        // Check which buffers will possibly need to be dropped
-        for tensor_id in to_remove {
-            let mut buffer = None;
-            for (pool_id, pool) in self.pools.iter_mut().enumerate() {
-                if let Some(buffer_id) = pool.buffer_map.remove(tensor_id) {
-                    buffer = Some((pool_id, buffer_id));
-                    break;
-                }
+        deallocate_tensors(to_remove, &mut self.pools);
+    }
+}
+
+pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool]) {
+    // This is basically tracing GC, seems faster than reference counting
+    // remove all buffers that are not used by any tensors
+    // Check which buffers will possibly need to be dropped
+    for tensor_id in to_remove {
+        let mut buffer = None;
+        for (pool_id, pool) in pools.iter_mut().enumerate() {
+            if let Some(buffer_id) = pool.buffer_map.remove(tensor_id) {
+                buffer = Some((pool_id, buffer_id));
+                break;
             }
-            if let Some((pool_id, buffer_id)) = buffer
-                && !self.pools.iter().any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
-            {
-                let pool = &mut self.pools[pool_id];
-                let mut events = Vec::new();
-                if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
-                    let event = pool.events.remove(&key.clone()).unwrap();
-                    events.push(event);
-                }
-                pool.pool.deallocate(buffer_id, events);
+        }
+        if let Some((pool_id, buffer_id)) = buffer
+            && !pools.iter().any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
+        {
+            let pool = &mut pools[pool_id];
+            let mut events = Vec::new();
+            if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
+                let event = pool.events.remove(&key.clone()).unwrap();
+                events.push(event);
             }
+            pool.pool.deallocate(buffer_id, events);
         }
     }
 }

@@ -140,12 +140,7 @@ impl DType {
     pub(crate) fn least_upper_dtype(self, rhs: DType) -> DType {
         use DType::*;
         // define an ordered list of “widening” priority
-        let order = [
-            Bool,
-            U8, U16, U32, U64,
-            I8, I16, I32, I64,
-            BF16, F16, F32, F64,
-        ];
+        let order = [Bool, U8, U16, U32, U64, I8, I16, I32, I64, BF16, F16, F32, F64];
 
         let i1 = order.iter().position(|&d| d == self).unwrap();
         let i2 = order.iter().position(|&d| d == rhs).unwrap();
@@ -432,7 +427,6 @@ impl Constant {
                 UOp::Exp2 | UOp::Log2 | UOp::Reciprocal | UOp::Sqrt | UOp::Sin | UOp::Cos | UOp::Floor => {
                     unreachable!()
                 }
-                UOp::Not => todo!(),
                 UOp::BitNot => todo!(),
                 UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
@@ -440,7 +434,6 @@ impl Constant {
         }
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Not => todo!(),
                 UOp::BitNot => todo!(),
                 UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),

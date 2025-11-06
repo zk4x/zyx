@@ -849,7 +849,6 @@ impl CUDADevice {
                             writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().cu()).unwrap();
                         }
                         UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};").unwrap(),
-                        UOp::Not => todo!(),
                         UOp::BitNot => todo!(),
                         UOp::Exp2 => {
                             //writeln!(source, "{indent}printf(\"%d\\n\", r{reg});").unwrap();
@@ -1254,7 +1253,6 @@ impl CUDADevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match uop {
-                        UOp::Not => todo!(),
                         UOp::BitNot => todo!(),
                         UOp::ReLU => {
                             writeln!(source, "{indent}max.{} %r{reg}, {x}, 0.0;", dtype.ptx()).unwrap();

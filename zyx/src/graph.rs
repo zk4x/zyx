@@ -370,7 +370,6 @@ pub enum BOp {
 pub enum UOp {
     ReLU,
     Neg,
-    Not,
     BitNot,
     Exp2,
     Log2,

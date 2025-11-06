@@ -581,8 +581,12 @@ impl Tensor {
         let cdf = &cw / cw.get((.., -1))?.unsqueeze(1)?;
         let cdf_sh = cdf.shape();
         let unif_samples = Tensor::rand([num_samples, cdf_sh[0], 1], DType::F32)?;
-        let indices =
-            unif_samples.expand([num_samples, cdf_sh[0], cdf_sh[1]])?.cmplt(cdf)?.not().sum_axes([2])?.permute([1, 0])?;
+        let indices = unif_samples
+            .expand([num_samples, cdf_sh[0], cdf_sh[1]])?
+            .cmplt(cdf)?
+            .not()
+            .sum_axes([2])?
+            .permute([1, 0])?;
         Ok((if rank == 1 { indices.squeeze([0]) } else { indices }).cast(DType::I32))
     }
 
@@ -1122,8 +1126,8 @@ impl Tensor {
     /// ```rust
     /// use zyx::Tensor;
     ///
-    /// let t = Tensor::from(vec![0.5f64, 1.0]);
-    /// assert_eq!(t.tanh(), [0.46211715738221946f64, 0.761594166564993]);
+    /// let t = Tensor::from(vec![0.5f32, 1.0]);
+    /// assert_eq!(t.tanh(), [0.46211715738221946f32, 0.761594166564993]);
     /// ```
     ///
     /// # Panics
@@ -1632,9 +1636,9 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let t = Tensor::from(vec![1.0, 2.0, 3.0]);
+    /// let t = Tensor::from(vec![1f32, 2.0, 3.0]);
     /// let sm = t.softmax([])?;
-    /// assert_eq!(sm, [0.0900305748, 0.2447281546, 0.6652412706]);
+    /// assert_eq!(sm, [0.0900305748f32, 0.2447281546, 0.6652412706]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -1813,9 +1817,10 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let a = Tensor::from([1.0, 2.0, 3.0]);
-    /// let b = Tensor::from([4.0, 5.0, 6.0]);
-    /// assert_eq!(a.cmplt(b)?.cast(zyx::DType::I32), [1i32, 1, 1]);
+    /// let a = Tensor::from([1f32, 2.0, 7.0]);
+    /// let b = Tensor::from([4f32, 5.0, 6.0]);
+    /// let z = a.cmplt(b)?.cast(zyx::DType::I32);
+    /// assert_eq!(z, [1i32, 1, 0]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -2027,9 +2032,9 @@ impl Tensor {
     ///
     /// ```
     /// use zyx::Tensor;
-    /// let input = Tensor::from([0.5, 0.2, 0.3]);
-    /// let target = Tensor::from([1., 0., 0.]);
-    /// assert_eq!(input.cross_entropy(target, [])?.mean(), 0.3133);
+    /// let input = Tensor::from([0.5f32, 0.2, 0.3]);
+    /// let target = Tensor::from([1f32, 0., 0.]);
+    /// assert_eq!(input.cross_entropy(target, [])?.mean(), 0.3133f32);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -2635,7 +2640,12 @@ impl Tensor {
         if let Some(bias) = bias {
             if bias.shape().iter().product::<usize>() != cout {
                 return Err(ZyxError::shape_error(
-                    format!("Bias length {} does not match output channels {}", bias.shape().iter().product::<usize>(), cout).into(),
+                    format!(
+                        "Bias length {} does not match output channels {}",
+                        bias.shape().iter().product::<usize>(),
+                        cout
+                    )
+                    .into(),
                 ));
             }
         }

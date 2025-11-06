@@ -806,9 +806,6 @@ impl OpenCLDevice {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
                     match uop {
-                        UOp::Not => {
-                            writeln!(source, "{indent}r{reg} = !{x};").unwrap();
-                        }
                         UOp::BitNot => {
                             writeln!(source, "{indent}r{reg} = ~{x};").unwrap();
                         }
