@@ -11,7 +11,7 @@ use crate::runtime::{TempData, apply_padding};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{Axis, Dim, IntoShape, into_axes, into_axis};
 use crate::slab::SlabId;
-use crate::{DebugMask, Map, RT, Set};
+use crate::{DebugMask, Map, RT};
 use core::cmp::Ordering;
 use half::{bf16, f16};
 use std::ffi::OsStr;
@@ -582,7 +582,7 @@ impl Tensor {
         let cdf_sh = cdf.shape();
         let unif_samples = Tensor::rand([num_samples, cdf_sh[0], 1], DType::F32)?;
         let indices =
-            unif_samples.expand([num_samples, cdf_sh[0], cdf_sh[1]])?.cmplt(cdf)?.not().sum([2])?.permute([1, 0])?;
+            unif_samples.expand([num_samples, cdf_sh[0], cdf_sh[1]])?.cmplt(cdf)?.not().sum_axes([2])?.permute([1, 0])?;
         Ok((if rank == 1 { indices.squeeze([0]) } else { indices }).cast(DType::I32))
     }
 
@@ -1183,7 +1183,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn log10(&self) -> Tensor {
-        self.ln() / Tensor::from(10f32).ln()
+        (self.log2() / Tensor::from(10f32).log2()).cast(self.dtype())
     }
 
     /// Converts angles from radians to degrees.
@@ -1192,6 +1192,11 @@ impl Tensor {
     #[must_use]
     pub fn rad2deg(&self) -> Tensor {
         (self * (180.0 / std::f64::consts::PI)).cast(self.dtype())
+    }
+
+    /// Bitnot
+    pub fn bitnot(&self) -> Tensor {
+        Tensor { id: RT.lock().unary(self.id, UOp::BitNot) }
     }
 
     /// Clamps the elements of this tensor within a specified range.
@@ -1546,213 +1551,8 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn ln_softmax(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        let m = self - self.max_kd(axes.clone())?;
-        Ok(&m - m.exp().sum_kd(axes)?.ln())
-    }
-
-    /// Returns a new tensor containing the maximum value along the specified axes.
-    ///
-    /// # Arguments
-    ///
-    /// * `axes` - The axes along which to compute the maximum. This can be any type that implements `IntoAxes`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    /// let arr = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(arr.max([0])?, [4]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if the axes contain duplicates or are out of bounds.
-    pub fn max(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
-        let rank = self.rank();
-        let axes = into_axes(axes, rank)?;
-        let mut unique = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
-        for a in &axes {
-            if !unique.insert(a) {
-                return Err(ZyxError::shape_error("Axes contain duplicates.".into()));
-            }
-        }
-        Ok(Tensor { id: RT.lock().max_reduce(self.id, axes) })
-    }
-
-    /// Returns the maximum value along the specified axes.
-    ///
-    /// This function computes the maximum value of each slice determined by the `axes`.
-    /// It first calculates the maximum along the specified axes using the `max` method,
-    /// and then reshapes the result to have the same number of dimensions as the input tensor.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let a = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(a.max_kd([0])?, [4]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    pub fn max_kd(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<_> = axes.into_iter().collect();
-        self.max(axes.clone())?.reshape(self.reduce_kd_shape(axes))
-    }
-
-    /// Calculates the mean of a tensor along specified axes.
-    ///
-    /// This function computes the sum of all elements in the tensor along the specified axes and then divides by the product of their sizes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::{Tensor, DType};
-    ///
-    /// let arr = Tensor::eye(3, DType::F32);
-    /// assert_eq!(arr.mean([0])?, [0.333333f32, 0.333333, 0.333333]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    #[allow(clippy::missing_panics_doc)]
-    pub fn mean(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<_> = axes.into_iter().collect();
-        let shape = self.shape();
-        println!("axes={axes:?}, shape={shape:?}");
-        let n = i64::try_from(
-            into_axes(axes.clone(), shape.rank())?.into_iter().map(|a| shape[a as usize]).product::<Dim>(),
-        )
-        .unwrap();
-        println!("{n}");
-        Ok(self.sum(axes)? / Tensor::from(n).cast(self.dtype()))
-    }
-
-    /// Calculates the mean of this tensor along the specified axes and reshapes it using `reduce_kd_shape`.
-    ///
-    /// This function first calculates the mean of the input tensor along the specified axes using the `mean`
-    /// method. It then reshapes the resulting tensor using `reduce_kd_shape` to match the output shape expected
-    /// by the caller.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let a = Tensor::from([1, 2, 3, 4]);
-    /// assert_eq!(a.mean_kd([])?, [2]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    pub fn mean_kd(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<_> = axes.into_iter().collect();
-        self.mean(axes.clone())?.reshape(self.reduce_kd_shape(axes))
-    }
-
-    /// Calculates the product of elements along specified axes.
-    ///
-    /// This function first applies the natural logarithm element-wise (`ln()`), then sums along the specified axes,
-    /// and finally exponentiates the result element-wise (`exp()`).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let arr = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    /// assert_eq!(arr.product([1])?, [2., 12.]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    pub fn product(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
-        Ok(self.ln().sum(axes)?.exp())
-    }
-
-    /// Calculates the standard deviation of the input tensor along specified axes.
-    ///
-    /// This function calculates the standard deviation by first computing the mean along the specified axes,
-    /// then subtracting that mean from each element, squaring the result, and finally taking the square root
-    /// of the average of those squared differences. If no axes are provided, it computes the standard deviation
-    /// over all elements in the tensor.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let a = Tensor::from([[1., 2., 3.], [4., 5., 6.]]);
-    /// assert_eq!(a.std([0, 1], 1)?, 1.8708);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    pub fn std(&self, axes: impl IntoIterator<Item = SAxis>, correction: usize) -> Result<Tensor, ZyxError> {
-        Ok(self.var(axes, correction)?.sqrt())
-    }
-
-    /// Creates a new tensor by applying standard deviation along specified axes.
-    ///
-    /// This function first computes the standard deviation of the input tensor along the specified axes,
-    /// and then reshapes the result to match the shape of the original tensor after reduction along those axes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::{Tensor, DType};
-    ///
-    /// let t = Tensor::rand([3, 4], DType::F32).unwrap();
-    /// let std_kd = t.std_kd([0, 1], 1)?;
-    /// assert_eq!(std_kd.shape(), [1, 1]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    pub fn std_kd(&self, axes: impl IntoIterator<Item = SAxis>, correction: usize) -> Result<Tensor, ZyxError> {
-        let axes: Vec<_> = axes.into_iter().collect();
-        self.std(axes.clone(), correction)?.reshape(self.reduce_kd_shape(axes))
-    }
-
-    /// Sum reduce. Removes tensor dimensions.
-    /// Equivalent to pytorch sum(axes, keepdim=False)
-    /// If you want to keep reduce dimensions, see [`sum_kd`](Tensor::sum_kd)
-    /// Passing empty axes executes reduce across all dimensions and result will have shape `[1]`
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    pub fn sum(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
-        // TODO handle axes out of range error
-        let rank = self.rank();
-        let axes = into_axes(axes, rank)?;
-        Ok(Tensor { id: RT.lock().sum_reduce(self.id, axes) })
-    }
-
-    // Probably just have sum_kd, max_kd that keep tensor dimensions
-    /// Like [sum](Tensor::sum) but keeps reduce dimensions, setting them to 1.
-    /// Equivalent to pytorch sum(axes, keepdim=True)
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    pub fn sum_kd(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<_> = axes.into_iter().collect();
-        self.sum(axes.clone())?.reshape(self.reduce_kd_shape(axes))
+        let m = self - self.max_axes_keepdim(axes.clone())?;
+        Ok(&m - m.exp().sum_axes_keepdim(axes)?.ln())
     }
 
     /// Comulative sum along axis.
@@ -1772,10 +1572,48 @@ impl Tensor {
         //println!("{x:?} padded");
         x = x.pool(k, 1, 1)?;
         //println!("{x:?} pooled");
-        x = x.sum([-1])?;
+        x = x.sum_axes([-1])?;
         //println!("{x:?} summed");
         x = x.transpose(axis, -1)?;
         //println!("{x:?} transposed");
+        Ok(x)
+    }
+
+    /// Comulative max along axis.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if axis is out of range.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn cummax(&self, axis: SAxis) -> Result<Tensor, ZyxError> {
+        let axis = into_axis(axis, self.rank())?;
+        let pl_sz = isize::try_from(self.shape()[axis as usize] - 1).unwrap();
+        let k = self.shape()[axis as usize];
+        let axis = SAxis::try_from(axis).unwrap();
+        let mut x = self.transpose(axis, -1)?;
+        x = x.pad_zeros([(pl_sz, 0)])?;
+        x = x.pool(k, 1, 1)?;
+        x = x.max_axes([-1])?;
+        x = x.transpose(axis, -1)?;
+        Ok(x)
+    }
+
+    /// Comulative product along axis.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if axis is out of range.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn cumprod(&self, axis: SAxis) -> Result<Tensor, ZyxError> {
+        let axis = into_axis(axis, self.rank())?;
+        let pl_sz = isize::try_from(self.shape()[axis as usize] - 1).unwrap();
+        let k = self.shape()[axis as usize];
+        let axis = SAxis::try_from(axis).unwrap();
+        let mut x = self.transpose(axis, -1)?;
+        x = x.pad_zeros([(pl_sz, 0)])?;
+        x = x.pool(k, 1, 1)?;
+        x = x.log2().sum_axes([-1])?.exp2();
+        x = x.transpose(axis, -1)?;
         Ok(x)
     }
 
@@ -1805,85 +1643,8 @@ impl Tensor {
     /// Returns error if self cannot be reduced by axes.
     pub fn softmax(&self, axes: impl IntoIterator<Item = SAxis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        let e = (self - self.max_kd(axes.clone())?).exp();
-        Ok(&e / e.sum_kd(axes)?)
-    }
-
-    /// Calculates the variance of this tensor along the specified axes.
-    ///
-    /// This function first computes the mean of the tensor along the provided axes,
-    /// then subtracts this mean from each element in the tensor, squares the result,
-    /// and finally means these squared differences along the same axes to obtain the variance.
-    ///
-    /// # Arguments
-    ///
-    /// * `axes` - The axes along which to compute the mean and variance. This can be a single axis or a tuple of axes.
-    ///
-    /// # Returns
-    ///
-    /// * A new tensor containing the variance values computed for each axis.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let arr = Tensor::from([[1f32, 2.], [3., 4.]]);
-    /// let var = arr.var([0], 0)?; // Compute variance along rows (axis=0)
-    /// assert_eq!(var, [1f32, 1.]);
-    ///
-    /// let var = arr.var([1], 1)?; // Compute variance along columns (axis=1)
-    /// assert_eq!(var, [0.5f32, 0.5]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    #[allow(clippy::missing_panics_doc)]
-    pub fn var(&self, axes: impl IntoIterator<Item = SAxis>, correction: usize) -> Result<Tensor, ZyxError> {
-        let axes: Vec<_> = axes.into_iter().collect();
-        let shape = self.shape();
-        let x = self - self.mean_kd(axes.clone())?;
-        let d = SAxis::try_from(
-            into_axes(axes.clone(), shape.rank())?.into_iter().map(|a| shape[a as usize]).product::<usize>(),
-        )
-        .unwrap()
-            - SAxis::try_from(correction).unwrap();
-        Ok((x.clone() * x.clone()).sum(axes)? / Tensor::from(d).cast(x.dtype()))
-    }
-
-    /// Calculates the variance along the specified axes.
-    ///
-    /// This function first calculates the mean along the specified axes using `var()`,
-    /// then subtracts that mean from the original tensor, squares the result,
-    /// and finally takes the mean of those squared values.
-    ///
-    /// # Arguments
-    ///
-    /// * `axes`: The axes to reduce over. If not provided, reduces over all axes.
-    ///
-    /// # Returns
-    ///
-    /// A new tensor containing the variance along the specified axes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use zyx::Tensor;
-    ///
-    /// let a = Tensor::from([[2f64, 3., 4.], [5., 6., 7.]]);
-    /// assert_eq!(a.var_kd([0], 0)?, [[2.25f64, 2.25, 2.25]]);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if self cannot be reduced by axes.
-    #[allow(clippy::missing_panics_doc)]
-    pub fn var_kd(&self, axes: impl IntoIterator<Item = SAxis>, correction: usize) -> Result<Tensor, ZyxError> {
-        let axes: Vec<_> = axes.into_iter().collect();
-        self.var(axes.clone(), correction)?.reshape(self.reduce_kd_shape(axes))
+        let e = (self - self.max_axes_keepdim(axes.clone())?).exp();
+        Ok(&e / e.sum_axes_keepdim(axes)?)
     }
 
     // index
@@ -2127,7 +1888,37 @@ impl Tensor {
             .collect::<Vec<usize>>();
         //std::println!("{x_shape:?}");
         //std::println!("{y_shape:?}");
-        (self.reshape(x_shape)? * y.reshape(y_shape)?).sum([-1])?.reshape(
+        (self.reshape(x_shape)? * y.reshape(y_shape)?).sum_axes([-1])?.reshape(
+            xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<usize>>(),
+        )
+    }
+
+    /// Matmul
+    pub fn dot_dtype(&self, rhs: impl Into<Tensor>, out_dtype: DType) -> Result<Tensor, ZyxError> {
+        let rhs: Tensor = rhs.into();
+        let org_y_shape = rhs.shape();
+        let y = rhs.t();
+        let xshape = self.shape();
+        let yshape = y.shape();
+        //println!("xshape {xshape:?}, yshape {yshape:?}");
+        let xrank = xshape.len();
+        let yrank = yshape.len();
+        if xshape[xrank - 1] != yshape[yrank - 1] {
+            //yshape[-(yrank.min(2) as i64)],
+            return Err(ZyxError::ShapeError(
+                format!("Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}").into(),
+            ));
+        }
+        let x_shape = xshape[..xrank - 1].iter().copied().chain([1]).chain([xshape[xrank - 1]]).collect::<Vec<usize>>();
+        let y_shape = yshape[0..yrank - 2]
+            .iter()
+            .copied()
+            .chain([1])
+            .chain(yshape[yrank - yrank.min(2)..yrank].iter().copied())
+            .collect::<Vec<usize>>();
+        //std::println!("{x_shape:?}");
+        //std::println!("{y_shape:?}");
+        (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype)).sum_axes([-1])?.reshape(
             xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<usize>>(),
         )
     }
@@ -2238,7 +2029,7 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let input = Tensor::from([0.5, 0.2, 0.3]);
     /// let target = Tensor::from([1., 0., 0.]);
-    /// assert_eq!(input.cross_entropy(target, [])?.mean([])?, 0.3133);
+    /// assert_eq!(input.cross_entropy(target, [])?.mean(), 0.3133);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -2251,9 +2042,9 @@ impl Tensor {
         axes: impl IntoIterator<Item = SAxis>,
     ) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        let m = self - self.max_kd(axes.clone())?;
-        let ln_softmax = &m - m.exp().sum_kd(axes)?.ln();
-        Ok(ln_softmax.neg() * target)
+        let m = self - self.max_axes_keepdim(axes.clone())?;
+        let neg_log2_softmax = m.exp().sum_axes_keepdim(axes)?.ln() - m;
+        Ok(neg_log2_softmax * target)
     }
 
     /// Calculates the L1 loss between `self` and the target tensor.
@@ -2309,7 +2100,7 @@ impl Tensor {
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, target)?;
         let x = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
-        (x.clone() * x).mean([])
+        Ok((x.clone() * x).mean())
     }
 
     /// Calculates the cosine similarity between this tensor and another.
@@ -2902,7 +2693,7 @@ impl Tensor {
             axes.push(-1 - SAxis::try_from(i).unwrap());
         }
         let shape: Vec<Dim> = [bs, cout].iter().chain(oyx).copied().collect();
-        let mut ret = (x * weight).sum_kd(axes).unwrap().reshape(shape).unwrap();
+        let mut ret = (x * weight).sum_axes_keepdim(axes).unwrap().reshape(shape).unwrap();
 
         if let Some(bias) = bias {
             let shape: Vec<usize> =
@@ -2912,26 +2703,6 @@ impl Tensor {
 
         Ok(ret)
     }
-
-    /*
-    def gather(self:Tensor, dim:int, index:Tensor) -> Tensor:
-    """
-    Gathers values along an axis specified by `dim`.
-
-    ```python exec="true" source="above" session="tensor" result="python"
-    t = Tensor([[1, 2], [3, 4]])
-    print(t.numpy())
-    ```
-    ```python exec="true" source="above" session="tensor" result="python"
-    print(t.gather(1, Tensor([[0, 0], [1, 0]])).numpy())
-    ```
-    """
-    assert index.ndim == self.ndim, f"self.ndim must equal index.ndim, {self.ndim=}, {index.ndim=}"
-    dim = self._resolve_dim(dim)
-    assert all(s >= i for d,(s,i) in enumerate(zip(self.shape, index.shape)) if d != dim), "requires self.shape[d] >= index.shape[d] for all d != dim"
-    index = index.to(self.device)
-    x = self.shrink(tuple((0, i) if d != dim else None for d,i in enumerate(index.shape))).unsqueeze(-1).transpose(-1, dim)
-    return (x * index.unsqueeze(-1)._one_hot_along_dim(self.shape[dim])).sum(-1, acc_dtype=self.dtype)*/
 
     /// Creates a new tensor by repeating the input tensor along its dimensions.
     ///
@@ -3444,6 +3215,7 @@ impl Tensor {
     /// Braodcasts to synchronize shapes and casts to synchronize dtypss
     /// This does both automatic expand AND automatic casting between dtypes.
     // TODO Broadcasting can be disable by changing a setting in the backend.
+    #[track_caller]
     fn broadcast(x: impl Into<Tensor>, y: impl Into<Tensor>) -> Result<(Tensor, Tensor), ZyxError> {
         let mut x = x.into();
         let mut y = y.into();
@@ -3591,15 +3363,6 @@ impl Tensor {
         //println!("Broadcasted to {eshape:?}");
         //println!("y shape {:?}", y.shape());
         Ok((x, y))
-    }
-
-    // Calculate shape for reduce which keeps reduced dims set to 1
-    fn reduce_kd_shape(&self, axes: impl IntoIterator<Item = SAxis>) -> Vec<Axis> {
-        let mut shape = self.shape();
-        for a in into_axes(axes, shape.len() as Axis).unwrap() {
-            shape[a as usize] = 1;
-        }
-        shape
     }
 
     /// Tensor id

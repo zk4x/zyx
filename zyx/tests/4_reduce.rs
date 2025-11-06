@@ -3,16 +3,16 @@ use zyx::{Tensor, ZyxError};
 #[test]
 fn sum_1() -> Result<(), ZyxError> {
     let x = Tensor::from([2, 4]);
-    assert_eq!(x.sum([])?, 6);
+    assert_eq!(x.sum(), 6);
     Ok(())
 }
 
 #[test]
 fn sum_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[4, 1, 3], [5, 2, 3], [6, 5, 7]]);
-    let x0 = x.sum([-1])?;
-    let x1 = x.sum([-2])?;
-    let x2 = x.sum([])?;
+    let x0 = x.sum_axes([-1])?;
+    let x1 = x.sum_axes([-2])?;
+    let x2 = x.sum();
     assert_eq!(x0, [8, 10, 18]);
     assert_eq!(x1, [15, 8, 13]);
     assert_eq!(x2, [36]);
@@ -23,16 +23,16 @@ fn sum_2() -> Result<(), ZyxError> {
 fn sum_3() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     println!("{x}");
-    assert_eq!(x.sum([0])?, [3, 9, 4]);
-    assert_eq!(x.sum([1])?, [9, 7]);
-    assert_eq!(x.sum([])?, 16);
+    assert_eq!(x.sum_axes([0])?, [3, 9, 4]);
+    assert_eq!(x.sum_axes([1])?, [9, 7]);
+    assert_eq!(x.sum(), 16);
     Ok(())
 }
 
 #[test]
 fn sum_4() -> Result<(), ZyxError> {
     let x = Tensor::from([[4, 1, 3], [5, 2, 3], [6, 5, 7]]);
-    let x0 = x.relu().sum([-1])?;
+    let x0 = x.relu().sum_axes([-1])?;
     assert_eq!(x0, [8, 10, 18]);
     Ok(())
 }
@@ -40,7 +40,7 @@ fn sum_4() -> Result<(), ZyxError> {
 #[test]
 fn sum_5() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    x = x.sum([])?;
+    x = x.sum();
     debug_assert_eq!(x, [13i32]);
     Ok(())
 }
@@ -48,9 +48,9 @@ fn sum_5() -> Result<(), ZyxError> {
 #[test]
 fn max_1() -> Result<(), ZyxError> {
     let x = Tensor::from([[4, 1, 3], [5, 2, 3], [6, 5, 7]]);
-    let x0 = x.max([-1])?;
-    let x1 = x.max([-2])?;
-    let x2 = x.max([])?;
+    let x0 = x.max_axes([-1])?;
+    let x1 = x.max_axes([-2])?;
+    let x2 = x.max();
     assert_eq!(x0, [4, 5, 7]);
     assert_eq!(x1, [6, 5, 7]);
     assert_eq!(x2, [7]);
@@ -70,7 +70,7 @@ fn sum_large_2d() -> Result<(), ZyxError> {
         [61, 62, 63, 64, 65, 66, 67, 68, 69, 70],
         [71, 72, 73, 74, 75, 76, 77, 78, 79, 80],
     ]);
-    let x0 = x.sum([-1])?;
+    let x0 = x.sum_axes([-1])?;
     assert_eq!(x0, [55, 155, 255, 355, 455, 555, 655, 755]);
     Ok(())
 }
@@ -83,7 +83,7 @@ fn max_large_3d() -> Result<(), ZyxError> {
         [[10, 11, 12], [13, 14, 15], [16, 17, 18]],
         [[19, 20, 21], [22, 23, 24], [25, 26, 27]],
     ]);
-    let x0 = x.max([-1])?;
+    let x0 = x.max_axes([-1])?;
     assert_eq!(x0, [[3, 6, 9], [12, 15, 18], [21, 24, 27]]);
     Ok(())
 }

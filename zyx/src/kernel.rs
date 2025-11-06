@@ -1,8 +1,7 @@
 use nanoserde::{DeBin, SerBin};
 
 use crate::{
-    CYAN, RED, RESET, YELLOW, MAGENTA, GREEN, BLUE,
-    DType, Map, Set,
+    BLUE, CYAN, DType, GREEN, MAGENTA, Map, RED, RESET, Set, YELLOW,
     backend::{Device, DeviceInfo, ProgramId},
     dtype::Constant,
     graph::{BOp, ROp, UOp},
@@ -549,6 +548,8 @@ impl Kernel {
             // number of new inserted ops before the tail section
             let n = 7 + n_dims * 2 - 1;
 
+            //println!("{tail:?}");
+
             let mut inserted_loads = Vec::new();
             let mut i = 0;
             while i < tail.len() {
@@ -563,9 +564,9 @@ impl Kernel {
                         if *src == op_id {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
+                            inserted_loads.push(i);
                             i += 1;
                             //n_inserted_loads += 1;
-                            inserted_loads.push(i);
                         } else if *src > op_id {
                             //*src += n_inserted_loads + 8;
                             //println!("src={src}, {inserted_loads:?}");
@@ -576,8 +577,8 @@ impl Kernel {
                         if *x == op_id {
                             *x = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
-                            i += 1;
                             inserted_loads.push(i);
+                            i += 1;
                         } else if *x > op_id {
                             *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
                         }
@@ -592,8 +593,8 @@ impl Kernel {
                         if *src == op_id {
                             *src = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
-                            i += 1;
                             inserted_loads.push(i);
+                            i += 1;
                         } else if *src > op_id {
                             *src += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *src + n).count() + n;
                         }
@@ -610,8 +611,8 @@ impl Kernel {
                         if *x == op_id {
                             *x = self.ops.len() + i;
                             tail.insert(i, Op::Load { src: acc, index: c_0 });
-                            i += 1;
                             inserted_loads.push(i);
+                            i += 1;
                         } else if *x > op_id {
                             *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
                         }
@@ -632,6 +633,11 @@ impl Kernel {
                         if tailx || taily {
                             inserted_loads.push(i);
                         }
+                        /*println!(
+                            "x={x}, op_id={op_id}, self.ops.len={}, n={n}, count={}, inserted_loads={inserted_loads:?}",
+                            self.ops.len(),
+                            inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count()
+                        );*/
                         if *x > op_id && !tailx {
                             *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
                         }
@@ -1004,7 +1010,10 @@ impl Kernel {
         let mut params = Vec::new();
         for op_id in 0..self.ops.len() {
             // TODO remove Op::Load from here, it has no reason to be here other than compatibility with predefined loads
-            if matches!(self.ops[op_id], Op::Store { .. } | Op::Loop { .. } | Op::EndLoop | Op::Load { .. }) {
+            if matches!(
+                self.ops[op_id],
+                Op::Store { .. } | Op::Loop { .. } | Op::EndLoop | Op::Load { .. }
+            ) {
                 params.push(op_id);
             }
         }

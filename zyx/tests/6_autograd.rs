@@ -3,7 +3,7 @@ use zyx::{GradientTape, Tensor, ZyxError};
 #[test]
 fn grad_relu_1() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 0, -1]);
-    let tape = GradientTape::new();
+    let _tape = GradientTape::new();
     let z = x.relu();
     println!("{z}");
     Ok(())
@@ -227,7 +227,7 @@ fn grad_linear_2() -> Result<(), ZyxError> {
     //let x = x.sigmoid();
     //let x = x.mse_loss(y)?;
     let x = x - y;
-    let x = (x.clone() * x).sum([])?;
+    let x = (x.clone() * x).sum();
     //println!("{x:?}");
 
     let mut grads = tape.gradient(&x, [&w1, &b1, &w2, &b2]);

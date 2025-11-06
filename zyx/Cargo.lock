@@ -1210,6 +1210,7 @@ dependencies = [
  "half",
  "libloading",
  "nanoserde",
+ "paste",
  "pollster",
  "pyo3",
  "wgpu",

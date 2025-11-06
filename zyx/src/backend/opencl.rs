@@ -809,6 +809,9 @@ impl OpenCLDevice {
                         UOp::Not => {
                             writeln!(source, "{indent}r{reg} = !{x};").unwrap();
                         }
+                        UOp::BitNot => {
+                            writeln!(source, "{indent}r{reg} = ~{x};").unwrap();
+                        }
                         UOp::ReLU => {
                             writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl()).unwrap();
                         }

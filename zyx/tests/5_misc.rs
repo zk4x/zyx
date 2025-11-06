@@ -33,7 +33,7 @@ fn fuse_2() -> Result<(), ZyxError> {
 #[test]
 fn fuse_3() -> Result<(), ZyxError> {
     let x = Tensor::from([[2f32, 4., 3.], [1., 5., 1.]]);
-    let z = x.sum([0])?.expand([2, 3])? + x;
+    let z = x.sum_axes([0])?.expand([2, 3])? + x;
     assert_eq!(z, [[5f32, 13., 7.], [4., 14., 5.]]);
     Ok(())
 }
@@ -63,7 +63,7 @@ fn fuse_5() -> Result<(), ZyxError> {
 #[test]
 fn fuse_6() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
-    x = x.sum([1])?;
+    x = x.sum_axes([1])?;
     let y = x.log2();
     let x = x.exp2();
     Tensor::realize([&x, &y])?;
@@ -89,7 +89,7 @@ fn boolean_buffer() -> Result<(), ZyxError> {
 #[test]
 fn mix_expand_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
-    x = x.sum([1])?;
+    x = x.sum_axes([1])?;
     println!("{:?}", x.shape());
     x = x.expand([2, 2])?;
     assert_eq!(x, [[9i32, 7], [9, 7]]);
@@ -99,7 +99,7 @@ fn mix_expand_reduce() -> Result<(), ZyxError> {
 #[test]
 fn mix_pad_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
-    x = x.sum([1])?;
+    x = x.sum_axes([1])?;
     x = x.pad_zeros([(0, 1)])?;
     assert_eq!(x, [9i32, 7, 0]);
     Ok(())
@@ -116,7 +116,7 @@ fn mix_permute_pad() -> Result<(), ZyxError> {
 #[test]
 fn mix_expand_reshape_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
-    x = x.sum([1])?;
+    x = x.sum_axes([1])?;
     let y = x.expand([2, 2])?;
     x = x.reshape([2, 1])?.expand([2, 2])?;
     Tensor::realize([&x, &y])?;
@@ -198,12 +198,13 @@ fn arange() -> Result<(), ZyxError> {
 }
 
 /*#[test]
-fn rand() {
+fn randn() {
     use zyx::DType;
     let x = Tensor::randn([10, 10], DType::F32).unwrap();
     //Tensor::plot_graph([], "graph0");
     //Tensor::realize([&x]).unwrap();
     println!("{x}");
+    assert_eq!(x.isnan().sum(), 0);
 }*/
 
 #[test]
@@ -438,9 +439,9 @@ fn layer_norm() -> Result<(), ZyxError> {
 
     let axes = -(d_dims as i32)..=-1;
     let eps = Tensor::from(eps).cast(x.dtype());
-    let a = &x - x.mean_kd(axes.clone())?;
+    let a = &x - x.mean_axes_keepdim(axes.clone())?;
     //println!("{a}");
-    let b = (x.var_kd(axes, 1)? + eps).sqrt();
+    let b = (x.var_axes_keepdim(axes)? + eps).sqrt();
     let mut x = a / b;
     if let Some(w) = &weight {
         x = x * w;
@@ -695,8 +696,8 @@ fn rope_4() -> Result<(), ZyxError> {
 fn complex_movement_reduce() -> Result<(), ZyxError> {
     let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]]).expand([2, 3, 2])?.exp().ln().reshape([2, 3, 2, 1])?;
     let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]]).reshape([2, 3, 1, 1])?.expand([2, 3, 2, 1])?;
-    let z = (&x + &y).expand([2, 3, 2, 2])?.sum([3, 0])?;
-    let z = z.exp().ln().permute([1, 0])?.sum([0])?;
+    let z = (&x + &y).expand([2, 3, 2, 2])?.sum_axes([3, 0])?;
+    let z = z.exp().ln().permute([1, 0])?.sum_axes([0])?;
     assert_eq!(z, [52f32, 52., 40.]);
     Ok(())
 }
@@ -704,7 +705,7 @@ fn complex_movement_reduce() -> Result<(), ZyxError> {
 #[test]
 fn mean1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1i32, 2, 3], [4, 5, 6]]);
-    let mean = x.sum([1])? * 0.33333333f32;
+    let mean = x.sum_axes([1])? * 0.33333333f32;
     //assert_eq!(mean, [2f32, 5.]);
     let y = x - mean.reshape([2, 1])?;
     //panic!("{y}");
@@ -716,10 +717,10 @@ fn mean1() -> Result<(), ZyxError> {
 fn var1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
     let [n] = x.dims()?;
-    let mean = x.mean_kd([0])?;
+    let mean = x.mean_axes_keepdim([0])?;
     let x = x - mean;
     let squared = x.pow(2)?;
-    let summed = squared.sum([0])?;
+    let summed = squared.sum_axes([0])?;
     let y = summed / n as u32;
     assert_eq!(y, [2.25f32, 2.25, 2.25]);
     Ok(())
@@ -728,7 +729,7 @@ fn var1() -> Result<(), ZyxError> {
 #[test]
 fn mean2() -> Result<(), ZyxError> {
     let x = Tensor::from([[1i32, 2, 3], [4, 5, 6]]);
-    let mean = x.mean_kd([1])?;
+    let mean = x.mean_axes_keepdim([1])?;
     let y = x - mean;
     assert_eq!(y, [[-1i32, 0, 1], [-1, 0, 1]]);
     Ok(())
@@ -738,10 +739,10 @@ fn mean2() -> Result<(), ZyxError> {
 fn var2() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
     let [_, n] = x.dims()?;
-    let mean = x.mean_kd([1])?;
+    let mean = x.mean_axes_keepdim([1])?;
     let x = x - mean;
     let squared = x.pow(2)?;
-    let summed = squared.sum([1])?;
+    let summed = squared.sum_axes([1])?;
     let y = summed / n as u32;
     assert_eq!(y, [0.666666f32, 0.666666]);
     Ok(())
@@ -750,7 +751,7 @@ fn var2() -> Result<(), ZyxError> {
 #[test]
 fn var3() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
-    let y = x.var([1], 0)?;
+    let y = x.var_axes_correction([1], 0)?;
     assert_eq!(y, [0.666666f32, 0.666666]);
     Ok(())
 }
@@ -758,9 +759,9 @@ fn var3() -> Result<(), ZyxError> {
 #[test]
 fn var4() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
-    let y = x.var([0], 0)?;
+    let y = x.var_axes_correction([0], 0)?;
     assert_eq!(y, [2.25f32, 2.25, 2.25]);
-    let y = x.var([1], 0)?;
+    let y = x.var_axes_correction([1], 0)?;
     assert_eq!(y, [0.666666f32, 0.666666]);
     Ok(())
 }
@@ -907,5 +908,21 @@ fn dot4() -> Result<(), ZyxError> {
     }
     println!("{x}");
     assert_eq!(x, [671627020i32, 441824135, 607929878]);
+    Ok(())
+}
+
+#[test]
+fn cross_entropy() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2, 3, 4], [5, 6, 7]]).cast(DType::F32);
+    let target = Tensor::from([[0, 1, 0], [0, 0, 1]]).cast(DType::F32);
+    let m = &x - x.max_axes_keepdim([1])?;
+    //println!("{}", m);
+    //Tensor::realize([&m])?;
+    let neg_log2_softmax = m.exp().sum_axes_keepdim([1])?.ln() - m;
+    //println!("{}", neg_log2_softmax);
+    //panic!();
+    let ce = neg_log2_softmax * target;
+    //println!("{ce:.6}");
+    assert_eq!(ce, [[0.000000f32, 1.407606, 0.000000], [0.000000, 0.000000, 0.407606]]);
     Ok(())
 }

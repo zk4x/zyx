@@ -95,6 +95,32 @@ impl DType {
         }
     }
 
+    /// Is this dtype integer?
+    #[must_use]
+    pub const fn is_int(self) -> bool {
+        match self {
+            Self::BF16 | Self::F16 | Self::F32 | Self::F64 | Self::Bool => false,
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::I8 | Self::I16 | Self::I32 | Self::I64 => true,
+        }
+    }
+
+    /// Is this dtype unsigned integer?
+    #[must_use]
+    pub const fn is_uint(self) -> bool {
+        match self {
+            Self::BF16
+            | Self::F16
+            | Self::F32
+            | Self::F64
+            | Self::Bool
+            | Self::I8
+            | Self::I16
+            | Self::I32
+            | Self::I64 => false,
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 => true,
+        }
+    }
+
     #[must_use]
     pub(super) const fn is_shiftable(self) -> bool {
         match self {
@@ -109,6 +135,21 @@ impl DType {
             | Self::I64 => false,
             Self::U8 | Self::U16 | Self::U32 | Self::U64 => true,
         }
+    }
+
+    pub(crate) fn least_upper_dtype(self, rhs: DType) -> DType {
+        use DType::*;
+        // define an ordered list of “widening” priority
+        let order = [
+            Bool,
+            U8, U16, U32, U64,
+            I8, I16, I32, I64,
+            BF16, F16, F32, F64,
+        ];
+
+        let i1 = order.iter().position(|&d| d == self).unwrap();
+        let i2 = order.iter().position(|&d| d == rhs).unwrap();
+        order[i1.max(i2)]
     }
 
     // TODO remove this in favor of bit_size, since we need to support quantized dtypes
@@ -388,10 +429,11 @@ impl Constant {
         use crate::Float;
         fn unary_func<T: Scalar>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Not => todo!(),
                 UOp::Exp2 | UOp::Log2 | UOp::Reciprocal | UOp::Sqrt | UOp::Sin | UOp::Cos | UOp::Floor => {
                     unreachable!()
                 }
+                UOp::Not => todo!(),
+                UOp::BitNot => todo!(),
                 UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
             }
@@ -399,6 +441,7 @@ impl Constant {
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
             match uop {
                 UOp::Not => todo!(),
+                UOp::BitNot => todo!(),
                 UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
                 UOp::Exp2 => x.exp2(),

@@ -73,6 +73,7 @@ mod chasher;
 mod prog_bar;
 mod realize;
 mod view;
+mod tensor2;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;

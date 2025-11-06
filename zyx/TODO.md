@@ -26,7 +26,7 @@
 - [x] autograd
   - [x] fix t6 test
   - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
-  - [ ] fix realize function with gradient tape
+  - [x] fix realize function with gradient tape
 - [ ] dtype
   - [ ] quantized dtypes
   - [x] optional implicit dtype casts
@@ -97,6 +97,34 @@
   - [ ] permute on reduce kernel
   - [ ] lot of testing for kernelizer correctness
   - [ ] more autograd tests
+- [ ] tensor
+  - [ ] gather
+  - [ ] scatter
+  - [ ] solve
+  - [ ] inverse of matrix
+  - [ ] pinverse
+  - [ ] eigvalsh
+  - [ ] singular value decomposition
+  - [ ] instance norm
+  - [ ] interpolate
+  - [ ] upsample
+  - [ ] downsample
+  - [ ] erf
+  - [ ] erfinv
+  - [ ] lgamma (log gamma)
+  - [ ] i0 (modified Bessel function)
+  - [ ] trunc
+  - [ ] frac
+  - [ ] ceil
+  - [ ] round
+  - [ ] nll loss
+  - [ ] bce loss
+  - [ ] huber loss
+  - [ ] smooth l1 loss
+  - [ ] ctc loss
+  - [ ] triplet margin loss
+  - [ ] frobenius norm
+  - [ ] spectral norm
 
 - [x] docs
   - [x] manual for adding new backends

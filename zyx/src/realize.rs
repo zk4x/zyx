@@ -537,11 +537,13 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].outputs.extend(outputs);
             self.kernels[kid].outputs.extend(vec![nid; self.rcs[&nid] as usize]);
 
-            let op = if !kid_stores && kidy_stores {
+            // Should we ever swap these?
+            /*let op = if !kid_stores && kidy_stores {
                 Op::Binary { x: op_idy + n, y: op_id, bop }
             } else {
                 Op::Binary { x: op_id, y: op_idy + n, bop }
-            };
+            };*/
+            let op = Op::Binary { x: op_id, y: op_idy + n, bop };
             self.kernels[kid].push(op);
 
             // Fix visited

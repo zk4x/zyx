@@ -116,7 +116,7 @@ pub fn into_axis(axis: SAxis, rank: Axis) -> Result<Axis, ZyxError> {
 pub fn into_axes(
     axes: impl IntoIterator<Item = SAxis>,
     rank: Axis,
-) -> Result<Vec<Dim>, ZyxError> {
+) -> Result<Vec<Axis>, ZyxError> {
     let mut res = Vec::new();
     let mut visited = std::collections::BTreeSet::new();
     for axis in axes {

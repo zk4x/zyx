@@ -327,6 +327,7 @@ impl Runtime {
                 }
                 Node::Unary { x, uop } => match uop {
                     UOp::Not => todo!(),
+                    UOp::BitNot => todo!(),
                     UOp::Reciprocal => {
                         // -1/(x*x)
                         let x_2_inv = self.binary(nid, nid, BOp::Mul);
