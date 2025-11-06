@@ -135,7 +135,7 @@ macro_rules! define_reduce_op {
         paste! {
             impl Tensor {
                 #[doc = concat!(
-                    "Computes the [`", stringify!($name), "`] reduction over all elements.\n\n",
+                    "Computes the `", stringify!($name), "` reduction over all elements.\n\n",
                     "# Examples\n",
                     "```\n",
                     "use zyx::Tensor;\n",
@@ -148,7 +148,7 @@ macro_rules! define_reduce_op {
                 }
 
                 #[doc = concat!(
-                    "Computes the [`", stringify!($name), "`] reduction over all elements, keeping reduced dimensions.\n\n",
+                    "Computes the `", stringify!($name), "` reduction over all elements, keeping reduced dimensions.\n\n",
                     "Reduced axes are retained with length 1.\n\n",
                     "# Examples\n",
                     "```\n",
@@ -162,7 +162,7 @@ macro_rules! define_reduce_op {
                 }
 
                 #[doc = concat!(
-                    "Computes the [`", stringify!($name), "`] reduction along the specified `axes`.\n\n",
+                    "Computes the `", stringify!($name), "` reduction along the specified `axes`.\n\n",
                     "# Arguments\n",
                     "* `axes` — Iterable of axes to reduce over.\n\n",
                     "# Examples\n",
@@ -177,7 +177,7 @@ macro_rules! define_reduce_op {
                 }
 
                 #[doc = concat!(
-                    "Computes the [`", stringify!($name), "`] reduction along the specified `axes`, keeping reduced dimensions.\n\n",
+                    "Computes the `", stringify!($name), "` reduction along the specified `axes`, keeping reduced dimensions.\n\n",
                     "# Arguments\n",
                     "* `axes` — Iterable of axes to reduce over.\n",
                     "* Keeps reduced dimensions with length 1.\n\n",
@@ -193,7 +193,7 @@ macro_rules! define_reduce_op {
                 }
 
                 #[doc = concat!(
-                    "Computes the [`", stringify!($name), "`] reduction over all elements and casts the result to `dtype`.\n\n",
+                    "Computes the `", stringify!($name), "` reduction over all elements and casts the result to `dtype`.\n\n",
                     "# Arguments\n",
                     "* `dtype` — Desired output data type.\n\n",
                     "# Examples\n",
@@ -208,7 +208,7 @@ macro_rules! define_reduce_op {
                 }
 
                 #[doc = concat!(
-                    "Computes the [`", stringify!($name), "`] reduction over all elements, keeping reduced dimensions,\n",
+                    "Computes the `", stringify!($name), "` reduction over all elements, keeping reduced dimensions,\n",
                     "and casts the result to `dtype`.\n\n",
                     "# Arguments\n",
                     "* `dtype` — Desired output data type.\n",
@@ -218,7 +218,7 @@ macro_rules! define_reduce_op {
                 }
 
                 #[doc = concat!(
-                    "Computes the [`", stringify!($name), "`] reduction along specified `axes`, casting the result to `dtype`.\n\n",
+                    "Computes the `", stringify!($name), "` reduction along specified `axes`, casting the result to `dtype`.\n\n",
                     "# Arguments\n",
                     "* `axes` — Iterable of axes to reduce over.\n",
                     "* `dtype` — Desired output data type.\n",
@@ -232,7 +232,7 @@ macro_rules! define_reduce_op {
                 }
 
                 #[doc = concat!(
-                    "Computes the [`", stringify!($name), "`] reduction along specified `axes`, keeping reduced dimensions,\n",
+                    "Computes the `", stringify!($name), "` reduction along specified `axes`, keeping reduced dimensions,\n",
                     "and casts the result to `dtype`.\n\n",
                     "# Arguments\n",
                     "* `axes` — Iterable of axes to reduce over.\n",
