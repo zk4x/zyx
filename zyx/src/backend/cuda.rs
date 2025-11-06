@@ -1214,14 +1214,33 @@ impl CUDADevice {
                         writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;");
                         writeln!(source, "{indent}st.local.{} [%address], {src};", dtype.ptx());
                     } else {
-                        writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
+                        /*writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
                         writeln!(
                             source,
                             "{indent}shl.b64 %offset, %offset, {};",
                             dtype.byte_size().ilog2()
                         );
                         writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;");
-                        writeln!(source, "{indent}st.global.{} [%address], {src};", dtype.ptx());
+                        writeln!(source, "{indent}st.global.{} [%address], {src};", dtype.ptx());*/
+                        if dtype == DType::Bool {
+                            // Convert predicate to integer for storing in memory
+                            writeln!(source, "{indent}selp.u32 %gstu32, 1, 0, {src};").unwrap();
+                            // Compute address and store
+                            writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};").unwrap();
+                            writeln!(source, "{indent}shl.b64 %offset, %offset, 0;").unwrap();
+                            writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;").unwrap();
+                            writeln!(source, "{indent}st.global.u8 [%address], %gstu32;").unwrap();
+                        } else {
+                            // Original numeric/float path
+                            writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};").unwrap();
+                            writeln!(
+                                source,
+                                "{indent}shl.b64 %offset, %offset, {};",
+                                dtype.byte_size().ilog2()
+                            ).unwrap();
+                            writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;").unwrap();
+                            writeln!(source, "{indent}st.global.{} [%address], {src};", dtype.ptx()).unwrap();
+                        }
                     }
                 }
                 &Op::Cast { x, dtype } => {
@@ -1328,7 +1347,9 @@ impl CUDADevice {
                         BOp::Add => match dtype {
                             DType::BF16 => todo!(),
                             DType::F16 => todo!(),
-                            DType::F32 => todo!(),
+                            DType::F32 => {
+                                writeln!(source, "{indent}add.f32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
                             DType::F64 => todo!(),
                             DType::U8 => todo!(),
                             DType::U16 => todo!(),
@@ -1398,6 +1419,9 @@ impl CUDADevice {
                         BOp::Maximum => {
                             writeln!(source, "{indent}max.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
                         }
+                        BOp::Eq => {
+                            writeln!(source, "{indent}setp.eq.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
+                        }
                         op => todo!("{op:?}"),
                     }
                 }
@@ -1437,7 +1461,6 @@ impl CUDADevice {
                             //writeln!(source, "{indent}.reg .pred %pre{loop_id};").unwrap();
                             writeln!(source, "{indent}mov.u32 %idx{loop_id}, 0;").unwrap();
                             writeln!(source, "{indent}LOOP_{loop_id}:").unwrap();
-
                             indent += "  ";
                         }
                     }
@@ -1482,7 +1505,7 @@ impl CUDADevice {
             }
         }
 
-        let mut reg_str = format!("{indent}.reg .u64 %offset;\n{indent}.reg .s64 %address;\n");
+        let mut reg_str = format!("{indent}.reg .u64 %offset;\n{indent}.reg .s64 %address;\n{indent}.reg .u32 %gstu32;\n");
 
         for pred in preds {
             writeln!(reg_str, "{pred}").unwrap();
@@ -1970,7 +1993,7 @@ fn get_dtypes(kernel: &Kernel) -> (Map<OpId, u32>, Map<OpId, DType>) {
                 rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
             }
             &Op::Binary { x, y, bop } => {
-                if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or) {
+                if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or | BOp::Eq) {
                     dtypes.insert(i, DType::Bool);
                 } else {
                     dtypes.insert(i, dtypes[&x]);
