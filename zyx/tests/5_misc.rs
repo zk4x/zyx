@@ -719,7 +719,7 @@ fn var1() -> Result<(), ZyxError> {
     let [n] = x.dims()?;
     let mean = x.mean_axes_keepdim([0])?;
     let x = x - mean;
-    let squared = x.pow(2)?;
+    let squared = &x * &x;
     let summed = squared.sum_axes([0])?;
     let y = summed / n as u32;
     assert_eq!(y, [2.25f32, 2.25, 2.25]);
@@ -741,7 +741,7 @@ fn var2() -> Result<(), ZyxError> {
     let [_, n] = x.dims()?;
     let mean = x.mean_axes_keepdim([1])?;
     let x = x - mean;
-    let squared = x.pow(2)?;
+    let squared = &x * &x;
     let summed = squared.sum_axes([1])?;
     let y = summed / n as u32;
     assert_eq!(y, [0.666666f32, 0.666666]);

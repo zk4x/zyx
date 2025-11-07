@@ -192,13 +192,13 @@ fn grad_linear_1() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[cfg(not(feature = "wgpu"))]
 #[test]
 fn grad_mse() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 3., 1.]);
     let y = Tensor::from([5f32, 1., 1.]);
     let tape = GradientTape::new();
-    let z = (&x - &y).pow(2)?;
+    let z = &x - &y;
+    let z = &z * &z;
     let mut grads = tape.gradient(&z, [&x, &y]);
 
     let y_grad = grads.pop().unwrap().unwrap();

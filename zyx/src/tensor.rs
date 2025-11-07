@@ -3204,6 +3204,7 @@ impl Drop for DebugGuard {
 
 impl Tensor {
     /// If self is not float, then cast it to float
+    #[track_caller]
     fn float_cast(&self) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
         if !dtype.is_float() {
