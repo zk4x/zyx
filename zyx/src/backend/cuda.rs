@@ -12,8 +12,10 @@ use std::{
     hash::BuildHasherDefault,
     ptr,
     sync::{
-        mpsc::{channel, Receiver, Sender}, Arc
-    }, usize,
+        Arc,
+        mpsc::{Receiver, Sender, channel},
+    },
+    usize,
 };
 
 use libloading::Library;
@@ -89,9 +91,45 @@ unsafe impl Send for CUDAStream {}
 unsafe impl Send for CUDAEvent {}
 
 enum CUDACommand {
-    Allocate { bytes: usize, reply: Sender<Result<(BufferId, Event), BackendError>> },
-    HostToPool { src: *const u8, bytes: usize, dst: BufferId, event_wait_list: Vec<Event>, reply: Sender<Result<Event, BackendError>> },
-    LaunchKernel {},
+    Allocate {
+        bytes: usize,
+        reply: Sender<Result<(BufferId, Event), BackendError>>,
+    },
+    Deallocate {
+        buffer_id: BufferId,
+        events: Vec<Event>,
+    },
+    HostToPool {
+        src: *const u8,
+        bytes: usize,
+        dst: BufferId,
+        event_wait_list: Vec<Event>,
+        reply: Sender<Result<Event, BackendError>>,
+    },
+    PoolToHost {
+        src: BufferId,
+        dst: *mut u8,
+        bytes: usize,
+        event_wait_list: Vec<Event>,
+        reply: Sender<Result<(), BackendError>>,
+    },
+    Compile {
+        gws: Vec<Dim>,
+        lws: Vec<Dim>,
+        name: Box<str>,
+        ptx: Vec<u8>,
+        reply: Sender<Result<ProgramId, BackendError>>,
+    },
+    Launch {
+        program_id: ProgramId,
+        args: Vec<BufferId>,
+        event_wait_list: Vec<Event>,
+        reply: Sender<Result<Event, BackendError>>,
+    },
+    SyncEvents {
+        events: Vec<Event>,
+        reply: Sender<Result<(), BackendError>>,
+    }
 }
 
 unsafe impl Send for CUDACommand {}
@@ -156,12 +194,28 @@ pub(super) fn initialize_device(
     //let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }.unwrap();
     //let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") }.unwrap();
     //let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }.unwrap();
-    let cuModuleLoadDataEx: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize, CUstream) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuModuleLoadDataEx\0") }.unwrap();
-    let cuModuleGetFunction: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize, CUstream) -> CUDAStatus =
+    let cuModuleLoadDataEx: unsafe extern "C" fn(
+        *mut CUmodule,
+        *const c_void,
+        c_uint,
+        *mut CUjit_option,
+        *mut *mut c_void,
+    ) -> CUDAStatus = *unsafe { cuda.get(b"cuModuleLoadDataEx\0") }.unwrap();
+    let cuModuleGetFunction: unsafe extern "C" fn(*mut CUfunction, CUmodule, *const c_char) -> CUDAStatus =
         *unsafe { cuda.get(b"cuModuleGetFunction\0") }.unwrap();
-    let cuLaunchKernel: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize, CUstream) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuLaunchKernel\0") }.unwrap();
+    let cuLaunchKernel: unsafe extern "C" fn(
+        CUfunction,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        c_uint,
+        CUstream,
+        *mut *mut c_void,
+        *mut *mut c_void,
+    ) -> CUDAStatus = *unsafe { cuda.get(b"cuLaunchKernel\0") }.unwrap();
     let cuStreamCreate: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUDAStatus =
         *unsafe { cuda.get(b"cuStreamCreate\0") }.unwrap();
     let cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus =
@@ -218,8 +272,7 @@ pub(super) fn initialize_device(
             continue;
         }
         let mut device_name = [0; 100];
-        let Ok(()) =
-            unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check(ErrorStatus::DeviceQuery)
+        let Ok(()) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check(ErrorStatus::DeviceQuery)
         else {
             continue;
         };
@@ -236,8 +289,7 @@ pub(super) fn initialize_device(
             });
         }
         let mut free_bytes = 0;
-        let Ok(()) = unsafe { cuDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery)
-        else {
+        let Ok(()) = unsafe { cuDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         let mut context: CUcontext = ptr::null_mut();
@@ -270,6 +322,7 @@ pub(super) fn initialize_device(
             }
 
             let mut buffers: Slab<BufferId, CUDABuffer> = Slab::new();
+            let mut programs: Slab<ProgramId, CUDAProgram> = Slab::new();
 
             // Worker loop
             while let Ok(cmd) = rx.recv() {
@@ -292,12 +345,30 @@ pub(super) fn initialize_device(
                         let event = Event::CUDA(CUDAEvent { event });
                         let _ = reply.send(Ok((buffer_id, event)));
                     }
+                    CUDACommand::Deallocate { buffer_id, mut events } => {
+                        let stream = next_stream(&mut streams, cuStreamSynchronize).unwrap();
+                        while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
+                            if !event.is_null() {
+                                unsafe { (cuStreamWaitEvent)(stream, event, 0) }
+                                    .check(ErrorStatus::MemoryDeallocation)
+                                    .unwrap();
+                                unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
+                            }
+                        }
+                        let buffer = &mut buffers[buffer_id];
+                        //unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation).unwrap();
+                        unsafe { (cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation).unwrap();
+                        free_bytes += buffer.bytes;
+                        buffers.remove(buffer_id);
+                    }
                     CUDACommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
                         let stream = next_stream(&mut streams, cuStreamSynchronize).unwrap();
                         let dst = &buffers[dst];
                         while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
                             if !event.is_null() {
-                                unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
+                                unsafe { (cuStreamWaitEvent)(stream, event, 0) }
+                                    .check(ErrorStatus::MemoryCopyH2P)
+                                    .unwrap();
                             }
                         }
                         let mut event = ptr::null_mut();
@@ -305,16 +376,124 @@ pub(super) fn initialize_device(
                         debug_assert!(!stream.is_null());
                         //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
                         unsafe { (cuMemcpyHtoDAsync)(dst.ptr, src.cast(), bytes, stream) }
-                            .check(ErrorStatus::MemoryCopyH2P).unwrap();
+                            .check(ErrorStatus::MemoryCopyH2P)
+                            .unwrap();
                         //unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check(ErrorStatus::MemoryCopyH2P)?;
                         unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
                         _ = reply.send(Ok(Event::CUDA(CUDAEvent { event })));
                     }
-                    CUDACommand::LaunchKernel {} => {
-                        // TODO: call cuLaunchKernel here
-                        //let _ = reply.send(Ok(()));
+                    CUDACommand::PoolToHost { src, dst, bytes, mut event_wait_list, reply } => {
+                        let stream = next_stream(&mut streams, cuStreamSynchronize).unwrap();
+                        while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
+                            if !event.is_null() {
+                                unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
+                                // Should we destroy the event here?
+                            }
+                        }
+                        let src = &buffers[src];
+                        let mut event = ptr::null_mut();
+                        unsafe { (cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
+                        unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes, stream) }
+                            .check(ErrorStatus::MemoryCopyP2H).unwrap();
+                        unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
+                        //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
+                        unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
+                        unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
+                        _ = reply.send(Ok(()));
                     }
-                    _ => todo!(),
+                    CUDACommand::Compile { gws, lws, name, ptx, reply } => {
+                        let mut module = ptr::null_mut();
+                        if let Err(err) = unsafe {
+                            (cuModuleLoadDataEx)(
+                                &raw mut module,
+                                ptx.as_ptr().cast(),
+                                0,
+                                ptr::null_mut(),
+                                ptr::null_mut(),
+                            )
+                        }
+                        .check(ErrorStatus::KernelCompilation)
+                        {
+                            /*if debug_asm {
+                                println!("Failed to compile kernel with err: {err:?}");
+                            }*/
+                            //return Err(err);
+                            panic!();
+                        }
+                        let mut function: CUfunction = ptr::null_mut();
+                        // Don't forget that the name is null terminated string
+                        if let Err(err) =
+                            unsafe { (cuModuleGetFunction)(&raw mut function, module, name.as_ptr().cast()) }
+                                .check(ErrorStatus::KernelLaunch)
+                        {
+                            /*if debug_asm {
+                                println!("Failed to launch kernel with err: {err:?}\n");
+                            }*/
+                            //return Err(err);
+                            panic!();
+                        }
+
+                        let program_id = programs.push(CUDAProgram {
+                            //name,
+                            module,
+                            function,
+                            gws,
+                            lws,
+                        });
+                        _ = reply.send(Ok(program_id));
+                    }
+                    CUDACommand::Launch { program_id, args, mut event_wait_list, reply } => {
+                        let stream = next_stream(&mut streams, cuStreamSynchronize).unwrap();
+                        let program = &programs[program_id];
+                        //println!("CUDA launch program id: {program_id}, gws: {:?}, lws: {:?}", program.global_work_size, program.local_work_size);
+                        let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
+                        for arg in args {
+                            let arg = &buffers[arg];
+                            //let ptr = &mut arg.mem;
+                            let ptr: *const u64 = &raw const arg.ptr;
+                            let ptr: *mut u64 = ptr.cast_mut();
+                            kernel_params.push(ptr.cast());
+                        }
+
+                        while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
+                            if !event.is_null() {
+                                unsafe { (cuStreamWaitEvent)(stream, event, 0) }
+                                    .check(ErrorStatus::KernelLaunch).unwrap();
+                            }
+                        }
+                        //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
+                        let mut event = ptr::null_mut();
+                        unsafe { (cuEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch).unwrap();
+                        unsafe {
+                            (cuLaunchKernel)(
+                                program.function,
+                                u32::try_from(program.gws.get(0).copied().unwrap_or(1)).unwrap(),
+                                u32::try_from(program.gws.get(1).copied().unwrap_or(1)).unwrap(),
+                                u32::try_from(program.gws.get(2).copied().unwrap_or(1)).unwrap(),
+                                u32::try_from(program.lws.get(0).copied().unwrap_or(1)).unwrap(),
+                                u32::try_from(program.lws.get(1).copied().unwrap_or(1)).unwrap(),
+                                u32::try_from(program.lws.get(2).copied().unwrap_or(1)).unwrap(),
+                                0,
+                                stream,
+                                kernel_params.as_mut_ptr(),
+                                ptr::null_mut(),
+                            )
+                        }
+                        .check(ErrorStatus::KernelLaunch);
+                        unsafe { (cuEventRecord)(event, stream) }
+                            .check(ErrorStatus::KernelLaunch).unwrap();
+                        //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
+                        _ = reply.send(Ok(Event::CUDA(CUDAEvent { event })));
+                    }
+                    CUDACommand::SyncEvents { mut events, reply } => {
+                        while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
+                            if !event.is_null() {
+                                unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync).unwrap();
+                                unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::KernelSync).unwrap();
+                            }
+                        }
+                        _ = reply.send(Ok(()));
+                    }
                 }
             }
         });
@@ -411,21 +590,8 @@ impl CUDAMemoryPool {
         reply_rx.recv().unwrap()
     }
 
-    pub fn deallocate(&mut self, buffer_id: BufferId, mut event_wait_list: Vec<Event>) {
-        /*while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
-            if !event.is_null() {
-                unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }
-                    .check(ErrorStatus::MemoryDeallocation)
-                    .unwrap();
-                unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
-            }
-        }
-        let buffer = &mut self.buffers[buffer_id];
-        //unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation).unwrap();
-        unsafe { (self.cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation).unwrap();
-        self.free_bytes += buffer.bytes;
-        self.buffers.remove(buffer_id);*/
-        todo!()
+    pub fn deallocate(&mut self, buffer_id: BufferId, mut events: Vec<Event>) {
+        self.tx.send(CUDACommand::Deallocate { buffer_id, events }).unwrap();
     }
 
     pub fn host_to_pool(
@@ -435,7 +601,9 @@ impl CUDAMemoryPool {
         mut event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply }).unwrap();
+        self.tx
+            .send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply })
+            .unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -443,36 +611,21 @@ impl CUDAMemoryPool {
         &mut self,
         src: BufferId,
         dst: &mut [u8],
-        mut event_wait_list: Vec<Event>,
+        event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
-        /*while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
-            if !event.is_null() {
-                unsafe { (self.cuStreamWaitEvent)(self.stream, event, 0) }.check(ErrorStatus::MemoryCopyP2H)?;
-                // Should we destroy the event here?
-            }
-        }
-        let src = &self.buffers[src];
-        let mut event = ptr::null_mut();
-        unsafe { (self.cuEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H)?;
-        unsafe { (self.cuMemcpyDtoHAsync)(dst.as_mut_ptr().cast(), src.ptr, dst.len(), self.stream) }
-            .check(ErrorStatus::MemoryCopyP2H)?;
-        unsafe { (self.cuEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
-        //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
-        unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::MemoryCopyP2H)?;
-        unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H)?;
-        Ok(())*/
-        todo!()
+        let (reply, reply_rx) = channel();
+        self.tx
+            .send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len(), event_wait_list, reply })
+            .unwrap();
+        reply_rx.recv().unwrap()
     }
 
-    pub fn sync_events(&mut self, mut events: Vec<Event>) -> Result<(), BackendError> {
-        /*while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
-            if !event.is_null() {
-                unsafe { (self.cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync)?;
-                unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::KernelSync)?;
-            }
-        }
-        Ok(())*/
-        todo!()
+    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        let (reply, reply_rx) = channel();
+        self.tx
+            .send(CUDACommand::SyncEvents { events, reply })
+            .unwrap();
+        reply_rx.recv().unwrap()
     }
 
     pub fn release_events(&mut self, events: Vec<Event>) {
@@ -502,46 +655,11 @@ impl CUDADevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        /*//let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
+        //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
-
-        let mut module = ptr::null_mut();
-        if let Err(err) = unsafe {
-            (self.cuModuleLoadDataEx)(
-                &raw mut module,
-                ptx.as_ptr().cast(),
-                0,
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        }
-        .check(ErrorStatus::KernelCompilation)
-        {
-            if debug_asm {
-                println!("Failed to compile kernel with err: {err:?}");
-            }
-            return Err(err);
-        }
-        let mut function: CUfunction = ptr::null_mut();
-        // Don't forget that the name is null terminated string
-        if let Err(err) = unsafe { (self.cuModuleGetFunction)(&raw mut function, module, name.as_ptr().cast()) }
-            .check(ErrorStatus::KernelLaunch)
-        {
-            if debug_asm {
-                println!("Failed to launch kernel with err: {err:?}\n");
-            }
-            return Err(err);
-        }
-
-        let program_id = self.programs.push(CUDAProgram {
-            //name,
-            module,
-            function,
-            gws,
-            lws,
-        });
-        Ok(program_id)*/
-        todo!()
+        let (reply, reply_rx) = channel();
+        self.tx.send(CUDACommand::Compile { gws, lws, name, ptx, reply }).unwrap();
+        reply_rx.recv().unwrap()
     }
 
     pub fn launch(
@@ -550,56 +668,11 @@ impl CUDADevice {
         memory_pool: &mut CUDAMemoryPool,
         args: &[BufferId],
         // If sync is empty, kernel will be immediatelly synchronized
-        mut event_wait_list: Vec<Event>,
+        event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        /*let stream_id = self.next_stream()?;
-        let program = &self.programs[program_id];
-
-        //println!("CUDA launch program id: {program_id}, gws: {:?}, lws: {:?}", program.global_work_size, program.local_work_size);
-
-        let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
-        for &arg in args {
-            let arg = &memory_pool.buffers[arg];
-            //let ptr = &mut arg.mem;
-            let ptr: *const u64 = &raw const arg.ptr;
-            let ptr: *mut u64 = ptr.cast_mut();
-            kernel_params.push(ptr.cast());
-        }
-
-        while let Some(Event::CUDA(CUDAEvent { event })) = event_wait_list.pop() {
-            if !event.is_null() {
-                unsafe { (self.cuStreamWaitEvent)(self.streams[stream_id].stream, event, 0) }
-                    .check(ErrorStatus::KernelLaunch)?;
-            }
-        }
-
-        //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
-
-        let mut event = ptr::null_mut();
-        unsafe { (self.cuEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
-        unsafe {
-            (self.cuLaunchKernel)(
-                program.function,
-                u32::try_from(program.gws.get(0).copied().unwrap_or(1)).unwrap(),
-                u32::try_from(program.gws.get(1).copied().unwrap_or(1)).unwrap(),
-                u32::try_from(program.gws.get(2).copied().unwrap_or(1)).unwrap(),
-                u32::try_from(program.lws.get(0).copied().unwrap_or(1)).unwrap(),
-                u32::try_from(program.lws.get(1).copied().unwrap_or(1)).unwrap(),
-                u32::try_from(program.lws.get(2).copied().unwrap_or(1)).unwrap(),
-                0,
-                self.streams[stream_id].stream,
-                kernel_params.as_mut_ptr(),
-                ptr::null_mut(),
-            )
-        }
-        .check(ErrorStatus::KernelLaunch)?;
-        unsafe { (self.cuEventRecord)(event, self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch)?;
-
-        //unsafe { (self.cuStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
-
-        self.streams[stream_id].load += 1;
-        Ok(Event::CUDA(CUDAEvent { event }))*/
-        todo!()
+        let (reply, reply_rx) = channel();
+        self.tx.send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply }).unwrap();
+        reply_rx.recv().unwrap()
     }
 
     pub fn release(&mut self, program_id: ProgramId) {
