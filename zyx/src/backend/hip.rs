@@ -119,7 +119,12 @@ pub(super) fn initialize_device(
 ) -> Result<(), BackendError> {
     let _ = config;
 
-    let hip_paths = ["/lib64/libamdhip64.so", "/lib/x86_64-linux-gnu/libamdhip64.so"];
+    let hip_paths = ["/lib64/libamdhip64.so", "/lib/x86_64-linux-gnu/libamdhip64.so",
+        "/usr/lib64/hip/libhip_hcc.so",
+        "/usr/lib64/hip/libhiprtc.so",
+        "/opt/rocm/hip/lib/libhip_hcc.so",
+        "/opt/rocm/hip/lib/libhiprtc.so",
+    ];
     let hip = hip_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(hip) = hip else {
         return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "HIP runtime not found.".into() });

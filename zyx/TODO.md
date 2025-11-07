@@ -125,6 +125,8 @@
   - [ ] triplet margin loss
   - [ ] frobenius norm
   - [ ] spectral norm
+  - [ ] tril
+  - [ ] triu
 
 - [x] docs
   - [x] manual for adding new backends
