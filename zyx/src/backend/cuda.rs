@@ -129,7 +129,10 @@ enum CUDACommand {
     SyncEvents {
         events: Vec<Event>,
         reply: Sender<Result<(), BackendError>>,
-    }
+    },
+    ReleaseProgram {
+        program_id: ProgramId
+    },
 }
 
 unsafe impl Send for CUDACommand {}
@@ -414,9 +417,9 @@ pub(super) fn initialize_device(
                         }
                         .check(ErrorStatus::KernelCompilation)
                         {
-                            /*if debug_asm {
+                            if debug_dev {
                                 println!("Failed to compile kernel with err: {err:?}");
-                            }*/
+                            }
                             //return Err(err);
                             panic!();
                         }
@@ -426,9 +429,9 @@ pub(super) fn initialize_device(
                             unsafe { (cuModuleGetFunction)(&raw mut function, module, name.as_ptr().cast()) }
                                 .check(ErrorStatus::KernelLaunch)
                         {
-                            /*if debug_asm {
+                            if debug_dev {
                                 println!("Failed to launch kernel with err: {err:?}\n");
-                            }*/
+                            }
                             //return Err(err);
                             panic!();
                         }
@@ -493,6 +496,10 @@ pub(super) fn initialize_device(
                             }
                         }
                         _ = reply.send(Ok(()));
+                    }
+                    CUDACommand::ReleaseProgram { program_id } => {
+                        let _ = unsafe { (cuModuleUnload)(programs[program_id].module) }.check(ErrorStatus::Deinitialization);
+                        programs.remove(program_id);
                     }
                 }
             }
@@ -676,9 +683,7 @@ impl CUDADevice {
     }
 
     pub fn release(&mut self, program_id: ProgramId) {
-        /*let _ = unsafe { (self.cuModuleUnload)(self.programs[program_id].module) }.check(ErrorStatus::Deinitialization);
-        self.programs.remove(program_id);*/
-        todo!()
+        self.tx.send(CUDACommand::ReleaseProgram { program_id }).unwrap();
     }
 }
 
@@ -1477,6 +1482,7 @@ impl CUDADevice {
                         BOp::Eq => {
                             writeln!(source, "{indent}setp.eq.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
                         }
+                        BOp::Pow => unreachable!(),
                         op => todo!("{op:?}"),
                     }
                 }

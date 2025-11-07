@@ -50,6 +50,7 @@ impl Optimizer {
             return false;
         }*/
 
+        kernel.unfold_pows();
         kernel.unfold_reduces();
         kernel.define_globals();
         kernel.unfold_views();

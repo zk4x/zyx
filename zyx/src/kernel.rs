@@ -959,6 +959,24 @@ impl Kernel {
         }
     }
 
+    pub fn unfold_pows(&mut self) {
+        let mut op_id = 0;
+        while op_id < self.ops.len() {
+            if let Op::Binary { x, y, bop } = self.ops[op_id] {
+                if bop == BOp::Pow {
+                    let mut tail: Vec<Op> = self.ops.split_off(op_id + 1);
+                    self.ops.pop();
+                    self.ops.push(Op::Unary { x, uop: UOp::Log2 });
+                    self.ops.push(Op::Binary { x: op_id, y, bop: BOp::Mul });
+                    self.ops.push(Op::Unary { x: op_id + 1, uop: UOp::Exp2 });
+                    increment(&mut tail, 2, op_id..);
+                    self.ops.extend(tail);
+                }
+            }
+            op_id += 1;
+        }
+    }
+
     fn decrement_range(&mut self, range: Range<usize>, n: usize) {
         for op in &mut self.ops[range.clone()] {
             match op {
