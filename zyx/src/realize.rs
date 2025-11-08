@@ -1199,7 +1199,7 @@ impl Runtime {
         (order, to_delete, new_leafs, rcs)
     }
 
-    fn graph_order_with_gradient(
+    fn _graph_order_with_gradient(
         &self,
         realized_nodes: &Set<TensorId>,
         to_eval: &mut Set<TensorId>,

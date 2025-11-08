@@ -769,6 +769,7 @@ impl Tensor {
     /// The output tensor has the same shape as the input tensor. Elements are preserved with probability `1 - probability`
     /// and set to zero with probability `probability`.
     #[allow(clippy::missing_panics_doc)]
+    #[must_use]
     pub fn dropout<P: Scalar + Float>(&self, probability: P) -> Tensor {
         if Tensor::training() {
             Tensor::from(probability).cmplt(Tensor::rand(self.shape(), P::dtype()).unwrap()).unwrap() * self.clone()
@@ -1334,6 +1335,7 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be padded by padding.
     #[allow(clippy::missing_panics_doc)]
+    #[track_caller]
     pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (isize, isize)>) -> Result<Tensor, ZyxError> {
         let padding: Vec<(isize, isize)> = padding.into_iter().collect();
         for (i, &(l, r)) in padding.iter().enumerate() {
@@ -1447,25 +1449,71 @@ impl Tensor {
 
     /// Applies a new shape to this tensor while preserving its total number of elements.
     ///
+    /// A single `0` in the shape will be inferred automatically. All other dimensions
+    /// must be >= 1.
+    ///
     /// # Examples
     ///
     /// ```rust
     /// use zyx::Tensor;
     /// let t = Tensor::from([1, 2, 3, 4]);
     /// assert_eq!(t.reshape((2, 2))?, [[1, 2], [3, 4]]);
+    ///
+    /// // Infer dimension automatically
+    /// let t = Tensor::from([1, 2, 3, 4]);
+    /// assert_eq!(t.reshape((2, 0))?, [[1, 2], [3, 4]]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
     /// # Errors
     /// Returns error if self cannot be reshaped to shape.
     pub fn reshape(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        let shape: Vec<_> = shape.into_shape().collect();
-        if shape.iter().product::<Dim>() != self.numel() {
+        let shape: Vec<Dim> = shape.into_shape().collect();
+
+        // Count how many zeros (dimensions to infer)
+        let infer_count = shape.iter().filter(|&&d| d == 0).count();
+        if infer_count > 1 {
+            return Err(ZyxError::shape_error("Can only infer one dimension".into()));
+        }
+
+        let total_elements = self.numel();
+
+        // Compute the product of known dimensions
+        let known_product: Dim = shape.iter().filter(|&&d| d != 0).product();
+
+        // Determine inferred dimension if needed
+        let final_shape: Vec<Dim> = shape
+            .into_iter()
+            .map(|d| {
+                if d == 0 {
+                    // Must divide exactly; check >= 1
+                    if total_elements % known_product != 0 {
+                        panic!("Cannot infer dimension: total elements not divisible");
+                    }
+                    let inferred = total_elements / known_product;
+                    if inferred == 0 {
+                        panic!("Inferred dimension cannot be zero");
+                    }
+                    inferred
+                } else {
+                    d
+                }
+            })
+            .collect();
+
+        // Sanity check: final shape matches total elements
+        if final_shape.iter().product::<Dim>() != total_elements {
             return Err(ZyxError::shape_error(
-                format!("Invalid reshape {:?} into {:?}", self.shape(), shape).into(),
+                format!(
+                    "Invalid reshape: total elements mismatch. Tensor has {} elements, but new shape {:?} multiplies to {}",
+                    total_elements,
+                    final_shape,
+                    final_shape.iter().product::<Dim>()
+                ).into()
             ));
         }
-        Ok(Tensor { id: RT.lock().reshape(self.id, shape) })
+
+        Ok(Tensor { id: RT.lock().reshape(self.id, final_shape) })
     }
 
     /// Transpose (swap) the last two dimensions of this tensor.
@@ -2411,22 +2459,44 @@ impl Tensor {
         mask.into().where_(value, self.clone())
     }
 
-    /*#[must_use]
-    fn tri(n: usize, dtype: DType) -> Tensor {
-        // if r == 0 or c == 0 or diagonal >= c: return Tensor.zeros(r,c,**kwargs)
-        // if r+diagonal <= 0: return Tensor.ones(r,c,**kwargs)
-        // s = r+c-1
-        // # build a (s, s) upper triangle
-        // t = Tensor.ones(s,s,**kwargs).pad((None,(0,s))).flatten().shrink(((0,s*(2*s-1)),)).reshape(s,-1).shrink((None,(0,s)))
-        // return t[:r,-diagonal:c-diagonal] if diagonal <= 0 else t[diagonal:r+diagonal,:c]
-        Tensor::ones([n * n / 2], dtype).pad_zeros([(0, n * n / 2)])
-    }*/
+    /// Tri
+    #[must_use]
+    #[track_caller]
+    pub fn tri(r: Dim, c: Dim, diagonal: isize, dtype: DType) -> Tensor {
+        if r == 0 || c == 0 || diagonal >= c as isize {
+            return Tensor::zeros([r, c], dtype);
+        }
+        if r as isize + diagonal <= 0 {
+            return Tensor::ones([r, c], dtype);
+        }
+        let s = r + c - 1;
+        let t = Tensor::ones([s, s], dtype).pad_zeros([(0, s as isize)]).unwrap();
+        let t = t.reshape([2 * s * s]).unwrap();
+        let t = t.pad_zeros([(0, -(s as isize))]).unwrap();
+        let t = t.reshape([s, 2 * s - 1]).unwrap();
+        let t = t.pad_zeros([(0, -((2 * s - 1 - s) as isize))]).unwrap();
+        if diagonal <= 0 {
+            t.get((0..r, (-diagonal) as usize..(c as isize - diagonal) as usize)).unwrap()
+        } else {
+            t.get((diagonal as usize..(r + diagonal as usize), 0..c)).unwrap()
+        }
+    }
 
-    // Returns upper triangular part of the input tensor, other elements are set to zero
-    /*#[must_use]
-    pub fn triu(&self, diagonal: isize) -> Tensor {
-        todo!()
-    }*/
+    /// Returns upper triangular part of the input tensor, other elements are set to zero
+    #[must_use]
+    pub fn triu(&self, diagonal: isize) -> Result<Tensor, ZyxError> {
+        //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal, device=self.device, dtype=dtypes.bool).where(self, self.zeros_like())
+        let [r, c] = self.rdims::<2>()?;
+        Tensor::tri(r, c, diagonal, DType::Bool).where_(self, Tensor::zeros_like(self))
+    }
+
+    /// Returns lower triangular part of the input tensor, other elements are set to zero
+    #[must_use]
+    pub fn tril(&self, diagonal: isize) -> Result<Tensor, ZyxError> {
+        //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal+1, device=self.device, dtype=dtypes.bool).where(self.zeros_like(), self)
+        let [r, c] = self.rdims::<2>()?;
+        Tensor::tri(r, c, diagonal + 1, DType::Bool).where_(Tensor::zeros_like(self), self)
+    }
 
     /// Pooling function with kernel size, stride and dilation
     ///

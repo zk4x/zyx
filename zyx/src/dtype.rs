@@ -122,7 +122,7 @@ impl DType {
     }
 
     #[must_use]
-    pub(super) const fn is_shiftable(self) -> bool {
+    pub(super) const fn _is_shiftable(self) -> bool {
         match self {
             Self::BF16
             | Self::F16

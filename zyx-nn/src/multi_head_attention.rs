@@ -124,18 +124,18 @@ impl MultiheadAttention {
         })
     }
 
-    /// Forward multihead attention
-    ///
-    /// Returns:
-    /// - output: Attention output tensor of shape `[T_q, B, E]` (or `[B, T_q, E]` if `batch_first`).
-    /// - attn_weights: Attention weights of shape `[B, num_heads, T_q, T_kv]`.
+    /// Multi head attention
     pub fn forward(
         &self,
         query: impl Into<Tensor>,
         key: impl Into<Tensor>,
         value: impl Into<Tensor>,
-        attn_mask: Option<impl Into<Tensor>>,
-    ) -> Result<(Tensor, Tensor), ZyxError> {
+        key_padding_mask: Option<impl Into<Tensor>>, // = None,
+        need_weights: bool,                          // = true,
+        attn_mask: Option<impl Into<Tensor>>,        // = None,
+        average_attn_weights: bool,                  // = true,
+        is_causal: bool,                             // = false,
+    ) -> Result<(Tensor, Option<Tensor>), ZyxError> {
         let (mut q, mut k, mut v) = (query.into(), key.into(), value.into());
 
         if !self.batch_first {
@@ -149,28 +149,30 @@ impl MultiheadAttention {
         let h = self.num_heads;
         let d = self.head_dim;
 
+        // Project and reshape
         let q = self
             .q_proj
             .forward(q)?
             .reshape([b, t_q, h, d])?
-            .transpose(1, 2)?; // [B, H, T_q, D]
+            .transpose(1, 2)?;
         let mut k = self
             .k_proj
             .forward(k)?
             .reshape([b, t_kv, h, d])?
-            .transpose(1, 2)?; // [B, H, T_kv, D]
+            .transpose(1, 2)?;
         let mut v = self
             .v_proj
             .forward(v)?
             .reshape([b, t_kv, h, d])?
-            .transpose(1, 2)?; // [B, H, T_kv, D]
+            .transpose(1, 2)?;
 
+        // Add bias_k / bias_v
         if self.add_bias_kv {
             if let (Some(bk), Some(bv)) = (&self.bias_k, &self.bias_v) {
                 let bk = bk
                     .expand([b, 1, self.embed_dim])?
                     .reshape([b, 1, h, d])?
-                    .transpose(1, 2)?; // [B, H, 1, D]
+                    .transpose(1, 2)?;
                 let bv = bv
                     .expand([b, 1, self.embed_dim])?
                     .reshape([b, 1, h, d])?
@@ -186,25 +188,51 @@ impl MultiheadAttention {
             v = Tensor::cat([&v, &zero], 2)?;
         }
 
+        // Attention scores
         let scale = 1f32 / (d as f32).sqrt();
         let mut attn_scores = q.matmul(k.transpose(-2, -1)?)? * scale; // [B, H, T_q, T_kv]
 
-        if let Some(mask) = attn_mask {
-            attn_scores = attn_scores + mask;
+        // Key padding mask
+        if let Some(mask) = key_padding_mask {
+            let mask = mask.into().unsqueeze(1)?.unsqueeze(2)?; // [B, 1, 1, S]
+            attn_scores = attn_scores.masked_fill(mask.cast(DType::Bool), f32::NEG_INFINITY)?;
         }
 
-        let attn_weights = attn_scores.softmax([-1])?; // [B, H, T_q, T_kv]
-        attn_weights.dropout(self.dropout);
+        // Causal mask
+        if is_causal {
+            let causal_mask = Tensor::ones([t_q, t_kv], attn_scores.dtype()).tril(0)?;
+            attn_scores = attn_scores.masked_fill(causal_mask.equal(0)?, f32::NEG_INFINITY)?;
+        }
 
+        // Attention mask
+        if let Some(mask) = attn_mask {
+            attn_scores = attn_scores + mask.into(); // Broadcasting handled internally
+        }
+
+        // Softmax
+        let mut attn_weights = attn_scores.softmax([-1])?;
+        if self.dropout > 0.0 {
+            attn_weights = attn_weights.dropout(self.dropout);
+        }
+
+        // Attention output
         let attn_output = attn_weights.matmul(v)?; // [B, H, T_q, D]
-        let attn_output = attn_output.transpose(1, 2)?.reshape([b, t_q, h * d])?; // [B, T_q, E]
+        let attn_output = attn_output.transpose(1, 2)?.reshape([b, t_q, h * d])?;
+        let mut output = self.out_proj.forward(attn_output)?;
 
-        let output = self.out_proj.forward(attn_output)?;
+        if !self.batch_first {
+            output = output.transpose(0, 1)?; // [T_q, B, E]
+        }
 
-        let output = if self.batch_first {
-            output
+        // Average attention weights across heads if requested
+        let attn_weights = if need_weights {
+            Some(if average_attn_weights {
+                attn_weights.mean_axes([1])? // [B, T_q, T_kv]
+            } else {
+                attn_weights // [B, H, T_q, T_kv]
+            })
         } else {
-            output.transpose(0, 1)? // [T_q, B, E]
+            None
         };
 
         Ok((output, attn_weights))

@@ -56,7 +56,8 @@ impl Optimizer {
         kernel.unfold_views();
 
         let mut temp_kernel = kernel.clone();
-        for _ in 0..100 { // Limit max optimization iterations
+        for _ in 0..100 {
+            // Limit max optimization iterations
             kernel.move_constants_to_beginning();
             kernel.constant_folding();
             kernel.common_subexpression_elimination();

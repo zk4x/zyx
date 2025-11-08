@@ -471,6 +471,7 @@ impl Node {
         }
     }
 
+    #[allow(unused)]
     pub const fn num_parameters(&self) -> u8 {
         match self {
             Node::Const { .. } | Node::Leaf { .. } => 0,
@@ -499,6 +500,7 @@ impl Node {
         }
     }
 
+    #[allow(unused)]
     pub const fn param2(&self) -> (TensorId, TensorId) {
         match *self {
             Node::Binary { x, y, .. } => (x, y),

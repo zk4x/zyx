@@ -15,6 +15,13 @@ fn memory2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn tri1() -> Result<(), ZyxError> {
+    let x = Tensor::tri(3, 5, 2, DType::I8);
+    assert_eq!(x, [[0i8, 0, 1, 1, 1], [0, 0, 0, 1, 1], [0, 0, 0, 0, 1]]);
+    Ok(())
+}
+
+#[test]
 fn fuse_1() -> Result<(), ZyxError> {
     let x = Tensor::from([[2f32, 4., 3.], [1., 5., 1.]]);
     let z = x.exp2() + x;
@@ -661,10 +668,9 @@ fn rope_3() -> Result<(), ZyxError> {
         let xs = Tensor::from([[1f32, 4., 2., 4., 4., 3.], [4., 2., 4., 4., 3., 4.]]).reshape([1, 1, 2, 6])?;
         let sin = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
         let cos = Tensor::from([1f32, 4., 2., 4., 4., 3.]).reshape([2, 3])?;
-        let sh = xs.shape();
+        let [d] = xs.rdims()?;
         let sin_freqs = sin.squeeze([0, 1]);
         let cos_freqs = cos.squeeze([0, 1]);
-        let d = isize::try_from(*sh.last().unwrap()).unwrap();
         let a = xs.get((.., .., .., ..d / 2)).unwrap();
         //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);
         let b = -xs.get((.., .., .., d / 2..)).unwrap();
