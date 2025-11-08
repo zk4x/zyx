@@ -1,5 +1,6 @@
-use zyx::{DType, ZyxError};
-use zyx_nn::{Module, Linear};
+use zyx::{DType, GradientTape, Tensor, ZyxError};
+use zyx_nn::{Linear, Module};
+use zyx_optim::SGD;
 
 #[derive(Module)]
 struct TinyNet {
@@ -8,25 +9,38 @@ struct TinyNet {
     lr: f32,
 }
 
+impl TinyNet {
+    fn forward(&self, x: &Tensor) -> Tensor {
+        let x = self.l0.forward(x).unwrap().relu();
+        self.l1.forward(x).unwrap().sigmoid()
+    }
+}
+
 fn main() -> Result<(), ZyxError> {
-    let tiny_net = TinyNet {
-        l0: Linear::init(1, 128, true, DType::F32)?,
-        l1: Linear::init(1, 128, true, DType::F32)?,
-        lr: 0.0,
+    let mut net = TinyNet {
+        l0: Linear::new(3, 1024, true, DType::F16)?,
+        l1: Linear::new(1024, 2, true, DType::F16)?,
+        lr: 0.01,
     };
 
-    for x in tiny_net.into_iter() {
-        println!("{x}");
+    let mut optim = SGD {
+        learning_rate: net.lr,
+        momentum: 0.9,
+        nesterov: true,
+        ..Default::default()
+    };
+
+    let x = Tensor::from([2, 3, 1]).cast(DType::F16);
+    let target = Tensor::from([5, 7]).cast(DType::F16);
+
+    for _ in 0..100 {
+        let tape = GradientTape::new();
+        let y = net.forward(&x);
+        let loss = y.mse_loss(&target)?;
+        let grads = tape.gradient(&loss, &net);
+        optim.update(&mut net, grads);
+        Tensor::realize(&net)?;
     }
-
-    //let x = Tensor::uniform([2, 3], 0..2);
-
-    //tiny_net.save("file.safetensors");
-    //let tiny_net: TinyNet = Tensor::load("file.safetensors").collect();
-
-    //let y = tiny_net.forward();
-    //let loss = x.mse_loss(target);
-    //let _grads = loss.backward(&tiny_net);
 
     Ok(())
 }

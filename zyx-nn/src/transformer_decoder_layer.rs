@@ -127,7 +127,6 @@ impl TransformerDecoderLayer {
     /// * `memory_mask` - optional mask for memory sequence.
     /// * `tgt_key_padding_mask` - optional mask for target keys per batch.
     /// * `memory_key_padding_mask` - optional mask for memory keys per batch.
-    /// * `train` - training mode (enables dropout).
     ///
     /// # Returns
     ///
@@ -140,7 +139,6 @@ impl TransformerDecoderLayer {
         memory_mask: Option<impl Into<Tensor>>,
         tgt_key_padding_mask: Option<impl Into<Tensor>>,
         memory_key_padding_mask: Option<impl Into<Tensor>>,
-        train: bool,
     ) -> Result<Tensor, ZyxError> {
         let mut tgt = tgt.into();
         let memory = memory.into();
@@ -150,20 +148,14 @@ impl TransformerDecoderLayer {
             tgt = self.norm1.forward(tgt.clone())?;
             let tgt2 = self
                 .self_attn
-                .forward(tgt.clone(), tgt.clone(), tgt.clone(), tgt_mask, train)?
+                .forward(tgt.clone(), tgt.clone(), tgt.clone(), tgt_mask)?
                 .0;
             tgt = tgt + tgt2.dropout(self.dropout1);
 
             tgt = self.norm2.forward(tgt.clone())?;
             let tgt2 = self
                 .multihead_attn
-                .forward(
-                    tgt.clone(),
-                    memory.clone(),
-                    memory.clone(),
-                    memory_mask,
-                    train,
-                )?
+                .forward(tgt.clone(), memory.clone(), memory.clone(), memory_mask)?
                 .0;
             tgt = tgt + tgt2.dropout(self.dropout2);
 
@@ -178,20 +170,14 @@ impl TransformerDecoderLayer {
             // Post-norm version
             let tgt2 = self
                 .self_attn
-                .forward(tgt.clone(), tgt.clone(), tgt.clone(), tgt_mask, train)?
+                .forward(tgt.clone(), tgt.clone(), tgt.clone(), tgt_mask)?
                 .0;
             tgt = tgt + tgt2.dropout(self.dropout1);
             tgt = self.norm1.forward(tgt)?;
 
             let tgt2 = self
                 .multihead_attn
-                .forward(
-                    tgt.clone(),
-                    memory.clone(),
-                    memory.clone(),
-                    memory_mask,
-                    train,
-                )?
+                .forward(tgt.clone(), memory.clone(), memory.clone(), memory_mask)?
                 .0;
             tgt = tgt + tgt2.dropout(self.dropout2);
             tgt = self.norm2.forward(tgt)?;

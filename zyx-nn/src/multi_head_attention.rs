@@ -75,13 +75,16 @@ impl MultiheadAttention {
         dtype: DType,
     ) -> Result<Self, ZyxError> {
         if embed_dim % num_heads != 0 {
-            return Err(ZyxError::ShapeError(
+            return Err(ZyxError::shape_error(
                 format!(
                     "embed_dim ({}) must be divisible by num_heads ({})",
                     embed_dim, num_heads
                 )
                 .into(),
             ));
+        }
+        if num_heads == 0 {
+            return Err(ZyxError::shape_error("num_heads must be > 0".into()));
         }
 
         let kdim = kdim.unwrap_or(embed_dim);
@@ -122,13 +125,16 @@ impl MultiheadAttention {
     }
 
     /// Forward multihead attention
+    ///
+    /// Returns:
+    /// - output: Attention output tensor of shape `[T_q, B, E]` (or `[B, T_q, E]` if `batch_first`).
+    /// - attn_weights: Attention weights of shape `[B, num_heads, T_q, T_kv]`.
     pub fn forward(
         &self,
         query: impl Into<Tensor>,
         key: impl Into<Tensor>,
         value: impl Into<Tensor>,
         attn_mask: Option<impl Into<Tensor>>,
-        train: bool,
     ) -> Result<(Tensor, Tensor), ZyxError> {
         let (mut q, mut k, mut v) = (query.into(), key.into(), value.into());
 
@@ -180,19 +186,15 @@ impl MultiheadAttention {
             v = Tensor::cat([&v, &zero], 2)?;
         }
 
-        let scale = (d as f32).sqrt();
-        let mut attn_scores = q.matmul(k.transpose(-2, -1)?)? / scale; // [B, H, T_q, T_kv]
+        let scale = 1f32 / (d as f32).sqrt();
+        let mut attn_scores = q.matmul(k.transpose(-2, -1)?)? * scale; // [B, H, T_q, T_kv]
 
         if let Some(mask) = attn_mask {
             attn_scores = attn_scores + mask;
         }
 
         let attn_weights = attn_scores.softmax([-1])?; // [B, H, T_q, T_kv]
-        let attn_weights = if train {
-            attn_weights.dropout(self.dropout)
-        } else {
-            attn_weights
-        };
+        attn_weights.dropout(self.dropout);
 
         let attn_output = attn_weights.matmul(v)?; // [B, H, T_q, D]
         let attn_output = attn_output.transpose(1, 2)?.reshape([b, t_q, h * d])?; // [B, T_q, E]

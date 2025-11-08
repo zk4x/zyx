@@ -23,7 +23,8 @@ impl RMSNorm {
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
         let dtype = x.dtype();
-        let x_normed = &x * (x.pow(2)?.mean_kd([-1])? + Tensor::from(self.eps).cast(dtype)).rsqrt();
+        let x_normed =
+            &x * (x.pow(2)?.mean_axes_keepdim([-1])? + Tensor::from(self.eps).cast(dtype)).rsqrt();
         return Ok(x_normed * &self.scale);
     }
 }

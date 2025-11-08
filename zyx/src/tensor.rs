@@ -951,10 +951,12 @@ impl Tensor {
     ///
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `max(0, input_element)`.
     #[must_use]
+    #[track_caller]
     pub fn relu(&self) -> Tensor {
         //return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) };
         //self.cmpgt(0).unwrap().where_(self, 0).unwrap() // for whatever reason this is the fastest
-        self.cmpgt(0).unwrap() * self
+        let dtype = self.dtype();
+        self.cmpgt(Tensor::from(0f32).cast(dtype)).unwrap() * self
     }
 
     /// Computes the reciprocal square root of each element in the input tensor.
@@ -2102,6 +2104,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if the tensors have non broadcasteable shapes.
+    #[track_caller]
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, target)?;
         let x = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
@@ -2759,41 +2762,55 @@ impl Tensor {
         Ok(x)
     }
 
-    /// Applies Rotary Positional Embeddings (RoPE) to the input tensor.
+    /// Applies Rotary Positional Encoding (RoPE) to a tensor.
     ///
-    /// # Inputs
+    /// This method computes RoPE by taking two tensors representing sine and cosine frequency components,
+    /// reshapes them appropriately, and combines them with the given input tensor to produce a new tensor
+    /// representing the positional encodings.
     ///
-    /// - `self`: Input tensor of shape `[batch_size, num_heads, seq_len, embed_dim]`.
-    ///   The last dimension (`embed_dim`) must be even.
-    /// - `sine_frequencies`: Tensor of shape `[seq_len, embed_dim / 2]` containing sine components.
-    /// - `cosine_frequencies`: Tensor of shape `[seq_len, embed_dim / 2]` containing cosine components.
+    /// # Arguments
     ///
-    /// # Behavior
+    /// * `sine_frequencies` - A tensor containing the sine frequency components for the RoPE computation.
+    /// * `cosine_frequencies` - A tensor containing the cosine frequency components for the RoPE computation.
     ///
-    /// This function splits the embedding dimension of `self` into two halves and applies
-    /// the rotary embedding transformation using the provided sine and cosine frequencies.
-    /// The sine and cosine tensors are broadcasted across the batch and heads dimensions.
+    /// # Returns
     ///
-    /// # Output
-    ///
-    /// Returns a tensor of the same shape as `self` with rotary positional embeddings applied.
+    /// * `Result<Tensor, ZyxError>` - A `Result` containing either the computed tensor with positional encodings
+    /// or an error describing the issue (e.g., shape mismatch, dtype mismatch, etc.).
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - The embedding dimension of `self` is not even.
-    /// - The shapes of `sine_frequencies` and `cosine_frequencies` do not match `[seq_len, embed_dim / 2]`.
-    /// - The sequence length dimension of `self` does not match the first dimension of the frequency tensors.
+    /// This function will return a `ZyxError` if:
+    ///
+    /// - The input tensors' shapes or dtypes do not match expectations.
+    /// - The tensor is not at least 2D (requiring at least [seq_len, embed_dim]).
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// // Given input tensor `x` with shape [B, H, S, D], where D is even,
-    /// // and sine/cosine tensors with shape [S, D/2]:
-    /// let x_rope = x.rope(sine_freqs, cosine_freqs)?;
-    /// assert_eq!(x.shape(), x_rope.shape());
+    /// ```rust
+    /// use zyx::{Tensor, DType};
+    ///
+    /// let input_tensor = Tensor::rand([10, 16], DType::F32)?;  // Example 2D tensor of shape [seq_len=10, embed_dim=16]
+    /// let sine_frequencies = Tensor::rand([10, 8], DType::F32)?; // Shape [seq_len=10, embed_dim / 2 = 8]
+    /// let cosine_frequencies = Tensor::rand([10, 8], DType::F32)?; // Shape [seq_len=10, embed_dim / 2 = 8]
+    ///
+    /// // Call rope to compute positional encodings
+    /// let result = input_tensor.rope(sine_frequencies, cosine_frequencies)?;
+    /// # Ok::<(), zyx::ZyxError>(())
     /// ```
-    #[allow(clippy::missing_panics_doc)]
+    ///
+    /// # Notes
+    ///
+    /// - The input tensor must be at least 2D: the first dimension represents the sequence length (`seq_len`),
+    ///   and the second represents the embedding dimension (`embed_dim`).
+    /// - The sine and cosine frequency tensors should have the shape `[seq_len, embed_dim / 2]`.
+    /// - This method assumes the input tensor and the frequency tensors have the same dtype.
+    ///
+    /// # Panics
+    /// This function may panic in the following cases:
+    ///
+    /// - Memory allocation failures or system-level errors when reshaping or performing tensor operations.
+    /// - Internal logic errors in the library (e.g., unexpected failure when performing tensor slicing or concatenation).
     pub fn rope(
         &self,
         sine_frequencies: impl Into<Tensor>,
@@ -2845,8 +2862,8 @@ impl Tensor {
         let sin_freqs = sin_freqs.reshape([1, 1, seq_len, embed_dim / 2]).unwrap();
         let cos_freqs = cos_freqs.reshape([1, 1, seq_len, embed_dim / 2]).unwrap();
 
-        let a = self.rget(..embed_dim as isize / 2).unwrap();
-        let b = -self.rget(embed_dim as isize / 2..).unwrap();
+        let a = self.rget(..embed_dim / 2).unwrap();
+        let b = -self.rget(embed_dim / 2..).unwrap();
         let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
         let co = a * sin_freqs + b * cos_freqs;
         let r = Tensor::cat([&co, &ro], -1).unwrap(); // Concatenate along the last dimension
@@ -3726,47 +3743,92 @@ impl IntoRange for RangeFull {
     }
 }
 
-impl IntoRange for RangeFrom<isize> {
+impl IntoRange for RangeFrom<i32> {
     fn into_range(self) -> Range<isize> {
-        self.start..isize::MAX
+        self.start as isize..isize::MAX
     }
 }
 
-impl IntoRange for RangeTo<isize> {
+impl IntoRange for RangeFrom<usize> {
     fn into_range(self) -> Range<isize> {
-        0..self.end
+        self.start as isize..isize::MAX
     }
 }
 
-impl IntoRange for RangeInclusive<isize> {
+impl IntoRange for RangeTo<i32> {
+    fn into_range(self) -> Range<isize> {
+        0..self.end as isize
+    }
+}
+
+impl IntoRange for RangeTo<usize> {
+    fn into_range(self) -> Range<isize> {
+        0..self.end as isize
+    }
+}
+
+impl IntoRange for RangeInclusive<i32> {
     fn into_range(self) -> Range<isize> {
         #[allow(clippy::range_plus_one)]
         {
-            *self.start()..*self.end() + 1
+            *self.start() as isize..*self.end() as isize + 1
         }
     }
 }
 
-impl IntoRange for RangeToInclusive<isize> {
+impl IntoRange for RangeInclusive<usize> {
     fn into_range(self) -> Range<isize> {
         #[allow(clippy::range_plus_one)]
         {
-            0..self.end + 1
+            *self.start() as isize..*self.end() as isize + 1
         }
     }
 }
 
-impl IntoRange for Range<isize> {
-    fn into_range(self) -> Range<isize> {
-        self
-    }
-}
-
-impl IntoRange for isize {
+impl IntoRange for RangeToInclusive<i32> {
     fn into_range(self) -> Range<isize> {
         #[allow(clippy::range_plus_one)]
         {
-            self..self + 1
+            0..self.end as isize + 1
+        }
+    }
+}
+
+impl IntoRange for RangeToInclusive<usize> {
+    fn into_range(self) -> Range<isize> {
+        #[allow(clippy::range_plus_one)]
+        {
+            0..self.end as isize + 1
+        }
+    }
+}
+
+impl IntoRange for Range<i32> {
+    fn into_range(self) -> Range<isize> {
+        self.start as isize..self.end as isize
+    }
+}
+
+impl IntoRange for Range<usize> {
+    fn into_range(self) -> Range<isize> {
+        self.start as isize..self.end as isize
+    }
+}
+
+impl IntoRange for i32 {
+    fn into_range(self) -> Range<isize> {
+        #[allow(clippy::range_plus_one)]
+        {
+            self as isize..self as isize + 1
+        }
+    }
+}
+
+impl IntoRange for usize {
+    fn into_range(self) -> Range<isize> {
+        #[allow(clippy::range_plus_one)]
+        {
+            self as isize..self as isize + 1
         }
     }
 }

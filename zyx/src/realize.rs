@@ -958,8 +958,8 @@ impl Runtime {
             }
 
             let (order, to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
-                self.graph_order_with_gradient(&realized_nodes, &mut to_eval)
-                //self.graph_order(&realized_nodes, &mut to_eval)
+                //self.graph_order_with_gradient(&realized_nodes, &mut to_eval) // really not sure about this
+                self.graph_order(&realized_nodes, &mut to_eval)
             } else {
                 self.graph_order(&realized_nodes, &mut to_eval)
             };

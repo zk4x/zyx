@@ -127,8 +127,8 @@ impl GroupNorm {
         let axes = 2..(new_shape.len() as i32);
 
         let eps = Tensor::from(self.eps).cast(x.dtype());
-        let mean = x.mean_kd(axes.clone())?;
-        let var = x.var_kd(axes.clone(), 1)?;
+        let mean = x.mean_axes_keepdim(axes.clone())?;
+        let var = x.var_axes_keepdim(axes.clone())?;
 
         let x = (x - mean) / (var + eps).sqrt();
 

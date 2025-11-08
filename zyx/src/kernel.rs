@@ -264,7 +264,7 @@ impl Kernel {
                 Op::StoreView { src, dtype } => println!("{i:>3}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}"),
                 Op::Reduce { x, rop, dims } => {
                     println!(
-                        "{i:>3}{indent}{CYAN}REDUCE{RESET} {} {x}, dims={dims:?}",
+                        "{i:>3}{indent}{RED}REDUCE{RESET} {} {x}, dims={dims:?}",
                         match rop {
                             ROp::Sum => "SUM",
                             ROp::Max => "MAX",

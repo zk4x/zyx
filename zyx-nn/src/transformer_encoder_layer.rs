@@ -111,15 +111,13 @@ impl TransformerEncoderLayer {
     ///
     /// # Arguments
     /// - `src`: input tensor ([B, T, E] if batch_first else [T, B, E])
-    /// - `train`: training mode flag for dropout
     ///
     /// # Returns
     /// Output tensor of the same shape as input.
-    pub fn forward(&self, src: impl Into<Tensor>, train: bool) -> Result<Tensor, ZyxError> {
+    pub fn forward(&self, src: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let mut src = src.into();
 
         let dropout = self.dropout;
-        let train = train;
 
         let residual = src.clone();
 
@@ -127,7 +125,7 @@ impl TransformerEncoderLayer {
             // Pre-norm
             let src2 = self
                 .self_attn
-                .forward(src.clone(), src.clone(), src.clone(), None::<Tensor>, train)?
+                .forward(src.clone(), src.clone(), src.clone(), None::<Tensor>)?
                 .0;
             let src2 = src2.dropout(dropout);
             src = residual + src2;
@@ -145,7 +143,7 @@ impl TransformerEncoderLayer {
             // Post-norm (default in PyTorch)
             let src2 = self
                 .self_attn
-                .forward(src.clone(), src.clone(), src.clone(), None::<Tensor>, train)?
+                .forward(src.clone(), src.clone(), src.clone(), None::<Tensor>)?
                 .0;
             let src2 = src2.dropout(dropout);
             src = src + src2;

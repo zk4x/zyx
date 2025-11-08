@@ -14,8 +14,6 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
-extern crate alloc;
-
 pub use zyx_derive::Module;
 
 mod linear;
@@ -35,8 +33,11 @@ mod rms_norm;
 pub use rms_norm::RMSNorm;
 
 // Recurrent layers
-mod rnn_cell;
-pub use rnn_cell::RNNCell;
+mod rnn;
+pub use rnn::RNNCell;
+
+mod gru;
+pub use gru::GRUCell;
 
 mod causal_self_attention;
 pub use causal_self_attention::CausalSelfAttention;

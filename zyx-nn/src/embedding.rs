@@ -73,6 +73,6 @@ impl Embedding {
             .reshape(x_sh.into_iter().chain([1, 1]).collect::<Vec<usize>>())?
             .expand(big_shp.clone())?;
         let vals = self.weight.expand(big_shp)?;
-        return (arange.equal(idx)?.cast(xdt) * vals).sum([2]);
+        (arange.equal(idx)?.cast(xdt) * vals).sum_axes([2])
     }
 }
