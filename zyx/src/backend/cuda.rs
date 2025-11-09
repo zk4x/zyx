@@ -133,6 +133,9 @@ enum CUDACommand {
     ReleaseProgram {
         program_id: ProgramId
     },
+    ReleaseEvents {
+        events: Vec<Event>,
+    },
 }
 
 unsafe impl Send for CUDACommand {}
@@ -501,6 +504,12 @@ pub(super) fn initialize_device(
                         let _ = unsafe { (cuModuleUnload)(programs[program_id].module) }.check(ErrorStatus::Deinitialization);
                         programs.remove(program_id);
                     }
+                    CUDACommand::ReleaseEvents { events } => {
+                        for event in events {
+                            let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
+                            unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization).unwrap();
+                        }
+                    }
                 }
             }
         });
@@ -636,11 +645,9 @@ impl CUDAMemoryPool {
     }
 
     pub fn release_events(&mut self, events: Vec<Event>) {
-        /*for event in events {
-            let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
-            unsafe { (self.cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization).unwrap();
-        }*/
-        todo!()
+        self.tx
+            .send(CUDACommand::ReleaseEvents { events })
+            .unwrap();
     }
 }
 
@@ -1368,6 +1375,7 @@ impl CUDADevice {
                     let yr = get_var(y, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
                     match bop {
+                        BOp::Pow => unreachable!(),
                         BOp::Mul => match dtype {
                             DType::BF16 => todo!(),
                             DType::F16 => todo!(),
@@ -1383,7 +1391,9 @@ impl CUDADevice {
                             DType::U64 => todo!(),
                             DType::I8 => todo!(),
                             DType::I16 => todo!(),
-                            DType::I32 => todo!(),
+                            DType::I32 => {
+                                writeln!(source, "{indent}mul.lo.s32 %r{reg}, {xr}, {yr};").unwrap();
+                            }
                             DType::I64 => todo!(),
                             DType::Bool => todo!(),
                         },
@@ -1456,7 +1466,7 @@ impl CUDADevice {
                             DType::U8 => todo!(),
                             DType::U16 => todo!(),
                             DType::U32 => {
-                                writeln!(source, "{indent}div.lo.u32 %r{reg}, {xr}, {yr};").unwrap();
+                                writeln!(source, "{indent}div.u32 %r{reg}, {xr}, {yr};").unwrap();
                             }
                             DType::U64 => todo!(),
                             DType::I8 => todo!(),
@@ -1482,7 +1492,9 @@ impl CUDADevice {
                         BOp::Eq => {
                             writeln!(source, "{indent}setp.eq.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
                         }
-                        BOp::Pow => unreachable!(),
+                        BOp::And => {
+                            writeln!(source, "{indent}and.pred %r{reg}, {xr}, {yr};").unwrap();
+                        }
                         op => todo!("{op:?}"),
                     }
                 }
