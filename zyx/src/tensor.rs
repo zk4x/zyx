@@ -349,6 +349,14 @@ impl Tensor {
         RT.lock().realize(&tensors.into_iter().map(|t| t.id).collect())
     }
 
+    /// Item
+    pub fn item<T: Scalar>(&self) -> T {
+        let mut rt = RT.lock();
+        let mut data = [T::zero(); 1];
+        rt.load(self.id, &mut data).unwrap();
+        data[0]
+    }
+
     /// Detaches tensor from graph.
     /// This function returns a new tensor with the same data as the previous one,
     /// but drops it's backpropagation graph. This is usefull for recurrent networks:
@@ -4530,7 +4538,7 @@ impl<I: IntoIndex> std::ops::Index<I> for Tensor {
 
     fn index(&self, _index: I) -> &Self::Output {
         panic!(
-            "Tensor does not support indexing with `[]`. \
+            "Tensor does not support indexing with `[]` because rust only allows indexing on referece types. \
              Use `.get(...)` instead, which supports ranges, integers, and tuples. \
              Example: tensor.get((0..3, -1))"
         );

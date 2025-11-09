@@ -932,3 +932,82 @@ fn cross_entropy() -> Result<(), ZyxError> {
     assert_eq!(ce, [[0.000000f32, 1.407606, 0.000000], [0.000000, 0.000000, 0.407606]]);
     Ok(())
 }
+
+#[test]
+fn test_padding_on_elementwise_kernel() {
+    let t = Tensor::from([2, 3, 4]);
+    let padded = t.pad([(1, 1)], 0).unwrap();
+    let result = padded + 1;
+    assert_eq!(result.shape(), &[5]);
+    assert_eq!(result.get(1).unwrap(), 3);
+}
+
+#[test]
+fn test_expand_on_elementwise_kernel() {
+    let t = Tensor::from([2, 3, 4]);
+    let expanded = t.expand([3, 3]).unwrap();
+    let result = expanded + 1.0;
+    assert_eq!(result.shape(), &[3, 3]);
+    assert_eq!(result.get((1, 1)).unwrap(), 4.0);
+}
+
+#[test]
+fn test_reshape_on_elementwise_kernel() {
+    let t = Tensor::from([2, 3, 4]);
+    let reshaped = t.reshape([3, 1]).unwrap();
+    let result = reshaped * 2.0;
+    assert_eq!(result.shape(), &[3, 1]);
+    assert_eq!(result.get((2, 0)).unwrap(), 8.0);
+}
+
+#[test]
+fn test_permute_on_elementwise_kernel() {
+    let t = Tensor::from([
+        [[1.0, 2.0], [3.0, 4.0]],
+        [[5.0, 6.0], [7.0, 8.0]],
+    ]);
+    let permuted = t.permute([2, 0, 1]).unwrap();
+    let result = permuted + 1.0;
+    assert_eq!(result.shape(), &[2, 2, 2]);
+    let value: f64 = result.get((1, 0, 1)).unwrap().item();
+    assert_eq!(value, 5.0);
+}
+
+#[test]
+fn test_padding_on_reduce_kernel() {
+    let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+    let padded = t.pad([(1, 1), (0, 0)], 0.0).unwrap();
+    let reduced = padded.sum_axes([0]).unwrap();
+    assert_eq!(reduced.shape(), &[4]);
+    assert_eq!(reduced.get(0).unwrap(), 0.0);
+    assert_eq!(reduced.get(1).unwrap(), 4.0);
+    assert_eq!(reduced.get(2).unwrap(), 6.0);
+    assert_eq!(reduced.get(3).unwrap(), 0.0);
+}
+
+#[test]
+fn test_expand_on_reduce_kernel() {
+    let t = Tensor::from([[1.0], [2.0], [3.0]]);
+    let expanded = t.expand([3, 2]).unwrap();
+    let reduced = expanded.mean_axes([1]).unwrap();
+    assert_eq!(reduced.shape(), &[3]);
+    assert_eq!(reduced.get(1).unwrap(), 2.0);
+}
+
+#[test]
+fn test_reshape_on_reduce_kernel() {
+    let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
+    let reshaped = t.reshape([4]).unwrap();
+    let reduced = reshaped.sum_axes([0]).unwrap();
+    assert_eq!(reduced.shape(), &[1]);
+    assert_eq!(reduced.item::<f64>(), 10.0);
+}
+
+#[test]
+fn test_permute_on_reduce_kernel() {
+    let t = Tensor::from([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
+    let permuted = t.permute([1, 2, 0]).unwrap();
+    let reduced = permuted.sum_axes([2]).unwrap();
+    assert_eq!(reduced.shape(), &[2, 2]);
+    assert_eq!(reduced.get((0, 0)).unwrap(), 6.0);
+}

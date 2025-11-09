@@ -5,6 +5,7 @@
     - [ ] fix load calculation, probably using Atomic usize
     - [x] fix event memory leaks, all events must be properly destroyed
     - [ ] channel for context, because cuda context is thread local
+    - [ ] rewrite PTX compiler to have proper register manager that handles constants and everything
   - [ ] hip
   - [x] opencl
     - [ ] fix load calculation, probably using Atomic usize
@@ -87,14 +88,14 @@
   - [x] rope_1
   - [x] rope_2
   - [x] softmax_1
-  - [ ] padding on elementwise kernel
-  - [ ] expand on elementwise kernel
-  - [ ] reshape on elementwise kernel
-  - [ ] permute on elementwise kernel
-  - [ ] padding on reduce kernel
-  - [ ] expand on reduce kernel
-  - [ ] reshape on reduce kernel
-  - [ ] permute on reduce kernel
+  - [x] padding on elementwise kernel
+  - [x] expand on elementwise kernel
+  - [x] reshape on elementwise kernel
+  - [x] permute on elementwise kernel
+  - [x] padding on reduce kernel
+  - [x] expand on reduce kernel
+  - [x] reshape on reduce kernel
+  - [x] permute on reduce kernel
   - [ ] lot of testing for kernelizer correctness
   - [ ] more autograd tests
 - [ ] tensor
@@ -125,8 +126,8 @@
   - [ ] triplet margin loss
   - [ ] frobenius norm
   - [ ] spectral norm
-  - [ ] tril
-  - [ ] triu
+  - [x] tril
+  - [x] triu
 
 - [x] docs
   - [x] manual for adding new backends
