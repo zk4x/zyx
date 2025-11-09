@@ -1,50 +1,72 @@
-use crate::{Dropout, LayerNorm, Linear, MultiheadAttention};
-use zyx::{Tensor, ZyxError};
+use crate::{LayerNorm, Linear, MultiheadAttention};
+use zyx::{DType, Tensor, ZyxError};
 
 pub struct TransformerDecoderLayer {
-    self_attn: MultiHeadAttention,
-    cross_attn: MultiHeadAttention,
-    linear1: Linear,
-    linear2: Linear,
-    norm1: LayerNorm,
-    norm2: LayerNorm,
-    norm3: LayerNorm,
-    dropout: Dropout,
-    d_model: i64,
-    // store flags
-    norm_first: bool,
-    activation: fn(&Tensor) -> Tensor,
+    self_attention: MultiheadAttention,
+    cross_attention: MultiheadAttention,
+    feedforward: Linear,
+    layer_norm_1: LayerNorm,
+    layer_norm_2: LayerNorm,
+    dropout_rate: f32,                // Dropout rate passed as a parameter
+    norm_first: bool,                 // Whether to apply norm before layers or after
+    activation: fn(Tensor) -> Tensor, // Activation function
 }
 
 impl TransformerDecoderLayer {
     pub fn new(
-        d_model: i64,
-        nhead: i64,
-        dim_feedforward: i64,
-        dropout_prob: f64,
-        activation: fn(&Tensor) -> Tensor,
-        layer_norm_eps: f64,
-        norm_first: bool,
+        d_model: usize,                   // embed_dim
+        nhead: usize,                     // num_heads
+        dim_feedforward: usize,           // dim_feedforward
+        dropout: f32,                     // dropout rate
+        activation: fn(Tensor) -> Tensor, // activation function
+        layer_norm_eps: f64,              // layer_norm_eps
+        batch_first: bool,                // batch_first
+        norm_first: bool,                 // norm_first
+        bias: bool,                       // use biases in layers
+        dtype: DType,                     // tensor data type (e.g., f32, f64)
     ) -> Result<Self, ZyxError> {
-        let self_attn = MultiheadAttention::new(d_model, nhead)?;
-        let cross_attn = MultiheadAttention::new(d_model, nhead)?;
-        let linear1 = Linear::new(d_model, dim_feedforward)?;
-        let linear2 = Linear::new(dim_feedforward, d_model)?;
-        let norm1 = LayerNorm::new(vec![d_model], layer_norm_eps)?;
-        let norm2 = LayerNorm::new(vec![d_model], layer_norm_eps)?;
-        let norm3 = LayerNorm::new(vec![d_model], layer_norm_eps)?;
-        let dropout = Dropout::new(dropout_prob);
-
-        Ok(Self {
-            self_attn,
-            cross_attn,
-            linear1,
-            linear2,
-            norm1,
-            norm2,
-            norm3,
-            dropout,
+        // Create self-attention and cross-attention layers
+        let self_attention = MultiheadAttention::new(
             d_model,
+            nhead,
+            dropout,
+            bias,
+            false,
+            false,
+            None,
+            None,
+            batch_first,
+            dtype,
+        )?;
+
+        let cross_attention = MultiheadAttention::new(
+            d_model,
+            nhead,
+            dropout,
+            bias,
+            false,
+            false,
+            None,
+            None,
+            batch_first,
+            dtype,
+        )?;
+
+        // Create feedforward layers (two Linear layers with ReLU activation)
+        let feedforward = Linear::new(d_model, dim_feedforward, bias, dtype)?;
+
+        // LayerNorms (First for attention, second for feedforward)
+        let layer_norm_1 = LayerNorm::new(d_model, layer_norm_eps, true, bias, dtype)?;
+        let layer_norm_2 = LayerNorm::new(d_model, layer_norm_eps, true, bias, dtype)?;
+
+        // Return the complete TransformerDecoderLayer
+        Ok(TransformerDecoderLayer {
+            self_attention,
+            cross_attention,
+            feedforward,
+            layer_norm_1,
+            layer_norm_2,
+            dropout_rate: dropout,
             norm_first,
             activation,
         })
@@ -52,72 +74,83 @@ impl TransformerDecoderLayer {
 
     pub fn forward(
         &self,
-        tgt: &Tensor,
-        memory: Option<&Tensor>,
-        tgt_mask: Option<&Tensor>,
-        memory_mask: Option<&Tensor>,
-        tgt_key_padding_mask: Option<&Tensor>,
-        memory_key_padding_mask: Option<&Tensor>,
-        tgt_is_causal: bool,
-        memory_is_causal: bool,
+        tgt: &Tensor,                           // Target sequence (input to the decoder)
+        memory: &Tensor,                        // Memory sequence (encoder output)
+        tgt_mask: Option<impl Into<Tensor>>, // Optional mask for target sequence (self-attention)
+        memory_mask: Option<impl Into<Tensor>>, // Optional mask for memory sequence (cross-attention)
+        tgt_key_padding_mask: Option<impl Into<Tensor>>, // Optional padding mask for target
+        memory_key_padding_mask: Option<impl Into<Tensor>>, // Optional padding mask for memory
+        tgt_is_causal: bool, // Whether to apply causal masking to target (autoregressive)
+        memory_is_causal: bool, // Whether to apply causal masking to memory
     ) -> Result<Tensor, ZyxError> {
-        // Implementation note: zyx‑nn interfaces may differ; this is illustrative.
+        let mut output = tgt.clone();
 
-        let mut x = tgt.shallow_clone();
-
+        // Apply LayerNorm first if norm_first is true
         if self.norm_first {
-            // pre‑norm variant
-            x = self.norm1.forward(&x)?;
+            output = self.layer_norm_1.forward(&output)?;
         }
 
-        // 1) Self‑attention
-        let attn_output =
-            self.self_attn
-                .forward(&x, &x, &x, tgt_mask, tgt_key_padding_mask, tgt_is_causal)?;
-        let x2 = &attn_output + &x;
-        let x2 = self.dropout.forward(&x2)?;
-        x = if self.norm_first {
-            x2
-        } else {
-            self.norm1.forward(&x2)?
-        };
+        // Self-Attention: Apply self-attention to the target sequence
+        let (attn_output, _) = self.self_attention.forward(
+            &output,              // query = tgt
+            &output,              // key = tgt
+            &output,              // value = tgt
+            tgt_key_padding_mask, // Padding mask for tgt
+            true,                 // need_weights = true (return attention weights)
+            tgt_mask,             // tgt_mask (optional)
+            true,                 // average_attn_weights = true
+            tgt_is_causal,        // Is causal self-attention (autoregressive)?
+        )?;
 
-        // 2) Cross‑attention (if memory is provided)
-        if let Some(mem) = memory {
-            if self.norm_first {
-                x = self.norm2.forward(&x)?;
-            }
-            let cross_output = self.cross_attn.forward(
-                &x,
-                mem,
-                mem,
-                memory_mask,
-                memory_key_padding_mask,
-                memory_is_causal,
-            )?;
-            let x3 = &cross_output + &x;
-            let x3 = self.dropout.forward(&x3)?;
-            x = if self.norm_first {
-                x3
-            } else {
-                self.norm2.forward(&x3)?
-            };
+        // Apply dropout after self-attention
+        let attn_output = attn_output.dropout(self.dropout_rate);
+
+        // Add residual connection after self-attention
+        output = output + attn_output;
+
+        // Apply LayerNorm after self-attention if norm_first is false
+        if !self.norm_first {
+            output = self.layer_norm_1.forward(&output)?;
         }
 
-        // 3) Feed‑forward network
-        if self.norm_first {
-            x = self.norm3.forward(&x)?;
-        }
-        let ff = (self.activation)(&self.linear1.forward(&x)?);
-        let ff2 = self.linear2.forward(&ff)?;
-        let x4 = ff2 + &x;
-        let x4 = self.dropout.forward(&x4)?;
-        x = if self.norm_first {
-            x4
-        } else {
-            self.norm3.forward(&x4)?
-        };
+        // Cross-Attention: Apply cross-attention using memory (encoder output)
+        let (cross_attn_output, _) = self.cross_attention.forward(
+            &output,                 // query = tgt (output from self-attention)
+            memory,                  // key = memory (encoder output)
+            memory,                  // value = memory
+            memory_key_padding_mask, // Padding mask for memory
+            true,                    // need_weights = true (return attention weights)
+            memory_mask,             // memory_mask (optional)
+            true,                    // average_attn_weights = true
+            memory_is_causal,        // Is causal attention for memory
+        )?;
 
-        Ok(x)
+        // Apply dropout after cross-attention
+        let cross_attn_output = cross_attn_output.dropout(self.dropout_rate);
+
+        // Add residual connection after cross-attention
+        output = output + cross_attn_output;
+
+        // Apply LayerNorm after cross-attention if norm_first is false
+        if !self.norm_first {
+            output = self.layer_norm_2.forward(&output)?;
+        }
+
+        // Feedforward Network: Apply the feedforward layer
+        let ff_output = self.feedforward.forward(&output)?;
+
+        // Apply the activation function to the feedforward output
+        let ff_output = (self.activation)(ff_output);
+
+        // Apply dropout after feedforward
+        let ff_output = ff_output.dropout(self.dropout_rate);
+
+        // Add residual connection after feedforward
+        output = output + ff_output;
+
+        // Apply final LayerNorm after feedforward
+        output = self.layer_norm_2.forward(&output)?;
+
+        Ok(output)
     }
 }

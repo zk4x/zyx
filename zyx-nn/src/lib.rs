@@ -54,8 +54,10 @@ pub use embedding::Embedding;
 mod conv2d;
 pub use conv2d::Conv2d;
 
-mod activation;
-pub use activation::Activation;
+// I don't like this, use fn(&Tensor) -> Tensor or something like that instead
+// fn(impl Into<Tensor>) -> Tensor
+//mod activation;
+//pub use activation::Activation;
 
 mod positional_encoding;
 pub use positional_encoding::PositionalEncoding;
