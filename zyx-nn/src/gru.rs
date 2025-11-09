@@ -1,7 +1,8 @@
 use zyx::{DType, Tensor, ZyxError};
+use zyx_derive::Module;
 
 /// GRU cell (PyTorch-style)
-#[derive(Debug)]
+#[derive(Debug, Module)]
 pub struct GRUCell {
     /// weight ih
     pub weight_ih: Tensor, // (3*hidden_size, input_size)

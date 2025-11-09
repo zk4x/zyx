@@ -1,5 +1,6 @@
 use crate::{LayerNorm, Linear, MultiheadAttention};
 use zyx::{DType, Tensor, ZyxError};
+use zyx_derive::Module;
 
 /// A single layer of a Transformer decoder.
 ///
@@ -11,6 +12,7 @@ use zyx::{DType, Tensor, ZyxError};
 ///
 /// The behavior of the layer can be adjusted using `norm_first` (pre-norm vs post-norm),
 /// dropout rate, and activation function.
+#[derive(Debug, Module)]
 pub struct TransformerDecoderLayer {
     self_attention: MultiheadAttention,
     cross_attention: MultiheadAttention,

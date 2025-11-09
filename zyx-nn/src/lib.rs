@@ -39,6 +39,9 @@ pub use rnn::RNNCell;
 mod gru;
 pub use gru::GRUCell;
 
+mod lstm;
+pub use lstm::LSTMCell;
+
 mod causal_self_attention;
 pub use causal_self_attention::CausalSelfAttention;
 

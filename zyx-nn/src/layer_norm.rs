@@ -1,9 +1,11 @@
 use zyx::{DType, IntoShape, Tensor, ZyxError};
+use zyx_derive::Module;
 
 /// A Layer Normalization layer.
 ///
 /// Layer Normalization normalizes the inputs across the specified dimensions (typically the last N dimensions)
 /// for each example independently. It optionally supports learnable scale (`weight`) and bias (`bias_tensor`) parameters.
+#[derive(Debug, Module)]
 pub struct LayerNorm {
     normalized_shape: Vec<usize>,
     eps: f64,
@@ -93,10 +95,13 @@ impl LayerNorm {
         let norm_rank = self.normalized_shape.len();
 
         if input_rank < norm_rank {
-            return Err(ZyxError::shape_error(format!(
-                "LayerNorm: input rank ({}) smaller than normalized_shape rank ({})",
-                input_rank, norm_rank
-            ).into()));
+            return Err(ZyxError::shape_error(
+                format!(
+                    "LayerNorm: input rank ({}) smaller than normalized_shape rank ({})",
+                    input_rank, norm_rank
+                )
+                .into(),
+            ));
         }
 
         // Determine axes to normalize over (last `norm_rank` dims)

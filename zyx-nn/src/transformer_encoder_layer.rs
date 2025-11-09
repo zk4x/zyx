@@ -1,11 +1,13 @@
-use zyx::{Tensor, DType, ZyxError};
-use crate::{MultiheadAttention, Linear, LayerNorm};
+use crate::{LayerNorm, Linear, MultiheadAttention};
+use zyx::{DType, Tensor, ZyxError};
+use zyx_derive::Module;
 
 /// A single Transformer Encoder layer, analogous to `torch.nn.TransformerEncoderLayer`.
 ///
 /// This layer implements a standard Transformer encoder block with a multi-head self-attention
 /// mechanism followed by a position-wise feedforward network. Layer normalization can be applied
 /// either before ("pre-norm") or after ("post-norm") the attention and feedforward sub-layers.
+#[derive(Debug, Module)]
 pub struct TransformerEncoderLayer {
     /// - `self_attn`: The multi-head self-attention module.
     pub self_attn: MultiheadAttention,
