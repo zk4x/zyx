@@ -45,9 +45,9 @@ impl Optimizer {
             return false;
         }
 
-        /*if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
+        if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
             return false;
-        }*/
+        }
 
         kernel.unfold_pows();
         kernel.unfold_reduces();

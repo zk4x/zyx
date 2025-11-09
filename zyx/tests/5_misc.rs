@@ -900,7 +900,6 @@ fn dot6() -> Result<(), ZyxError> {
         x = x.matmul(&w)?;
     }
     assert_eq!(x, [492004322i32, 323660910, 445342573]);
-    panic!();
     Ok(())
 }
 
@@ -963,10 +962,7 @@ fn test_reshape_on_elementwise_kernel() {
 
 #[test]
 fn test_permute_on_elementwise_kernel() {
-    let t = Tensor::from([
-        [[1.0, 2.0], [3.0, 4.0]],
-        [[5.0, 6.0], [7.0, 8.0]],
-    ]);
+    let t = Tensor::from([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]);
     let permuted = t.permute([2, 0, 1]).unwrap();
     let result = permuted + 1.0;
     assert_eq!(result.shape(), &[2, 2, 2]);
