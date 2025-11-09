@@ -900,6 +900,7 @@ fn dot6() -> Result<(), ZyxError> {
         x = x.matmul(&w)?;
     }
     assert_eq!(x, [492004322i32, 323660910, 445342573]);
+    panic!();
     Ok(())
 }
 
