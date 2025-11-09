@@ -1,6 +1,16 @@
 use crate::{LayerNorm, Linear, MultiheadAttention};
 use zyx::{DType, Tensor, ZyxError};
 
+/// A single layer of a Transformer decoder.
+///
+/// This layer implements the standard Transformer decoder operations:
+/// 1. **Self-attention** on the target sequence.
+/// 2. **Cross-attention** using the encoder output (memory).
+/// 3. **Feedforward network** with activation function.
+/// 4. **Residual connections** and **Layer Normalization**.
+///
+/// The behavior of the layer can be adjusted using `norm_first` (pre-norm vs post-norm),
+/// dropout rate, and activation function.
 pub struct TransformerDecoderLayer {
     self_attention: MultiheadAttention,
     cross_attention: MultiheadAttention,
@@ -13,6 +23,24 @@ pub struct TransformerDecoderLayer {
 }
 
 impl TransformerDecoderLayer {
+    /// Creates a new `TransformerDecoderLayer`.
+    ///
+    /// # Arguments
+    ///
+    /// * `d_model` - Dimensionality of input embeddings (number of features per token).
+    /// * `nhead` - Number of attention heads in self-attention and cross-attention.
+    /// * `dim_feedforward` - Hidden dimension of the feedforward network.
+    /// * `dropout` - Dropout probability applied after attention and feedforward layers.
+    /// * `activation` - Activation function applied after the feedforward network (e.g., ReLU).
+    /// * `layer_norm_eps` - Small epsilon value for numerical stability in layer normalization.
+    /// * `batch_first` - If true, input tensors have shape `[batch, seq, feature]`. Otherwise `[seq, batch, feature]`.
+    /// * `norm_first` - Whether to apply layer normalization before sub-layers (pre-norm) or after (post-norm).
+    /// * `bias` - Whether to include bias terms in linear and attention layers.
+    /// * `dtype` - Data type of tensors (e.g., `DType::F32`, `DType::F64`).
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the new `TransformerDecoderLayer` or a `ZyxError` if initialization fails.
     pub fn new(
         d_model: usize,                   // embed_dim
         nhead: usize,                     // num_heads
@@ -72,6 +100,32 @@ impl TransformerDecoderLayer {
         })
     }
 
+    /// Performs a forward pass through the decoder layer.
+    ///
+    /// # Arguments
+    ///
+    /// * `tgt` - Target sequence tensor (decoder input).
+    /// * `memory` - Memory tensor from the encoder (encoder output).
+    /// * `tgt_mask` - Optional mask for self-attention on the target sequence.
+    /// * `memory_mask` - Optional mask for cross-attention on the memory sequence.
+    /// * `tgt_key_padding_mask` - Optional padding mask for target tokens.
+    /// * `memory_key_padding_mask` - Optional padding mask for memory tokens.
+    /// * `tgt_is_causal` - Whether to apply causal masking to target self-attention (autoregressive decoding).
+    /// * `memory_is_causal` - Whether to apply causal masking in cross-attention.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the output tensor of the decoder layer or a `ZyxError`.
+    ///
+    /// # Behavior
+    ///
+    /// 1. Applies layer normalization if `norm_first` is true.
+    /// 2. Applies self-attention on the target sequence.
+    /// 3. Applies residual connection and dropout.
+    /// 4. Applies cross-attention with the encoder memory.
+    /// 5. Applies residual connection and dropout.
+    /// 6. Passes through feedforward network with activation.
+    /// 7. Applies final residual connection and layer normalization.
     pub fn forward(
         &self,
         tgt: &Tensor,                           // Target sequence (input to the decoder)
