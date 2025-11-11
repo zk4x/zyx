@@ -15,7 +15,7 @@ fn reshape_permute_1() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[4, 5, 2, 1], [3, 4, 1, 4]]);
     x = x.reshape([8, 1])?;
     x = x.reshape([1, 2, 1, 4])?.permute([2, 3, 1, 0])?;
-    x = x.reshape([4, 2])?.exp2().cast(zyx::DType::I32);
+    x = x.reshape([4, 2])?.cast(zyx::DType::F32).exp2().cast(zyx::DType::I32);
     assert_eq!(x, [[16, 8], [32, 16], [4, 2], [2, 16]]);
     Ok(())
 }

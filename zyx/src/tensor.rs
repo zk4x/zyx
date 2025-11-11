@@ -93,11 +93,19 @@ impl Clone for Tensor {
 impl Drop for Tensor {
     fn drop(&mut self) {
         //std::println!("dropping");
-        if let Some(mut rt) = RT.try_lock() {
+        //RT.lock().release(self.id);
+        /*if let Some(mut rt) = RT.try_lock() {
             rt.release(self.id);
         } else {
             println!("Warning: Unable to drop Tensor due to runtime mutex lock.");
-        }
+        }*/
+        let _ = std::panic::catch_unwind(|| {
+            let mut rt = match RT.try_lock() {
+                Ok(rt) => rt,
+                Err(_poisoned) => return, // poisoned.into_inner(),
+            };
+            rt.release(self.id);
+        });
     }
 }
 
@@ -1476,52 +1484,33 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be reshaped to shape.
     pub fn reshape(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        let shape: Vec<Dim> = shape.into_shape().collect();
+        let mut shape: Vec<Dim> = shape.into_shape().collect();
 
-        // Count how many zeros (dimensions to infer)
         let infer_count = shape.iter().filter(|&&d| d == 0).count();
         if infer_count > 1 {
             return Err(ZyxError::shape_error("Can only infer one dimension".into()));
         }
 
-        let total_elements = self.numel();
+        let numel = self.numel();
 
-        // Compute the product of known dimensions
-        let known_product: Dim = shape.iter().filter(|&&d| d != 0).product();
+        if infer_count > 0 {
+            let total: Dim = shape.iter().map(|&x| if x == 0 { 1 } else { x }).product();
+            let inferred_dim = numel / total;
+            shape = shape.into_iter().map(|x| if x == 0 { inferred_dim } else { x }).collect();
+        }
 
-        // Determine inferred dimension if needed
-        let final_shape: Vec<Dim> = shape
-            .into_iter()
-            .map(|d| {
-                if d == 0 {
-                    // Must divide exactly; check >= 1
-                    if total_elements % known_product != 0 {
-                        panic!("Cannot infer dimension: total elements not divisible");
-                    }
-                    let inferred = total_elements / known_product;
-                    if inferred == 0 {
-                        panic!("Inferred dimension cannot be zero");
-                    }
-                    inferred
-                } else {
-                    d
-                }
-            })
-            .collect();
-
-        // Sanity check: final shape matches total elements
-        if final_shape.iter().product::<Dim>() != total_elements {
+        if shape.iter().product::<Dim>() != numel {
             return Err(ZyxError::shape_error(
                 format!(
                     "Invalid reshape: total elements mismatch. Tensor has {} elements, but new shape {:?} multiplies to {}",
-                    total_elements,
-                    final_shape,
-                    final_shape.iter().product::<Dim>()
+                    numel,
+                    shape,
+                    shape.iter().product::<Dim>()
                 ).into()
             ));
         }
 
-        Ok(Tensor { id: RT.lock().reshape(self.id, final_shape) })
+        Ok(Tensor { id: RT.lock().reshape(self.id, shape) })
     }
 
     /// Transpose (swap) the last two dimensions of this tensor.
@@ -3289,7 +3278,7 @@ pub struct DebugGuard {
 
 impl Drop for DebugGuard {
     fn drop(&mut self) {
-        if let Some(mut rt) = RT.try_lock() {
+        if let Ok(mut rt) = RT.try_lock() {
             rt.debug = self.debug;
         } else {
             println!("Warning: Unable to drop DebugGuard due to runtime mutex lock.");
@@ -3312,7 +3301,7 @@ impl Tensor {
                 });
             }
             return Err(ZyxError::dtype_error(
-                format!("Called function that only supports float on a tensor that is of dtype = {dtype}").into(),
+                format!("Called function that only supports float on a tensor that is of dtype = {dtype} while implitic casts were disabled.").into(),
             ));
         }
         Ok(self.clone())

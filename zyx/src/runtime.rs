@@ -112,7 +112,7 @@ impl Runtime {
 
     pub(super) fn release(&mut self, x: TensorId) {
         let to_remove = self.graph.release(x);
-        self.deallocate_tensors(&to_remove);
+        deallocate_tensors(&to_remove, &mut self.pools);
         if self.graph.is_empty() && self.pools.iter().all(|mp| mp.buffer_map.is_empty()) {
             self.deinitialize();
         }
@@ -195,13 +195,14 @@ impl Runtime {
         self.devices.shrink_to_fit();
 
         self.search_config = config.search;
+        //println!("INIT runtime");
         Ok(())
     }
 
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
     /// It does not reset the rng and it does not change debug, search, training and `config_dir` fields
     fn deinitialize(&mut self) {
-        //println!("Deinitialize");
+        //println!("DEINIT runtime");
         // drop graph
         self.graph = Graph::new();
         // Drop programs
@@ -571,10 +572,6 @@ impl Runtime {
         }
         pool.pool.pool_to_host(buffer_id, byte_slice, Vec::new())?;
         Ok(())
-    }
-
-    pub fn deallocate_tensors(&mut self, to_remove: &Set<TensorId>) {
-        deallocate_tensors(to_remove, &mut self.pools);
     }
 }
 

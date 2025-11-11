@@ -58,12 +58,13 @@ impl Graph {
                     params.extend(node.parameters());
                     to_remove.insert(x);
                     self.nodes.remove(x);
-                    self.shapes.remove(&x);
+                    _ = self.shapes.remove(&x);
+                    _ = self.axes.remove(&x);
+                    _ = self.paddings.remove(&x);
+
                     if let Some(tape) = self.gradient_tape.as_mut() {
-                        tape.remove(&x);
+                        _ = tape.remove(&x);
                     }
-                    self.axes.remove(&x);
-                    self.paddings.remove(&x);
                 }
             }
         }

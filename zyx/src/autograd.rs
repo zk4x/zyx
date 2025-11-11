@@ -91,7 +91,7 @@ impl GradientTape {
 impl Drop for GradientTape {
     fn drop(&mut self) {
         //RT.lock().drop_gradient_tape();
-        if let Some(mut rt) = RT.try_lock() {
+        if let Ok(mut rt) = RT.try_lock() {
             rt.drop_gradient_tape();
         } else {
             println!("Warning: Unable to drop GradientTape due to runtime mutex lock.");

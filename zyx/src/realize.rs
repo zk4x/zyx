@@ -784,7 +784,7 @@ impl<'a> Kernelizer<'a> {
         // Check if best optimization already found
         if optimizer.fully_optimized() {
             // done optimizing, loaded best from disk
-            let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization());
+            let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), self.debug.ir());
             debug_assert!(opt_res);
             if self.debug.ir() {
                 println!("\nIR optimized kernel");
@@ -803,29 +803,35 @@ impl<'a> Kernelizer<'a> {
         // If search_iters == 0, we use default optimizations
         if self.search_config.iterations == 0 {
             let mut okernel;
+            let program_id;
+            let nanos;
             loop {
                 okernel = kernel.clone();
-                let optimization =
-                    optimizer.next_optimization(u128::MAX).unwrap_or_else(|| optimizer.best_optimization());
-                if optimizer.apply_optimization(&mut okernel, optimization) {
-                    break;
+
+                let Some(optimization) =
+                    optimizer.next_optimization(u128::MAX) else { return Err(ZyxError::KernelLaunchFailure) };
+
+                if !optimizer.apply_optimization(&mut okernel, optimization, self.debug.ir()) {
+                    continue;
                 }
+
+                if let Ok(pid) = device.compile(&okernel, self.debug.asm()) {
+                    program_id = pid;
+                } else {
+                    continue;
+                }
+
+                let timer = std::time::Instant::now();
+                if self.debug.kmd() {
+                    println!("Kernel launch from memory pool {} with args: {:?}", mpid, args);
+                }
+                let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
+                pool.pool.sync_events(vec![event])?;
+                nanos = timer.elapsed().as_nanos();
+
+                break;
             }
 
-            if self.debug.ir() {
-                println!("\nIR optimized kernel");
-                okernel.debug();
-                println!();
-            }
-
-            let program_id = device.compile(&okernel, self.debug.asm())?;
-            let nanos = std::time::Instant::now();
-            if self.debug.kmd() {
-                println!("Kernel launch from memory pool {} with args: {:?}", mpid, args);
-            }
-            let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-            pool.pool.sync_events(vec![event])?;
-            let nanos = nanos.elapsed().as_nanos();
             //assert!(self.cache.programs.insert((kernel_id, dev_id as u32), program_id).is_none());
             if nanos < optimizer.best_time_nanos {
                 self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
@@ -864,13 +870,8 @@ impl<'a> Kernelizer<'a> {
             {
                 i += 1;
                 let mut kernel = kernel.clone();
-                if !optimizer.apply_optimization(&mut kernel, optimization) {
+                if !optimizer.apply_optimization(&mut kernel, optimization, self.debug.ir()) {
                     continue;
-                }
-                if self.debug.ir() {
-                    println!("\nIR optimized kernel");
-                    kernel.debug();
-                    println!();
                 }
 
                 let res = (|| -> Result<(ProgramId, u128), BackendError> {
@@ -1126,7 +1127,7 @@ impl Runtime {
         }
 
         // Deallocate tensors from devices, new_leafs can be deallocated too
-        self.deallocate_tensors(&to_delete);
+        deallocate_tensors(&to_delete, &mut self.pools);
 
         // Remove evaluated part of graph unless needed for backpropagation
         for tensor in new_leafs {

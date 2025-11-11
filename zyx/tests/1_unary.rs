@@ -1,7 +1,7 @@
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
-fn relu() -> Result<(), ZyxError> {
+fn relu_1() -> Result<(), ZyxError> {
     let data: [f32; 10] = [
         -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
     ];
@@ -57,7 +57,7 @@ fn reciprocal() -> Result<(), ZyxError> {
     ];
     let zdata: Vec<f32> = Tensor::from(data).reciprocal().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        println!("{}, {y}", 1. / x);
+        //println!("{}, {y}", 1. / x);
         assert!((1. / x).is_equal(y));
     }
     Ok(())

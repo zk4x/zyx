@@ -1,6 +1,6 @@
 //! Simple implementation of mutex based on spinlock.
 
-use std::sync::MutexGuard;
+use std::sync::{LockResult, MutexGuard};
 pub struct Mutex<T>(std::sync::Mutex<T>);
 
 impl<T> Mutex<T> {
@@ -12,8 +12,8 @@ impl<T> Mutex<T> {
         self.0.lock().ok().unwrap()
     }
 
-    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
-        self.0.try_lock().ok()
+    pub fn try_lock(&self) -> LockResult<MutexGuard<'_, T>> {
+        self.0.lock()
     }
 }
 

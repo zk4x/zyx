@@ -37,7 +37,7 @@ pub struct Optimizer {
 
 impl Optimizer {
     #[must_use]
-    pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization) -> bool {
+    pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization, debug_ir: bool) -> bool {
         let [local_work_size_opt_index, loop_opt_index, loop_split_opt_index] =
             optimization.into_indices(self.max_indices);
 
@@ -72,6 +72,13 @@ impl Optimizer {
             }
             temp_kernel = kernel.clone();
         }
+
+        if debug_ir {
+            println!("\nIR optimized kernel");
+            kernel.debug();
+            println!();
+        }
+
         true
     }
 

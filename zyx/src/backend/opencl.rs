@@ -887,19 +887,14 @@ impl OpenCLDevice {
                     loop_id += 1;
                 }
                 Op::EndLoop => {
-                    indent.pop();
-                    indent.pop();
-                    writeln!(source, "{indent}}}").unwrap();
-                    loop_id -= 1;
+                    if loop_id as usize > lws.len() + gws.len() {
+                        indent.pop();
+                        indent.pop();
+                        writeln!(source, "{indent}}}").unwrap();
+                        loop_id -= 1;
+                    }
                 }
             }
-        }
-
-        while loop_id as usize > lws.len() + gws.len() {
-            indent.pop();
-            indent.pop();
-            loop_id -= 1;
-            writeln!(source, "{indent}}}").unwrap();
         }
 
         let mut reg_str = String::new();
