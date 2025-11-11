@@ -82,7 +82,7 @@ fn sin() -> Result<(), ZyxError> {
     ];
     let zdata: Vec<f32> = Tensor::from(data).sin().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
-        assert!(x.sin().is_equal(y));
+        assert!(x.sin().is_equal(y), "{} != {y}", x.sin());
     }
     Ok(())
 }

@@ -1,8 +1,7 @@
 //! `DType` and constant
 
 use crate::{
-    Scalar, ZyxError,
-    graph::{BOp, UOp},
+    graph::{BOp, UOp}, kernel::IDX_T, Scalar, ZyxError
 };
 use half::{bf16, f16};
 use nanoserde::{DeBin, SerBin};
@@ -293,12 +292,27 @@ impl Constant {
         match T::dtype() {
             DType::I32 => {
                 let idx: i32 = unsafe { t(&idx) };
-                Self::U32(idx as u32)
+                if IDX_T == DType::U64 {
+                    Self::U64((idx as u64).to_le_bytes())
+                } else {
+                    Self::U32(idx as u32)
+                }
             }
-            DType::U32 => Self::U32(unsafe { t(&idx) }),
+            DType::U32 => {
+                let idx: u32 = unsafe { t(&idx) };
+                if IDX_T == DType::U64 {
+                    Self::U64((idx as u64).to_le_bytes())
+                } else {
+                    Self::U32(idx)
+                }
+            }
             DType::U64 => {
                 let idx: u64 = unsafe { t(&idx) };
-                Self::U32(idx as u32)
+                if IDX_T == DType::U64 {
+                    Self::U64(idx.to_le_bytes())
+                } else {
+                    Self::U32(idx as u32)
+                }
             }
             x => unreachable!("{x}"),
         }

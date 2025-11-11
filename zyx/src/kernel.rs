@@ -16,7 +16,7 @@ use std::{
 };
 
 pub type OpId = usize;
-pub const IDX_T: DType = DType::U32;
+pub const IDX_T: DType = DType::U64;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct Kernel {
@@ -1021,6 +1021,21 @@ impl Kernel {
                     }
                 }
             }
+        }
+    }
+
+    pub fn close_loops(&mut self) {
+        let mut loop_id = 0;
+        for op in &self.ops {
+            match op {
+                Op::Loop { .. } => loop_id += 1,
+                Op::EndLoop => loop_id -= 1,
+                _ => {}
+            }
+        }
+        while loop_id > 0 {
+            self.ops.push(Op::EndLoop);
+            loop_id -= 1;
         }
     }
 

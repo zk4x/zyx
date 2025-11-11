@@ -53,6 +53,7 @@ impl Optimizer {
         kernel.unfold_reduces();
         kernel.define_globals();
         kernel.unfold_views();
+        kernel.close_loops();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..100 {
