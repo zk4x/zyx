@@ -10,7 +10,7 @@ use std::{collections::HashSet, ops::Range};
 
 // Indices in 0..max_index for each optimization Opt
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, DeBin, SerBin)]
-pub struct Optimization(u64);
+pub struct Optimization(u32);
 
 #[derive(Debug, Clone, DeBin, SerBin)]
 pub struct Optimizer {
@@ -19,16 +19,16 @@ pub struct Optimizer {
     loop_unrolling_opt: LoopUnrollingOpt,
     loop_split_opt: LoopSplitOpt,
     //inner_loop_swap_opt: InnerLoopSwapOpt, // a bit harder to know max number of optimizations
-    max_indices: [u64; 3],
+    max_indices: [u32; 3],
     // best optimization found so far
     best_optimization: Optimization,
     // time taken by kernel with the best optimization
-    pub best_time_nanos: u128,
+    pub best_time_nanos: u64,
     // Which iteration are we on? First 30 iterations are random, then 20 iterations of refinement
     // and remaider is just going over all possible optimizations in deterministic order
-    rand_iteration: u64,
-    full_iteration: u64,
-    max_iter: u64,
+    rand_iteration: u32,
+    full_iteration: u32,
+    max_iter: u32,
     // Optimizations that were tried during random search and refinement
     tried: HashSet<Optimization>,
     // Last tried optimization
@@ -45,13 +45,14 @@ impl Optimizer {
             return false;
         }
 
-        if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
+        /*if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
             return false;
-        }
+        }*/
 
         kernel.unfold_pows();
         kernel.unfold_reduces();
         kernel.define_globals();
+
         kernel.unfold_views();
         kernel.close_loops();
 
@@ -83,13 +84,13 @@ impl Optimizer {
     }
 
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
-        let local_work_size_opt = WorkSizeOpt::new(kernel, dev_info);
-        let loop_unrolling_opt = LoopUnrollingOpt::new(kernel);
-        let loop_split_opt = LoopSplitOpt::new(kernel, 3);
+        let (local_work_size_opt, local_work_size_opt_max_idx) = WorkSizeOpt::new(kernel, dev_info);
+        let (loop_unrolling_opt, loop_unrolling_opt_max_idx) = LoopUnrollingOpt::new(kernel);
+        let (loop_split_opt, loop_split_opt_max_idx) = LoopSplitOpt::new(kernel, 3);
         let max_indices = [
-            local_work_size_opt.max_index(),
-            loop_unrolling_opt.max_index(),
-            loop_split_opt.max_index(),
+            local_work_size_opt_max_idx,
+            loop_unrolling_opt_max_idx,
+            loop_split_opt_max_idx,
         ];
         Self {
             max_indices,
@@ -97,7 +98,7 @@ impl Optimizer {
             loop_unrolling_opt,
             loop_split_opt,
             best_optimization: Optimization(0),
-            best_time_nanos: u128::MAX,
+            best_time_nanos: u64::MAX,
             tried: HashSet::with_capacity(200),
             rand_iteration: 0,
             full_iteration: 0,
@@ -106,7 +107,7 @@ impl Optimizer {
         }
     }
 
-    pub fn max_iters(&self) -> u64 {
+    pub fn max_iters(&self) -> u32 {
         self.max_iter
     }
 
@@ -114,7 +115,7 @@ impl Optimizer {
         self.best_optimization
     }
 
-    pub fn next_optimization(&mut self, last_time_nanos: u128) -> Option<Optimization> {
+    pub fn next_optimization(&mut self, last_time_nanos: u64) -> Option<Optimization> {
         if last_time_nanos < self.best_time_nanos {
             self.best_time_nanos = last_time_nanos;
             self.best_optimization = self.last;
@@ -174,7 +175,7 @@ struct WorkSizeOpt {
 }
 
 impl WorkSizeOpt {
-    fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
+    fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> (Self, u32) {
         fn divisors(x: usize, limit: usize) -> Vec<usize> {
             debug_assert_ne!(x, 0);
             let mut res = Vec::new();
@@ -217,16 +218,14 @@ impl WorkSizeOpt {
         }
 
         let max_local_threads = dev_info.max_local_threads;
-        Self { gws, gws_factors, max_local_threads }
-    }
 
-    fn max_index(&self) -> u64 {
-        self.gws_factors.iter().map(|gd| gd.len() as u64).product()
+        let max_idx = gws_factors.iter().map(|gd| gd.len() as u32).product();
+        (Self { gws, gws_factors, max_local_threads }, max_idx)
     }
 
     // Returns false if this index is invalid
     #[must_use]
-    fn apply_optimization(&self, index: u64, kernel: &mut Kernel) -> bool {
+    fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
         let mut value = index as usize;
         let mut result: Vec<usize> = Vec::new();
         for max in self.gws_factors.iter().map(|f| f.len()).rev() {
@@ -280,16 +279,12 @@ impl WorkSizeOpt {
 struct LoopUnrollingOpt {}
 
 impl LoopUnrollingOpt {
-    fn new(_kernel: &Kernel) -> Self {
-        Self {}
-    }
-
-    fn max_index(&self) -> u64 {
-        1
+    fn new(_kernel: &Kernel) -> (Self, u32) {
+        (Self {}, 1)
     }
 
     #[must_use]
-    fn apply_optimization(&self, _index: u64, _kernel: &mut Kernel) -> bool {
+    fn apply_optimization(&self, _index: u32, _kernel: &mut Kernel) -> bool {
         // TODO
         true
     }
@@ -404,13 +399,13 @@ impl LoopUnrollingOpt {
 }
 
 impl Optimization {
-    fn into_indices<const N: usize>(self, max_values: [u64; N]) -> [u64; N] {
+    fn into_indices<const N: usize>(self, max_values: [u32; N]) -> [u32; N] {
         let mut value = self.0;
         debug_assert!(
             value < max_values.iter().product(),
             "Index {self:?} out of range for {max_values:?}."
         );
-        let mut result: [u64; N] = [0; N];
+        let mut result: [u32; N] = [0; N];
 
         for i in (0..N).rev() {
             result[i] = value % max_values[i]; // Get the current component
@@ -440,7 +435,7 @@ struct LoopSplitOpt {
 }
 
 impl LoopSplitOpt {
-    fn new(kernel: &Kernel, max_depth: usize) -> Self {
+    fn new(kernel: &Kernel, max_depth: usize) -> (Self, u32) {
         let mut reduction_splits = Vec::new();
 
         // Find all reduction ops
@@ -452,11 +447,8 @@ impl LoopSplitOpt {
             }
         }
 
-        LoopSplitOpt { reduction_splits }
-    }
-
-    fn max_index(&self) -> u64 {
-        self.reduction_splits.iter().map(|splits| splits.len() as u64).product::<u64>()
+        let max_index = reduction_splits.iter().map(|splits| splits.len() as u32).product::<u32>();
+        (LoopSplitOpt { reduction_splits }, max_index)
     }
 
     fn generate_splits(dims: &[Dim], max_depth: usize) -> Vec<Vec<Dim>> {
@@ -506,13 +498,18 @@ impl LoopSplitOpt {
     }
 
     fn apply_optimization(&self, index: u64, kernel: &mut Kernel) -> bool {
+        /*println!();
+        kernel.debug();
+        println!();
+        println!();*/
         // Check if we have any reduction splits
         if self.reduction_splits.is_empty() {
             // No reduction operations found, nothing to optimize
             return true;
         }
 
-        // TODO This code has bad vibes. It should by able to apply splits to multiple loops at once.
+        // TODO This code has bad vibes. It should by able to apply splits to multiple loops at once,
+        // currently works only with single reduce loop.
         let (reduction_idx, split_idx) = self.decode_index(index);
 
         // 2. Find the target reduction operation using filter
@@ -527,6 +524,7 @@ impl LoopSplitOpt {
 
         // 3. Get the split dimensions and replace the dims in the reduction op
         let split_dims = self.reduction_splits[reduction_idx][split_idx].clone();
+        //println!("split_dims={split_dims:?}, reducing loop {reduce_op_id}");
 
         // Replace the dims in the reduction operation
         let n_reduce_dims;
@@ -538,12 +536,14 @@ impl LoopSplitOpt {
         }
 
         let min_param = self.find_min_param(kernel, reduce_op_id);
+        //println!("min_param={min_param}, n_reduce_dims={n_reduce_dims}");
         let mut n_skipped_axes = 0;
         for (op_id, op) in kernel.ops.iter_mut().enumerate() {
             match op {
                 Op::ConstView { view, .. } => {
                     if op_id >= min_param && op_id < reduce_op_id {
                         let rank = view.rank();
+                        //println!("rank={rank}");
                         view.reshape(
                             rank - n_skipped_axes - n_reduce_dims..rank - n_skipped_axes,
                             &split_dims,
@@ -560,7 +560,9 @@ impl LoopSplitOpt {
                     }
                 }
                 Op::Reduce { dims, .. } => {
-                    n_skipped_axes += dims.len();
+                    if op_id >= min_param && op_id < reduce_op_id {
+                        n_skipped_axes += dims.len();
+                    }
                 }
                 _ => {}
             }
@@ -688,3 +690,30 @@ fn test_generate_splits_fix() {
         );
     }
 }
+
+// In the future
+/*def wmma_pass(ir):
+    """
+    WMMA pass for already-tiled IR.
+    Assumes:
+      - Inner loops are fully tiled (autotuner chooses tile dimensions)
+      - Accumulators are sized to hold full tile sums
+      - Memory accesses are coalesced
+    """
+    for loop in ir.loops:
+        # Find inner-most multiply-accumulate / reduce loops
+        if is_inner_tile_reduction(loop):
+            mul_reduce_loop = loop.inner_mul_reduce  # e.g., BINARY Mul + REDUCE SUM
+
+            # Map entire loop to WMMA fragment
+            mul_reduce_loop.wrap_into_wmma_fragment()
+
+            # Map accumulator to WMMA C fragment
+            loop.accumulator.map_to_wmma_fragment()
+
+            # Redirect loads/stores to fragment memory
+            mul_reduce_loop.replace_loads_with_wmma_fragments()
+            mul_reduce_loop.replace_stores_with_wmma_fragments()
+
+            # Outer loops stay the same — iterate over WMMA tiles
+    return ir*/

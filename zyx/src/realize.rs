@@ -809,7 +809,7 @@ impl<'a> Kernelizer<'a> {
                 okernel = kernel.clone();
 
                 let Some(optimization) =
-                    optimizer.next_optimization(u128::MAX) else { return Err(ZyxError::KernelLaunchFailure) };
+                    optimizer.next_optimization(u64::MAX) else { return Err(ZyxError::KernelLaunchFailure) };
 
                 if !optimizer.apply_optimization(&mut okernel, optimization, self.debug.ir()) {
                     continue;
@@ -827,7 +827,7 @@ impl<'a> Kernelizer<'a> {
                 }
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 pool.pool.sync_events(vec![event])?;
-                nanos = timer.elapsed().as_nanos();
+                nanos = timer.elapsed().as_nanos() as u64;
 
                 break;
             }
@@ -842,7 +842,7 @@ impl<'a> Kernelizer<'a> {
             }
             optimizer.best_time_nanos = nanos;
         } else {
-            let mut last_time_nanos = u128::MAX;
+            let mut last_time_nanos = u64::MAX;
 
             pool.pool.sync_events(event_wait_list)?;
 
@@ -874,12 +874,12 @@ impl<'a> Kernelizer<'a> {
                     continue;
                 }
 
-                let res = (|| -> Result<(ProgramId, u128), BackendError> {
+                let res = (|| -> Result<(ProgramId, u64), BackendError> {
                     let program_id = device.compile(&kernel, self.debug.asm())?;
                     let begin = std::time::Instant::now();
                     let event = device.launch(program_id, &mut pool.pool, &args, Vec::new())?;
                     pool.pool.sync_events(vec![event])?;
-                    Ok((program_id, begin.elapsed().as_nanos()))
+                    Ok((program_id, begin.elapsed().as_nanos() as u64))
                 })();
 
                 last_time_nanos = if let Ok((program_id, last_time_nanos)) = res {
@@ -900,7 +900,7 @@ impl<'a> Kernelizer<'a> {
                             }
                         }
                     }
-                    u128::MAX
+                    u64::MAX
                 };
 
                 if let Some((prog_bar, flop, mem_read, mem_write)) = &mut progress_bar {
@@ -909,7 +909,7 @@ impl<'a> Kernelizer<'a> {
                         &format!(
                             "{}, best={}μs",
                             get_perf(*flop, *mem_read, *mem_write, last_time_nanos),
-                            if optimizer.best_time_nanos == u128::MAX {
+                            if optimizer.best_time_nanos == u64::MAX {
                                 ("inf").into()
                             } else {
                                 (optimizer.best_time_nanos / 1000).to_string()

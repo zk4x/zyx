@@ -180,11 +180,11 @@ impl Cache {
 }
 
 #[allow(clippy::similar_names)]
-pub fn get_perf(flop: u128, bytes_read: u128, bytes_written: u128, nanos: u128) -> String {
-    if nanos == u128::MAX {
+pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> String {
+    if nanos == u64::MAX {
         return format!("INF time taken");
     }
-    const fn value_unit(x: u128) -> (u128, &'static str) {
+    const fn value_unit(x: u64) -> (u64, &'static str) {
         match x {
             0..1000 => (x * 100, ""),
             1_000..1_000_000 => (x / 10, "k"),
@@ -295,7 +295,7 @@ impl Kernel {
         }
     }
 
-    pub fn flop_mem_rw(&self) -> (u128, u128, u128) {
+    pub fn flop_mem_rw(&self) -> (u64, u64, u64) {
         let stores: Vec<OpId> =
             self.ops.iter().enumerate().filter(|(_, op)| matches!(op, Op::StoreView { .. })).map(|(i, _)| i).collect();
 
@@ -305,13 +305,13 @@ impl Kernel {
         let mut visited = Map::with_hasher(BuildHasherDefault::new());
 
         // flop, memory read, memory write, number of elements being processed
-        fn recursive(x: OpId, ops: &[Op], visited: &mut Map<OpId, u128>) -> (u128, u128, u128) {
+        fn recursive(x: OpId, ops: &[Op], visited: &mut Map<OpId, u64>) -> (u64, u64, u64) {
             if visited.contains_key(&x) {
                 return (0, 0, 0);
             }
             let (f, r, w, n) = match &ops[x] {
-                Op::ConstView { view, .. } => (0, 0, 0, view.numel() as u128),
-                Op::LoadView { view, .. } => (0, view.original_numel() as u128, 0, view.numel() as u128),
+                Op::ConstView { view, .. } => (0, 0, 0, view.numel() as u64),
+                Op::LoadView { view, .. } => (0, view.original_numel() as u64, 0, view.numel() as u64),
                 Op::StoreView { src, .. } => {
                     let (f, r, w) = recursive(*src, ops, visited);
                     let n = visited[src];
@@ -332,7 +332,7 @@ impl Kernel {
                 Op::Reduce { x, dims, .. } => {
                     let (mut f, r, w) = recursive(*x, ops, visited);
                     let mut n = visited[x];
-                    let rd = dims.iter().product::<usize>() as u128;
+                    let rd = dims.iter().product::<usize>() as u64;
                     n /= rd;
                     f += n * (rd - 1);
                     (f, r, w, n)
@@ -1037,6 +1037,18 @@ impl Kernel {
             self.ops.push(Op::EndLoop);
             loop_id -= 1;
         }
+    }
+
+    pub fn loop_invariant_code_motion(&mut self) {
+        todo!()
+    }
+
+    pub fn loop_unroll(&mut self, loop_id: OpId) {
+        todo!()
+    }
+
+    pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
+        todo!()
     }
 
     pub fn dead_code_elimination(&mut self) {
