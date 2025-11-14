@@ -70,6 +70,8 @@
   - [ ] inner loop splitting
   - [ ] loop reordering
   - [ ] loop unrolling
+    - [ ] in optimizer
+    - [x] in kernel
   - [ ] loop invariant code motion
   - [ ] vectorization, vector dtypes
   - [ ] tensor cores/tiling

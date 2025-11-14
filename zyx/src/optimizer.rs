@@ -56,6 +56,10 @@ impl Optimizer {
         kernel.unfold_views();
         kernel.close_loops();
 
+        /*let loop_id =
+            kernel.ops.len() - kernel.ops.iter().rev().position(|op| matches!(op, Op::Loop { .. })).unwrap() - 1;
+        kernel.loop_unroll(loop_id);*/
+
         let mut temp_kernel = kernel.clone();
         for _ in 0..100 {
             // Limit max optimization iterations
@@ -693,27 +697,27 @@ fn test_generate_splits_fix() {
 
 // In the future
 /*def wmma_pass(ir):
-    """
+"""
     WMMA pass for already-tiled IR.
     Assumes:
       - Inner loops are fully tiled (autotuner chooses tile dimensions)
       - Accumulators are sized to hold full tile sums
       - Memory accesses are coalesced
     """
-    for loop in ir.loops:
-        # Find inner-most multiply-accumulate / reduce loops
-        if is_inner_tile_reduction(loop):
-            mul_reduce_loop = loop.inner_mul_reduce  # e.g., BINARY Mul + REDUCE SUM
+for loop in ir.loops:
+    # Find inner-most multiply-accumulate / reduce loops
+    if is_inner_tile_reduction(loop):
+        mul_reduce_loop = loop.inner_mul_reduce  # e.g., BINARY Mul + REDUCE SUM
 
-            # Map entire loop to WMMA fragment
-            mul_reduce_loop.wrap_into_wmma_fragment()
+        # Map entire loop to WMMA fragment
+        mul_reduce_loop.wrap_into_wmma_fragment()
 
-            # Map accumulator to WMMA C fragment
-            loop.accumulator.map_to_wmma_fragment()
+        # Map accumulator to WMMA C fragment
+        loop.accumulator.map_to_wmma_fragment()
 
-            # Redirect loads/stores to fragment memory
-            mul_reduce_loop.replace_loads_with_wmma_fragments()
-            mul_reduce_loop.replace_stores_with_wmma_fragments()
+        # Redirect loads/stores to fragment memory
+        mul_reduce_loop.replace_loads_with_wmma_fragments()
+        mul_reduce_loop.replace_stores_with_wmma_fragments()
 
-            # Outer loops stay the same — iterate over WMMA tiles
-    return ir*/
+        # Outer loops stay the same — iterate over WMMA tiles
+return ir*/

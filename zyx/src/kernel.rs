@@ -1044,7 +1044,44 @@ impl Kernel {
     }
 
     pub fn loop_unroll(&mut self, loop_id: OpId) {
-        todo!()
+        //self.debug();
+        //println!();
+        let Op::Loop { dim, scope } = self.ops[loop_id] else { unreachable!() };
+
+        // Get tail and body
+        let end_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::EndLoop)).unwrap() + loop_id;
+        //println!("end_loop_id={end_loop_id}, loop_id={loop_id}");
+        let mut tail = self.ops.split_off(end_loop_id + 1);
+        self.ops.pop();
+        let loop_body = self.ops.split_off(loop_id + 1);
+        self.ops.pop();
+        //Kernel { ops: loop_body.clone() }.debug();
+
+        // Repeat loop body
+        let mut n = 1;
+        for idx in 0..dim {
+            let mut body = loop_body.clone();
+            // First index as constant
+            let idx_const = self.ops.len();
+            self.ops.push(Op::Const(Constant::idx(idx as u64)));
+
+            // Increment body
+            increment(&mut body, n - 1, loop_id + 1..end_loop_id);
+            n += body.len() + 1;
+
+            // Remap body to use constant
+            let mut map = Map::default();
+            map.insert(loop_id, idx_const);
+            remap(&mut body, &map);
+            self.ops.extend(body);
+        }
+
+        // TODO increment loads and stores of define that happened before loop, but is used in tail
+
+        // Add tail, increment ops
+        increment(&mut tail, n, ..);
+        self.ops.extend(tail);
+        //self.debug();
     }
 
     pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
