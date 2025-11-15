@@ -1070,16 +1070,21 @@ impl Kernel {
 
         // LICM
         // Extract loop body and tail
-        let end_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::EndLoop)).unwrap() + loop_id;
+        let end_loop_id = self.get_end_loop_id(loop_id);
+
+        //println!("end_loop_id={end_loop_id}");
         let tail = self.ops.split_off(end_loop_id);
         let mut body = self.ops.split_off(loop_id);
         // for each op in loop body - if all parameters are invariant, mark as invariant, otherwise do nothing
         let mut i = 0;
         while i < body.len() {
-            //println!("op: {:?}", body[i]);
-            // If is invariant
-            if !matches!(body[i], Op::Loop { .. }) && body[i].parameters().all(|x| x < loop_id) {
-                //println!("invariant");
+            // If op is invariant
+            if !matches!(
+                body[i],
+                Op::Loop { .. } | Op::Store { .. } | Op::Load { .. } | Op::EndLoop | Op::Define { .. }
+            ) && body[i].parameters().all(|x| x < loop_id)
+            {
+                //println!("invariant op: {:?}", body[i]);
                 // Move op out of the loop
                 let op = body.remove(i);
                 self.ops.push(op);
@@ -1092,7 +1097,6 @@ impl Kernel {
                     1,
                     self.ops.len() - 1..self.ops.len() + i - 1,
                 );
-                //Kernel { ops: body.clone() }.debug();
             } else {
                 i += 1;
             }
@@ -1110,7 +1114,7 @@ impl Kernel {
         let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
 
         // Get tail and body
-        let end_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::EndLoop)).unwrap() + loop_id;
+        let end_loop_id = self.get_end_loop_id(loop_id);
         let mut tail = self.ops.split_off(end_loop_id + 1);
         self.ops.pop();
         let loop_body = self.ops.split_off(loop_id + 1);
@@ -1142,6 +1146,23 @@ impl Kernel {
 
     pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
         todo!()
+    }
+
+    fn get_end_loop_id(&mut self, loop_id: OpId) -> OpId {
+        let mut end_loop_id = loop_id;
+        let mut n_loops = 1;
+        while end_loop_id < self.ops.len() {
+            end_loop_id += 1;
+            match self.ops[end_loop_id] {
+                Op::Loop { .. } => n_loops += 1,
+                Op::EndLoop => n_loops -= 1,
+                _ => {}
+            }
+            if n_loops == 0 {
+                break;
+            }
+        }
+        end_loop_id
     }
 
     pub fn dead_code_elimination(&mut self) {
