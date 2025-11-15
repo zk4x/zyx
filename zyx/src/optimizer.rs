@@ -52,13 +52,8 @@ impl Optimizer {
         kernel.unfold_pows();
         kernel.unfold_reduces();
         kernel.define_globals();
-
         kernel.unfold_views();
         kernel.close_loops();
-
-        /*let loop_id =
-            kernel.ops.len() - kernel.ops.iter().rev().position(|op| matches!(op, Op::Loop { .. })).unwrap() - 1;
-        kernel.loop_unroll(loop_id);*/
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..100 {
@@ -67,6 +62,14 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
+
+            let mut op_id = kernel.ops.len();
+            while op_id > 0 {
+                op_id -= 1;
+                if matches!(kernel.ops[op_id], Op::Loop { .. }) {
+                    kernel.loop_invariant_code_motion(op_id);
+                }
+            }
 
             if !self.loop_unrolling_opt.apply_optimization(loop_opt_index, kernel) {
                 return false;
@@ -146,7 +149,7 @@ impl Optimizer {
             return None;
         }
         self.rand_iteration += 1;
-        let mut rng = crate::rng::Rng::seed_from_systime();
+        let mut rng = crate::rng::Rng::seed_from_u64(42); //seed_from_systime();
         for _ in 0..1_000_000 {
             let index = rng.range(0..self.max_iter);
             if self.tried.insert(Optimization(index)) {
@@ -290,6 +293,9 @@ impl LoopUnrollingOpt {
     #[must_use]
     fn apply_optimization(&self, _index: u32, _kernel: &mut Kernel) -> bool {
         // TODO
+        /*let loop_id =
+            kernel.ops.len() - kernel.ops.iter().rev().position(|op| matches!(op, Op::Loop { .. })).unwrap() - 1;
+        kernel.loop_unroll(loop_id);*/
         true
     }
 
@@ -355,26 +361,6 @@ impl LoopUnrollingOpt {
                 println!("{i} -> {op:?}");
             }*/
         }
-
-        /*fn loop_invariant_code_motion(ir: &mut Vec<Op>, range: Range<usize>) {
-            for op_id in range {
-                match &ir[op_id] {
-                    Op::ConstView { value, view } => todo!(),
-                    Op::LoadView { dtype, view } => todo!(),
-                    Op::Reduce { x, rop, dims } => todo!(),
-                    Op::Const(constant) => todo!(),
-                    Op::Load { dtype, index, arg_id } => todo!(),
-                    Op::DeclareAcc { dtype, rop } => todo!(),
-                    Op::Loop { dim, vectorize } => todo!(),
-                    Op::Accumulate { x, rop } => todo!(),
-                    Op::EndLoop => todo!(),
-                    Op::Store { x, index } => todo!(),
-                    Op::Cast { x, dtype } => todo!(),
-                    Op::Unary { x, uop } => todo!(),
-                    Op::Binary { x, y, bop } => todo!(),
-                }
-            }
-        }*/
 
         let mut ranges = Vec::new();
         let mut stack = Vec::new();

@@ -57,6 +57,28 @@ pub enum Op {
     EndLoop,
 }
 
+impl Op {
+    fn parameters(&self) -> impl Iterator<Item = OpId> {
+        match self {
+            Op::ConstView { .. } => vec![],
+            Op::LoadView { .. } => vec![],
+            Op::StoreView { src, .. } => vec![*src],
+            Op::Reduce { x, .. } => vec![*x],
+            Op::Store { dst, x, index } => vec![*dst, *x, *index],
+            Op::Cast { x, .. } => vec![*x],
+            Op::Unary { x, .. } => vec![*x],
+            Op::Binary { x, y, .. } => vec![*x, *y],
+            Op::Null => vec![],
+            Op::Const(..) => vec![],
+            Op::Define { .. } => vec![],
+            Op::Load { src, index } => vec![*src, *index],
+            Op::Loop { .. } => vec![],
+            Op::EndLoop => vec![],
+        }
+        .into_iter()
+    }
+}
+
 // This is SSA representation. All ops return immutable variables.
 // The Define op can define mutable variables.
 // Variables defined by define op can only be accessed with Load on Store ops,
@@ -1039,23 +1061,60 @@ impl Kernel {
         }
     }
 
-    pub fn loop_invariant_code_motion(&mut self) {
-        todo!()
+    pub fn loop_invariant_code_motion(&mut self, loop_id: OpId) {
+        //self.debug();
+        // TODO Reorder commutative
+        // Iterate:
+        //   find a chain of commutative ops like add/sub
+        //   reoder by moving loop index last
+
+        // LICM
+        // Extract loop body and tail
+        let end_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::EndLoop)).unwrap() + loop_id;
+        let tail = self.ops.split_off(end_loop_id);
+        let mut body = self.ops.split_off(loop_id);
+        // for each op in loop body - if all parameters are invariant, mark as invariant, otherwise do nothing
+        let mut i = 0;
+        while i < body.len() {
+            //println!("op: {:?}", body[i]);
+            // If is invariant
+            if !matches!(body[i], Op::Loop { .. }) && body[i].parameters().all(|x| x < loop_id) {
+                //println!("invariant");
+                // Move op out of the loop
+                let op = body.remove(i);
+                self.ops.push(op);
+
+                // Increment and remap all ops in the body accordingly
+                remap_or_increment(
+                    &mut body,
+                    self.ops.len() + i - 1,
+                    self.ops.len() - 1,
+                    1,
+                    self.ops.len() - 1..self.ops.len() + i - 1,
+                );
+                //Kernel { ops: body.clone() }.debug();
+            } else {
+                i += 1;
+            }
+        }
+
+        // Add body back to ops
+        self.ops.extend(body);
+        self.ops.extend(tail);
+        //println!();
+        //self.debug();
+        //panic!();
     }
 
     pub fn loop_unroll(&mut self, loop_id: OpId) {
-        //self.debug();
-        //println!();
-        let Op::Loop { dim, scope } = self.ops[loop_id] else { unreachable!() };
+        let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
 
         // Get tail and body
         let end_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::EndLoop)).unwrap() + loop_id;
-        //println!("end_loop_id={end_loop_id}, loop_id={loop_id}");
         let mut tail = self.ops.split_off(end_loop_id + 1);
         self.ops.pop();
         let loop_body = self.ops.split_off(loop_id + 1);
         self.ops.pop();
-        //Kernel { ops: loop_body.clone() }.debug();
 
         // Repeat loop body
         let mut n = 1;
@@ -1076,12 +1135,9 @@ impl Kernel {
             self.ops.extend(body);
         }
 
-        // TODO increment loads and stores of define that happened before loop, but is used in tail
-
         // Add tail, increment ops
-        increment(&mut tail, n, ..);
+        increment(&mut tail, n, end_loop_id..);
         self.ops.extend(tail);
-        //self.debug();
     }
 
     pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
@@ -1409,6 +1465,86 @@ fn remap(ops: &mut [Op], remap: &Map<OpId, OpId>) {
             Op::Binary { x, y, .. } => {
                 h(x);
                 h(y);
+            }
+        }
+    }
+}
+
+fn remap_or_increment(ops: &mut [Op], from: OpId, to: OpId, d: usize, range: impl RangeBounds<usize>) {
+    let start = match range.start_bound() {
+        std::ops::Bound::Included(x) => *x,
+        std::ops::Bound::Excluded(x) => *x + 1,
+        std::ops::Bound::Unbounded => 0,
+    };
+    let end = match range.end_bound() {
+        std::ops::Bound::Included(x) => *x + 1,
+        std::ops::Bound::Excluded(x) => *x,
+        std::ops::Bound::Unbounded => usize::MAX,
+    };
+    debug_assert!(start < end);
+    let range = start..end;
+
+    let hi = |x: &mut usize| {
+        //println!("{x}, {range:?}, contains={}", range.contains(x));
+        if range.contains(x) {
+            *x += d;
+        }
+    };
+
+    let hr = |x: &mut usize| -> bool {
+        if *x == from {
+            *x = to;
+            true
+        } else {
+            false
+        }
+    };
+
+    for op in ops {
+        match op {
+            Op::ConstView { .. }
+            | Op::LoadView { .. }
+            | Op::Const(_)
+            | Op::Loop { .. }
+            | Op::EndLoop
+            | Op::Define { .. }
+            | Op::Null => {}
+            Op::StoreView { src, .. } => {
+                if !hr(src) {
+                    hi(src);
+                }
+            }
+            Op::Load { src, index, .. } => {
+                if !hr(src) {
+                    hi(src);
+                }
+                if !hr(index) {
+                    hi(index);
+                }
+            }
+            Op::Store { dst, x: src, index } => {
+                if !hr(dst) {
+                    hi(dst);
+                }
+                if !hr(src) {
+                    hi(src);
+                }
+                if !hr(index) {
+                    hi(index);
+                }
+            }
+            Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
+                if !hr(x) {
+                    hi(x)
+                }
+            }
+            Op::Binary { x, y, .. } => {
+                if !hr(x) {
+                    hi(x);
+                }
+                if !hr(y) {
+                    hi(y);
+                }
             }
         }
     }
