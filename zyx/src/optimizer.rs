@@ -2,11 +2,10 @@ use nanoserde::{DeBin, SerBin};
 
 use crate::{
     backend::DeviceInfo,
-    dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope, increment},
     shape::Dim,
 };
-use std::{collections::HashSet, ops::Range};
+use std::collections::HashSet;
 
 // Indices in 0..max_index for each optimization Opt
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, DeBin, SerBin)]
@@ -51,9 +50,9 @@ impl Optimizer {
 
         kernel.unfold_pows();
         kernel.unfold_reduces();
+        kernel.close_loops();
         kernel.define_globals();
         kernel.unfold_views();
-        kernel.close_loops();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..100 {
@@ -149,7 +148,8 @@ impl Optimizer {
             return None;
         }
         self.rand_iteration += 1;
-        let mut rng = crate::rng::Rng::seed_from_u64(42); //seed_from_systime();
+        let mut rng = crate::rng::Rng::seed_from_u64(42);
+        //let mut rng = crate::rng::Rng::seed_from_systime();
         for _ in 0..1_000_000 {
             let index = rng.range(0..self.max_iter);
             if self.tried.insert(Optimization(index)) {
@@ -266,7 +266,7 @@ impl WorkSizeOpt {
         {
             let k = gws.len() + lws.len() + rws.len();
             let n = kernel.ops.len();
-            increment(&mut kernel.ops, k, 0..n);
+            increment(&mut kernel.ops, k as isize, 0..n);
             for &dim in rws.iter().rev() {
                 kernel.ops.insert(0, Op::Loop { dim, scope: Scope::Register });
             }
@@ -287,104 +287,22 @@ struct LoopUnrollingOpt {}
 
 impl LoopUnrollingOpt {
     fn new(_kernel: &Kernel) -> (Self, u32) {
-        (Self {}, 1)
+        (Self {}, 4) // 4, 8, 16, 32 unfolding
     }
 
     #[must_use]
-    fn apply_optimization(&self, _index: u32, _kernel: &mut Kernel) -> bool {
-        // TODO
-        /*let loop_id =
-            kernel.ops.len() - kernel.ops.iter().rev().position(|op| matches!(op, Op::Loop { .. })).unwrap() - 1;
-        kernel.loop_unroll(loop_id);*/
+    fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
+        let unroll_dim = 4 << index;
+        let mut op_id = kernel.ops.len();
+        while op_id > 0 {
+            op_id -= 1;
+            if let Op::Loop { dim, scope } = kernel.ops[op_id] {
+                if scope == Scope::Register && dim <= unroll_dim {
+                    kernel.loop_unroll(op_id);
+                }
+            }
+        }
         true
-    }
-
-    /// Unroll all loops with dimension <= `loop_unroll_size`
-    #[allow(unused)]
-    fn loop_optimization(kernel: &mut Kernel, loop_unroll_size: usize) {
-        fn unroll_loop(ir: &mut Vec<Op>, range: Range<usize>) {
-            let Op::Loop { dim, .. } = ir[range.start] else {
-                unreachable!("Expected Op::Loop at start of matched loop range");
-            };
-
-            let mut body = ir.split_off(range.start);
-            let mut tail = body.split_off(range.end - range.start);
-            body.pop();
-
-            // If body contains accumulator, we replace it with binary ops and DeclareAcc with constant
-            /*let mut replace_acc = if body.iter().any(|op| matches!(op, Op::Accumulate { .. })) {
-                ir.iter().rposition(|op| matches!(op, Op::DeclareAcc { .. }))
-            } else {
-                None
-            };
-            if let Some(decl_acc_id) = replace_acc {
-                if let Op::DeclareAcc { dtype, rop } = ir[decl_acc_id] {
-                    ir[decl_acc_id] = Op::Const(match rop {
-                        ROp::Sum => dtype.zero_constant(),
-                        ROp::Max => dtype.min_constant(),
-                    });
-                }
-            }*/
-
-            // Append body dim times
-            for i in 0..dim {
-                let mut body = body.clone();
-                let n = body.len();
-                increment(&mut body, i * n, range.clone());
-                body[0] = Op::Const(Constant::U32(i as u32));
-
-                /*if let Some(decl_acc_id) = replace_acc {
-                    for (op_id, op) in body.iter_mut().enumerate() {
-                        if let &mut Op::Accumulate { x, rop } = op {
-                            *op = Op::Binary {
-                                x,
-                                y: decl_acc_id,
-                                bop: match rop {
-                                    ROp::Sum => BOp::Add,
-                                    ROp::Max => BOp::Max,
-                                },
-                            };
-                            replace_acc = Some(op_id + ir.len());
-                            break;
-                        }
-                    }
-                }*/
-
-                ir.extend(body);
-            }
-
-            increment(&mut tail, (dim - 1) * body.len() - 1, range.end..usize::MAX);
-            increment(&mut tail, (dim - 1) * body.len(), range);
-            ir.extend(tail);
-
-            /*for (i, op) in ir.iter().enumerate() {
-                println!("{i} -> {op:?}");
-            }*/
-        }
-
-        let mut ranges = Vec::new();
-        let mut stack = Vec::new();
-
-        for (i, op) in kernel.ops.iter().enumerate() {
-            match op {
-                Op::Loop { dim, .. } => {
-                    stack.push((i, dim));
-                }
-                &Op::EndLoop => {
-                    if let Some((start, dim)) = stack.pop()
-                        && *dim <= loop_unroll_size
-                    {
-                        ranges.push(start..i + 1);
-                    }
-                }
-                _ => {}
-            }
-        }
-        //println!("{ranges:?}");
-
-        for range in ranges {
-            unroll_loop(&mut kernel.ops, range);
-        }
     }
 }
 
@@ -487,7 +405,7 @@ impl LoopSplitOpt {
         results
     }
 
-    fn apply_optimization(&self, index: u64, kernel: &mut Kernel) -> bool {
+    fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
         /*println!();
         kernel.debug();
         println!();
@@ -561,7 +479,7 @@ impl LoopSplitOpt {
         true
     }
 
-    fn decode_index(&self, index: u64) -> (usize, usize) {
+    fn decode_index(&self, index: u32) -> (usize, usize) {
         let mut idx = index as usize;
         for (i, splits) in self.reduction_splits.iter().enumerate() {
             if idx < splits.len() {

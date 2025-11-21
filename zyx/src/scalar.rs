@@ -158,7 +158,9 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     }
     /// Very small value of scalar, very close to zero, zero in case of integers
     #[must_use]
-    fn epsilon() -> Self { Self::zero() }
+    fn epsilon() -> Self {
+        Self::zero()
+    }
 }
 
 /// Float dtype
@@ -187,89 +189,163 @@ pub trait Float: Scalar {
 }
 
 impl Scalar for bf16 {
-    fn from_bf16(t: bf16) -> Self { t }
+    fn from_bf16(t: bf16) -> Self {
+        t
+    }
 
-    fn from_f16(t: f16) -> Self { bf16::from_f32(t.into()) }
+    fn from_f16(t: f16) -> Self {
+        bf16::from_f32(t.into())
+    }
 
     fn from_u64(t: u64) -> Self {
         let _ = t;
         todo!()
     }
 
-    fn from_f32(t: f32) -> Self { bf16::from_f32(t) }
+    fn from_f32(t: f32) -> Self {
+        bf16::from_f32(t)
+    }
 
-    fn from_f64(t: f64) -> Self { bf16::from_f64(t) }
+    fn from_f64(t: f64) -> Self {
+        bf16::from_f64(t)
+    }
 
-    fn from_u8(t: u8) -> Self { bf16::from_f32(f32::from(t)) }
+    fn from_u8(t: u8) -> Self {
+        bf16::from_f32(f32::from(t))
+    }
 
-    fn from_u16(t: u16) -> Self { bf16::from_f32(f32::from(t)) }
+    fn from_u16(t: u16) -> Self {
+        bf16::from_f32(f32::from(t))
+    }
 
-    fn from_u32(t: u32) -> Self { bf16::from_f64(f64::from(t)) }
+    fn from_u32(t: u32) -> Self {
+        bf16::from_f64(f64::from(t))
+    }
 
-    fn from_i8(t: i8) -> Self { bf16::from_f32(f32::from(t)) }
+    fn from_i8(t: i8) -> Self {
+        bf16::from_f32(f32::from(t))
+    }
 
-    fn from_i16(t: i16) -> Self { bf16::from_f32(f32::from(t)) }
+    fn from_i16(t: i16) -> Self {
+        bf16::from_f32(f32::from(t))
+    }
 
-    fn from_i32(t: i32) -> Self { bf16::from_f32(f32::from(u16::try_from(t).unwrap())) }
+    fn from_i32(t: i32) -> Self {
+        bf16::from_f32(f32::from(u16::try_from(t).unwrap()))
+    }
 
-    fn from_i64(t: i64) -> Self { bf16::from_f32(f32::from(u16::try_from(t).unwrap())) }
+    fn from_i64(t: i64) -> Self {
+        bf16::from_f32(f32::from(u16::try_from(t).unwrap()))
+    }
 
-    fn from_bool(t: bool) -> Self { bf16::from_f32(f32::from(t)) }
+    fn from_bool(t: bool) -> Self {
+        bf16::from_f32(f32::from(t))
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { bf16::from_le_bytes([bytes[0], bytes[1]]) }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        bf16::from_le_bytes([bytes[0], bytes[1]])
+    }
 
     fn dtype() -> DType {
         //DType::BF16
         todo!()
     }
 
-    fn zero() -> Self { bf16::ZERO }
+    fn zero() -> Self {
+        bf16::ZERO
+    }
 
-    fn one() -> Self { bf16::ONE }
+    fn one() -> Self {
+        bf16::ONE
+    }
 
-    fn byte_size() -> usize { 2 }
+    fn byte_size() -> usize {
+        2
+    }
 
-    fn abs(self) -> Self { self.max(-self) }
+    fn abs(self) -> Self {
+        self.max(-self)
+    }
 
-    fn neg(self) -> Self { -self }
+    fn neg(self) -> Self {
+        -self
+    }
 
-    fn relu(self) -> Self { self.max(bf16::ZERO) }
+    fn relu(self) -> Self {
+        self.max(bf16::ZERO)
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
-    fn pow(self, _rhs: Self) -> Self { todo!() }
+    fn pow(self, _rhs: Self) -> Self {
+        todo!()
+    }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != Self::ZERO || rhs != Self::ZERO }
+    fn or(self, rhs: Self) -> bool {
+        self != Self::ZERO || rhs != Self::ZERO
+    }
 
-    fn and(self, rhs: Self) -> bool { self != Self::ZERO && rhs != Self::ZERO }
+    fn and(self, rhs: Self) -> bool {
+        self != Self::ZERO && rhs != Self::ZERO
+    }
 
-    fn max(self, rhs: Self) -> Self { self.max(rhs) }
+    fn max(self, rhs: Self) -> Self {
+        self.max(rhs)
+    }
 
-    fn max_value() -> Self { bf16::MAX }
+    fn max_value() -> Self {
+        bf16::MAX
+    }
 
-    fn min_value() -> Self { bf16::MIN }
+    fn min_value() -> Self {
+        bf16::MIN
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { bf16::MIN_POSITIVE }
+    fn epsilon() -> Self {
+        bf16::MIN_POSITIVE
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
     fn bitxor(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -301,34 +377,56 @@ impl Scalar for bf16 {
 }
 
 impl Float for bf16 {
-    fn reciprocal(self) -> Self { bf16::ONE / self }
+    fn reciprocal(self) -> Self {
+        bf16::ONE / self
+    }
 
-    fn floor(self) -> Self { todo!() }
+    fn floor(self) -> Self {
+        todo!()
+    }
 
-    fn sin(self) -> Self { todo!() }
+    fn sin(self) -> Self {
+        todo!()
+    }
 
-    fn cos(self) -> Self { todo!() }
+    fn cos(self) -> Self {
+        todo!()
+    }
 
-    fn sqrt(self) -> Self { todo!() }
+    fn sqrt(self) -> Self {
+        todo!()
+    }
 
-    fn exp2(self) -> Self { todo!() }
+    fn exp2(self) -> Self {
+        todo!()
+    }
 
-    fn log2(self) -> Self { todo!() }
+    fn log2(self) -> Self {
+        todo!()
+    }
 }
 
 impl Scalar for f16 {
-    fn from_bf16(t: bf16) -> Self { f16::from_f32(t.to_f32()) }
+    fn from_bf16(t: bf16) -> Self {
+        f16::from_f32(t.to_f32())
+    }
 
-    fn from_f16(t: f16) -> Self { f16::from_f32(t.to_f32()) }
+    fn from_f16(t: f16) -> Self {
+        f16::from_f32(t.to_f32())
+    }
 
     fn from_u64(t: u64) -> Self {
         let _ = t;
         todo!()
     }
 
-    fn from_f32(t: f32) -> Self { f16::from_f32(t) }
+    fn from_f32(t: f32) -> Self {
+        f16::from_f32(t)
+    }
 
-    fn from_f64(t: f64) -> Self { f16::from_f64(t) }
+    fn from_f64(t: f64) -> Self {
+        f16::from_f64(t)
+    }
 
     fn from_u8(t: u8) -> Self {
         let _ = t;
@@ -340,7 +438,9 @@ impl Scalar for f16 {
         todo!()
     }
 
-    fn from_u32(t: u32) -> Self { f16::from_f64(t.into()) }
+    fn from_u32(t: u32) -> Self {
+        f16::from_f64(t.into())
+    }
 
     fn from_i8(t: i8) -> Self {
         let _ = t;
@@ -353,57 +453,107 @@ impl Scalar for f16 {
     }
 
     #[allow(clippy::cast_lossless)]
-    fn from_i32(t: i32) -> Self { f16::from_f64(t as f64) }
+    fn from_i32(t: i32) -> Self {
+        f16::from_f64(t as f64)
+    }
 
     #[allow(clippy::cast_precision_loss)]
-    fn from_i64(t: i64) -> Self { f16::from_f64(t as f64) }
+    fn from_i64(t: i64) -> Self {
+        f16::from_f64(t as f64)
+    }
 
     #[allow(clippy::cast_lossless)]
-    fn from_bool(t: bool) -> Self { f16::from_f64(t as i8 as f64) }
+    fn from_bool(t: bool) -> Self {
+        f16::from_f64(t as i8 as f64)
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { f16::from_le_bytes([bytes[0], bytes[1]]) }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        f16::from_le_bytes([bytes[0], bytes[1]])
+    }
 
-    fn dtype() -> DType { DType::F16 }
+    fn dtype() -> DType {
+        DType::F16
+    }
 
-    fn zero() -> Self { f16::ZERO }
+    fn zero() -> Self {
+        f16::ZERO
+    }
 
-    fn one() -> Self { f16::ONE }
+    fn one() -> Self {
+        f16::ONE
+    }
 
-    fn byte_size() -> usize { 2 }
+    fn byte_size() -> usize {
+        2
+    }
 
-    fn abs(self) -> Self { todo!() }
+    fn abs(self) -> Self {
+        todo!()
+    }
 
-    fn neg(self) -> Self { -self }
+    fn neg(self) -> Self {
+        -self
+    }
 
-    fn relu(self) -> Self { self.max(f16::ZERO) }
+    fn relu(self) -> Self {
+        self.max(f16::ZERO)
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
-    fn pow(self, rhs: Self) -> Self { f16::from_f32(self.to_f32().pow(rhs.to_f32())) }
+    fn pow(self, rhs: Self) -> Self {
+        f16::from_f32(self.to_f32().pow(rhs.to_f32()))
+    }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != Self::ZERO || rhs != Self::ZERO }
+    fn or(self, rhs: Self) -> bool {
+        self != Self::ZERO || rhs != Self::ZERO
+    }
 
-    fn and(self, rhs: Self) -> bool { self != Self::ZERO && rhs != Self::ZERO }
+    fn and(self, rhs: Self) -> bool {
+        self != Self::ZERO && rhs != Self::ZERO
+    }
 
-    fn max(self, rhs: Self) -> Self { f16::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        f16::max(self, rhs)
+    }
 
-    fn max_value() -> Self { f16::MAX }
+    fn max_value() -> Self {
+        f16::MAX
+    }
 
-    fn min_value() -> Self { f16::MIN }
+    fn min_value() -> Self {
+        f16::MIN
+    }
 
     fn is_equal(self, rhs: Self) -> bool {
         (self == -Self::INFINITY && rhs == -Self::INFINITY)
@@ -411,11 +561,17 @@ impl Scalar for f16 {
             || self.sub(rhs).abs() < self.abs() * f16::from_f32(0.0001)
     }
 
-    fn epsilon() -> Self { f16::from_f32(0.00001) }
+    fn epsilon() -> Self {
+        f16::from_f32(0.00001)
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
     fn bitxor(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -447,96 +603,180 @@ impl Scalar for f16 {
 }
 
 impl Float for f16 {
-    fn reciprocal(self) -> Self { f16::ONE / self }
+    fn reciprocal(self) -> Self {
+        f16::ONE / self
+    }
 
-    fn sin(self) -> Self { f16::from_f32(self.to_f32().sin()) }
+    fn sin(self) -> Self {
+        f16::from_f32(self.to_f32().sin())
+    }
 
-    fn cos(self) -> Self { f16::from_f32(self.to_f32().cos()) }
+    fn cos(self) -> Self {
+        f16::from_f32(self.to_f32().cos())
+    }
 
-    fn sqrt(self) -> Self { f16::from_f32(self.to_f32().sqrt()) }
+    fn sqrt(self) -> Self {
+        f16::from_f32(self.to_f32().sqrt())
+    }
 
-    fn exp2(self) -> Self { f16::from_f32(self.to_f32().exp2()) }
+    fn exp2(self) -> Self {
+        f16::from_f32(self.to_f32().exp2())
+    }
 
-    fn log2(self) -> Self { f16::from_f32(self.to_f32().log2()) }
+    fn log2(self) -> Self {
+        f16::from_f32(self.to_f32().log2())
+    }
 
-    fn floor(self) -> Self { f16::from_f32(self.to_f32().floor()) }
+    fn floor(self) -> Self {
+        f16::from_f32(self.to_f32().floor())
+    }
 }
 
 impl Scalar for f32 {
-    fn from_bf16(t: bf16) -> Self { t.into() }
+    fn from_bf16(t: bf16) -> Self {
+        t.into()
+    }
 
-    fn from_f16(t: f16) -> Self { t.into() }
+    fn from_f16(t: f16) -> Self {
+        t.into()
+    }
 
-    fn from_u16(t: u16) -> Self { t.into() }
+    fn from_u16(t: u16) -> Self {
+        t.into()
+    }
 
     #[allow(clippy::cast_precision_loss)]
-    fn from_u64(t: u64) -> Self { t as f32 }
+    fn from_u64(t: u64) -> Self {
+        t as f32
+    }
 
-    fn from_f32(t: f32) -> Self { t }
+    fn from_f32(t: f32) -> Self {
+        t
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f64(t: f64) -> Self { t as Self }
+    fn from_f64(t: f64) -> Self {
+        t as Self
+    }
 
-    fn from_u8(t: u8) -> Self { f32::from(t) }
-
-    #[allow(clippy::cast_precision_loss)]
-    fn from_u32(t: u32) -> Self { t as f32 }
-
-    fn from_i8(t: i8) -> Self { f32::from(t) }
-
-    fn from_i16(t: i16) -> Self { f32::from(t) }
+    fn from_u8(t: u8) -> Self {
+        f32::from(t)
+    }
 
     #[allow(clippy::cast_precision_loss)]
-    fn from_i32(t: i32) -> Self { t as f32 }
+    fn from_u32(t: u32) -> Self {
+        t as f32
+    }
+
+    fn from_i8(t: i8) -> Self {
+        f32::from(t)
+    }
+
+    fn from_i16(t: i16) -> Self {
+        f32::from(t)
+    }
 
     #[allow(clippy::cast_precision_loss)]
-    fn from_i64(t: i64) -> Self { t as f32 }
+    fn from_i32(t: i32) -> Self {
+        t as f32
+    }
 
-    fn from_bool(t: bool) -> Self { f32::from(i8::from(t)) }
+    #[allow(clippy::cast_precision_loss)]
+    fn from_i64(t: i64) -> Self {
+        t as f32
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) }
+    fn from_bool(t: bool) -> Self {
+        f32::from(i8::from(t))
+    }
 
-    fn dtype() -> DType { DType::F32 }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
 
-    fn zero() -> Self { 0. }
+    fn dtype() -> DType {
+        DType::F32
+    }
 
-    fn one() -> Self { 1. }
+    fn zero() -> Self {
+        0.
+    }
 
-    fn byte_size() -> usize { 4 }
+    fn one() -> Self {
+        1.
+    }
 
-    fn abs(self) -> Self { self.abs() }
+    fn byte_size() -> usize {
+        4
+    }
 
-    fn neg(self) -> Self { -self }
+    fn abs(self) -> Self {
+        self.abs()
+    }
 
-    fn relu(self) -> Self { self.max(0.) }
+    fn neg(self) -> Self {
+        -self
+    }
 
-    fn not(self) -> Self { if self == 0. { 1. } else { 0. } }
+    fn relu(self) -> Self {
+        self.max(0.)
+    }
 
-    fn nonzero(self) -> Self { f32::from(i8::from(self != 0.)) }
+    fn not(self) -> Self {
+        if self == 0. { 1. } else { 0. }
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn nonzero(self) -> Self {
+        f32::from(i8::from(self != 0.))
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn pow(self, rhs: Self) -> Self { self.powf(rhs) }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn pow(self, rhs: Self) -> Self {
+        self.powf(rhs)
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0. || rhs != 0. }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0. && rhs != 0. }
+    fn or(self, rhs: Self) -> bool {
+        self != 0. || rhs != 0.
+    }
 
-    fn max(self, rhs: Self) -> Self { f32::max(self, rhs) }
+    fn and(self, rhs: Self) -> bool {
+        self != 0. && rhs != 0.
+    }
 
-    fn max_value() -> Self { f32::MAX }
+    fn max(self, rhs: Self) -> Self {
+        f32::max(self, rhs)
+    }
 
-    fn min_value() -> Self { f32::MIN }
+    fn max_value() -> Self {
+        f32::MAX
+    }
+
+    fn min_value() -> Self {
+        f32::MIN
+    }
 
     fn is_equal(self, rhs: Self) -> bool {
         // Less than 0.1% error is OK
@@ -545,11 +785,17 @@ impl Scalar for f32 {
             || (self - rhs).abs() <= self.abs() * 0.001
     }
 
-    fn epsilon() -> Self { 0.0001 }
+    fn epsilon() -> Self {
+        0.0001
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { !self.is_equal(rhs) }
+    fn noteq(self, rhs: Self) -> bool {
+        !self.is_equal(rhs)
+    }
 
     fn bitxor(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -581,9 +827,13 @@ impl Scalar for f32 {
 }
 
 impl Float for f32 {
-    fn exp2(self) -> Self { self.exp2() }
+    fn exp2(self) -> Self {
+        self.exp2()
+    }
 
-    fn log2(self) -> Self { self.log2() }
+    fn log2(self) -> Self {
+        self.log2()
+    }
 
     fn sin(self) -> Self {
         //libm::sinf(self)
@@ -593,7 +843,9 @@ impl Float for f32 {
         f32::sin(self)
     }
 
-    fn floor(self) -> Self { f32::floor(self) }
+    fn floor(self) -> Self {
+        f32::floor(self)
+    }
 
     fn cos(self) -> Self {
         //libm::cosf(self)
@@ -616,39 +868,65 @@ impl Float for f32 {
         f32::sqrt(self)
     }
 
-    fn reciprocal(self) -> Self { 1.0 / self }
+    fn reciprocal(self) -> Self {
+        1.0 / self
+    }
 }
 
 impl Scalar for f64 {
-    fn from_bf16(t: bf16) -> Self { t.into() }
+    fn from_bf16(t: bf16) -> Self {
+        t.into()
+    }
 
-    fn from_f16(t: f16) -> Self { t.into() }
+    fn from_f16(t: f16) -> Self {
+        t.into()
+    }
 
     fn from_u64(t: u64) -> Self {
         let _ = t;
         todo!()
     }
 
-    fn from_f32(t: f32) -> Self { f64::from(t) }
+    fn from_f32(t: f32) -> Self {
+        f64::from(t)
+    }
 
-    fn from_f64(t: f64) -> Self { t }
+    fn from_f64(t: f64) -> Self {
+        t
+    }
 
-    fn from_u8(t: u8) -> Self { f64::from(t) }
+    fn from_u8(t: u8) -> Self {
+        f64::from(t)
+    }
 
-    fn from_u16(t: u16) -> Self { t.into() }
+    fn from_u16(t: u16) -> Self {
+        t.into()
+    }
 
-    fn from_u32(t: u32) -> Self { t.into() }
+    fn from_u32(t: u32) -> Self {
+        t.into()
+    }
 
-    fn from_i8(t: i8) -> Self { t.into() }
+    fn from_i8(t: i8) -> Self {
+        t.into()
+    }
 
-    fn from_i16(t: i16) -> Self { t.into() }
+    fn from_i16(t: i16) -> Self {
+        t.into()
+    }
 
-    fn from_i32(t: i32) -> Self { t.into() }
+    fn from_i32(t: i32) -> Self {
+        t.into()
+    }
 
     #[allow(clippy::cast_precision_loss)]
-    fn from_i64(t: i64) -> Self { t as f64 }
+    fn from_i64(t: i64) -> Self {
+        t as f64
+    }
 
-    fn from_bool(t: bool) -> Self { t.into() }
+    fn from_bool(t: bool) -> Self {
+        t.into()
+    }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
         f64::from_le_bytes([
@@ -656,58 +934,106 @@ impl Scalar for f64 {
         ])
     }
 
-    fn dtype() -> DType { DType::F64 }
+    fn dtype() -> DType {
+        DType::F64
+    }
 
-    fn zero() -> Self { 0. }
+    fn zero() -> Self {
+        0.
+    }
 
-    fn one() -> Self { 1. }
+    fn one() -> Self {
+        1.
+    }
 
-    fn byte_size() -> usize { 8 }
+    fn byte_size() -> usize {
+        8
+    }
 
-    fn abs(self) -> Self { self.abs() }
+    fn abs(self) -> Self {
+        self.abs()
+    }
 
-    fn neg(self) -> Self { -self }
+    fn neg(self) -> Self {
+        -self
+    }
 
-    fn relu(self) -> Self { self.max(0.) }
+    fn relu(self) -> Self {
+        self.max(0.)
+    }
 
-    fn not(self) -> Self { if self == 0. { 1. } else { 0. } }
+    fn not(self) -> Self {
+        if self == 0. { 1. } else { 0. }
+    }
 
-    fn nonzero(self) -> Self { u8::from(self != 0.).into() }
+    fn nonzero(self) -> Self {
+        u8::from(self != 0.).into()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
-    fn pow(self, rhs: Self) -> Self { self.powf(rhs) }
+    fn pow(self, rhs: Self) -> Self {
+        self.powf(rhs)
+    }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0. || rhs != 0. }
+    fn or(self, rhs: Self) -> bool {
+        self != 0. || rhs != 0.
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0. && rhs != 0. }
+    fn and(self, rhs: Self) -> bool {
+        self != 0. && rhs != 0.
+    }
 
-    fn max(self, rhs: Self) -> Self { f64::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        f64::max(self, rhs)
+    }
 
-    fn max_value() -> Self { f64::MAX }
+    fn max_value() -> Self {
+        f64::MAX
+    }
 
-    fn min_value() -> Self { f64::MIN }
+    fn min_value() -> Self {
+        f64::MIN
+    }
 
     fn is_equal(self, rhs: Self) -> bool {
         // Less than 0.1% error is OK
         (self == -f64::INFINITY && rhs == -f64::INFINITY) || (self - rhs).abs() <= self.abs() * 0.001
     }
 
-    fn epsilon() -> Self { 0.00001 }
+    fn epsilon() -> Self {
+        0.00001
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { !self.is_equal(rhs) }
+    fn noteq(self, rhs: Self) -> bool {
+        !self.is_equal(rhs)
+    }
 
     fn bitxor(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -739,19 +1065,33 @@ impl Scalar for f64 {
 }
 
 impl Float for f64 {
-    fn exp2(self) -> Self { self.exp2() }
+    fn exp2(self) -> Self {
+        self.exp2()
+    }
 
-    fn log2(self) -> Self { self.log2() }
+    fn log2(self) -> Self {
+        self.log2()
+    }
 
-    fn reciprocal(self) -> Self { 1.0 / self }
+    fn reciprocal(self) -> Self {
+        1.0 / self
+    }
 
-    fn floor(self) -> Self { self.floor() }
+    fn floor(self) -> Self {
+        self.floor()
+    }
 
-    fn sin(self) -> Self { f64::sin(self) }
+    fn sin(self) -> Self {
+        f64::sin(self)
+    }
 
-    fn cos(self) -> Self { f64::cos(self) }
+    fn cos(self) -> Self {
+        f64::cos(self)
+    }
 
-    fn sqrt(self) -> Self { f64::sqrt(self) }
+    fn sqrt(self) -> Self {
+        f64::sqrt(self)
+    }
 }
 
 impl Scalar for i8 {
@@ -767,90 +1107,168 @@ impl Scalar for i8 {
         t as Self
     }
 
-    fn from_u64(t: u64) -> Self { t.try_into().unwrap() }
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f32(t: f32) -> Self { t as Self }
+    fn from_f32(t: f32) -> Self {
+        t as Self
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f64(t: f64) -> Self { t as Self }
+    fn from_f64(t: f64) -> Self {
+        t as Self
+    }
 
-    fn from_u8(t: u8) -> Self { t.try_into().unwrap() }
+    fn from_u8(t: u8) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_u16(t: u16) -> Self { t.try_into().unwrap() }
+    fn from_u16(t: u16) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_u32(t: u32) -> Self { t.try_into().unwrap() }
+    fn from_u32(t: u32) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i8(t: i8) -> Self { t }
+    fn from_i8(t: i8) -> Self {
+        t
+    }
 
-    fn from_i16(t: i16) -> Self { Self::try_from(t).unwrap() }
+    fn from_i16(t: i16) -> Self {
+        Self::try_from(t).unwrap()
+    }
 
-    fn from_i32(t: i32) -> Self { Self::try_from(t).unwrap() }
+    fn from_i32(t: i32) -> Self {
+        Self::try_from(t).unwrap()
+    }
 
-    fn from_i64(t: i64) -> Self { Self::try_from(t).unwrap() }
+    fn from_i64(t: i64) -> Self {
+        Self::try_from(t).unwrap()
+    }
 
-    fn from_bool(t: bool) -> Self { Self::from(t) }
+    fn from_bool(t: bool) -> Self {
+        Self::from(t)
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { i8::from_le_bytes([bytes[0]]) }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        i8::from_le_bytes([bytes[0]])
+    }
 
-    fn dtype() -> DType { DType::I8 }
+    fn dtype() -> DType {
+        DType::I8
+    }
 
-    fn zero() -> Self { 0 }
+    fn zero() -> Self {
+        0
+    }
 
-    fn one() -> Self { 1 }
+    fn one() -> Self {
+        1
+    }
 
-    fn byte_size() -> usize { 1 }
+    fn byte_size() -> usize {
+        1
+    }
 
-    fn abs(self) -> Self { self.abs() }
+    fn abs(self) -> Self {
+        self.abs()
+    }
 
-    fn neg(self) -> Self { -self }
+    fn neg(self) -> Self {
+        -self
+    }
 
-    fn relu(self) -> Self { Ord::max(self, 0) }
+    fn relu(self) -> Self {
+        Ord::max(self, 0)
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
     fn pow(self, rhs: Self) -> Self {
         let _ = rhs;
         todo!()
     }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0 || rhs != 0 }
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0 && rhs != 0 }
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
+    }
 
-    fn max(self, rhs: Self) -> Self { <i8 as Ord>::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        <i8 as Ord>::max(self, rhs)
+    }
 
-    fn max_value() -> Self { i8::MAX }
+    fn max_value() -> Self {
+        i8::MAX
+    }
 
-    fn min_value() -> Self { i8::MIN }
+    fn min_value() -> Self {
+        i8::MIN
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { 0 }
+    fn epsilon() -> Self {
+        0
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
 
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -865,100 +1283,182 @@ impl Scalar for i8 {
 
 impl Scalar for i16 {
     #[allow(clippy::cast_possible_truncation)]
-    fn from_bf16(t: bf16) -> Self { t.to_f32() as i16 }
+    fn from_bf16(t: bf16) -> Self {
+        t.to_f32() as i16
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f16(t: f16) -> Self { t.to_f32() as i16 }
+    fn from_f16(t: f16) -> Self {
+        t.to_f32() as i16
+    }
 
-    fn from_u64(t: u64) -> Self { t.try_into().unwrap() }
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f32(t: f32) -> Self { t as i16 }
+    fn from_f32(t: f32) -> Self {
+        t as i16
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f64(t: f64) -> Self { t as i16 }
+    fn from_f64(t: f64) -> Self {
+        t as i16
+    }
 
-    fn from_u8(t: u8) -> Self { t.into() }
+    fn from_u8(t: u8) -> Self {
+        t.into()
+    }
 
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_possible_wrap)]
-    fn from_u16(t: u16) -> Self { t as i16 }
+    fn from_u16(t: u16) -> Self {
+        t as i16
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_u32(t: u32) -> Self { t as i16 }
+    fn from_u32(t: u32) -> Self {
+        t as i16
+    }
 
-    fn from_i8(t: i8) -> Self { t.into() }
+    fn from_i8(t: i8) -> Self {
+        t.into()
+    }
 
-    fn from_i16(t: i16) -> Self { t }
+    fn from_i16(t: i16) -> Self {
+        t
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_i32(t: i32) -> Self { t as i16 }
+    fn from_i32(t: i32) -> Self {
+        t as i16
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_i64(t: i64) -> Self { t as i16 }
+    fn from_i64(t: i64) -> Self {
+        t as i16
+    }
 
-    fn from_bool(t: bool) -> Self { t.into() }
+    fn from_bool(t: bool) -> Self {
+        t.into()
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { i16::from_le_bytes([bytes[0], bytes[1]]) }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        i16::from_le_bytes([bytes[0], bytes[1]])
+    }
 
-    fn dtype() -> DType { DType::I16 }
+    fn dtype() -> DType {
+        DType::I16
+    }
 
-    fn zero() -> Self { 0 }
+    fn zero() -> Self {
+        0
+    }
 
-    fn one() -> Self { 1 }
+    fn one() -> Self {
+        1
+    }
 
-    fn byte_size() -> usize { 2 }
+    fn byte_size() -> usize {
+        2
+    }
 
-    fn abs(self) -> Self { todo!() }
+    fn abs(self) -> Self {
+        todo!()
+    }
 
-    fn neg(self) -> Self { -self }
+    fn neg(self) -> Self {
+        -self
+    }
 
-    fn relu(self) -> Self { Ord::max(self, 0) }
+    fn relu(self) -> Self {
+        Ord::max(self, 0)
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
     fn pow(self, rhs: Self) -> Self {
         let _ = rhs;
         todo!()
     }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0 || rhs != 0 }
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0 && rhs != 0 }
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
+    }
 
-    fn max(self, rhs: Self) -> Self { Ord::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        Ord::max(self, rhs)
+    }
 
-    fn max_value() -> Self { i16::MAX }
+    fn max_value() -> Self {
+        i16::MAX
+    }
 
-    fn min_value() -> Self { i16::MIN }
+    fn min_value() -> Self {
+        i16::MIN
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { 0 }
+    fn epsilon() -> Self {
+        0
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
 
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -982,88 +1482,168 @@ impl Scalar for i32 {
         todo!()
     }
 
-    fn from_u64(t: u64) -> Self { t.try_into().unwrap() }
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f32(t: f32) -> Self { t as i32 }
+    fn from_f32(t: f32) -> Self {
+        t as i32
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f64(t: f64) -> Self { t as i32 }
+    fn from_f64(t: f64) -> Self {
+        t as i32
+    }
 
-    fn from_u8(t: u8) -> Self { t.into() }
+    fn from_u8(t: u8) -> Self {
+        t.into()
+    }
 
-    fn from_u16(t: u16) -> Self { t.into() }
+    fn from_u16(t: u16) -> Self {
+        t.into()
+    }
 
-    fn from_u32(t: u32) -> Self { i32::try_from(t).unwrap() }
+    fn from_u32(t: u32) -> Self {
+        i32::try_from(t).unwrap()
+    }
 
-    fn from_i8(t: i8) -> Self { t.into() }
+    fn from_i8(t: i8) -> Self {
+        t.into()
+    }
 
-    fn from_i16(t: i16) -> Self { t.into() }
+    fn from_i16(t: i16) -> Self {
+        t.into()
+    }
 
-    fn from_i32(t: i32) -> Self { t }
+    fn from_i32(t: i32) -> Self {
+        t
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_i64(t: i64) -> Self { t as i32 }
+    fn from_i64(t: i64) -> Self {
+        t as i32
+    }
 
-    fn from_bool(t: bool) -> Self { t.into() }
+    fn from_bool(t: bool) -> Self {
+        t.into()
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
 
-    fn dtype() -> DType { DType::I32 }
+    fn dtype() -> DType {
+        DType::I32
+    }
 
-    fn zero() -> Self { 0 }
+    fn zero() -> Self {
+        0
+    }
 
-    fn one() -> Self { 1 }
+    fn one() -> Self {
+        1
+    }
 
-    fn byte_size() -> usize { 4 }
+    fn byte_size() -> usize {
+        4
+    }
 
-    fn abs(self) -> Self { todo!() }
+    fn abs(self) -> Self {
+        todo!()
+    }
 
-    fn neg(self) -> Self { -self }
+    fn neg(self) -> Self {
+        -self
+    }
 
-    fn relu(self) -> Self { <i32 as Ord>::max(self, 0) }
+    fn relu(self) -> Self {
+        <i32 as Ord>::max(self, 0)
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
-    fn pow(self, rhs: Self) -> Self { i32::pow(self, u32::try_from(rhs).unwrap()) }
+    fn pow(self, rhs: Self) -> Self {
+        i32::pow(self, u32::try_from(rhs).unwrap())
+    }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0 || rhs != 0 }
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0 && rhs != 0 }
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
+    }
 
-    fn max(self, rhs: Self) -> Self { <i32 as Ord>::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        <i32 as Ord>::max(self, rhs)
+    }
 
-    fn max_value() -> Self { i32::MAX }
+    fn max_value() -> Self {
+        i32::MAX
+    }
 
-    fn min_value() -> Self { i32::MIN }
+    fn min_value() -> Self {
+        i32::MIN
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { 0 }
+    fn epsilon() -> Self {
+        0
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
 
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -1087,29 +1667,51 @@ impl Scalar for i64 {
         todo!()
     }
 
-    fn from_u64(t: u64) -> Self { t.try_into().unwrap() }
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f32(t: f32) -> Self { t as Self }
+    fn from_f32(t: f32) -> Self {
+        t as Self
+    }
 
     #[allow(clippy::cast_possible_truncation)]
-    fn from_f64(t: f64) -> Self { t as Self }
+    fn from_f64(t: f64) -> Self {
+        t as Self
+    }
 
-    fn from_u8(t: u8) -> Self { t.into() }
+    fn from_u8(t: u8) -> Self {
+        t.into()
+    }
 
-    fn from_u16(t: u16) -> Self { t.into() }
+    fn from_u16(t: u16) -> Self {
+        t.into()
+    }
 
-    fn from_u32(t: u32) -> Self { t.into() }
+    fn from_u32(t: u32) -> Self {
+        t.into()
+    }
 
-    fn from_i8(t: i8) -> Self { t.into() }
+    fn from_i8(t: i8) -> Self {
+        t.into()
+    }
 
-    fn from_i16(t: i16) -> Self { t.into() }
+    fn from_i16(t: i16) -> Self {
+        t.into()
+    }
 
-    fn from_i32(t: i32) -> Self { t.into() }
+    fn from_i32(t: i32) -> Self {
+        t.into()
+    }
 
-    fn from_i64(t: i64) -> Self { t }
+    fn from_i64(t: i64) -> Self {
+        t
+    }
 
-    fn from_bool(t: bool) -> Self { t.into() }
+    fn from_bool(t: bool) -> Self {
+        t.into()
+    }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
         i64::from_le_bytes([
@@ -1117,61 +1719,117 @@ impl Scalar for i64 {
         ])
     }
 
-    fn dtype() -> DType { DType::I64 }
+    fn dtype() -> DType {
+        DType::I64
+    }
 
-    fn zero() -> Self { 0 }
+    fn zero() -> Self {
+        0
+    }
 
-    fn one() -> Self { 1 }
+    fn one() -> Self {
+        1
+    }
 
-    fn byte_size() -> usize { 8 }
+    fn byte_size() -> usize {
+        8
+    }
 
-    fn abs(self) -> Self { todo!() }
+    fn abs(self) -> Self {
+        todo!()
+    }
 
-    fn neg(self) -> Self { -self }
+    fn neg(self) -> Self {
+        -self
+    }
 
-    fn relu(self) -> Self { <i64 as Ord>::max(self, 0) }
+    fn relu(self) -> Self {
+        <i64 as Ord>::max(self, 0)
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
-    fn pow(self, rhs: Self) -> Self { i64::pow(self, u32::try_from(rhs).unwrap()) }
+    fn pow(self, rhs: Self) -> Self {
+        i64::pow(self, u32::try_from(rhs).unwrap())
+    }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0 || rhs != 0 }
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0 && rhs != 0 }
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
+    }
 
-    fn max(self, rhs: Self) -> Self { <i64 as Ord>::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        <i64 as Ord>::max(self, rhs)
+    }
 
-    fn max_value() -> Self { Self::MAX }
+    fn max_value() -> Self {
+        Self::MAX
+    }
 
-    fn min_value() -> Self { Self::MIN }
+    fn min_value() -> Self {
+        Self::MIN
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { 0 }
+    fn epsilon() -> Self {
+        0
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
 
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -1205,84 +1863,158 @@ impl Scalar for u8 {
         todo!()
     }
 
-    fn from_u8(t: u8) -> Self { t }
+    fn from_u8(t: u8) -> Self {
+        t
+    }
 
-    fn from_u16(t: u16) -> Self { t.try_into().unwrap() }
+    fn from_u16(t: u16) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_u32(t: u32) -> Self { t.try_into().unwrap() }
+    fn from_u32(t: u32) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_u64(t: u64) -> Self { t.try_into().unwrap() }
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i8(t: i8) -> Self { t.try_into().unwrap() }
+    fn from_i8(t: i8) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i16(t: i16) -> Self { t.try_into().unwrap() }
+    fn from_i16(t: i16) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i32(t: i32) -> Self { t.try_into().unwrap() }
+    fn from_i32(t: i32) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i64(t: i64) -> Self { t.try_into().unwrap() }
+    fn from_i64(t: i64) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_bool(t: bool) -> Self { t.into() }
+    fn from_bool(t: bool) -> Self {
+        t.into()
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { u8::from_le_bytes([bytes[0]]) }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        u8::from_le_bytes([bytes[0]])
+    }
 
-    fn dtype() -> DType { DType::U8 }
+    fn dtype() -> DType {
+        DType::U8
+    }
 
-    fn zero() -> Self { 0 }
+    fn zero() -> Self {
+        0
+    }
 
-    fn one() -> Self { 1 }
+    fn one() -> Self {
+        1
+    }
 
-    fn byte_size() -> usize { 1 }
+    fn byte_size() -> usize {
+        1
+    }
 
-    fn abs(self) -> Self { todo!() }
+    fn abs(self) -> Self {
+        todo!()
+    }
 
-    fn neg(self) -> Self { todo!() }
+    fn neg(self) -> Self {
+        todo!()
+    }
 
-    fn relu(self) -> Self { todo!() }
+    fn relu(self) -> Self {
+        todo!()
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
     fn pow(self, rhs: Self) -> Self {
         let _ = rhs;
         todo!()
     }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0 || rhs != 0 }
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0 && rhs != 0 }
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
+    }
 
-    fn max(self, rhs: Self) -> Self { Ord::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        Ord::max(self, rhs)
+    }
 
-    fn max_value() -> Self { u8::MAX }
+    fn max_value() -> Self {
+        u8::MAX
+    }
 
-    fn min_value() -> Self { u8::MIN }
+    fn min_value() -> Self {
+        u8::MIN
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { 0 }
+    fn epsilon() -> Self {
+        0
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
 
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -1316,84 +2048,158 @@ impl Scalar for u16 {
         todo!()
     }
 
-    fn from_u8(t: u8) -> Self { t.into() }
+    fn from_u8(t: u8) -> Self {
+        t.into()
+    }
 
-    fn from_u32(t: u32) -> Self { t.try_into().unwrap() }
+    fn from_u32(t: u32) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_u64(t: u64) -> Self { t.try_into().unwrap() }
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i8(t: i8) -> Self { t.try_into().unwrap() }
+    fn from_i8(t: i8) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i16(t: i16) -> Self { t.try_into().unwrap() }
+    fn from_i16(t: i16) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i32(t: i32) -> Self { t.try_into().unwrap() }
+    fn from_i32(t: i32) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i64(t: i64) -> Self { t.try_into().unwrap() }
+    fn from_i64(t: i64) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_bool(t: bool) -> Self { t.into() }
+    fn from_bool(t: bool) -> Self {
+        t.into()
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { Self::from_le_bytes([bytes[0], bytes[1]]) }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        Self::from_le_bytes([bytes[0], bytes[1]])
+    }
 
-    fn dtype() -> DType { DType::U32 }
+    fn dtype() -> DType {
+        DType::U32
+    }
 
-    fn zero() -> Self { 0 }
+    fn zero() -> Self {
+        0
+    }
 
-    fn one() -> Self { 1 }
+    fn one() -> Self {
+        1
+    }
 
-    fn byte_size() -> usize { 4 }
+    fn byte_size() -> usize {
+        4
+    }
 
-    fn abs(self) -> Self { todo!() }
+    fn abs(self) -> Self {
+        todo!()
+    }
 
-    fn neg(self) -> Self { todo!() }
+    fn neg(self) -> Self {
+        todo!()
+    }
 
-    fn relu(self) -> Self { todo!() }
+    fn relu(self) -> Self {
+        todo!()
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
     fn pow(self, rhs: Self) -> Self {
         let _ = rhs;
         todo!()
     }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0 || rhs != 0 }
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0 && rhs != 0 }
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
+    }
 
-    fn max(self, rhs: Self) -> Self { Ord::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        Ord::max(self, rhs)
+    }
 
-    fn max_value() -> Self { Self::MAX }
+    fn max_value() -> Self {
+        Self::MAX
+    }
 
-    fn min_value() -> Self { Self::MIN }
+    fn min_value() -> Self {
+        Self::MIN
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { 0 }
+    fn epsilon() -> Self {
+        0
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
 
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
-    fn from_u16(t: u16) -> Self { t }
+    fn from_u16(t: u16) -> Self {
+        t
+    }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -1427,84 +2233,158 @@ impl Scalar for u32 {
         todo!()
     }
 
-    fn from_u8(t: u8) -> Self { t.into() }
+    fn from_u8(t: u8) -> Self {
+        t.into()
+    }
 
-    fn from_u16(t: u16) -> Self { t.into() }
+    fn from_u16(t: u16) -> Self {
+        t.into()
+    }
 
-    fn from_u32(t: u32) -> Self { t }
+    fn from_u32(t: u32) -> Self {
+        t
+    }
 
-    fn from_u64(t: u64) -> Self { t.try_into().unwrap() }
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i8(t: i8) -> Self { t.try_into().unwrap() }
+    fn from_i8(t: i8) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i16(t: i16) -> Self { t.try_into().unwrap() }
+    fn from_i16(t: i16) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i32(t: i32) -> Self { t.try_into().unwrap() }
+    fn from_i32(t: i32) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i64(t: i64) -> Self { t.try_into().unwrap() }
+    fn from_i64(t: i64) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_bool(t: bool) -> Self { t.into() }
+    fn from_bool(t: bool) -> Self {
+        t.into()
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { Self::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        Self::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
 
-    fn dtype() -> DType { DType::U32 }
+    fn dtype() -> DType {
+        DType::U32
+    }
 
-    fn zero() -> Self { 0 }
+    fn zero() -> Self {
+        0
+    }
 
-    fn one() -> Self { 1 }
+    fn one() -> Self {
+        1
+    }
 
-    fn byte_size() -> usize { 4 }
+    fn byte_size() -> usize {
+        4
+    }
 
-    fn abs(self) -> Self { todo!() }
+    fn abs(self) -> Self {
+        todo!()
+    }
 
-    fn neg(self) -> Self { todo!() }
+    fn neg(self) -> Self {
+        todo!()
+    }
 
-    fn relu(self) -> Self { todo!() }
+    fn relu(self) -> Self {
+        todo!()
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self - rhs
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
     fn pow(self, rhs: Self) -> Self {
         let _ = rhs;
         todo!()
     }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0 || rhs != 0 }
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0 && rhs != 0 }
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
+    }
 
-    fn max(self, rhs: Self) -> Self { Ord::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        Ord::max(self, rhs)
+    }
 
-    fn max_value() -> Self { Self::MAX }
+    fn max_value() -> Self {
+        Self::MAX
+    }
 
-    fn min_value() -> Self { Self::MIN }
+    fn min_value() -> Self {
+        Self::MIN
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { 0 }
+    fn epsilon() -> Self {
+        0
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
 
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -1538,23 +2418,41 @@ impl Scalar for u64 {
         todo!()
     }
 
-    fn from_u8(t: u8) -> Self { t.into() }
+    fn from_u8(t: u8) -> Self {
+        t.into()
+    }
 
-    fn from_u16(t: u16) -> Self { t.into() }
+    fn from_u16(t: u16) -> Self {
+        t.into()
+    }
 
-    fn from_u32(t: u32) -> Self { t.into() }
+    fn from_u32(t: u32) -> Self {
+        t.into()
+    }
 
-    fn from_u64(t: u64) -> Self { t }
+    fn from_u64(t: u64) -> Self {
+        t
+    }
 
-    fn from_i8(t: i8) -> Self { t.try_into().unwrap() }
+    fn from_i8(t: i8) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i16(t: i16) -> Self { t.try_into().unwrap() }
+    fn from_i16(t: i16) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i32(t: i32) -> Self { t.try_into().unwrap() }
+    fn from_i32(t: i32) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_i64(t: i64) -> Self { t.try_into().unwrap() }
+    fn from_i64(t: i64) -> Self {
+        t.try_into().unwrap()
+    }
 
-    fn from_bool(t: bool) -> Self { t.into() }
+    fn from_bool(t: bool) -> Self {
+        t.into()
+    }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
         Self::from_le_bytes([
@@ -1562,66 +2460,122 @@ impl Scalar for u64 {
         ])
     }
 
-    fn dtype() -> DType { DType::U64 }
+    fn dtype() -> DType {
+        DType::U64
+    }
 
-    fn zero() -> Self { 0 }
+    fn zero() -> Self {
+        0
+    }
 
-    fn one() -> Self { 1 }
+    fn one() -> Self {
+        1
+    }
 
-    fn byte_size() -> usize { 4 }
+    fn byte_size() -> usize {
+        4
+    }
 
-    fn abs(self) -> Self { todo!() }
+    fn abs(self) -> Self {
+        todo!()
+    }
 
-    fn neg(self) -> Self { todo!() }
+    fn neg(self) -> Self {
+        todo!()
+    }
 
-    fn relu(self) -> Self { todo!() }
+    fn relu(self) -> Self {
+        todo!()
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self + rhs }
+    fn add(self, rhs: Self) -> Self {
+        self + rhs
+    }
 
-    fn sub(self, rhs: Self) -> Self { self - rhs }
+    fn sub(self, rhs: Self) -> Self {
+        self.wrapping_sub(rhs)
+    }
 
-    fn mul(self, rhs: Self) -> Self { self * rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self * rhs
+    }
 
-    fn div(self, rhs: Self) -> Self { self / rhs }
+    fn div(self, rhs: Self) -> Self {
+        self / rhs
+    }
 
     fn pow(self, rhs: Self) -> Self {
         let _ = rhs;
         todo!()
     }
 
-    fn cmplt(self, rhs: Self) -> bool { self < rhs }
+    fn cmplt(self, rhs: Self) -> bool {
+        self < rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> bool { self > rhs }
+    fn cmpgt(self, rhs: Self) -> bool {
+        self > rhs
+    }
 
-    fn or(self, rhs: Self) -> bool { self != 0 || rhs != 0 }
+    fn or(self, rhs: Self) -> bool {
+        self != 0 || rhs != 0
+    }
 
-    fn and(self, rhs: Self) -> bool { self != 0 && rhs != 0 }
+    fn and(self, rhs: Self) -> bool {
+        self != 0 && rhs != 0
+    }
 
-    fn max(self, rhs: Self) -> Self { Ord::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        Ord::max(self, rhs)
+    }
 
-    fn max_value() -> Self { Self::MAX }
+    fn max_value() -> Self {
+        Self::MAX
+    }
 
-    fn min_value() -> Self { Self::MIN }
+    fn min_value() -> Self {
+        Self::MIN
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { 0 }
+    fn epsilon() -> Self {
+        0
+    }
 
-    fn mod_(self, rhs: Self) -> Self { self % rhs }
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
 
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
-    fn bitshiftleft(self, rhs: Self) -> Self { self << rhs }
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        self << rhs
+    }
 
     fn bitshiftright(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -1630,60 +2584,110 @@ impl Scalar for u64 {
 }
 
 impl Scalar for bool {
-    fn from_bf16(t: bf16) -> Self { t != bf16::ZERO }
+    fn from_bf16(t: bf16) -> Self {
+        t != bf16::ZERO
+    }
 
-    fn from_f16(t: f16) -> Self { t != f16::ZERO }
+    fn from_f16(t: f16) -> Self {
+        t != f16::ZERO
+    }
 
-    fn from_u64(t: u64) -> Self { t != 0 }
+    fn from_u64(t: u64) -> Self {
+        t != 0
+    }
 
-    fn from_f32(t: f32) -> Self { t != 0. }
+    fn from_f32(t: f32) -> Self {
+        t != 0.
+    }
 
-    fn from_f64(t: f64) -> Self { t != 0. }
+    fn from_f64(t: f64) -> Self {
+        t != 0.
+    }
 
-    fn from_u8(t: u8) -> Self { t != 0 }
+    fn from_u8(t: u8) -> Self {
+        t != 0
+    }
 
-    fn from_u16(t: u16) -> Self { t != 0 }
+    fn from_u16(t: u16) -> Self {
+        t != 0
+    }
 
-    fn from_u32(t: u32) -> Self { t != 0 }
+    fn from_u32(t: u32) -> Self {
+        t != 0
+    }
 
-    fn from_i8(t: i8) -> Self { t != 0 }
+    fn from_i8(t: i8) -> Self {
+        t != 0
+    }
 
-    fn from_i16(t: i16) -> Self { t != 0 }
+    fn from_i16(t: i16) -> Self {
+        t != 0
+    }
 
-    fn from_i32(t: i32) -> Self { t != 0 }
+    fn from_i32(t: i32) -> Self {
+        t != 0
+    }
 
-    fn from_i64(t: i64) -> Self { t != 0 }
+    fn from_i64(t: i64) -> Self {
+        t != 0
+    }
 
-    fn from_bool(t: bool) -> Self { t }
+    fn from_bool(t: bool) -> Self {
+        t
+    }
 
-    fn from_le_bytes(bytes: &[u8]) -> Self { bytes[0] != 0 }
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        bytes[0] != 0
+    }
 
-    fn dtype() -> DType { DType::Bool }
+    fn dtype() -> DType {
+        DType::Bool
+    }
 
-    fn zero() -> Self { false }
+    fn zero() -> Self {
+        false
+    }
 
-    fn one() -> Self { true }
+    fn one() -> Self {
+        true
+    }
 
-    fn byte_size() -> usize { 1 }
+    fn byte_size() -> usize {
+        1
+    }
 
-    fn abs(self) -> Self { self }
+    fn abs(self) -> Self {
+        self
+    }
 
-    fn neg(self) -> Self { panic!() }
+    fn neg(self) -> Self {
+        panic!()
+    }
 
-    fn relu(self) -> Self { panic!() }
+    fn relu(self) -> Self {
+        panic!()
+    }
 
-    fn not(self) -> Self { todo!() }
+    fn not(self) -> Self {
+        todo!()
+    }
 
-    fn nonzero(self) -> Self { todo!() }
+    fn nonzero(self) -> Self {
+        todo!()
+    }
 
-    fn add(self, rhs: Self) -> Self { self | rhs }
+    fn add(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
     fn sub(self, rhs: Self) -> Self {
         let _ = rhs;
         panic!()
     }
 
-    fn mul(self, rhs: Self) -> Self { self & rhs }
+    fn mul(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
     fn div(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -1695,23 +2699,41 @@ impl Scalar for bool {
         panic!()
     }
 
-    fn cmplt(self, rhs: Self) -> Self { !self & rhs }
+    fn cmplt(self, rhs: Self) -> Self {
+        !self & rhs
+    }
 
-    fn cmpgt(self, rhs: Self) -> Self { self && !rhs }
+    fn cmpgt(self, rhs: Self) -> Self {
+        self && !rhs
+    }
 
-    fn or(self, rhs: Self) -> Self { self || rhs }
+    fn or(self, rhs: Self) -> Self {
+        self || rhs
+    }
 
-    fn and(self, rhs: Self) -> bool { self && rhs }
+    fn and(self, rhs: Self) -> bool {
+        self && rhs
+    }
 
-    fn max(self, rhs: Self) -> Self { <bool as Ord>::max(self, rhs) }
+    fn max(self, rhs: Self) -> Self {
+        <bool as Ord>::max(self, rhs)
+    }
 
-    fn max_value() -> Self { true }
+    fn max_value() -> Self {
+        true
+    }
 
-    fn min_value() -> Self { false }
+    fn min_value() -> Self {
+        false
+    }
 
-    fn is_equal(self, rhs: Self) -> bool { self == rhs }
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
 
-    fn epsilon() -> Self { false }
+    fn epsilon() -> Self {
+        false
+    }
 
     fn mod_(self, rhs: Self) -> Self {
         let _ = rhs;
@@ -1719,13 +2741,21 @@ impl Scalar for bool {
         todo!()
     }
 
-    fn noteq(self, rhs: Self) -> bool { self != rhs }
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
 
-    fn bitxor(self, rhs: Self) -> Self { self ^ rhs }
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
 
-    fn bitor(self, rhs: Self) -> Self { self | rhs }
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
 
-    fn bitand(self, rhs: Self) -> Self { self & rhs }
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
         let _ = rhs;

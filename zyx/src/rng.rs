@@ -53,6 +53,7 @@ impl Rng {
         Self { s }
     }
 
+    #[allow(unused)]
     pub fn seed_from_systime() -> Self {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         Rng::seed_from_u64(seed as u64)
@@ -143,12 +144,14 @@ impl Rng {
                     std::ops::Bound::Included(_) => todo!(),
                     std::ops::Bound::Excluded(start) => *start,
                     std::ops::Bound::Unbounded => T::min_value(),
-                }.cast();
+                }
+                .cast();
                 let mut end: f64 = match range.end_bound() {
                     std::ops::Bound::Included(_) => todo!(),
                     std::ops::Bound::Excluded(end) => *end,
                     std::ops::Bound::Unbounded => T::max_value(),
-                }.cast();
+                }
+                .cast();
                 if end < start {
                     (start, end) = (end, start);
                 }
@@ -161,18 +164,20 @@ impl Rng {
                     std::ops::Bound::Included(start) => *start,
                     std::ops::Bound::Excluded(start) => start.add(T::one()),
                     std::ops::Bound::Unbounded => T::min_value(),
-                }.cast();
+                }
+                .cast();
                 let mut end: u64 = match range.end_bound() {
                     std::ops::Bound::Included(end) => end.add(T::one()),
                     std::ops::Bound::Excluded(end) => *end,
                     std::ops::Bound::Unbounded => T::max_value(),
-                }.cast();
+                }
+                .cast();
                 if end < start {
                     (start, end) = (end, start);
                 }
                 let x = self.next_u64();
                 //(x * (end - start) + start).cast()
-                (x % (end - start) +  start).cast()
+                (x % (end - start) + start).cast()
             }
 
             DType::I8 | DType::I16 | DType::I32 | DType::I64 => {

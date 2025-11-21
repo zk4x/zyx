@@ -542,7 +542,7 @@ impl Kernel {
                 self.ops.push(Op::Loop { dim, scope: Scope::Register });
             }
 
-            increment(&mut body, 4 + n_dims, min_param..);
+            increment(&mut body, 4 + n_dims as isize, min_param..);
             self.ops.extend(body);
 
             // Insert reduce op (load + binary + store)
@@ -705,7 +705,7 @@ impl Kernel {
         }
         self.ops.extend(temp_ops);
         let n = self.ops.len();
-        increment(&mut self.ops, k, 0..n);
+        increment(&mut self.ops, k as isize, 0..n);
     }
 
     pub fn unfold_views(&mut self) {
@@ -820,7 +820,7 @@ impl Kernel {
 
                     let n = self.ops.len();
                     self.ops.extend(temp_ops);
-                    increment(&mut self.ops[n..], n - op_id - 1, op_id..);
+                    increment(&mut self.ops[n..], (n - op_id - 1) as isize, op_id..);
                     op_id = n;
                     continue;
                 }
@@ -921,7 +921,7 @@ impl Kernel {
 
                     let n = self.ops.len();
                     self.ops.extend(temp_ops);
-                    increment(&mut self.ops[n..], n - op_id - 1, op_id..);
+                    increment(&mut self.ops[n..], (n - op_id - 1) as isize, op_id..);
                     op_id = n;
                     load_id += 1;
                     continue;
@@ -970,7 +970,7 @@ impl Kernel {
                     }
                     println!("n={n}");*/
                     self.ops.extend(temp_ops);
-                    increment(&mut self.ops[n..], n - op_id - 1, op_id..);
+                    increment(&mut self.ops[n..], (n - op_id - 1) as isize, op_id..);
                     op_id = n;
                     store_id += 1;
                     continue;
@@ -1061,6 +1061,10 @@ impl Kernel {
         }
     }
 
+    pub fn loop_split(&mut self, loop_id: OpId, splits: &[Dim]) {
+        todo!()
+    }
+
     pub fn loop_invariant_code_motion(&mut self, loop_id: OpId) {
         //self.debug();
         // TODO Reorder commutative
@@ -1111,6 +1115,7 @@ impl Kernel {
     }
 
     pub fn loop_unroll(&mut self, loop_id: OpId) {
+        //self.debug();
         let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
 
         // Get tail and body
@@ -1129,7 +1134,7 @@ impl Kernel {
             self.ops.push(Op::Const(Constant::idx(idx as u64)));
 
             // Increment body
-            increment(&mut body, n - 1, loop_id + 1..end_loop_id);
+            increment(&mut body, n as isize - 1, loop_id + 1..end_loop_id);
             n += body.len() + 1;
 
             // Remap body to use constant
@@ -1139,12 +1144,27 @@ impl Kernel {
             self.ops.extend(body);
         }
 
+        let d = ((end_loop_id - loop_id) * (dim - 1)) as isize - 1;
+        //println!("n={n}, d={d}");
+
         // Add tail, increment ops
-        increment(&mut tail, n, end_loop_id..);
+        increment(&mut tail, d, end_loop_id..);
         self.ops.extend(tail);
+        //println!();
+        //self.debug();
+        //panic!();
     }
 
     pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
+        todo!()
+    }
+
+    // Loop tiling/vectorization. Tiles all loads.
+    pub fn loop_tile(&mut self, loop_id: OpId) {
+        todo!()
+    }
+
+    pub fn loop_tile_and_jam(&mut self, loop_id: OpId) {
         todo!()
     }
 
@@ -1232,7 +1252,11 @@ impl Kernel {
                         }
                     }
 
-                    if !remaps.contains_key(&op_id) && !matches!(op, Op::Define { .. } | Op::Loop { .. } | Op::EndLoop)
+                    if !remaps.contains_key(&op_id)
+                        && !matches!(
+                            op,
+                            Op::Define { .. } | Op::Loop { .. } | Op::EndLoop | Op::Load { .. } | Op::Store { .. }
+                        )
                     {
                         unique_stack.last_mut().unwrap().insert(op.clone(), op_id);
                     }
@@ -1256,7 +1280,11 @@ impl Kernel {
             }
         }
         self.ops.extend(tail);
-        increment(&mut self.ops[n_defines + remaps.len()..], remaps.len(), n_defines..);
+        increment(
+            &mut self.ops[n_defines + remaps.len()..],
+            remaps.len() as isize,
+            n_defines..,
+        );
         remap(&mut self.ops, &remaps);
     }
 
@@ -1405,7 +1433,7 @@ fn get_axes(ops: &[Op]) -> Vec<Axis> {
     axes
 }
 
-pub fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
+pub fn increment(ops: &mut [Op], d: isize, range: impl RangeBounds<usize>) {
     let start = match range.start_bound() {
         std::ops::Bound::Included(x) => *x,
         std::ops::Bound::Excluded(x) => *x + 1,
@@ -1422,7 +1450,7 @@ pub fn increment(ops: &mut [Op], d: usize, range: impl RangeBounds<usize>) {
     let h = |x: &mut usize| {
         //println!("{x}, {range:?}, contains={}", range.contains(x));
         if range.contains(x) {
-            *x += d;
+            *x = (*x as isize + d) as usize;
         }
     };
     for op in ops {

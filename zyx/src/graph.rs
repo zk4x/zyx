@@ -392,48 +392,18 @@ pub enum ROp {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub enum Node {
     // Constant tensor baked into kernels
-    Const {
-        value: Constant,
-    },
+    Const { value: Constant },
     // Tensor stored on device
-    Leaf {
-        dtype: DType,
-    },
-    Expand {
-        x: TensorId,
-        //shape: u32,
-    },
-    Permute {
-        x: TensorId,
-        //axes: Box<Vec<usize>>,
-    },
+    Leaf { dtype: DType },
+    Expand { x: TensorId },
+    Permute { x: TensorId },
     // Reshape can be sometimes axis split or axis join
-    Reshape {
-        x: TensorId,
-        //shape: Box<Vec<usize>>,
-    },
-    Pad {
-        x: TensorId,
-        //padding: Box<Vec<(isize, isize)>>,
-    },
-    Reduce {
-        x: TensorId,
-        rop: ROp,
-        //axes: Box<Vec<usize>>,
-    },
-    Cast {
-        x: TensorId,
-        dtype: DType,
-    },
-    Unary {
-        x: TensorId,
-        uop: UOp,
-    },
-    Binary {
-        bop: BOp,
-        x: TensorId,
-        y: TensorId,
-    },
+    Reshape { x: TensorId },
+    Pad { x: TensorId },
+    Reduce { x: TensorId, rop: ROp },
+    Cast { x: TensorId, dtype: DType },
+    Unary { x: TensorId, uop: UOp },
+    Binary { bop: BOp, x: TensorId, y: TensorId },
 }
 
 pub struct NodeParametersIterator {
