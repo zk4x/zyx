@@ -173,7 +173,7 @@ pub(super) fn initialize_device(
             for entry in lib_folder.flatten() {
                 let path = entry.path();
                 if path.is_file() {
-                    let name = path.file_name().unwrap().to_str().unwrap();
+                    let name = path.file_name().map(|x| x.to_str().unwrap()).unwrap_or("");
                     if name.contains("libOpenCL.so") {
                         opencl_paths.push(path);
                     }
@@ -187,7 +187,7 @@ pub(super) fn initialize_device(
         return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "OpenCL runtime not found.".into() });
     };
     let clGetPlatformIDs: unsafe extern "C" fn(cl_uint, *mut *mut c_void, *mut cl_uint) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clGetPlatformIDs\0") }.unwrap();
+        *unsafe { opencl.get(b"clGetPlatformIDs\0") }?;
     let clCreateContext: unsafe extern "C" fn(
         *const isize,
         cl_uint,
@@ -195,39 +195,39 @@ pub(super) fn initialize_device(
         Option<unsafe extern "C" fn(*const i8, *const c_void, usize, *mut c_void)>,
         *mut c_void,
         *mut OpenCLStatus,
-    ) -> *mut c_void = *unsafe { opencl.get(b"clCreateContext\0") }.unwrap();
+    ) -> *mut c_void = *unsafe { opencl.get(b"clCreateContext\0") }?;
     let clCreateCommandQueue: unsafe extern "C" fn(
         *mut c_void,
         *mut c_void,
         cl_bitfield,
         *mut OpenCLStatus,
-    ) -> *mut c_void = *unsafe { opencl.get(b"clCreateCommandQueue\0") }.unwrap();
+    ) -> *mut c_void = *unsafe { opencl.get(b"clCreateCommandQueue\0") }?;
     let clGetDeviceIDs: unsafe extern "C" fn(
         *mut c_void,
         cl_bitfield,
         cl_uint,
         *mut *mut c_void,
         *mut cl_uint,
-    ) -> OpenCLStatus = *unsafe { opencl.get(b"clGetDeviceIDs\0") }.unwrap();
-    let clWaitForEvents = *unsafe { opencl.get(b"clWaitForEvents\0") }.unwrap();
-    let clReleaseCommandQueue = *unsafe { opencl.get(b"clReleaseCommandQueue\0") }.unwrap();
-    let clEnqueueNDRangeKernel = *unsafe { opencl.get(b"clEnqueueNDRangeKernel\0") }.unwrap();
-    let clGetProgramBuildInfo = *unsafe { opencl.get(b"clGetProgramBuildInfo\0") }.unwrap();
-    let clBuildProgram = *unsafe { opencl.get(b"clBuildProgram\0") }.unwrap();
-    let clReleaseProgram = *unsafe { opencl.get(b"clReleaseProgram\0") }.unwrap();
-    let clReleaseContext = *unsafe { opencl.get(b"clReleaseContext\0") }.unwrap();
-    //let clReleaseEvent = *unsafe { opencl.get(b"clReleaseContext\0") }.unwrap();
-    let clSetKernelArg = *unsafe { opencl.get(b"clSetKernelArg\0") }.unwrap();
-    let clCreateKernel = *unsafe { opencl.get(b"clCreateKernel\0") }.unwrap();
-    let clReleaseMemObject = *unsafe { opencl.get(b"clReleaseMemObject\0") }.unwrap();
-    let clGetDeviceInfo = *unsafe { opencl.get(b"clGetDeviceInfo\0") }.unwrap();
-    let clCreateProgramWithSource = *unsafe { opencl.get(b"clCreateProgramWithSource\0") }.unwrap();
-    let clEnqueueReadBuffer = *unsafe { opencl.get(b"clEnqueueReadBuffer\0") }.unwrap();
-    let clEnqueueWriteBuffer = *unsafe { opencl.get(b"clEnqueueWriteBuffer\0") }.unwrap();
-    let clCreateBuffer = *unsafe { opencl.get(b"clCreateBuffer\0") }.unwrap();
-    let clFinish = *unsafe { opencl.get(b"clFinish\0") }.unwrap();
+    ) -> OpenCLStatus = *unsafe { opencl.get(b"clGetDeviceIDs\0") }?;
+    let clWaitForEvents = *unsafe { opencl.get(b"clWaitForEvents\0") }?;
+    let clReleaseCommandQueue = *unsafe { opencl.get(b"clReleaseCommandQueue\0") }?;
+    let clEnqueueNDRangeKernel = *unsafe { opencl.get(b"clEnqueueNDRangeKernel\0") }?;
+    let clGetProgramBuildInfo = *unsafe { opencl.get(b"clGetProgramBuildInfo\0") }?;
+    let clBuildProgram = *unsafe { opencl.get(b"clBuildProgram\0") }?;
+    let clReleaseProgram = *unsafe { opencl.get(b"clReleaseProgram\0") }?;
+    let clReleaseContext = *unsafe { opencl.get(b"clReleaseContext\0") }?;
+    //let clReleaseEvent = *unsafe { opencl.get(b"clReleaseContext\0") }?;
+    let clSetKernelArg = *unsafe { opencl.get(b"clSetKernelArg\0") }?;
+    let clCreateKernel = *unsafe { opencl.get(b"clCreateKernel\0") }?;
+    let clReleaseMemObject = *unsafe { opencl.get(b"clReleaseMemObject\0") }?;
+    let clGetDeviceInfo = *unsafe { opencl.get(b"clGetDeviceInfo\0") }?;
+    let clCreateProgramWithSource = *unsafe { opencl.get(b"clCreateProgramWithSource\0") }?;
+    let clEnqueueReadBuffer = *unsafe { opencl.get(b"clEnqueueReadBuffer\0") }?;
+    let clEnqueueWriteBuffer = *unsafe { opencl.get(b"clEnqueueWriteBuffer\0") }?;
+    let clCreateBuffer = *unsafe { opencl.get(b"clCreateBuffer\0") }?;
+    let clFinish = *unsafe { opencl.get(b"clFinish\0") }?;
     let clGetPlatformInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clGetPlatformInfo\0") }.unwrap();
+        *unsafe { opencl.get(b"clGetPlatformInfo\0") }?;
 
     let library = Arc::new(opencl);
     let platform_ids = {
@@ -246,7 +246,7 @@ pub(super) fn initialize_device(
             Vec::new()
         }
     };
-    let mut memory_pool_id = u32::try_from(memory_pools.len()).unwrap();
+    let mut memory_pool_id = u32::try_from(memory_pools.len()).expect("So many memory pools...");
     for (platform_id, platform) in platform_ids
         .iter()
         .enumerate()
@@ -284,7 +284,7 @@ pub(super) fn initialize_device(
         let context = unsafe {
             clCreateContext(
                 ptr::null(),
-                cl_uint::try_from(device_ids.len()).unwrap(),
+                cl_uint::try_from(device_ids.len()).expect("So many devices..."),
                 device_ids.as_ptr(),
                 None,
                 ptr::null_mut(),
@@ -399,8 +399,8 @@ pub(super) fn initialize_device(
 
 impl OpenCLMemoryPool {
     pub fn deinitialize(&mut self) {
-        unsafe { (self.clReleaseContext)(self.context) }.check(ErrorStatus::Deinitialization).unwrap();
-        unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization).unwrap();
+        _ = unsafe { (self.clReleaseContext)(self.context) }.check(ErrorStatus::Deinitialization);
+        _ = unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization);
     }
 
     pub const fn free_bytes(&self) -> Dim {
@@ -424,7 +424,7 @@ impl OpenCLMemoryPool {
         };
         status.check(ErrorStatus::MemoryAllocation)?;
         //println!("Allocated buffer {buffer:?}, bytes {bytes}");
-        self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
+        self.free_bytes = self.free_bytes.saturating_sub(bytes);
         Ok((
             self.buffers.push(OpenCLBuffer { buffer, bytes }),
             Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }),
@@ -487,7 +487,7 @@ impl OpenCLMemoryPool {
                 0,
                 src.len(),
                 src.as_ptr().cast(),
-                event_wait_list.len().try_into().unwrap(),
+                event_wait_list.len().try_into().expect("So many events..."),
                 event_wait_list_ptr,
                 &raw mut event,
             )
@@ -520,7 +520,7 @@ impl OpenCLMemoryPool {
         };*/
         if !event_wait_list.is_empty() {
             //println!("Syncing events: {event_wait_list:?}");
-            unsafe { (self.clWaitForEvents)(u32::try_from(event_wait_list.len()).unwrap(), event_wait_list.as_ptr()) }
+            unsafe { (self.clWaitForEvents)(u32::try_from(event_wait_list.len()).expect("So many events..."), event_wait_list.as_ptr()) }
                 .check(ErrorStatus::MemoryCopyP2H)?;
         }
         let mut event: *mut c_void = ptr::null_mut();
@@ -580,7 +580,7 @@ impl OpenCLMemoryPool {
             events.as_ptr()
         };
         if !events.is_empty() {
-            unsafe { (self.clWaitForEvents)(events.len().try_into().unwrap(), event_wait_list_ptr) }
+            unsafe { (self.clWaitForEvents)(events.len().try_into().expect("So many events..."), event_wait_list_ptr) }
                 .check(ErrorStatus::KernelSync)?;
         }
         Ok(())
@@ -680,13 +680,12 @@ impl OpenCLDevice {
             if let &Op::Define { dtype, scope, ro, .. } = op
                 && scope == Scope::Global
             {
-                writeln!(
+                _ = writeln!(
                     global_args,
                     "  __global {}{}* p{i},",
                     if ro { "const " } else { "" },
                     dtype.ocl()
-                )
-                .unwrap();
+                );
             }
         }
         global_args.pop();
@@ -764,13 +763,12 @@ impl OpenCLDevice {
                 }
                 &Op::Define { dtype, scope, ro, len } => {
                     if scope == Scope::Register {
-                        writeln!(
+                        _ = writeln!(
                             source,
                             "{indent}{}{} p{i}[{len}];",
                             if ro { "const " } else { "" },
                             dtype.ocl(),
-                        )
-                        .unwrap();
+                        );
                     }
                 }
                 &Op::Load { src, index } => {
@@ -778,28 +776,21 @@ impl OpenCLDevice {
                         let dtype = dtypes[&src];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
                         let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rc, loop_id);
-                        writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
+                        _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                     }
-                    /*if src == 16 && index == 4 {
-                        writeln!(source, "printf(\"r3=%d\\n\", r3);").unwrap();
-                    }*/
                 }
                 &Op::Store { dst, x: src, index } => {
-                    /*if dst == 2 {
-                        writeln!(source, "printf(\"r1=%d, r2=%d\\n\", r1, r2);").unwrap();
-                    }*/
-                    writeln!(
+                    _ = writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",
                         get_var(index, &constants, &indices, &reg_map, &mut registers),
                         get_var(src, &constants, &indices, &reg_map, &mut registers)
-                    )
-                    .unwrap();
+                    );
                 }
                 &Op::Cast { x, dtype } => {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
-                    writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl(),).unwrap();
+                    _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl());
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
@@ -807,80 +798,74 @@ impl OpenCLDevice {
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
                     match uop {
                         UOp::BitNot => {
-                            writeln!(source, "{indent}r{reg} = ~{x};").unwrap();
+                            _ = writeln!(source, "{indent}r{reg} = ~{x};");
                         }
                         UOp::ReLU => {
-                            writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl()).unwrap();
+                            _ = writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ocl());
                         }
-                        UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};").unwrap(),
+                        UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
                         UOp::Exp2 => {
-                            //writeln!(source, "{indent}printf(\"%d\\n\", r{reg});").unwrap();
-                            writeln!(source, "{indent}r{reg} = exp2({x});").unwrap();
+                            //_ = writeln!(source, "{indent}printf(\"%d\\n\", r{reg});");
+                            _ = writeln!(source, "{indent}r{reg} = exp2({x});");
                         }
-                        UOp::Log2 => writeln!(source, "{indent}r{reg} = log2({x});").unwrap(),
+                        UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
                         UOp::Reciprocal => {
-                            writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().ocl()).unwrap();
+                            _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().ocl());
                         }
-                        UOp::Sqrt => writeln!(source, "{indent}r{reg} = sqrt({x});").unwrap(),
-                        UOp::Sin => writeln!(source, "{indent}r{reg} = sin({x});").unwrap(),
-                        UOp::Cos => writeln!(source, "{indent}r{reg} = cos({x});").unwrap(),
-                        UOp::Floor => writeln!(source, "{indent}r{reg} = floor({x});").unwrap(),
+                        UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
+                        UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
+                        UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
+                        UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
                     }
                 }
                 &Op::Binary { x, y, bop } => {
-                    /*if bop == BOp::Sub {
-                        writeln!(source, "printf(\"binary r2=%d, r3=%d\\n\", r2, r3);").unwrap();
-                    }*/
                     let dtype = dtypes[&i];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
                     let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
-                    match bop {
-                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};").unwrap(),
-                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),
-                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};").unwrap(),
-                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};").unwrap(),
-                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow((double){x}, (double){y});").unwrap(),
-                        BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};").unwrap(),
-                        BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};").unwrap(),
-                        BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};").unwrap(),
-                        BOp::Maximum => writeln!(source, "{indent}r{reg} = max({x}, {y});").unwrap(),
-                        BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};").unwrap(),
-                        BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};").unwrap(),
-                        BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};").unwrap(),
-                        BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};").unwrap(),
-                        BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};").unwrap(),
-                        BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};").unwrap(),
-                        BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};").unwrap(),
-                        BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};").unwrap(),
-                        BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};").unwrap(),
-                    }
+                    _ = match bop {
+                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
+                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
+                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};"),
+                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};"),
+                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow((double){x}, (double){y});"),
+                        BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};"),
+                        BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
+                        BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
+                        BOp::Maximum => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
+                        BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
+                        BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
+                        BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};"),
+                        BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};"),
+                        BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};"),
+                        BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};"),
+                        BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};"),
+                        BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
+                        BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
+                    };
                 }
                 &Op::Loop { dim, scope } => {
                     indices.insert(i, loop_id);
                     match scope {
                         Scope::Global => {
-                            writeln!(
+                            _ = writeln!(
                                 source,
                                 "{indent}unsigned int idx{loop_id} = get_group_id({loop_id}); // 0..{dim}"
-                            )
-                            .unwrap();
+                            );
                             n_global_ids += 1;
                         }
                         Scope::Local => {
-                            writeln!(
+                            _ = writeln!(
                                 source,
                                 "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..{dim}",
                                 loop_id - n_global_ids
-                            )
-                            .unwrap();
+                            );
                         }
                         Scope::Register => {
-                            writeln!(
+                            _ = writeln!(
                                 source,
                                 "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
-                            )
-                            .unwrap();
+                            );
                             indent += "  ";
                         }
                     }
@@ -890,7 +875,7 @@ impl OpenCLDevice {
                     if loop_id as usize > lws.len() + gws.len() {
                         indent.pop();
                         indent.pop();
-                        writeln!(source, "{indent}}}").unwrap();
+                        _ = writeln!(source, "{indent}}}");
                         loop_id -= 1;
                     }
                 }
@@ -901,18 +886,18 @@ impl OpenCLDevice {
         if registers.len() > 0 {
             let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
-            write!(reg_str, "{indent}{} r0", dt.ocl()).unwrap();
+            _ = write!(reg_str, "{indent}{} r0", dt.ocl());
             let mut i = 1;
             for (dt, _, _) in registers {
                 if dt == prev_dt {
-                    write!(reg_str, ", r{i}").unwrap();
+                    _ = write!(reg_str, ", r{i}");
                 } else {
-                    write!(reg_str, ";\n{indent}{} r{i}", dt.ocl()).unwrap();
+                    _ = write!(reg_str, ";\n{indent}{} r{i}", dt.ocl());
                 }
                 prev_dt = dt;
                 i += 1;
             }
-            writeln!(reg_str, ";").unwrap();
+            _ =writeln!(reg_str, ";");
         }
 
         let mut pragma = String::new();
@@ -995,7 +980,7 @@ impl OpenCLDevice {
             println!("{dst:?}");
         }*/
 
-        let queue_id = self.next_queue()?;
+        let queue_id = self.next_queue();
         /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
             self.programs[program_id].kernel,
@@ -1039,11 +1024,11 @@ impl OpenCLDevice {
             (self.clEnqueueNDRangeKernel)(
                 self.queues[queue_id].queue,
                 program.kernel,
-                u32::try_from(program.gws.len()).unwrap(),
+                u32::try_from(program.gws.len()).expect("So many programs..."),
                 ptr::null(),
                 program.gws.as_ptr().cast(),
                 lws_ptr,
-                event_wait_list.len().try_into().unwrap(),
+                event_wait_list.len().try_into().expect("So many events..."),
                 event_wait_list_ptr,
                 &raw mut event,
             )
@@ -1110,12 +1095,12 @@ impl OpenCLDevice {
             preferred_vector_size: u8::try_from(u32::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
             ))
-            .unwrap()
+            .expect("What a vector width...")
                 * 4,
             local_mem_size: Dim::try_from(u64::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
             ))
-            .unwrap(),
+            .expect("What a memory size..."),
             num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
             tensor_cores: false,
         };
@@ -1186,14 +1171,15 @@ impl OpenCLDevice {
         }
     }
 
-    fn next_queue(&mut self) -> Result<usize, BackendError> {
+    fn next_queue(&mut self) -> usize {
         let mut id = self.queues.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
         if self.queues[id].load > 20 {
-            unsafe { (self.clFinish)(self.queues[id].queue) }.check(ErrorStatus::KernelSync)?;
-            self.queues[id].load = 0;
+            if unsafe { (self.clFinish)(self.queues[id].queue) }.check(ErrorStatus::KernelSync).is_ok() {
+                self.queues[id].load = 0;
+            }
             id = self.queues.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
         }
-        Ok(id)
+        id
     }
 }
 
