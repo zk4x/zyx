@@ -180,4 +180,5 @@ For contributing to Zyx, finding bugs and using it in your ML models.
 
 ## License
 
-Zyx is free software licensed under the terms of both the MIT license and the Apache License, Version 2.0.
+Zyx is free software licensed under the GNU Affero General Public License v3.0 (AGPLv3).
+See the LICENSE file for details.
