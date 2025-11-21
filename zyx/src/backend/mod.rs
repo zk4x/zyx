@@ -78,6 +78,12 @@ impl SlabId for ProgramId {
     }
 }
 
+impl From<libloading::Error> for BackendError {
+    fn from(value: libloading::Error) -> Self {
+        BackendError { status: ErrorStatus::Initialization, context: value.to_string().into() }
+    }
+}
+
 pub fn initialize_backends(
     device_config: &Config,
     memory_pools: &mut Vec<Pool>,

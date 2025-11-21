@@ -1133,7 +1133,7 @@ impl OpenCLDevice {
                     context: format!("Failed to get device info {param_name}, {ocl_status:?}").into(),
                 });
             }
-            Ok(size)
+            Ok::<usize, BackendError>(size)
         }?;
         let object = self.ptr;
         if 0 < size {
