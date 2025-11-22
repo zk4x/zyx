@@ -24,11 +24,16 @@ fn repeat_kv(xs: Tensor, n_rep: usize) -> Tensor {
     if n_rep == 1 {
         xs
     } else {
-        let [b_sz, n_kv_head, seq_len, head_dim] = xs.shape()[..] else { panic!() };
+        let [b_sz, n_kv_head, seq_len, head_dim] = xs.shape()[..] else {
+            panic!()
+        };
         // Using cat is faster than a broadcast as it avoids going through a potentially
         // strided copy.
         // https://github.com/huggingface/candle/pull/2043
-        Tensor::cat(vec![&xs; n_rep], 2).unwrap().reshape([b_sz, n_kv_head * n_rep, seq_len, head_dim]).unwrap()
+        Tensor::cat(vec![&xs; n_rep], 2)
+            .unwrap()
+            .reshape([b_sz, n_kv_head * n_rep, seq_len, head_dim])
+            .unwrap()
     }
 }
 
@@ -152,8 +157,8 @@ impl RotaryEmbedding {
         let [_b_size, _num_heads, seq_len, _headdim] = xs.shape()[..] else {
             panic!()
         };
-        let xs_rot = xs.get((.., .., .., ..self.dim as isize)).unwrap();
-        let xs_pass = xs.get((.., .., .., self.dim as isize..)).unwrap();
+        let xs_rot = xs.slice((.., .., .., ..self.dim as isize)).unwrap();
+        let xs_pass = xs.slice((.., .., .., self.dim as isize..)).unwrap();
         let c = self.cos.narrow(0, seqlen_offset, seq_len).unwrap();
         let s = self.sin.narrow(0, seqlen_offset, seq_len).unwrap();
         let xs_rot = xs_rot.rope(c, s).unwrap();
@@ -349,13 +354,16 @@ impl Attention {
         };
         self.kv_cache = Some((key_states.clone(), value_states.clone()));
 
-        let num_kv_groups = self.num_heads/self.num_kv_heads;
+        let num_kv_groups = self.num_heads / self.num_kv_heads;
         let key_states = repeat_kv(key_states, num_kv_groups);
         let value_states = repeat_kv(value_states, num_kv_groups);
 
         let attn_output = {
             let scale = half::f16::from_f64(1f64 / f64::sqrt(self.head_dim as f64));
-            let attn_weights = query_states.matmul(key_states.transpose(2, 3).unwrap()).unwrap() * scale;
+            let attn_weights = query_states
+                .matmul(key_states.transpose(2, 3).unwrap())
+                .unwrap()
+                * scale;
 
             let attn_weights = match attention_mask {
                 None => attn_weights,
@@ -852,7 +860,10 @@ impl TextGeneration {
             };
 
             let next_token: u32 = self.logits_processor.sample(&logits).unwrap();
-            println!("{next_token:?} -> {}", self.tokenizer.decode(&[next_token]).unwrap());
+            println!(
+                "{next_token:?} -> {}",
+                self.tokenizer.decode(&[next_token]).unwrap()
+            );
             tokens.push(next_token);
             //if let Some(t) = self.tokenizer.decode_rest().unwrap() { print!("{t}"); }
             generated_tokens += 1;
@@ -947,8 +958,7 @@ fn main() -> Result<(), ZyxError> {
 
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
-        let mut vb: HashMap<String, Tensor> =
-            Tensor::load("phi1_5-model.safetensors").unwrap();
+        let mut vb: HashMap<String, Tensor> = Tensor::load("phi1_5-model.safetensors").unwrap();
         //let mut keys: Vec<String> = vb.keys().cloned().collect();
         //keys.sort();
         //println!("{:?}", keys);

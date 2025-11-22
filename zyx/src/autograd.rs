@@ -3,7 +3,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, Node, ROp, UOp},
     runtime::Runtime,
-    shape::{Axis, Dim},
+    shape::{UAxis, Dim},
     tensor::TensorId,
 };
 use std::hash::BuildHasherDefault;
@@ -418,11 +418,11 @@ impl Runtime {
                     let sh = self.graph.shape(nid);
                     let x_shape: Vec<Dim> = self.shape(x).into();
                     debug_assert_eq!(sh.len(), x_shape.len());
-                    let expand_axes: Vec<Axis> = sh
+                    let expand_axes: Vec<UAxis> = sh
                         .iter()
                         .zip(&x_shape)
                         .enumerate()
-                        .filter_map(|(a, (&d, &e))| if d == e { None } else { Some(a as Axis) })
+                        .filter_map(|(a, (&d, &e))| if d == e { None } else { Some(a as UAxis) })
                         .collect();
                     //println!("x shape {:?}, nid shape {:?}, expand_axes: {:?}", x_shape, sh, expand_axes);
                     debug_assert!(!expand_axes.is_empty());
@@ -433,9 +433,9 @@ impl Runtime {
                 }
                 Node::Permute { x } => {
                     let axes = self.graph.axes(nid);
-                    let mut axes: Vec<(usize, Axis)> = axes.iter().copied().enumerate().collect();
+                    let mut axes: Vec<(usize, UAxis)> = axes.iter().copied().enumerate().collect();
                     axes.sort_by_key(|(_, v)| *v);
-                    let argsort_axes: Vec<Axis> = axes.iter().map(|(k, _)| *k as Axis).collect();
+                    let argsort_axes: Vec<UAxis> = axes.iter().map(|(k, _)| *k as UAxis).collect();
                     let grad = self.permute(grad, &argsort_axes);
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }

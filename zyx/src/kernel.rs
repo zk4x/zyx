@@ -6,7 +6,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, ROp, UOp},
     optimizer::Optimizer,
-    shape::{Axis, Dim},
+    shape::{UAxis, Dim},
     view::View,
 };
 use std::{
@@ -1450,7 +1450,7 @@ impl Kernel {
     }
 }
 
-fn get_axes(ops: &[Op]) -> Vec<Axis> {
+fn get_axes(ops: &[Op]) -> Vec<UAxis> {
     let mut axes = Vec::new();
     for (i, op) in ops.iter().enumerate() {
         match op {

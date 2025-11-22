@@ -361,8 +361,8 @@ impl<'a> Kernelizer<'a> {
         let axes = self.graph.axes(nid);
         #[cfg(debug_assertions)]
         {
-            use crate::shape::Axis;
-            let mut sorted_axes: Vec<Axis> = axes.into();
+            use crate::shape::UAxis;
+            let mut sorted_axes: Vec<UAxis> = axes.into();
             sorted_axes.sort_unstable();
             debug_assert_eq!(axes, sorted_axes, "Reduce axes must be sorted.");
         }

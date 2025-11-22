@@ -2,17 +2,17 @@
 
 use core::fmt::Debug;
 
-use crate::{error::ZyxError, tensor::SAxis};
+use crate::{error::ZyxError, tensor::Axis};
 
 pub type Dim = usize;
-pub type Axis = usize;
+pub type UAxis = usize;
 
 /// `IntoShape` trait
 pub trait IntoShape: Clone + Debug {
     /// Convert value into shape (iterator over dimensions)
     fn into_shape(self) -> impl Iterator<Item = Dim>;
     /// Get the rank of the shape
-    fn rank(&self) -> Axis;
+    fn rank(&self) -> UAxis;
 }
 
 impl IntoShape for Dim {
@@ -20,7 +20,7 @@ impl IntoShape for Dim {
         [self].into_iter()
     }
 
-    fn rank(&self) -> Axis {
+    fn rank(&self) -> UAxis {
         1
     }
 }
@@ -30,7 +30,7 @@ impl IntoShape for (Dim, Dim) {
         [self.0, self.1].into_iter()
     }
 
-    fn rank(&self) -> Axis {
+    fn rank(&self) -> UAxis {
         2
     }
 }
@@ -40,7 +40,7 @@ impl IntoShape for (Dim, Dim, Dim) {
         [self.0, self.1, self.2].into_iter()
     }
 
-    fn rank(&self) -> Axis {
+    fn rank(&self) -> UAxis {
         3
     }
 }
@@ -50,8 +50,8 @@ impl<const N: usize> IntoShape for [Dim; N] {
         self.into_iter()
     }
 
-    fn rank(&self) -> Axis {
-        N as Axis
+    fn rank(&self) -> UAxis {
+        N as UAxis
     }
 }
 
@@ -60,8 +60,8 @@ impl IntoShape for &[Dim] {
         self.iter().copied()
     }
 
-    fn rank(&self) -> Axis {
-        self.len() as Axis
+    fn rank(&self) -> UAxis {
+        self.len() as UAxis
     }
 }
 
@@ -70,8 +70,8 @@ impl IntoShape for Vec<Dim> {
         self.into_iter()
     }
 
-    fn rank(&self) -> Axis {
-        self.len() as Axis
+    fn rank(&self) -> UAxis {
+        self.len() as UAxis
     }
 }
 
@@ -80,32 +80,32 @@ impl IntoShape for &Vec<Dim> {
         self.iter().copied()
     }
 
-    fn rank(&self) -> Axis {
-        self.len() as Axis
+    fn rank(&self) -> UAxis {
+        self.len() as UAxis
     }
 }
 
-pub fn into_axis(axis: SAxis, rank: Axis) -> Result<Axis, ZyxError> {
-    TryInto::<SAxis>::try_into(rank).map_or_else(
+pub fn into_axis(axis: Axis, rank: UAxis) -> Result<UAxis, ZyxError> {
+    TryInto::<Axis>::try_into(rank).map_or_else(
         |_| {
-            Err(ZyxError::ShapeError(format!(
-                "Axis {axis} is out of range of rank {rank}"
-            ).into()))
+            Err(ZyxError::ShapeError(
+                format!("Axis {axis} is out of range of rank {rank}").into(),
+            ))
         },
         |rank2| {
-            TryInto::<Axis>::try_into(axis + rank2).map_or_else(
+            TryInto::<UAxis>::try_into(axis + rank2).map_or_else(
                 |_| {
-                    Err(ZyxError::ShapeError(format!(
-                        "Axis {axis} is out of range of rank {rank}"
-                    ).into()))
+                    Err(ZyxError::ShapeError(
+                        format!("Axis {axis} is out of range of rank {rank}").into(),
+                    ))
                 },
                 |a| {
                     if a < 2 * rank {
                         Ok(a % rank)
                     } else {
-                        Err(ZyxError::ShapeError(format!(
-                            "Axis {axis} is out of range of rank {rank}"
-                        ).into()))
+                        Err(ZyxError::ShapeError(
+                            format!("Axis {axis} is out of range of rank {rank}").into(),
+                        ))
                     }
                 },
             )
@@ -113,10 +113,7 @@ pub fn into_axis(axis: SAxis, rank: Axis) -> Result<Axis, ZyxError> {
     )
 }
 
-pub fn into_axes(
-    axes: impl IntoIterator<Item = SAxis>,
-    rank: Axis,
-) -> Result<Vec<Axis>, ZyxError> {
+pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Vec<UAxis>, ZyxError> {
     let mut res = Vec::new();
     let mut visited = std::collections::BTreeSet::new();
     for axis in axes {
@@ -131,21 +128,17 @@ pub fn into_axes(
     Ok(res)
 }
 
-pub fn permute(shape: &[Dim], axes: &[Axis]) -> Vec<Dim> {
+pub fn permute(shape: &[Dim], axes: &[UAxis]) -> Vec<Dim> {
     debug_assert_eq!(shape.len(), axes.len());
     axes.iter().map(|a| shape[*a as usize]).collect()
 }
 
-pub fn reduce(shape: &[Dim], axes: &[Axis]) -> Vec<Dim> {
+pub fn reduce(shape: &[Dim], axes: &[UAxis]) -> Vec<Dim> {
     let res: Vec<_> = shape
         .iter()
         .copied()
         .enumerate()
-        .filter_map(|(i, d)| if axes.contains(&(i as Axis)) { None } else { Some(d) })
+        .filter_map(|(i, d)| if axes.contains(&(i as UAxis)) { None } else { Some(d) })
         .collect();
-    if res.is_empty() {
-        vec![1]
-    } else {
-        res
-    }
+    if res.is_empty() { vec![1] } else { res }
 }

@@ -1,8 +1,8 @@
 // nanoGPT, credit goes to Andrej Karpathy and great minds who invented parts of this model
 // https://github.com/karpathy/nanoGPT
 
-use zyx::{Tensor, ZyxError, DType};
-use zyx_nn::{Module, Linear, LayerNorm, CausalSelfAttention, Embedding};
+use zyx::{DType, Tensor, ZyxError};
+use zyx_nn::{CausalSelfAttention, Embedding, LayerNorm, Linear, Module};
 
 #[derive(Module)]
 struct GPTConfig {
@@ -26,8 +26,8 @@ impl Default for GPTConfig {
             n_embd: 768,
             dropout: 0.0,
             bias: true, // True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-           dtype: DType::F32,
-        }
+            dtype: DType::F32,
+        };
     }
 }
 
@@ -41,8 +41,8 @@ struct MLP {
 impl MLP {
     fn init(config: &GPTConfig) -> Result<MLP, ZyxError> {
         Ok(MLP {
-            c_fc: Linear::init(config.n_embd, 4*config.n_embd, config.bias, config.dtype)?,
-            c_proj: Linear::init(4*config.n_embd, config.n_embd, config.bias, config.dtype)?,
+            c_fc: Linear::init(config.n_embd, 4 * config.n_embd, config.bias, config.dtype)?,
+            c_proj: Linear::init(4 * config.n_embd, config.n_embd, config.bias, config.dtype)?,
             dropout: config.dropout,
         })
     }
@@ -68,7 +68,13 @@ impl Block {
     fn init(config: &GPTConfig) -> Result<Block, ZyxError> {
         Ok(Block {
             ln_1: LayerNorm::init(config.n_embd, config.bias, config.dtype)?,
-            attn: CausalSelfAttention::init(config.n_embd, config.n_head, config.bias, config.dropout, config.dtype)?,
+            attn: CausalSelfAttention::init(
+                config.n_embd,
+                config.n_head,
+                config.bias,
+                config.dropout,
+                config.dtype,
+            )?,
             ln_2: LayerNorm::init(config.n_embd, config.bias, config.dtype)?,
             mlp: MLP::init(config)?,
         })
@@ -98,7 +104,9 @@ impl GPT {
         assert!(config.block_size > 0);
 
         let mut gpt = GPT {
-            h: (0..config.n_layer).map(|_| Block::init(&config).unwrap()).collect(),
+            h: (0..config.n_layer)
+                .map(|_| Block::init(&config).unwrap())
+                .collect(),
             wte: Embedding::init(config.vocab_size, config.n_embd, config.dtype)?,
             wpe: Embedding::init(config.block_size, config.n_embd, config.dtype)?,
             ln_f: LayerNorm::init(config.n_embd, config.bias, config.dtype)?,
@@ -135,8 +143,13 @@ impl GPT {
 
     fn forward(&self, idx: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let idx = idx.into();
-        let [_, t] = idx.shape()[..] else { panic!("Input must have 2d shape batch x time") };
-        assert!(t <= self.config.block_size, "Time dimensions must be <= block size");
+        let [_, t] = idx.shape()[..] else {
+            panic!("Input must have 2d shape batch x time")
+        };
+        assert!(
+            t <= self.config.block_size,
+            "Time dimensions must be <= block size"
+        );
         let pos = Tensor::arange(0, t as i64, 1)?.cast(self.config.dtype);
 
         let tok_emb = self.wte.forward(idx)?; // [b, t, n_embd]
@@ -148,20 +161,26 @@ impl GPT {
         x = self.ln_f.forward(x)?;
 
         let logits = self.lm_head.forward(x)?;
-        
+
         Ok(logits)
     }
 
-    fn generate(&self, idx: impl Into<Tensor>, max_new_tokens: usize, temperature: f32, top_k: Option<usize>) -> Result<Tensor, ZyxError> {
+    fn generate(
+        &self,
+        idx: impl Into<Tensor>,
+        max_new_tokens: usize,
+        temperature: f32,
+        top_k: Option<usize>,
+    ) -> Result<Tensor, ZyxError> {
         let mut idx = idx.into();
         for _ in 0..max_new_tokens {
             let idx_cond = if idx.shape()[1] <= self.config.block_size {
                 idx.clone()
             } else {
-                idx.get((.., -(self.config.block_size as isize)..))?
+                idx.slice((.., -(self.config.block_size as isize)..))?
             };
             let mut logits = self.forward(idx_cond)?;
-            logits = logits.get((.., -1, ..))? / temperature;
+            logits = logits.slice((.., -1, ..))? / temperature;
             /*if let Some(top_k) = top_k {
                 v = logits.topk(top_k.min(logits.shape().last().unwrap()));
                 // TODO, probably use where_:

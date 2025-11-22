@@ -14,17 +14,6 @@ categories = ["computer-vision", "science"]
 [badges]
 maintenance = { status = "experimental" }
 
-[dependencies]
-zyx = { version = "*", path = "../zyx" }
-zyx-nn = { version = "*", path = "../zyx-nn" }
-zyx-optim = { version = "*", path = "../zyx-optim" }
-serde = { version = "*" }
-tokenizers = { version = "0.21.2" }
-clap = { version = "*", features = ["derive"] }
-rand = { version = "*" }
-csv = { version = "*" }
-half = { version = "*" }
-
 [profile.dev]
 opt-level = 2
 lto = "off"
@@ -50,3 +39,27 @@ debug = 0
 #incremental = false
 #codegen-units = 1
 #debug = 0
+
+[dependencies]
+zyx = { version = "*", path = "../zyx" }
+zyx-nn = { version = "*", path = "../zyx-nn" }
+zyx-optim = { version = "*", path = "../zyx-optim" }
+
+serde = { version = "*", optional=true }
+tokenizers = { version = "0.21.2", optional=true }
+clap = { version = "*", features = ["derive"], optional=true }
+rand = { version = "*", optional=true }
+csv = { version = "*", optional=true }
+half = { version = "*", optional=true }
+
+[[example]]
+name = "mnist"
+path = "examples/mnist.rs"
+
+[[example]]
+name = "phi"
+path = "examples/phi.rs"
+required-features = ["phi-example"]
+
+[features]
+phi-example = ["serde", "tokenizers", "clap", "rand", "csv", "half"]

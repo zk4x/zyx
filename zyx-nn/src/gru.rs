@@ -60,10 +60,10 @@ impl GRUCell {
         }
 
         // 🔹 Split gates: (z, r, n)
-        let z = (gates.get((.., 0..hs))? + gates_h.get((.., 0..hs))?).sigmoid();
-        let r = (gates.get((.., hs..2 * hs))? + gates_h.get((.., hs..2 * hs))?).sigmoid();
-        let n_input = gates.get((.., 2 * hs..3 * hs))?;
-        let n_hidden = gates_h.get((.., 2 * hs..3 * hs))?;
+        let z = (gates.slice((.., 0..hs))? + gates_h.slice((.., 0..hs))?).sigmoid();
+        let r = (gates.slice((.., hs..2 * hs))? + gates_h.slice((.., hs..2 * hs))?).sigmoid();
+        let n_input = gates.slice((.., 2 * hs..3 * hs))?;
+        let n_hidden = gates_h.slice((.., 2 * hs..3 * hs))?;
 
         // 🔹 Candidate hidden: n = tanh(x_n + r * (h @ W_hh_n + b_hh_n))
         let n = (n_input + r * n_hidden).tanh();

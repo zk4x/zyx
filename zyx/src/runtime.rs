@@ -6,7 +6,7 @@ use crate::graph::{BOp, Graph, Node, ROp, UOp};
 use crate::kernel::Cache;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
-use crate::shape::{Axis, Dim, permute, reduce};
+use crate::shape::{UAxis, Dim, permute, reduce};
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::DeJson;
@@ -468,8 +468,8 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn permute(&mut self, x: TensorId, axes: &[Axis]) -> TensorId {
-        if axes.len() < 2 || axes == (0..axes.len() as Axis).collect::<Vec<Axis>>() {
+    pub(super) fn permute(&mut self, x: TensorId, axes: &[UAxis]) -> TensorId {
+        if axes.len() < 2 || axes == (0..axes.len() as UAxis).collect::<Vec<UAxis>>() {
             self.retain(x);
             return x;
         }
@@ -490,11 +490,11 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn sum_reduce(&mut self, x: TensorId, mut axes: Vec<Axis>) -> TensorId {
+    pub(super) fn sum_reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>) -> TensorId {
         let sh = self.shape(x);
         axes.sort_unstable();
         if axes.is_empty() {
-            axes = (0..sh.len() as Axis).collect();
+            axes = (0..sh.len() as UAxis).collect();
         }
         let shape = reduce(sh, &axes);
         let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Sum }, shape);
@@ -503,11 +503,11 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn max_reduce(&mut self, x: TensorId, mut axes: Vec<Axis>) -> TensorId {
+    pub(super) fn max_reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>) -> TensorId {
         let sh = self.shape(x);
         axes.sort_unstable();
         if axes.is_empty() {
-            axes = (0..sh.len() as Axis).collect();
+            axes = (0..sh.len() as UAxis).collect();
         }
         let shape = reduce(sh, &axes);
         let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Max }, shape);

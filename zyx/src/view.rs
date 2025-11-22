@@ -2,7 +2,7 @@
 
 use nanoserde::{DeBin, SerBin};
 
-use crate::shape::{Axis, Dim};
+use crate::shape::{Dim, UAxis};
 use std::{cmp::Ordering, fmt::Display, ops::Range};
 
 /// .0[0] is original shape, further shapes are additional reshapes
@@ -137,7 +137,7 @@ impl View {
         //println!("After insert loop {self:?}");
     }*/
 
-    pub fn reshape(&mut self, axes: Range<Axis>, new_shape: &[Dim]) {
+    pub fn reshape(&mut self, axes: Range<UAxis>, new_shape: &[Dim]) {
         fn try_reshape(block: &[RDim], new_shape: &[usize]) -> Vec<RDim> {
             fn is_contiguous_block(dims: &[RDim]) -> bool {
                 //println!("is contiguous: {dims:?}");
@@ -423,7 +423,7 @@ impl View {
         }
     }
 
-    pub fn pad_axis(&mut self, axis: Axis, left_pad: isize, right_pad: isize) {
+    pub fn pad_axis(&mut self, axis: UAxis, left_pad: isize, right_pad: isize) {
         let mut old_shape = self.shape();
         let inner = self.0.last_mut().unwrap();
         let mut dim = &mut inner[axis];

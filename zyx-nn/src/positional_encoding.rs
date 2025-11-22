@@ -70,13 +70,15 @@ impl PositionalEncoding {
         // Interleave sin and cos: [max_len, d_model]
         let mut parts = Vec::with_capacity(d_model);
         for i in 0..(d_model / 2) {
-            parts.push(sin_part.get((0..max_len, i))?.unsqueeze(1)?);
-            parts.push(cos_part.get((0..max_len, i))?.unsqueeze(1)?);
+            parts.push(sin_part.slice((0..max_len, i))?.unsqueeze(1)?);
+            parts.push(cos_part.slice((0..max_len, i))?.unsqueeze(1)?);
         }
 
         // Pad if d_model is odd
         if d_model % 2 != 0 {
-            let pad = sin_part.get((0..max_len, d_model / 2 - 1))?.unsqueeze(1)?;
+            let pad = sin_part
+                .slice((0..max_len, d_model / 2 - 1))?
+                .unsqueeze(1)?;
             parts.push(pad);
         }
 
@@ -137,7 +139,7 @@ impl PositionalEncoding {
             ));
         }
 
-        let pe_slice = self.pe.get((0..seq_len, 0..dim))?; // [seq_len, dim]
+        let pe_slice = self.pe.slice((0..seq_len, 0..dim))?; // [seq_len, dim]
         let pe_expanded = pe_slice.unsqueeze(0)?; // [1, seq_len, dim]
 
         let out = (x + pe_expanded).dropout(self.dropout_prob);

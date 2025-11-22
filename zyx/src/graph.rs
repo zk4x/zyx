@@ -6,7 +6,7 @@ use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::{
     DType,
-    shape::{Axis, Dim},
+    shape::{UAxis, Dim},
     slab::Slab,
 };
 use crate::{Map, Set};
@@ -20,7 +20,7 @@ pub struct Graph {
     pub gradient_tape: Option<Set<TensorId>>,
     shapes: Map<TensorId, Box<[Dim]>>,
     paddings: Map<TensorId, Box<[(isize, isize)]>>,
-    axes: Map<TensorId, Box<[Axis]>>,
+    axes: Map<TensorId, Box<[UAxis]>>,
 }
 
 impl Graph {
@@ -113,7 +113,7 @@ impl Graph {
         self.paddings.insert(id, padding.into_boxed_slice());
     }
 
-    pub(super) fn push_axes(&mut self, id: TensorId, axes: Vec<Axis>) {
+    pub(super) fn push_axes(&mut self, id: TensorId, axes: Vec<UAxis>) {
         self.axes.insert(id, axes.into_boxed_slice());
     }
 
@@ -152,7 +152,7 @@ impl Graph {
         &self.paddings[&tensor_id]
     }
 
-    pub(super) fn axes(&self, tensor_id: TensorId) -> &[Axis] {
+    pub(super) fn axes(&self, tensor_id: TensorId) -> &[UAxis] {
         &self.axes[&tensor_id]
     }
 
