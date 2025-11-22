@@ -67,7 +67,7 @@ impl KMKernel {
         self.kernel.shape()
     }
 
-    fn last_op_id(&self) -> OpId {
+    const fn last_op_id(&self) -> OpId {
         self.kernel.ops.len() - 1
     }
 
@@ -126,12 +126,8 @@ impl KMKernel {
             }
             //println!("param={param}");
             match &self.kernel.ops[param] {
-                Op::Reduce { x, .. } => {
-                    params.push(*x);
-                }
-                Op::Cast { x, .. } => {
-                    params.push(*x);
-                }
+                Op::Reduce { x, .. } |
+                Op::Cast { x, .. } |
                 Op::Unary { x, .. } => {
                     params.push(*x);
                 }
@@ -139,8 +135,7 @@ impl KMKernel {
                     params.push(*x);
                     params.push(*y);
                 }
-                Op::Const(..) | Op::ConstView { .. } => {}
-                Op::LoadView { .. } => {}
+                Op::Const(..) | Op::ConstView { .. } | Op::LoadView { .. } => {}
                 Op::Define { .. }
                 | Op::StoreView { .. }
                 | Op::Load { .. }
@@ -175,7 +170,7 @@ struct Kernelizer<'a> {
     devices: &'a mut [Device],
     cache: &'a mut Cache,
     search_config: &'a SearchConfig,
-    config_dir: &'a Option<PathBuf>,
+    config_dir: Option<&'a PathBuf>,
     debug: &'a DebugMask,
 }
 
@@ -188,7 +183,7 @@ impl<'a> Kernelizer<'a> {
         devices: &'a mut [Device],
         cache: &'a mut Cache,
         search_config: &'a SearchConfig,
-        config_dir: &'a Option<PathBuf>,
+        config_dir: Option<&'a PathBuf>,
         debug: &'a DebugMask,
     ) -> Self {
         Self {
@@ -316,10 +311,7 @@ impl<'a> Kernelizer<'a> {
     }
 
     fn add_reshape_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
-        #[cfg(debug_assertions)]
-        if !self.visited.contains_key(&x) {
-            panic!("Missing tensor {x} in visited.");
-        }
+        debug_assert!(self.visited.contains_key(&x), "Missing tensor {x} in visited.");
         // TODO duplicate or store only if this is not mergeable.
         // Otherwise if it is like unsqueeze or splitting two dims
         // or fusing two dims, it can be represented by a custom
@@ -518,7 +510,7 @@ impl<'a> Kernelizer<'a> {
                 match op {
                     Op::ConstView { .. } | Op::LoadView { .. } | Op::Loop { .. } | Op::Null => {}
                     Op::StoreView { src: x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
-                        *x += n
+                        *x += n;
                     }
                     Op::Binary { x, y, .. } => {
                         *x += n;
@@ -547,7 +539,7 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].push(op);
 
             // Fix visited
-            for (_, (kidm, op_id)) in &mut self.visited {
+            for (kidm, op_id) in self.visited.values_mut() {
                 if *kidm == kidy {
                     *kidm = kid;
                     *op_id += n;
@@ -752,7 +744,7 @@ impl<'a> Kernelizer<'a> {
             // If it has been compiled for the device
             if let Some(&program_id) = self.cache.programs.get(&(kid, dev_info_id)) {
                 if self.debug.kmd() {
-                    println!("Kernel launch from memory pool {} with args: {:?}", mpid, args);
+                    println!("Kernel launch from memory pool {mpid} with args: {args:?}");
                 }
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 self.pools[mpid].events.insert(output_buffers, event);
@@ -793,7 +785,7 @@ impl<'a> Kernelizer<'a> {
             }
             let program_id = device.compile(&kernel, self.debug.asm())?;
             if self.debug.kmd() {
-                println!("Kernel launch from memory pool {} with args: {:?}", mpid, args);
+                println!("Kernel launch from memory pool {mpid} with args: {args:?}");
             }
             let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
             self.pools[mpid].events.insert(output_buffers, event);
@@ -824,7 +816,7 @@ impl<'a> Kernelizer<'a> {
 
                 let timer = std::time::Instant::now();
                 if self.debug.kmd() {
-                    println!("Kernel launch from memory pool {} with args: {:?}", mpid, args);
+                    println!("Kernel launch from memory pool {mpid} with args: {args:?}");
                 }
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 pool.pool.sync_events(vec![event])?;
@@ -930,7 +922,7 @@ impl<'a> Kernelizer<'a> {
 
         self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer);
         if self.search_config.save_to_disk {
-            if let Some(mut path) = self.config_dir.clone() {
+            if let Some(mut path) = self.config_dir.cloned() {
                 path.push("cached_kernels");
                 let ser_cache: Vec<u8> = self.cache.serialize_bin();
                 std::fs::write(path, ser_cache)?;
@@ -1037,7 +1029,7 @@ impl Runtime {
                 &mut self.devices,
                 &mut self.cache,
                 &self.search_config,
-                &self.config_dir,
+                self.config_dir.as_ref(),
                 &self.debug,
             );
 

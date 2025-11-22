@@ -16,7 +16,6 @@
 #![deny(clippy::cast_lossless)]
 #![deny(clippy::cast_precision_loss)]
 #![deny(clippy::all)]
-#![deny(clippy::cast_possible_wrap)]
 #![deny(clippy::cast_ptr_alignment)]
 #![deny(clippy::cast_sign_loss)]
 #![deny(clippy::ptr_cast_constness)]
@@ -49,6 +48,8 @@
 #![allow(clippy::fallible_impl_from)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::cast_possible_wrap)]
 
 use crate::runtime::Runtime;
 use std::{fs::File, path::Path};

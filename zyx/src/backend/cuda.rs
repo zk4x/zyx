@@ -334,7 +334,7 @@ pub(super) fn initialize_device(
             let mut programs: Slab<ProgramId, CUDAProgram> = Slab::new();
 
             // Worker loop
-            while let Ok(cmd) = rx.recv() {
+            'work_thread_loop: while let Ok(cmd) = rx.recv() {
                 match cmd {
                     CUDACommand::Allocate { bytes, reply } => {
                         //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
@@ -504,7 +504,7 @@ pub(super) fn initialize_device(
                                     unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::KernelLaunch)
                                 {
                                     _ = reply.send(Err(err));
-                                    continue;
+                                    continue 'work_thread_loop;
                                 };
                             }
                         }

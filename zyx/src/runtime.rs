@@ -31,7 +31,7 @@ pub struct Runtime {
     /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
     pub cache: Cache,
     /// Zyx configuration directory path
-    pub config_dir: Option<PathBuf>, // Why the hell isn't PathBuf::new const?????
+    pub config_dir: Option<PathBuf>,
     /// Random number generator
     pub rng: Rng,
     /// Are we in training mode?
