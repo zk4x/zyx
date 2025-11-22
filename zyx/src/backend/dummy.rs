@@ -60,6 +60,7 @@ pub(super) fn initialize_device(
 }
 
 impl DummyMemoryPool {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn deinitialize(&mut self) {
         let _ = self;
     }
@@ -89,6 +90,7 @@ impl DummyMemoryPool {
 
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn host_to_pool(
         &mut self,
         src: &[u8],
@@ -104,6 +106,7 @@ impl DummyMemoryPool {
 
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn pool_to_host(
         &mut self,
         src: BufferId,
@@ -119,6 +122,7 @@ impl DummyMemoryPool {
 
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let _ = self;
         let _ = events;
@@ -126,6 +130,7 @@ impl DummyMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         let _ = self;
         let _ = events;
@@ -133,6 +138,7 @@ impl DummyMemoryPool {
 }
 
 impl DummyDevice {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn deinitialize(&mut self) {
         let _ = self;
     }
@@ -150,6 +156,7 @@ impl DummyDevice {
     }
 
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         let _ = self;
         let _ = kernel;
@@ -157,6 +164,7 @@ impl DummyDevice {
         Ok(ProgramId::ZERO)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn release(&mut self, program_id: ProgramId) {
         let _ = self;
         let _ = program_id;
@@ -164,6 +172,7 @@ impl DummyDevice {
 
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn launch(
         &mut self,
         program_id: ProgramId,

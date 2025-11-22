@@ -808,8 +808,9 @@ impl<'a> Kernelizer<'a> {
             loop {
                 okernel = kernel.clone();
 
-                let Some(optimization) =
-                    optimizer.next_optimization(u64::MAX) else { return Err(ZyxError::KernelLaunchFailure) };
+                let Some(optimization) = optimizer.next_optimization(u64::MAX) else {
+                    return Err(ZyxError::KernelLaunchFailure);
+                };
 
                 if !optimizer.apply_optimization(&mut okernel, optimization, self.debug.ir()) {
                     continue;
@@ -929,7 +930,7 @@ impl<'a> Kernelizer<'a> {
 
         self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer);
         if self.search_config.save_to_disk {
-            if let Some(mut path) = self.config_dir.as_ref().cloned() {
+            if let Some(mut path) = self.config_dir.clone() {
                 path.push("cached_kernels");
                 let ser_cache: Vec<u8> = self.cache.serialize_bin();
                 std::fs::write(path, ser_cache)?;
@@ -1064,7 +1065,7 @@ impl Runtime {
                         Node::Pad { x } => kernelizer.add_pad_op(nid, x)?,
                         Node::Reduce { x, rop } => kernelizer.add_reduce_op(nid, x, rop)?,
                         Node::Binary { x, y, bop } => kernelizer.add_binary_op(nid, x, y, bop)?,
-                    };
+                    }
                 }
 
                 if to_eval.contains(&nid) {

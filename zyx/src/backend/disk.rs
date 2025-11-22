@@ -6,7 +6,10 @@ use std::{
 
 use super::{BufferId, Event, MemoryPool};
 use crate::{
-    error::{BackendError, ErrorStatus}, runtime::Pool, shape::Dim, slab::Slab
+    error::{BackendError, ErrorStatus},
+    runtime::Pool,
+    shape::Dim,
+    slab::Slab,
 };
 
 #[derive(Debug)]
@@ -26,10 +29,7 @@ struct DiskBuffer {
 pub struct DiskEvent {}
 
 #[allow(clippy::unnecessary_wraps)]
-pub(super) fn initialize_pool(
-    memory_pools: &mut Vec<Pool>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
+pub(super) fn initialize_pool(memory_pools: &mut Vec<Pool>, debug_dev: bool) -> Result<(), BackendError> {
     if debug_dev {
         println!("Using disk backend");
     }
@@ -42,6 +42,7 @@ pub(super) fn initialize_pool(
 }
 
 impl DiskMemoryPool {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn deinitialize(&mut self) {
         let _ = self;
     }
@@ -65,6 +66,7 @@ impl DiskMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn pool_to_host(
         &mut self,
         src: BufferId,
@@ -80,6 +82,7 @@ impl DiskMemoryPool {
 
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let _ = self;
         let _ = events;
@@ -87,6 +90,7 @@ impl DiskMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         let _ = self;
         let _ = events;

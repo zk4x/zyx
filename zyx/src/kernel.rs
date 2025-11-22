@@ -1201,7 +1201,7 @@ impl Kernel {
         }
     }
 
-    fn get_end_loop_id(&mut self, loop_id: OpId) -> OpId {
+    fn get_end_loop_id(&self, loop_id: OpId) -> OpId {
         let mut end_loop_id = loop_id;
         let mut n_loops = 1;
         while end_loop_id < self.ops.len() {

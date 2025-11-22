@@ -138,24 +138,10 @@ impl View {
     }*/
 
     pub fn reshape(&mut self, axes: Range<Axis>, new_shape: &[Dim]) {
-        //println!("Reshape {:?}, axes {:?} into shape {new_shape:?}, {self}", self.shape(), axes.clone());
-        debug_assert!(
-            axes.end <= self.0.last().map_or(1, Vec::len) as Dim,
-            "Reshape axes range {axes:?} is greater than view's rank {}",
-            self.0.last().map_or(1, Vec::len)
-        );
-        debug_assert_eq!(
-            self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
-            new_shape.iter().product::<Dim>(),
-            "Reshape failed, products are different: {:?} axes {axes:?} -> {:?}",
-            self.shape(),
-            new_shape
-        );
-
-        pub fn try_reshape(block: &[RDim], new_shape: &[usize]) -> Vec<RDim> {
+        fn try_reshape(block: &[RDim], new_shape: &[usize]) -> Vec<RDim> {
             fn is_contiguous_block(dims: &[RDim]) -> bool {
                 //println!("is contiguous: {dims:?}");
-                let mut expected_stride = dims.last().map(|rd| rd.st).unwrap_or(1);
+                let mut expected_stride = dims.last().map_or(1, |rd| rd.st);
                 for rd in dims.iter().rev() {
                     if rd.lp != 0 || rd.rp != 0 {
                         return false;
@@ -239,7 +225,7 @@ impl View {
                     }
 
                     // Recompute strides, zero padding
-                    let mut stride = orig_slice.last().map(|rd| rd.st).unwrap_or(1);
+                    let mut stride = orig_slice.last().map_or(1, |rd| rd.st);
                     for k in (new_start..j).rev() {
                         let dim = new_shape[k];
                         new_dims[k] = RDim { d: dim, st: if dim == 1 { 0 } else { stride }, lp: 0, rp: 0 };
@@ -260,6 +246,20 @@ impl View {
 
             new_dims
         }
+
+        //println!("Reshape {:?}, axes {:?} into shape {new_shape:?}, {self}", self.shape(), axes.clone());
+        debug_assert!(
+            axes.end <= self.0.last().map_or(1, Vec::len) as Dim,
+            "Reshape axes range {axes:?} is greater than view's rank {}",
+            self.0.last().map_or(1, Vec::len)
+        );
+        debug_assert_eq!(
+            self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
+            new_shape.iter().product::<Dim>(),
+            "Reshape failed, products are different: {:?} axes {axes:?} -> {:?}",
+            self.shape(),
+            new_shape
+        );
 
         if let Some(last_block) = self.0.last_mut() {
             // Try to reshape last block in place

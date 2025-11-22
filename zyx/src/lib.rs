@@ -41,6 +41,7 @@
 #![deny(clippy::separated_literal_suffix)]
 #![allow(clippy::unnecessary_cast)]
 #![allow(trivial_numeric_casts)] // why not?, will by optimizad by the compiler anyway
+#![allow(clippy::collapsible_if)]
 // Deny later
 #![allow(clippy::single_char_lifetime_names)]
 #![forbid(clippy::cargo)]
@@ -72,8 +73,8 @@ mod autograd;
 mod chasher;
 mod prog_bar;
 mod realize;
-mod view;
 mod tensor2;
+mod view;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;

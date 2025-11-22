@@ -119,7 +119,9 @@ pub(super) fn initialize_device(
 ) -> Result<(), BackendError> {
     let _ = config;
 
-    let hip_paths = ["/lib64/libamdhip64.so", "/lib/x86_64-linux-gnu/libamdhip64.so",
+    let hip_paths = [
+        "/lib64/libamdhip64.so",
+        "/lib/x86_64-linux-gnu/libamdhip64.so",
         "/usr/lib64/hip/libhip_hcc.so",
         "/usr/lib64/hip/libhiprtc.so",
         "/opt/rocm/hip/lib/libhip_hcc.so",
@@ -291,11 +293,14 @@ pub(super) fn initialize_device(
 impl HIPMemoryPool {
     #[allow(clippy::unused_self)]
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn deinitialize(&mut self) {
         // TODO
     }
 
-    pub(super) const fn free_bytes(&self) -> usize { self.free_bytes }
+    pub(super) const fn free_bytes(&self) -> usize {
+        self.free_bytes
+    }
 
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
@@ -407,12 +412,15 @@ impl HIPMemoryPool {
 }
 
 impl Drop for HIPMemoryPool {
-    fn drop(&mut self) { unsafe { (self.hipCtxDestroy)(self.context) }; }
+    fn drop(&mut self) {
+        unsafe { (self.hipCtxDestroy)(self.context) };
+    }
 }
 
 impl HIPDevice {
     #[allow(clippy::unused_self)]
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) const fn deinitialize(&mut self) {
         // TODO
     }
@@ -427,10 +435,14 @@ impl HIPDevice {
         Ok(id)
     }
 
-    pub(super) const fn info(&self) -> &DeviceInfo { &self.dev_info }
+    pub(super) const fn info(&self) -> &DeviceInfo {
+        &self.dev_info
+    }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) const fn memory_pool_id(&self) -> u32 { self.memory_pool_id }
+    pub(super) const fn memory_pool_id(&self) -> u32 {
+        self.memory_pool_id
+    }
 
     /*#[allow(clippy::needless_pass_by_value)]
     pub(super) fn release_program(&self, program: HIPProgram) -> Result<(), BackendError> {
@@ -549,6 +561,7 @@ impl HIPDevice {
     }
 
     #[allow(unused)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         /*let (gws, lws, name, ptx) = self.compile_hip(kernel, debug_asm)?;
         //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
@@ -592,6 +605,7 @@ impl HIPDevice {
         todo!()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn launch(
         &mut self,
         program_id: ProgramId,
@@ -654,7 +668,9 @@ impl HIPDevice {
         self.programs.remove(program_id);
     }
 
-    pub const fn free_compute(&self) -> u128 { self.dev_info.compute }
+    pub const fn free_compute(&self) -> u128 {
+        self.dev_info.compute
+    }
 }
 
 impl HIPStatus {

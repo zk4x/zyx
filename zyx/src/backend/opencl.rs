@@ -520,8 +520,13 @@ impl OpenCLMemoryPool {
         };*/
         if !event_wait_list.is_empty() {
             //println!("Syncing events: {event_wait_list:?}");
-            unsafe { (self.clWaitForEvents)(u32::try_from(event_wait_list.len()).expect("So many events..."), event_wait_list.as_ptr()) }
-                .check(ErrorStatus::MemoryCopyP2H)?;
+            unsafe {
+                (self.clWaitForEvents)(
+                    u32::try_from(event_wait_list.len()).expect("So many events..."),
+                    event_wait_list.as_ptr(),
+                )
+            }
+            .check(ErrorStatus::MemoryCopyP2H)?;
         }
         let mut event: *mut c_void = ptr::null_mut();
         unsafe {
@@ -586,7 +591,7 @@ impl OpenCLMemoryPool {
         Ok(())
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         let _ = self;
         let _ = events;
@@ -599,6 +604,7 @@ impl OpenCLMemoryPool {
 }
 
 impl OpenCLDevice {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn deinitialize(&mut self) {
         let _ = self;
     }
@@ -897,7 +903,7 @@ impl OpenCLDevice {
                 prev_dt = dt;
                 i += 1;
             }
-            _ =writeln!(reg_str, ";");
+            _ = writeln!(reg_str, ";");
         }
 
         let mut pragma = String::new();
@@ -965,6 +971,7 @@ impl OpenCLDevice {
         Ok(self.programs.push(OpenCLProgram { program, kernel, gws, lws }))
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn launch(
         &mut self,
         program_id: ProgramId,
