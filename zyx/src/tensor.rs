@@ -2488,7 +2488,8 @@ impl Tensor {
     }
 
     /// Returns lower triangular part of the input tensor, other elements are set to zero
-    #[must_use]
+    /// # Errors
+    /// Returns error if self's rank < 2
     pub fn tril(&self, diagonal: isize) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal+1, device=self.device, dtype=dtypes.bool).where(self.zeros_like(), self)
         let [r, c] = self.rdims::<2>()?;
@@ -2829,16 +2830,16 @@ impl Tensor {
         Ok(x)
     }
 
-    /// Applies Rotary Positional Encoding (RoPE) to a tensor.
+    /// Applies Rotary Positional Encoding (`RoPE`) to a tensor.
     ///
-    /// This method computes RoPE by taking two tensors representing sine and cosine frequency components,
+    /// This method computes `RoPE` by taking two tensors representing sine and cosine frequency components,
     /// reshapes them appropriately, and combines them with the given input tensor to produce a new tensor
     /// representing the positional encodings.
     ///
     /// # Arguments
     ///
-    /// * `sine_frequencies` - A tensor containing the sine frequency components for the RoPE computation.
-    /// * `cosine_frequencies` - A tensor containing the cosine frequency components for the RoPE computation.
+    /// * `sine_frequencies` - A tensor containing the sine frequency components for the `RoPE` computation.
+    /// * `cosine_frequencies` - A tensor containing the cosine frequency components for the `RoPE` computation.
     ///
     /// # Returns
     ///
@@ -3750,17 +3751,7 @@ fn tensor_to_string<T: core::fmt::Display>(
         return "[]".into();
     }
     // get maximal width of single value
-    let mut w = 0;
-    if let Some(width) = width {
-        w = width;
-    } else {
-        for x in data {
-            let l = format!("{x:>.precision$}").len();
-            if l > w {
-                w = l;
-            }
-        }
-    }
+    let w = width.unwrap_or_else(|| data.iter().map(|x| format!("{x:>.precision$}").len()).max().unwrap_or(0));
     let d0 = shape[rank - 1];
     for (i, x) in data.iter().enumerate() {
         {

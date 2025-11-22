@@ -165,9 +165,8 @@ impl Optimizer {
             self.full_iteration += 1;
             if !self.tried.contains(&Optimization(temp)) && temp < self.max_iter {
                 return Some(Optimization(temp));
-            } else {
-                self.tried.remove(&Optimization(temp));
             }
+            self.tried.remove(&Optimization(temp));
         }
         self.tried.clear();
         None
