@@ -14,9 +14,9 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, RT};
 use core::cmp::Ordering;
 use half::{bf16, f16};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::{Debug, Display};
-use std::hash::BuildHasherDefault;
 use std::iter::{once, repeat_n};
 use std::ops::{
     Add, BitAnd, BitOr, BitXor, Bound, Div, Mul, Neg, Not, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive,
@@ -2170,15 +2170,21 @@ impl Tensor {
     return (index.unsqueeze(-1)._one_hot_along_dim(self.shape[dim]).where(x, 0)).sum(-1, dtype=self.dtype)
     */
 
-    /*
-    def _one_hot_along_dim(self:Tensor, num_classes:sint, dim:int=-1) -> Tensor:
-      if not dtypes.is_int(self.dtype): raise RuntimeError(f"_one_hot_along_dim expects int index tensor, getting {self.dtype}")
-      offset = self.ndim - self._resolve_dim(dim) - 1
-      dt = dtypes.int64 if sint_to_uop(num_classes).overflows(dtypes.int32) else dtypes.int32
-      return self == Tensor.arange(num_classes, dtype=dt, device=self.device, requires_grad=False).reshape((num_classes,) + (1,) * offset)
-      */
+    /*if not dtypes.is_int(self.dtype): raise RuntimeError(f"expect integer dtype, getting {self.dtype=}")
+    if num_classes == -1: num_classes = (self.max()+1).item()
+    return self[..., None]._one_hot_along_dim(num_classes).where(1, 0)*/
 
-    fn one_hot_along_dim(&self, num_classes: usize, dim: isize) -> Tensor {
+    /// One hot
+    pub fn one_hot(&self, num_classes: Dim) -> Tensor {
+        let mut num_classes = num_classes;
+        if num_classes == 0 {
+            num_classes = (self.max() + 1).item::<i64>() as usize;
+        }
+        self.one_hot_along_dim(num_classes, -1).where_(1, 0).unwrap()
+    }
+
+    /// One hot along dim
+    fn one_hot_along_dim(&self, num_classes: Dim, dim: Axis) -> Tensor {
         // Step 1: Check if the tensor is of integer dtype
         if !self.dtype().is_int() {
             panic!(
@@ -2188,8 +2194,8 @@ impl Tensor {
         }
 
         // Step 2: Determine the target dimension (resolving negative dim)
-        let dim = if dim < 0 { self.rank() as isize + dim } else { dim };
-        let offset = self.rank() as isize - dim - 1;
+        let dim = if dim < 0 { self.rank() as Axis + dim } else { dim };
+        let offset = self.rank() as Axis - dim - 1;
 
         // Step 3: Choose appropriate data type based on num_classes
         let dt = if num_classes > i32::MAX as usize {
@@ -2475,6 +2481,11 @@ impl Tensor {
     /// Argmax
     pub fn argmax(&self) -> Tensor {
         self.argmax_impl(None, false).unwrap()
+    }
+
+    /// Argmax
+    pub fn argmax_axis(&self, axis: Axis) -> Result<Tensor, ZyxError> {
+        self.argmax_impl(Some(axis), false)
     }
 
     /// Argmax
@@ -3123,7 +3134,7 @@ impl Tensor {
     #[allow(clippy::type_complexity)]
     pub fn load_gguf(
         path: impl AsRef<Path>,
-    ) -> Result<(Map<String, GGUFMetadataValue>, Map<String, Tensor>), ZyxError> {
+    ) -> Result<(HashMap<String, GGUFMetadataValue>, HashMap<String, Tensor>), ZyxError> {
         use std::io::Read;
         let mut f = std::fs::File::open(&path)?;
         let mut magic = [0; 4];
@@ -3147,7 +3158,7 @@ impl Tensor {
         let metadata_kv_count = usize::try_from(u64::from_le_bytes(metadata_kv_count))
             .map_err(|e| ZyxError::parse_error(format!("Failed to parse tensor count in GGUF file. {e}").into()))?;
 
-        let mut metadata = Map::default();
+        let mut metadata = HashMap::new();
         for _ in 0..metadata_kv_count {
             // First string key, (len u64, chars),
             let mut metadata_key_len = [0; 8];
@@ -3235,7 +3246,7 @@ impl Tensor {
             None
         };
 
-        let mut tensors = Map::default();
+        let mut tensors = HashMap::new();
         for (name, (shape, dtype, offset)) in tensor_header {
             if let Some(progress_bar) = &mut progress_bar {
                 progress_bar.inc(1, &format!("{name}, {shape:?}, {dtype}"));
@@ -3246,7 +3257,7 @@ impl Tensor {
     }
 
     /// Load safetensors module from path
-    fn load_safetensors(path: impl AsRef<Path>) -> Result<Map<String, Tensor>, ZyxError> {
+    pub fn load_safetensors(path: impl AsRef<Path>) -> Result<HashMap<String, Tensor>, ZyxError> {
         use std::io::Read;
         let mut f = std::fs::File::open(&path)?;
         //println!("File size is {} bytes", f.metadata()?.len());
@@ -3262,7 +3273,7 @@ impl Tensor {
         let mut text = String::with_capacity(10);
         let mut begin_str = false;
         let mut i = 0;
-        let mut tensors = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut tensors = HashMap::new();
         let mut dtype = DType::F32;
         let mut shape = vec![1];
         let mut label = String::new();
