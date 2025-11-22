@@ -44,9 +44,9 @@ impl Optimizer {
             return false;
         }
 
-        /*if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
+        if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
             return false;
-        }*/
+        }
 
         kernel.unfold_pows();
         kernel.unfold_reduces();
@@ -344,30 +344,6 @@ struct LoopSplitOpt {
 
 impl LoopSplitOpt {
     fn new(kernel: &Kernel, max_depth: usize) -> (Self, u32) {
-        let mut reduction_splits = Vec::new();
-
-        // Find all reduction ops
-        for (_, op) in kernel.ops.iter().enumerate() {
-            if let Op::Reduce { dims, .. } = op {
-                // Generate all valid splits for these dimensions
-                let splits = Self::generate_splits(dims, max_depth);
-                reduction_splits.push(splits);
-            }
-        }
-
-        let max_index = reduction_splits.iter().map(|splits| splits.len() as u32).product::<u32>();
-        (LoopSplitOpt { reduction_splits }, max_index)
-    }
-
-    fn generate_splits(dims: &[Dim], max_depth: usize) -> Vec<Vec<Dim>> {
-        // Calculate the total product of all dimensions
-        let total_product: Dim = dims.iter().product();
-
-        // Generate all possible factorizations of the total product up to max_depth
-        let mut current = Vec::new();
-        let mut results = Vec::new();
-
-        // Inline factorization generation
         fn find_factorizations(
             remaining: Dim,
             start: Dim,
@@ -381,7 +357,6 @@ impl LoopSplitOpt {
                 }
                 return;
             }
-
             for i in start..=remaining {
                 if remaining % i == 0 {
                     current.push(i);
@@ -391,36 +366,45 @@ impl LoopSplitOpt {
             }
         }
 
-        find_factorizations(total_product, 1, max_depth, &mut current, &mut results);
+        let mut reduction_splits = Vec::new();
 
-        // Filter out splits that contain dimensions with length 1
-        results.retain(|split| !split.contains(&1));
+        // Find all reduction ops
+        for (_, op) in kernel.ops.iter().enumerate() {
+            if let Op::Reduce { dims, .. } = op {
+                // Generate all valid splits for these dimensions
+                // Calculate the total product of all dimensions
+                let total_product: Dim = dims.iter().product();
 
-        // Only keep splits where the product equals the total product
-        results.retain(|split| split.iter().product::<Dim>() == total_product);
+                // Generate all possible factorizations of the total product up to max_depth
+                let mut current = Vec::new();
+                let mut splits = Vec::new();
 
-        // Add the original dimensions as a valid option (no split)
-        results.push(dims.to_vec());
+                find_factorizations(total_product, 1, max_depth, &mut current, &mut splits);
 
-        results
+                // Filter out splits that contain dimensions with length 1
+                splits.retain(|split| !split.contains(&1));
+
+                // Only keep splits where the product equals the total product
+                splits.retain(|split| split.iter().product::<Dim>() == total_product);
+
+                // Add the original dimensions as a valid option (no split)
+                splits.push(dims.to_vec());
+
+                reduction_splits.push(splits);
+            }
+        }
+
+        let max_index = reduction_splits.iter().map(|splits| splits.len() as u32).product::<u32>();
+        (LoopSplitOpt { reduction_splits }, max_index)
     }
 
-    fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        /*println!();
-        kernel.debug();
-        println!();
-        println!();*/
+    fn apply_optimization(&self, mut index: u32, kernel: &mut Kernel) -> bool {
         // Check if we have any reduction splits
         if self.reduction_splits.is_empty() {
             // No reduction operations found, nothing to optimize
             return true;
         }
 
-        // TODO This code has bad vibes. It should by able to apply splits to multiple loops at once,
-        // currently works only with single reduce loop.
-        let (reduction_idx, split_idx) = self.decode_index(index);
-
-        // 2. Find the target reduction operation using filter
         let reduce_ops: Vec<OpId> = kernel
             .ops
             .iter()
@@ -428,174 +412,19 @@ impl LoopSplitOpt {
             .filter(|(_, op)| matches!(op, Op::Reduce { .. }))
             .map(|(op_id, _)| op_id)
             .collect();
-        let Some(&reduce_op_id) = reduce_ops.get(reduction_idx) else { return false };
 
-        // 3. Get the split dimensions and replace the dims in the reduction op
-        let split_dims = self.reduction_splits[reduction_idx][split_idx].clone();
-        //println!("split_dims={split_dims:?}, reducing loop {reduce_op_id}");
+        let mut result = Vec::with_capacity(self.reduction_splits.len());
+        for (i, choices) in self.reduction_splits.iter().enumerate() {
+            let n = choices.len();
+            let idx = index % n as u32;
+            index /= n as u32;
+            result.push((i, idx));
 
-        // Replace the dims in the reduction operation
-        let n_reduce_dims;
-        if let Op::Reduce { ref mut dims, .. } = kernel.ops[reduce_op_id] {
-            n_reduce_dims = dims.len();
-            *dims = split_dims.clone();
-        } else {
-            return false; // Should not happen since we checked it's a Reduce op
-        }
-
-        let min_param = self.find_min_param(kernel, reduce_op_id);
-        //println!("min_param={min_param}, n_reduce_dims={n_reduce_dims}");
-        let mut n_skipped_axes = 0;
-        for (op_id, op) in kernel.ops.iter_mut().enumerate() {
-            match op {
-                Op::ConstView { view, .. } => {
-                    if op_id >= min_param && op_id < reduce_op_id {
-                        let rank = view.rank();
-                        //println!("rank={rank}");
-                        view.reshape(
-                            rank - n_skipped_axes - n_reduce_dims..rank - n_skipped_axes,
-                            &split_dims,
-                        );
-                    }
-                }
-                Op::LoadView { view, .. } => {
-                    if op_id >= min_param && op_id < reduce_op_id {
-                        let rank = view.rank();
-                        view.reshape(
-                            rank - n_skipped_axes - n_reduce_dims..rank - n_skipped_axes,
-                            &split_dims,
-                        );
-                    }
-                }
-                Op::Reduce { dims, .. } => {
-                    if op_id >= min_param && op_id < reduce_op_id {
-                        n_skipped_axes += dims.len();
-                    }
-                }
-                _ => {}
-            }
+            let Some(&reduce_id) = reduce_ops.get(i) else { return false };
+            kernel.reshape_reduce(reduce_id, &self.reduction_splits[i][idx as usize]);
         }
 
         true
-    }
-
-    fn decode_index(&self, index: u32) -> (usize, usize) {
-        let mut idx = index as usize;
-        for (i, splits) in self.reduction_splits.iter().enumerate() {
-            if idx < splits.len() {
-                return (i, idx);
-            }
-            idx -= splits.len();
-        }
-        panic!("Index {index} out of bounds");
-    }
-
-    fn find_min_param(&self, kernel: &Kernel, reduce_op_id: usize) -> usize {
-        // Reuse the tracing algorithm from kernel.unfold_reduces (lines 422-502)
-        let Op::Reduce { x, .. } = kernel.ops[reduce_op_id] else { unreachable!() };
-
-        let mut min_param = x;
-        let mut params = vec![x];
-
-        while let Some(param) = params.pop() {
-            match kernel.ops[param] {
-                Op::Load { src, .. } => {
-                    params.push(src);
-                    if src < min_param {
-                        min_param = src;
-                    }
-                }
-                Op::Store { x: src, index, .. } => {
-                    params.push(index);
-                    if index < min_param {
-                        min_param = index;
-                    }
-                    params.push(src);
-                    if src < min_param {
-                        min_param = src;
-                    }
-                }
-                Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
-                    params.push(x);
-                    if x < min_param {
-                        min_param = x;
-                    }
-                }
-                Op::Binary { x, y, .. } => {
-                    params.push(x);
-                    if x < min_param {
-                        min_param = x;
-                    }
-                    params.push(y);
-                    if y < min_param {
-                        min_param = y;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        min_param
-    }
-}
-
-#[test]
-fn test_generate_splits_fix() {
-    // Test the case mentioned in the issue: dims = [512], max_depth = 3
-    let dims = [512];
-    let max_depth = 3;
-    let splits = LoopSplitOpt::generate_splits(&dims, max_depth);
-
-    println!("Generated splits for dims = {:?}, max_depth = {}:", dims, max_depth);
-    for (i, split) in splits.iter().enumerate() {
-        let product: usize = split.iter().product();
-        println!("  {}: {:?} (product = {})", i + 1, split, product);
-    }
-
-    // Verify that all splits have product equal to 512
-    for split in &splits {
-        let product: usize = split.iter().product();
-        assert_eq!(product, 512, "Split {:?} has product {} != 512", split, product);
-    }
-
-    // Verify that we don't have splits with more than max_depth elements
-    for split in &splits {
-        assert!(
-            split.len() <= max_depth,
-            "Split {:?} has length {} > max_depth {}",
-            split,
-            split.len(),
-            max_depth
-        );
-    }
-
-    // Verify that we don't have splits containing 1
-    for split in &splits {
-        assert!(!split.contains(&1), "Split {:?} contains 1", split);
-    }
-
-    // Test with multiple dimensions
-    let dims = [256, 368, 512];
-    let splits = LoopSplitOpt::generate_splits(&dims, 2);
-
-    println!("\nGenerated splits for dims = {:?}, max_depth = {}:", dims, 2);
-    for (i, split) in splits.iter().take(10).enumerate() {
-        let product: usize = split.iter().product();
-        println!("  {}: {:?} (product = {})", i + 1, split, product);
-    }
-    if splits.len() > 10 {
-        println!("  ... and {} more splits", splits.len() - 10);
-    }
-
-    // Verify that all splits have product equal to 256*368*512
-    let expected_product: usize = dims.iter().product();
-    for split in &splits {
-        let product: usize = split.iter().product();
-        assert_eq!(
-            product, expected_product,
-            "Split {:?} has product {} != {}",
-            split, product, expected_product
-        );
     }
 }
 

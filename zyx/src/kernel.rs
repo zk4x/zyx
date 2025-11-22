@@ -1061,10 +1061,6 @@ impl Kernel {
         }
     }
 
-    pub fn loop_split(&mut self, loop_id: OpId, splits: &[Dim]) {
-        todo!()
-    }
-
     pub fn loop_invariant_code_motion(&mut self, loop_id: OpId) {
         //self.debug();
         // TODO Reorder commutative
@@ -1115,11 +1111,16 @@ impl Kernel {
     }
 
     pub fn loop_unroll(&mut self, loop_id: OpId) {
-        //self.debug();
         let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
 
         // Get tail and body
         let end_loop_id = self.get_end_loop_id(loop_id);
+
+        // Don't unroll super huge loops with many iterations
+        if (end_loop_id - loop_id) * dim > 1024 {
+            return;
+        }
+
         let mut tail = self.ops.split_off(end_loop_id + 1);
         self.ops.pop();
         let loop_body = self.ops.split_off(loop_id + 1);
@@ -1144,28 +1145,60 @@ impl Kernel {
             self.ops.extend(body);
         }
 
-        let d = ((end_loop_id - loop_id) * (dim - 1)) as isize - 1;
-        //println!("n={n}, d={d}");
-
         // Add tail, increment ops
+        let d = ((end_loop_id - loop_id) * (dim - 1)) as isize - 1;
         increment(&mut tail, d, end_loop_id..);
         self.ops.extend(tail);
-        //println!();
-        //self.debug();
-        //panic!();
     }
 
-    pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
+    /*pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
         todo!()
-    }
+    }*/
 
     // Loop tiling/vectorization. Tiles all loads.
-    pub fn loop_tile(&mut self, loop_id: OpId) {
+    /*pub fn loop_tile(&mut self, loop_id: OpId) {
         todo!()
     }
 
     pub fn loop_tile_and_jam(&mut self, loop_id: OpId) {
         todo!()
+    }*/
+
+    pub fn reshape_reduce(&mut self, reduce_id: OpId, new_dims: &[Dim]) {
+        let Op::Reduce { x, ref mut dims, .. } = self.ops[reduce_id] else { return };
+        let n_old_dims = dims.len();
+        *dims = new_dims.into();
+
+        let mut visited = Set::default();
+        self.recursively_apply_reshape(x, n_old_dims, new_dims, &mut visited, 0);
+    }
+
+    fn recursively_apply_reshape(
+        &mut self,
+        op_id: OpId,
+        n_old_dims: usize,
+        new_dims: &[Dim],
+        visited: &mut Set<OpId>,
+        skip_last: usize,
+    ) {
+        match self.ops[op_id] {
+            Op::LoadView { ref mut view, .. } | Op::ConstView { ref mut view, .. } => {
+                let rank = view.rank();
+                view.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
+            }
+            Op::Reduce { x, ref dims, .. } => {
+                let skip_last = skip_last + dims.len();
+                self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
+            }
+            Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
+            }
+            Op::Binary { x, y, .. } => {
+                self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
+                self.recursively_apply_reshape(y, n_old_dims, new_dims, visited, skip_last);
+            }
+            _ => {}
+        }
     }
 
     fn get_end_loop_id(&mut self, loop_id: OpId) -> OpId {

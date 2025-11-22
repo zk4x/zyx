@@ -47,13 +47,14 @@ is very primitive, but in the future this can contain complex decision process i
 
 ### 4. Kernel optimization
 
-An optimizer then takes the kernel and runs tree search trying different optimizations possible with the kernel
+An optimizer then takes the kernel and runs autotune trying different optimizations possible with the kernel
 and the device it was scheduled for. There can be thousands of different work sizes and other optimizations
 that can be applied for each kernel. This search tries it's best to find the best kernel version with as few
 tries as possible, but if you want to really want to push your hardware from 80% to 90%, it will take some time,
-especially for large kernels.
+especially for large kernels. Given enough iterations, the search will eventually try all possible combinations
+of optimizations.
 
-### 5. Kernel compilation
+### 5. Backend code/assembly generation
 
 Finally kernels are compiled into respective backends - CUDA, OpenCL, WGPU, ...
 Compilation from IR into backends is straightforward and usually the whole mapping function is about 100 lines of code
