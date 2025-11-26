@@ -16,8 +16,8 @@ fn memory2() -> Result<(), ZyxError> {
 
 #[test]
 fn tri1() -> Result<(), ZyxError> {
-    let x = Tensor::tri(3, 5, 2, DType::I8);
-    assert_eq!(x, [[0i8, 0, 1, 1, 1], [0, 0, 0, 1, 1], [0, 0, 0, 0, 1]]);
+    let x = Tensor::tri(3, 5, 2, DType::I32);
+    assert_eq!(x, [[0i32, 0, 1, 1, 1], [0, 0, 0, 1, 1], [0, 0, 0, 0, 1]]);
     Ok(())
 }
 
@@ -301,7 +301,7 @@ fn graph_node_reuse() {
 #[test]
 fn get() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
-    assert_eq!(x.get((.., 2..3)).unwrap(), [[1], [4]]);
+    assert_eq!(x.slice((.., 2..3)).unwrap(), [[1], [4]]);
 }
 
 #[test]
@@ -526,7 +526,7 @@ fn mix_2() {
 fn rand_get() -> Result<(), ZyxError> {
     Tensor::manual_seed(69420);
     let x = Tensor::rand([3, 12], DType::U8)?;
-    let x = x.get((.., 8..=-2))?;
+    let x = x.slice((.., 8..=-2))?;
     assert_eq!(x, [[41u8, 171, 236], [212, 222, 77], [16, 125, 60]]);
     Ok(())
 }
@@ -671,9 +671,9 @@ fn rope_3() -> Result<(), ZyxError> {
         let [d] = xs.rdims()?;
         let sin_freqs = sin.squeeze([0, 1]);
         let cos_freqs = cos.squeeze([0, 1]);
-        let a = xs.get((.., .., .., ..d / 2)).unwrap();
+        let a = xs.slice((.., .., .., ..d / 2)).unwrap();
         //assert_eq!(a, [[[[1f32, 4., 2.], [4., 2., 4.]]]]);
-        let b = -xs.get((.., .., .., d / 2..)).unwrap();
+        let b = -xs.slice((.., .., .., d / 2..)).unwrap();
         //assert_eq!(b, [[[[-4f32, -4., -3.], [-4., -3., -4.]]]]);
         let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
         assert_eq!(ro, [[[[5f32, 32., 10.], [32., 20., 24.]]]]);
@@ -940,7 +940,7 @@ fn test_padding_on_elementwise_kernel() {
     let padded = t.pad([(1, 1)], 0).unwrap();
     let result = padded + 1;
     assert_eq!(result.shape(), &[5]);
-    assert_eq!(result.get(1).unwrap(), 3);
+    assert_eq!(result.slice(1).unwrap(), 3);
 }
 
 #[test]
@@ -949,7 +949,7 @@ fn test_expand_on_elementwise_kernel() {
     let expanded = t.expand([3, 3]).unwrap();
     let result = expanded + 1.0;
     assert_eq!(result.shape(), &[3, 3]);
-    assert_eq!(result.get((1, 1)).unwrap(), 4.0);
+    assert_eq!(result.slice((1, 1)).unwrap(), 4.0);
 }
 
 #[test]
@@ -958,7 +958,7 @@ fn test_reshape_on_elementwise_kernel() {
     let reshaped = t.reshape([3, 1]).unwrap();
     let result = reshaped * 2.0;
     assert_eq!(result.shape(), &[3, 1]);
-    assert_eq!(result.get((2, 0)).unwrap(), 8.0);
+    assert_eq!(result.slice((2, 0)).unwrap(), 8.0);
 }
 
 #[test]
@@ -967,7 +967,7 @@ fn test_permute_on_elementwise_kernel() {
     let permuted = t.permute([2, 0, 1]).unwrap();
     let result = permuted + 1.0;
     assert_eq!(result.shape(), &[2, 2, 2]);
-    let value: f64 = result.get((1, 0, 1)).unwrap().item();
+    let value: f64 = result.slice((1, 0, 1)).unwrap().item();
     assert_eq!(value, 5.0);
 }
 
@@ -977,10 +977,10 @@ fn test_padding_on_reduce_kernel() {
     let padded = t.pad([(1, 1), (0, 0)], 0.0).unwrap();
     let reduced = padded.sum_axes([0]).unwrap();
     assert_eq!(reduced.shape(), &[4]);
-    assert_eq!(reduced.get(0).unwrap(), 0.0);
-    assert_eq!(reduced.get(1).unwrap(), 4.0);
-    assert_eq!(reduced.get(2).unwrap(), 6.0);
-    assert_eq!(reduced.get(3).unwrap(), 0.0);
+    assert_eq!(reduced.slice(0).unwrap(), 0.0);
+    assert_eq!(reduced.slice(1).unwrap(), 4.0);
+    assert_eq!(reduced.slice(2).unwrap(), 6.0);
+    assert_eq!(reduced.slice(3).unwrap(), 0.0);
 }
 
 #[test]
@@ -989,7 +989,7 @@ fn test_expand_on_reduce_kernel() {
     let expanded = t.expand([3, 2]).unwrap();
     let reduced = expanded.mean_axes([1]).unwrap();
     assert_eq!(reduced.shape(), &[3]);
-    assert_eq!(reduced.get(1).unwrap(), 2.0);
+    assert_eq!(reduced.slice(1).unwrap(), 2.0);
 }
 
 #[test]
@@ -1007,5 +1007,5 @@ fn test_permute_on_reduce_kernel() {
     let permuted = t.permute([1, 2, 0]).unwrap();
     let reduced = permuted.sum_axes([2]).unwrap();
     assert_eq!(reduced.shape(), &[2, 2]);
-    assert_eq!(reduced.get((0, 0)).unwrap(), 6.0);
+    assert_eq!(reduced.slice((0, 0)).unwrap(), 6.0);
 }

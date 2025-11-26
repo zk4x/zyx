@@ -7,7 +7,7 @@ description = "Zyx examples"
 documentation = "https://docs.rs/zyx-torch"
 homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-only"
 keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "science"]
 
@@ -41,7 +41,7 @@ debug = 0
 #debug = 0
 
 [dependencies]
-zyx = { version = "*", path = "../zyx" }
+zyx = { version = "*", path = "../zyx", features = [] }
 zyx-nn = { version = "*", path = "../zyx-nn" }
 zyx-optim = { version = "*", path = "../zyx-optim" }
 

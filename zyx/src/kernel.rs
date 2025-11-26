@@ -6,7 +6,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, ROp, UOp},
     optimizer::Optimizer,
-    shape::{UAxis, Dim},
+    shape::{Dim, UAxis},
     view::View,
 };
 use std::{
@@ -16,7 +16,7 @@ use std::{
 };
 
 pub type OpId = usize;
-pub const IDX_T: DType = DType::U64;
+pub const IDX_T: DType = DType::U32;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct Kernel {

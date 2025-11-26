@@ -358,38 +358,44 @@ impl WGPUDevice {
                     dtypes.insert(i, IDX_T);
                     match scope {
                         Scope::Global => {
-                            writeln!(source, "{indent}let r{i} = gidx[{loop_id}]; // 0..{dim}").unwrap();
+                            writeln!(
+                                source,
+                                "{indent}let r{i} = {}(gidx[{loop_id}]); // 0..{dim}",
+                                IDX_T.wgsl()
+                            )
+                            .unwrap();
                             n_global_ids += 1;
                         }
                         Scope::Local => {
                             writeln!(
                                 source,
-                                "{indent}let r{i} = lidx[{}]; // 0..{dim}",
+                                "{indent}let r{i} = {}(lidx[{}]); // 0..{dim}",
+                                IDX_T.wgsl(),
                                 loop_id - n_global_ids
                             )
                             .unwrap();
                         }
                         Scope::Register => {
-                            writeln!(source, "{indent}for (var r{i}: u32 = 0; r{i} < {dim}; r{i} += 1) {{").unwrap();
+                            writeln!(
+                                source,
+                                "{indent}for (var r{i}: {} = 0; r{i} < {dim}; r{i} += 1) {{",
+                                IDX_T.wgsl()
+                            )
+                            .unwrap();
                             indent += "  ";
                         }
                     }
                     loop_id += 1;
                 }
                 Op::EndLoop => {
-                    indent.pop();
-                    indent.pop();
-                    writeln!(source, "{indent}}}").unwrap();
-                    loop_id -= 1;
+                    if loop_id as usize > lws.len() + gws.len() {
+                        indent.pop();
+                        indent.pop();
+                        writeln!(source, "{indent}}}").unwrap();
+                        loop_id -= 1;
+                    }
                 }
             }
-        }
-
-        while loop_id as usize > lws.len() + gws.len() {
-            indent.pop();
-            indent.pop();
-            loop_id -= 1;
-            writeln!(source, "{indent}}}").unwrap();
         }
 
         let mut pragma = String::new();

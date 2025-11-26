@@ -354,7 +354,7 @@ impl Tensor {
     /// # Errors
     /// Returns device error if the device fails to realize one or more tensors.
     pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
-        RT.lock().realize(&tensors.into_iter().map(|t| t.id).collect())
+        RT.lock().realize_and_cleanup(&tensors.into_iter().map(|t| t.id).collect())
     }
 
     /// Item
@@ -850,7 +850,7 @@ impl Tensor {
     #[must_use]
     pub fn gelu(&self) -> Tensor {
         self * 0.5f32
-            * (((self + self.pow(3f32).unwrap() * 0.044_715f32) * (2f32 / core::f32::consts::PI).sqrt()).tanh() + 1f32)
+            * (((self + self * self * self * 0.044_715f32) * (2f32 / core::f32::consts::PI).sqrt()).tanh() + 1f32)
     }
 
     /// Applies the Leaky `ReLU` activation function element-wise.

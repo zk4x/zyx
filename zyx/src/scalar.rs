@@ -2314,7 +2314,7 @@ impl Scalar for u32 {
     }
 
     fn sub(self, rhs: Self) -> Self {
-        self - rhs
+        self.wrapping_sub(rhs)
     }
 
     fn mul(self, rhs: Self) -> Self {

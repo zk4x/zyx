@@ -126,9 +126,7 @@ impl KMKernel {
             }
             //println!("param={param}");
             match &self.kernel.ops[param] {
-                Op::Reduce { x, .. } |
-                Op::Cast { x, .. } |
-                Op::Unary { x, .. } => {
+                Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
                     params.push(*x);
                 }
                 Op::Binary { x, y, .. } => {
@@ -160,7 +158,9 @@ impl std::ops::Index<OpId> for KMKernel {
 struct Kernelizer<'a> {
     // TODO merge as many of these as possible. Perhaps start by mergins rcs and visited
     // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
+    to_eval: &'a Set<TensorId>,
     virt_realized_nodes: Set<TensorId>,
+    must_keep_nodes: Set<TensorId>,
     realized_nodes: Set<TensorId>,
     kernels: Slab<KernelId, KMKernel>,
     visited: Map<TensorId, (KernelId, OpId)>,
@@ -177,6 +177,7 @@ struct Kernelizer<'a> {
 impl<'a> Kernelizer<'a> {
     fn new(
         realized_nodes: Set<TensorId>,
+        to_eval: &'a Set<TensorId>,
         rcs: Map<TensorId, u32>,
         graph: &'a Graph,
         pools: &'a mut [Pool],
@@ -186,8 +187,12 @@ impl<'a> Kernelizer<'a> {
         config_dir: Option<&'a PathBuf>,
         debug: &'a DebugMask,
     ) -> Self {
+        let mut must_keep_nodes = realized_nodes.clone();
+        must_keep_nodes.extend(to_eval);
         Self {
             // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
+            to_eval,
+            must_keep_nodes,
             virt_realized_nodes: realized_nodes.clone(),
             realized_nodes,
             kernels: Slab::with_capacity(30),
@@ -575,18 +580,20 @@ impl<'a> Kernelizer<'a> {
             && self.kernels[kid].loads.iter().all(|x| self.realized_nodes.contains(x))
         {
             let kernel = unsafe { self.kernels.remove_and_return(kid) };
-            //let loads = kernel.loads.clone();
+            let loads = kernel.loads.clone();
             let stores = kernel.stores.clone();
             self.launch_kernel(kernel)?;
             self.realized_nodes.extend(stores);
             // Delete unneeded intermediate tensors from memory pools
-            /*let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
+            let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
             for tid in loads {
-                if !self.kernels.values().any(|kernel| kernel.loads.contains(&tid)) {
+                if !self.kernels.values().any(|kernel| kernel.loads.contains(&tid))
+                    && !self.must_keep_nodes.contains(&tid)
+                {
                     to_remove.insert(tid);
                 }
             }
-            deallocate_tensors(&to_remove, self.pools);*/
+            deallocate_tensors(&to_remove, self.pools);
         }
         //println!("ADDED STORE for {x} x {xrc_rem}");
         Ok(())
@@ -937,8 +944,7 @@ impl Runtime {
     // 1. gets a set of tensors which need to be processed and in which order
     // 2. generates kernels from them
     // 3. assigns those kernels to devices, compiles and launches them
-    #[allow(clippy::cognitive_complexity)]
-    pub fn realize(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+    pub fn realize_and_cleanup(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let (to_eval, realized_nodes, order, rcs, new_leafs, mut to_delete) = {
             let begin = std::time::Instant::now();
             let realized_nodes: Set<TensorId> =
@@ -969,153 +975,15 @@ impl Runtime {
             (to_eval, realized_nodes, order, rcs, new_leafs, to_delete)
         };
 
+        self.realize(rcs, realized_nodes, &order, &to_eval)?;
+
+        #[cfg(debug_assertions)]
         {
-            let mut rcs = if rcs.is_empty() {
-                let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-                // to_eval are not in rcs
-                for &nid in &order {
-                    if !realized_nodes.contains(&nid) {
-                        for nid in self.graph[nid].parameters() {
-                            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                        }
-                    }
-                }
-                rcs
-            } else {
-                rcs
-            };
-
-            #[cfg(debug_assertions)]
-            {
-                let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
-                // to_eval are not in rcs
-                for &nid in &order {
-                    if !realized_nodes.contains(&nid) {
-                        for nid in self.graph[nid].parameters() {
-                            rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                        }
-                    }
-                }
-                if rcs2 != rcs {
-                    println!("Realized nodes: {realized_nodes:?}");
-                    for &nid in &order {
-                        println!(
-                            "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}",
-                            self.graph[nid],
-                            self.graph.shape(nid),
-                            rcs.get(&nid).copied().unwrap_or(0),
-                            rcs2.get(&nid).copied().unwrap_or(0),
-                        );
-                    }
-                    panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
-                }
-            }
-
-            for &nid in &to_eval {
-                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-
-            //println!("{rcs:?}");
-            //println!("realized_nodes: {realized_nodes:?}");
-            //println!("to_eval: {to_eval:?}");
-
-            let begin = std::time::Instant::now();
-
-            let mut kernelizer = Kernelizer::new(
-                realized_nodes,
-                rcs,
-                &self.graph,
-                &mut self.pools,
-                &mut self.devices,
-                &mut self.cache,
-                &self.search_config,
-                self.config_dir.as_ref(),
-                &self.debug,
-            );
-
-            for nid in order {
-                //use crate::{RED, RESET};
-                /*println!(
-                    "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
-                    if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
-                    kernelizer.rcs[&nid],
-                    self.graph[nid],
-                    self.graph.dtype(nid),
-                    self.graph.shape(nid)
-                );*/
-                if kernelizer.is_virt_realized(nid) {
-                    kernelizer.create_load_kernel(nid);
-                } else {
-                    match self.graph[nid] {
-                        Node::Leaf { .. } => unreachable!(),
-                        Node::Const { value } => kernelizer.create_const_kernel(nid, value),
-                        Node::Cast { x, dtype } => kernelizer.add_cast_op(nid, x, dtype),
-                        Node::Unary { x, uop } => kernelizer.add_unary_op(nid, x, uop),
-                        Node::Expand { x } => kernelizer.add_expand_op(nid, x)?,
-                        Node::Permute { x } => kernelizer.add_permute_op(nid, x)?,
-                        Node::Reshape { x } => kernelizer.add_reshape_op(nid, x)?,
-                        Node::Pad { x } => kernelizer.add_pad_op(nid, x)?,
-                        Node::Reduce { x, rop } => kernelizer.add_reduce_op(nid, x, rop)?,
-                        Node::Binary { x, y, bop } => kernelizer.add_binary_op(nid, x, y, bop)?,
-                    }
-                }
-
-                if to_eval.contains(&nid) {
-                    kernelizer.add_store(nid)?;
-                    *kernelizer.rcs.get_mut(&nid).unwrap() -= 1;
-                    if kernelizer.rcs[&nid] > 0 {
-                        kernelizer.create_load_kernel(nid);
-                    }
-                }
-
-                //kernelizer.debug();
-            }
-
-            if kernelizer.kernels.len() > KernelId(0) {
-                let mut kids: Vec<KernelId> = kernelizer.kernels.ids().collect();
-                while let Some(kid) = kids
-                    .iter()
-                    .find(|&&kid| kernelizer.kernels[kid].loads.iter().all(|x| kernelizer.realized_nodes.contains(x)))
-                    .copied()
-                {
-                    kids.retain(|x| *x != kid);
-                    let kernel = unsafe { kernelizer.kernels.remove_and_return(kid) };
-                    let loads = kernel.loads.clone();
-                    let stores = kernel.stores.clone();
-                    kernelizer.launch_kernel(kernel)?;
-                    kernelizer.realized_nodes.extend(stores);
-
-                    // Delete unneeded intermediate tensors in memory pools
-                    let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
-                    for tid in loads {
-                        if !kernelizer.kernels.values().any(|kernel| kernel.loads.contains(&tid)) {
-                            to_remove.insert(tid);
-                        }
-                    }
-                    deallocate_tensors(&to_remove, kernelizer.pools);
-                }
-            }
-
-            #[cfg(debug_assertions)]
-            {
-                if kernelizer.kernels.len() > KernelId(0) {
-                    println!("realized_nodes={:?}", kernelizer.realized_nodes);
-                    println!("Unrealized kernels:");
-                    for (kid, kernel) in kernelizer.kernels.iter() {
-                        println!("loads={:?}", kernel.loads);
-                        println!("stores={:?}", kernel.stores);
-                        println!("{kid:?}, outputs={:?}", kernel.outputs);
-                        kernel.debug();
-                        println!();
-                    }
-                    panic!();
-                }
-                debug_assert!(to_eval.is_subset(&kernelizer.realized_nodes));
-            }
-
-            let elapsed = begin.elapsed();
-            if self.debug.perf() {
-                println!("Kernelizer took {} μs", elapsed.as_micros());
+            let realized_nodes: Set<TensorId> =
+                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            //println!("Realized nodes after realize function: {:?}", realized_nodes);
+            if !to_eval.is_subset(&realized_nodes) {
+                panic!("Tensors {:?} are not realized.", to_eval.difference(&realized_nodes));
             }
         }
 
@@ -1190,6 +1058,166 @@ impl Runtime {
         //println!("ToDelete {to_delete:?}");
         //println!("NewLeafs {new_leafs:?}");
         (order, to_delete, new_leafs, rcs)
+    }
+
+    fn realize(
+        &mut self,
+        rcs: Map<TensorId, u32>,
+        realized_nodes: Set<TensorId>,
+        order: &[TensorId],
+        to_eval: &Set<TensorId>,
+    ) -> Result<(), ZyxError> {
+        let mut rcs = if rcs.is_empty() {
+            let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+            for &nid in order {
+                if !realized_nodes.contains(&nid) {
+                    for nid in self.graph[nid].parameters() {
+                        rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                    }
+                }
+            }
+            rcs
+        } else {
+            rcs
+        };
+
+        #[cfg(debug_assertions)]
+        {
+            let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
+            // to_eval are not in rcs
+            for &nid in order {
+                if !realized_nodes.contains(&nid) {
+                    for nid in self.graph[nid].parameters() {
+                        rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                    }
+                }
+            }
+            if rcs2 != rcs {
+                println!("Realized nodes: {realized_nodes:?}");
+                for &nid in order {
+                    println!(
+                        "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}",
+                        self.graph[nid],
+                        self.graph.shape(nid),
+                        rcs.get(&nid).copied().unwrap_or(0),
+                        rcs2.get(&nid).copied().unwrap_or(0),
+                    );
+                }
+                panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
+            }
+        }
+
+        for &nid in to_eval {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+        }
+
+        //println!("{rcs:?}");
+        //println!("realized_nodes: {realized_nodes:?}");
+        //println!("to_eval: {to_eval:?}");
+
+        let begin = std::time::Instant::now();
+
+        let mut kernelizer = Kernelizer::new(
+            realized_nodes,
+            &to_eval,
+            rcs,
+            &self.graph,
+            &mut self.pools,
+            &mut self.devices,
+            &mut self.cache,
+            &self.search_config,
+            self.config_dir.as_ref(),
+            &self.debug,
+        );
+
+        for &nid in order {
+            /*use crate::{RED, RESET};
+            println!(
+                "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
+                if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
+                kernelizer.rcs[&nid],
+                self.graph[nid],
+                self.graph.dtype(nid),
+                self.graph.shape(nid)
+            );*/
+            if kernelizer.is_virt_realized(nid) {
+                kernelizer.create_load_kernel(nid);
+            } else {
+                match self.graph[nid] {
+                    Node::Leaf { .. } => unreachable!(),
+                    Node::Const { value } => kernelizer.create_const_kernel(nid, value),
+                    Node::Cast { x, dtype } => kernelizer.add_cast_op(nid, x, dtype),
+                    Node::Unary { x, uop } => kernelizer.add_unary_op(nid, x, uop),
+                    Node::Expand { x } => kernelizer.add_expand_op(nid, x)?,
+                    Node::Permute { x } => kernelizer.add_permute_op(nid, x)?,
+                    Node::Reshape { x } => kernelizer.add_reshape_op(nid, x)?,
+                    Node::Pad { x } => kernelizer.add_pad_op(nid, x)?,
+                    Node::Reduce { x, rop } => kernelizer.add_reduce_op(nid, x, rop)?,
+                    Node::Binary { x, y, bop } => kernelizer.add_binary_op(nid, x, y, bop)?,
+                }
+            }
+
+            if to_eval.contains(&nid) {
+                kernelizer.add_store(nid)?;
+                *kernelizer.rcs.get_mut(&nid).unwrap() -= 1;
+                if kernelizer.rcs[&nid] > 0 {
+                    kernelizer.create_load_kernel(nid);
+                }
+            }
+
+            //kernelizer.debug();
+        }
+
+        if kernelizer.kernels.len() > KernelId(0) {
+            let mut kids: Vec<KernelId> = kernelizer.kernels.ids().collect();
+            while let Some(kid) = kids
+                .iter()
+                .find(|&&kid| kernelizer.kernels[kid].loads.iter().all(|x| kernelizer.realized_nodes.contains(x)))
+                .copied()
+            {
+                kids.retain(|x| *x != kid);
+                let kernel = unsafe { kernelizer.kernels.remove_and_return(kid) };
+                let loads = kernel.loads.clone();
+                let stores = kernel.stores.clone();
+                kernelizer.launch_kernel(kernel)?;
+                kernelizer.realized_nodes.extend(stores);
+
+                // Delete unneeded intermediate tensors in memory pools
+                let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
+                for tid in loads {
+                    if !kernelizer.kernels.values().any(|kernel| kernel.loads.contains(&tid))
+                        && !kernelizer.must_keep_nodes.contains(&tid)
+                    {
+                        to_remove.insert(tid);
+                    }
+                }
+                deallocate_tensors(&to_remove, kernelizer.pools);
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            if kernelizer.kernels.len() > KernelId(0) {
+                println!("realized_nodes={:?}", kernelizer.realized_nodes);
+                println!("Unrealized kernels:");
+                for (kid, kernel) in kernelizer.kernels.iter() {
+                    println!("loads={:?}", kernel.loads);
+                    println!("stores={:?}", kernel.stores);
+                    println!("{kid:?}, outputs={:?}", kernel.outputs);
+                    kernel.debug();
+                    println!();
+                }
+                panic!();
+            }
+            debug_assert!(to_eval.is_subset(&kernelizer.realized_nodes));
+            //println!("Realized nodes in kernelizer: {:?}", kernelizer.realized_nodes);
+        }
+
+        let elapsed = begin.elapsed();
+        if self.debug.perf() {
+            println!("Kernelizer took {} μs", elapsed.as_micros());
+        }
+        Ok(())
     }
 
     fn graph_order_with_gradient(

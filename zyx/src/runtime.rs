@@ -6,7 +6,7 @@ use crate::graph::{BOp, Graph, Node, ROp, UOp};
 use crate::kernel::Cache;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
-use crate::shape::{UAxis, Dim, permute, reduce};
+use crate::shape::{Dim, UAxis, permute, reduce};
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::DeJson;
@@ -380,7 +380,7 @@ impl Runtime {
         }
         let mut to_eval = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
         to_eval.insert(x);
-        self.realize(&to_eval)?;
+        self.realize_and_cleanup(&to_eval)?;
         let mut shape = self.shape(x).to_vec();
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
@@ -551,7 +551,7 @@ impl Runtime {
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
             let mut to_eval = Set::with_capacity_and_hasher(1, BuildHasherDefault::default());
             to_eval.insert(x);
-            self.realize(&to_eval)?;
+            self.realize_and_cleanup(&to_eval)?;
         }
 
         let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x).unwrap();
