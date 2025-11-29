@@ -233,6 +233,11 @@ impl Tensor {
         RT.lock().debug_graph();
     }
 
+    /// Reference count
+    pub fn ref_count(&self) -> u32 {
+        RT.lock().graph.nodes[self.id].0
+    }
+
     /// Returns a slice of the last N dimensions of this tensor.
     ///
     /// # Parameters

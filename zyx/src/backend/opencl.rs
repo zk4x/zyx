@@ -811,8 +811,12 @@ impl OpenCLDevice {
                         }
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
                         UOp::Exp2 => {
+                            if dtype == DType::F16 {
+                                _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
+                            } else {
+                                _ = writeln!(source, "{indent}r{reg} = exp2({x});");
+                            }
                             //_ = writeln!(source, "{indent}printf(\"%d\\n\", r{reg});");
-                            _ = writeln!(source, "{indent}r{reg} = exp2({x});");
                         }
                         UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
                         UOp::Reciprocal => {
@@ -1215,8 +1219,8 @@ impl Constant {
         match self {
             Self::BF16(x) => format!("{:.16}f", half::bf16::from_le_bytes(x)),
             Self::F16(x) => format!("(half){:.16}", half::f16::from_le_bytes(x)),
-            Self::F32(x) => format!("{:.16}f", f32::from_le_bytes(x)),
-            Self::F64(x) => format!("{:.16}", f64::from_le_bytes(x)),
+            Self::F32(x) => format!("(float){:.16}", f32::from_le_bytes(x)),
+            Self::F64(x) => format!("(double){:.16}", f64::from_le_bytes(x)),
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),

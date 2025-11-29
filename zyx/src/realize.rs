@@ -939,68 +939,6 @@ impl<'a> Kernelizer<'a> {
 }
 
 impl Runtime {
-    // 1. gets a set of tensors which need to be processed and in which order
-    // 2. generates kernels from them
-    // 3. assigns those kernels to devices, compiles and launches them
-    pub fn realize_and_cleanup(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
-        let (to_eval, realized_nodes, order, rcs, new_leafs, mut to_delete) = {
-            let begin = std::time::Instant::now();
-            let realized_nodes: Set<TensorId> =
-                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
-            let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
-            if to_eval.is_empty() {
-                return Ok(());
-            }
-            if self.devices.is_empty() {
-                self.initialize_devices()?;
-            }
-
-            let (order, to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
-                self.graph_order_with_gradient(&realized_nodes, &mut to_eval)
-            } else {
-                self.graph_order(&realized_nodes, &mut to_eval)
-            };
-            let elapsed = begin.elapsed();
-            if self.debug.perf() {
-                println!(
-                    "Runtime realize graph order took {} μs for {}/{} tensors with gradient_tape={}",
-                    elapsed.as_micros(),
-                    order.len(),
-                    usize::from(self.graph.nodes.len()),
-                    self.graph.gradient_tape.is_some(),
-                );
-            }
-            (to_eval, realized_nodes, order, rcs, new_leafs, to_delete)
-        };
-
-        self.realize(rcs, realized_nodes, &order, &to_eval)?;
-
-        #[cfg(debug_assertions)]
-        {
-            let realized_nodes: Set<TensorId> =
-                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
-            //println!("Realized nodes after realize function: {:?}", realized_nodes);
-            if !to_eval.is_subset(&realized_nodes) {
-                panic!("Tensors {:?} are not realized.", to_eval.difference(&realized_nodes));
-            }
-        }
-
-        // Deallocate tensors from devices, new_leafs can be deallocated too
-        deallocate_tensors(&to_delete, &mut self.pools);
-
-        // Remove evaluated part of graph unless needed for backpropagation
-        for tensor in new_leafs {
-            self.graph.add_shape(tensor);
-            self.graph[tensor] = Node::Leaf { dtype: self.graph.dtype(tensor) };
-            to_delete.remove(&tensor);
-        }
-        // Delete nodes, but do not use release function (don't deallocate again),
-        // only remove it from graph.nodes
-        self.graph.delete_tensors(&to_delete);
-
-        Ok(())
-    }
-
     fn realize(
         &mut self,
         rcs: Map<TensorId, u32>,
@@ -1158,6 +1096,76 @@ impl Runtime {
         if self.debug.perf() {
             println!("Kernelizer took {} μs", elapsed.as_micros());
         }
+        Ok(())
+    }
+
+    // 1. gets a set of tensors which need to be processed and in which order
+    // 2. generates kernels from them
+    // 3. assigns those kernels to devices, compiles and launches them
+    pub fn realize_and_cleanup(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+        let (to_eval, realized_nodes, order, rcs, new_leafs, mut to_delete) = {
+            let begin = std::time::Instant::now();
+            let realized_nodes: Set<TensorId> =
+                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            let mut to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+            if to_eval.is_empty() {
+                return Ok(());
+            }
+            if self.devices.is_empty() {
+                self.initialize_devices()?;
+            }
+
+            let (order, to_delete, new_leafs, rcs) = if self.graph.gradient_tape.is_some() {
+                self.graph_order_with_gradient(&realized_nodes, &mut to_eval)
+            } else {
+                self.graph_order(&realized_nodes, &mut to_eval)
+            };
+            let elapsed = begin.elapsed();
+            if self.debug.perf() {
+                println!(
+                    "Runtime realize graph order took {} μs for {}/{} tensors with gradient_tape={}",
+                    elapsed.as_micros(),
+                    order.len(),
+                    usize::from(self.graph.nodes.len()),
+                    self.graph.gradient_tape.is_some(),
+                );
+            }
+            (to_eval, realized_nodes, order, rcs, new_leafs, to_delete)
+        };
+
+        self.realize(rcs, realized_nodes, &order, &to_eval)?;
+
+        #[cfg(debug_assertions)]
+        {
+            let realized_nodes: Set<TensorId> =
+                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            //println!("Realized nodes after realize function: {:?}", realized_nodes);
+            if !to_eval.is_subset(&realized_nodes) {
+                panic!("Tensors {:?} are not realized.", to_eval.difference(&realized_nodes));
+            }
+        }
+
+        // Deallocate tensors from devices. If nodes are both in to_delete and new_leafs,
+        // they get deleted from buffers, but not from graph.
+        deallocate_tensors(&to_delete, &mut self.pools);
+
+        // Remove evaluated part of graph unless needed for backpropagation
+        for nid in new_leafs {
+            self.graph.add_shape(nid);
+            let dtype = self.graph.dtype(nid);
+            // IMPORTANT: when a node is set as leaf, all nodes preceding to must get decresed reference count,
+            // otherwise this causes memory leak.
+            for param in self.graph[nid].parameters() {
+                self.release(param);
+            }
+            self.graph[nid] = Node::Leaf { dtype };
+            to_delete.remove(&nid);
+        }
+        // Delete nodes, but do not use release function (don't deallocate again),
+        // only remove it from graph.nodes
+        //println!("completely deleting: {to_delete:?}");
+        self.graph.delete_tensors(&to_delete);
+
         Ok(())
     }
 

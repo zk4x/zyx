@@ -426,7 +426,7 @@ impl Iterator for NodeParametersIterator {
 
 impl Node {
     /// Get all parameters of self. This method does not allocate.
-    pub const fn parameters(&self) -> impl Iterator<Item = TensorId> {
+    pub const fn parameters(&self) -> NodeParametersIterator {
         match self {
             Node::Const { .. } | Node::Leaf { .. } => {
                 NodeParametersIterator { parameters: [TensorId::ZERO, TensorId::ZERO], idx: 0, len: 0 }

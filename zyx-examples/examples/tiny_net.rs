@@ -39,6 +39,7 @@ fn main() -> Result<(), ZyxError> {
         let loss = y.mse_loss(&target)?;
         let grads = tape.gradient(&loss, &net);
         optim.update(&mut net, grads);
+        drop(tape);
         Tensor::realize(&net)?;
     }
 
