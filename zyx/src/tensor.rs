@@ -1737,24 +1737,24 @@ impl Tensor {
     /// let x = Tensor::randn([3, 4, 5], DType::F32)?;
     ///
     /// // Select first item from first dimension
-    /// let a = x.get(0)?;
+    /// let a = x.slice(0)?;
     ///
     /// // Select last element along the last axis
-    /// let b = x.get((.., .., -1))?;
+    /// let b = x.slice((.., .., -1))?;
     ///
     /// // Slice second dimension between index 1 and 3
-    /// let c = x.get((0, 1..3, ..))?;
+    /// let c = x.slice((0, 1..3, ..))?;
     ///
     /// // Chain indexing calls
-    /// let d = x.get((0, .., -1))?.get(0)?;
+    /// let d = x.slice((0, .., -1))?.slice(0)?;
     ///
     /// // Use a slice of ranges
     /// let slice = [0..2, 1..4];
-    /// let e = x.get(slice)?;
+    /// let e = x.slice(slice)?;
     ///
     /// // Use a vector of ranges dynamically
     /// let ranges = vec![0..2, 0..4, 1..5];
-    /// let f = x.get(ranges)?;
+    /// let f = x.slice(ranges)?;
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -1762,7 +1762,6 @@ impl Tensor {
     ///
     /// - Negative indexing is supported (e.g., `-1` is the last element).
     /// - Omitted dimensions are preserved in the output.
-    /// - This operation is non-mutating: it returns a new tensor and does not alter the original.
     /// - Useful for flexible slicing, batching, and masking operations.
     ///
     /// # Errors
@@ -1801,7 +1800,7 @@ impl Tensor {
 
     /// Same as [Tensor::get], but instead of indexing from first dimensions, it indexes from last dimensions.
     #[allow(clippy::missing_panics_doc)]
-    pub fn rget(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
+    pub fn rslice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let padding: Vec<(isize, isize)> = index
             .into_index()
@@ -2313,7 +2312,7 @@ impl Tensor {
     pub fn cosine_similarity(&self, rhs: impl Into<Tensor>, eps: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let rhs: Tensor = rhs.into();
         let eps: Tensor = eps.into();
-        let x = self.pow(2)?.sqrt() * rhs.pow(2)?.sqrt();
+        let x = (self * self).sqrt() * (&rhs * &rhs).sqrt();
         Ok(self * rhs / x.cmplt(eps.clone())?.where_(eps, x)?)
     }
 
@@ -3099,8 +3098,8 @@ impl Tensor {
         let sin_freqs = sin_freqs.reshape([1, 1, seq_len, embed_dim / 2]).unwrap();
         let cos_freqs = cos_freqs.reshape([1, 1, seq_len, embed_dim / 2]).unwrap();
 
-        let a = self.rget(..embed_dim / 2).unwrap();
-        let b = -self.rget(embed_dim / 2..).unwrap();
+        let a = self.rslice(..embed_dim / 2).unwrap();
+        let b = -self.rslice(embed_dim / 2..).unwrap();
         let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
         let co = a * sin_freqs + b * cos_freqs;
         let r = Tensor::cat([&co, &ro], -1).unwrap(); // Concatenate along the last dimension
