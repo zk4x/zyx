@@ -1025,7 +1025,7 @@ impl Constant {
             &Self::U64(x) => format!("{}", u64::from_le_bytes(x)),
             Self::I32(x) => format!("{x}"),
             &Self::I64(x) => format!("{}", i64::from_le_bytes(x)),
-            Self::Bool(x) => format!("{x}"),
+            &Self::Bool(x) => format!("{}", if x { 1 } else { 0 }),
         }
     }
 }
@@ -1228,19 +1228,19 @@ impl Compiler {
                     "mul.lo"
                 }
             }
-            BOp::Div => "div.approx",
+            BOp::Div => "div",
             BOp::Pow => todo!(),
-            BOp::Mod => todo!(),
+            BOp::Mod => "rem",
             BOp::Cmplt => "setp.lt",
             BOp::Cmpgt => "setp.gt",
-            BOp::Maximum => todo!(),
-            BOp::Or => todo!(),
-            BOp::And => todo!(),
-            BOp::BitXor => todo!(),
-            BOp::BitOr => todo!(),
-            BOp::BitAnd => todo!(),
-            BOp::BitShiftLeft => todo!(),
-            BOp::BitShiftRight => todo!(),
+            BOp::Maximum => "max",
+            BOp::Or => "or",
+            BOp::And => "and",
+            BOp::BitXor => "xor",
+            BOp::BitOr => "or",
+            BOp::BitAnd => "and",
+            BOp::BitShiftLeft => "shl.b32",
+            BOp::BitShiftRight => "shr.b32",
             BOp::NotEq => "setp.ne",
             BOp::Eq => "setp.eq",
         }

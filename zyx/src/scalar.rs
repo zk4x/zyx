@@ -2310,7 +2310,7 @@ impl Scalar for u32 {
     }
 
     fn add(self, rhs: Self) -> Self {
-        self + rhs
+        self.wrapping_add(rhs)
     }
 
     fn sub(self, rhs: Self) -> Self {
