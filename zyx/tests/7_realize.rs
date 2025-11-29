@@ -27,14 +27,31 @@ fn t01() -> Result<(), ZyxError> {
 #[test]
 fn t02() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2f32, 3., 4.], [5., 6., 7.]]);
+    let z = Tensor::from(6);
 
-    for _ in 0..20 {
+    for _ in 0..200 {
         let y0 = x.exp2();
-        let y1 = y0.exp2();
-        let y2 = y1.exp2();
-        let y3 = y2.exp2();
+        let y1 = y0.exp2() * &z;
+        let y2 = y1.exp2() + 3;
+        let _y3 = y2.exp2();
         x = y2.log2();
+        Tensor::realize([&x])?;
+    }
 
+    Ok(())
+}
+
+#[test]
+fn t03() -> Result<(), ZyxError> {
+    let mut x = Tensor::from([[2f32, 3., 4.], [5., 6., 7.]]);
+    let z = Tensor::from(6);
+
+    for _ in 0..2 {
+        let y0 = x.exp2();
+        let y1 = y0.exp2() * &z;
+        let y2 = y1.exp2() + 3;
+        let _y3 = y2.exp2();
+        x = y2.log2();
         Tensor::realize([&x])?;
     }
 

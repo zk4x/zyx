@@ -1,18 +1,14 @@
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
-#![allow(clippy::question_mark)]
-#![allow(unused)]
 
 // TODO properly deallocate events
 
 use std::{
-    collections::{HashMap, HashSet},
     ffi::{c_char, c_int, c_uint, c_void},
     fmt::Write,
     hash::BuildHasherDefault,
     ptr,
     sync::{
-        Arc,
         mpsc::{Receiver, Sender, channel},
     },
     usize,
@@ -22,7 +18,7 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    DType, Map, ZyxError,
+    DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{BOp, UOp},
@@ -241,7 +237,7 @@ pub(super) fn initialize_device(
     let cuEventSynchronize: unsafe extern "C" fn(CUevent) -> CUDAStatus =
         *unsafe { cuda.get(b"cuEventSynchronize\0") }?;
     let cuEventDestroy: unsafe extern "C" fn(CUevent) -> CUDAStatus = *unsafe { cuda.get(b"cuEventDestroy\0") }?;
-    let cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus = *unsafe { cuda.get(b"cuCtxDestroy\0") }?;
+    //let cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus = *unsafe { cuda.get(b"cuCtxDestroy\0") }?;
     //let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }?;
 
     if let Err(err) = unsafe { cuInit(0) }.check(ErrorStatus::Initialization) {
@@ -270,12 +266,11 @@ pub(super) fn initialize_device(
         );
     }
 
-    let cuda = Arc::new(cuda);
     for dev_id in device_ids {
         let mut device = 0;
         if let Err(err) = unsafe { cuDeviceGet(&raw mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration) {
             if debug_dev {
-                println!("Device with id {dev_id} requested, but could not be enumerated.");
+                println!("Device with id {dev_id} requested, but could not be enumerated: {err}.");
             }
             continue;
         }
@@ -515,22 +510,25 @@ pub(super) fn initialize_device(
                             _ = reply.send(Err(err));
                             continue;
                         };
-                        unsafe {
-                            (cuLaunchKernel)(
-                                program.function,
-                                u32::try_from(program.gws.get(0).copied().unwrap_or(1)).unwrap(),
-                                u32::try_from(program.gws.get(1).copied().unwrap_or(1)).unwrap(),
-                                u32::try_from(program.gws.get(2).copied().unwrap_or(1)).unwrap(),
-                                u32::try_from(program.lws.get(0).copied().unwrap_or(1)).unwrap(),
-                                u32::try_from(program.lws.get(1).copied().unwrap_or(1)).unwrap(),
-                                u32::try_from(program.lws.get(2).copied().unwrap_or(1)).unwrap(),
-                                0,
-                                stream,
-                                kernel_params.as_mut_ptr(),
-                                ptr::null_mut(),
-                            )
-                        }
-                        .check(ErrorStatus::KernelLaunch);
+                        send_or_continue!(
+                            unsafe {
+                                (cuLaunchKernel)(
+                                    program.function,
+                                    u32::try_from(program.gws.get(0).copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(program.gws.get(1).copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(program.gws.get(2).copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(program.lws.get(0).copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(program.lws.get(1).copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(program.lws.get(2).copied().unwrap_or(1)).unwrap(),
+                                    0,
+                                    stream,
+                                    kernel_params.as_mut_ptr(),
+                                    ptr::null_mut(),
+                                )
+                            }
+                            .check(ErrorStatus::KernelLaunch),
+                            reply
+                        );
                         if let Err(err) = unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::KernelLaunch) {
                             _ = reply.send(Err(err));
                             continue;
@@ -567,7 +565,7 @@ pub(super) fn initialize_device(
                     }
                 }
             }
-            println!("DEINIT receiver");
+            //println!("DEINIT receiver");
         });
 
         let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes });
@@ -665,7 +663,7 @@ impl CUDAMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn deallocate(&mut self, buffer_id: BufferId, mut events: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: BufferId, events: Vec<Event>) {
         self.tx.send(CUDACommand::Deallocate { buffer_id, events }).unwrap();
     }
 
@@ -674,7 +672,7 @@ impl CUDAMemoryPool {
         &mut self,
         src: &[u8],
         dst: BufferId,
-        mut event_wait_list: Vec<Event>,
+        event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
@@ -744,7 +742,7 @@ impl CUDADevice {
     pub fn launch(
         &mut self,
         program_id: ProgramId,
-        memory_pool: &mut CUDAMemoryPool,
+        _memory_pool: &mut CUDAMemoryPool,
         args: &[BufferId],
         // If sync is empty, kernel will be immediatelly synchronized
         event_wait_list: Vec<Event>,
@@ -784,924 +782,6 @@ impl CUDADevice {
         let mut v = 0;
         unsafe { cuDeviceGetAttribute(&raw mut v, attr, self.device) }.check(ErrorStatus::DeviceQuery)?;
         Ok(v)
-    }
-
-    #[allow(unused)]
-    #[allow(clippy::type_complexity)]
-    fn compile_cuda(
-        &self,
-        kernel: &Kernel,
-        debug_asm: bool,
-    ) -> Result<(Vec<Dim>, Vec<Dim>, String, Vec<u8>), BackendError> {
-        fn new_reg(
-            op_id: OpId,
-            reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<(DType, u32)>,
-            dtype: DType,
-            rc: u32,
-        ) -> usize {
-            for (i, (dt, nrc)) in registers.iter_mut().enumerate() {
-                if *nrc == 0 && *dt == dtype {
-                    reg_map.insert(op_id, i);
-                    registers[i].1 = rc;
-                    return i;
-                }
-            }
-            let i = registers.len();
-            registers.push((dtype, rc));
-            reg_map.insert(op_id, i);
-            i
-        }
-
-        fn get_var(
-            op_id: OpId,
-            constants: &Map<OpId, Constant>,
-            indices: &Map<OpId, u8>,
-            reg_map: &Map<OpId, usize>,
-            registers: &mut [(DType, u32)],
-        ) -> String {
-            if let Some(c) = constants.get(&op_id) {
-                c.ptx()
-            } else if let Some(id) = indices.get(&op_id) {
-                format!("idx{id}")
-            } else if let Some(reg) = reg_map.get(&op_id) {
-                registers[*reg].1 -= 1;
-                format!("r{reg}")
-            } else {
-                unreachable!()
-            }
-        }
-
-        let mut gws = Vec::new();
-        let mut lws = Vec::new();
-        for op in &kernel.ops {
-            if let &Op::Loop { dim, scope } = op {
-                match scope {
-                    Scope::Global => {
-                        gws.push(dim);
-                    }
-                    Scope::Local => {
-                        lws.push(dim);
-                    }
-                    Scope::Register => {}
-                }
-            }
-        }
-
-        if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "Invalid local work size.".into(),
-            });
-        }
-
-        let mut global_args = String::new();
-        for (i, op) in kernel.ops.iter().enumerate() {
-            if let &Op::Define { dtype, scope, ro, .. } = op
-                && scope == Scope::Global
-            {
-                writeln!(
-                    global_args,
-                    "  __global {}{}* p{i},",
-                    if ro { "const " } else { "" },
-                    dtype.cu()
-                )
-                .unwrap();
-            }
-        }
-        global_args.pop();
-        global_args.pop();
-        global_args.push('\n');
-
-        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-
-        // first we will calculate those reference counts.
-        for (i, op) in kernel.ops.iter().enumerate() {
-            match op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Null => unreachable!(),
-                Op::Const(x) => {
-                    dtypes.insert(i, x.dtype());
-                }
-                &Op::Define { dtype, .. } => {
-                    dtypes.insert(i, dtype);
-                }
-                &Op::Load { src, index } => {
-                    dtypes.insert(i, dtypes[&src]);
-                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-                }
-                &Op::Store { dst, x: src, index } => {
-                    dtypes.insert(i, dtypes[&src]);
-                    rcs.entry(dst).and_modify(|rc| *rc += 1).or_insert(1);
-                    rcs.entry(src).and_modify(|rc| *rc += 1).or_insert(1);
-                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
-                }
-                &Op::Cast { x, dtype } => {
-                    dtypes.insert(i, dtype);
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                }
-                &Op::Unary { x, .. } => {
-                    dtypes.insert(i, dtypes[&x]);
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                }
-                &Op::Binary { x, y, bop } => {
-                    dtypes.insert(i, dtypes[&x]);
-                    if matches!(bop, BOp::NotEq | BOp::Cmpgt | BOp::Cmplt | BOp::And | BOp::Or) {
-                        dtypes.insert(i, DType::Bool);
-                    }
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                    rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
-                }
-                Op::Loop { .. } => {
-                    dtypes.insert(i, DType::U32);
-                }
-                Op::EndLoop => {}
-                &Op::Reduce { x, .. } => {
-                    dtypes.insert(i, dtypes[&x]);
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                }
-            }
-        }
-
-        let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
-        let mut registers: Vec<(DType, u32)> = Vec::new();
-
-        let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-        let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
-
-        let mut n_global_ids = 0;
-        let mut loop_id = 0;
-        let mut indent = String::from("  ");
-        let mut source = String::with_capacity(1000);
-
-        for (i, op) in kernel.ops.iter().enumerate() {
-            //println!("{i} -> {op:?}");
-            match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Null => {
-                    unreachable!()
-                }
-                &Op::Const(x) => {
-                    constants.insert(i, x);
-                }
-                &Op::Define { dtype, scope, ro, len } => {
-                    if scope == Scope::Register {
-                        writeln!(
-                            source,
-                            "{indent}{}{} p{i}[{len}];",
-                            if ro { "const " } else { "" },
-                            dtype.cu(),
-                        )
-                        .unwrap();
-                    }
-                }
-                &Op::Load { src, index } => {
-                    let dtype = dtypes[&src];
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    writeln!(source, "{indent}r{reg} = p{src}[{idx}];",).unwrap();
-                }
-                &Op::Store { dst, x: src, index } => {
-                    writeln!(
-                        source,
-                        "{indent}p{dst}[{}] = {};",
-                        get_var(index, &constants, &indices, &reg_map, &mut registers),
-                        get_var(src, &constants, &indices, &reg_map, &mut registers)
-                    )
-                    .unwrap();
-                }
-                &Op::Cast { x, dtype } => {
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    writeln!(source, "{indent}r{reg} = ({}){x};", dtype.cu(),).unwrap();
-                }
-                &Op::Unary { x, uop } => {
-                    let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    match uop {
-                        UOp::ReLU => {
-                            writeln!(source, "{indent}r{reg} = max({x}, {});", dtype.zero_constant().ptx()).unwrap();
-                        }
-                        UOp::Neg => writeln!(source, "{indent}r{reg} = -{x};").unwrap(),
-                        UOp::BitNot => todo!(),
-                        UOp::Exp2 => {
-                            //writeln!(source, "{indent}printf(\"%d\\n\", r{reg});").unwrap();
-                            writeln!(source, "{indent}r{reg} = exp2({x});").unwrap();
-                        }
-                        UOp::Log2 => writeln!(source, "{indent}r{reg} = log2({x});").unwrap(),
-                        UOp::Reciprocal => {
-                            writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().ptx()).unwrap();
-                        }
-                        UOp::Sqrt => writeln!(source, "{indent}r{reg} = sqrt({x});").unwrap(),
-                        UOp::Sin => writeln!(source, "{indent}r{reg} = sin({x});").unwrap(),
-                        UOp::Cos => writeln!(source, "{indent}r{reg} = cos({x});").unwrap(),
-                        UOp::Floor => writeln!(source, "{indent}r{reg} = floor({x});").unwrap(),
-                    }
-                }
-                &Op::Binary { x, y, bop } => {
-                    let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    match bop {
-                        BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};").unwrap(),
-                        BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};").unwrap(),
-                        BOp::Mul => writeln!(source, "{indent}r{reg} = {x} * {y};").unwrap(),
-                        BOp::Div => writeln!(source, "{indent}r{reg} = {x} / {y};").unwrap(),
-                        BOp::Pow => writeln!(source, "{indent}r{reg} = pow({x}, {y});").unwrap(),
-                        BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};").unwrap(),
-                        BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};").unwrap(),
-                        BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};").unwrap(),
-                        BOp::Maximum => writeln!(source, "{indent}r{reg} = max({x}, {y});").unwrap(),
-                        BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};").unwrap(),
-                        BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};").unwrap(),
-                        BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};").unwrap(),
-                        BOp::BitOr => writeln!(source, "{indent}r{reg} = {x} | {y};").unwrap(),
-                        BOp::BitAnd => writeln!(source, "{indent}r{reg} = {x} & {y};").unwrap(),
-                        BOp::BitShiftLeft => writeln!(source, "{indent}r{reg} = {x} << {y};").unwrap(),
-                        BOp::BitShiftRight => writeln!(source, "{indent}r{reg} = {x} >> {y};").unwrap(),
-                        BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};").unwrap(),
-                        BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};").unwrap(),
-                    }
-                }
-                &Op::Loop { dim, scope } => {
-                    indices.insert(i, loop_id);
-                    match scope {
-                        Scope::Global => {
-                            writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = get_group_id({loop_id}); // 0..{dim}"
-                            )
-                            .unwrap();
-                            n_global_ids += 1;
-                        }
-                        Scope::Local => {
-                            writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..{dim}",
-                                loop_id - n_global_ids
-                            )
-                            .unwrap();
-                        }
-                        Scope::Register => {
-                            writeln!(
-                                source,
-                                "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
-                            )
-                            .unwrap();
-                            indent += "  ";
-                        }
-                    }
-                    loop_id += 1;
-                }
-                Op::EndLoop => {
-                    indent.pop();
-                    indent.pop();
-                    writeln!(source, "{indent}}}").unwrap();
-                    loop_id -= 1;
-                }
-            }
-        }
-
-        let mut reg_str = String::new();
-        let (dt, _) = registers.remove(0);
-        let mut prev_dt = dt;
-        write!(reg_str, "{indent}{} r0", dt.cu()).unwrap();
-        let mut i = 1;
-        for (dt, _) in registers {
-            if dt == prev_dt {
-                write!(reg_str, ", r{i}").unwrap();
-            } else {
-                write!(reg_str, ";\n{indent}{} r{i}", dt.cu()).unwrap();
-            }
-            prev_dt = dt;
-            i += 1;
-        }
-        writeln!(reg_str, ";").unwrap();
-
-        let mut pragma = String::new();
-        if dtypes.values().any(|&x| x == DType::F16) {
-            pragma += "#include <cuda_fp16.h>\n";
-        }
-        if dtypes.values().any(|&x| x == DType::F64) {
-            pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
-        }
-
-        let mut name = format!(
-            "k_{}__{}",
-            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-        );
-
-        let source =
-            format!("{pragma}extern \"C\" __global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\0",);
-        if debug_asm {
-            println!();
-            println!("{source}");
-        }
-        name += "\0";
-
-        let cudartc_paths = [
-            "/lib/x86_64-linux-gnu/libnvrtc.so",
-            "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
-            "/usr/lib64/x86_64-linux/lib/libnvrtc.so",
-            "/usr/lib/libnvrtc.so",
-            "/usr/lib64/libnvrtc.so",
-        ];
-        let cudartc = cudartc_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
-        let Some(cudartc) = cudartc else {
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: "CUDA libnvrtc.so not found.".into(),
-            });
-        };
-        let nvrtcCreateProgram: unsafe extern "C" fn(
-            *mut nvrtcProgram,
-            *const c_char,
-            *const c_char,
-            c_int,
-            *const *const c_char,
-            *const *const c_char,
-        ) -> nvrtcResult = *unsafe { cudartc.get(b"nvrtcCreateProgram\0") }.unwrap();
-        let nvrtcCompileProgram: unsafe extern "C" fn(nvrtcProgram, c_int, *const *const c_char) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcCompileProgram\0") }.unwrap();
-        let nvrtcGetPTXSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetPTXSize\0") }.unwrap();
-        let nvrtcGetPTX: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetPTX\0") }.unwrap();
-        let nvrtcGetProgramLogSize: unsafe extern "C" fn(nvrtcProgram, *mut usize) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetProgramLogSize\0") }.unwrap();
-        let nvrtcGetProgramLog: unsafe extern "C" fn(nvrtcProgram, *mut c_char) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcGetProgramLog\0") }.unwrap();
-        let nvrtcDestroyProgram: unsafe extern "C" fn(*mut nvrtcProgram) -> nvrtcResult =
-            *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
-
-        let mut program = ptr::null_mut();
-        unsafe {
-            nvrtcCreateProgram(
-                &raw mut program,
-                source.as_ptr().cast(),
-                name.as_ptr().cast(),
-                0,
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        }
-        .check(ErrorStatus::KernelCompilation)?;
-        let df = format!(
-            "--gpu-architecture=compute_{}{}\0",
-            self.compute_capability[0], self.compute_capability[1]
-        );
-        let opts = [df.as_ptr().cast(), c"-I/usr/local/cuda-12.8/include".as_ptr().cast()];
-        if let Err(e) = unsafe { nvrtcCompileProgram(program, 2, opts.as_ptr()) }.check(ErrorStatus::KernelCompilation)
-        {
-            println!("CUDA compilation error {e:?}");
-            let mut program_log_size: usize = 0;
-            unsafe { nvrtcGetProgramLogSize(program, &raw mut program_log_size) }
-                .check(ErrorStatus::KernelCompilation)?;
-            let mut program_log_vec: Vec<u8> = vec![0; program_log_size + 1];
-            unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr().cast()) }
-                .check(ErrorStatus::KernelCompilation)?;
-            if let Ok(log) = String::from_utf8(program_log_vec) {
-                println!("NVRTC program log:\n{log}",);
-            } else {
-                println!("NVRTC program log is not valid utf8");
-            }
-        }
-        let mut ptx_size: usize = 0;
-        unsafe { nvrtcGetPTXSize(program, &raw mut ptx_size) }.check(ErrorStatus::KernelCompilation)?;
-        let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
-        unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr().cast()) }.check(ErrorStatus::KernelCompilation)?;
-        unsafe { nvrtcDestroyProgram(&raw mut program) }.check(ErrorStatus::KernelCompilation)?;
-        Ok((gws, lws, name, ptx_vec))
-    }
-
-    #[allow(unused)]
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    fn compile_ptx(
-        &mut self,
-        kernel: &Kernel,
-        debug_asm: bool,
-    ) -> Result<(Vec<Dim>, Vec<Dim>, Box<str>, Vec<u8>), BackendError> {
-        fn new_reg(
-            op_id: OpId,
-            reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<(DType, u32)>,
-            dtype: DType,
-            rc: u32,
-        ) -> usize {
-            for (i, (dt, nrc)) in registers.iter_mut().enumerate() {
-                if *nrc == 0 && *dt == dtype {
-                    reg_map.insert(op_id, i);
-                    registers[i].1 = rc;
-                    return i;
-                }
-            }
-            let i = registers.len();
-            registers.push((dtype, rc));
-            reg_map.insert(op_id, i);
-            i
-        }
-
-        fn get_var(
-            op_id: OpId,
-            constants: &Map<OpId, Constant>,
-            indices: &Map<OpId, u8>,
-            reg_map: &Map<OpId, usize>,
-            registers: &mut [(DType, u32)],
-        ) -> String {
-            if let Some(c) = constants.get(&op_id) {
-                c.ptx()
-            } else if let Some(id) = indices.get(&op_id) {
-                format!("%idx{id}")
-            } else if let Some(reg) = reg_map.get(&op_id) {
-                registers[*reg].1 -= 1;
-                format!("%r{reg}")
-            } else {
-                unreachable!()
-            }
-        }
-        let mut gws = Vec::new();
-        let mut lws = Vec::new();
-        for op in &kernel.ops {
-            if let &Op::Loop { dim, scope } = op {
-                match scope {
-                    Scope::Global => {
-                        gws.push(dim);
-                    }
-                    Scope::Local => {
-                        lws.push(dim);
-                    }
-                    Scope::Register => {}
-                }
-            }
-        }
-
-        if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "Invalid local work size.".into(),
-            });
-        }
-
-        let name = format!(
-            "k_{}__{}",
-            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-        );
-
-        let mut indent = String::from("  ");
-        let mut global_args = format!(
-            ".version {0}.{1}
-.target sm_{0}{1}
-.address_size 64
-.visible .entry {name}(\n",
-            self.compute_capability[0], self.compute_capability[1]
-        );
-        // Declare global variables
-        for (i, op) in kernel.ops.iter().enumerate() {
-            if let &Op::Define { dtype, scope, ro, .. } = op
-                && scope == Scope::Global
-            {
-                writeln!(global_args, "{indent}.param .u64 g{i},").unwrap();
-            }
-        }
-        global_args.pop();
-        global_args.pop();
-        global_args += "\n) {\n";
-
-        let (rcs, dtypes) = get_dtypes(&kernel);
-
-        let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
-        let mut registers: Vec<(DType, u32)> = Vec::new();
-
-        let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-        let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
-
-        let mut n_global_ids = 0;
-        let mut loop_id = 0;
-        let mut source = String::with_capacity(1000);
-
-        let mut loop_dims = Vec::new();
-
-        let mut preds = Vec::new();
-        let mut accs: HashSet<OpId> = HashSet::new();
-
-        for (i, op) in kernel.ops.iter().enumerate() {
-            //println!("{i} -> {op:?}");
-            match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Null => {
-                    unreachable!()
-                }
-                &Op::Const(x) => {
-                    constants.insert(i, x);
-                }
-                &Op::Define { dtype, scope, ro, len } => match scope {
-                    Scope::Global => {
-                        writeln!(source, "{indent}ld.param.u64 %p{i}, [g{i}];");
-                    }
-                    Scope::Local => todo!(),
-                    Scope::Register => {
-                        writeln!(
-                            source,
-                            "{indent}.local .align {} .{} %p{i}[{len}];",
-                            dtype.byte_size(),
-                            dtype.ptx()
-                        );
-                        accs.insert(i);
-                    }
-                },
-                &Op::Load { src, index } => {
-                    let dtype = dtypes[&src];
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    if accs.contains(&index) {
-                        writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
-                        writeln!(
-                            source,
-                            "{indent}shl.b64 %offset, %offset, {};",
-                            dtype.byte_size().ilog2()
-                        );
-                        writeln!(source, "{indent}add.u64 %address, %p{src}, %offset;");
-                        writeln!(source, "{indent}ld.local.{} %r{reg}, [%address];", dtype.ptx());
-                    } else {
-                        writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
-                        writeln!(
-                            source,
-                            "{indent}shl.b64 %offset, %offset, {};",
-                            dtype.byte_size().ilog2()
-                        );
-                        writeln!(source, "{indent}add.u64 %address, %p{src}, %offset;");
-                        writeln!(source, "{indent}ld.global.{} %r{reg}, [%address];", dtype.ptx());
-                    }
-                }
-                &Op::Store { dst, x: src, index } => {
-                    let dtype = dtypes[&src];
-                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
-                    let src = get_var(src, &constants, &indices, &reg_map, &mut registers);
-                    if accs.contains(&index) {
-                        writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
-                        writeln!(
-                            source,
-                            "{indent}shl.b64 %offset, %offset, {};",
-                            dtype.byte_size().ilog2()
-                        );
-                        writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;");
-                        writeln!(source, "{indent}st.local.{} [%address], {src};", dtype.ptx());
-                    } else {
-                        /*writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};");
-                        writeln!(
-                            source,
-                            "{indent}shl.b64 %offset, %offset, {};",
-                            dtype.byte_size().ilog2()
-                        );
-                        writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;");
-                        writeln!(source, "{indent}st.global.{} [%address], {src};", dtype.ptx());*/
-                        if dtype == DType::Bool {
-                            // Convert predicate to integer for storing in memory
-                            writeln!(source, "{indent}selp.u32 %gstu32, 1, 0, {src};").unwrap();
-                            // Compute address and store
-                            writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};").unwrap();
-                            writeln!(source, "{indent}shl.b64 %offset, %offset, 0;").unwrap();
-                            writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;").unwrap();
-                            writeln!(source, "{indent}st.global.u8 [%address], %gstu32;").unwrap();
-                        } else {
-                            // Original numeric/float path
-                            writeln!(source, "{indent}cvt.u64.u32 %offset, {idx};").unwrap();
-                            writeln!(
-                                source,
-                                "{indent}shl.b64 %offset, %offset, {};",
-                                dtype.byte_size().ilog2()
-                            )
-                            .unwrap();
-                            writeln!(source, "{indent}add.u64 %address, %p{dst}, %offset;").unwrap();
-                            writeln!(source, "{indent}st.global.{} [%address], {src};", dtype.ptx()).unwrap();
-                        }
-                    }
-                }
-                &Op::Cast { x, dtype } => {
-                    let xdtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    match (dtype, xdtype) {
-                        (DType::Bool, _) => {
-                            if dtype.is_float() {
-                                writeln!(source, "{indent}setp.ne.{} %r{reg}, {x}, 0.0;", xdtype.ptx()).unwrap();
-                            } else {
-                                writeln!(source, "{indent}setp.ne.{} %r{reg}, {x}, 0;", xdtype.ptx()).unwrap();
-                            }
-                        }
-                        (_, DType::Bool) => {
-                            if dtype.is_float() {
-                                writeln!(source, "{indent}selp.{} %r{reg}, 1.0, 0.0, {x};", dtype.ptx()).unwrap();
-                            } else {
-                                writeln!(source, "{indent}selp.{} %r{reg}, 1, 0, {x};", dtype.ptx()).unwrap();
-                            }
-                        }
-                        (_, _) => {
-                            writeln!(source, "{indent}cvt.rn.{}.{} %r{reg}, {x};", dtype.ptx(), xdtype.ptx()).unwrap();
-                        }
-                    }
-                }
-                &Op::Unary { x, uop } => {
-                    let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    match uop {
-                        UOp::BitNot => todo!(),
-                        UOp::ReLU => {
-                            writeln!(source, "{indent}max.{} %r{reg}, {x}, 0.0;", dtype.ptx()).unwrap();
-                        }
-                        UOp::Neg => {
-                            writeln!(source, "{indent}neg.{} %r{reg}, {x};", dtype.ptx()).unwrap();
-                        }
-                        UOp::Exp2 => {
-                            writeln!(source, "{indent}ex2.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
-                        }
-                        UOp::Log2 => {
-                            writeln!(source, "{indent}lg2.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
-                        }
-                        UOp::Reciprocal => {
-                            writeln!(source, "{indent}rcp.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
-                        }
-                        UOp::Sqrt => {
-                            writeln!(source, "{indent}sqrt.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
-                        }
-                        UOp::Sin => {
-                            writeln!(source, "{indent}sin.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
-                        }
-                        UOp::Cos => {
-                            writeln!(source, "{indent}cos.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
-                        }
-                        UOp::Floor => {
-                            writeln!(source, "{indent}floor.approx.{} %r{reg}, {x};", dtype.ptx()).unwrap();
-                        }
-                    }
-                }
-                &Op::Binary { x, y, bop } => {
-                    let dtype = dtypes[&i];
-                    let xr = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let yr = get_var(y, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i]);
-                    match bop {
-                        BOp::Pow => unreachable!(),
-                        BOp::Mul => match dtype {
-                            DType::BF16 => todo!(),
-                            DType::F16 => todo!(),
-                            DType::F32 => {
-                                writeln!(source, "{indent}mul.f32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::F64 => todo!(),
-                            DType::U8 => todo!(),
-                            DType::U16 => todo!(),
-                            DType::U32 => {
-                                writeln!(source, "{indent}mul.lo.u32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::U64 => {
-                                writeln!(source, "{indent}mul.u64 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::I8 => todo!(),
-                            DType::I16 => todo!(),
-                            DType::I32 => {
-                                writeln!(source, "{indent}mul.lo.s32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::I64 => todo!(),
-                            DType::Bool => todo!(),
-                        },
-                        BOp::Mod => match dtype {
-                            DType::BF16 => todo!(),
-                            DType::F16 => todo!(),
-                            DType::F32 => todo!(),
-                            DType::F64 => todo!(),
-                            DType::U8 => todo!(),
-                            DType::U16 => todo!(),
-                            DType::U32 => {
-                                writeln!(source, "{indent}rem.u32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::U64 => todo!(),
-                            DType::I8 => todo!(),
-                            DType::I16 => todo!(),
-                            DType::I32 => todo!(),
-                            DType::I64 => todo!(),
-                            DType::Bool => todo!(),
-                        },
-                        BOp::Add => match dtype {
-                            DType::BF16 => todo!(),
-                            DType::F16 => todo!(),
-                            DType::F32 => {
-                                writeln!(source, "{indent}add.f32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::F64 => todo!(),
-                            DType::U8 => todo!(),
-                            DType::U16 => todo!(),
-                            DType::U32 => {
-                                writeln!(source, "{indent}add.u32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::U64 => {
-                                writeln!(source, "{indent}add.u64 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::I8 => todo!(),
-                            DType::I16 => todo!(),
-                            DType::I32 => {
-                                writeln!(source, "{indent}add.s32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::I64 => todo!(),
-                            DType::Bool => todo!(),
-                        },
-                        BOp::Sub => match dtype {
-                            DType::BF16 => todo!(),
-                            DType::F16 => todo!(),
-                            DType::F32 => {
-                                writeln!(source, "{indent}sub.f32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::F64 => todo!(),
-                            DType::U8 => todo!(),
-                            DType::U16 => todo!(),
-                            DType::U32 => {
-                                writeln!(source, "{indent}sub.u32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::U64 => todo!(),
-                            DType::I8 => todo!(),
-                            DType::I16 => todo!(),
-                            DType::I32 => {
-                                writeln!(source, "{indent}sub.s32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::I64 => todo!(),
-                            DType::Bool => todo!(),
-                        },
-                        BOp::Div => match dtype {
-                            DType::BF16 => todo!(),
-                            DType::F16 => todo!(),
-                            DType::F32 => {
-                                writeln!(source, "{indent}div.approx.f32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::F64 => todo!(),
-                            DType::U8 => todo!(),
-                            DType::U16 => todo!(),
-                            DType::U32 => {
-                                writeln!(source, "{indent}div.u32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::U64 => todo!(),
-                            DType::I8 => todo!(),
-                            DType::I16 => todo!(),
-                            DType::I32 => {
-                                writeln!(source, "{indent}div.s32 %r{reg}, {xr}, {yr};").unwrap();
-                            }
-                            DType::I64 => todo!(),
-                            DType::Bool => todo!(),
-                        },
-                        BOp::NotEq => {
-                            writeln!(source, "{indent}setp.ne.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
-                        }
-                        BOp::Cmplt => {
-                            writeln!(source, "{indent}setp.lt.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
-                        }
-                        BOp::Cmpgt => {
-                            writeln!(source, "{indent}setp.gt.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
-                        }
-                        BOp::Maximum => {
-                            writeln!(source, "{indent}max.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
-                        }
-                        BOp::Eq => {
-                            writeln!(source, "{indent}setp.eq.{} %r{reg}, {xr}, {yr};", dtypes[&x].ptx()).unwrap();
-                        }
-                        BOp::And => {
-                            writeln!(source, "{indent}and.pred %r{reg}, {xr}, {yr};").unwrap();
-                        }
-                        op => todo!("{op:?}"),
-                    }
-                }
-                &Op::Loop { dim, scope } => {
-                    loop_dims.push(dim);
-                    indices.insert(i, loop_id);
-                    match scope {
-                        Scope::Global => {
-                            writeln!(
-                                source,
-                                "{indent}mov.u32 %idx{loop_id}, %ctaid.{};",
-                                match loop_id {
-                                    0 => "x",
-                                    1 => "y",
-                                    2 => "z",
-                                    _ => unreachable!(),
-                                }
-                            )
-                            .unwrap();
-                            n_global_ids += 1;
-                        }
-                        Scope::Local => {
-                            writeln!(
-                                source,
-                                "{indent}mov.u32 %idx{loop_id}, %tid.{};",
-                                match loop_id - n_global_ids {
-                                    0 => "x",
-                                    1 => "y",
-                                    2 => "z",
-                                    _ => unreachable!(),
-                                }
-                            )
-                            .unwrap();
-                        }
-                        Scope::Register => {
-                            preds.push(format!("{indent}.reg .pred %pre{loop_id};"));
-                            //writeln!(source, "{indent}.reg .pred %pre{loop_id};").unwrap();
-                            writeln!(source, "{indent}mov.u32 %idx{loop_id}, 0;").unwrap();
-                            writeln!(source, "{indent}LOOP_{loop_id}:").unwrap();
-                            indent += "  ";
-                        }
-                    }
-                    loop_id += 1;
-                }
-                Op::EndLoop => {
-                    loop_id -= 1;
-                    if loop_id as usize >= lws.len() + gws.len() {
-                        let dim = loop_dims.pop().unwrap();
-                        writeln!(source, "{indent}add.u32 %idx{loop_id}, %idx{loop_id}, 1;").unwrap();
-                        writeln!(
-                            source,
-                            "{indent}setp.lt.u32 %pre{loop_id}, %idx{loop_id}, {};",
-                            Constant::idx(dim as u64).ptx()
-                        )
-                        .unwrap();
-                        indent.pop();
-                        indent.pop();
-                        writeln!(source, "{indent}@%pre{loop_id} bra LOOP_{loop_id};").unwrap();
-                    }
-                }
-            }
-        }
-
-        /*while loop_id as usize > lws.len() + gws.len() {
-            loop_id -= 1;
-            let dim = loop_dims.pop().unwrap();
-            writeln!(source, "{indent}add.u32 %idx{loop_id}, %idx{loop_id}, 1;").unwrap();
-            writeln!(
-                source,
-                "{indent}setp.lt.u32 %pre{loop_id}, %idx{loop_id}, {};",
-                Constant::idx(dim as u64).ptx()
-            )
-            .unwrap();
-            indent.pop();
-            indent.pop();
-            writeln!(source, "{indent}@%pre{loop_id} bra LOOP_{loop_id};").unwrap();
-        }*/
-
-        let mut max_loop_id = 0;
-        for op in &kernel.ops {
-            if let Op::Loop { .. } = op {
-                max_loop_id += 1;
-            }
-        }
-
-        let mut reg_str =
-            format!("{indent}.reg .u64 %offset;\n{indent}.reg .s64 %address;\n{indent}.reg .u32 %gstu32;\n");
-
-        for pred in preds {
-            writeln!(reg_str, "{pred}").unwrap();
-        }
-
-        for (i, op) in kernel.ops.iter().enumerate() {
-            if let Op::Define { dtype, scope, ro, len } = op
-                && *scope == Scope::Global
-            {
-                writeln!(reg_str, "{indent}.reg .u64 %p{i};").unwrap();
-            }
-        }
-
-        for i in 0..max_loop_id {
-            writeln!(reg_str, "{indent}.reg .u32 %idx{i};").unwrap();
-        }
-
-        let (dt, _) = registers.remove(0);
-        let mut prev_dt = dt;
-        write!(reg_str, "{indent}.reg .{} %r0", dt.ptx()).unwrap();
-        let mut i = 1;
-        for (dt, _) in registers {
-            if dt == prev_dt {
-                write!(reg_str, ", %r{i}").unwrap();
-            } else {
-                write!(reg_str, ";\n{indent}.reg .{} %r{i}", dt.ptx()).unwrap();
-            }
-            prev_dt = dt;
-            i += 1;
-        }
-        writeln!(reg_str, ";").unwrap();
-
-        let mut pragma = String::new();
-        if dtypes.values().any(|&x| x == DType::F16) {
-            pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
-        }
-        if dtypes.values().any(|&x| x == DType::F64) {
-            pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
-        }
-
-        let mut loop_id = 6;
-        // End kernel
-        source = format!("{pragma}{global_args}{reg_str}{source}{indent}ret;\n}}\0");
-        if debug_asm {
-            println!("{source}");
-        }
-        Ok((gws, lws, name.into(), source.into()))
     }
 }
 
@@ -1901,24 +981,6 @@ enum CUdevice_attribute {
 }
 
 impl DType {
-    pub(super) fn cu(&self) -> &str {
-        match self {
-            Self::BF16 => todo!("BF16 is not native to OpenCL, workaround is WIP."),
-            Self::F16 => "__half",
-            Self::F32 => "float",
-            Self::F64 => "double",
-            Self::U8 => "unsigned char",
-            Self::I8 => "char",
-            Self::I16 => "short",
-            Self::I32 => "int",
-            Self::I64 => "long",
-            Self::Bool => "bool",
-            Self::U16 => "unsigned short",
-            Self::U32 => "unsigned int",
-            Self::U64 => "unsigned long",
-        }
-    }
-
     pub(super) fn ptx(&self) -> &str {
         match self {
             Self::BF16 => todo!("BF16 is not native to OpenCL, workaround is WIP."),
@@ -1964,42 +1026,6 @@ impl Constant {
             Self::I32(x) => format!("{x}"),
             &Self::I64(x) => format!("{}", i64::from_le_bytes(x)),
             Self::Bool(x) => format!("{x}"),
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug)]
-struct _nvrtcProgram {
-    _unused: [u8; 0],
-}
-type nvrtcProgram = *mut _nvrtcProgram;
-
-#[allow(unused)]
-#[derive(Debug, PartialEq, Eq)]
-#[repr(C)]
-enum nvrtcResult {
-    NVRTC_SUCCESS = 0,
-    NVRTC_ERROR_OUT_OF_MEMORY = 1,
-    NVRTC_ERROR_PROGRAM_CREATION_FAILURE = 2,
-    NVRTC_ERROR_INVALID_INPUT = 3,
-    NVRTC_ERROR_INVALID_PROGRAM = 4,
-    NVRTC_ERROR_INVALID_OPTION = 5,
-    NVRTC_ERROR_COMPILATION = 6,
-    NVRTC_ERROR_BUILTIN_OPERATION_FAILURE = 7,
-    NVRTC_ERROR_NO_NAME_EXPRESSIONS_AFTER_COMPILATION = 8,
-    NVRTC_ERROR_NO_LOWERED_NAMES_BEFORE_COMPILATION = 9,
-    NVRTC_ERROR_NAME_EXPRESSION_NOT_VALID = 10,
-    NVRTC_ERROR_INTERNAL_ERROR = 11,
-    NVRTC_ERROR_TIME_FILE_WRITE_FAILED = 12,
-}
-
-impl nvrtcResult {
-    fn check(self, status: ErrorStatus) -> Result<(), BackendError> {
-        if self == Self::NVRTC_SUCCESS {
-            Ok(())
-        } else {
-            Err(BackendError { status, context: format!("{self:?}").into() })
         }
     }
 }
@@ -2169,7 +1195,7 @@ fn get_dtypes(kernel: &Kernel) -> (Map<OpId, u32>, Map<OpId, DType>) {
 }
 
 struct Compiler {
-    var_map: HashMap<OpId, u16>,
+    var_map: Map<OpId, u16>,
     loops: Vec<(Dim, u16, u16)>,
     header: String,
     body: String,
@@ -2181,7 +1207,7 @@ struct Compiler {
 impl Compiler {
     pub fn new() -> Self {
         Self {
-            var_map: HashMap::new(),
+            var_map: Map::default(),
             loops: Vec::new(),
             header: String::new(),
             body: String::new(),
@@ -2316,14 +1342,14 @@ impl Compiler {
         .into_boxed_str();
 
         // Kernel header
-        writeln!(
+        _ = writeln!(
             self.header,
             ".version {0}.{1}\n.target sm_{0}{1}\n.address_size 64\n.visible .entry {name}(",
             cc[0], cc[1]
         );
         // Global parameters
         for (i, op) in kernel.ops.iter().enumerate() {
-            if let &Op::Define { dtype, scope, ro, .. } = op {
+            if let &Op::Define { scope, .. } = op {
                 if scope == Scope::Global {
                     writeln!(self.header, "{}.param .u64 g{i},", self.indent).unwrap();
                 }
@@ -2332,7 +1358,7 @@ impl Compiler {
         // Close parameter declaration
         self.header.pop();
         self.header.pop();
-        writeln!(self.header, "\n) {{");
+        _ = writeln!(self.header, "\n) {{");
 
         // Kernel body
         let mut n_global_loops = 0;
@@ -2341,15 +1367,15 @@ impl Compiler {
         for (op_id, op) in kernel.ops.iter().enumerate() {
             //println!("{op_id} x {}: {op:?}", rcs.get(&op_id).unwrap_or(&100));
             match op {
-                Op::Define { dtype, scope, ro, len } => {
+                Op::Define { dtype, scope, len, .. } => {
                     self.scopes.insert(op_id, *scope);
                     match scope {
                         Scope::Global => {
-                            writeln!(self.body, "{}ld.param.u64 %p{op_id}, [g{op_id}];", self.indent);
+                            _ = writeln!(self.body, "{}ld.param.u64 %p{op_id}, [g{op_id}];", self.indent);
                         }
                         Scope::Local => todo!(),
                         Scope::Register => {
-                            writeln!(
+                            _ = writeln!(
                                 self.body,
                                 "{}.local .align {} .{} %p{op_id}[{len}];",
                                 self.indent,
@@ -2361,7 +1387,7 @@ impl Compiler {
                 }
                 Op::Const(constant) => {
                     let reg = self.new_var(op_id, constant.dtype(), u32::MAX); // constants live forever
-                    writeln!(
+                    _ = writeln!(
                         self.body,
                         "{}mov.{} %r{reg}, {};",
                         self.indent,
@@ -2377,24 +1403,24 @@ impl Compiler {
                     let reg = self.new_var(op_id, dtype, rcs[&op_id]);
                     if IDX_T == DType::U64 {
                         if offset != idx {
-                            writeln!(self.body, "{}mov.u64 %r{offset}, %r{idx};", self.indent);
+                            _ = writeln!(self.body, "{}mov.u64 %r{offset}, %r{idx};", self.indent);
                         }
                     } else {
-                        writeln!(self.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", self.indent);
+                        _ = writeln!(self.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", self.indent);
                     }
-                    writeln!(
+                    _ = writeln!(
                         self.body,
                         "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};",
                         self.indent
                     );
-                    writeln!(self.body, "{}add.u64 %address, %p{src}, %r{offset};", self.indent);
+                    _ = writeln!(self.body, "{}add.u64 %address, %p{src}, %r{offset};", self.indent);
                     let scope = match self.get_scope(*src) {
                         Scope::Global => "global",
                         Scope::Local => "shared",
                         Scope::Register => "local",
                     };
                     self.release_reg(offset);
-                    writeln!(
+                    _ = writeln!(
                         self.body,
                         "{}ld.{}.{} %r{reg}, [%address];",
                         self.indent,
@@ -2414,17 +1440,17 @@ impl Compiler {
                                 let gstu = self.new_reg(DType::U32, 1);
                                 let idx = self.get_var(*index);
                                 let x = self.get_var(*x);
-                                writeln!(self.body, "{}selp.u32 %r{gstu}, 1, 0, %r{x};", self.indent);
+                                _ = writeln!(self.body, "{}selp.u32 %r{gstu}, 1, 0, %r{x};", self.indent);
                                 // Compute address and store
                                 if IDX_T == DType::U64 {
                                     if offset != idx {
-                                        writeln!(self.body, "{}mov.u64 %r{offset}, %r{idx};", self.indent);
+                                        _ = writeln!(self.body, "{}mov.u64 %r{offset}, %r{idx};", self.indent);
                                     }
                                 } else {
-                                    writeln!(self.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", self.indent);
+                                    _ = writeln!(self.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", self.indent);
                                 }
-                                writeln!(self.body, "{}add.u64 %address, %p{dst}, %r{offset};", self.indent);
-                                writeln!(self.body, "{}st.global.u8 [%address], %r{gstu};", self.indent);
+                                _ = writeln!(self.body, "{}add.u64 %address, %p{dst}, %r{offset};", self.indent);
+                                _ = writeln!(self.body, "{}st.global.u8 [%address], %r{gstu};", self.indent);
                                 self.release_reg(gstu);
                             } else {
                                 // Original numeric/float path
@@ -2432,18 +1458,18 @@ impl Compiler {
                                 let x = self.get_var(*x);
                                 if IDX_T == DType::U64 {
                                     if offset != idx {
-                                        writeln!(self.body, "{}mov.u64 %r{offset}, %r{idx};", self.indent);
+                                        _ = writeln!(self.body, "{}mov.u64 %r{offset}, %r{idx};", self.indent);
                                     }
                                 } else {
-                                    writeln!(self.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", self.indent);
+                                    _ = writeln!(self.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", self.indent);
                                 }
-                                writeln!(
+                                _ = writeln!(
                                     self.body,
                                     "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};",
                                     self.indent
                                 );
-                                writeln!(self.body, "{}add.u64 %address, %p{dst}, %r{offset};", self.indent);
-                                writeln!(self.body, "{}st.global.{} [%address], %r{x};", self.indent, dtype.ptx());
+                                _ = writeln!(self.body, "{}add.u64 %address, %p{dst}, %r{offset};", self.indent);
+                                _ = writeln!(self.body, "{}st.global.{} [%address], %r{x};", self.indent, dtype.ptx());
                             }
                         }
                         Scope::Local => {
@@ -2452,10 +1478,10 @@ impl Compiler {
                         Scope::Register => {
                             let idx = self.get_var(*index);
                             let x = self.get_var(*x);
-                            writeln!(self.body, "{}cvt.u64.u32 %offset, {idx};", self.indent);
-                            writeln!(self.body, "{}shl.b64 %offset, %offset, {byte_shift};", self.indent);
-                            writeln!(self.body, "{}add.u64 %address, %p{dst}, %offset;", self.indent);
-                            writeln!(self.body, "{}st.local.{} [%address], {x};", self.indent, dtype.ptx());
+                            _ = writeln!(self.body, "{}cvt.u64.u32 %offset, {idx};", self.indent);
+                            _ = writeln!(self.body, "{}shl.b64 %offset, %offset, {byte_shift};", self.indent);
+                            _ = writeln!(self.body, "{}add.u64 %address, %p{dst}, %offset;", self.indent);
+                            _ = writeln!(self.body, "{}st.local.{} [%address], {x};", self.indent, dtype.ptx());
                         }
                     }
                     self.release_reg(offset);
@@ -2467,30 +1493,30 @@ impl Compiler {
                     match (dtype, xdtype) {
                         (DType::Bool, _) => {
                             if dtype.is_float() {
-                                writeln!(
+                                _ = writeln!(
                                     self.body,
                                     "{}setp.ne.{} %r{reg}, %r{x}, 0.0;",
                                     self.indent,
                                     xdtype.ptx()
                                 );
                             } else {
-                                writeln!(self.body, "{}setp.ne.{} %r{reg}, %r{x}, 0;", self.indent, xdtype.ptx());
+                                _ = writeln!(self.body, "{}setp.ne.{} %r{reg}, %r{x}, 0;", self.indent, xdtype.ptx());
                             }
                         }
                         (_, DType::Bool) => {
                             if dtype.is_float() {
-                                writeln!(
+                                _ = writeln!(
                                     self.body,
                                     "{}selp.{} %r{reg}, 1.0, 0.0, %r{x};",
                                     self.indent,
                                     dtype.ptx(),
                                 );
                             } else {
-                                writeln!(self.body, "{}selp.{} %r{reg}, 1, 0, %r{x};", self.indent, dtype.ptx());
+                                _ = writeln!(self.body, "{}selp.{} %r{reg}, 1, 0, %r{x};", self.indent, dtype.ptx());
                             }
                         }
                         (_, _) => {
-                            writeln!(
+                            _ = writeln!(
                                 self.body,
                                 "{}cvt.rn.{}.{} %r{reg}, %r{x};",
                                 self.indent,
@@ -2504,7 +1530,7 @@ impl Compiler {
                     let dtype = dtypes[&x];
                     let x = self.get_var(*x);
                     let reg = self.new_var(op_id, dtype, rcs[&op_id]);
-                    writeln!(
+                    _ = writeln!(
                         self.body,
                         "{}{}.{} %r{reg}, %r{x};",
                         self.indent,
@@ -2517,7 +1543,7 @@ impl Compiler {
                     let xr = self.get_var(*x);
                     let yr = self.get_var(*y);
                     let reg = self.new_var(op_id, dtype, rcs[&op_id]);
-                    writeln!(
+                    _ = writeln!(
                         self.body,
                         "{}{}.{} %r{reg}, %r{xr}, %r{yr};",
                         self.indent,
@@ -2529,7 +1555,7 @@ impl Compiler {
                     let loop_idx = self.new_var(op_id, IDX_T, rcs[&op_id]); // index for loop
                     match scope {
                         Scope::Global => {
-                            writeln!(
+                            _ = writeln!(
                                 self.body,
                                 "{}{}.u32 %r{loop_idx}, %ctaid.{};",
                                 self.indent,
@@ -2544,7 +1570,7 @@ impl Compiler {
                             n_global_loops += 1;
                         }
                         Scope::Local => {
-                            writeln!(
+                            _ = writeln!(
                                 self.body,
                                 "{}{}.u32 %r{loop_idx}, %tid.{};",
                                 self.indent,
@@ -2560,8 +1586,8 @@ impl Compiler {
                         Scope::Register => {
                             let loop_pred = self.new_reg(DType::Bool, 2); // predicate for loop condition check
                             self.loops.push((*dim, loop_pred, loop_idx));
-                            writeln!(self.body, "{}mov.{} %r{loop_idx}, 0;", self.indent, IDX_T.ptx());
-                            writeln!(self.body, "{}LOOP_{loop_id}:", self.indent);
+                            _ = writeln!(self.body, "{}mov.{} %r{loop_idx}, 0;", self.indent, IDX_T.ptx());
+                            _ = writeln!(self.body, "{}LOOP_{loop_id}:", self.indent);
                             self.indent += "  ";
                         }
                     }
@@ -2570,7 +1596,7 @@ impl Compiler {
                 Op::EndLoop => {
                     loop_id -= 1;
                     if let Some((dim, loop_pred, loop_idx)) = self.loops.pop() {
-                        writeln!(
+                        _ = writeln!(
                             self.body,
                             "{}add.{} %r{loop_idx}, %r{loop_idx}, 1;",
                             self.indent,
@@ -2586,7 +1612,7 @@ impl Compiler {
                         .unwrap();
                         self.indent.pop();
                         self.indent.pop();
-                        writeln!(self.body, "{}@%r{loop_pred} bra LOOP_{loop_id};", self.indent);
+                        _ = writeln!(self.body, "{}@%r{loop_pred} bra LOOP_{loop_id};", self.indent);
                     }
                 }
                 Op::Null | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
@@ -2596,21 +1622,21 @@ impl Compiler {
         }
 
         // Finish kernel body
-        writeln!(self.body, "{}ret;\n}}", self.indent);
+        _ = writeln!(self.body, "{}ret;\n}}", self.indent);
 
         // Global argument pointers declaration
         for (i, op) in kernel.ops.iter().enumerate() {
-            if let &Op::Define { dtype, scope, ro, .. } = op {
+            if let &Op::Define { scope, .. } = op {
                 if scope == Scope::Global {
-                    writeln!(self.header, "{}.reg .s64 %p{i};", self.indent);
+                    _ = writeln!(self.header, "{}.reg .s64 %p{i};", self.indent);
                 }
             }
         }
 
         // Register declarations
-        writeln!(self.header, "{}.reg .u64 %address;", self.indent);
+        _ = writeln!(self.header, "{}.reg .u64 %address;", self.indent);
         for (op_id, (dtype, _)) in self.registers.iter().enumerate() {
-            writeln!(self.header, "{}.reg .{} %r{op_id};", self.indent, dtype.ptx());
+            _ = writeln!(self.header, "{}.reg .{} %r{op_id};", self.indent, dtype.ptx());
         }
 
         // Join body into header

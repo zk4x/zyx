@@ -133,7 +133,7 @@ impl Graph {
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
-        for _ in 0..10000 {
+        for _ in 0..100000 {
             match self.nodes[tensor_id].1 {
                 Node::Const { value } => return value.dtype(),
                 Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
@@ -158,7 +158,7 @@ impl Graph {
 
     pub(super) fn shape(&self, tensor_id: TensorId) -> &[Dim] {
         let mut tensor_id = tensor_id;
-        for _ in 0..10000 {
+        for _ in 0..1000000 {
             if let Some(shape) = self.shapes.get(&tensor_id) {
                 //println!("Found shape {shape:?} for tensor {tensor_id}");
                 return shape;

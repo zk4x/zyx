@@ -753,7 +753,6 @@ impl<'a> Kernelizer<'a> {
                 }
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 self.pools[mpid].events.insert(output_buffers, event);
-                // TODO Deallocate loads that are not used by any other kernel
                 return Ok(());
             } else if let Some(opt) = self.cache.optimizations.get(&(kid, dev_info_id)) {
                 // Continue optimizing using optimizations cached to disk
@@ -792,6 +791,7 @@ impl<'a> Kernelizer<'a> {
             if self.debug.kmd() {
                 println!("Kernel launch from memory pool {mpid} with args: {args:?}");
             }
+            self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
             let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
             self.pools[mpid].events.insert(output_buffers, event);
             return Ok(());
@@ -1010,7 +1010,7 @@ impl Runtime {
         );
 
         for &nid in order {
-            use crate::{RED, RESET};
+            /*use crate::{RED, RESET};
             println!(
                 "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
                 if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
@@ -1018,7 +1018,7 @@ impl Runtime {
                 self.graph[nid],
                 self.graph.dtype(nid),
                 self.graph.shape(nid)
-            );
+            );*/
             if kernelizer.is_virt_realized(nid) {
                 kernelizer.create_load_kernel(nid);
             } else {
@@ -1341,10 +1341,10 @@ impl Runtime {
                 rcs.remove(x);
             }
         }
-        println!("Order {order:?}");
+        /*println!("Order {order:?}");
         println!("ToEval {to_eval:?}");
         println!("ToDelete {to_delete:?}");
-        println!("NewLeafs {new_leafs:?}");
+        println!("NewLeafs {new_leafs:?}");*/
 
         debug_assert!(!order.is_empty());
         debug_assert!(!to_eval.is_empty());
