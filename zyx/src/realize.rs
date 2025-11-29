@@ -158,7 +158,6 @@ impl std::ops::Index<OpId> for KMKernel {
 struct Kernelizer<'a> {
     // TODO merge as many of these as possible. Perhaps start by mergins rcs and visited
     // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
-    to_eval: &'a Set<TensorId>,
     virt_realized_nodes: Set<TensorId>,
     must_keep_nodes: Set<TensorId>,
     realized_nodes: Set<TensorId>,
@@ -191,7 +190,6 @@ impl<'a> Kernelizer<'a> {
         must_keep_nodes.extend(to_eval);
         Self {
             // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
-            to_eval,
             must_keep_nodes,
             virt_realized_nodes: realized_nodes.clone(),
             realized_nodes,
@@ -965,7 +963,7 @@ impl Runtime {
             let elapsed = begin.elapsed();
             if self.debug.perf() {
                 println!(
-                    "Runtime realize graph order took {} us for {}/{} tensors with gradient_tape={}",
+                    "Runtime realize graph order took {} μs for {}/{} tensors with gradient_tape={}",
                     elapsed.as_micros(),
                     order.len(),
                     usize::from(self.graph.nodes.len()),
@@ -1001,63 +999,6 @@ impl Runtime {
         self.graph.delete_tensors(&to_delete);
 
         Ok(())
-    }
-
-    fn graph_order(
-        &self,
-        realized_nodes: &Set<TensorId>,
-        to_eval: &mut Set<TensorId>,
-    ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
-        let old_to_eval = to_eval.clone();
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        while let Some(nid) = params.pop() {
-            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                if !realized_nodes.contains(&nid) {
-                    params.extend(self.graph.nodes[nid].1.parameters());
-                }
-                1
-            });
-        }
-        // Order them using rcs reference counts
-        let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        let mut new_leafs = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
-        let mut order = Vec::new();
-        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
-        while let Some(nid) = params.pop() {
-            if let Some(&rc) = rcs.get(&nid) {
-                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
-                    order.push(nid);
-                    let node = &self.graph.nodes[nid];
-                    if node.0 > rc {
-                        new_leafs.insert(nid);
-                        if !realized_nodes.contains(&nid) {
-                            to_eval.insert(nid);
-                        }
-                    } else if !to_eval.contains(&nid) {
-                        to_delete.insert(nid);
-                    } else {
-                        new_leafs.insert(nid);
-                    }
-                    if !realized_nodes.contains(&nid) {
-                        params.extend(node.1.parameters());
-                    }
-                }
-            }
-        }
-        order.reverse();
-        for x in &old_to_eval {
-            *rcs.get_mut(x).unwrap() -= 1;
-            if *rcs.get(x).unwrap() == 0 {
-                rcs.remove(x);
-            }
-        }
-        //println!("Order {order:?}");
-        //println!("ToEval {to_eval:?}");
-        //println!("ToDelete {to_delete:?}");
-        //println!("NewLeafs {new_leafs:?}");
-        (order, to_delete, new_leafs, rcs)
     }
 
     fn realize(
@@ -1131,7 +1072,7 @@ impl Runtime {
         );
 
         for &nid in order {
-            /*use crate::{RED, RESET};
+            use crate::{RED, RESET};
             println!(
                 "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
                 if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
@@ -1139,7 +1080,7 @@ impl Runtime {
                 self.graph[nid],
                 self.graph.dtype(nid),
                 self.graph.shape(nid)
-            );*/
+            );
             if kernelizer.is_virt_realized(nid) {
                 kernelizer.create_load_kernel(nid);
             } else {
@@ -1338,5 +1279,67 @@ impl Runtime {
             new_leafs,
             Map::with_hasher(BuildHasherDefault::default()),
         )
+    }
+
+    fn graph_order(
+        &self,
+        realized_nodes: &Set<TensorId>,
+        to_eval: &mut Set<TensorId>,
+    ) -> (Vec<TensorId>, Set<TensorId>, Set<TensorId>, Map<TensorId, u32>) {
+        debug_assert!(!to_eval.is_empty());
+
+        let old_to_eval = to_eval.clone();
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                if !realized_nodes.contains(&nid) {
+                    params.extend(self.graph.nodes[nid].1.parameters());
+                }
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut to_delete = Set::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut new_leafs = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
+        let mut order = Vec::new();
+        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    let node = &self.graph.nodes[nid];
+                    if node.0 > rc {
+                        new_leafs.insert(nid);
+                        if !realized_nodes.contains(&nid) {
+                            to_eval.insert(nid);
+                        }
+                    } else if !to_eval.contains(&nid) {
+                        to_delete.insert(nid);
+                    } else {
+                        new_leafs.insert(nid);
+                    }
+                    if !realized_nodes.contains(&nid) {
+                        params.extend(node.1.parameters());
+                    }
+                }
+            }
+        }
+        order.reverse();
+        for x in &old_to_eval {
+            *rcs.get_mut(x).unwrap() -= 1;
+            if *rcs.get(x).unwrap() == 0 {
+                rcs.remove(x);
+            }
+        }
+        println!("Order {order:?}");
+        println!("ToEval {to_eval:?}");
+        println!("ToDelete {to_delete:?}");
+        println!("NewLeafs {new_leafs:?}");
+
+        debug_assert!(!order.is_empty());
+        debug_assert!(!to_eval.is_empty());
+        (order, to_delete, new_leafs, rcs)
     }
 }

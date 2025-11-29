@@ -228,6 +228,11 @@ impl Tensor {
         }
     }
 
+    /// Debug graph
+    pub fn debug_graph() {
+        RT.lock().debug_graph();
+    }
+
     /// Returns a slice of the last N dimensions of this tensor.
     ///
     /// # Parameters

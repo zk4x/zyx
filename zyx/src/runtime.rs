@@ -106,6 +106,12 @@ impl Runtime {
         }
     }
 
+    pub fn debug_graph(&self) {
+        for (id, (rc, node)) in self.graph.nodes.iter() {
+            println!("{id} x {rc} -> {node:?} {:?} {:?}", self.shape(id), self.dtype(id));
+        }
+    }
+
     pub(super) fn retain(&mut self, x: TensorId) {
         self.graph.retain(x);
     }
