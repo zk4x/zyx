@@ -364,7 +364,8 @@ impl Tensor {
     /// # Errors
     /// Returns device error if the device fails to realize one or more tensors.
     pub fn realize<'a>(tensors: impl IntoIterator<Item = &'a Tensor>) -> Result<(), ZyxError> {
-        RT.lock().realize_and_cleanup(&tensors.into_iter().map(|t| t.id).collect())
+        //RT.lock().realize_and_cleanup(&tensors.into_iter().map(|t| t.id).collect())
+        RT.lock().realize_cleanup(&tensors.into_iter().map(|t| t.id).collect())
     }
 
     /// Item

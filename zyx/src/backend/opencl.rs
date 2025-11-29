@@ -403,7 +403,8 @@ impl OpenCLMemoryPool {
         _ = unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization);
     }
 
-    pub const fn free_bytes(&self) -> Dim {
+    pub fn free_bytes(&self) -> Dim {
+        //println!("checking free bytes = {}", self.free_bytes);
         self.free_bytes
     }
 
@@ -454,6 +455,7 @@ impl OpenCLMemoryPool {
         }*/
         let _ = unsafe { (self.clReleaseMemObject)(buffer.buffer) }.check(ErrorStatus::Deinitialization);
         self.free_bytes += buffer.bytes;
+        //println!("free_bytes after deallocation = {}", self.free_bytes);
         self.buffers.remove(buffer_id);
     }
 

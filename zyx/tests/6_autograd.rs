@@ -285,8 +285,8 @@ fn grad_t6() -> Result<(), ZyxError> {
     //panic!();
     println!("{b_grad}");
     // Also higher order derivatives
-    //let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
-    //println!("{bb_grad}");
+    let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
+    println!("{bb_grad}");
 
     Ok(())
 }

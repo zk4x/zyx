@@ -607,15 +607,12 @@ impl<'a> Kernelizer<'a> {
         //println!("Kernel launch");
 
         let KMKernel { mut kernel, outputs: _, loads, stores } = kernel;
+        //debug_assert!(outputs.is_empty());
 
-        let required_kernel_memory: Dim = stores
+        let required_stores_memory: Dim = stores
             .iter()
             .map(|&tid| self.graph.shape(tid).iter().product::<Dim>() * self.graph.dtype(tid).byte_size() as Dim)
-            .sum::<Dim>()
-            + loads
-                .iter()
-                .map(|&tid| self.graph.shape(tid).iter().product::<Dim>() * self.graph.dtype(tid).byte_size() as Dim)
-                .sum::<Dim>();
+            .sum::<Dim>();
         //println!("Kernel requires {required_kernel_memory} B");
         let mut dev_ids: Vec<usize> = (0..self.devices.len()).collect();
         dev_ids.sort_unstable_by_key(|&dev_id| self.devices[dev_id].free_compute());
@@ -627,18 +624,18 @@ impl<'a> Kernelizer<'a> {
             // Check if kernel arguments fit into associated memory pool
             let free_memory = self.pools[mpid].pool.free_bytes();
             // required memory is lowered by the amount of tensors already stored in that memory pool
-            let existing_memory = loads
+            let missing_loads_memory = loads
                 .iter()
                 .map(|tid| {
-                    if self.pools[mpid].buffer_map.contains_key(tid) {
+                    if !self.pools[mpid].buffer_map.contains_key(tid) {
                         self.graph.shape(*tid).iter().product::<Dim>() * self.graph.dtype(*tid).byte_size() as Dim
                     } else {
                         0
                     }
                 })
                 .sum::<Dim>();
-            //println!("Free memory {free_memory} B, existing memory {existing_memory} B");
-            let required_memory = required_kernel_memory - existing_memory;
+            //println!("Free memory {free_memory} B, missing loads memory {missing_loads_memory} B");
+            let required_memory = required_stores_memory + missing_loads_memory;
             if free_memory > required_memory {
                 device_id = Some(dev_id);
                 break;
@@ -647,7 +644,7 @@ impl<'a> Kernelizer<'a> {
         // else
         let Some(dev_id) = device_id else {
             return Err(ZyxError::AllocationError(
-                format!("no device has enough memory to store {required_kernel_memory} B for intermedite tensors.")
+                format!("no device has enough memory to store {required_stores_memory} B for intermedite tensors.")
                     .into(),
             ));
         };
@@ -946,7 +943,7 @@ impl Runtime {
         order: &[TensorId],
         to_eval: &Set<TensorId>,
     ) -> Result<(), ZyxError> {
-        let mut rcs = if rcs.is_empty() {
+        let rcs = if rcs.is_empty() {
             let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
             for &nid in order {
                 if !realized_nodes.contains(&nid) {
@@ -954,6 +951,9 @@ impl Runtime {
                         rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
                     }
                 }
+            }
+            for &nid in to_eval {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
             }
             rcs
         } else {
@@ -963,13 +963,15 @@ impl Runtime {
         #[cfg(debug_assertions)]
         {
             let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
-            // to_eval are not in rcs
             for &nid in order {
                 if !realized_nodes.contains(&nid) {
                     for nid in self.graph[nid].parameters() {
                         rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
                     }
                 }
+            }
+            for &nid in to_eval {
+                rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
             }
             if rcs2 != rcs {
                 println!("Realized nodes: {realized_nodes:?}");
@@ -984,10 +986,6 @@ impl Runtime {
                 }
                 panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
             }
-        }
-
-        for &nid in to_eval {
-            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
         }
 
         //println!("{rcs:?}");
@@ -1099,10 +1097,91 @@ impl Runtime {
         Ok(())
     }
 
+    pub fn realize_cleanup(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+        let realized_nodes: Set<TensorId> =
+            self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+
+        let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
+
+        if to_eval.is_empty() {
+            return Ok(());
+        }
+
+        if self.devices.is_empty() {
+            self.initialize_devices()?;
+        }
+
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        while let Some(nid) = params.pop() {
+            rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
+                if !realized_nodes.contains(&nid) {
+                    params.extend(self.graph.nodes[nid].1.parameters());
+                }
+                1
+            });
+        }
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    if !realized_nodes.contains(&nid) {
+                        params.extend(self.graph.nodes[nid].1.parameters());
+                    }
+                }
+            }
+        }
+        order.reverse();
+        //println!("Order {order:?}");
+        //println!("To eval {to_eval:?}");
+
+        debug_assert!(!order.is_empty());
+        debug_assert!(!to_eval.is_empty());
+
+        if self.debug.perf() {
+            println!(
+                "Runtime realize graph order for {}/{} tensors with gradient_tape={}",
+                order.len(),
+                usize::from(self.graph.nodes.len()),
+                self.graph.gradient_tape.is_some(),
+            );
+        }
+
+        self.realize(rcs, realized_nodes, &order, &to_eval)?;
+
+        if self.graph.gradient_tape.is_none() {
+            // Delete all unnecessary nodes no longer needed after realization
+            let mut to_release = Vec::new();
+            for &nid in &to_eval {
+                self.graph.add_shape(nid);
+                let dtype = self.dtype(nid);
+                self.graph[nid] = Node::Leaf { dtype };
+                to_release.extend(self.graph[nid].parameters());
+            }
+            let to_remove = self.graph.release(&to_release);
+            deallocate_tensors(&to_remove, &mut self.pools);
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let realized_nodes: Set<TensorId> =
+                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            debug_assert!(realized_nodes.is_superset(&to_eval));
+        }
+
+        Ok(())
+    }
+}
+
+/*
     // 1. gets a set of tensors which need to be processed and in which order
     // 2. generates kernels from them
     // 3. assigns those kernels to devices, compiles and launches them
-    pub fn realize_and_cleanup(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+    pub fn realize_and_eliminate_dead_tensors(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let (to_eval, realized_nodes, order, rcs, new_leafs, mut to_delete) = {
             let begin = std::time::Instant::now();
             let realized_nodes: Set<TensorId> =
@@ -1163,8 +1242,7 @@ impl Runtime {
         }
         // Delete nodes, but do not use release function (don't deallocate again),
         // only remove it from graph.nodes
-        //println!("completely deleting: {to_delete:?}");
-        self.graph.delete_tensors(&to_delete);
+        self.graph.delete_tensors_without_deallocation(&to_delete);
 
         Ok(())
     }
@@ -1341,6 +1419,9 @@ impl Runtime {
                 rcs.remove(x);
             }
         }
+        for &x in to_eval.iter() {
+            rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+        }
         /*println!("Order {order:?}");
         println!("ToEval {to_eval:?}");
         println!("ToDelete {to_delete:?}");
@@ -1350,4 +1431,4 @@ impl Runtime {
         debug_assert!(!to_eval.is_empty());
         (order, to_delete, new_leafs, rcs)
     }
-}
+}*/

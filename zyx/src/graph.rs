@@ -44,9 +44,9 @@ impl Graph {
     }
 
     /// Returns which tensors should be deallocated
-    pub(super) fn release(&mut self, x: TensorId) -> Set<TensorId> {
+    pub(super) fn release(&mut self, x: &[TensorId]) -> Set<TensorId> {
         let mut params = Vec::with_capacity(10);
-        params.push(x);
+        params.extend(x);
         let mut to_remove = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
         while let Some(x) = params.pop() {
             //println!("Releasing {x}");
@@ -122,14 +122,34 @@ impl Graph {
         self.shapes.insert(id, shape);
     }
 
-    pub(super) fn delete_tensors(&mut self, tensors: &Set<TensorId>) {
-        for &tensor in tensors {
+    /*pub(super) fn delete_tensors_without_deallocation(&mut self, tensors: &Set<TensorId>) {
+        /*for &tensor in tensors {
             self.nodes.remove(tensor);
             self.shapes.remove(&tensor);
             self.paddings.remove(&tensor);
             self.axes.remove(&tensor);
+        }*/
+        let mut params: Vec<TensorId> = tensors.iter().copied().collect();
+        while let Some(x) = params.pop() {
+            //println!("Releasing {x}");
+            if let Some((rc, node)) = self.nodes.get_mut(x) {
+                let a = rc.saturating_sub(1);
+                *rc = a;
+                if a == 0 {
+                    //println!("Dropping {x}");
+                    params.extend(node.parameters());
+                    self.nodes.remove(x);
+                    _ = self.shapes.remove(&x);
+                    _ = self.axes.remove(&x);
+                    _ = self.paddings.remove(&x);
+
+                    if let Some(tape) = self.gradient_tape.as_mut() {
+                        _ = tape.remove(&x);
+                    }
+                }
+            }
         }
-    }
+    }*/
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;

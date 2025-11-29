@@ -343,6 +343,10 @@ struct LoopSplitOpt {
 
 impl LoopSplitOpt {
     fn new(kernel: &Kernel, max_depth: usize) -> (Self, u32) {
+        //return (LoopSplitOpt { reduction_splits: Vec::new() }, 10);
+
+        // TODO fix this to only produce about 10 meaningful splits below dimension 256
+        // (that's max possible warp size)
         fn find_factorizations(
             remaining: Dim,
             start: Dim,

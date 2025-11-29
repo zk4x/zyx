@@ -117,7 +117,7 @@ impl Runtime {
     }
 
     pub(super) fn release(&mut self, x: TensorId) {
-        let to_remove = self.graph.release(x);
+        let to_remove = self.graph.release(&[x]);
         deallocate_tensors(&to_remove, &mut self.pools);
         if self.graph.is_empty() && self.pools.iter().all(|mp| mp.buffer_map.is_empty()) {
             self.deinitialize();
@@ -266,20 +266,6 @@ impl Runtime {
     ) -> Result<TensorId, ZyxError> {
         let bytes = shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
         self.initialize_devices()?;
-        if bytes == dtype.byte_size() as Dim {
-            /*let value = data.read();
-            let value = Constant::from_bytes(value, dtype);
-            if self.constants_len < NUM_CONSTANTS {
-                if !self.constants.contains(&value) {
-                    self.constants[self.constants_len] = value;
-                    self.constants_len += 1;
-                }
-                return Ok(self.graph.push(Node::Const { value }));
-            } else if self.constants.contains(&value) {
-                return Ok(self.graph.push(Node::Const { value }));
-            }*/
-            todo!();
-        }
         if let Some(disk) = self.pools[0].pool.disk_pool() {
             let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
             let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
@@ -386,7 +372,7 @@ impl Runtime {
         }
         let mut to_eval = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
         to_eval.insert(x);
-        self.realize_and_cleanup(&to_eval)?;
+        self.realize_cleanup(&to_eval)?;
         let mut shape = self.shape(x).to_vec();
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
@@ -557,7 +543,7 @@ impl Runtime {
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
             let mut to_eval = Set::with_capacity_and_hasher(1, BuildHasherDefault::default());
             to_eval.insert(x);
-            self.realize_and_cleanup(&to_eval)?;
+            self.realize_cleanup(&to_eval)?;
         }
 
         let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x).unwrap();
