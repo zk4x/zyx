@@ -1181,6 +1181,9 @@ impl Kernel {
         visited: &mut Set<OpId>,
         skip_last: usize,
     ) {
+        if !visited.insert(op_id) {
+            return;
+        }
         match self.ops[op_id] {
             Op::LoadView { ref mut view, .. } | Op::ConstView { ref mut view, .. } => {
                 let rank = view.rank();
