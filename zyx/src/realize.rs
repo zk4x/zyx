@@ -1159,8 +1159,8 @@ impl Runtime {
             for &nid in &to_eval {
                 self.graph.add_shape(nid);
                 let dtype = self.dtype(nid);
-                self.graph[nid] = Node::Leaf { dtype };
                 to_release.extend(self.graph[nid].parameters());
+                self.graph[nid] = Node::Leaf { dtype };
             }
             let to_remove = self.graph.release(&to_release);
             deallocate_tensors(&to_remove, &mut self.pools);

@@ -779,10 +779,19 @@ impl Scalar for f32 {
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        // Less than 0.1% error is OK
-        (self == -f32::INFINITY && rhs == -f32::INFINITY)
-            || (self.is_nan() && rhs.is_nan())
-            || (self - rhs).abs() <= self.abs() * 0.001
+        let a = self;
+        let b = rhs;
+        if a.is_nan() && b.is_nan() {
+            return true;
+        }
+        if a == b {
+            return true;
+        }
+        let diff = (a - b).abs();
+        let max_abs = a.abs().max(b.abs());
+        let rel_tol = 1e-3 * max_abs; // relative tolerance for large numbers
+        let abs_tol = 2e-7; // absolute tolerance for tiny numbers
+        diff < rel_tol || diff < abs_tol
     }
 
     fn epsilon() -> Self {

@@ -87,7 +87,7 @@ fn pow() -> Result<(), ZyxError> {
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
         //assert!((x.pow(y) - z).abs() < 0.00001);
         let x = x.pow(y);
-        //println!("{x}, {z}");
+        println!("{x}, {z}");
         assert!(x.is_equal(z));
     }
     Ok(())

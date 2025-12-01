@@ -6,7 +6,7 @@ use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::{
     DType,
-    shape::{UAxis, Dim},
+    shape::{Dim, UAxis},
     slab::Slab,
 };
 use crate::{Map, Set};
@@ -191,13 +191,6 @@ impl Graph {
         panic!("Shape of {tensor_id:?} could not be found. This is internal bug.")
     }
 
-    #[allow(unused)]
-    fn debug(&self) {
-        for (nid, (rc, node)) in self.nodes.iter() {
-            println!("{nid} x {rc} -> {node:?}");
-        }
-    }
-
     pub(super) fn build_topo(&self, x: TensorId, sources: &Set<TensorId>) -> Vec<TensorId> {
         //self.debug();
         let Some(tape) = self.gradient_tape.as_ref() else { return Vec::new() };
@@ -364,7 +357,6 @@ impl std::ops::IndexMut<TensorId> for Graph {
 
 use crate::dtype::Constant;
 
-#[allow(unused)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
 pub enum BOp {
     Add,
@@ -462,8 +454,7 @@ impl Node {
         }
     }
 
-    #[allow(unused)]
-    pub const fn num_parameters(&self) -> u8 {
+    /*pub const fn num_parameters(&self) -> u8 {
         match self {
             Node::Const { .. } | Node::Leaf { .. } => 0,
             Node::Expand { .. }
@@ -475,7 +466,7 @@ impl Node {
             | Node::Unary { .. } => 1,
             Node::Binary { .. } => 2,
         }
-    }
+    }*/
 
     pub const fn param1(&self) -> TensorId {
         match *self {
@@ -491,13 +482,13 @@ impl Node {
         }
     }
 
-    #[allow(unused)]
+    /*
     pub const fn param2(&self) -> (TensorId, TensorId) {
         match *self {
             Node::Binary { x, y, .. } => (x, y),
             _ => unreachable!(),
         }
-    }
+    }*/
 
     /*pub(super) const fn is_movement(&self) -> bool {
         matches!(

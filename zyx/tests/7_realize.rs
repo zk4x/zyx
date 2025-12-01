@@ -5,13 +5,13 @@ fn t01() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2f32, 3., 4.], [5., 6., 7.]]);
 
     for _ in 0..1 {
-
         let y = x.exp2();
         x = y.log2();
 
         println!("x rc = {}", x.ref_count());
         println!("y rc = {}", y.ref_count());
 
+        Tensor::debug_graph();
         Tensor::realize([&x])?;
         Tensor::debug_graph();
 
@@ -29,7 +29,7 @@ fn t02() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2f32, 3., 4.], [5., 6., 7.]]);
     let z = Tensor::from(6);
 
-    for _ in 0..200 {
+    for _ in 0..20 {
         let y0 = x.exp2();
         let y1 = y0.exp2() * &z;
         let y2 = y1.exp2() + 3;

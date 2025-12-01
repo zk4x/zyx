@@ -194,6 +194,11 @@ impl Tensor {
         RT.lock().shape(self.id).to_vec()
     }
 
+    /// Is realized
+    pub fn is_realized(&self) -> bool {
+        RT.lock().is_realized(self.id)
+    }
+
     /// Returns a slice of the first N dimensions of this tensor.
     ///
     /// # Parameters

@@ -559,121 +559,17 @@ impl Kernel {
             self.ops.push(Op::Store { dst: acc, x: y + 1, index: c_0 });
 
             // Insert endloops
-            for _ in 0..(n_dims - 1) {
+            for _ in 0..n_dims {
                 self.ops.push(Op::EndLoop);
             }
 
-            // Update tail by adding load acc before all ops referencing op_id
-            // op_id -> acc
-            //let mut n_inserted_loads = 0;
+            // Load the accumulator for access in the tail
+            self.ops.push(Op::Load { src: acc, index: c_0 });
 
-            // number of new inserted ops before the tail section
-            let n = 7 + n_dims * 2 - 1;
+            tail.remove(0);
+            increment(&mut tail, (7 + n_dims * 2) as isize, op_id..);
 
             //println!("{tail:?}");
-
-            let mut inserted_loads = Vec::new();
-            let mut i = 0;
-            while i < tail.len() {
-                match &mut tail[i] {
-                    Op::ConstView { .. }
-                    | Op::LoadView { .. }
-                    | Op::Define { .. }
-                    | Op::Loop { .. }
-                    | Op::EndLoop
-                    | Op::Null => {}
-                    Op::StoreView { src, .. } => {
-                        if *src == op_id {
-                            *src = self.ops.len() + i;
-                            tail.insert(i, Op::Load { src: acc, index: c_0 });
-                            inserted_loads.push(i);
-                            i += 1;
-                            //n_inserted_loads += 1;
-                        } else if *src > op_id {
-                            //*src += n_inserted_loads + 8;
-                            //println!("src={src}, {inserted_loads:?}");
-                            *src += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *src + n).count() + n;
-                        }
-                    }
-                    Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                        if *x == op_id {
-                            *x = self.ops.len() + i;
-                            tail.insert(i, Op::Load { src: acc, index: c_0 });
-                            inserted_loads.push(i);
-                            i += 1;
-                        } else if *x > op_id {
-                            *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
-                        }
-                    }
-                    Op::Const(_) => {}
-                    Op::Load { src, index } => {
-                        debug_assert_ne!(*index, op_id);
-                        if *index > op_id {
-                            *index +=
-                                inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *index + n).count() + n;
-                        }
-                        if *src == op_id {
-                            *src = self.ops.len() + i;
-                            tail.insert(i, Op::Load { src: acc, index: c_0 });
-                            inserted_loads.push(i);
-                            i += 1;
-                        } else if *src > op_id {
-                            *src += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *src + n).count() + n;
-                        }
-                    }
-                    Op::Store { dst, x, index } => {
-                        debug_assert_ne!(*index, op_id);
-                        if *dst > op_id {
-                            *dst += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *dst + n).count() + n;
-                        }
-                        if *index > op_id {
-                            *index +=
-                                inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *index + n).count() + n;
-                        }
-                        if *x == op_id {
-                            *x = self.ops.len() + i;
-                            tail.insert(i, Op::Load { src: acc, index: c_0 });
-                            inserted_loads.push(i);
-                            i += 1;
-                        } else if *x > op_id {
-                            *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
-                        }
-                    }
-                    Op::Binary { x, y, .. } => {
-                        let tailx = if *x == op_id {
-                            *x = self.ops.len() + i;
-                            true
-                        } else {
-                            false
-                        };
-                        let taily = if *y == op_id {
-                            *y = self.ops.len() + i;
-                            true
-                        } else {
-                            false
-                        };
-                        if tailx || taily {
-                            inserted_loads.push(i);
-                        }
-                        /*println!(
-                            "x={x}, op_id={op_id}, self.ops.len={}, n={n}, count={}, inserted_loads={inserted_loads:?}",
-                            self.ops.len(),
-                            inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count()
-                        );*/
-                        if *x > op_id && !tailx {
-                            *x += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *x + n).count() + n;
-                        }
-                        if *y > op_id && !taily {
-                            *y += inserted_loads.iter().filter(|&&v| v + self.ops.len() - 1 < *y + n).count() + n;
-                        }
-                        if tailx || taily {
-                            tail.insert(i, Op::Load { src: acc, index: c_0 });
-                            i += 1;
-                        }
-                    }
-                }
-                i += 1;
-            }
 
             self.ops.extend(tail);
         }
@@ -1152,6 +1048,11 @@ impl Kernel {
     }
 
     /*pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
+        let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
+
+        // Find and jam into inner loops
+
+        // Unroll outer loops
         todo!()
     }*/
 

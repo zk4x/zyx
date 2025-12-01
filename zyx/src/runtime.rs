@@ -106,6 +106,10 @@ impl Runtime {
         }
     }
 
+    pub fn is_realized(&self, x: TensorId) -> bool {
+        self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x))
+    }
+
     pub fn debug_graph(&self) {
         for (id, (rc, node)) in self.graph.nodes.iter() {
             println!("{id} x {rc} -> {node:?} {:?} {:?}", self.shape(id), self.dtype(id));

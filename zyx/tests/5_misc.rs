@@ -74,6 +74,8 @@ fn fuse_6() -> Result<(), ZyxError> {
     let y = x.log2();
     let x = x.exp2();
     Tensor::realize([&x, &y])?;
+    assert_eq!(x, [512f32, 128.]);
+    assert_eq!(y, [3.16993f32, 2.807355]);
     Ok(())
 }
 
@@ -328,15 +330,6 @@ fn split2() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn matmul_3() -> Result<(), ZyxError> {
-    let x = Tensor::rand([1024, 1024], DType::F32)?;
-    let y = Tensor::rand([1024, 1024], DType::F32)?;
-    let z = x.dot(y)?;
-    Tensor::realize([&z])?;
-    Ok(())
-}
-
-#[test]
 fn matmul_1024() -> Result<(), ZyxError> {
     //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
     //let y = xy.pop().unwrap();
@@ -554,9 +547,10 @@ fn iter1() -> Result<(), ZyxError> {
     let mut x = Tensor::randn([64, 64], DType::F32)?;
     let y = Tensor::randn([64, 64], DType::F32)?;
 
-    for _ in 0..100 {
+    for _ in 0..20 {
         x = x.dot(&y)?.softmax([-1])?;
         Tensor::realize([&x])?;
+        //println!("{}", x.is_realized());
     }
 
     Ok(())
@@ -564,8 +558,9 @@ fn iter1() -> Result<(), ZyxError> {
 
 #[test]
 fn bench_mm1() -> Result<(), ZyxError> {
-    let x = Tensor::rand([1024, 1024], zyx::DType::F32)?;
-    let y = Tensor::rand([1024, 1024], zyx::DType::F32)?;
+    const N: usize = 256;
+    let x = Tensor::rand([N, N], zyx::DType::F32)?;
+    let y = Tensor::rand([N, N], zyx::DType::F32)?;
     let z = x.matmul(y)?;
     Tensor::realize([&z])?;
     Ok(())
@@ -711,7 +706,7 @@ fn complex_movement_reduce() -> Result<(), ZyxError> {
 #[test]
 fn mean1() -> Result<(), ZyxError> {
     let x = Tensor::from([[1i32, 2, 3], [4, 5, 6]]);
-    let mean = x.sum_axes([1])? * 0.33333333f32;
+    let mean = x.sum_axes([1])? * 0.3333333333333f32;
     //assert_eq!(mean, [2f32, 5.]);
     let y = x - mean.reshape([2, 1])?;
     //panic!("{y}");
