@@ -1153,8 +1153,21 @@ impl Runtime {
 
         self.realize(rcs, realized_nodes, &order, &to_eval)?;
 
-        if self.graph.gradient_tape.is_none() {
-            // Delete all unnecessary nodes no longer needed after realization
+        // Delete all unnecessary nodes no longer needed after realization
+        if let Some(tape) = self.graph.gradient_tape.as_ref() {
+            let mut to_release = Vec::new();
+            for &nid in &to_eval {
+                if !tape.contains(&nid) {
+                    let dtype = self.dtype(nid);
+                    let shape = self.shape(nid).into();
+                    self.graph.shapes.insert(nid, shape);
+                    to_release.extend(self.graph[nid].parameters());
+                    self.graph.nodes[nid].1 = Node::Leaf { dtype };
+                }
+            }
+            let to_remove = self.graph.release(&to_release);
+            deallocate_tensors(&to_remove, &mut self.pools);
+        } else {
             let mut to_release = Vec::new();
             for &nid in &to_eval {
                 self.graph.add_shape(nid);
