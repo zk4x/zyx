@@ -92,7 +92,7 @@ impl Optimizer {
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
         let (local_work_size_opt, local_work_size_opt_max_idx) = WorkSizeOpt::new(kernel, dev_info);
         let (loop_unrolling_opt, loop_unrolling_opt_max_idx) = LoopUnrollingOpt::new(kernel);
-        let (loop_split_opt, loop_split_opt_max_idx) = LoopSplitOpt::new(kernel, 3);
+        let (loop_split_opt, loop_split_opt_max_idx) = LoopSplitOpt::new(kernel);
         let max_indices = [
             local_work_size_opt_max_idx,
             loop_unrolling_opt_max_idx,
@@ -342,32 +342,8 @@ struct LoopSplitOpt {
 }
 
 impl LoopSplitOpt {
-    fn new(kernel: &Kernel, max_depth: usize) -> (Self, u32) {
+    fn new(kernel: &Kernel) -> (Self, u32) {
         //return (LoopSplitOpt { reduction_splits: Vec::new() }, 10);
-
-        // TODO fix this to only produce about 10 meaningful splits below dimension 256
-        // (that's max possible warp size)
-        fn find_factorizations(
-            remaining: Dim,
-            start: Dim,
-            max_depth: usize,
-            current: &mut Vec<Dim>,
-            results: &mut Vec<Vec<Dim>>,
-        ) {
-            if current.len() == max_depth || remaining == 1 {
-                if !current.is_empty() {
-                    results.push(current.clone());
-                }
-                return;
-            }
-            for i in start..=remaining {
-                if remaining % i == 0 {
-                    current.push(i);
-                    find_factorizations(remaining / i, i, max_depth, current, results);
-                    current.pop();
-                }
-            }
-        }
 
         let mut reduction_splits = Vec::new();
 
@@ -378,22 +354,19 @@ impl LoopSplitOpt {
                 // Calculate the total product of all dimensions
                 let total_product: Dim = dims.iter().product();
 
+                let mut options: Vec<Vec<Dim>> = Vec::new();
+
+                // Add original
+                options.push(dims.clone());
+
                 // Generate all possible factorizations of the total product up to max_depth
-                let mut current = Vec::new();
-                let mut splits = Vec::new();
+                for d in 2..64 {
+                    if total_product.is_multiple_of(d) {
+                        options.push(vec![total_product / d, d]);
+                    }
+                }
 
-                find_factorizations(total_product, 1, max_depth, &mut current, &mut splits);
-
-                // Filter out splits that contain dimensions with length 1
-                splits.retain(|split| !split.contains(&1));
-
-                // Only keep splits where the product equals the total product
-                splits.retain(|split| split.iter().product::<Dim>() == total_product);
-
-                // Add the original dimensions as a valid option (no split)
-                splits.push(dims.to_vec());
-
-                reduction_splits.push(splits);
+                reduction_splits.push(options);
             }
         }
 
@@ -416,12 +389,10 @@ impl LoopSplitOpt {
             .map(|(op_id, _)| op_id)
             .collect();
 
-        let mut result = Vec::with_capacity(self.reduction_splits.len());
         for (i, choices) in self.reduction_splits.iter().enumerate() {
-            let n = choices.len();
-            let idx = index % n as u32;
-            index /= n as u32;
-            result.push((i, idx));
+            let n = choices.len() as u32;
+            let idx = index % n;
+            index /= n;
 
             let Some(&reduce_id) = reduce_ops.get(i) else { return false };
             kernel.reshape_reduce(reduce_id, &self.reduction_splits[i][idx as usize]);
