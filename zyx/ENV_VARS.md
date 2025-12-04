@@ -1,4 +1,4 @@
-Environment variables can be set to enable debugging.
+Environment variable can be set to enable debugging.
 
 Zyx uses one variable for debugging:
 

@@ -61,6 +61,8 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
+            kernel.debug();
+            panic!();
 
             let mut op_id = kernel.ops.len();
             while op_id > 0 {

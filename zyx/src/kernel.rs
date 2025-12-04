@@ -84,17 +84,16 @@ impl Op {
 // Variables defined by define op can only be accessed with Load on Store ops,
 // using their src and dst fields.
 /*pub enum Op {
-    Const(Constant),
-    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
-    Load { src: OpId, index: OpId },
     Store { dst: OpId, x: OpId, index: OpId },
-
-    Loop { dim: Dim, scope: Scope },
-    EndLoop,
-
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
+    Null,
+    Const(Constant),
+    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
+    Load { src: OpId, index: OpId },
+    Loop { dim: Dim, scope: Scope },
+    EndLoop,
 }*/
 
 #[derive(Debug)]
@@ -1049,7 +1048,7 @@ impl Kernel {
 
     pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
         // Assumes there is outer loop at loop_id and at least one inner loop in this outer loop
-        let Op::Loop { dim: outer_loop_dim, scope } = self.ops[loop_id] else { unreachable!() };
+        let Op::Loop { dim: loop_dim, scope } = self.ops[loop_id] else { unreachable!() };
         debug_assert_eq!(scope, Scope::Register);
 
         // Find first inner loop and jam it in there
@@ -1059,14 +1058,21 @@ impl Kernel {
         let mut tail = self.ops.split_off(end_inner_loop_id);
         let mut body = self.ops.split_off(inner_loop_id + 1);
         // Jam the outer loop in the inner loop
-        self.ops.push(Op::Loop { dim: outer_loop_dim, scope: Scope::Register });
+        self.ops.push(Op::Loop { dim: loop_dim, scope: Scope::Register });
         increment(&mut body, 1, inner_loop_id + 1..);
         self.ops.extend(body);
         self.ops.push(Op::EndLoop);
         increment(&mut tail, 2, end_inner_loop_id..);
         self.ops.extend(tail);
 
-        // Unroll everything else in the outer loop, except for the inner loop
+        // Unroll everything else in the outer loop, except for the tail (inner loop + ops after it, till the end of the kernel)
+
+        // What we need to do is to repeat all ops loop_dim times, but define needs to be
+        // instead multiplied (it's len) by loop_dim.
+        // Existing index that is used to index define both for loads and stores needs to be incremented:
+        //  - outside of the inner loop it needs to be incremented by constant
+        //  - in the inner loop it needs to be incremented by the jammed loop index
+
         todo!()
     }
 
