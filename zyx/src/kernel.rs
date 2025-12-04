@@ -1047,14 +1047,28 @@ impl Kernel {
         self.ops.extend(tail);
     }
 
-    /*pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
-        let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
+    pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
+        // Assumes there is outer loop at loop_id and at least one inner loop in this outer loop
+        let Op::Loop { dim: outer_loop_dim, scope } = self.ops[loop_id] else { unreachable!() };
+        debug_assert_eq!(scope, Scope::Register);
 
-        // Find and jam into inner loops
+        // Find first inner loop and jam it in there
+        let inner_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::Loop { .. })).unwrap();
+        let end_inner_loop_id = self.get_end_loop_id(inner_loop_id);
+        // Get the body of the inner loop
+        let mut tail = self.ops.split_off(end_inner_loop_id);
+        let mut body = self.ops.split_off(inner_loop_id + 1);
+        // Jam the outer loop in the inner loop
+        self.ops.push(Op::Loop { dim: outer_loop_dim, scope: Scope::Register });
+        increment(&mut body, 1, inner_loop_id + 1..);
+        self.ops.extend(body);
+        self.ops.push(Op::EndLoop);
+        increment(&mut tail, 2, end_inner_loop_id..);
+        self.ops.extend(tail);
 
-        // Unroll outer loops
+        // Unroll everything else in the outer loop, except for the inner loop
         todo!()
-    }*/
+    }
 
     // Loop tiling/vectorization. Tiles all loads.
     /*pub fn loop_tile(&mut self, loop_id: OpId) {
