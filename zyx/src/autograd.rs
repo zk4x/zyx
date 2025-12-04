@@ -2,8 +2,8 @@ use crate::{
     Map, RT, Set, Tensor,
     dtype::Constant,
     graph::{BOp, Node, ROp, UOp},
-    runtime::Runtime,
-    shape::{UAxis, Dim},
+    runtime::{Runtime, deallocate_tensors},
+    shape::{Dim, UAxis},
     tensor::TensorId,
 };
 use std::hash::BuildHasherDefault;
@@ -103,7 +103,22 @@ impl Runtime {
     pub(super) fn drop_gradient_tape(&mut self) {
         self.graph.gradient_tape_ref_count -= 1;
         if self.graph.gradient_tape_ref_count == 0 {
-            self.graph.gradient_tape = None;
+            if let Some(tape) = &self.graph.gradient_tape {
+                // Remove parts of graph that are realized and were needed only for gradient tracing
+                let realized_nodes: Set<TensorId> =
+                    self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+                let mut to_release = Vec::new();
+                for &nid in realized_nodes.intersection(tape) {
+                    let shape = self.graph.shape(nid).into();
+                    self.graph.shapes.insert(nid, shape);
+                    let dtype = self.dtype(nid);
+                    to_release.extend(self.graph[nid].parameters());
+                    self.graph.nodes[nid].1 = Node::Leaf { dtype };
+                }
+                let to_remove = self.graph.release(&to_release);
+                deallocate_tensors(&to_remove, &mut self.pools);
+                self.graph.gradient_tape = None;
+            }
         }
     }
 
@@ -309,17 +324,17 @@ impl Runtime {
                         }
                         self.release(eq);
                     }
-                    BOp::Cmplt |
-                    BOp::Cmpgt |
-                    BOp::NotEq |
-                    BOp::Eq |
-                    BOp::Or |
-                    BOp::And |
-                    BOp::BitAnd |
-                    BOp::BitOr |
-                    BOp::BitXor |
-                    BOp::BitShiftLeft |
-                    BOp::BitShiftRight => {}
+                    BOp::Cmplt
+                    | BOp::Cmpgt
+                    | BOp::NotEq
+                    | BOp::Eq
+                    | BOp::Or
+                    | BOp::And
+                    | BOp::BitAnd
+                    | BOp::BitOr
+                    | BOp::BitXor
+                    | BOp::BitShiftLeft
+                    | BOp::BitShiftRight => {}
                 },
                 Node::Cast { x, .. } => {
                     let grad = self.cast(grad, self.dtype(x));
