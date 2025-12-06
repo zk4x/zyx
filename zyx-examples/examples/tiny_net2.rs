@@ -33,16 +33,15 @@ fn main() -> Result<(), ZyxError> {
     let x = Tensor::from([2, 3, 1]).cast(DType::F16);
     let target = Tensor::from([5, 7]).cast(DType::F16);
 
-    Tensor::realize(&net)?;
-    Tensor::realize([&x, &target])?;
     for _ in 0..100 {
         let tape = GradientTape::new();
         let y = net.forward(&x);
         let loss = y.mse_loss(&target)?;
         let grads = tape.gradient(&loss, &net);
         optim.update(&mut net, grads);
-        drop(tape);
-        Tensor::realize(&net)?;
+        //Tensor::realize(&net)?;
+        //Tensor::realize(optim.bias.iter())?;
+        Tensor::realize_all()?;
     }
 
     Ok(())

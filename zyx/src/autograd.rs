@@ -53,19 +53,9 @@ impl GradientTape {
     /// Any ops following this function will not be traced.
     /// If you want to keep tracing, use [`gradient_persistent`](GradientTape::gradient_persistent)
     #[must_use]
-    pub fn gradient<'a>(&self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
-        let sources: Vec<TensorId> = sources.into_iter().map(Tensor::id).collect();
-        //println!("Sources: {sources:?}");
-        let mut rt = RT.lock();
-        let grads: Map<TensorId, TensorId> = rt.gradient(target.id(), &sources.iter().copied().collect());
-        rt.graph.gradient_tape_ref_count += 1;
-        rt.drop_gradient_tape();
-        drop(rt);
-        sources
-            .into_iter()
-            .map(|x: TensorId| grads.get(&x).copied())
-            .map(|id: Option<TensorId>| id.map(|id| Tensor { id }))
-            .collect()
+    pub fn gradient<'a>(self, target: &Tensor, sources: impl IntoIterator<Item = &'a Tensor>) -> Vec<Option<Tensor>> {
+        self.gradient_persistent(target, sources)
+        // here tape is dropped automatically
     }
 
     /// Returns gradients of target derived w.r.t. sources

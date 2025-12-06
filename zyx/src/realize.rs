@@ -943,7 +943,7 @@ impl Runtime {
         order: &[TensorId],
         to_eval: &Set<TensorId>,
     ) -> Result<(), ZyxError> {
-        let rcs = if rcs.is_empty() {
+        /*let rcs = if rcs.is_empty() {
             let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
             for &nid in order {
                 if !realized_nodes.contains(&nid) {
@@ -958,7 +958,7 @@ impl Runtime {
             rcs
         } else {
             rcs
-        };
+        };*/
 
         #[cfg(debug_assertions)]
         {
@@ -1097,7 +1097,7 @@ impl Runtime {
         Ok(())
     }
 
-    pub fn realize_cleanup(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+    pub fn realize_specific(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let realized_nodes: Set<TensorId> =
             self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
 
@@ -1121,6 +1121,102 @@ impl Runtime {
                 1
             });
         }
+        // Order them using rcs reference counts
+        let mut order = Vec::new();
+        let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        let mut params: Vec<TensorId> = to_eval.iter().copied().collect();
+        while let Some(nid) = params.pop() {
+            if let Some(&rc) = rcs.get(&nid) {
+                if rc == *internal_rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1) {
+                    order.push(nid);
+                    if !realized_nodes.contains(&nid) {
+                        params.extend(self.graph.nodes[nid].1.parameters());
+                    }
+                }
+            }
+        }
+        order.reverse();
+        //println!("Order {order:?}");
+        //println!("To eval {to_eval:?}");
+
+        debug_assert!(!order.is_empty());
+        debug_assert!(!to_eval.is_empty());
+
+        if self.debug.perf() {
+            println!(
+                "Runtime realize graph order for {}/{} tensors with gradient_tape={}",
+                order.len(),
+                usize::from(self.graph.nodes.len()),
+                self.graph.gradient_tape.is_some(),
+            );
+        }
+
+        self.realize(rcs, realized_nodes, &order, &to_eval)?;
+
+        // Delete all unnecessary nodes no longer needed after realization
+        let mut to_release = Vec::new();
+        if let Some(tape) = self.graph.gradient_tape.as_ref() {
+            for &nid in &to_eval {
+                if !tape.contains(&nid) {
+                    let dtype = self.dtype(nid);
+                    let shape = self.shape(nid).into();
+                    self.graph.shapes.insert(nid, shape);
+                    to_release.extend(self.graph[nid].parameters());
+                    self.graph.nodes[nid].1 = Node::Leaf { dtype };
+                }
+            }
+            let to_remove = self.graph.release(&to_release);
+            deallocate_tensors(&to_remove, &mut self.pools);
+        } else {
+            for &nid in &to_eval {
+                self.graph.add_shape(nid);
+                let dtype = self.dtype(nid);
+                to_release.extend(self.graph[nid].parameters());
+                self.graph[nid] = Node::Leaf { dtype };
+            }
+            let to_remove = self.graph.release(&to_release);
+            deallocate_tensors(&to_remove, &mut self.pools);
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            let realized_nodes: Set<TensorId> =
+                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            debug_assert!(realized_nodes.is_superset(&to_eval));
+        }
+
+        Ok(())
+    }
+
+    pub fn realize_all(&mut self) -> Result<(), ZyxError> {
+        let realized_nodes: Set<TensorId> =
+            self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+
+        if self.devices.is_empty() {
+            self.initialize_devices()?;
+        }
+
+        let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
+        for (_, node) in self.graph.nodes.values() {
+            for nid in node.parameters() {
+                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+        }
+
+        let mut to_eval = Set::with_hasher(BuildHasherDefault::new()); // TODO
+        for (id, (rc, _)) in self.graph.nodes.iter() {
+            if let Some(graph_rc) = rcs.get(&id) {
+                if rc > graph_rc {
+                    to_eval.insert(id);
+                }
+            } else {
+                to_eval.insert(id);
+            }
+        }
+        for id in &to_eval {
+            rcs.entry(*id).and_modify(|rc| *rc += 1).or_insert(1);
+        }
+
         // Order them using rcs reference counts
         let mut order = Vec::new();
         let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());

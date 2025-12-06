@@ -3,8 +3,9 @@ use zyx_optim::SGD;
 
 fn main() -> Result<(), ZyxError> {
     let mut optim = SGD {
-        momentum: 0.9,
-        nesterov: true,
+        momentum: 0.2,
+        nesterov: false,
+        weight_decay: 0.0,
         ..Default::default()
     };
 
@@ -16,10 +17,11 @@ fn main() -> Result<(), ZyxError> {
     for _ in 0..100 {
         let tape = GradientTape::new();
         let y = x.matmul(&w)?;
-        let mut grads = tape.gradient(&y, [&w]);
-        w = w - grads.pop().unwrap().unwrap();
-        drop(tape);
+        let grads = tape.gradient(&y, [&w]);
+        optim.update([&mut w], grads);
         Tensor::realize([&w])?;
+        Tensor::realize(optim.bias.iter())?;
+        //Tensor::realize_all()?;
     }
 
     Ok(())
