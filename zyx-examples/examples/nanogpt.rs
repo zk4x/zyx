@@ -14,6 +14,7 @@ struct GPTConfig {
     dropout: f32,
     bias: bool,
     dtype: DType,
+    eps: f32,
 }
 
 impl Default for GPTConfig {
@@ -27,6 +28,7 @@ impl Default for GPTConfig {
             dropout: 0.0,
             bias: true, // True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
             dtype: DType::F32,
+            eps: 1e-5,
         };
     }
 }
@@ -41,8 +43,8 @@ struct MLP {
 impl MLP {
     fn init(config: &GPTConfig) -> Result<MLP, ZyxError> {
         Ok(MLP {
-            c_fc: Linear::init(config.n_embd, 4 * config.n_embd, config.bias, config.dtype)?,
-            c_proj: Linear::init(4 * config.n_embd, config.n_embd, config.bias, config.dtype)?,
+            c_fc: Linear::new(config.n_embd, 4 * config.n_embd, config.bias, config.dtype)?,
+            c_proj: Linear::new(4 * config.n_embd, config.n_embd, config.bias, config.dtype)?,
             dropout: config.dropout,
         })
     }
@@ -51,7 +53,7 @@ impl MLP {
         let mut x = self.c_fc.forward(x)?;
         x = x.gelu();
         x = self.c_proj.forward(x)?;
-        x = x.dropout(self.dropout)?;
+        x = x.dropout(self.dropout);
         return Ok(x);
     }
 }
@@ -67,15 +69,15 @@ struct Block {
 impl Block {
     fn init(config: &GPTConfig) -> Result<Block, ZyxError> {
         Ok(Block {
-            ln_1: LayerNorm::init(config.n_embd, config.bias, config.dtype)?,
-            attn: CausalSelfAttention::init(
+            ln_1: LayerNorm::new(config.n_embd, config.eps, true, config.bias, config.dtype)?,
+            attn: CausalSelfAttention::new(
                 config.n_embd,
                 config.n_head,
                 config.bias,
                 config.dropout,
                 config.dtype,
             )?,
-            ln_2: LayerNorm::init(config.n_embd, config.bias, config.dtype)?,
+            ln_2: LayerNorm::new(config.n_embd, config.eps, true, config.bias, config.dtype)?,
             mlp: MLP::init(config)?,
         })
     }
@@ -107,10 +109,10 @@ impl GPT {
             h: (0..config.n_layer)
                 .map(|_| Block::init(&config).unwrap())
                 .collect(),
-            wte: Embedding::init(config.vocab_size, config.n_embd, config.dtype)?,
-            wpe: Embedding::init(config.block_size, config.n_embd, config.dtype)?,
-            ln_f: LayerNorm::init(config.n_embd, config.bias, config.dtype)?,
-            lm_head: Linear::init(config.n_embd, config.vocab_size, config.bias, config.dtype)?,
+            wte: Embedding::new(config.vocab_size, config.n_embd, config.dtype)?,
+            wpe: Embedding::new(config.block_size, config.n_embd, config.dtype)?,
+            ln_f: LayerNorm::new(config.n_embd, config.eps, true, config.bias, config.dtype)?,
+            lm_head: Linear::new(config.n_embd, config.vocab_size, config.bias, config.dtype)?,
             config,
         };
 
@@ -177,7 +179,7 @@ impl GPT {
             let idx_cond = if idx.shape()[1] <= self.config.block_size {
                 idx.clone()
             } else {
-                idx.slice((.., -(self.config.block_size as isize)..))?
+                idx.rslice(-(self.config.block_size as i32)..)?
             };
             let mut logits = self.forward(idx_cond)?;
             logits = logits.slice((.., -1, ..))? / temperature;
