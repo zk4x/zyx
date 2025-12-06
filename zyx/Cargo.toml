@@ -18,7 +18,7 @@ maintenance = { status = "experimental" }
 [dependencies]
 # Good, well written minimal dependencies
 # libloading is used to access cuda, opencl and hsa runtimes
-libloading = { version = "0.9.0", default-features = false } # ISC
+libloading = { version = "0.9.0", default-features = false, features = ["std"] } # ISC
 # nanoserde is used to read backend config
 nanoserde = { version = "0.2.1", default-features = false, features = [
     "std",
@@ -36,11 +36,7 @@ wgpu = { version = "27.0.1", default-features = false, features = [
     "vulkan",
     "metal",
     "dx12",
-], optional = true }
-# Futures for wgpu axync mess. Some functions are async, while others using polling and it's a mess that deadlocks
-futures = { version = "0.3.31", default-features = false, features = [
-    "alloc",
-], optional = true }
+], optional = true } # MIT or Apache 2.0
 pollster = { version = "0.4.0", default-features = false, optional = true }
 
 # Pyo3 is used only for python bindings
@@ -48,7 +44,7 @@ pyo3 = { version = "0.25.1", optional = true, features = [
     "extension-module",
     "auto-initialize",
 ] } # MIT or Apache 2.0
-paste = "1.0.15"
+paste = "1.0.15" # MIT or Apache 2.0
 
 # Vulkano, will be later removed
 #vulkano = { version = "*", optional = true }
@@ -63,7 +59,7 @@ default = [
 ]
 
 # Enables wgpu backend
-wgpu = ["dep:wgpu", "dep:pollster", "dep:futures"]
+wgpu = ["dep:wgpu", "dep:pollster"]
 
 # Enables vulkan backend, dependency will be later removed
 #vulkan = ["dep:vulkano"]

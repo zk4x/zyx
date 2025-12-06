@@ -161,7 +161,7 @@ pub(super) fn initialize_device(
         "/usr/lib/libcuda.so",
         "/usr/lib64/libcuda.so",
     ];
-    let cuda = cuda_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
+    let cuda = cuda_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(cuda) = cuda else {
         if debug_dev {
             println!("libcuda.so not found");

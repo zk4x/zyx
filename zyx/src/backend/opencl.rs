@@ -182,7 +182,7 @@ pub(super) fn initialize_device(
         }
     }
 
-    let opencl = opencl_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
+    let opencl = opencl_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
         return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "OpenCL runtime not found.".into() });
     };

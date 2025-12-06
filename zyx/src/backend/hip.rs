@@ -127,7 +127,7 @@ pub(super) fn initialize_device(
         "/opt/rocm/hip/lib/libhip_hcc.so",
         "/opt/rocm/hip/lib/libhiprtc.so",
     ];
-    let hip = hip_paths.iter().find_map(|path| unsafe { Library::new(path) }.ok());
+    let hip = hip_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(hip) = hip else {
         return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "HIP runtime not found.".into() });
     };

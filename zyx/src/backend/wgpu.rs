@@ -12,8 +12,7 @@ use nanoserde::DeJson;
 use pollster::FutureExt;
 use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc};
 use wgpu::{
-    BufferDescriptor, BufferUsages, PollType, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource,
-    util::DownloadBuffer,
+    BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource,
 };
 
 #[derive(DeJson, Debug)]
@@ -87,13 +86,16 @@ pub(super) fn initialize_device(
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                trace: wgpu::Trace::Off,
-                required_features: adapter.features(),
-                required_limits: adapter.limits(),
+                required_features: wgpu::Features::SHADER_INT64
+                    | wgpu::Features::SHADER_F64
+                    | wgpu::Features::SHADER_F16,
+                required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 32, ..Default::default() },
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::Off,
             })
             .await
-            .expect("Failed at device creation.");
+            .expect("Failed at device creation");
         (adapter, device, queue)
     }
     .block_on();
@@ -177,7 +179,7 @@ impl WGPUMemoryPool {
         Ok(Event::WGPU(WGPUEvent {}))
     }
 
-    pub fn pool_to_host(
+    /*pub fn pool_to_host(
         &mut self,
         src: BufferId,
         dst: &mut [u8],
@@ -190,13 +192,81 @@ impl WGPUMemoryPool {
             DownloadBuffer::read_buffer(&self.device, &self.queue, &src.slice(..), move |result| {
                 tx.send(result).unwrap_or_else(|_| panic!("Failed to download buffer."));
             });
-            self.device.poll(PollType::Wait).unwrap();
+            self.device.poll(PollType::Wait { submission_index: None, timeout: None }).unwrap();
             let download = rx.await.unwrap().unwrap();
             dst.copy_from_slice(&download);
         }
         .block_on();
         Ok(())
+    }*/
+
+    pub fn pool_to_host(
+        &mut self,
+        src: BufferId,
+        dst: &mut [u8],
+        event_wait_list: Vec<Event>,
+    ) -> Result<(), BackendError> {
+        let _ = event_wait_list; // You can eventually use events if needed
+
+        // Get the source buffer
+        let src = &self.buffers[src];
+
+        // Create a temporary download buffer to receive data from the GPU
+        let download_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("DownloadBuffer"), // You can try removing or adjusting the label if needed
+            size: dst.len() as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, // Ensure proper usage flags
+            mapped_at_creation: false,
+        });
+
+        // Record a command to copy the data from the GPU buffer to the download buffer
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("CopyBufferEncoder"),
+        });
+
+        // Copy data from the source buffer to the download buffer
+        encoder.copy_buffer_to_buffer(
+            &src,
+            0,                // Start at the beginning of the source buffer
+            &download_buffer,
+            0,                // Start at the beginning of the destination buffer
+            dst.len() as u64, // The number of bytes to copy
+        );
+
+        // Submit the command to the GPU
+        let command_buffer = encoder.finish();
+        self.queue.submit(Some(command_buffer));
+
+        // Create a channel to notify when mapping is complete
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        // Map the download buffer asynchronously
+        download_buffer.map_async(wgpu::MapMode::Read, 0..download_buffer.size(), move |result| {
+            // Notify the main thread when the mapping is done
+            tx.send(result).unwrap();
+        });
+
+        // Poll the device to wait for the buffer mapping to complete
+        self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None })
+            .unwrap();  // Make sure polling completes
+
+        // Wait for the map operation to complete
+        let mapping_result = rx.recv().unwrap();
+        mapping_result.unwrap(); // Ensure the mapping was successful
+
+        // Now that the buffer is mapped, access the mapped data (entire buffer)
+        let mapped_range = download_buffer.get_mapped_range(0..download_buffer.size());
+
+        // Copy the data to the destination
+        dst.copy_from_slice(&mapped_range);
+
+        // Unmap the buffer after use. Make sure to drop the mapped view before unmapping.
+        drop(mapped_range); // This drops the mapped range to release the view before unmapping the buffer.
+        download_buffer.unmap();
+
+        Ok(())
     }
+
 
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let _ = events;
