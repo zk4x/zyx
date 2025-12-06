@@ -115,6 +115,10 @@ impl Optimizer {
         }
     }
 
+    pub fn is_new(&self) -> bool {
+        self.last == Optimization(0)
+    }
+
     pub fn max_iters(&self) -> u32 {
         self.max_iter
     }

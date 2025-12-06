@@ -68,6 +68,7 @@ mod runtime;
 mod scalar;
 mod shape;
 mod slab;
+mod cache;
 mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 mod autograd;

@@ -5,10 +5,11 @@ use nanoserde::SerBin;
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
     backend::{Device, ProgramId, SearchConfig},
+    cache::{Cache, get_perf},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{BOp, Graph, Node, ROp, UOp},
-    kernel::{Cache, Kernel, Op, OpId, get_perf},
+    kernel::{Kernel, Op, OpId},
     optimizer::Optimizer,
     prog_bar::ProgressBar,
     runtime::{Pool, Runtime, deallocate_tensors},
@@ -727,6 +728,7 @@ impl<'a> Kernelizer<'a> {
         /***** CACHE and OPTIMIZATION SEARCH *****/
 
         let device = &mut self.devices[dev_id];
+        let dev_id = dev_id as u32;
         let pool = &mut self.pools[mpid];
 
         // Send the kernel to kernel cache.
@@ -743,7 +745,7 @@ impl<'a> Kernelizer<'a> {
         let mut optimizer;
         if let Some(&kid) = self.cache.kernels.get(&kernel) {
             // If it has been compiled for the device
-            if let Some(&program_id) = self.cache.programs.get(&(kid, dev_info_id)) {
+            if let Some(&program_id) = self.cache.programs.get(&(kid, dev_id)) {
                 if self.debug.kmd() {
                     println!("Kernel launch from memory pool {mpid} with args: {args:?}");
                 }
@@ -765,16 +767,8 @@ impl<'a> Kernelizer<'a> {
             optimizer = Optimizer::new(&kernel, device.info());
         }
 
-        if self.debug.sched() {
-            println!(
-                "Optimizing kernel stores {stores:?}, loads {loads:?}, max iterations: {}",
-                optimizer.max_iters()
-            );
-            kernel.debug();
-        }
-
         // Check if best optimization already found
-        if optimizer.fully_optimized() {
+        if optimizer.fully_optimized() || (self.search_config.iterations == 0 && !optimizer.is_new()) {
             // done optimizing, loaded best from disk
             let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), self.debug.ir());
             debug_assert!(opt_res);
@@ -787,10 +781,18 @@ impl<'a> Kernelizer<'a> {
             if self.debug.kmd() {
                 println!("Kernel launch from memory pool {mpid} with args: {args:?}");
             }
-            self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
+            self.cache.programs.insert((kernel_id, dev_id), program_id);
             let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
             self.pools[mpid].events.insert(output_buffers, event);
             return Ok(());
+        }
+
+        if self.debug.sched() {
+            println!(
+                "Optimizing kernel stores {stores:?}, loads {loads:?}, max iterations: {}",
+                optimizer.max_iters()
+            );
+            kernel.debug();
         }
 
         // If search_iters == 0, we use default optimizations
@@ -826,9 +828,8 @@ impl<'a> Kernelizer<'a> {
                 break;
             }
 
-            //assert!(self.cache.programs.insert((kernel_id, dev_id as u32), program_id).is_none());
             if nanos < optimizer.best_time_nanos {
-                self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
+                self.cache.programs.insert((kernel_id, dev_id), program_id);
             }
             if self.debug.perf() {
                 let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
