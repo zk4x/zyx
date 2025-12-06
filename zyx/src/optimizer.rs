@@ -72,9 +72,9 @@ impl Optimizer {
                 }
             }
 
-            /*if !self.loop_unrolling_opt.apply_optimization(loop_opt_index, kernel) {
+            if !self.loop_unrolling_opt.apply_optimization(loop_opt_index, kernel) {
                 return false;
-            }*/
+            }
 
             if *kernel == temp_kernel {
                 break;
