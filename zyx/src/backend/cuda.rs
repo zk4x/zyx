@@ -8,10 +8,7 @@ use std::{
     fmt::Write,
     hash::BuildHasherDefault,
     ptr,
-    sync::{
-        mpsc::{Receiver, Sender, channel},
-    },
-    usize,
+    sync::mpsc::{Receiver, Sender, channel},
 };
 
 use libloading::Library;

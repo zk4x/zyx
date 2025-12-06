@@ -627,10 +627,10 @@ impl<'a> Kernelizer<'a> {
             let missing_loads_memory = loads
                 .iter()
                 .map(|tid| {
-                    if !self.pools[mpid].buffer_map.contains_key(tid) {
-                        self.graph.shape(*tid).iter().product::<Dim>() * self.graph.dtype(*tid).byte_size() as Dim
-                    } else {
+                    if self.pools[mpid].buffer_map.contains_key(tid) {
                         0
+                    } else {
+                        self.graph.shape(*tid).iter().product::<Dim>() * self.graph.dtype(*tid).byte_size() as Dim
                     }
                 })
                 .sum::<Dim>();
@@ -655,7 +655,6 @@ impl<'a> Kernelizer<'a> {
         // Move all loads to that pool if they are not there already.
         for &tid in &loads {
             if !self.pools[mpid].buffer_map.contains_key(&tid) {
-                #[allow(clippy::map_entry)]
                 if !self.pools[mpid].buffer_map.contains_key(&tid) {
                     // Check where the tensor is
                     let mut old_mpid = usize::MAX;
@@ -996,7 +995,7 @@ impl Runtime {
 
         let mut kernelizer = Kernelizer::new(
             realized_nodes,
-            &to_eval,
+            to_eval,
             rcs,
             &self.graph,
             &mut self.pools,
@@ -1154,8 +1153,8 @@ impl Runtime {
         self.realize(rcs, realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
+        let mut to_release = Vec::new();
         if let Some(tape) = self.graph.gradient_tape.as_ref() {
-            let mut to_release = Vec::new();
             for &nid in &to_eval {
                 if !tape.contains(&nid) {
                     let dtype = self.dtype(nid);
@@ -1168,7 +1167,6 @@ impl Runtime {
             let to_remove = self.graph.release(&to_release);
             deallocate_tensors(&to_remove, &mut self.pools);
         } else {
-            let mut to_release = Vec::new();
             for &nid in &to_eval {
                 self.graph.add_shape(nid);
                 let dtype = self.dtype(nid);

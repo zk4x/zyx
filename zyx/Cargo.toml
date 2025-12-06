@@ -18,7 +18,7 @@ maintenance = { status = "experimental" }
 [dependencies]
 # Good, well written minimal dependencies
 # libloading is used to access cuda, opencl and hsa runtimes
-libloading = { version = "0.8.6", default-features = false } # ISC
+libloading = { version = "0.9.0", default-features = false } # ISC
 # nanoserde is used to read backend config
 nanoserde = { version = "0.2.1", default-features = false, features = [
     "std",
@@ -31,7 +31,7 @@ nanoserde = { version = "0.2.1", default-features = false, features = [
 half = { version = "2.6.0", default-features = false } # MIT or Apache 2.0
 
 # Lot of dependencies from wgpu, probably just don't use that
-wgpu = { version = "25.0.0", default-features = false, features = [
+wgpu = { version = "27.0.1", default-features = false, features = [
     "wgsl",
     "vulkan",
     "metal",

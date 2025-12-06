@@ -1047,31 +1047,83 @@ impl Kernel {
     }
 
     pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
+        // This function must be called after LICM
+        // LICM guarantees only ops kept in the loop are those that depend on the index
+        // or are defines.
+
         // Assumes there is outer loop at loop_id and at least one inner loop in this outer loop
         let Op::Loop { dim: loop_dim, scope } = self.ops[loop_id] else { unreachable!() };
         debug_assert_eq!(scope, Scope::Register);
 
-        // Find first inner loop and jam it in there
         let inner_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::Loop { .. })).unwrap();
-        let end_inner_loop_id = self.get_end_loop_id(inner_loop_id);
-        // Get the body of the inner loop
-        let mut tail = self.ops.split_off(end_inner_loop_id);
-        let mut body = self.ops.split_off(inner_loop_id + 1);
-        // Jam the outer loop in the inner loop
-        self.ops.push(Op::Loop { dim: loop_dim, scope: Scope::Register });
-        increment(&mut body, 1, inner_loop_id + 1..);
-        self.ops.extend(body);
-        self.ops.push(Op::EndLoop);
-        increment(&mut tail, 2, end_inner_loop_id..);
-        self.ops.extend(tail);
 
         // Unroll everything else in the outer loop, except for the tail (inner loop + ops after it, till the end of the kernel)
+        {
+            let tail = self.ops.split_off(inner_loop_id);
+            let pre_body = self.ops.split_off(loop_id + 1);
+
+            self.ops.pop(); // remove the loop that should be unrolled
+
+            // First iteration, set first value to idx 0, reg define len is multiplied
+            self.ops.push(Op::Const(Constant::idx(0)));
+            self.ops.extend(pre_body.clone());
+            for op in &mut self.ops[loop_id..inner_loop_id] {
+                if let Op::Define { scope, len, .. } = op {
+                    debug_assert_eq!(*scope, Scope::Register);
+                    *len *= loop_dim;
+                }
+            }
+
+            // This function must be called after LICM
+            // LICM guarantees only ops kept in the loop are those that depend on the index
+            // or are defines.
+            // We have to make a map of all ops that are not loop invariant.
+            // All of these have to be moved in the inner jammed loop.
+
+            // Remove defines as they need to be declared only once
+            /*pre_body.= pre_body
+
+            // Unroll remaining iterations
+            for idx in 1..loop_dim {
+                let mut body = pre_body.clone();
+                // First index as constant
+                let idx_const = self.ops.len();
+                self.ops.push(Op::Const(Constant::idx(idx as u64)));
+
+                // Increment body
+                increment(&mut body, n as isize - 1, loop_id + 1..end_loop_id);
+                n += body.len() + 1;
+
+                // Remap body to use constant
+                let mut map = Map::default();
+                map.insert(loop_id, idx_const);
+                remap(&mut body, &map);
+                self.ops.extend(body);
+            }*/
+        }
 
         // What we need to do is to repeat all ops loop_dim times, but define needs to be
         // instead multiplied (it's len) by loop_dim.
         // Existing index that is used to index define both for loads and stores needs to be incremented:
         //  - outside of the inner loop it needs to be incremented by constant
         //  - in the inner loop it needs to be incremented by the jammed loop index
+
+        // Find first inner loop and jam it in there
+        let (inner_loop_id, end_inner_loop_id) = {
+            let inner_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::Loop { .. })).unwrap();
+            let end_inner_loop_id = self.get_end_loop_id(inner_loop_id);
+            // Get the body of the inner loop
+            let mut tail = self.ops.split_off(end_inner_loop_id);
+            let mut body = self.ops.split_off(inner_loop_id + 1);
+            // Jam the outer loop in the inner loop
+            self.ops.push(Op::Loop { dim: loop_dim, scope: Scope::Register });
+            increment(&mut body, 1, inner_loop_id + 1..);
+            self.ops.extend(body);
+            self.ops.push(Op::EndLoop);
+            increment(&mut tail, 2, end_inner_loop_id..);
+            self.ops.extend(tail);
+            (inner_loop_id + 1, end_inner_loop_id + 2)
+        };
 
         todo!()
     }

@@ -61,8 +61,8 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
-            kernel.debug();
-            panic!();
+            //kernel.debug();
+            //panic!();
 
             let mut op_id = kernel.ops.len();
             while op_id > 0 {
@@ -72,9 +72,9 @@ impl Optimizer {
                 }
             }
 
-            if !self.loop_unrolling_opt.apply_optimization(loop_opt_index, kernel) {
+            /*if !self.loop_unrolling_opt.apply_optimization(loop_opt_index, kernel) {
                 return false;
-            }
+            }*/
 
             if *kernel == temp_kernel {
                 break;

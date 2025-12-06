@@ -2654,7 +2654,6 @@ impl Tensor {
     }
 
     /// Returns upper triangular part of the input tensor, other elements are set to zero
-    #[must_use]
     pub fn triu(&self, diagonal: isize) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal, device=self.device, dtype=dtypes.bool).where(self, self.zeros_like())
         let [r, c] = self.rdims::<2>()?;
@@ -3272,6 +3271,9 @@ impl Tensor {
     }
 
     /// Load safetensors module from path
+    ///
+    /// # Errors
+    /// Errors if path does not exist or IO failed for other reasons.
     pub fn load_safetensors(path: impl AsRef<Path>) -> Result<HashMap<String, Tensor>, ZyxError> {
         use std::io::Read;
         let mut f = std::fs::File::open(&path)?;

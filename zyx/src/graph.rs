@@ -153,7 +153,7 @@ impl Graph {
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
-        for _ in 0..100000 {
+        for _ in 0..100_000 {
             match self.nodes[tensor_id].1 {
                 Node::Const { value } => return value.dtype(),
                 Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
