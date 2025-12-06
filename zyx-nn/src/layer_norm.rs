@@ -32,7 +32,7 @@ impl LayerNorm {
     ///
     /// ```rust
     /// # use zyx::{DType, Tensor};
-    /// # use your_crate::LayerNorm;
+    /// # use zyx_nn::LayerNorm;
     /// let layer_norm = LayerNorm::new([10, 20], 1e-5, true, true, DType::F32).unwrap();
     /// ```
     pub fn new(
@@ -83,9 +83,9 @@ impl LayerNorm {
     ///
     /// ```rust
     /// # use zyx::{DType, Tensor};
-    /// # use your_crate::LayerNorm;
+    /// # use zyx_nn::LayerNorm;
     /// let layer_norm = LayerNorm::new([10, 20], 1e-5, true, true, DType::F32).unwrap();
-    /// let input = Tensor::randn(&[2, 10, 20], DType::F32);
+    /// let input = Tensor::randn([2, 10, 20], DType::F32).unwrap();
     /// let output = layer_norm.forward(input).unwrap();
     /// ```
     pub fn forward(&self, input: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
@@ -110,7 +110,7 @@ impl LayerNorm {
             .collect();
 
         // Compute mean and variance along those axes (keep dims for broadcasting)
-        let mean = input.mean_axes_keepdim(axes.clone())?;
+        let mean = input.mean_keepdim(axes.clone())?;
         let variance = input.var_axes_keepdim(axes)?;
 
         // Normalize: (x - mean) / sqrt(var + eps)

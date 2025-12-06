@@ -19,7 +19,7 @@ use zyx_derive::Module;
 /// # Example
 /// ```rust
 /// use zyx::{DType, Tensor};
-/// use my_crate::LSTMCell;
+/// use zyx_nn::LSTMCell;
 ///
 /// let input_size = 10;
 /// let hidden_size = 20;
@@ -96,7 +96,7 @@ impl LSTMCell {
     /// - `c_next`: Next cell state `(batch_size, hidden_size)`.
     ///
     /// # Example
-    /// ```rust
+    /// ```rust ignore
     /// let (h_next, c_next) = lstm.forward(&x, &h, &c).unwrap();
     /// ```
     pub fn forward(

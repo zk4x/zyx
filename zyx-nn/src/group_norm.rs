@@ -29,7 +29,7 @@ impl GroupNorm {
     /// A `GroupNorm` module with optional learnable parameters.
     ///
     /// # Example
-    /// ```
+    /// ```rust ignore
     /// let gn = GroupNorm::new(32, 64, true, DType::F32)?;
     /// let out = gn.forward(x)?;
     /// ```
@@ -88,7 +88,7 @@ impl GroupNorm {
     /// Returns an error if the input shape is invalid or incompatible with `num_groups`.
     ///
     /// # Example
-    /// ```
+    /// ```rust ignore
     /// let gn = GroupNorm::new(8, 64, true, DType::F32)?;
     /// let out = gn.forward(x)?;
     /// ```
@@ -127,7 +127,7 @@ impl GroupNorm {
         let axes = 2..(new_shape.len() as i32);
 
         let eps = Tensor::from(self.eps).cast(x.dtype());
-        let mean = x.mean_axes_keepdim(axes.clone())?;
+        let mean = x.mean_keepdim(axes.clone())?;
         let var = x.var_axes_keepdim(axes.clone())?;
 
         let x = (x - mean) / (var + eps).sqrt();

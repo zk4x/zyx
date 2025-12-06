@@ -27,8 +27,8 @@ nanoserde = { version = "0.2.1", default-features = false, features = [
 ] }
 
 # To be removed
-# Support for f16 and bf16 dtypes
-half = { version = "2.6.0", default-features = false } # MIT or Apache 2.0
+# Support for f16 and bf16 dtypes, stick to version 1.8.3, which does not have absurd number of dependencies
+half = { version = "1.8.3", default-features = false, features = ["std"] } # MIT or Apache 2.0
 
 # Lot of dependencies from wgpu, probably just don't use that
 wgpu = { version = "27.0.1", default-features = false, features = [
@@ -37,7 +37,7 @@ wgpu = { version = "27.0.1", default-features = false, features = [
     "metal",
     "dx12",
 ], optional = true } # MIT or Apache 2.0
-pollster = { version = "0.4.0", default-features = false, optional = true }
+pollster = { version = "0.4.0", default-features = false, optional = true } # MIT or Apache 2.0
 
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.25.1", optional = true, features = [
@@ -46,7 +46,7 @@ pyo3 = { version = "0.25.1", optional = true, features = [
 ] } # MIT or Apache 2.0
 paste = "1.0.15" # MIT or Apache 2.0
 
-# Vulkano, will be later removed
+# Vulkano, will be later removed, once we sort out direct vulkan bindings
 #vulkano = { version = "*", optional = true }
 
 [lib]

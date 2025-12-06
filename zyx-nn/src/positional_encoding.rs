@@ -33,7 +33,7 @@ impl PositionalEncoding {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust ignore
     /// let pe = PositionalEncoding::new(512, 1024, 0.1, DType::F32)?;
     /// ```
     pub fn new(

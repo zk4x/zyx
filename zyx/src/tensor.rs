@@ -613,12 +613,8 @@ impl Tensor {
         let cdf = &cw / cw.slice((.., -1))?.unsqueeze(1)?;
         let cdf_sh = cdf.shape();
         let unif_samples = Tensor::rand([num_samples, cdf_sh[0], 1], DType::F32)?;
-        let indices = unif_samples
-            .expand([num_samples, cdf_sh[0], cdf_sh[1]])?
-            .cmplt(cdf)?
-            .not()
-            .sum_axes([2])?
-            .permute([1, 0])?;
+        let indices =
+            unif_samples.expand([num_samples, cdf_sh[0], cdf_sh[1]])?.cmplt(cdf)?.not().sum([2])?.permute([1, 0])?;
         Ok((if rank == 1 { indices.squeeze([0]) } else { indices }).cast(DType::I32))
     }
 
@@ -1618,8 +1614,8 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn ln_softmax(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        let m = self - self.max_axes_keepdim(axes.clone())?;
-        Ok(&m - m.exp().sum_axes_keepdim(axes)?.ln())
+        let m = self - self.max_keepdim(axes.clone())?;
+        Ok(&m - m.exp().sum_keepdim(axes)?.ln())
     }
 
     /// Comulative sum along axis.
@@ -1639,7 +1635,7 @@ impl Tensor {
         //println!("{x:?} padded");
         x = x.pool(k, 1, 1)?;
         //println!("{x:?} pooled");
-        x = x.sum_axes([-1])?;
+        x = x.sum([-1])?;
         //println!("{x:?} summed");
         x = x.transpose(axis, -1)?;
         //println!("{x:?} transposed");
@@ -1660,7 +1656,7 @@ impl Tensor {
         let mut x = self.transpose(axis, -1)?;
         x = x.pad_zeros([(pl_sz, 0)])?;
         x = x.pool(k, 1, 1)?;
-        x = x.max_axes([-1])?;
+        x = x.max([-1])?;
         x = x.transpose(axis, -1)?;
         Ok(x)
     }
@@ -1679,7 +1675,7 @@ impl Tensor {
         let mut x = self.transpose(axis, -1)?;
         x = x.pad_zeros([(pl_sz, 0)])?;
         x = x.pool(k, 1, 1)?;
-        x = x.log2().sum_axes([-1])?.exp2();
+        x = x.log2().sum([-1])?.exp2();
         x = x.transpose(axis, -1)?;
         Ok(x)
     }
@@ -1710,8 +1706,8 @@ impl Tensor {
     /// Returns error if self cannot be reduced by axes.
     pub fn softmax(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        let e = (self - self.max_axes_keepdim(axes.clone())?).exp();
-        Ok(&e / e.sum_axes_keepdim(axes)?)
+        let e = (self - self.max_keepdim(axes.clone())?).exp();
+        Ok(&e / e.sum_keepdim(axes)?)
     }
 
     // index
@@ -1955,7 +1951,7 @@ impl Tensor {
             .collect::<Vec<usize>>();
         //std::println!("{x_shape:?}");
         //std::println!("{y_shape:?}");
-        (self.reshape(x_shape)? * y.reshape(y_shape)?).sum_axes([-1])?.reshape(
+        (self.reshape(x_shape)? * y.reshape(y_shape)?).sum([-1])?.reshape(
             xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<usize>>(),
         )
     }
@@ -1985,7 +1981,7 @@ impl Tensor {
             .collect::<Vec<usize>>();
         //std::println!("{x_shape:?}");
         //std::println!("{y_shape:?}");
-        (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype)).sum_axes([-1])?.reshape(
+        (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype)).sum([-1])?.reshape(
             xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<usize>>(),
         )
     }
@@ -2109,8 +2105,8 @@ impl Tensor {
         axes: impl IntoIterator<Item = Axis>,
     ) -> Result<Tensor, ZyxError> {
         let axes: Vec<_> = axes.into_iter().collect();
-        let m = self - self.max_axes_keepdim(axes.clone())?;
-        let neg_log2_softmax = m.exp().sum_axes_keepdim(axes)?.ln() - m;
+        let m = self - self.max_keepdim(axes.clone())?;
+        let neg_log2_softmax = m.exp().sum_keepdim(axes)?.ln() - m;
         Ok(neg_log2_softmax * target)
     }
 
@@ -2193,7 +2189,7 @@ impl Tensor {
     pub fn one_hot(&self, num_classes: Dim) -> Tensor {
         let mut num_classes = num_classes;
         if num_classes == 0 {
-            num_classes = (self.max() + 1).item::<i64>() as usize;
+            num_classes = (self.max_all() + 1).item::<i64>() as usize;
         }
         self.one_hot_along_dim(num_classes, -1).where_(1, 0).unwrap()
     }
@@ -2286,7 +2282,7 @@ impl Tensor {
     pub fn mse_loss(&self, target: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self, target)?;
         let x = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
-        Ok((x.clone() * x).mean())
+        Ok((x.clone() * x).mean_all())
     }
 
     /// Calculates the cosine similarity between this tensor and another.
@@ -2507,7 +2503,7 @@ impl Tensor {
     fn argmax_impl(&self, axis: Option<Axis>, keepdim: bool) -> Result<Tensor, ZyxError> {
         if let Some(axis) = axis {
             // Find the maximum values along the specified axis
-            let max_vals = self.max_axes_keepdim([axis]).unwrap();
+            let max_vals = self.max_keepdim([axis]).unwrap();
 
             // Create a mask where each element is `true` if it equals the max value
             let mask = self.equal(max_vals)?;
@@ -2524,9 +2520,9 @@ impl Tensor {
             let idx = mask * reshaped_range;
             let res = Tensor::from(shape[uaxis] as i64)
                 - if keepdim {
-                    idx.max_axes_keepdim([axis])?
+                    idx.max_keepdim([axis])?
                 } else {
-                    idx.max_axes([axis])?
+                    idx.max([axis])?
                 };
             Ok(res.cast(DType::I32))
         } else {
@@ -2947,7 +2943,7 @@ impl Tensor {
             axes.push(-1 - Axis::try_from(i).unwrap());
         }
         let shape: Vec<Dim> = [bs, cout].iter().chain(oyx).copied().collect();
-        let mut ret = (x * weight).sum_axes_keepdim(axes).unwrap().reshape(shape).unwrap();
+        let mut ret = (x * weight).sum_keepdim(axes).unwrap().reshape(shape).unwrap();
 
         if let Some(bias) = bias {
             let shape: Vec<usize> =

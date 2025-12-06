@@ -72,38 +72,38 @@ impl Tensor {
             }
             ReduceOp::Min => {
                 if let Some(dtype) = dtype {
-                    self.inverse().max_axes_dtype(axes, dtype)?.inverse()
+                    self.inverse().max_dtype(axes, dtype)?.inverse()
                 } else {
-                    self.inverse().max_axes(axes)?.inverse()
+                    self.inverse().max(axes)?.inverse()
                 }
             }
             ReduceOp::Prod => {
                 if let Some(dtype) = dtype {
-                    self.log2().sum_axes_dtype(axes, dtype)?.exp2()
+                    self.log2().sum_dtype(axes, dtype)?.exp2()
                 } else {
-                    self.log2().sum_axes(axes)?.exp2()
+                    self.log2().sum(axes)?.exp2()
                 }
             }
             ReduceOp::Mean => {
                 let n: i64 = axes_vec.iter().map(|&a| shape[a]).product::<Dim>().try_into().unwrap();
                 let x = if let Some(dtype) = dtype {
-                    self.sum_axes_dtype(axes, dtype)?
+                    self.sum_dtype(axes, dtype)?
                 } else {
-                    self.sum_axes(axes)?
+                    self.sum(axes)?
                 };
                 x / Tensor::from(n).cast(x_dtype)
             }
             ReduceOp::Var => {
                 if let Some(dtype) = dtype {
-                    let x = self - self.mean_axes_keepdim_dtype(axes.clone(), dtype)?;
+                    let x = self - self.mean_keepdim_dtype(axes.clone(), dtype)?;
                     let d = Axis::try_from(axes_vec.iter().map(|&a| shape[a]).product::<usize>()).unwrap()
                         - Axis::try_from(correction).unwrap();
-                    (x.clone() * x).sum_axes_dtype(axes, dtype)? / Tensor::from(d).cast(x_dtype)
+                    (x.clone() * x).sum_dtype(axes, dtype)? / Tensor::from(d).cast(x_dtype)
                 } else {
-                    let x = self - self.mean_axes_keepdim(axes.clone())?;
+                    let x = self - self.mean_keepdim(axes.clone())?;
                     let d = Axis::try_from(axes_vec.iter().map(|&a| shape[a]).product::<usize>()).unwrap()
                         - Axis::try_from(correction).unwrap();
-                    (x.clone() * x).sum_axes(axes)? / Tensor::from(d).cast(x_dtype)
+                    (x.clone() * x).sum(axes)? / Tensor::from(d).cast(x_dtype)
                 }
             }
             ReduceOp::Std => {
@@ -141,11 +141,11 @@ macro_rules! define_reduce_op {
                     "```\n",
                     "use zyx::Tensor;\n",
                     "let t = Tensor::from([1.0, 2.0, 3.0]);\n",
-                    "let result = t.", stringify!($name), "();\n",
+                    "let result = t.", stringify!($name), "_all();\n",
                     "```\n",
                 )]
                 #[must_use]
-                pub fn $name(&self) -> Tensor {
+                pub fn [<$name _all>](&self) -> Tensor {
                     self.reduce_impl::<false>($op_variant, [], None, 1).unwrap()
                 }
 
@@ -156,11 +156,11 @@ macro_rules! define_reduce_op {
                     "```\n",
                     "use zyx::Tensor;\n",
                     "let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);\n",
-                    "let result = t.", stringify!($name), "_keepdim();\n",
+                    "let result = t.", stringify!($name), "_all_keepdim();\n",
                     "```\n",
                 )]
                 #[must_use]
-                pub fn [<$name _keepdim>](&self) -> Tensor {
+                pub fn [<$name _all_keepdim>](&self) -> Tensor {
                     self.reduce_impl::<true>($op_variant, [], None, 1).unwrap()
                 }
 
@@ -178,7 +178,7 @@ macro_rules! define_reduce_op {
                     "# Errors\n",
                     "When axes are out of range\n"
                 )]
-                pub fn [<$name _axes>](&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
+                pub fn $name(&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<false>($op_variant, axes, None, 1)
                 }
 
@@ -197,7 +197,7 @@ macro_rules! define_reduce_op {
                     "# Errors\n",
                     "When axes are out of range\n"
                 )]
-                pub fn [<$name _axes_keepdim>](&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
+                pub fn [<$name _keepdim>](&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<true>($op_variant, axes, None, 1)
                 }
 
@@ -209,11 +209,11 @@ macro_rules! define_reduce_op {
                     "```\n",
                     "use zyx::{Tensor, DType};\n",
                     "let t = Tensor::from([1.0, 2.0, 3.0]);\n",
-                    "let result = t.", stringify!($name), "_dtype(DType::F64);\n",
+                    "let result = t.", stringify!($name), "_all_dtype(DType::F64);\n",
                     "```\n",
                 )]
                 #[must_use]
-                pub fn [<$name _dtype>](&self, dtype: DType) -> Tensor {
+                pub fn [<$name _all_dtype>](&self, dtype: DType) -> Tensor {
                     self.reduce_impl::<false>($op_variant, [], Some(dtype), 1).unwrap()
                 }
 
@@ -224,7 +224,7 @@ macro_rules! define_reduce_op {
                     "* `dtype` — Desired output data type.\n",
                 )]
                 #[must_use]
-                pub fn [<$name _keepdim_dtype>](&self, dtype: DType) -> Tensor {
+                pub fn [<$name _all_keepdim_dtype>](&self, dtype: DType) -> Tensor {
                     self.reduce_impl::<true>($op_variant, [], Some(dtype), 1).unwrap()
                 }
 
@@ -237,7 +237,7 @@ macro_rules! define_reduce_op {
                     "# Errors\n",
                     "When axes are out of range\n"
                 )]
-                pub fn [<$name _axes_dtype>](
+                pub fn [<$name _dtype>](
                     &self,
                     axes: impl IntoIterator<Item = Axis>,
                     dtype: DType
@@ -255,7 +255,7 @@ macro_rules! define_reduce_op {
                     "# Errors\n",
                     "When axes are out of range\n"
                 )]
-                pub fn [<$name _axes_keepdim_dtype>](
+                pub fn [<$name _keepdim_dtype>](
                     &self,
                     axes: impl IntoIterator<Item = Axis>,
                     dtype: DType

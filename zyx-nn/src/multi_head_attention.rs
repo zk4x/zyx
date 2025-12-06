@@ -227,7 +227,7 @@ impl MultiheadAttention {
         // Average attention weights across heads if requested
         let attn_weights = if need_weights {
             Some(if average_attn_weights {
-                attn_weights.mean_axes([1])? // [B, T_q, T_kv]
+                attn_weights.mean([1])? // [B, T_q, T_kv]
             } else {
                 attn_weights // [B, H, T_q, T_kv]
             })

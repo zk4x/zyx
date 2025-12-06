@@ -229,7 +229,7 @@ fn grad_linear_2() -> Result<(), ZyxError> {
     //let x = x.sigmoid();
     //let x = x.mse_loss(y)?;
     let x = x - y;
-    let x = (x.clone() * x).sum();
+    let x = (x.clone() * x).sum_all();
     //println!("{x:?}");
 
     let mut grads = tape.gradient(&x, [&w1, &b1, &w2, &b2]);
