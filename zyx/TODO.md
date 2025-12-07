@@ -4,12 +4,11 @@
     - [ ] tensor cores
     - [ ] fix load calculation, probably using Atomic usize
     - [x] fix event memory leaks, all events must be properly destroyed
-    - [ ] channel for context, because cuda context is thread local
-    - [ ] rewrite PTX compiler to have proper register manager that handles constants and everything
+    - [x] channel for context, because cuda context is thread local
+    - [x] rewrite PTX compiler to have proper register manager that handles constants and everything
   - [ ] hip
   - [x] opencl
     - [ ] fix load calculation, probably using Atomic usize
-    - [ ] channel for context is required by some (e.g. cuda), but not others
   - [ ] vulkan
     - [ ] initialization
     - [ ] memory management
@@ -49,7 +48,7 @@
   - [ ] improve permute node (should never store)
   - [ ] improve pad node (should almost never store)
   - [ ] pad could also work even with kernels that store stuff, just pad the store view
-  - [ ] binary op synchronization (with dependent loads and stores)
+  - [ ] binary op improved synchronization (with dependent loads and stores)
   - [x] expand reduce bug
   - [x] fix is expandable conditions
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
@@ -58,7 +57,7 @@
   - [x] scheduling to multiple devices
   - [x] fix bug when running phi3, panic on min_kernel function
   - [ ] automatic sharding across devices
-  - [ ] automatic dropping of unneeded tensors
+  - [x] automatic dropping of unneeded tensors
 - [ ] kernel
   - [x] default optimizations
   - [x] indexing for padded views
@@ -66,19 +65,18 @@
   - [x] common subexpression elimination
   - [x] dead store elimination
   - [x] kernel flops, memory reads, memory writes
-  - [ ] global to inner loop splitting
-  - [ ] inner loop splitting
-  - [ ] loop reordering
-  - [ ] loop unrolling
-    - [ ] in optimizer
+  - [x] global to inner loop splitting
+  - [x] inner loop splitting
+  - [ ] unroll and jam
+  - [x] loop unrolling
+    - [x] in optimizer
     - [x] in kernel
-  - [ ] loop invariant code motion
+  - [x] loop invariant code motion
   - [ ] vectorization, vector dtypes
   - [ ] tensor cores/tiling
   - [ ] merge all mul + add into mad instructions
   - [ ] local tiling of all variables
   - [ ] streaming dual reduce ops (e.g. streaming softmax)
-  - [ ] flash attention
   - [x] optimizer with search
 - [ ] testing
   - [ ] fuzzy tester
@@ -121,7 +119,7 @@
   - [ ] ceil
   - [ ] round
   - [ ] nll loss
-  - [ ] bce loss
+  - [x] bce loss
   - [ ] huber loss
   - [ ] smooth l1 loss
   - [ ] ctc loss
@@ -141,5 +139,8 @@
   - [x] remove rand
 
 - examples
-  - [ ] get phi working
-    - [ ] fix tensor memory leak
+  - [x] tiny net
+  - [ ] tiny net with sigmoid activation
+  - [ ] mnist
+  - [ ] phi LLM
+  - [ ] RNN

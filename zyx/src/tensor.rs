@@ -2290,6 +2290,16 @@ impl Tensor {
         Ok((x.clone() * x).mean_all())
     }
 
+    /// BCE Loss
+    #[track_caller]
+    pub fn bce_loss(&self, target: impl Into<Tensor>, eps: f32) -> Result<Tensor, ZyxError> {
+        let target: Tensor = target.into();
+        let x: Tensor = self.clamp(eps, 1.0 - eps)?;
+        let temp: Tensor = 1 - &x;
+        let loss: Tensor = (1 - &target) * temp.ln() - (target * x.ln());
+        Ok(loss.mean_all())
+    }
+
     /// Calculates the cosine similarity between this tensor and another.
     ///
     /// # Arguments
