@@ -797,6 +797,16 @@ impl Kernel {
         }
     }
 
+    pub fn loop_invariant_code_motion_all(&mut self) {
+        let mut op_id = self.ops.len();
+        while op_id > 0 {
+            op_id -= 1;
+            if matches!(self.ops[op_id], Op::Loop { .. }) {
+                self.loop_invariant_code_motion(op_id);
+            }
+        }
+    }
+
     pub fn loop_invariant_code_motion(&mut self, loop_id: OpId) {
         //self.debug();
         // TODO Reorder commutative
@@ -887,7 +897,7 @@ impl Kernel {
         self.ops.extend(tail);
     }
 
-    /*pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
+    pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
         // This function must be called after LICM
         // LICM guarantees only ops kept in the loop are those that depend on the index
         // or are defines.
@@ -967,7 +977,7 @@ impl Kernel {
         };
 
         todo!()
-    }*/
+    }
 
     // Loop tiling/vectorization. Tiles all loads.
     /*pub fn loop_tile(&mut self, loop_id: OpId) {
