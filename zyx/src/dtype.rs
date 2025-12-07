@@ -1,7 +1,9 @@
 //! `DType` and constant
 
 use crate::{
-    graph::{BOp, UOp}, kernel::IDX_T, Scalar, ZyxError
+    Scalar, ZyxError,
+    graph::{BOp, UOp},
+    kernel::IDX_T,
 };
 use half::{bf16, f16};
 use nanoserde::{DeBin, SerBin};
@@ -442,14 +444,12 @@ impl Constant {
                     unreachable!()
                 }
                 UOp::BitNot => todo!(),
-                UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
             }
         }
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
             match uop {
                 UOp::BitNot => todo!(),
-                UOp::ReLU => x.relu(),
                 UOp::Neg => x.neg(),
                 UOp::Exp2 => x.exp2(),
                 UOp::Log2 => x.log2(),

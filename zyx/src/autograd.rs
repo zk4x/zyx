@@ -246,40 +246,6 @@ impl Runtime {
                             self.release(xpowy_log2_one_elog2);
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
-                        /*if req_grad.contains(&x) {
-                            // x_grad = grad * y * x^(y-1)
-                            let ones = self.ones(self.shape(y).into(), self.dtype(y));
-                            let y_1 = self.binary(y, ones, BOp::Sub);
-                            self.release(ones);
-                            // Cast x to float to ensure pow works correctly
-                            let x_f = self.cast(x, crate::DType::F32);
-                            let pow_y_1 = self.binary(x_f, y_1, BOp::Pow);
-                            self.release(x_f);
-                            self.release(y_1);
-                            let y_mul = self.binary(y, pow_y_1, BOp::Mul);
-                            self.release(pow_y_1);
-                            let x_grad = self.binary(grad, y_mul, BOp::Mul);
-                            self.release(y_mul);
-                            insert_or_add_grad(self, &mut grads, x, x_grad);
-                        }
-                        if req_grad.contains(&y) {
-                            let x_f = self.cast(x, crate::DType::F32);
-                            let pow_xy = self.binary(x_f, y, BOp::Pow);
-                            self.release(x_f);
-                            let log2_x = self.unary(x_f, UOp::Log2);
-                            self.release(pow_xy);
-                            let one_elog2 = self.constant(std::f32::consts::LN_2);
-                            let one_elog2_ex = self.expand(x, self.shape(x).into()).unwrap();
-                            self.release(one_elog2);
-                            let ln_x = self.binary(log2_x, one_elog2_ex, BOp::Mul);
-                            self.release(log2_x);
-                            self.release(one_elog2_ex);
-                            let xpowy_log = self.binary(pow_xy, ln_x, BOp::Mul);
-                            self.release(pow_xy);
-                            self.release(ln_x);
-                            let y_grad = self.binary(grad, xpowy_log, BOp::Mul);
-                            insert_or_add_grad(self, &mut grads, y, y_grad);
-                        }*/
                     }
                     BOp::Maximum => {
                         //# Create masks for where x > y, x < y, and x == y
@@ -339,16 +305,6 @@ impl Runtime {
                         self.release(x_2_inv);
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
-                    UOp::ReLU => {
-                        let zeros = self.zeros(self.shape(x).into(), self.dtype(x));
-                        let zl = self.binary(zeros, x, BOp::Cmplt);
-                        self.release(zeros);
-                        let zl_cast = self.cast(zl, self.dtype(x));
-                        self.release(zl);
-                        let x_grad = self.binary(zl_cast, grad, BOp::Mul);
-                        self.release(zl_cast);
-                        insert_or_add_grad(self, &mut grads, x, x_grad);
-                    }
                     UOp::Exp2 => {
                         let dtype = self.dtype(x);
                         let c = std::f64::consts::E.log2();
@@ -405,15 +361,7 @@ impl Runtime {
                         let grad = self.expand(temp, self.shape(x).into()).unwrap();
                         self.release(temp);
                         insert_or_add_grad(self, &mut grads, x, grad);
-                    } /*UOp::Tanh => {
-                          // 1 - tanh^2(x)
-                          let tanh_x_2 = self.mul(nid, nid);
-                          let ones = self.ones(self.shape(x).into(), self.dtype(x));
-                          let grad = self.sub(ones, tanh_x_2);
-                          self.release(ones).unwrap();
-                          self.release(tanh_x_2).unwrap();
-                          insert_or_add_grad(self, &mut grads, x, grad);
-                      }*/
+                    }
                 },
                 Node::Reshape { x, .. } => {
                     let grad = self.reshape(grad, self.shape(x).into());

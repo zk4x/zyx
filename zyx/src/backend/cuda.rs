@@ -1245,7 +1245,6 @@ impl Compiler {
 
     fn uop_to_ptx(&self, uop: UOp) -> &'static str {
         match uop {
-            UOp::ReLU => todo!(),
             UOp::Neg => "neg",
             UOp::BitNot => "not",
             UOp::Exp2 => "ex2.approx",

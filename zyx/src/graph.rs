@@ -381,7 +381,6 @@ pub enum BOp {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
 pub enum UOp {
-    ReLU,
     Neg,
     BitNot,
     Exp2,

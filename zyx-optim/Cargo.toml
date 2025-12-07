@@ -17,3 +17,4 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 zyx = { version = "*", path = "../zyx" }
+zyx-derive = { version = "*", path = "../zyx-derive" }

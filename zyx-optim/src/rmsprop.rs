@@ -1,7 +1,9 @@
 // In your code base or inside zyx_optim crate
 use zyx::Tensor;
+use zyx_derive::Module;
 
 /// RMSProp optimizer for adaptive learning rate training.
+#[derive(Module)]
 pub struct RMSprop {
     /// Step size multiplier
     pub learning_rate: f32,

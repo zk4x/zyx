@@ -20,30 +20,18 @@ maintenance = { status = "experimental" }
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.9.0", default-features = false, features = ["std"] } # ISC
 # nanoserde is used to read backend config
-nanoserde = { version = "0.2.1", default-features = false, features = [
-    "std",
-    "binary",
-    "json",
-] }
+nanoserde = { version = "0.2.1", default-features = false, features = ["std", "binary", "json"] }
 
 # To be removed
 # Support for f16 and bf16 dtypes, stick to version 1.8.3, which does not have absurd number of dependencies
 half = { version = "1.8.3", default-features = false, features = ["std"] } # MIT or Apache 2.0
 
 # Lot of dependencies from wgpu, probably just don't use that
-wgpu = { version = "27.0.1", default-features = false, features = [
-    "wgsl",
-    "vulkan",
-    "metal",
-    "dx12",
-], optional = true } # MIT or Apache 2.0
+wgpu = { version = "27.0.1", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12"], optional = true } # MIT or Apache 2.0
 pollster = { version = "0.4.0", default-features = false, optional = true } # MIT or Apache 2.0
 
 # Pyo3 is used only for python bindings
-pyo3 = { version = "0.25.1", optional = true, features = [
-    "extension-module",
-    "auto-initialize",
-] } # MIT or Apache 2.0
+pyo3 = { version = "0.25.1", optional = true, features = ["extension-module", "auto-initialize"] } # MIT or Apache 2.0
 paste = "1.0.15" # MIT or Apache 2.0
 
 # Vulkano, will be later removed, once we sort out direct vulkan bindings

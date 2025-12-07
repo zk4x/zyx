@@ -844,7 +844,7 @@ impl<'a> Kernelizer<'a> {
             let mut progress_bar = if self.debug.perf() {
                 let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 Some((
-                    ProgressBar::new(self.search_config.iterations as u64),
+                    ProgressBar::new(self.search_config.iterations.min(optimizer.max_iters() as usize) as u64),
                     flop,
                     mem_read,
                     mem_write,
@@ -936,7 +936,7 @@ impl<'a> Kernelizer<'a> {
 }
 
 impl Runtime {
-    fn realize(
+    fn realize_with_order(
         &mut self,
         rcs: Map<TensorId, u32>,
         realized_nodes: Set<TensorId>,
@@ -1151,7 +1151,7 @@ impl Runtime {
             );
         }
 
-        self.realize(rcs, realized_nodes, &order, &to_eval)?;
+        self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
@@ -1247,7 +1247,7 @@ impl Runtime {
             );
         }
 
-        self.realize(rcs, realized_nodes, &order, &to_eval)?;
+        self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();

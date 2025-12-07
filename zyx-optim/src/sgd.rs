@@ -1,6 +1,8 @@
 use zyx::Tensor;
+use zyx_derive::Module;
 
 /// # Stochastic gradient descent optimizer
+#[derive(Module)]
 pub struct SGD {
     /// learning rate (default: 0.001)
     pub learning_rate: f32,

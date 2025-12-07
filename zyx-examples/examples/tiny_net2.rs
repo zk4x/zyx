@@ -6,13 +6,12 @@ use zyx_optim::SGD;
 struct TinyNet {
     l0: Linear,
     l1: Linear,
-    lr: f32,
 }
 
 impl TinyNet {
     fn forward(&self, x: &Tensor) -> Tensor {
         let x = self.l0.forward(x).unwrap().relu();
-        self.l1.forward(x).unwrap().sigmoid()
+        self.l1.forward(x).unwrap()
     }
 }
 
@@ -20,11 +19,10 @@ fn main() -> Result<(), ZyxError> {
     let mut net = TinyNet {
         l0: Linear::new(3, 1024, true, DType::F16)?,
         l1: Linear::new(1024, 2, true, DType::F16)?,
-        lr: 0.01,
     };
 
     let mut optim = SGD {
-        learning_rate: net.lr,
+        learning_rate: 0.01,
         momentum: 0.9,
         nesterov: true,
         ..Default::default()
@@ -39,9 +37,8 @@ fn main() -> Result<(), ZyxError> {
         let loss = y.mse_loss(&target)?;
         let grads = tape.gradient(&loss, &net);
         optim.update(&mut net, grads);
-        //Tensor::realize(&net)?;
-        //Tensor::realize(optim.bias.iter())?;
-        Tensor::realize_all()?;
+        Tensor::realize(net.into_iter().chain(optim.into_iter()))?;
+        //Tensor::realize_all()?;
     }
 
     Ok(())

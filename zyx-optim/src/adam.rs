@@ -1,6 +1,8 @@
 use zyx::Tensor;
+use zyx_derive::Module;
 
 /// # Adaptive momentum estimation optimizer
+#[derive(Module)]
 pub struct Adam {
     /// learning rate (default: 1e-3)
     pub learning_rate: f32,
