@@ -808,7 +808,6 @@ impl Kernel {
     }
 
     pub fn loop_invariant_code_motion(&mut self, loop_id: OpId) {
-        //self.debug();
         // TODO Reorder commutative
         // Iterate:
         //   find a chain of commutative ops like add/sub
@@ -818,7 +817,6 @@ impl Kernel {
         // Extract loop body and tail
         let end_loop_id = self.get_end_loop_id(loop_id);
 
-        //println!("end_loop_id={end_loop_id}");
         let tail = self.ops.split_off(end_loop_id);
         let mut body = self.ops.split_off(loop_id);
         // for each op in loop body - if all parameters are invariant, mark as invariant, otherwise do nothing
@@ -830,7 +828,6 @@ impl Kernel {
                 Op::Loop { .. } | Op::Store { .. } | Op::Load { .. } | Op::EndLoop | Op::Define { .. }
             ) && body[i].parameters().all(|x| x < loop_id)
             {
-                //println!("invariant op: {:?}", body[i]);
                 // Move op out of the loop
                 let op = body.remove(i);
                 self.ops.push(op);
@@ -851,29 +848,20 @@ impl Kernel {
         // Add body back to ops
         self.ops.extend(body);
         self.ops.extend(tail);
-        //println!();
-        //self.debug();
-        //panic!();
     }
 
     pub fn loop_unroll(&mut self, loop_id: OpId) {
         let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
-
-        // Get tail and body
         let end_loop_id = self.get_end_loop_id(loop_id);
 
-        // Don't unroll super huge loops with many iterations
-        if (end_loop_id - loop_id) * dim > 1024 {
-            return;
-        }
-
+        // Get tail and body
         let mut tail = self.ops.split_off(end_loop_id + 1);
         self.ops.pop();
         let loop_body = self.ops.split_off(loop_id + 1);
         self.ops.pop();
 
         // Repeat loop body
-        let mut n = 1;
+        let mut offset = 1;
         for idx in 0..dim {
             let mut body = loop_body.clone();
             // First index as constant
@@ -881,8 +869,8 @@ impl Kernel {
             self.ops.push(Op::Const(Constant::idx(idx as u64)));
 
             // Increment body
-            increment(&mut body, n as isize - 1, loop_id + 1..end_loop_id);
-            n += body.len() + 1;
+            increment(&mut body, offset as isize - 1, loop_id + 1..end_loop_id);
+            offset += body.len() + 1;
 
             // Remap body to use constant
             let mut map = Map::default();
@@ -892,8 +880,10 @@ impl Kernel {
         }
 
         // Add tail, increment ops
-        let d = ((end_loop_id - loop_id) * (dim - 1)) as isize - 1;
-        increment(&mut tail, d, end_loop_id..);
+        let unrolled_body_size = end_loop_id - loop_id;
+        let d = (unrolled_body_size * (dim - 1)) as isize - 1;
+        let tail_range = end_loop_id..;
+        increment(&mut tail, d, tail_range);
         self.ops.extend(tail);
     }
 
@@ -902,81 +892,153 @@ impl Kernel {
         // LICM guarantees only ops kept in the loop are those that depend on the index
         // or are defines.
 
+        self.debug();
+
         // Assumes there is outer loop at loop_id and at least one inner loop in this outer loop
         let Op::Loop { dim: loop_dim, scope } = self.ops[loop_id] else { unreachable!() };
         debug_assert_eq!(scope, Scope::Register);
+        let end_loop_id = self.get_end_loop_id(loop_id);
+        println!("loop_id={loop_id}");
+        println!("end_loop_id={end_loop_id}");
 
-        let inner_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::Loop { .. })).unwrap();
+        let inner_loop_id =
+            self.ops[loop_id + 1..].iter().position(|op| matches!(op, Op::Loop { .. })).unwrap() + loop_id + 1;
+        let end_inner_loop_id = self.get_end_loop_id(inner_loop_id);
+        println!("inner_loop_id={inner_loop_id}");
+        println!("end_inner_loop_id={end_inner_loop_id}");
 
-        // Unroll everything else in the outer loop, except for the tail (inner loop + ops after it, till the end of the kernel)
-        {
-            let tail = self.ops.split_off(inner_loop_id);
-            let pre_body = self.ops.split_off(loop_id + 1);
+        // We can do this as triple unroll, that is unroll at the same time pre_body, post_body and inner_body
+        let tail = self.ops.split_off(end_loop_id);
+        let mut post_body = self.ops.split_off(end_inner_loop_id);
+        let mut inner_body = self.ops.split_off(inner_loop_id);
+        // pre_body is iterated over and appended to self.ops, inner body and post body
+        let pre_body = self.ops.split_off(loop_id + 1);
 
-            self.ops.pop(); // remove the loop that should be unrolled
+        let mut offset = 0; // By how much to shift first inner body and then post body
+        let mut idx_consts = Vec::new();
 
-            // First iteration, set first value to idx 0, reg define len is multiplied
-            self.ops.push(Op::Const(Constant::idx(0)));
-            self.ops.extend(pre_body.clone());
-            for op in &mut self.ops[loop_id..inner_loop_id] {
-                if let Op::Define { scope, len, .. } = op {
-                    debug_assert_eq!(*scope, Scope::Register);
-                    *len *= loop_dim;
+        // UNROLL PART OF THE LOOP BEFORE THE INNER LOOP
+        // The first unroll is special as we deal with defines
+        self.ops.pop();
+        idx_consts.push(self.ops.len());
+        self.ops.push(Op::Const(Constant::idx(0))); // Loop index for first iteration
+        for op in &pre_body {
+            // Deal with pre body part
+            if let &Op::Define { dtype, scope, ro, len } = op {
+                self.ops.push(Op::Define { dtype, scope, ro, len: len * loop_dim })
+            } else {
+                self.ops.push(op.clone());
+            }
+        }
+        // Deal with pre body part
+        for idx in 1..loop_dim {
+            idx_consts.push(self.ops.len());
+            self.ops.push(Op::Const(Constant::idx(idx as u64)));
+
+            let n = self.ops.len();
+            for op in &pre_body {
+                if let &Op::Define { .. } = op {
+                    self.ops.push(Op::Null);
+                } else {
+                    self.ops.push(op.clone());
                 }
             }
-
-            // This function must be called after LICM
-            // LICM guarantees only ops kept in the loop are those that depend on the index
-            // or are defines.
-            // We have to make a map of all ops that are not loop invariant.
-            // All of these have to be moved in the inner jammed loop.
-
-            // Remove defines as they need to be declared only once
-            /*pre_body.= pre_body
-
-            // Unroll remaining iterations
-            for idx in 1..loop_dim {
-                let mut body = pre_body.clone();
-                // First index as constant
-                let idx_const = self.ops.len();
-                self.ops.push(Op::Const(Constant::idx(idx as u64)));
-
-                // Increment body
-                increment(&mut body, n as isize - 1, loop_id + 1..end_loop_id);
-                n += body.len() + 1;
-
-                // Remap body to use constant
-                let mut map = Map::default();
-                map.insert(loop_id, idx_const);
-                remap(&mut body, &map);
-                self.ops.extend(body);
-            }*/
+            remap_or_increment(
+                &mut self.ops[n..],
+                loop_id,
+                *idx_consts.last().unwrap(),
+                offset,
+                loop_id + 1..,
+            );
+            offset += pre_body.len() + 1;
         }
 
-        // What we need to do is to repeat all ops loop_dim times, but define needs to be
-        // instead multiplied (it's len) by loop_dim.
-        // Existing index that is used to index define both for loads and stores needs to be incremented:
-        //  - outside of the inner loop it needs to be incremented by constant
-        //  - in the inner loop it needs to be incremented by the jammed loop index
-
-        // Find first inner loop and jam it in there
-        let (inner_loop_id, end_inner_loop_id) = {
-            let inner_loop_id = self.ops[loop_id..].iter().position(|op| matches!(op, Op::Loop { .. })).unwrap();
-            let end_inner_loop_id = self.get_end_loop_id(inner_loop_id);
-            // Get the body of the inner loop
-            let mut tail = self.ops.split_off(end_inner_loop_id);
-            let mut body = self.ops.split_off(inner_loop_id + 1);
-            // Jam the outer loop in the inner loop
+        // JAM INTO INNER LOOP
+        {
+            self.ops.push(inner_body.remove(0)); // First add inner loop op
+            // Jam outer loop into inner body
             self.ops.push(Op::Loop { dim: loop_dim, scope: Scope::Register });
-            increment(&mut body, 1, inner_loop_id + 1..);
-            self.ops.extend(body);
-            self.ops.push(Op::EndLoop);
-            increment(&mut tail, 2, end_inner_loop_id..);
-            self.ops.extend(tail);
-            (inner_loop_id + 1, end_inner_loop_id + 2)
-        };
+            let n = self.ops.len();
+            // Add ops from pre_body, exclude define ops
+            self.ops.extend(pre_body.iter().map(|op| {
+                if matches!(op, Op::Define { .. } | Op::Store { .. }) {
+                    Op::Null
+                } else if matches!(op, Op::Load { .. }) {
+                    todo!() // Not sure what to do if this is the case, perhaps just return false?
+                } else {
+                    op.clone()
+                }
+            }));
 
-        todo!()
+            // Increment pre_body ops that reference pre_body ops
+            increment(
+                &mut self.ops[n..],
+                (offset + pre_body.len() + 2) as isize, // 2 = 1 for inner loop + 1 for jammed loop
+                loop_id..inner_loop_id,
+            );
+
+            let get_offset = |x, offset| {
+                if x <= inner_loop_id { x + offset } else { x + offset + 1 }
+            };
+
+            // Add inner body
+            for op in inner_body {
+                match op {
+                    Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                        unreachable!()
+                    }
+                    Op::EndLoop => {
+                        self.ops.push(Op::EndLoop);
+                    }
+                    Op::Loop { dim, scope } => {
+                        self.ops.push(Op::Loop { dim, scope });
+                    }
+                    Op::Cast { x, dtype } => {
+                        self.ops.push(Op::Cast { x: get_offset(x, offset), dtype });
+                    }
+                    Op::Unary { x, uop } => {
+                        self.ops.push(Op::Unary { x: get_offset(x, offset), uop });
+                    }
+                    Op::Binary { x, y, bop } => {
+                        self.ops.push(Op::Binary { x: get_offset(x, offset), y: get_offset(y, offset), bop });
+                    }
+                    Op::Null => {
+                        self.ops.push(Op::Null);
+                    }
+                    Op::Const(constant) => {
+                        self.ops.push(Op::Const(constant));
+                    }
+                    Op::Define { dtype, scope, ro, len } => {
+                        self.ops.push(Op::Define { dtype, scope, ro, len });
+                    }
+                    Op::Load { src, index } => {
+                        self.ops.push(Op::Load { src, index: get_offset(index, offset) });
+                    } // If loads from unrolled define, add index first
+                    Op::Store { dst, x, index } => {
+                        self.ops.push(Op::Store { dst, x: get_offset(x, offset), index: get_offset(index, offset) });
+                    } // If stores to unrolled define, add index first
+                }
+            }
+            offset += 1;
+        }
+
+        self.ops.push(Op::EndLoop); // Add end of the jammed loop
+        self.ops.push(post_body.remove(0)); // Add end of the inner body loop
+        offset += 1;
+
+        // UNROLL PART OF THE LOOP AFTER THE INNER LOOP
+        for idx in 1..loop_dim {
+            let n = self.ops.len();
+            self.ops.extend(post_body.clone());
+            // TODO increment and remap accordingly
+            //remap_or_increment(&mut self.ops[n..], loop_id, idx_consts[idx], offset, loop_id + 1..);
+            offset += post_body.len();
+        }
+
+        self.ops.extend(tail);
+
+        self.debug();
+        todo!();
     }
 
     // Loop tiling/vectorization. Tiles all loads.
@@ -1088,11 +1150,12 @@ impl Kernel {
             // Remove this op from kernel
             self.ops.remove(op_id);
             self.decrement_range(op_id..self.ops.len(), 1);
+            // Or perhaps just self.ops[op_id] = Op::Null
         }
     }
 
+    // TODO deduplication should preserve loop boundaries
     pub fn common_subexpression_elimination(&mut self) {
-        // TODO deduplication should preserve loop boundaries
         let mut unique_stack: Vec<Map<Op, OpId>> = Vec::new();
         unique_stack.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::new()));
         let mut remaps = Map::with_hasher(BuildHasherDefault::new());
@@ -1393,19 +1456,12 @@ fn remap_or_increment(ops: &mut [Op], from: OpId, to: OpId, d: usize, range: imp
     debug_assert!(start < end);
     let range = start..end;
 
-    let hi = |x: &mut usize| {
+    let h = |x: &mut usize| {
         //println!("{x}, {range:?}, contains={}", range.contains(x));
-        if range.contains(x) {
-            *x += d;
-        }
-    };
-
-    let hr = |x: &mut usize| -> bool {
         if *x == from {
             *x = to;
-            true
-        } else {
-            false
+        } else if range.contains(x) {
+            *x += d;
         }
     };
 
@@ -1419,41 +1475,21 @@ fn remap_or_increment(ops: &mut [Op], from: OpId, to: OpId, d: usize, range: imp
             | Op::Define { .. }
             | Op::Null => {}
             Op::StoreView { src, .. } => {
-                if !hr(src) {
-                    hi(src);
-                }
+                h(src);
             }
             Op::Load { src, index, .. } => {
-                if !hr(src) {
-                    hi(src);
-                }
-                if !hr(index) {
-                    hi(index);
-                }
+                h(src);
+                h(index);
             }
             Op::Store { dst, x: src, index } => {
-                if !hr(dst) {
-                    hi(dst);
-                }
-                if !hr(src) {
-                    hi(src);
-                }
-                if !hr(index) {
-                    hi(index);
-                }
+                h(dst);
+                h(src);
+                h(index);
             }
-            Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
-                if !hr(x) {
-                    hi(x)
-                }
-            }
+            Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => h(x),
             Op::Binary { x, y, .. } => {
-                if !hr(x) {
-                    hi(x);
-                }
-                if !hr(y) {
-                    hi(y);
-                }
+                h(x);
+                h(y);
             }
         }
     }

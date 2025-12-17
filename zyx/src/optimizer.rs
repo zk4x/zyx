@@ -165,7 +165,7 @@ impl Optimizer {
             return None;
         }
         self.rand_iteration += 1;
-        let mut rng = crate::rng::Rng::seed_from_u64(42);
+        let mut rng = crate::rng::Rng::seed_from_u64(642392);
         //let mut rng = crate::rng::Rng::seed_from_systime();
         for _ in 0..1_000_000 {
             let index = rng.range(0..self.max_iter);

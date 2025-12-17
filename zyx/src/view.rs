@@ -368,19 +368,6 @@ impl View {
             self.shape()
         );
 
-        // This version without allocation is wrong
-        /*let mut temp = inner[axes[0]].clone();
-        let mut a = 0;
-        std::mem::swap(&mut inner[a], &mut temp);
-        for _ in 1..axes.len() {
-            let mut i = 0;
-            while a != axes[i] {
-                i += 1;
-            }
-            std::mem::swap(&mut inner[i], &mut temp);
-            a = i;
-        }*/
-
         let mut temp_data = inner.clone();
         for i in 0..axes.len() {
             temp_data[i] = inner[axes[i]].clone();
