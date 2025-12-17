@@ -2097,7 +2097,7 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let input = Tensor::from([0.5f32, 0.2, 0.3]);
     /// let target = Tensor::from([1f32, 0., 0.]);
-    /// assert_eq!(input.cross_entropy(target, [])?.mean(), 0.3133f32);
+    /// assert_eq!(input.cross_entropy(target, [])?.mean_all(), 0.3133f32);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///

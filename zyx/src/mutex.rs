@@ -81,7 +81,7 @@ impl<T> Mutex<T> {
         }
     }
 
-    pub(super) fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+    pub(super) fn try_lock(&self) -> Result<MutexGuard<'_, T>, ()> {
         const N: usize = 1_000;
 
         let mut i = 0;
@@ -91,7 +91,7 @@ impl<T> Mutex<T> {
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
-                return Some(MutexGuard {
+                return Ok(MutexGuard {
                     lock: &self.lock,
                     data: &self.data,
                 });
@@ -103,7 +103,7 @@ impl<T> Mutex<T> {
                 core::hint::spin_loop();
                 i += 1;
                 if i > N {
-                    return None;
+                    return Err(());
                 }
             }
         }

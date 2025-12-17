@@ -868,14 +868,8 @@ impl Kernel {
             let idx_const = self.ops.len();
             self.ops.push(Op::Const(Constant::idx(idx as u64)));
 
-            // Increment body
-            increment(&mut body, offset as isize - 1, loop_id + 1..end_loop_id);
+            remap_or_increment(&mut body, loop_id, idx_const, offset - 1, loop_id + 1..end_loop_id);
             offset += body.len() + 1;
-
-            // Remap body to use constant
-            let mut map = Map::default();
-            map.insert(loop_id, idx_const);
-            remap(&mut body, &map);
             self.ops.extend(body);
         }
 
@@ -1030,15 +1024,14 @@ impl Kernel {
         for idx in 1..loop_dim {
             let n = self.ops.len();
             self.ops.extend(post_body.clone());
-            // TODO increment and remap accordingly
-            //remap_or_increment(&mut self.ops[n..], loop_id, idx_consts[idx], offset, loop_id + 1..);
+            remap_or_increment(&mut self.ops[n..], loop_id, idx_consts[idx], offset, loop_id + 1..);
             offset += post_body.len();
         }
 
         self.ops.extend(tail);
 
         self.debug();
-        todo!();
+        //todo!();
     }
 
     // Loop tiling/vectorization. Tiles all loads.

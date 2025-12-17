@@ -316,6 +316,10 @@ impl LoopUnrollAndJamOpt {
                 if scope == Scope::Register && dim <= unroll_dim {
                     // Check if there is a loop after this (so that we can jam)
                     if kernel.ops[op_id + 1..].iter().any(|op| matches!(op, Op::Loop { .. })) {
+                        // A reasonable limit for max kernel size
+                        if kernel.ops.len() * dim > 10000 {
+                            continue;
+                        }
                         kernel.loop_unroll_and_jam(op_id);
                     }
                 }
@@ -342,6 +346,10 @@ impl LoopUnrollingOpt {
             op_id -= 1;
             if let Op::Loop { dim, scope } = kernel.ops[op_id] {
                 if scope == Scope::Register && dim <= unroll_dim {
+                    // A reasonable limit for max kernel size
+                    if kernel.ops.len() * dim > 10000 {
+                        continue;
+                    }
                     kernel.loop_unroll(op_id);
                 }
             }
