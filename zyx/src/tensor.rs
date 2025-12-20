@@ -2091,11 +2091,13 @@ impl Tensor {
     /// This function takes a target tensor and axes as input. It first calculates the softmax of the input tensor along the specified axes,
     /// then multiplies the result by the logarithm of the target tensor.
     ///
+    /// Self is logits.
+    ///
     /// # Examples
     ///
     /// ```
     /// use zyx::Tensor;
-    /// let input = Tensor::from([0.5f32, 0.2, 0.3]);
+    /// let input = Tensor::from([5f32, 2., -3.]);
     /// let target = Tensor::from([1f32, 0., 0.]);
     /// assert_eq!(input.cross_entropy(target, [])?.mean_all(), 0.3133f32);
     /// # Ok::<(), zyx::ZyxError>(())
@@ -2112,7 +2114,7 @@ impl Tensor {
         let axes: Vec<_> = axes.into_iter().collect();
         let m = self - self.max_keepdim(axes.clone())?;
         let neg_log2_softmax = m.exp().sum_keepdim(axes)?.ln() - m;
-        Ok(neg_log2_softmax * target)
+        (neg_log2_softmax * target).sum([-1])
     }
 
     /*
@@ -2493,8 +2495,10 @@ impl Tensor {
         let shape = self.shape();
         let rank = shape.len();
         if dim < 0 {
-            if - dim > (rank + 1) as Axis {
-                return Err(ZyxError::shape_error("Unsqueeze dim {dim} is not possible on rank {rank} tensor.".into()))
+            if -dim > (rank + 1) as Axis {
+                return Err(ZyxError::shape_error(
+                    "Unsqueeze dim {dim} is not possible on rank {rank} tensor.".into(),
+                ));
             }
             let dim = usize::try_from(-dim).unwrap();
             let dim = rank - dim + 1;
@@ -2504,7 +2508,9 @@ impl Tensor {
         } else {
             let dim = usize::try_from(dim).unwrap();
             if dim > rank {
-                return Err(ZyxError::shape_error("Unsqueeze dim {dim} is not possible on rank {rank} tensor.".into()))
+                return Err(ZyxError::shape_error(
+                    "Unsqueeze dim {dim} is not possible on rank {rank} tensor.".into(),
+                ));
             }
             self.reshape(
                 shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<usize>>(),
@@ -2514,43 +2520,39 @@ impl Tensor {
 
     /// Argmax
     pub fn argmax(&self) -> Tensor {
-        self.argmax_impl(None, false).unwrap()
+        self.flatten(..).unwrap().argmax_impl(0, false).unwrap()
     }
 
     /// Argmax
     pub fn argmax_axis(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        self.argmax_impl(Some(axis), false)
+        self.argmax_impl(axis, false)
     }
 
     /// Argmax
-    fn argmax_impl(&self, axis: Option<Axis>, keepdim: bool) -> Result<Tensor, ZyxError> {
-        if let Some(axis) = axis {
-            // Find the maximum values along the specified axis
-            let max_vals = self.max_keepdim([axis]).unwrap();
+    fn argmax_impl(&self, axis: Axis, keepdim: bool) -> Result<Tensor, ZyxError> {
+        // Find the maximum values along the specified axis
+        let max_vals = self.max_keepdim([axis]).unwrap();
 
-            // Create a mask where each element is `true` if it equals the max value
-            let mask = self.equal(max_vals)?;
-            let shape = self.shape();
-            let uaxis = into_axis(axis, shape.len())?;
-            let range = Tensor::arange(shape[uaxis] as i32, 0, -1)?;
+        // Create a mask where each element is `true` if it equals the max value
+        let mask = self.equal(max_vals)?;
+        let shape = self.shape();
+        let uaxis = into_axis(axis, shape.len())?;
+        let range = Tensor::arange(shape[uaxis] as i32, 0, -1)?;
 
-            let shape_value = shape[uaxis];
-            let repeat_count = shape.len() - uaxis - 1;
-            let mut shape = vec![shape_value];
-            shape.extend(vec![1; repeat_count]);
+        let shape_value = shape[uaxis];
+        let repeat_count = shape.len() - uaxis - 1;
+        let mut shape = vec![shape_value];
+        shape.extend(vec![1; repeat_count]);
 
-            let reshaped_range = range.reshape(&shape)?;
-            let idx = mask * reshaped_range;
-            let res = Tensor::from(shape[uaxis] as i64)
-                - if keepdim {
-                    idx.max_keepdim([axis])?
-                } else {
-                    idx.max([axis])?
-                };
-            Ok(res.cast(DType::I32))
-        } else {
-            self.flatten(..)?.argmax_impl(Some(0), keepdim)
-        }
+        let reshaped_range = range.reshape(&shape)?;
+        let idx = mask * reshaped_range;
+        let res = Tensor::from(shape[uaxis] as i64)
+            - if keepdim {
+                idx.max_keepdim([axis])?
+            } else {
+                idx.max([axis])?
+            };
+        Ok(res.cast(DType::I32))
     }
 
     /// Creates a new tensor by stacking the input tensors along the specified dimension.

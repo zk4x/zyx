@@ -14,7 +14,7 @@ struct GPTConfig {
     dropout: f32,
     bias: bool,
     dtype: DType,
-    eps: f32,
+    eps: f64,
 }
 
 impl Default for GPTConfig {

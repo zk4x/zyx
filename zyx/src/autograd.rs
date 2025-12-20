@@ -232,9 +232,8 @@ impl Runtime {
                             // grad * x.pow(y) * log2(x) * (1/E.log2)
                             let sh = self.shape(y).into();
                             let dtype = self.dtype(y);
-                            let one_elog2 = self.graph.push(Node::Const {
-                                value: Constant::new(1f64 / std::f64::consts::E.log2()).cast(dtype),
-                            });
+                            let c = 1f64 / std::f64::consts::E.log2();
+                            let one_elog2 = self.graph.push(Node::Const { value: Constant::new(c).cast(dtype) });
                             let one_elog2_ex = self.expand(one_elog2, sh).unwrap();
                             self.release(one_elog2);
                             let log2 = self.unary(x, UOp::Log2);
@@ -258,10 +257,13 @@ impl Runtime {
                         //grad_y = grad_output * (mask_y_greater + 0.5 * mask_equal)
 
                         let dtype = self.dtype(x);
+                        let sh = self.shape(x).into();
                         let c = self.graph.push(Node::Const { value: Constant::new(0.5).cast(dtype) });
-                        let mask_eq = self.binary(x, y, BOp::Eq);
-                        let eq = self.binary(mask_eq, c, BOp::Mul);
+                        let c_ex = self.expand(c, sh).unwrap();
                         self.release(c);
+                        let mask_eq = self.binary(x, y, BOp::Eq);
+                        let eq = self.binary(mask_eq, c_ex, BOp::Mul);
+                        self.release(c_ex);
                         self.release(mask_eq);
                         if req_grad.contains(&x) {
                             let mask_xgt = self.binary(x, y, BOp::Cmpgt);
@@ -401,9 +403,9 @@ impl Runtime {
                 }
                 Node::Reduce { x, rop } => match rop {
                     ROp::Sum => {
+                        //println!("Reduce backward, z shape: {z_shape:?}, x shape: {x_shape:?}, reduce axes: {:?}", self.graph.axes(nid));
                         let x_shape: Vec<Dim> = self.shape(x).into();
                         let mut z_shape: Vec<Dim> = self.shape(nid).into();
-                        //println!("Reduce backward, z shape: {z_shape:?}, x shape: {x_shape:?}, reduce axes: {:?}", self.graph.axes(nid));
                         for &axis in self.graph.axes(nid) {
                             z_shape.insert(axis as usize, 1);
                         }
@@ -417,17 +419,70 @@ impl Runtime {
                     }
                     ROp::Max => {
                         // x_grad = (1 - (x < z.expand(x.shape()))) * grad
-                        let x_shape: Vec<Dim> = self.shape(x).into();
+                        /*let x_shape: Vec<Dim> = self.shape(x).into();
                         let z_temp = self.expand(nid, x_shape.clone()).unwrap();
                         let cmp_t = self.binary(x, z_temp, BOp::Cmplt);
                         self.release(z_temp);
-                        let ones = self.zeros(x_shape, self.dtype(x));
+                        let ones = self.ones(x_shape, self.dtype(x));
                         let max_1s = self.binary(ones, cmp_t, BOp::Sub);
                         self.release(ones);
                         self.release(cmp_t);
                         let grad = self.binary(max_1s, grad, BOp::Mul);
                         self.release(max_1s);
-                        insert_or_add_grad(self, &mut grads, x, grad);
+                        insert_or_add_grad(self, &mut grads, x, grad);*/
+
+                        // TODO make this shorter
+
+                        // Compute x_grad = (1 - (x < z_broadcasted)) * grad
+                        let x_shape: Vec<Dim> = self.shape(x).into();
+                        let mut z_shape: Vec<Dim> = self.shape(nid).into();
+                        let axes: Vec<usize> = self.graph.axes(nid).into();
+
+                        // Insert singleton dims along the reduced axes for z
+                        for &axis in &axes {
+                            z_shape.insert(axis as usize, 1);
+                        }
+                        if axes.len() == x_shape.len() {
+                            z_shape.remove(0);
+                        }
+
+                        // Reshape z and expand to x.shape()
+                        let z_reshaped = self.reshape(nid, z_shape);
+                        let z_broadcasted = self.expand(z_reshaped, x_shape.clone()).unwrap();
+                        self.release(z_reshaped);
+
+                        // Compare x < z_broadcasted
+                        let cmp_t = self.binary(x, z_broadcasted, BOp::Cmplt);
+                        self.release(z_broadcasted);
+
+                        // Cast boolean to float
+                        let cmp_t_float = self.cast(cmp_t, self.dtype(x));
+                        self.release(cmp_t);
+
+                        // Compute mask = 1 - (x < z)
+                        let ones = self.ones(x_shape.clone(), self.dtype(x));
+                        let mask = self.binary(ones, cmp_t_float, BOp::Sub);
+                        self.release(ones);
+                        self.release(cmp_t_float);
+
+                        // --- Reshape/expand grad to x.shape() ---
+                        let mut grad_shape: Vec<Dim> = self.shape(grad).into();
+                        for &axis in &axes {
+                            grad_shape.insert(axis as usize, 1);
+                        }
+                        if axes.len() == x_shape.len() {
+                            grad_shape.remove(0);
+                        }
+                        let grad_reshaped = self.reshape(grad, grad_shape);
+                        let grad_expanded = self.expand(grad_reshaped, x_shape.clone()).unwrap();
+                        self.release(grad_reshaped);
+
+                        // Multiply mask * grad (now shapes match exactly)
+                        let grad_x = self.binary(mask, grad_expanded, BOp::Mul);
+                        self.release(mask);
+                        self.release(grad_expanded);
+
+                        insert_or_add_grad(self, &mut grads, x, grad_x);
                     }
                 },
             }

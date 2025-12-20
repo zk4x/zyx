@@ -1333,7 +1333,7 @@ impl Kernel {
                             }
                         }
                         BOp::Cmplt | BOp::Cmpgt | BOp::NotEq | BOp::And | BOp::Eq => {}
-                        BOp::Maximum => todo!(),
+                        BOp::Maximum => {}
                         BOp::Or => todo!(),
                         BOp::BitXor => todo!(),
                         BOp::BitOr => todo!(),

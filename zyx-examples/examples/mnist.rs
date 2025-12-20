@@ -31,18 +31,21 @@ impl MnistNet {
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
     let mut train_dataset: HashMap<String, Tensor> =
-        Tensor::load_safetensors("../data/mnist.safetensors")?;
-    let train_x = train_dataset.remove("train_x").unwrap();
-    let train_y = train_dataset.remove("train_y").unwrap();
-    let test_x = train_dataset.remove("test_x").unwrap();
-    let test_y = train_dataset.remove("test_y").unwrap();
+        Tensor::load_safetensors("data/mnist_dataset.safetensors")?;
+    println!("{:?}", train_dataset.keys());
+    let train_x = train_dataset.remove("x_train").unwrap().cast(DType::F32)/255;
+    println!("{:.2}", train_x.slice((-5.., ..))?);
+    let train_y = train_dataset.remove("y_train").unwrap();
+    let test_x = train_dataset.remove("x_test").unwrap().cast(DType::F32)/255;
+    let test_y = train_dataset.remove("y_test").unwrap();
 
     let batch_size = 64usize;
     let num_train = train_x.shape()[0];
 
     let mut net = MnistNet::new(DType::F32)?;
+
     let mut optim = SGD {
-        learning_rate: 0.01,
+        learning_rate: 0.0001,
         momentum: 0.9,
         nesterov: true,
         ..Default::default()
@@ -51,23 +54,44 @@ fn main() -> Result<(), ZyxError> {
     println!("Training...");
     for epoch in 1..=5 {
         let mut total_loss = 0f32;
+        let mut iters = 0;
 
         for i in (0..num_train).step_by(batch_size) {
             let end = (i + batch_size).min(num_train);
 
             let x = train_x.slice([i..end]).unwrap();
             let y = train_y.slice([i..end]).unwrap();
-            println!("{y}");
 
             let tape = GradientTape::new();
-            let logits = net.forward(&x);
-            let loss = logits.cross_entropy(&y, [-1])?;
+            let logits = net.forward(&x).clamp(-100, 100)?;
+            println!("{:?}, {:?}", logits.shape(), y.shape());
+
+            //println!("{}", logits.slice((-5.., ..))?);
+            let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
             total_loss += loss.item::<f32>();
+            println!("Loss is: {:.8}", loss.item::<f32>());
 
             let grads = tape.gradient(&loss, &net);
+
+            /*for (i, grad_opt) in grads.iter().enumerate() {
+                if let Some(grad) = grad_opt {
+                    // Compute the L2 norm of the gradient (vectorized)
+                    let grad_norm = (grad * grad).sum_all().sqrt();  // ||grad||_2
+                    println!("Grad {} L2 norm: {:?}", i, grad_norm);
+
+                    // Compute min/max in a vectorized way
+                    let grad_min = grad.min_all();
+                    let grad_max = grad.max_all();
+                    println!("Grad {} min/max: {}/{}", i, grad_min, grad_max);
+                } else {
+                    println!("Grad {} is None", i);
+                }
+            }*/
+
             optim.update(&mut net, grads);
 
-            Tensor::realize(&net)?;
+            Tensor::realize(net.into_iter().chain(&optim))?;
+            iters += 1;
         }
 
         println!("Epoch {epoch}: loss = {total_loss:.4}");
