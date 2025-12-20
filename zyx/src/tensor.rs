@@ -2091,7 +2091,7 @@ impl Tensor {
     /// This function takes a target tensor and axes as input. It first calculates the softmax of the input tensor along the specified axes,
     /// then multiplies the result by the logarithm of the target tensor.
     ///
-    /// Self is logits.
+    /// Self is logits, target is one-hot.
     ///
     /// # Examples
     ///
@@ -2099,7 +2099,8 @@ impl Tensor {
     /// use zyx::Tensor;
     /// let input = Tensor::from([5f32, 2., -3.]);
     /// let target = Tensor::from([1f32, 0., 0.]);
-    /// assert_eq!(input.cross_entropy(target, [])?.mean_all(), 0.3133f32);
+    /// let loss = input.cross_entropy(target, [])?.mean_all();
+    /// assert_eq!(loss, 0.048907f32);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
