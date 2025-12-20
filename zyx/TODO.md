@@ -141,7 +141,7 @@
 
 - examples
   - [x] tiny net
-  - [ ] tiny net with sigmoid activation
+  - [x] tiny net with sigmoid activation
   - [ ] mnist
   - [ ] phi LLM
   - [ ] RNN

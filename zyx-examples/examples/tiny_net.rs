@@ -16,7 +16,7 @@ fn main() -> Result<(), ZyxError> {
     Tensor::realize([&w, &x, &target])?;
     for _ in 0..100 {
         let tape = GradientTape::new();
-        let y = x.matmul(&w)?;
+        let y = x.matmul(&w)?.sigmoid();
         let grads = tape.gradient(&y, [&w]);
         optim.update([&mut w], grads);
         Tensor::realize([&w])?;

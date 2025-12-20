@@ -192,6 +192,7 @@ impl Runtime {
                             self.release(grad_neg);
                             let y_squared = self.binary(y, y, BOp::Mul);
                             let y_grad = self.binary(x_mul, y_squared, BOp::Div);
+                            self.release(x_mul);
                             self.release(y_squared);
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
