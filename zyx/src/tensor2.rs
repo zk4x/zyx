@@ -5,8 +5,9 @@ use crate::{
 };
 use paste::paste;
 
+/// Reduce op
 #[derive(Clone, Copy)]
-enum ReduceOp {
+pub(crate) enum ReduceOp {
     Sum,
     Mean,
     Var,
@@ -28,7 +29,8 @@ impl Tensor {
         }
     }
 
-    fn reduce_impl<const KEEPDIM: bool>(
+    /// Reduce implementation
+    pub(crate) fn reduce_impl<const KEEPDIM: bool>(
         &self,
         op: ReduceOp,
         axes: impl IntoIterator<Item = Axis>,
@@ -108,9 +110,9 @@ impl Tensor {
             }
             ReduceOp::Std => {
                 if let Some(dtype) = dtype {
-                    self.var_axes_dtype(axes, dtype)?.sqrt()
+                    self.var_dtype(axes, dtype)?.sqrt()
                 } else {
-                    self.var_axes(axes)?.sqrt()
+                    self.var(axes)?.sqrt()
                 }
             }
         };
@@ -283,7 +285,7 @@ macro_rules! define_reduce_op_with_correction {
                 /// # Returns
                 /// A scalar tensor containing the reduction result.
                 #[must_use]
-                pub fn $name(&self) -> Tensor {
+                pub fn [<$name _all>](&self) -> Tensor {
                     self.reduce_impl::<false>($op_variant, [], None, 1).unwrap()
                 }
 
@@ -291,13 +293,13 @@ macro_rules! define_reduce_op_with_correction {
                 ///
                 /// Reduced axes are retained with length 1.
                 #[must_use]
-                pub fn [<$name _keepdim>](&self) -> Tensor {
+                pub fn [<$name _all_keepdim>](&self) -> Tensor {
                     self.reduce_impl::<true>($op_variant, [], None, 1).unwrap()
                 }
 
                 /// Computes the [$name] reduction over all elements, casting the result to `dtype`.
                 #[must_use]
-                pub fn [<$name _dtype>](&self, dtype: DType) -> Tensor {
+                pub fn [<$name _all_dtype>](&self, dtype: DType) -> Tensor {
                     self.reduce_impl::<false>($op_variant, [], Some(dtype), 1).unwrap()
                 }
 
@@ -308,7 +310,7 @@ macro_rules! define_reduce_op_with_correction {
                 ///
                 /// # Errors
                 /// When axes are out of range
-                pub fn [<$name _axes>](&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
+                pub fn [<$name >](&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<false>($op_variant, axes, None, 1)
                 }
 
@@ -316,7 +318,7 @@ macro_rules! define_reduce_op_with_correction {
                 ///
                 /// # Errors
                 /// When axes are out of range
-                pub fn [<$name _axes_keepdim>](&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
+                pub fn [<$name _keepdim>](&self, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<true>($op_variant, axes, None, 1)
                 }
 
@@ -324,7 +326,7 @@ macro_rules! define_reduce_op_with_correction {
                 ///
                 /// # Errors
                 /// When axes are out of range
-                pub fn [<$name _axes_dtype>](&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
+                pub fn [<$name _dtype>](&self, axes: impl IntoIterator<Item = Axis>, dtype: DType) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<false>($op_variant, axes, Some(dtype), 1)
                 }
 
@@ -336,8 +338,13 @@ macro_rules! define_reduce_op_with_correction {
                 ///
                 /// # Errors
                 /// When axes are out of range
-                pub fn [<$name _axes_correction>](&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
+                pub fn [<$name _correction>](&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<false>($op_variant, axes, None, correction)
+                }
+
+                /// All correction
+                pub fn [<$name _all_correction>](&self, correction: Dim) -> Result<Tensor, ZyxError> {
+                    self.reduce_impl::<false>($op_variant, [], None, correction)
                 }
 
                 /// Computes the [$name] reduction over all elements, keeping reduced dimensions and casting to `dtype`.
@@ -348,13 +355,13 @@ macro_rules! define_reduce_op_with_correction {
 
                 /// Computes the [$name] reduction over all elements, keeping reduced dimensions, with `correction`.
                 #[must_use]
-                pub fn [<$name _keepdim_correction>](&self, correction: Dim) -> Tensor {
+                pub fn [<$name _all_keepdim_correction>](&self, correction: Dim) -> Tensor {
                     self.reduce_impl::<true>($op_variant, [], None, correction).unwrap()
                 }
 
                 /// Computes the [$name] reduction over all elements, casting to `dtype`, with `correction`.
                 #[must_use]
-                pub fn [<$name _dtype_correction>](&self, dtype: DType, correction: Dim) -> Tensor {
+                pub fn [<$name _all_dtype_correction>](&self, dtype: DType, correction: Dim) -> Tensor {
                     self.reduce_impl::<false>($op_variant, [], Some(dtype), correction).unwrap()
                 }
 
@@ -370,7 +377,7 @@ macro_rules! define_reduce_op_with_correction {
                 ///
                 /// # Errors
                 /// When axes are out of range
-                pub fn [<$name _axes_keepdim_correction>](&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
+                pub fn [<$name _keepdim_correction>](&self, axes: impl IntoIterator<Item = Axis>, correction: Dim) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<true>($op_variant, axes, None, correction)
                 }
 
@@ -378,13 +385,13 @@ macro_rules! define_reduce_op_with_correction {
                 ///
                 /// # Errors
                 /// When axes are out of range
-                pub fn [<$name _axes_dtype_correction>](&self, axes: impl IntoIterator<Item = Axis>, dtype: DType, correction: Dim) -> Result<Tensor, ZyxError> {
+                pub fn [<$name _dtype_correction>](&self, axes: impl IntoIterator<Item = Axis>, dtype: DType, correction: Dim) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<false>($op_variant, axes, Some(dtype), correction)
                 }
 
                 /// Computes the [$name] reduction over all elements, keeping reduced dimensions, casting to `dtype`, with `correction`.
                 #[must_use]
-                pub fn [<$name _keepdim_dtype_correction>](&self, dtype: DType, correction: Dim) -> Tensor {
+                pub fn [<$name _all_keepdim_dtype_correction>](&self, dtype: DType, correction: Dim) -> Tensor {
                     self.reduce_impl::<true>($op_variant, [], Some(dtype), correction).unwrap()
                 }
 
@@ -393,7 +400,7 @@ macro_rules! define_reduce_op_with_correction {
                 ///
                 /// # Errors
                 /// When axes are out of range
-                pub fn [<$name _axes_keepdim_dtype_correction>](&self, axes: impl IntoIterator<Item = Axis>, dtype: DType, correction: Dim) -> Result<Tensor, ZyxError> {
+                pub fn [<$name _keepdim_dtype_correction>](&self, axes: impl IntoIterator<Item = Axis>, dtype: DType, correction: Dim) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<true>($op_variant, axes, Some(dtype), correction)
                 }
             }

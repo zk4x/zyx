@@ -441,7 +441,7 @@ fn layer_norm() -> Result<(), ZyxError> {
     let eps = Tensor::from(eps).cast(x.dtype());
     let a = &x - x.mean_keepdim(axes.clone())?;
     //println!("{a}");
-    let b = (x.var_axes_keepdim(axes)? + eps).sqrt();
+    let b = (x.var_keepdim(axes)? + eps).sqrt();
     let mut x = a / b;
     if let Some(w) = &weight {
         x = x * w;
@@ -752,7 +752,7 @@ fn var2() -> Result<(), ZyxError> {
 #[test]
 fn var3() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
-    let y = x.var_axes_correction([1], 0)?;
+    let y = x.var_correction([1], 0)?;
     assert_eq!(y, [0.666666f32, 0.666666]);
     Ok(())
 }
@@ -760,9 +760,9 @@ fn var3() -> Result<(), ZyxError> {
 #[test]
 fn var4() -> Result<(), ZyxError> {
     let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.]]);
-    let y = x.var_axes_correction([0], 0)?;
+    let y = x.var_correction([0], 0)?;
     assert_eq!(y, [2.25f32, 2.25, 2.25]);
-    let y = x.var_axes_correction([1], 0)?;
+    let y = x.var_correction([1], 0)?;
     assert_eq!(y, [0.666666f32, 0.666666]);
     Ok(())
 }
