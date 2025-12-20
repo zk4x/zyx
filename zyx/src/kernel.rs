@@ -807,12 +807,15 @@ impl Kernel {
         }
     }
 
-    pub fn loop_invariant_code_motion(&mut self, loop_id: OpId) {
+    pub fn reorder_commutative(&mut self) {
         // TODO Reorder commutative
         // Iterate:
         //   find a chain of commutative ops like add/sub
         //   reoder by moving loop index last
 
+    }
+
+    pub fn loop_invariant_code_motion(&mut self, loop_id: OpId) {
         // LICM
         // Extract loop body and tail
         let end_loop_id = self.get_end_loop_id(loop_id);
@@ -881,11 +884,24 @@ impl Kernel {
         self.ops.extend(tail);
     }
 
-    pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
+    /*
+    /// Ejects define op outside of current loop and makes it larger
+    pub fn eject_define(&mut self, define_id: OpId) {
+        // TODO
+    }*/
+
+    /// Jam outer loop into inner loop
+    pub fn loop_jam(&mut self, _loop_id: OpId) {
+        // TODO
+    }
+
+    /*pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
         // This function must be called after LICM
         // LICM guarantees only ops kept in the loop are those that depend on the index
         // or are defines.
 
+        // TODO instead of unrolling, just add loops before the body and after the body and more all define ops before those loops
+        // and that should be it.
         self.debug();
 
         // Assumes there is outer loop at loop_id and at least one inner loop in this outer loop
@@ -1032,7 +1048,7 @@ impl Kernel {
 
         self.debug();
         //todo!();
-    }
+    }*/
 
     // Loop tiling/vectorization. Tiles all loads.
     /*pub fn loop_tile(&mut self, loop_id: OpId) {

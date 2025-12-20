@@ -63,6 +63,7 @@ impl Optimizer {
         kernel.constant_folding();
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
+        kernel.reorder_commutative();
         kernel.loop_invariant_code_motion_all();
 
         // Unroll and jam for all loops
@@ -82,6 +83,7 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
+            kernel.reorder_commutative();
             kernel.loop_invariant_code_motion_all();
 
             if *kernel == temp_kernel {
@@ -91,9 +93,7 @@ impl Optimizer {
         }
 
         if debug_ir {
-            println!("\nIR optimized kernel");
             kernel.debug();
-            println!();
         }
 
         true
@@ -320,7 +320,8 @@ impl LoopUnrollAndJamOpt {
                         if kernel.ops.len() * dim > 10000 {
                             continue;
                         }
-                        kernel.loop_unroll_and_jam(op_id);
+                        // TODO add eject define
+                        kernel.loop_jam(op_id);
                     }
                 }
             }
