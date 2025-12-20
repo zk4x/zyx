@@ -282,6 +282,14 @@ fn pad_zeros() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn one_hot() -> Result<(), ZyxError> {
+    let x = Tensor::from([2, 3, 4]);
+    let y = x.one_hot(4);
+    assert_eq!(y, [[0, 0, 1, 0], [0, 0, 0, 1], [0, 0, 0, 0]]);
+    Ok(())
+}
+
+#[test]
 fn ones() {
     let x = Tensor::ones([2, 3], DType::I32);
     assert_eq!(x, [[1i32, 1, 1], [1, 1, 1]]);

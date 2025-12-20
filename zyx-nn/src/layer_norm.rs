@@ -111,7 +111,7 @@ impl LayerNorm {
 
         // Compute mean and variance along those axes (keep dims for broadcasting)
         let mean = input.mean_keepdim(axes.clone())?;
-        let variance = input.var_axes_keepdim(axes)?;
+        let variance = input.var_keepdim(axes)?;
 
         // Normalize: (x - mean) / sqrt(var + eps)
         let normalized = (input - &mean) / (variance + self.eps).sqrt();

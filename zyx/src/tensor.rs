@@ -2191,12 +2191,14 @@ impl Tensor {
     return self[..., None]._one_hot_along_dim(num_classes).where(1, 0)*/
 
     /// One hot
+    ///
+    /// If num_classes is less than any scalr in self, that scalar is ignored.
     pub fn one_hot(&self, num_classes: Dim) -> Tensor {
         let mut num_classes = num_classes;
         if num_classes == 0 {
             num_classes = (self.max_all() + 1).item::<i64>() as usize;
         }
-        self.one_hot_along_dim(num_classes, -1).where_(1, 0).unwrap()
+        self.unsqueeze(-1).unwrap().one_hot_along_dim(num_classes, -1).where_(1, 0).unwrap()
     }
 
     /// One hot along dim
@@ -2394,7 +2396,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if tensors cannot be concattenated along axis.
-    pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, axis: isize) -> Result<Tensor, ZyxError> {
+    pub fn cat<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, axis: Axis) -> Result<Tensor, ZyxError> {
         let tensors: Vec<&Tensor> = tensors.into_iter().collect();
         if tensors.len() < 2 {
             return Err(ZyxError::shape_error("Cat requires two or more tensors.".into()));
@@ -2402,7 +2404,7 @@ impl Tensor {
         let shape = tensors[0].shape();
         let rank = shape.rank();
         let dim: usize = (if axis < 0 {
-            axis + isize::try_from(rank).unwrap()
+            axis + Axis::try_from(rank).unwrap()
         } else {
             axis
         })
@@ -2487,10 +2489,13 @@ impl Tensor {
     ///
     /// Returns error if self cannot be unsqueezed along axis.
     #[allow(clippy::missing_panics_doc)]
-    pub fn unsqueeze(&self, dim: isize) -> Result<Tensor, ZyxError> {
+    pub fn unsqueeze(&self, dim: Axis) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
+        let rank = shape.len();
         if dim < 0 {
-            let rank = shape.len();
+            if - dim > (rank + 1) as Axis {
+                return Err(ZyxError::shape_error("Unsqueeze dim {dim} is not possible on rank {rank} tensor.".into()))
+            }
             let dim = usize::try_from(-dim).unwrap();
             let dim = rank - dim + 1;
             self.reshape(
@@ -2498,6 +2503,9 @@ impl Tensor {
             )
         } else {
             let dim = usize::try_from(dim).unwrap();
+            if dim > rank {
+                return Err(ZyxError::shape_error("Unsqueeze dim {dim} is not possible on rank {rank} tensor.".into()))
+            }
             self.reshape(
                 shape[..dim].iter().copied().chain([1]).chain(shape[dim..].iter().copied()).collect::<Vec<usize>>(),
             )
@@ -2577,7 +2585,7 @@ impl Tensor {
     ///
     /// [`unsqueeze`](Tensor::unsqueeze), [`cat`](Tensor::cat)
     #[allow(clippy::missing_panics_doc)]
-    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: isize) -> Result<Tensor, ZyxError> {
+    pub fn stack<'a>(tensors: impl IntoIterator<Item = &'a Tensor>, dim: Axis) -> Result<Tensor, ZyxError> {
         // TODO handle dim corretly
         let tensors: Vec<Tensor> = tensors.into_iter().map(|t| t.unsqueeze(dim).unwrap()).collect();
         Tensor::cat(&tensors, dim)
@@ -3513,90 +3521,13 @@ impl Tensor {
         // We can later add option for backend to disable these implicit conversions.
         let x_dtype = x.dtype();
         let y_dtype = y.dtype();
-        if RT.lock().implicit_casts {
-            match (x_dtype, y_dtype) {
-                (DType::I16 | DType::I8 | DType::U8 | DType::Bool, DType::BF16) => {
-                    x = x.cast(DType::BF16);
-                }
-                (DType::BF16, DType::I16 | DType::I8 | DType::U8 | DType::Bool) => {
-                    y = y.cast(DType::BF16);
-                }
-                (DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool, DType::F16) => {
-                    x = x.cast(DType::F16);
-                }
-                (DType::F16, DType::BF16 | DType::I16 | DType::I8 | DType::U8 | DType::Bool) => {
-                    y = y.cast(DType::F16);
-                }
-                (
-                    DType::F16
-                    | DType::BF16
-                    | DType::I32
-                    | DType::I16
-                    | DType::I8
-                    | DType::U32
-                    | DType::U8
-                    | DType::Bool,
-                    DType::F32,
-                ) => x = x.cast(DType::F32),
-                (
-                    DType::F32,
-                    DType::F16
-                    | DType::BF16
-                    | DType::I32
-                    | DType::I16
-                    | DType::I8
-                    | DType::U32
-                    | DType::U8
-                    | DType::Bool,
-                ) => y = y.cast(DType::F32),
-                (
-                    DType::F32
-                    | DType::F16
-                    | DType::BF16
-                    | DType::I64
-                    | DType::I32
-                    | DType::I16
-                    | DType::I8
-                    | DType::U32
-                    | DType::U8
-                    | DType::Bool,
-                    DType::F64,
-                ) => x = x.cast(DType::F64),
-                (
-                    DType::F64,
-                    DType::F32
-                    | DType::F16
-                    | DType::BF16
-                    | DType::I64
-                    | DType::I32
-                    | DType::I16
-                    | DType::I8
-                    | DType::U32
-                    | DType::U8
-                    | DType::Bool,
-                ) => y = y.cast(DType::F64),
-                (DType::BF16, DType::BF16)
-                | (DType::F16, DType::F16)
-                | (DType::F32, DType::F32)
-                | (DType::F64, DType::F64)
-                | (DType::U8, DType::U8)
-                | (DType::U32, DType::U32)
-                | (DType::I8, DType::I8)
-                | (DType::I16, DType::I16)
-                | (DType::I32, DType::I32)
-                | (DType::I64, DType::I64)
-                | (DType::Bool, DType::Bool) => {}
-                (DType::I64 | DType::I32 | DType::I16 | DType::I8 | DType::U32 | DType::U8, DType::Bool) => {
-                    y = y.cast(x_dtype);
-                }
-                (DType::Bool, DType::I64 | DType::I32 | DType::I16 | DType::I8 | DType::U32 | DType::U8) => {
-                    x = x.cast(y_dtype);
-                }
-                (dt0, dt1) => {
-                    return Err(ZyxError::dtype_error(format!(
-                        "Binary operands have dtypes {dt0} and {dt1}, which could not be implicitly casted. Please explicitly cast them to common dtype."
-                    ).into()));
-                }
+        if x_dtype != y_dtype && RT.lock().implicit_casts {
+            let common_dtype = x_dtype.least_upper_dtype(y_dtype);
+            if x_dtype != common_dtype {
+                x = x.cast(common_dtype);
+            }
+            if y_dtype != common_dtype {
+                y = y.cast(common_dtype);
             }
         } else if x_dtype != y_dtype {
             return Err(ZyxError::dtype_error(
