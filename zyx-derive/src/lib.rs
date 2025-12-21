@@ -51,22 +51,23 @@ use syn::{parse_macro_input, Data, DataStruct, DeriveInput};
 pub fn derive_module(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = &input.ident;
+
     let mut field_iterators = quote! {
-        trait __MarkerTraitRef {
-            fn __iterate_by_ref(&self, res: &mut Vec<(String, zyx::Tensor)>, label: &str) {}
+        trait __MarkerTraitRef: Sized {
+            fn __iterate_by_ref(self, res: &mut Vec<(String, &zyx::Tensor)>, label: &str) {}
         }
 
         struct __MarkerStructRef<T>(T);
 
         impl<'a, T: zyx::Module> __MarkerStructRef<&'a T> {
-            fn __iterate_by_ref(&self, res: &mut Vec<(String, zyx::Tensor)>, label: &str) {
+            fn __iterate_by_ref(self, res: &mut Vec<(String, &'a zyx::Tensor)>, label: &str) {
                 res.extend(self.0.iter_tensors().map(|(k, t)|  (format!("{label}.{k}"), t)));
             }
         }
 
-        impl<T> __MarkerTraitRef for __MarkerStructRef<T>{}
+        impl<'a, T> __MarkerTraitRef for __MarkerStructRef<&'a T>{}
 
-        let mut res = Vec::<(String, zyx::Tensor)>::new();
+        let mut res = Vec::<(String, &zyx::Tensor)>::new();
     };
 
     if let Data::Struct(DataStruct { fields, .. }) = &input.data {
@@ -83,19 +84,69 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
             if quote! { #field_ty }.to_string() == "Tensor" {
                 field_iterators = quote! {
                     #field_iterators
-                    res.push((#field_name_str.to_string(), self.#field_name.clone()));
+                    res.push((#field_name_str.to_string(), &self.#field_name));
                 }
             } else if quote! { #field_ty }.to_string() == "Option < Tensor >" {
                 field_iterators = quote! {
                     #field_iterators
-                    if let Some(tensor) = self.#field_name.clone() {
+                    if let Some(tensor) = &self.#field_name {
                         res.push((#field_name_str.to_string(), tensor));
                     }
                 }
             } else {
                 field_iterators = quote! {
                     #field_iterators
-                    __MarkerStructRef::<&#field_ty>::__iterate_by_ref(&__MarkerStructRef(&self.#field_name), &mut res, #field_name_str);
+                    __MarkerStructRef::<&#field_ty>::__iterate_by_ref(__MarkerStructRef(&self.#field_name), &mut res, #field_name_str);
+                };
+            }
+        }
+    }
+
+    let mut mut_field_iterators = quote! {
+        trait __MarkerTraitRef: Sized {
+            fn __iterate_by_ref(mut self, res: &mut Vec<(String, &mut zyx::Tensor)>, label: &str) {}
+        }
+
+        struct __MarkerStructRef<T>(T);
+
+        impl<'a, T: zyx::Module> __MarkerStructRef<&'a mut T> {
+            fn __iterate_by_ref(mut self, res: &mut Vec<(String, &'a mut zyx::Tensor)>, label: &str) {
+                res.extend(self.0.iter_tensors_mut().map(|(k, t)|  (format!("{label}.{k}"), t)));
+            }
+        }
+
+        impl<'a, T> __MarkerTraitRef for __MarkerStructRef<&'a mut T>{}
+
+        let mut res = Vec::<(String, &mut zyx::Tensor)>::new();
+    };
+
+    if let Data::Struct(DataStruct { fields, .. }) = &input.data {
+        for field in fields.iter() {
+            let field_name = match &field.ident {
+                Some(ident) => ident,
+                None => panic!("Unnamed fields are not supported"),
+            };
+            let field_name_str = field_name.to_string();
+
+            let field_ty: &syn::Type = &field.ty;
+
+            use std::string::ToString;
+            if quote! { #field_ty }.to_string() == "Tensor" {
+                mut_field_iterators = quote! {
+                    #mut_field_iterators
+                    res.push((#field_name_str.to_string(), &mut self.#field_name));
+                }
+            } else if quote! { #field_ty }.to_string() == "Option < Tensor >" {
+                mut_field_iterators = quote! {
+                    #mut_field_iterators
+                    if let Some(tensor) = &mut self.#field_name {
+                        res.push((#field_name_str.to_string(), tensor));
+                    }
+                }
+            } else {
+                mut_field_iterators = quote! {
+                    #mut_field_iterators
+                    __MarkerStructRef::<&mut #field_ty>::__iterate_by_ref(__MarkerStructRef(&mut self.#field_name), &mut res, #field_name_str);
                 };
             }
         }
@@ -111,13 +162,14 @@ pub fn derive_module(input: TokenStream) -> TokenStream {
                 self.into_iter()
             }
 
-            fn iter_tensors(&self) -> impl Iterator<Item = (String, zyx::Tensor)> {
+            fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a zyx::Tensor)> {
                 #field_iterators
                 res.into_iter()
             }
 
-            fn from_tensors(tensors: impl Iterator<Item = (String, zyx::Tensor)>) -> Self {
-                todo!()
+            fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut zyx::Tensor)> {
+                #mut_field_iterators
+                res.into_iter()
             }
         }
     };

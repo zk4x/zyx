@@ -30,7 +30,7 @@ impl MnistNet {
 
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
-    let train_dataset: HashMap<String, Tensor> = Module::load("data/mnist_dataset.safetensors")?;
+    let train_dataset: HashMap<String, Tensor> = Tensor::load("data/mnist_dataset.safetensors")?;
     //println!("{:?}", train_dataset.keys());
     let train_x = train_dataset["x_train"].cast(DType::F32)/255;
     //println!("{:.2}", train_x.slice((-5.., ..))?);
@@ -42,11 +42,10 @@ fn main() -> Result<(), ZyxError> {
     let num_train = train_x.shape()[0];
 
     let mut net = MnistNet::new(DType::F32)?;
-    let blah: HashMap<String, Tensor> = net.iter_tensors().collect();
-    net.save("models/mnist.safetensors");
-    panic!();
+    //net.save("models/mnist.safetensors");
 
-    let mut net: MnistNet = Module::load("models/mnist.safetensors")?;
+    let mut state_dict = Tensor::load("models/mnist.safetensors")?;
+    net.set_params(&mut state_dict);
 
     let mut optim = SGD {
         learning_rate: 0.0001,
@@ -94,8 +93,7 @@ fn main() -> Result<(), ZyxError> {
 
             optim.update(&mut net, grads);
 
-            net.realize()?;
-            optim.realize()?;
+            Tensor::realize(net.iter().chain(optim.iter()))?;
 
             iters += 1;
         }

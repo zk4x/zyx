@@ -11,14 +11,23 @@ pub trait Module {
     fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor>;
 
     /// Iterate over tensors without consuming the module
-    fn iter_tensors(&self) -> impl Iterator<Item = (String, Tensor)>;
+    fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a Tensor)>;
 
     /// From tensors
-    fn from_tensors(tensors: impl Iterator<Item = (String, Tensor)>) -> Self;
+    fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)>;
 
     /// Realize all tensors in the module
     fn realize<'a>(&'a self) -> Result<(), ZyxError> {
         Tensor::realize(self.iter())
+    }
+
+    /// Set parameters, removes them from params, skips parameters that are not found in params.
+    fn set_params(&mut self, params: &mut HashMap<String, Tensor>) {
+        for (label, tensor) in self.iter_tensors_mut() {
+            if let Some(param) = params.remove(&label) {
+                *tensor = param;
+            }
+        }
     }
 
     /// Save tensors or modules to a file determined by file extension.
@@ -55,22 +64,95 @@ pub trait Module {
         }
         Ok(())
     }
+}
 
+/// GGUF metadata
+#[allow(unused)]
+pub enum GGUFMetadataValue {
+    Uint8(u8),
+    Int8(i8),
+    Uint16(u16),
+    Int16(i16),
+    Uint32(u32),
+    Int32(i32),
+    Uint64(u64),
+    Int64(i64),
+    Float64(f64),
+    Bool(bool),
+    String(String),
+    Array(Box<[GGUFMetadataValue]>),
+}
+
+impl<S: std::hash::BuildHasher + Default> Module for HashMap<String, Tensor, S> {
+    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
+        self.values()
+    }
+
+    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
+        self.values_mut()
+    }
+
+    fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a Tensor)> {
+        self.iter().map(|(k, v)| (k.clone(), v))
+    }
+
+    fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)> {
+        self.iter_mut().map(|(k, v)| (k.clone(), v))
+    }
+}
+
+impl Module for Vec<Tensor> {
+    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
+        self.into_iter()
+    }
+
+    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
+        self.into_iter()
+    }
+
+    fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a Tensor)> {
+        self.iter().map(|t| (format!("{}", t.id()), t))
+    }
+
+    fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)> {
+        self.iter_mut().map(|t| (format!("{}", t.id()), t))
+    }
+}
+
+impl<M0: Module, M1: Module> Module for (M0, M1) {
+    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
+        self.0.iter().chain(self.1.iter())
+    }
+
+    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
+        self.0.iter_mut().chain(self.1.iter_mut())
+    }
+
+    fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a Tensor)> {
+        self.0.iter_tensors().chain(self.1.iter_tensors())
+    }
+
+    fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)> {
+        self.0.iter_tensors_mut().chain(self.1.iter_tensors_mut())
+    }
+}
+
+impl Tensor {
     /// Load module from path. This function will determine the filetype based on file extension.
     ///
     /// # Errors
     ///
     /// Errors if loading from disk failed or if loaded tensors could not be allocated to device.
     #[allow(clippy::missing_panics_doc)]
-    fn load(path: impl AsRef<Path>) -> Result<Self, ZyxError>
+    pub fn load(path: impl AsRef<Path>) -> Result<HashMap<String, Tensor>, ZyxError>
     where
         Self: Sized,
     {
         RT.lock().initialize_devices()?; // So that we load debug mask
         let e = path.as_ref().extension().and_then(OsStr::to_str).unwrap();
         match e {
-            "safetensors" => Ok(Self::from_tensors(Self::load_safetensors(path)?)),
-            "gguf" => Ok(Self::from_tensors(Self::load_gguf(path)?.1)),
+            "safetensors" => Self::load_safetensors(path),
+            "gguf" => Ok(Self::load_gguf(path)?.1),
             _ => panic!("Unknown file extension. Zyx currently supports only safetensors format."),
         }
     }
@@ -81,15 +163,9 @@ pub trait Module {
     /// read failure
     #[allow(clippy::missing_panics_doc)]
     #[allow(clippy::type_complexity)]
-    fn load_gguf(
+    pub fn load_gguf(
         path: impl AsRef<Path>,
-    ) -> Result<
-        (
-            impl Iterator<Item = (String, GGUFMetadataValue)>,
-            impl Iterator<Item = (String, Tensor)>,
-        ),
-        ZyxError,
-    > {
+    ) -> Result<(HashMap<String, GGUFMetadataValue>, HashMap<String, Tensor>), ZyxError> {
         use std::io::Read;
         let mut f = std::fs::File::open(&path)?;
         let mut magic = [0; 4];
@@ -208,14 +284,14 @@ pub trait Module {
             }
             tensors.insert(name, Tensor::from_path(shape, dtype, &path, offset)?);
         }
-        Ok((metadata.into_iter(), tensors.into_iter()))
+        Ok((metadata, tensors))
     }
 
     /// Load safetensors module from path
     ///
     /// # Errors
     /// Errors if path does not exist or IO failed for other reasons.
-    fn load_safetensors(path: impl AsRef<Path>) -> Result<impl Iterator<Item = (String, Tensor)>, ZyxError> {
+    pub fn load_safetensors(path: impl AsRef<Path>) -> Result<HashMap<String, Tensor>, ZyxError> {
         use std::io::Read;
         let mut f = std::fs::File::open(&path)?;
         //println!("File size is {} bytes", f.metadata()?.len());
@@ -231,7 +307,7 @@ pub trait Module {
         let mut text = String::with_capacity(10);
         let mut begin_str = false;
         let mut i = 0;
-        let mut tensors = Map::default();
+        let mut tensors = HashMap::default();
         let mut dtype = DType::F32;
         let mut shape = vec![1];
         let mut label = String::new();
@@ -314,77 +390,6 @@ pub trait Module {
                 text.push(x);
             }
         }
-        Ok(tensors.into_iter())
-    }
-}
-
-/// GGUF metadata
-#[allow(unused)]
-pub enum GGUFMetadataValue {
-    Uint8(u8),
-    Int8(i8),
-    Uint16(u16),
-    Int16(i16),
-    Uint32(u32),
-    Int32(i32),
-    Uint64(u64),
-    Int64(i64),
-    Float64(f64),
-    Bool(bool),
-    String(String),
-    Array(Box<[GGUFMetadataValue]>),
-}
-
-impl<S: std::hash::BuildHasher + Default> Module for HashMap<String, Tensor, S> {
-    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
-        self.values()
-    }
-
-    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
-        self.values_mut()
-    }
-
-    fn iter_tensors(&self) -> impl Iterator<Item = (String, Tensor)> {
-        self.iter().map(|(k, v)| (k.clone(), v.clone()))
-    }
-
-    fn from_tensors(tensors: impl Iterator<Item = (String, Tensor)>) -> Self {
-        tensors.collect()
-    }
-}
-
-impl Module for Vec<Tensor> {
-    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
-        self.into_iter()
-    }
-
-    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
-        self.into_iter()
-    }
-
-    fn iter_tensors(&self) -> impl Iterator<Item = (String, Tensor)> {
-        self.iter().map(|t: &Tensor| (format!("{}", t.id()), t.clone()))
-    }
-
-    fn from_tensors(tensors: impl Iterator<Item = (String, Tensor)>) -> Self {
-        tensors.map(|(_, t)| t).collect()
-    }
-}
-
-impl<M0: Module, M1: Module> Module for (M0, M1) {
-    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
-        self.0.iter().chain(self.1.iter())
-    }
-
-    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
-        self.0.iter_mut().chain(self.1.iter_mut())
-    }
-
-    fn iter_tensors(&self) -> impl Iterator<Item = (String, Tensor)> {
-        self.0.iter_tensors().chain(self.1.iter_tensors())
-    }
-
-    fn from_tensors(_tensors: impl Iterator<Item = (String, Tensor)>) -> Self {
-        todo!()
+        Ok(tensors)
     }
 }

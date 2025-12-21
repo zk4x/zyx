@@ -26,8 +26,10 @@ fn t0() -> Result<(), ZyxError> {
         },
     };
 
-    let blah: HashMap<String, Tensor> = net.iter_tensors().collect();
+    let blah: HashMap<String, &Tensor> = net.iter_tensors().collect();
     assert_eq!(blah.len(), 2);
+
+    //net.set_params(blah.into_iter());
 
     Ok(())
 }
