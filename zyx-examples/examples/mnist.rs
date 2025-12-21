@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use zyx::{DType, GradientTape, Tensor, ZyxError};
+use zyx::{DType, GradientTape, Module, Tensor, ZyxError};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
@@ -30,24 +30,28 @@ impl MnistNet {
 
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
-    let mut train_dataset: HashMap<String, Tensor> =
-        Tensor::load_safetensors("data/mnist_dataset.safetensors")?;
-    println!("{:?}", train_dataset.keys());
-    let train_x = train_dataset.remove("x_train").unwrap().cast(DType::F32)/255;
-    println!("{:.2}", train_x.slice((-5.., ..))?);
-    let train_y = train_dataset.remove("y_train").unwrap();
-    let test_x = train_dataset.remove("x_test").unwrap().cast(DType::F32)/255;
-    let test_y = train_dataset.remove("y_test").unwrap();
+    let train_dataset: HashMap<String, Tensor> = Module::load("data/mnist_dataset.safetensors")?;
+    //println!("{:?}", train_dataset.keys());
+    let train_x = train_dataset["x_train"].cast(DType::F32)/255;
+    //println!("{:.2}", train_x.slice((-5.., ..))?);
+    let train_y = train_dataset["y_train"].clone();
+    let test_x = train_dataset["x_test"].cast(DType::F32)/255;
+    let test_y = train_dataset["y_test"].clone();
 
     let batch_size = 64usize;
     let num_train = train_x.shape()[0];
 
     let mut net = MnistNet::new(DType::F32)?;
+    let blah: HashMap<String, Tensor> = net.iter_tensors().collect();
+    net.save("models/mnist.safetensors");
+    panic!();
+
+    let mut net: MnistNet = Module::load("models/mnist.safetensors")?;
 
     let mut optim = SGD {
         learning_rate: 0.0001,
-        momentum: 0.9,
-        nesterov: true,
+        momentum: 0.6,
+        nesterov: false,
         ..Default::default()
     };
 
@@ -59,8 +63,8 @@ fn main() -> Result<(), ZyxError> {
         for i in (0..num_train).step_by(batch_size) {
             let end = (i + batch_size).min(num_train);
 
-            let x = train_x.slice([i..end]).unwrap();
-            let y = train_y.slice([i..end]).unwrap();
+            let x = train_x.slice([i..end])?;
+            let y = train_y.slice([i..end])?;
 
             let tape = GradientTape::new();
             let logits = net.forward(&x).clamp(-100, 100)?;
@@ -90,7 +94,9 @@ fn main() -> Result<(), ZyxError> {
 
             optim.update(&mut net, grads);
 
-            Tensor::realize(net.into_iter().chain(&optim))?;
+            net.realize()?;
+            optim.realize()?;
+
             iters += 1;
         }
 

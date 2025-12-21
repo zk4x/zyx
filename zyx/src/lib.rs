@@ -52,9 +52,9 @@
 #![allow(clippy::cast_possible_wrap)]
 
 use crate::runtime::Runtime;
-use std::{fs::File, path::Path};
 
 mod backend;
+mod cache;
 mod dtype;
 mod error;
 mod graph;
@@ -68,7 +68,6 @@ mod runtime;
 mod scalar;
 mod shape;
 mod slab;
-mod cache;
 mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 mod autograd;
@@ -77,6 +76,7 @@ mod prog_bar;
 mod realize;
 mod tensor2;
 mod view;
+mod module;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
@@ -85,9 +85,9 @@ pub use autograd::GradientTape;
 pub use dtype::DType;
 pub use error::ZyxError;
 pub use scalar::{Float, Scalar};
-use shape::Dim;
 pub use shape::IntoShape;
 pub use tensor::Tensor;
+pub use module::Module;
 
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
 static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
@@ -142,52 +142,6 @@ const BLUE: &str = "\x1b[34m";
 const MAGENTA: &str = "\x1b[35m";
 const CYAN: &str = "\x1b[36m";
 const RESET: &str = "\x1b[0m";
-
-/// Save tensors or modules
-pub trait TensorSave {
-    /// Save tensors or modules
-    ///
-    /// # Errors
-    ///
-    /// Errors if tensors failed to realize or failed to save to disk.
-    fn save(self, path: impl AsRef<Path>) -> Result<(), ZyxError>;
-}
-
-impl<'a, I: IntoIterator<Item = &'a Tensor>> TensorSave for I {
-    fn save(self, path: impl AsRef<Path>) -> Result<(), ZyxError> {
-        use std::fmt::Write;
-        use std::io::Write as IOWrite;
-        let mut f = File::create(path)?;
-        let mut header = String::from("{");
-        let mut begin = 0;
-        let tensors: Vec<&Tensor> = self.into_iter().collect();
-        for tensor in &tensors {
-            let dtype = tensor.dtype();
-            //if let Some(label) = tensor.label() {
-            //write!(header, "\"{label}\":{{").unwrap();
-            //} else {
-            write!(header, "\"{}\":{{", Into::<usize>::into(tensor.id())).unwrap();
-            //}
-            write!(header, "\"dtype\":\"{}\",", dtype.safetensors()).unwrap();
-            let mut st_shape = format!("{:?}", tensor.shape());
-            st_shape.retain(|c| !c.is_whitespace());
-            write!(header, "\"shape\":{st_shape},").unwrap();
-            let size = tensor.numel() * dtype.byte_size() as Dim;
-            write!(header, "\"data_offsets\":[{},{}]", begin, begin + size).unwrap();
-            begin += size;
-            write!(header, "}},").unwrap();
-        }
-        header.pop();
-        write!(header, "}}").unwrap();
-        let header_bytes = header.as_bytes();
-        f.write_all(&(header_bytes.len() as u64).to_le_bytes())?;
-        f.write_all(header_bytes)?;
-        for tensor in tensors {
-            f.write_all(&tensor.to_le_bytes()?)?;
-        }
-        Ok(())
-    }
-}
 
 // Execution timer
 /*static ET: mutex::Mutex<std::collections::BTreeMap<String, (u128, u128)>, 1_000_000_000> =

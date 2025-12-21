@@ -16,7 +16,7 @@
 //!
 //! impl MyNet {
 //!     fn forward(&self, x: &Tensor) -> Tensor {
-//!         x.dot(&self.w) + &self.b
+//!         x.dot(&self.w).unwrap() + &self.b
 //!     }
 //! }
 //! ```
@@ -44,13 +44,85 @@ use syn::{parse_macro_input, Data, DataStruct, DeriveInput};
 
 /// # Procedural macro Module
 ///
-/// Implements IntoIterator<Item = &Tensor> and IntoIterator<Item = &mut Tensor> for your struct.
+/// Implements FromIterator<Item = (String, Tensor)> and Module for your struct.
 ///
 /// This allows saving, loading, backpropagation and updating your modules.
 #[proc_macro_derive(Module)]
-pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
+pub fn derive_module(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = &input.ident;
+    let mut field_iterators = quote! {
+        trait __MarkerTraitRef {
+            fn __iterate_by_ref(&self, res: &mut Vec<(String, zyx::Tensor)>, label: &str) {}
+        }
+
+        struct __MarkerStructRef<T>(T);
+
+        impl<'a, T: zyx::Module> __MarkerStructRef<&'a T> {
+            fn __iterate_by_ref(&self, res: &mut Vec<(String, zyx::Tensor)>, label: &str) {
+                res.extend(self.0.iter_tensors().map(|(k, t)|  (format!("{label}.{k}"), t)));
+            }
+        }
+
+        impl<T> __MarkerTraitRef for __MarkerStructRef<T>{}
+
+        let mut res = Vec::<(String, zyx::Tensor)>::new();
+    };
+
+    if let Data::Struct(DataStruct { fields, .. }) = &input.data {
+        for field in fields.iter() {
+            let field_name = match &field.ident {
+                Some(ident) => ident,
+                None => panic!("Unnamed fields are not supported"),
+            };
+            let field_name_str = field_name.to_string();
+
+            let field_ty: &syn::Type = &field.ty;
+
+            use std::string::ToString;
+            if quote! { #field_ty }.to_string() == "Tensor" {
+                field_iterators = quote! {
+                    #field_iterators
+                    res.push((#field_name_str.to_string(), self.#field_name.clone()));
+                }
+            } else if quote! { #field_ty }.to_string() == "Option < Tensor >" {
+                field_iterators = quote! {
+                    #field_iterators
+                    if let Some(tensor) = self.#field_name.clone() {
+                        res.push((#field_name_str.to_string(), tensor));
+                    }
+                }
+            } else {
+                field_iterators = quote! {
+                    #field_iterators
+                    __MarkerStructRef::<&#field_ty>::__iterate_by_ref(&__MarkerStructRef(&self.#field_name), &mut res, #field_name_str);
+                };
+            }
+        }
+    }
+
+    let expanded = quote! {
+        impl zyx::Module for #struct_name {
+            fn iter<'a>(&'a self) -> impl Iterator<Item = &'a zyx::Tensor> {
+                self.into_iter()
+            }
+
+            fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut zyx::Tensor> {
+                self.into_iter()
+            }
+
+            fn iter_tensors(&self) -> impl Iterator<Item = (String, zyx::Tensor)> {
+                #field_iterators
+                res.into_iter()
+            }
+
+            fn from_tensors(tensors: impl Iterator<Item = (String, zyx::Tensor)>) -> Self {
+                todo!()
+            }
+        }
+    };
+
+    // Implementation of IntoIterator<Item = &Tensor>
     let mut field_iterators = quote! {
         trait __MarkerTraitRef<'a> {
             fn __iterate_by_ref(&self, res: &mut Vec<&'a zyx::Tensor>) {}
@@ -92,6 +164,8 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
     }
 
     let expanded = quote! {
+        #expanded
+
         impl<'a> IntoIterator for &'a #struct_name {
             type Item = &'a zyx::Tensor;
             type IntoIter = std::vec::IntoIter<&'a zyx::Tensor>;
@@ -103,6 +177,7 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
         }
     };
 
+    // Implementation of IntoIterator<Item = &mut Tensor>
     let mut field_iterators = quote! {
         trait MarkerTraitMut<'a>: Sized {
             fn iterate_by_mut(mut self, res: &mut Vec<&'a mut zyx::Tensor>) {}
@@ -159,4 +234,3 @@ pub fn into_iterator_item_tensor(input: TokenStream) -> TokenStream {
 
     TokenStream::from(expanded)
 }
-
