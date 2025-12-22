@@ -70,21 +70,23 @@ fn t04() -> Result<(), ZyxError> {
     impl MnistNet {
         fn forward(&self, x: &Tensor) -> Tensor {
             let x = x.reshape([0, 784]).unwrap();
-            let x = x.matmul(&self.l1_weight).unwrap() + &self.l1_bias;
+            let x = x.matmul(&self.l1_weight.t()).unwrap() + &self.l1_bias;
             let x = x.relu();
-            let x = x.matmul(&self.l2_weight).unwrap() + &self.l2_bias;
+            let x = x.matmul(&self.l2_weight.t()).unwrap() + &self.l2_bias;
             x
         }
     }
 
+    let state_dict = Tensor::load("../zyx-examples/models/mnist.safetensors")?;
+
     let net = MnistNet {
-        l1_weight: Tensor::rand([784, 128], DType::F32)?,
-        l1_bias: Tensor::rand([784, 128], DType::F32)?,
-        l2_weight: Tensor::rand([128, 10], DType::F32)?,
-        l2_bias: Tensor::rand([784, 128], DType::F32)?,
+        l1_weight: state_dict["l1.weight"].clone(),
+        l1_bias: state_dict["l1.bias"].clone(),
+        l2_weight: state_dict["l2.weight"].clone(),
+        l2_bias: state_dict["l2.bias"].clone(),
     }; // l1: Linear::new(784, 128, true, dtype)?, l2: Linear::new(128, 10, true, dtype)? };
 
-    let x = Tensor::randn([784], DType::F32)?;
+    let x = Tensor::rand([784], DType::F32)?;
     let x = net.forward(&x);
     println!("{x}");
 
