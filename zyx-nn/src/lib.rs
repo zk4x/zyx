@@ -54,11 +54,6 @@ pub use embedding::Embedding;
 mod conv2d;
 pub use conv2d::Conv2d;
 
-// I don't like this, use fn(&Tensor) -> Tensor or something like that instead
-// fn(impl Into<Tensor>) -> Tensor
-//mod activation;
-//pub use activation::Activation;
-
 mod positional_encoding;
 pub use positional_encoding::PositionalEncoding;
 
@@ -67,3 +62,8 @@ pub use transformer_encoder_layer::TransformerEncoderLayer;
 
 mod transformer_decoder_layer;
 pub use transformer_decoder_layer::TransformerDecoderLayer;
+
+// I don't like this, use fn(&Tensor) -> Tensor or something like that instead
+// fn(impl Into<Tensor>) -> Tensor
+//mod activation;
+//pub use activation::Activation;

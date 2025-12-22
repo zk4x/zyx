@@ -24,28 +24,24 @@ impl MnistNet {
     }
 }
 
-// ----------------------------------------------------------------------------
-// TRAINING LOOP
-// ----------------------------------------------------------------------------
-
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
     let train_dataset: HashMap<String, Tensor> = Tensor::load("data/mnist_dataset.safetensors")?;
     //println!("{:?}", train_dataset.keys());
-    let train_x = train_dataset["x_train"].cast(DType::F32)/255;
+    let train_x = train_dataset["train_x"].cast(DType::F32) / 255;
     //println!("{:.2}", train_x.slice((-5.., ..))?);
-    let train_y = train_dataset["y_train"].clone();
-    let test_x = train_dataset["x_test"].cast(DType::F32)/255;
-    let test_y = train_dataset["y_test"].clone();
+    let train_y = train_dataset["train_y"].clone();
+    let test_x = train_dataset["test_x"].cast(DType::F32) / 255;
+    let test_y = train_dataset["test_y"].clone();
 
     let batch_size = 64usize;
     let num_train = train_x.shape()[0];
 
     let mut net = MnistNet::new(DType::F32)?;
-    //net.save("models/mnist.safetensors");
+    //net.save("models/mnist.safetensors")?;
 
-    let mut state_dict = Tensor::load("models/mnist.safetensors")?;
-    net.set_params(&mut state_dict);
+    //let mut state_dict = Tensor::load("models/mnist.safetensors")?;
+    //net.set_params(&mut state_dict);
 
     let mut optim = SGD {
         learning_rate: 0.0001,
@@ -55,6 +51,8 @@ fn main() -> Result<(), ZyxError> {
     };
 
     println!("Training...");
+    Tensor::realize_all()?;
+    panic!();
     for epoch in 1..=5 {
         let mut total_loss = 0f32;
         let mut iters = 0;

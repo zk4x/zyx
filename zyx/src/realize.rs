@@ -603,12 +603,11 @@ impl<'a> Kernelizer<'a> {
         // Then select first fastest device that has associated memory pool which fits all tensors used
         // as arguments for the kernel that are not yet allocated on that memory pool.
 
-        //println!("Loads: {loads:?}");
-        //println!("Stores: {stores:?}");
-        //println!("Kernel launch");
+        kernel.debug();
 
         let KMKernel { mut kernel, outputs: _, loads, stores } = kernel;
-        //debug_assert!(outputs.is_empty());
+        debug_assert!(!stores.is_empty());
+        debug_assert!(!kernel.ops.is_empty());
 
         let required_stores_memory: Dim = stores
             .iter()

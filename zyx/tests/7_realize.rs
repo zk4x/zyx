@@ -1,4 +1,4 @@
-use zyx::{Tensor, ZyxError};
+use zyx::{DType, Tensor, ZyxError};
 
 #[test]
 fn t01() -> Result<(), ZyxError> {
@@ -54,6 +54,39 @@ fn t03() -> Result<(), ZyxError> {
         x = y2.log2();
         Tensor::realize([&x])?;
     }
+
+    Ok(())
+}
+
+#[test]
+fn t04() -> Result<(), ZyxError> {
+    struct MnistNet {
+        l1_weight: Tensor,
+        l1_bias: Tensor,
+        l2_weight: Tensor,
+        l2_bias: Tensor,
+    }
+
+    impl MnistNet {
+        fn forward(&self, x: &Tensor) -> Tensor {
+            let x = x.reshape([0, 784]).unwrap();
+            let x = x.matmul(&self.l1_weight).unwrap() + &self.l1_bias;
+            let x = x.relu();
+            let x = x.matmul(&self.l2_weight).unwrap() + &self.l2_bias;
+            x
+        }
+    }
+
+    let net = MnistNet {
+        l1_weight: Tensor::rand([784, 128], DType::F32)?,
+        l1_bias: Tensor::rand([784, 128], DType::F32)?,
+        l2_weight: Tensor::rand([128, 10], DType::F32)?,
+        l2_bias: Tensor::rand([784, 128], DType::F32)?,
+    }; // l1: Linear::new(784, 128, true, dtype)?, l2: Linear::new(128, 10, true, dtype)? };
+
+    let x = Tensor::randn([784], DType::F32)?;
+    let x = net.forward(&x);
+    println!("{x}");
 
     Ok(())
 }
