@@ -64,7 +64,7 @@ fn main() -> Result<(), ZyxError> {
             let y = train_y.slice([i..end])?;
 
             let tape = GradientTape::new();
-            let logits = net.forward(&x).clamp(-100, 100)?;
+            let logits = net.forward(&x); //.clamp(-100, 100)?;
             println!("{:?}, {:?}", logits.shape(), y.shape());
 
             //println!("{}", logits.slice((-5.., ..))?);

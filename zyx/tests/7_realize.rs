@@ -92,3 +92,10 @@ fn t04() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn pad_1() -> Result<(), ZyxError> {
+    let x = Tensor::arange(0, 20, 1)?.reshape([4, 5])?;
+    assert_eq!(x.rslice(3)?, [[3], [8], [13], [18]]);
+    Ok(())
+}

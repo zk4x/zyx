@@ -72,11 +72,10 @@ mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 mod autograd;
 mod chasher;
+mod module;
 mod prog_bar;
 mod realize;
-mod tensor2;
 mod view;
-mod module;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
@@ -84,10 +83,10 @@ type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<c
 pub use autograd::GradientTape;
 pub use dtype::DType;
 pub use error::ZyxError;
+pub use module::Module;
 pub use scalar::{Float, Scalar};
 pub use shape::IntoShape;
 pub use tensor::Tensor;
-pub use module::Module;
 
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
 static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());

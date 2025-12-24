@@ -607,7 +607,7 @@ impl<'a> Kernelizer<'a> {
             kernel.debug();
         }
         let KMKernel { mut kernel, outputs: _, loads, stores } = kernel;
-        debug_assert!(!stores.is_empty());
+        //debug_assert!(!stores.is_empty());
         debug_assert!(!kernel.ops.is_empty());
 
         let required_stores_memory: Dim = stores

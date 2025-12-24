@@ -408,6 +408,7 @@ impl View {
                 self.pad_axis(axis, lp, rp);
             }
         }
+        //println!("Shape after padding: {:?}", self.shape());
     }
 
     pub fn pad_axis(&mut self, axis: UAxis, left_pad: isize, right_pad: isize) {
