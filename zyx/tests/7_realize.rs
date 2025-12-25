@@ -1,4 +1,4 @@
-use zyx::{DType, Tensor, ZyxError};
+use zyx::{Tensor, ZyxError};
 
 #[test]
 fn t01() -> Result<(), ZyxError> {
@@ -84,9 +84,9 @@ fn t04() -> Result<(), ZyxError> {
         l1_bias: state_dict["l1.bias"].clone(),
         l2_weight: state_dict["l2.weight"].clone(),
         l2_bias: state_dict["l2.bias"].clone(),
-    }; // l1: Linear::new(784, 128, true, dtype)?, l2: Linear::new(128, 10, true, dtype)? };
+    };
 
-    let x = Tensor::rand([784], DType::F32)?;
+    let x = Tensor::arange(0f32, 784. * 184., 1.)?;
     let x = net.forward(&x);
     println!("{x}");
 

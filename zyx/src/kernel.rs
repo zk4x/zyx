@@ -227,6 +227,20 @@ impl Kernel {
         self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
     }
 
+    pub fn total_reduce_dim(&self, op: OpId) -> Dim {
+        fn recurse(ops: &[Op], x: OpId) -> Dim {
+            let mut prod: Dim = 1;
+            if let Op::Reduce { dims, .. } = &ops[x] {
+                prod *= dims.iter().product::<Dim>();
+            }
+            for param in ops[x].parameters() {
+                prod *= recurse(ops, param);
+            }
+            return prod;
+        }
+        recurse(&self.ops, op)
+    }
+
     pub fn contains_stores(&self) -> bool {
         self.ops.iter().any(|x| matches!(x, Op::StoreView { .. }))
     }
@@ -812,7 +826,6 @@ impl Kernel {
         // Iterate:
         //   find a chain of commutative ops like add/sub
         //   reoder by moving loop index last
-
     }
 
     pub fn loop_invariant_code_motion(&mut self, loop_id: OpId) {

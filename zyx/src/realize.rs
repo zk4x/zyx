@@ -60,6 +60,10 @@ impl KMKernel {
         self.kernel.is_reduce()
     }
 
+    fn total_reduce_dim(&self, op: OpId) -> Dim {
+        self.kernel.total_reduce_dim(op)
+    }
+
     fn apply_movement(&mut self, func: impl Fn(&mut View)) {
         self.kernel.apply_movement(func);
     }
@@ -219,7 +223,7 @@ impl<'a> Kernelizer<'a> {
         self.virt_realized_nodes.contains(&nid)
     }
 
-    fn duplicate_or_store(&mut self, x: TensorId) -> Result<(KernelId, OpId), ZyxError> {
+    fn duplicate_or_store(&mut self, x: TensorId, reduce_dims: Option<Dim>) -> Result<(KernelId, OpId), ZyxError> {
         let (mut kid, mut op_id) = self.visited[&x];
 
         if self.kernels[kid].contains_stores() {
@@ -227,6 +231,19 @@ impl<'a> Kernelizer<'a> {
             (kid, op_id) = self.create_load_kernel(x);
             if self.kernels[kid].outputs.len() > 1 {
                 kid = self.duplicate_kernel(x, kid);
+            }
+        }
+
+        // if it's reduce
+        if let Some(reduce_dims) = reduce_dims {
+            if self.kernels[kid].is_reduce() {
+                if reduce_dims * self.kernels[kid].total_reduce_dim(op_id) > 32000 {
+                    self.add_store(x)?;
+                    (kid, op_id) = self.create_load_kernel(x);
+                    if self.kernels[kid].outputs.len() > 1 {
+                        kid = self.duplicate_kernel(x, kid);
+                    }
+                }
             }
         }
 
@@ -288,7 +305,7 @@ impl<'a> Kernelizer<'a> {
 
     fn add_expand_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add expand op that inserts loop in IR
-        let (kid, op_id) = self.duplicate_or_store(x)?;
+        let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
         kernel.apply_movement(|view| view.expand(shape));
@@ -302,7 +319,7 @@ impl<'a> Kernelizer<'a> {
 
     fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add permute op that swaps indices in IR
-        let (kid, op_id) = self.duplicate_or_store(x)?;
+        let (kid, op_id) = self.duplicate_or_store(x, None)?;
         let axes = self.graph.axes(nid);
         let kernel = &mut self.kernels[kid];
         kernel.apply_movement(|view| view.permute(axes));
@@ -321,7 +338,7 @@ impl<'a> Kernelizer<'a> {
         // or fusing two dims, it can be represented by a custom
         // op that is unfoldable into indices, since it does not change
         // global work size.
-        let (kid, op_id) = self.duplicate_or_store(x)?;
+        let (kid, op_id) = self.duplicate_or_store(x, None)?;
         let n = self.graph.shape(x).len();
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
@@ -336,7 +353,7 @@ impl<'a> Kernelizer<'a> {
 
     fn add_pad_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of duplication add pad op that adds if statement into ir (e.g. if idx < padding)
-        let (kid, op_id) = self.duplicate_or_store(x)?;
+        let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
         let padding = self.graph.padding(nid);
         let rank = self.graph.shape(nid).len();
         let kernel = &mut self.kernels[kid];
@@ -353,16 +370,20 @@ impl<'a> Kernelizer<'a> {
         // Don't apply reduce if the kernel already contains reduce
         // and the resulting shape's dimension is less than 256
 
+        let axes = self.graph.axes(nid);
+        let shape = self.graph.shape(x);
+        let dims: Vec<Dim> = axes.iter().map(|&a| shape[a]).collect();
+
         // If the kernel has more than one output, or rc of x is more than one,
         // we have to either copy it (if it is small), or store x (if kid is big)
-        let (kid, op_id) = self.duplicate_or_store(x)?;
+        let reduce_dims_product: Dim = dims.iter().product();
+        let (kid, op_id) = self.duplicate_or_store(x, Some(reduce_dims_product))?;
         //self.debug();
 
         /*for kernel in kernels.iter() {
             println!("{:?}, {}", kernel.0, kernel.1.n_outputs);
         }*/
 
-        let axes = self.graph.axes(nid);
         #[cfg(debug_assertions)]
         {
             use crate::shape::UAxis;
@@ -374,7 +395,6 @@ impl<'a> Kernelizer<'a> {
         //kernels[kid].debug();
         //println!("{axes:?}");
 
-        let shape = self.graph.shape(x);
         {
             // Permute before reduce so that reduce axes are last
             let n = shape.len();
@@ -393,7 +413,7 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
         }
 
-        let dims = axes.iter().map(|&a| shape[a]).collect();
+        // If all dims are reduced
         if shape == dims {
             self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
         }
@@ -606,8 +626,9 @@ impl<'a> Kernelizer<'a> {
         if kernel.stores.is_empty() {
             kernel.debug();
         }
-        let KMKernel { mut kernel, outputs: _, loads, stores } = kernel;
-        //debug_assert!(!stores.is_empty());
+        let KMKernel { mut kernel, outputs, loads, stores } = kernel;
+        debug_assert!(outputs.is_empty());
+        debug_assert!(!stores.is_empty());
         debug_assert!(!kernel.ops.is_empty());
 
         let required_stores_memory: Dim = stores
@@ -817,10 +838,10 @@ impl<'a> Kernelizer<'a> {
                     continue;
                 }
 
-                let timer = std::time::Instant::now();
                 if self.debug.kmd() {
                     println!("Kernel launch from memory pool {mpid} with args: {args:?}");
                 }
+                let timer = std::time::Instant::now();
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 pool.pool.sync_events(vec![event])?;
                 nanos = timer.elapsed().as_nanos() as u64;
@@ -1008,7 +1029,7 @@ impl Runtime {
         );
 
         for &nid in order {
-            /*use crate::{RED, RESET};
+            use crate::{RED, RESET};
             println!(
                 "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
                 if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
@@ -1016,7 +1037,7 @@ impl Runtime {
                 self.graph[nid],
                 self.graph.dtype(nid),
                 self.graph.shape(nid)
-            );*/
+            );
             if kernelizer.is_virt_realized(nid) {
                 kernelizer.create_load_kernel(nid);
             } else {
