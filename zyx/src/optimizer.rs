@@ -15,7 +15,7 @@ pub struct Optimization(u32);
 pub struct Optimizer {
     // optimizations
     local_work_size_opt: WorkSizeOpt,
-    loop_unroll_and_jam_opt: LoopUnrollAndJamOpt,
+    loop_unroll_and_jam_opt: UpcastOpt,
     loop_unrolling_opt: LoopUnrollingOpt,
     loop_split_opt: LoopSplitOpt,
     //inner_loop_swap_opt: InnerLoopSwapOpt, // a bit harder to know max number of optimizations
@@ -102,7 +102,7 @@ impl Optimizer {
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
         let (local_work_size_opt, local_work_size_opt_max_idx) = WorkSizeOpt::new(kernel, dev_info);
         let (loop_unrolling_opt, loop_unrolling_opt_max_idx) = LoopUnrollingOpt::new(kernel);
-        let (loop_unroll_and_jam_opt, loop_unroll_and_jam_opt_max_idx) = LoopUnrollAndJamOpt::new(kernel);
+        let (loop_unroll_and_jam_opt, loop_unroll_and_jam_opt_max_idx) = UpcastOpt::new(kernel);
         let (loop_split_opt, loop_split_opt_max_idx) = LoopSplitOpt::new(kernel);
         let max_indices = [
             local_work_size_opt_max_idx,
@@ -299,9 +299,9 @@ impl WorkSizeOpt {
 
 /// loop unrolling plus loop invariant code motion
 #[derive(Debug, Clone, DeBin, SerBin)]
-struct LoopUnrollAndJamOpt {}
+struct UpcastOpt {}
 
-impl LoopUnrollAndJamOpt {
+impl UpcastOpt {
     fn new(_kernel: &Kernel) -> (Self, u32) {
         (Self {}, 3) // 8, 16, 32 unfolding
     }
@@ -320,7 +320,6 @@ impl LoopUnrollAndJamOpt {
                         if kernel.ops.len() * dim > 10000 {
                             continue;
                         }
-                        // TODO add eject define
                         kernel.loop_jam(op_id);
                     }
                 }

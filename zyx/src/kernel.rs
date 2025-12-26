@@ -897,181 +897,7 @@ impl Kernel {
         self.ops.extend(tail);
     }
 
-    /*
-    /// Ejects define op outside of current loop and makes it larger
-    pub fn eject_define(&mut self, define_id: OpId) {
-        // TODO
-    }*/
-
-    /// Jam outer loop into inner loop
-    pub fn loop_jam(&mut self, _loop_id: OpId) {
-        // TODO
-    }
-
-    /*pub fn loop_unroll_and_jam(&mut self, loop_id: OpId) {
-        // This function must be called after LICM
-        // LICM guarantees only ops kept in the loop are those that depend on the index
-        // or are defines.
-
-        // TODO instead of unrolling, just add loops before the body and after the body and more all define ops before those loops
-        // and that should be it.
-        self.debug();
-
-        // Assumes there is outer loop at loop_id and at least one inner loop in this outer loop
-        let Op::Loop { dim: loop_dim, scope } = self.ops[loop_id] else { unreachable!() };
-        debug_assert_eq!(scope, Scope::Register);
-        let end_loop_id = self.get_end_loop_id(loop_id);
-        println!("loop_id={loop_id}");
-        println!("end_loop_id={end_loop_id}");
-
-        let inner_loop_id =
-            self.ops[loop_id + 1..].iter().position(|op| matches!(op, Op::Loop { .. })).unwrap() + loop_id + 1;
-        let end_inner_loop_id = self.get_end_loop_id(inner_loop_id);
-        println!("inner_loop_id={inner_loop_id}");
-        println!("end_inner_loop_id={end_inner_loop_id}");
-
-        // We can do this as triple unroll, that is unroll at the same time pre_body, post_body and inner_body
-        let tail = self.ops.split_off(end_loop_id);
-        let mut post_body = self.ops.split_off(end_inner_loop_id);
-        let mut inner_body = self.ops.split_off(inner_loop_id);
-        // pre_body is iterated over and appended to self.ops, inner body and post body
-        let pre_body = self.ops.split_off(loop_id + 1);
-
-        let mut offset = 0; // By how much to shift first inner body and then post body
-        let mut idx_consts = Vec::new();
-
-        // UNROLL PART OF THE LOOP BEFORE THE INNER LOOP
-        // The first unroll is special as we deal with defines
-        self.ops.pop();
-        idx_consts.push(self.ops.len());
-        self.ops.push(Op::Const(Constant::idx(0))); // Loop index for first iteration
-        for op in &pre_body {
-            // Deal with pre body part
-            if let &Op::Define { dtype, scope, ro, len } = op {
-                self.ops.push(Op::Define { dtype, scope, ro, len: len * loop_dim })
-            } else {
-                self.ops.push(op.clone());
-            }
-        }
-        // Deal with pre body part
-        for idx in 1..loop_dim {
-            idx_consts.push(self.ops.len());
-            self.ops.push(Op::Const(Constant::idx(idx as u64)));
-
-            let n = self.ops.len();
-            for op in &pre_body {
-                if let &Op::Define { .. } = op {
-                    self.ops.push(Op::Null);
-                } else {
-                    self.ops.push(op.clone());
-                }
-            }
-            remap_or_increment(
-                &mut self.ops[n..],
-                loop_id,
-                *idx_consts.last().unwrap(),
-                offset,
-                loop_id + 1..,
-            );
-            offset += pre_body.len() + 1;
-        }
-
-        // JAM INTO INNER LOOP
-        {
-            self.ops.push(inner_body.remove(0)); // First add inner loop op
-            // Jam outer loop into inner body
-            self.ops.push(Op::Loop { dim: loop_dim, scope: Scope::Register });
-            let n = self.ops.len();
-            // Add ops from pre_body, exclude define ops
-            self.ops.extend(pre_body.iter().map(|op| {
-                if matches!(op, Op::Define { .. } | Op::Store { .. }) {
-                    Op::Null
-                } else if matches!(op, Op::Load { .. }) {
-                    todo!() // Not sure what to do if this is the case, perhaps just return false?
-                } else {
-                    op.clone()
-                }
-            }));
-
-            // Increment pre_body ops that reference pre_body ops
-            increment(
-                &mut self.ops[n..],
-                (offset + pre_body.len() + 2) as isize, // 2 = 1 for inner loop + 1 for jammed loop
-                loop_id..inner_loop_id,
-            );
-
-            let get_offset = |x, offset| {
-                if x <= inner_loop_id { x + offset } else { x + offset + 1 }
-            };
-
-            // Add inner body
-            for op in inner_body {
-                match op {
-                    Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
-                        unreachable!()
-                    }
-                    Op::EndLoop => {
-                        self.ops.push(Op::EndLoop);
-                    }
-                    Op::Loop { dim, scope } => {
-                        self.ops.push(Op::Loop { dim, scope });
-                    }
-                    Op::Cast { x, dtype } => {
-                        self.ops.push(Op::Cast { x: get_offset(x, offset), dtype });
-                    }
-                    Op::Unary { x, uop } => {
-                        self.ops.push(Op::Unary { x: get_offset(x, offset), uop });
-                    }
-                    Op::Binary { x, y, bop } => {
-                        self.ops.push(Op::Binary { x: get_offset(x, offset), y: get_offset(y, offset), bop });
-                    }
-                    Op::Null => {
-                        self.ops.push(Op::Null);
-                    }
-                    Op::Const(constant) => {
-                        self.ops.push(Op::Const(constant));
-                    }
-                    Op::Define { dtype, scope, ro, len } => {
-                        self.ops.push(Op::Define { dtype, scope, ro, len });
-                    }
-                    Op::Load { src, index } => {
-                        self.ops.push(Op::Load { src, index: get_offset(index, offset) });
-                    } // If loads from unrolled define, add index first
-                    Op::Store { dst, x, index } => {
-                        self.ops.push(Op::Store { dst, x: get_offset(x, offset), index: get_offset(index, offset) });
-                    } // If stores to unrolled define, add index first
-                }
-            }
-            offset += 1;
-        }
-
-        self.ops.push(Op::EndLoop); // Add end of the jammed loop
-        self.ops.push(post_body.remove(0)); // Add end of the inner body loop
-        offset += 1;
-
-        // UNROLL PART OF THE LOOP AFTER THE INNER LOOP
-        for idx in 1..loop_dim {
-            let n = self.ops.len();
-            self.ops.extend(post_body.clone());
-            remap_or_increment(&mut self.ops[n..], loop_id, idx_consts[idx], offset, loop_id + 1..);
-            offset += post_body.len();
-        }
-
-        self.ops.extend(tail);
-
-        self.debug();
-        //todo!();
-    }*/
-
-    // Loop tiling/vectorization. Tiles all loads.
-    /*pub fn loop_tile(&mut self, loop_id: OpId) {
-        todo!()
-    }
-
-    pub fn loop_tile_and_jam(&mut self, loop_id: OpId) {
-        todo!()
-    }*/
-
+    /// Reshapes, (splits or merges) reduce from original into new_dims
     pub fn reshape_reduce(&mut self, reduce_id: OpId, new_dims: &[Dim]) {
         let Op::Reduce { x, ref mut dims, .. } = self.ops[reduce_id] else { return };
         let n_old_dims = dims.len();
@@ -1515,4 +1341,114 @@ fn remap_or_increment(ops: &mut [Op], from: OpId, to: OpId, d: usize, range: imp
             }
         }
     }
+}
+
+/// Kernel optimization ops that may or may not be applied, that is they are beneficial for some kernels,
+/// but hurt other kernels or backends.
+impl Kernel {
+    /// Take defines in loop at loop_id and multiply their size
+    /// Take the loop at loop_id and move it into the loop that follows it (jam)
+    pub fn loop_jam(&mut self, loop_id: OpId) {
+        self.debug();
+        // Get loop details
+        let Op::Loop { dim, scope } = self.ops[loop_id] else { unreachable!() };
+        debug_assert_eq!(scope, Scope::Register);
+
+        // Get loop borders
+        let end_loop_id = self.get_end_loop_id(loop_id);
+        let inner_loop_id =
+            self.ops[loop_id + 1..].iter().position(|op| matches!(op, Op::Loop { .. })).unwrap() + loop_id + 1;
+        let end_inner_loop_id = self.get_end_loop_id(inner_loop_id);
+
+        // split kernel into blocks
+        let tail = self.ops.split_off(end_loop_id);
+        let post_loop = self.ops.split_off(end_inner_loop_id + 1);
+        let mut inner_loop = self.ops.split_off(inner_loop_id);
+        let pre_loop = self.ops.split_off(loop_id);
+
+        // Define offset that increases for each inserted op
+        let mut offset = 0;
+
+        // Expand define ops
+        let mut define_map = Map::default();
+        for (i, op) in pre_loop.iter().enumerate() {
+            if let &Op::Define { dtype, scope, ro, len } = op {
+                let new_define_id = self.ops.len();
+                self.ops.push(Op::Define { dtype, scope, ro, len: len * dim });
+                offset += 1;
+                define_map.insert(i, new_define_id);
+            }
+        }
+        println!("{define_map:?}");
+        for op in &pre_loop {
+            let loop_index = self.ops.len();
+            self.ops.push(Op::Loop { dim, scope });
+            offset += 1;
+            if let &Op::Store { dst, x, index } = op {
+                // TODO fix dst, x, index
+                // for example if index is not just a constant 0, it can't be replaced,
+                // it has to be multiplied by stride and added
+                self.ops.push(Op::Store { dst, x, index: loop_index });
+                offset += 1;
+            }
+            self.ops.push(Op::EndLoop);
+            offset += 1;
+        }
+
+        // JAM THE LOOP
+        // Put pre loop
+        self.ops.push(inner_loop.remove(0));
+        for op in &pre_loop {
+            if matches!(op, Op::Define { .. } | Op::Store { .. }) {
+                self.ops.push(Op::Null);
+            } else {
+                self.ops.push(op.clone());
+            }
+        }
+
+        // Put inner loop
+        // TODO perhaps this shouldn't be loop_id, but something else
+        increment(&mut inner_loop, offset, loop_id..);
+        self.ops.extend(inner_loop);
+
+        // Put pre loop before post loop
+        // TODO fix offsets
+        for op in pre_loop {
+            if matches!(op, Op::Define { .. } | Op::Store { .. }) {
+                self.ops.push(Op::Null);
+            } else {
+                self.ops.push(op.clone());
+            }
+        }
+
+        // Resolve parts ofter the inner loop
+        // Put post loop
+        // TODO fix offsets
+        self.ops.extend(post_loop);
+
+        // Put tail
+        // TODO fix offsets
+        self.ops.extend(tail);
+
+        self.debug();
+        panic!();
+    }
+
+    // Something like this to upcast local dimensions, that is to do double buffering along local dimensions
+    //pub fn upcast_local(&mut self, loop_id: OpId, dim: Dim) {}
+
+    // Split loop into multiple accumulation steps
+    //pub fn multi_step_reduce(&mut self) {}
+
+    /// Adds local memory buffer for large reduces
+    pub fn grouptop(&mut self, loop_id: OpId, dim: Dim) {}
+
+    // In tinygrad, thread splits workload across multiple CPU threads
+    //pub fn thread(&mut self, loop_id)
+
+    // Loop tiling/vectorization. Tiles all loads.
+    // This may not be needed, it depends how we actually implement tensor cores and double buffering
+    /*pub fn loop_tile(&mut self, loop_id: OpId) {
+        todo!()
+    }*/
 }
