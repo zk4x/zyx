@@ -1386,6 +1386,7 @@ fn remap_or_increment(ops: &mut [Op], from: OpId, to: OpId, d: usize, range: imp
     }
 }
 
+/*
 /// Kernel optimization ops that may or may not be applied, that is they are beneficial for some kernels,
 /// but hurt other kernels or backends.
 impl Kernel {
@@ -1423,6 +1424,7 @@ impl Kernel {
             }
         }
 
+        // Add stores of define ops before inner loops
         let loop_index = self.ops.len();
         self.ops.push(Op::Loop { dim, scope });
         offset += 1;
@@ -1439,8 +1441,9 @@ impl Kernel {
         self.ops.push(Op::EndLoop);
         offset += 1;
 
-        // JAM THE LOOP
-        // Put pre loop
+        // ***** JAM THE LOOP *****
+        // *** Put pre loop ***
+        let new_inner_loop_id = self.ops.len();
         self.ops.push(inner_loop.remove(0));
         for op in &pre_loop {
             if matches!(op, Op::Define { .. } | Op::Store { .. }) {
@@ -1449,10 +1452,23 @@ impl Kernel {
                 self.ops.push(op.clone());
             }
         }
+        // Reindex pre loop
+        println!(
+            "new_inner_loop_id={new_inner_loop_id}, pre_loop.len()={}, offset={offset}, loop_id={loop_id}",
+            pre_loop.len(),
+        );
+        // offset + 1 for inner loop op
+        increment(&mut self.ops[new_inner_loop_id + 1..], offset + 1, loop_id..);
 
-        // Put inner loop
-        // TODO perhaps this shouldn't be loop_id, but something else
-        increment(&mut inner_loop, offset, loop_id..);
+        // *** Put inner loop ***
+        // First increment ops inside inner loop by offset (number of inserted ops)
+        increment(&mut inner_loop, offset, inner_loop_id..);
+        // Remap references to inner loop, now already with applied offset
+        //remap(&mut inner_loop, map);
+        // Increment references to pre loop, again + 1 for inner loop op itself
+        increment(&mut inner_loop, offset + 1, loop_id..inner_loop_id);
+        // Remap references to defines
+        // remape(&mut inner_loop, defines_map);
         self.ops.extend(inner_loop);
 
         // Put pre loop before post loop
@@ -1495,4 +1511,4 @@ impl Kernel {
     /*pub fn loop_tile(&mut self, loop_id: OpId) {
         todo!()
     }*/
-}
+}*/

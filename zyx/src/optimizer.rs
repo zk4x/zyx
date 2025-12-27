@@ -322,7 +322,8 @@ impl UpcastOpt {
                         if kernel.ops.len() * dim > 10000 {
                             continue;
                         }
-                        kernel.loop_jam(op_id);
+                        // TODO
+                        //kernel.loop_jam(op_id);
                     }
                 }
             }
