@@ -376,7 +376,7 @@ impl Runtime {
         }
         let mut to_eval = Set::with_capacity_and_hasher(10, BuildHasherDefault::default());
         to_eval.insert(x);
-        self.realize_specific(&to_eval)?;
+        self.realize_selected(&to_eval)?;
         let mut shape = self.shape(x).to_vec();
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
@@ -547,7 +547,7 @@ impl Runtime {
         if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
             let mut to_eval = Set::with_capacity_and_hasher(1, BuildHasherDefault::default());
             to_eval.insert(x);
-            self.realize_specific(&to_eval)?;
+            self.realize_selected(&to_eval)?;
         }
 
         let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x).unwrap();

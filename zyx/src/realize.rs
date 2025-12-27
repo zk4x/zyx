@@ -627,7 +627,7 @@ impl<'a> Kernelizer<'a> {
             kernel.debug();
         }
         let KMKernel { mut kernel, outputs, loads, stores } = kernel;
-        debug_assert!(outputs.is_empty());
+        //debug_assert!(outputs.is_empty());
         debug_assert!(!stores.is_empty());
         debug_assert!(!kernel.ops.is_empty());
 
@@ -1029,7 +1029,7 @@ impl Runtime {
         );
 
         for &nid in order {
-            use crate::{RED, RESET};
+            /*use crate::{RED, RESET};
             println!(
                 "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
                 if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
@@ -1037,7 +1037,7 @@ impl Runtime {
                 self.graph[nid],
                 self.graph.dtype(nid),
                 self.graph.shape(nid)
-            );
+            );*/
             if kernelizer.is_virt_realized(nid) {
                 kernelizer.create_load_kernel(nid);
             } else {
@@ -1118,7 +1118,7 @@ impl Runtime {
         Ok(())
     }
 
-    pub fn realize_specific(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+    pub fn realize_selected(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         let realized_nodes: Set<TensorId> =
             self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
 

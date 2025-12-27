@@ -270,7 +270,6 @@ fn grad_linear_2() -> Result<(), ZyxError> {
     Ok(())
 }
 
-// TODO this fails due to runtime realize graph creation issue
 #[test]
 fn grad_t6() -> Result<(), ZyxError> {
     use zyx::{DType, GradientTape};
@@ -279,7 +278,9 @@ fn grad_t6() -> Result<(), ZyxError> {
     let b = Tensor::zeros([10], DType::F32);
     let tape = GradientTape::new();
     let _z = &x + &y;
-    let z = (x.dot(&y).unwrap() + &b).gelu();
+    let z = x.dot(&y).unwrap() + &b;
+    let z = z.gelu(); // TODO there is some numeric instability in gelu
+
     // Zyx allows for arbitrary differentiation
     let b_grad = tape.gradient_persistent(&z, [&b])[0].clone().unwrap();
     //panic!();

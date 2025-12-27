@@ -228,17 +228,21 @@ impl Kernel {
     }
 
     pub fn total_reduce_dim(&self, op: OpId) -> Dim {
-        fn recurse(ops: &[Op], x: OpId) -> Dim {
-            let mut prod: Dim = 1;
-            if let Op::Reduce { dims, .. } = &ops[x] {
-                prod *= dims.iter().product::<Dim>();
+        fn recurse(ops: &[Op], x: OpId, visited: &mut Set<OpId>) -> Dim {
+            if visited.insert(x) {
+                let mut prod: Dim = 1;
+                if let Op::Reduce { dims, .. } = &ops[x] {
+                    prod *= dims.iter().product::<Dim>();
+                }
+                for param in ops[x].parameters() {
+                    prod *= recurse(ops, param, visited);
+                }
+                return prod;
             }
-            for param in ops[x].parameters() {
-                prod *= recurse(ops, param);
-            }
-            return prod;
+            return 1;
         }
-        recurse(&self.ops, op)
+        let mut visited = Set::default();
+        recurse(&self.ops, op, &mut visited)
     }
 
     pub fn contains_stores(&self) -> bool {
@@ -955,6 +959,46 @@ impl Kernel {
         end_loop_id
     }
 
+    // Loops that don't contain stores can be deleted
+    pub fn delete_empty_loops(&mut self) {
+        // TODO make this fast by going in reverse
+        for i in 0..self.ops.len() {
+            if matches!(self.ops[i], Op::Loop { .. }) {
+                let mut contains_store = false;
+                let mut end_loop_id = 0;
+                let mut loop_level = 0;
+                for (i, op) in self.ops[i..].iter().enumerate() {
+                    match op {
+                        Op::Store { .. } => {
+                            contains_store = true;
+                            break;
+                        }
+                        Op::Loop { .. } => {
+                            loop_level += 1;
+                        }
+                        Op::EndLoop => {
+                            loop_level -= 1;
+                            if loop_level == 0 {
+                                end_loop_id = i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if !contains_store {
+                    //panic!("Deleting from {i} to {}", i + end_loop_id);
+                    for op in &mut self.ops[i..=i + end_loop_id] {
+                        *op = Op::Null
+                    }
+                }
+            }
+        }
+    }
+
+    // TODO delete loops that iterate only once
+    // fn delete_single_iteration_loops(&mut self) {}
+
     pub fn dead_code_elimination(&mut self) {
         let mut params = Vec::new();
         for op_id in 0..self.ops.len() {
@@ -1002,7 +1046,6 @@ impl Kernel {
         }
     }
 
-    // TODO deduplication should preserve loop boundaries
     pub fn common_subexpression_elimination(&mut self) {
         let mut unique_stack: Vec<Map<Op, OpId>> = Vec::new();
         unique_stack.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::new()));
@@ -1376,24 +1419,25 @@ impl Kernel {
                 let new_define_id = self.ops.len();
                 self.ops.push(Op::Define { dtype, scope, ro, len: len * dim });
                 offset += 1;
-                define_map.insert(i, new_define_id);
+                define_map.insert(i + loop_id, new_define_id);
             }
         }
-        println!("{define_map:?}");
+
+        let loop_index = self.ops.len();
+        self.ops.push(Op::Loop { dim, scope });
+        offset += 1;
         for op in &pre_loop {
-            let loop_index = self.ops.len();
-            self.ops.push(Op::Loop { dim, scope });
-            offset += 1;
             if let &Op::Store { dst, x, index } = op {
                 // TODO fix dst, x, index
                 // for example if index is not just a constant 0, it can't be replaced,
                 // it has to be multiplied by stride and added
+                let dst = define_map.get(&dst).copied().unwrap_or(dst);
                 self.ops.push(Op::Store { dst, x, index: loop_index });
                 offset += 1;
             }
-            self.ops.push(Op::EndLoop);
-            offset += 1;
         }
+        self.ops.push(Op::EndLoop);
+        offset += 1;
 
         // JAM THE LOOP
         // Put pre loop

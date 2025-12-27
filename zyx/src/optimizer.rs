@@ -65,6 +65,7 @@ impl Optimizer {
         kernel.dead_code_elimination();
         kernel.reorder_commutative();
         kernel.loop_invariant_code_motion_all();
+        kernel.delete_empty_loops();
 
         // Unroll and jam for all loops
         if !self.loop_unroll_and_jam_opt.apply_optimization(loop_unroll_and_jam_opt_index, kernel) {
@@ -85,6 +86,7 @@ impl Optimizer {
             kernel.dead_code_elimination();
             kernel.reorder_commutative();
             kernel.loop_invariant_code_motion_all();
+            kernel.delete_empty_loops();
 
             if *kernel == temp_kernel {
                 break;
