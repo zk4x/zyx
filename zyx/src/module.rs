@@ -97,7 +97,7 @@ impl<S: std::hash::BuildHasher + Default> Module for HashMap<String, Tensor, S> 
     }
 
     fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)> {
-        self.iter_mut().map(|(k, v): (&String, &Tensor)| (k.clone(), v))
+        self.iter_mut().map(|(k, v): (&String, &mut Tensor)| (k.clone(), v))
     }
 }
 
@@ -115,7 +115,7 @@ impl Module for Vec<Tensor> {
     }
 
     fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)> {
-        self.iter_mut().map(|t: &Tensor| (format!("{}", t.id()), t))
+        self.iter_mut().map(|t: &mut Tensor| (format!("{}", t.id()), t))
     }
 }
 
