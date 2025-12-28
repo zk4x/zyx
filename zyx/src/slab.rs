@@ -10,6 +10,8 @@ use std::{
     ops::{Index, IndexMut},
 };
 
+use nanoserde::{DeBin, SerBin};
+
 pub trait SlabId:
     std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize>
 {
@@ -17,7 +19,7 @@ pub trait SlabId:
     fn inc(&mut self);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 pub struct Slab<Id: SlabId, T> {
     values: Vec<MaybeUninit<T>>,
     empty: BTreeSet<Id>,
@@ -130,13 +132,13 @@ impl<Id: SlabId, T> Slab<Id, T> {
             .map(|id| unsafe { self.values[id.into()].assume_init_ref() })
     }
 
-    /*pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.values
             .iter_mut()
             .enumerate()
             .filter(|(id, _)| !self.empty.contains(&(Id::from(*id))))
             .map(|(_, x)| unsafe { x.assume_init_mut() })
-    }*/
+    }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (Id, &T)> {
         self.values
@@ -182,9 +184,13 @@ impl<Id: SlabId, T> Slab<Id, T> {
         Id::from(self.values.len() - self.empty.len())
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.values.len() - self.empty.len() == 0
+    }
+
     pub fn get_mut(&mut self, index: Id) -> Option<&mut T> {
         if self.empty.contains(&index) {
-            return None
+            return None;
         }
         let idx = index.into();
         self.values.get_mut(idx).map(|e| unsafe { e.assume_init_mut() })

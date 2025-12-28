@@ -5,6 +5,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, ROp, UOp},
     shape::{Dim, UAxis},
+    slab::{Slab, SlabId},
     view::View,
 };
 use std::{
@@ -13,12 +14,63 @@ use std::{
     ops::{Range, RangeBounds},
 };
 
-pub type OpId = usize;
 pub const IDX_T: DType = DType::U32;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub struct OpId(u32);
+
+impl OpId {
+    pub fn null() -> Self {
+        Self(u32::MAX)
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.0 == u32::MAX
+    }
+}
+
+impl Display for OpId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}", self.0))
+    }
+}
+
+impl From<usize> for OpId {
+    fn from(value: usize) -> Self {
+        OpId(value as u32)
+    }
+}
+
+impl From<OpId> for usize {
+    fn from(value: OpId) -> usize {
+        value.0 as usize
+    }
+}
+
+impl SlabId for OpId {
+    const ZERO: Self = Self(0);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Kernel {
-    pub ops: Vec<Op>,
+    pub ops: Slab<OpId, Op>,
+    pub order: Vec<OpId>,
+}
+
+impl SerBin for Kernel {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        todo!()
+    }
+}
+
+impl DeBin for Kernel {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        todo!()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
@@ -55,14 +107,14 @@ pub enum Op {
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    Null,
+    //Null,
 
     // ops that only exist after unfolding views and reduces
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
     Load { src: OpId, index: OpId },
-    Loop { dim: Dim, scope: Scope },
-    EndLoop,
+    Loop { dim: Dim, scope: Scope, ops: Vec<OpId> },
+    //EndLoop,
 }
 
 impl Op {
@@ -76,12 +128,10 @@ impl Op {
             Op::Cast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             Op::Binary { x, y, .. } => vec![*x, *y],
-            Op::Null => vec![],
             Op::Const(..) => vec![],
             Op::Define { .. } => vec![],
             Op::Load { src, index } => vec![*src, *index],
             Op::Loop { .. } => vec![],
-            Op::EndLoop => vec![],
         }
         .into_iter()
     }
@@ -96,7 +146,6 @@ impl Op {
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    Null,
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
     Load { src: OpId, index: OpId },
@@ -106,7 +155,7 @@ impl Op {
 
 impl Kernel {
     pub fn apply_movement(&mut self, func: impl Fn(&mut View)) {
-        for op in &mut self.ops {
+        for op in self.ops.values_mut() {
             match op {
                 Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
                     func(view);
@@ -118,13 +167,22 @@ impl Kernel {
 
     pub fn debug(&self) {
         //println!("Kernel shape {:?}", self.shape);
-        let mut indent = String::from(" ");
-        for (i, op) in self.ops.iter().enumerate() {
-            match op {
-                Op::ConstView { value, view } => println!("{i:>3}{indent}{CYAN}CONST VIEW{RESET} {value} {view}"),
-                Op::LoadView { dtype, view } => println!("{i:>3}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}"),
+        let mut indent = String::from("    ");
+        let mut order = self.order.clone();
+        order.reverse();
+        let mut i = 0;
+        let mut end_loop_op = OpId(0);
+        for op_id in order.pop() {
+            if op_id == end_loop_op {
+                indent.pop();
+                indent.pop();
+            }
+            i += 1;
+            match self.ops[op_id] {
+                Op::ConstView { value, ref view } => println!("{i:>3}{indent}{CYAN}CONST VIEW{RESET} {value} {view}"),
+                Op::LoadView { dtype, ref view } => println!("{i:>3}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}"),
                 Op::StoreView { src, dtype } => println!("{i:>3}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}"),
-                Op::Reduce { x, rop, dims } => {
+                Op::Reduce { x, rop, ref dims } => {
                     println!(
                         "{i:>3}{indent}{RED}REDUCE{RESET} {} {x}, dims={dims:?}",
                         match rop {
@@ -144,15 +202,12 @@ impl Kernel {
                 Op::Cast { x, dtype } => println!("{i:>3}{indent}CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{i:>3}{indent}UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{i:>3}{indent}BINARY {bop:?} {x} {y}"),
-                Op::Loop { dim, scope } => {
+                Op::Loop { dim, scope, ref ops } => {
                     println!("{i:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}");
+                    end_loop_op = *ops.last().unwrap();
+                    order.extend(ops.clone());
                     indent += " ";
                 }
-                Op::EndLoop => {
-                    indent.pop();
-                    println!("{i:>3}{indent}{BLUE}ENDLOOP{RESET}");
-                }
-                Op::Null => {}
             }
         }
     }
@@ -223,8 +278,12 @@ impl Kernel {
         (flop, mr, mw)
     }
 
+    pub fn contains_stores(&self) -> bool {
+        self.ops.values().any(|x| matches!(x, Op::StoreView { .. }))
+    }
+
     pub fn is_reduce(&self) -> bool {
-        self.ops.iter().any(|x| matches!(x, Op::Reduce { .. }))
+        self.ops.values().any(|x| matches!(x, Op::Reduce { .. }))
     }
 
     pub fn total_reduce_dim(&self, op: OpId) -> Dim {
@@ -243,10 +302,6 @@ impl Kernel {
         }
         let mut visited = Set::default();
         recurse(&self.ops, op, &mut visited)
-    }
-
-    pub fn contains_stores(&self) -> bool {
-        self.ops.iter().any(|x| matches!(x, Op::StoreView { .. }))
     }
 
     pub fn shape(&self) -> Vec<Dim> {

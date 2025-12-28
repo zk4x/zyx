@@ -72,10 +72,6 @@ impl KMKernel {
         self.kernel.shape()
     }
 
-    const fn last_op_id(&self) -> OpId {
-        self.kernel.ops.len() - 1
-    }
-
     fn push(&mut self, op: Op) {
         self.kernel.ops.push(op);
     }
