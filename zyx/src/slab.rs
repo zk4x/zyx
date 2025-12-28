@@ -10,8 +10,6 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-use nanoserde::{DeBin, SerBin};
-
 pub trait SlabId:
     std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize>
 {
@@ -19,11 +17,17 @@ pub trait SlabId:
     fn inc(&mut self);
 }
 
-#[derive(Debug, Hash)]
+#[derive(Debug)]
 pub struct Slab<Id: SlabId, T> {
     values: Vec<MaybeUninit<T>>,
     empty: BTreeSet<Id>,
     _index: PhantomData<Id>,
+}
+
+impl<Id: SlabId, T: std::hash::Hash> std::hash::Hash for Slab<Id, T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.values().for_each(|x| x.hash(state));
+    }
 }
 
 struct IdIter<'a, Id> {
