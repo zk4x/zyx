@@ -2,7 +2,7 @@ use nanoserde::{DeBin, SerBin};
 
 use crate::{
     backend::DeviceInfo,
-    kernel::{Kernel, Op, OpId, Scope, increment},
+    kernel::{Kernel, Op, OpId, Scope},
     shape::Dim,
 };
 use std::collections::HashSet;
@@ -15,7 +15,7 @@ pub struct Optimization(u32);
 pub struct Optimizer {
     // optimizations
     local_work_size_opt: WorkSizeOpt,
-    loop_unroll_and_jam_opt: UpcastOpt,
+    loop_unroll_and_jam_opt: LoopJamOpt,
     loop_unrolling_opt: LoopUnrollingOpt,
     loop_split_opt: LoopSplitOpt,
     //inner_loop_swap_opt: InnerLoopSwapOpt, // a bit harder to know max number of optimizations
@@ -53,19 +53,19 @@ impl Optimizer {
             return false;
         }
 
-        kernel.unfold_pows();
+        //kernel.unfold_pows();
         kernel.unfold_reduces();
-        kernel.close_loops();
+        //kernel.close_loops();
         kernel.define_globals();
         kernel.unfold_views();
 
-        kernel.move_constants_to_beginning();
-        kernel.constant_folding();
-        kernel.common_subexpression_elimination();
+        //kernel.move_constants_to_beginning();
+        //kernel.constant_folding();
+        //kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
-        kernel.reorder_commutative();
-        kernel.loop_invariant_code_motion_all();
-        kernel.delete_empty_loops();
+        //kernel.reorder_commutative();
+        //kernel.loop_invariant_code_motion_all();
+        //kernel.delete_empty_loops();
 
         // Unroll and jam for all loops
         if !self.loop_unroll_and_jam_opt.apply_optimization(loop_unroll_and_jam_opt_index, kernel) {
@@ -80,13 +80,13 @@ impl Optimizer {
         // Do a few more iterations to clean up things
         let mut temp_kernel = kernel.clone();
         for _ in 0..100 {
-            kernel.move_constants_to_beginning();
-            kernel.constant_folding();
-            kernel.common_subexpression_elimination();
+            //kernel.move_constants_to_beginning();
+            //kernel.constant_folding();
+            //kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
-            kernel.reorder_commutative();
-            kernel.loop_invariant_code_motion_all();
-            kernel.delete_empty_loops();
+            //kernel.reorder_commutative();
+            //kernel.loop_invariant_code_motion_all();
+            //kernel.delete_empty_loops();
 
             if *kernel == temp_kernel {
                 break;
@@ -104,7 +104,7 @@ impl Optimizer {
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
         let (local_work_size_opt, local_work_size_opt_max_idx) = WorkSizeOpt::new(kernel, dev_info);
         let (loop_unrolling_opt, loop_unrolling_opt_max_idx) = LoopUnrollingOpt::new(kernel);
-        let (loop_unroll_and_jam_opt, loop_unroll_and_jam_opt_max_idx) = UpcastOpt::new(kernel);
+        let (loop_unroll_and_jam_opt, loop_unroll_and_jam_opt_max_idx) = LoopJamOpt::new(kernel);
         let (loop_split_opt, loop_split_opt_max_idx) = LoopSplitOpt::new(kernel);
         let max_indices = [
             local_work_size_opt_max_idx,
@@ -216,7 +216,8 @@ impl WorkSizeOpt {
             res
         }
 
-        let mut gws = kernel.shape();
+        //let mut gws = kernel.shape();
+        let mut gws = vec![3, 4, 2];
         // If gws > dev_info.max_global_work_dims.len(), then we join the starting dimensions
         while gws.len() > dev_info.max_global_work_dims.len() {
             let d = gws.remove(0);
@@ -278,7 +279,7 @@ impl WorkSizeOpt {
         }
 
         let shape: Vec<Dim> = gws.iter().chain(&lws).chain(&rws).copied().collect();
-        let n = kernel.shape().len();
+        /*let n = kernel.shape().len();
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
 
         {
@@ -294,16 +295,16 @@ impl WorkSizeOpt {
             for &dim in gws.iter().rev() {
                 kernel.ops.insert(0, Op::Loop { dim, scope: Scope::Global });
             }
-        };
+        };*/
         true
     }
 }
 
 /// loop unrolling plus loop invariant code motion
 #[derive(Debug, Clone, DeBin, SerBin)]
-struct UpcastOpt {}
+struct LoopJamOpt {}
 
-impl UpcastOpt {
+impl LoopJamOpt {
     fn new(_kernel: &Kernel) -> (Self, u32) {
         (Self {}, 3) // 8, 16, 32 unfolding
     }
@@ -311,7 +312,7 @@ impl UpcastOpt {
     #[must_use]
     fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
         let unroll_dim = 8 << index;
-        let mut op_id = kernel.ops.len();
+        /*let mut op_id = kernel.ops.len();
         while op_id > 0 {
             op_id -= 1;
             if let Op::Loop { dim, scope } = kernel.ops[op_id] {
@@ -327,7 +328,7 @@ impl UpcastOpt {
                     }
                 }
             }
-        }
+        }*/
         true
     }
 }
@@ -345,7 +346,7 @@ impl LoopUnrollingOpt {
     fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
         let unroll_dim = 4 << index;
         let mut op_id = kernel.ops.len();
-        while op_id > 0 {
+        /*while op_id > 0 {
             op_id -= 1;
             if let Op::Loop { dim, scope } = kernel.ops[op_id] {
                 if scope == Scope::Register && dim <= unroll_dim {
@@ -356,7 +357,7 @@ impl LoopUnrollingOpt {
                     kernel.loop_unroll(op_id);
                 }
             }
-        }
+        }*/
         true
     }
 }
@@ -404,7 +405,7 @@ impl LoopSplitOpt {
         let mut reduction_splits = Vec::new();
 
         // Find all reduction ops
-        for (_, op) in kernel.ops.iter().enumerate() {
+        for op in kernel.ops.values() {
             if let Op::Reduce { dims, .. } = op {
                 // Generate all valid splits for these dimensions
                 // Calculate the total product of all dimensions
@@ -437,7 +438,7 @@ impl LoopSplitOpt {
             return true;
         }
 
-        let reduce_ops: Vec<OpId> = kernel
+        /*let reduce_ops: Vec<OpId> = kernel
             .ops
             .iter()
             .enumerate()
@@ -452,7 +453,7 @@ impl LoopSplitOpt {
 
             let Some(&reduce_id) = reduce_ops.get(i) else { return false };
             kernel.reshape_reduce(reduce_id, &self.reduction_splits[i][idx as usize]);
-        }
+        }*/
 
         true
     }

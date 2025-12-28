@@ -620,7 +620,7 @@ impl OpenCLDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        fn new_reg(
+        /*fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
             registers: &mut Vec<(DType, u32, u8)>,
@@ -969,7 +969,8 @@ impl OpenCLDevice {
         let program_name = &CString::new(name).unwrap();
         let kernel = unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &raw mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
-        Ok(self.programs.push(OpenCLProgram { program, kernel, gws, lws }))
+        Ok(self.programs.push(OpenCLProgram { program, kernel, gws, lws }))*/
+        todo!()
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]

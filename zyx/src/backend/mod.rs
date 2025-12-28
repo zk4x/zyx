@@ -116,8 +116,6 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
-    //#[cfg(feature = "vulkan")]
-    //let _ = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_dev);
     #[cfg(feature = "wgpu")]
     if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends)
     {

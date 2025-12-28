@@ -725,14 +725,15 @@ impl CUDADevice {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+        /*
         //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
-        let (ptx, name, gws, lws) =
-            Compiler::new().compile(kernel, self.compute_capability, &self.dev_info, debug_asm)?;
+        let (ptx, name, gws, lws) = Compiler::new().compile(kernel, self.compute_capability, &self.dev_info, debug_asm)?;
 
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Compile { gws, lws, name, ptx, reply }).unwrap();
-        reply_rx.recv().unwrap()
+        reply_rx.recv().unwrap()*/
+        todo!()
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -1132,6 +1133,7 @@ impl CUDAStatus {
     }
 }
 
+/*
 fn get_dtypes(kernel: &Kernel) -> (Map<OpId, u32>, Map<OpId, DType>) {
     let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
     let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
@@ -1643,4 +1645,4 @@ impl Compiler {
         }
         Ok((self.header.into_bytes(), name, gws, lws))
     }
-}
+}*/

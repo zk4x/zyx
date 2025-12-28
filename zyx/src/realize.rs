@@ -69,11 +69,14 @@ impl KMKernel {
     }
 
     fn shape(&self) -> Vec<Dim> {
-        self.kernel.shape()
+        //self.kernel.shape()
+        todo!()
     }
 
-    fn push(&mut self, op: Op) {
-        self.kernel.ops.push(op);
+    fn push(&mut self, op: Op) -> OpId {
+        let op_id = self.kernel.ops.push(op);
+        self.kernel.order.push(op_id);
+        op_id
     }
 
     fn debug(&self) {
@@ -89,7 +92,7 @@ impl KMKernel {
         outputs.iter().position(|elem| *elem == x).map(|i| outputs.remove(i));
     }
 
-    fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KernelId, OpId)>) {
+    /*fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KernelId, OpId)>) {
         let params = self.outputs.iter().map(|tid| visited[tid].1).collect();
         let required = self.get_required_ops(params);
         let mut loaded_tensors = Vec::new();
@@ -145,7 +148,7 @@ impl KMKernel {
             }
         }
         required
-    }
+    }*/
 }
 
 impl std::ops::Index<OpId> for KMKernel {
@@ -266,9 +269,9 @@ impl<'a> Kernelizer<'a> {
         // and remove these ops from the original if not needed.
         let mut kernel = self.kernels[kid].clone();
         kernel.outputs = vec![x];
-        kernel.drop_unused_ops(&self.visited);
+        //kernel.drop_unused_ops(&self.visited);
         self.kernels[kid].remove_first_output(x);
-        self.kernels[kid].drop_unused_ops(&self.visited);
+        //self.kernels[kid].drop_unused_ops(&self.visited);
         //self.debug();
         self.kernels.push(kernel)
     }
@@ -277,26 +280,30 @@ impl<'a> Kernelizer<'a> {
         //println!("ADDING LOAD for {x} x {}", rc);
         let shape = self.graph.shape(nid);
         let dtype = self.graph.dtype(nid);
+        let mut ops = Slab::with_capacity(100);
+        let op_id = ops.push(Op::LoadView { dtype, view: View::contiguous(shape) });
         let kernel = KMKernel {
-            kernel: Kernel { ops: vec![Op::LoadView { dtype, view: View::contiguous(shape) }] },
+            kernel: Kernel { ops, order: vec![op_id] },
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: vec![nid],
             stores: Vec::new(),
         };
         let kid = self.kernels.push(kernel);
-        self.visited.insert(nid, (kid, 0));
-        (kid, 0)
+        self.visited.insert(nid, (kid, op_id));
+        (kid, op_id)
     }
 
     fn create_const_kernel(&mut self, nid: TensorId, value: Constant) {
+        let mut ops = Slab::with_capacity(100);
+        let op_id = ops.push(Op::ConstView { value, view: View::contiguous(&[1]) });
         let kernel = KMKernel {
-            kernel: Kernel { ops: vec![Op::ConstView { value, view: View::contiguous(&[1]) }] },
+            kernel: Kernel { ops, order: vec![op_id] },
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: Vec::new(),
             stores: Vec::new(),
         };
         let kid = self.kernels.push(kernel);
-        self.visited.insert(nid, (kid, 0));
+        self.visited.insert(nid, (kid, op_id));
     }
 
     fn add_expand_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
@@ -414,33 +421,33 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
         }
         let kernel = &mut self.kernels[kid];
-        kernel.push(Op::Reduce { x: op_id, rop, dims });
+        let op_id = kernel.push(Op::Reduce { x: op_id, rop, dims });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
         debug_assert_eq!(self.graph.shape(nid), kernel.shape());
-        self.visited.insert(nid, (kid, kernel.last_op_id()));
+        self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
 
     fn add_cast_op(&mut self, nid: TensorId, x: TensorId, dtype: DType) {
         let (kid, op_id) = self.visited[&x];
         let kernel = &mut self.kernels[kid];
-        kernel.push(Op::Cast { x: op_id, dtype });
+        let op_id = kernel.push(Op::Cast { x: op_id, dtype });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        self.visited.insert(nid, (kid, self.kernels[kid].last_op_id()));
+        self.visited.insert(nid, (kid, op_id));
     }
 
     fn add_unary_op(&mut self, nid: TensorId, x: TensorId, uop: UOp) {
         let (kid, op_id) = self.visited[&x];
         let kernel = &mut self.kernels[kid];
-        kernel.push(Op::Unary { x: op_id, uop });
+        let op_id = kernel.push(Op::Unary { x: op_id, uop });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        self.visited.insert(nid, (kid, self.kernels[kid].last_op_id()));
+        self.visited.insert(nid, (kid, op_id));
     }
 
     fn add_binary_op(&mut self, nid: TensorId, x: TensorId, y: TensorId, bop: BOp) -> Result<(), ZyxError> {
@@ -469,12 +476,12 @@ impl<'a> Kernelizer<'a> {
         let kid_stores = !self.kernels[kid].stores.is_empty();
         let kidy_stores = !self.kernels[kidy].stores.is_empty();
 
-        if kid == kidy {
+        let new_op_id = if kid == kidy {
             let kernel = &mut self.kernels[kid];
             kernel.remove_first_output(x);
             kernel.remove_first_output(y);
             kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
-            kernel.push(Op::Binary { x: op_id, y: op_idy, bop });
+            kernel.push(Op::Binary { x: op_id, y: op_idy, bop })
         } else {
             // TODO later use this, but this requires global memory sync inside of the kernel
             // as it loads and stores from the same kernel
@@ -524,52 +531,35 @@ impl<'a> Kernelizer<'a> {
             }*/
 
             self.kernels[kidy].remove_first_output(y);
-            let KMKernel { mut kernel, outputs, loads, stores } = unsafe { self.kernels.remove_and_return(kidy) };
-            let n = self.kernels[kid].kernel.ops.len();
-            for op in kernel.ops.iter_mut() {
-                match op {
-                    Op::ConstView { .. } | Op::LoadView { .. } | Op::Loop { .. } | Op::Null => {}
-                    Op::StoreView { src: x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Reduce { x, .. } => {
-                        *x += n;
-                    }
-                    Op::Binary { x, y, .. } => {
-                        *x += n;
-                        *y += n;
-                    }
-                    op => unreachable!("{op:?}"),
-                }
+            let KMKernel { kernel, outputs, loads, stores } = unsafe { self.kernels.remove_and_return(kidy) };
+
+            // Extend x kernel with y ops
+            let mut y_ops_map = Map::with_capacity_and_hasher(50, BuildHasherDefault::new());
+            for (op_id, op) in kernel.ops.iter() {
+                let new_op_id = self.kernels[kid].push(op.clone());
+                y_ops_map.insert(op_id, new_op_id);
             }
-            self.kernels[kid].kernel.ops.extend(kernel.ops);
-
-            self.kernels[kid].loads.extend(loads);
-            self.kernels[kid].stores.extend(stores);
-
-            //println!("kid={:?} kidy={:?}", kid, kidy);
-            self.kernels[kid].remove_first_output(x);
-            self.kernels[kid].outputs.extend(outputs);
-            self.kernels[kid].outputs.extend(vec![nid; self.rcs[&nid] as usize]);
-
-            // Should we ever swap these?
-            /*let op = if !kid_stores && kidy_stores {
-                Op::Binary { x: op_idy + n, y: op_id, bop }
-            } else {
-                Op::Binary { x: op_id, y: op_idy + n, bop }
-            };*/
-            let op = Op::Binary { x: op_id, y: op_idy + n, bop };
-            self.kernels[kid].push(op);
-
             // Fix visited
             for (kidm, op_id) in self.visited.values_mut() {
                 if *kidm == kidy {
                     *kidm = kid;
-                    *op_id += n;
+                    *op_id = y_ops_map[op_id];
                 }
             }
-        }
+
+            self.kernels[kid].loads.extend(loads);
+            self.kernels[kid].stores.extend(stores);
+
+            self.kernels[kid].remove_first_output(x);
+            self.kernels[kid].outputs.extend(outputs);
+            self.kernels[kid].outputs.extend(vec![nid; self.rcs[&nid] as usize]);
+
+            self.kernels[kid].push(Op::Binary { x: op_id, y: y_ops_map[&op_idy], bop })
+        };
 
         *self.rcs.get_mut(&x).unwrap() -= 1;
         *self.rcs.get_mut(&y).unwrap() -= 1;
-        self.visited.insert(nid, (kid, self.kernels[kid].last_op_id()));
+        self.visited.insert(nid, (kid, new_op_id));
         Ok(())
     }
 
