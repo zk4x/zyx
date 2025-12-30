@@ -48,20 +48,19 @@ impl Optimizer {
         if !self.local_work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
             return false;
         }
+        kernel.close_loops();
 
         if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
             return false;
         }
 
-        //kernel.unfold_pows();
+        kernel.unfold_pows();
         kernel.unfold_reduces();
-        //kernel.close_loops();
-        kernel.define_globals();
         kernel.unfold_views();
 
-        //kernel.move_constants_to_beginning();
+        kernel.move_constants_to_beginning();
         //kernel.constant_folding();
-        //kernel.common_subexpression_elimination();
+        kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
         //kernel.reorder_commutative();
         //kernel.loop_invariant_code_motion_all();
@@ -82,7 +81,7 @@ impl Optimizer {
         for _ in 0..100 {
             //kernel.move_constants_to_beginning();
             //kernel.constant_folding();
-            //kernel.common_subexpression_elimination();
+            kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
             //kernel.reorder_commutative();
             //kernel.loop_invariant_code_motion_all();
@@ -93,6 +92,8 @@ impl Optimizer {
             }
             temp_kernel = kernel.clone();
         }
+
+        kernel.verify();
 
         if debug_ir {
             kernel.debug();
@@ -216,8 +217,7 @@ impl WorkSizeOpt {
             res
         }
 
-        //let mut gws = kernel.shape();
-        let mut gws = vec![3, 4, 2];
+        let mut gws = kernel.shape();
         // If gws > dev_info.max_global_work_dims.len(), then we join the starting dimensions
         while gws.len() > dev_info.max_global_work_dims.len() {
             let d = gws.remove(0);
@@ -279,23 +279,23 @@ impl WorkSizeOpt {
         }
 
         let shape: Vec<Dim> = gws.iter().chain(&lws).chain(&rws).copied().collect();
-        /*let n = kernel.shape().len();
+        let n = kernel.shape().len();
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
 
         {
-            let k = gws.len() + lws.len() + rws.len();
-            let n = kernel.ops.len();
-            increment(&mut kernel.ops, k as isize, 0..n);
             for &dim in rws.iter().rev() {
-                kernel.ops.insert(0, Op::Loop { dim, scope: Scope::Register });
+                let loop_id = kernel.ops.push(Op::Loop { dim, scope: Scope::Register });
+                kernel.order.insert(0, loop_id);
             }
             for &dim in lws.iter().rev() {
-                kernel.ops.insert(0, Op::Loop { dim, scope: Scope::Local });
+                let loop_id = kernel.ops.push(Op::Loop { dim, scope: Scope::Local });
+                kernel.order.insert(0, loop_id);
             }
             for &dim in gws.iter().rev() {
-                kernel.ops.insert(0, Op::Loop { dim, scope: Scope::Global });
+                let loop_id = kernel.ops.push(Op::Loop { dim, scope: Scope::Global });
+                kernel.order.insert(0, loop_id);
             }
-        };*/
+        };
         true
     }
 }

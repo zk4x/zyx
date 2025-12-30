@@ -8,10 +8,7 @@ use crate::{
     slab::{Slab, SlabId},
     view::View,
 };
-use std::{
-    fmt::Display,
-    hash::BuildHasherDefault,
-};
+use std::{fmt::Display, hash::BuildHasherDefault};
 
 pub const IDX_T: DType = DType::U32;
 
@@ -28,9 +25,9 @@ impl OpId {
     }
 }
 
-impl Display for OpId {
+impl std::fmt::Display for OpId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{}", self.0))
+        std::fmt::Display::fmt(&self.0, f)
     }
 }
 
@@ -72,7 +69,8 @@ pub struct Kernel {
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
     Load { src: OpId, index: OpId },
-    Loop { dim: Dim, scope: Scope, ops: Vec<OpId> },
+    Loop { dim: Dim, scope: Scope },
+    EndLoop,
 }*/
 
 impl SerBin for Kernel {
@@ -121,14 +119,13 @@ pub enum Op {
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    //Null,
 
     // ops that only exist after unfolding views and reduces
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
     Load { src: OpId, index: OpId },
-    Loop { dim: Dim, scope: Scope, ops: Vec<OpId> },
-    //EndLoop,
+    Loop { dim: Dim, scope: Scope },
+    EndLoop,
 }
 
 impl Op {
@@ -146,6 +143,26 @@ impl Op {
             Op::Define { .. } => vec![],
             Op::Load { src, index } => vec![*src, *index],
             Op::Loop { .. } => vec![],
+            Op::EndLoop => vec![],
+        }
+        .into_iter()
+    }
+
+    pub fn parameters_mut(&mut self) -> impl Iterator<Item = &mut OpId> {
+        match self {
+            Op::ConstView { .. } => vec![],
+            Op::LoadView { .. } => vec![],
+            Op::StoreView { src, .. } => vec![src],
+            Op::Reduce { x, .. } => vec![x],
+            Op::Store { dst, x, index } => vec![dst, x, index],
+            Op::Cast { x, .. } => vec![x],
+            Op::Unary { x, .. } => vec![x],
+            Op::Binary { x, y, .. } => vec![x, y],
+            Op::Const(..) => vec![],
+            Op::Define { .. } => vec![],
+            Op::Load { src, index } => vec![src, index],
+            Op::Loop { .. } => vec![],
+            Op::EndLoop => vec![],
         }
         .into_iter()
     }
@@ -178,18 +195,14 @@ impl Kernel {
     }
 
     pub fn debug(&self) {
+        println!();
         //println!("Kernel shape {:?}", self.shape);
-        let mut indent = String::from("    ");
-        let mut order = self.order.clone();
-        order.reverse();
-        let mut end_loop_op = OpId(0);
-        while let Some(op_id) = order.pop() {
-            if op_id == end_loop_op {
-                indent.pop();
-                indent.pop();
-            }
+        let mut indent = String::from(" ");
+        for &op_id in &self.order {
             match self.ops[op_id] {
-                Op::ConstView { value, ref view } => println!("{op_id:>3}{indent}{CYAN}CONST VIEW{RESET} {value} {view}"),
+                Op::ConstView { value, ref view } => {
+                    println!("{op_id:>3}{indent}{CYAN}CONST VIEW{RESET} {value} {view}")
+                }
                 Op::LoadView { dtype, ref view } => println!("{op_id:>3}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}"),
                 Op::StoreView { src, dtype } => println!("{op_id:>3}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}"),
                 Op::Reduce { x, rop, ref dims } => {
@@ -212,11 +225,13 @@ impl Kernel {
                 Op::Cast { x, dtype } => println!("{op_id:>3}{indent}CAST {x} {dtype:?}"),
                 Op::Unary { x, uop } => println!("{op_id:>3}{indent}UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}"),
-                Op::Loop { dim, scope, ref ops } => {
+                Op::Loop { dim, scope } => {
                     println!("{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}");
-                    end_loop_op = *ops.last().unwrap();
-                    order.extend(ops.iter().rev());
                     indent += " ";
+                }
+                Op::EndLoop => {
+                    indent.pop();
+                    println!("{op_id:>3}{indent}{BLUE}END_LOOP{RESET}");
                 }
             }
         }
@@ -268,6 +283,7 @@ impl Kernel {
                 Op::Define { .. } => unreachable!(),
                 Op::Load { .. } => unreachable!(),
                 Op::Loop { .. } => unreachable!(),
+                Op::EndLoop { .. } => unreachable!(),
                 Op::Store { .. } => unreachable!(),
             };
             visited.insert(x, n);
@@ -312,13 +328,13 @@ impl Kernel {
         recurse(&self.ops, op, &mut visited)
     }
 
-    /*pub fn shape(&self) -> Vec<Dim> {
+    pub fn shape(&self) -> Vec<Dim> {
         if self.ops.values().any(|op| matches!(op, Op::Loop { .. })) {
             return self
                 .ops
                 .values()
                 .filter_map(|op| {
-                    if let Op::Loop { dim, scope, ops } = op {
+                    if let Op::Loop { dim, scope } = op {
                         if matches!(scope, Scope::Global | Scope::Local) {
                             Some(*dim)
                         } else {
@@ -331,8 +347,8 @@ impl Kernel {
                 .collect();
         }
         let mut reduce_dims = 0;
-        for op in self.ops.iter().rev() {
-            match op {
+        for &op_id in self.order.iter().rev() {
+            match &self[op_id] {
                 Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
                     let mut shape = view.shape();
                     for _ in 0..reduce_dims {
@@ -347,7 +363,23 @@ impl Kernel {
             }
         }
         unreachable!()
-    }*/
+    }
+
+    pub fn close_loops(&mut self) {
+        let mut loop_id = 0;
+        for &op_id in &self.order {
+            match self[op_id] {
+                Op::Loop { .. } => loop_id += 1,
+                Op::EndLoop => loop_id -= 1,
+                _ => {}
+            }
+        }
+        while loop_id > 0 {
+            let op_id = self.ops.push(Op::EndLoop);
+            self.order.push(op_id);
+            loop_id -= 1;
+        }
+    }
 
     /// Find all Reduce ops and put them in a Loop block
     /// Add define ops and add reduce operation as BOp::Add or BOp::Max
@@ -364,22 +396,88 @@ impl Kernel {
                 }
             })
             .collect();
+
         while let Some(reduce_op_id) = reduce_op_ids.pop() {
-            let Op::Reduce { x, rop, ref dims } = self[reduce_op_id] else { unreachable!() };
+            let Op::Reduce { x, rop, ref dims } = self.ops[reduce_op_id] else { unreachable!() };
+            let dims = dims.clone();
 
             // Find all relevant ops
-            let mut ops = vec![x];
+            let mut reduce_loop_ops = vec![x];
             let mut params = vec![x];
+            let mut acc_dtype = None;
             while let Some(param) = params.pop() {
                 params.extend(self[param].parameters());
-                ops.extend(self[param].parameters());
+                reduce_loop_ops.extend(self[param].parameters());
+                if acc_dtype.is_none() {
+                    match self[param] {
+                        Op::Define { dtype, .. } => acc_dtype = Some(dtype),
+                        Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
+                        _ => {}
+                    }
+                }
             }
-            ops.reverse();
+            reduce_loop_ops.reverse();
 
             // Remove ops from order
-            self.order.retain(|op_id| !ops.contains(op_id));
+            self.order.retain(|op_id| !reduce_loop_ops.contains(op_id));
 
-            // Put ops in a loop block
+            // Create new order for loop contents
+            let mut order = Vec::new();
+
+            // Add const zero
+            let const_zero = self.ops.push(Op::Const(Constant::idx(0)));
+            order.push(const_zero);
+
+            // Add accumulator
+            let dtype = DType::F32;
+            let acc_init_id = self.ops.push(Op::Const(match rop {
+                ROp::Sum => dtype.zero_constant(),
+                ROp::Max => dtype.min_constant(),
+            }));
+            order.push(acc_init_id);
+            let acc = self.ops.push(Op::Define { dtype, scope: Scope::Register, ro: false, len: 0 });
+            order.push(acc);
+
+            // Zero the accumulator
+            let zero_acc_op = self.ops.push(Op::Store { dst: acc, x: acc_init_id, index: const_zero });
+            order.push(zero_acc_op);
+
+            // Add Loops for the reduce
+            for &dim in &dims {
+                let loop_id = self.ops.push(Op::Loop { dim, scope: Scope::Register });
+                order.push(loop_id);
+            }
+
+            // Add body of the reduce loop
+            order.extend(reduce_loop_ops);
+
+            // Add reduction operation, load from acc, accumulate, store to acc
+            let load_acc = self.ops.push(Op::Load { src: acc, index: const_zero });
+            order.push(load_acc);
+            let binary_accumulate = self.ops.push(Op::Binary {
+                x,
+                y: load_acc,
+                bop: match rop {
+                    ROp::Sum => BOp::Add,
+                    ROp::Max => BOp::Maximum,
+                },
+            });
+            order.push(binary_accumulate);
+            let store_acc = self.ops.push(Op::Store { dst: acc, x: binary_accumulate, index: const_zero });
+            order.push(store_acc);
+
+            // Close the reduce loop
+            for _ in 0..dims.len() {
+                let endloop_id = self.ops.push(Op::EndLoop);
+                order.push(endloop_id);
+            }
+
+            // Replace old reduce op with the acc load op
+            self.ops[reduce_op_id] = Op::Load { src: acc, index: const_zero };
+
+            // Put all things back in self.order
+            let reduce_i = self.order.iter().position(|&op_id| op_id == reduce_op_id).unwrap();
+            self.order.splice(reduce_i..reduce_i, order);
         }
     }
 
@@ -405,24 +503,55 @@ impl Kernel {
         self.order = order;
     }
 
-    pub fn unfold_views(&mut self) {}
+    fn get_loops(&self, op_id: OpId) -> Vec<OpId> {
+        let mut loops = Vec::new();
+        for &i in &self.order {
+            if i == op_id {
+                return loops;
+            }
+            match self.ops[i] {
+                Op::Loop { .. } => {
+                    loops.push(i);
+                }
+                Op::EndLoop => {
+                    loops.pop();
+                }
+                _ => {}
+            }
+        }
+        loops
+    }
 
-    /*pub fn unfold_views(&mut self) {
-        // First we generate the whole view into a new vec,
-        // then we insert the vec into existing ops
-        // Convert view
-        fn new_op(ops: &mut Vec<Op>, op: Op) -> OpId {
-            let op_id = ops.len();
-            ops.push(op);
+    pub fn unfold_views(&mut self) {
+        fn new_op(ops: &mut Slab<OpId, Op>, order: &mut Vec<OpId>, op: Op) -> OpId {
+            let op_id = ops.push(op);
+            order.push(op_id);
             op_id
         }
 
-        let n_loads = self.ops.iter().filter(|op| matches!(op, Op::LoadView { .. })).count();
+        self.define_globals();
+
+        let mut global_args = Vec::new();
+        let mut n_loads = 0;
+        for &op_id in &self.order {
+            if let Op::Define { dtype, scope, ro, len } = self[op_id] {
+                if ro {
+                    n_loads += 1;
+                }
+                if scope == Scope::Global {
+                    global_args.push(op_id);
+                }
+            } else {
+                break;
+            }
+        }
         let mut load_id = 0;
-        let mut store_id = n_loads;
-        let mut op_id = 0;
-        while op_id < self.ops.len() {
-            match self.ops[op_id] {
+        let mut store_id = 0;
+
+        let mut i = 0;
+        while i < self.order.len() {
+            let op_id = self.order[i];
+            match self[op_id] {
                 Op::ConstView { value, ref view } => {
                     // With padding, right padding does not affect offset
                     // offset = (a0-lp0)*st0 + a1*st1
@@ -431,16 +560,17 @@ impl Kernel {
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
                     let view = view.clone();
+                    let axes = self.get_loops(op_id);
 
                     //println!("Unfolding view: {view}");
-                    let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
-                    self.ops.pop();
                     let ops = &mut self.ops;
-                    let axes = get_axes(&ops[0..op_id]);
-                    let mut pc = new_op(ops, Op::Const(Constant::Bool(true)));
-                    let constant_zero = new_op(ops, Op::Const(Constant::idx(0)));
-                    #[allow(unused)] // false positive
-                    let mut offset = constant_zero;
+
+                    let order = &mut Vec::new();
+                    let mut pc = new_op(ops, order, Op::Const(Constant::Bool(true)));
+                    let constant_zero = new_op(ops, order, Op::Const(Constant::idx(0)));
+
+                    let mut offset;
+
                     let mut old_offset: Option<OpId> = None;
                     //println!("View");
                     //for inner in self.0.iter() { println!("{inner:?}") }
@@ -457,70 +587,66 @@ impl Kernel {
                                 let x = if t_ost == 1 {
                                     old_offset
                                 } else {
-                                    let ost_c = new_op(ops, Op::Const(Constant::idx(t_ost)));
-                                    new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
+                                    let ost_c = new_op(ops, order, Op::Const(Constant::idx(t_ost)));
+                                    new_op(ops, order, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
                                 };
                                 if dim.d == 1 {
                                     constant_zero
                                 } else {
-                                    let dimd_c = new_op(ops, Op::Const(Constant::idx(dim.d as u64)));
-                                    new_op(ops, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
+                                    let dimd_c = new_op(ops, order, Op::Const(Constant::idx(dim.d as u64)));
+                                    new_op(ops, order, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
                                 }
                             } else if dim.d == 1 {
-                                new_op(ops, Op::Const(Constant::idx(0u64)))
+                                new_op(ops, order, Op::Const(Constant::idx(0u64)))
                             } else {
                                 axes[a]
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
-                                let lp = new_op(ops, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
+                                let lp = new_op(ops, order, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
-                                    new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Sub })
+                                    new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Sub })
                                 } else {
-                                    new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Add })
+                                    new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Add })
                                 }
                             } else {
                                 a
                             };
 
                             if dim.st != 0 {
-                                let stride = new_op(ops, Op::Const(Constant::idx(dim.st as u64)));
-                                let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
-                                offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
+                                let stride = new_op(ops, order, Op::Const(Constant::idx(dim.st as u64)));
+                                let x = new_op(ops, order, Op::Binary { x: t, y: stride, bop: BOp::Mul });
+                                offset = new_op(ops, order, Op::Binary { x, y: offset, bop: BOp::Add });
                             }
 
                             // Padding condition
                             if dim.lp > 0 {
-                                let lp = new_op(ops, Op::Const(Constant::idx((dim.lp - 1) as u64)));
-                                let t = new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
-                                pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let lp = new_op(ops, order, Op::Const(Constant::idx((dim.lp - 1) as u64)));
+                                let t = new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
+                                pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = new_op(ops, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
-                                let t = new_op(ops, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
-                                pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let rp = new_op(ops, order, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
+                                let t = new_op(ops, order, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
+                                pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                         }
                         old_offset = Some(offset);
                     }
 
-                    //let pcu32 = new_op(ops, Op::Cast { x: pc, dtype: DType::U32 });
-                    //let offset = new_op(ops, Op::Binary { x: pcu32, y: offset, bop: BOp::Mul });
+                    let z = new_op(ops, order, Op::Const(value));
 
-                    let z = new_op(ops, Op::Const(value));
-
-                    // TODO process view
-                    //self.ops[op_id] = Op::Const(value);
                     let dtype = value.dtype();
-                    let pcd = new_op(ops, Op::Cast { x: pc, dtype });
-                    // Nullify z if padding condition is false (if there is padding at that index)
-                    _ = new_op(ops, Op::Binary { x: pcd, y: z, bop: BOp::Mul });
+                    let pcd = new_op(ops, order, Op::Cast { x: pc, dtype });
 
-                    let n = self.ops.len();
-                    self.ops.extend(temp_ops);
-                    increment(&mut self.ops[n..], (n - op_id - 1) as isize, op_id..);
-                    op_id = n;
+                    // Nullify z if padding condition is false (if there is padding at that index)
+                    self.ops[op_id] = Op::Binary { x: pcd, y: z, bop: BOp::Mul }; // this is now the new op_id
+
+                    // Put newly created ops into correct order
+                    self.order.splice(i..i, order.into_iter().map(|x| *x));
+
+                    i += order.len();
                     continue;
                 }
                 Op::LoadView { dtype, ref view } => {
@@ -531,14 +657,17 @@ impl Kernel {
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
                     let view = view.clone();
+                    let axes = self.get_loops(op_id);
 
                     //println!("Unfolding view: {view}");
-                    let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
-                    self.ops.pop();
                     let ops = &mut self.ops;
-                    let axes = get_axes(&ops[0..op_id]);
-                    let mut pc = new_op(ops, Op::Const(Constant::Bool(true)));
-                    let constant_zero = new_op(ops, Op::Const(Constant::idx(0)));
+
+                    // We just record the order of all new inserted ops here
+                    // and then just insrt this order into current block
+                    let order = &mut Vec::new();
+
+                    let mut pc = new_op(ops, order, Op::Const(Constant::Bool(true)));
+                    let constant_zero = new_op(ops, order, Op::Const(Constant::idx(0)));
                     let mut offset = constant_zero;
                     let mut old_offset: Option<OpId> = None;
                     //println!("View");
@@ -561,14 +690,14 @@ impl Kernel {
                                 let x = if t_ost == 1 {
                                     old_offset
                                 } else {
-                                    let ost_c = new_op(ops, Op::Const(Constant::idx(t_ost)));
-                                    new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
+                                    let ost_c = new_op(ops, order, Op::Const(Constant::idx(t_ost)));
+                                    new_op(ops, order, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
                                 };
                                 if dim.d == 1 {
                                     constant_zero
                                 } else {
-                                    let dimd_c = new_op(ops, Op::Const(Constant::idx(dim.d as u64)));
-                                    new_op(ops, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
+                                    let dimd_c = new_op(ops, order, Op::Const(Constant::idx(dim.d as u64)));
+                                    new_op(ops, order, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
                                 }
                             } else if dim.d == 1 {
                                 constant_zero
@@ -578,66 +707,69 @@ impl Kernel {
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
-                                let lp = new_op(ops, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
+                                let lp = new_op(ops, order, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
-                                    new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Sub })
+                                    new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Sub })
                                 } else {
-                                    new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Add })
+                                    new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Add })
                                 }
                             } else {
                                 a
                             };
 
                             if dim.st != 0 {
-                                let stride = new_op(ops, Op::Const(Constant::idx(dim.st as u64)));
-                                let x = new_op(ops, Op::Binary { x: t, y: stride, bop: BOp::Mul });
-                                offset = new_op(ops, Op::Binary { x, y: offset, bop: BOp::Add });
+                                let stride = new_op(ops, order, Op::Const(Constant::idx(dim.st as u64)));
+                                let x = new_op(ops, order, Op::Binary { x: t, y: stride, bop: BOp::Mul });
+                                offset = new_op(ops, order, Op::Binary { x, y: offset, bop: BOp::Add });
                             }
 
                             // Padding condition
                             if dim.lp > 0 {
-                                let lp = new_op(ops, Op::Const(Constant::idx((dim.lp - 1) as u64)));
-                                let t = new_op(ops, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
-                                pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let lp = new_op(ops, order, Op::Const(Constant::idx((dim.lp - 1) as u64)));
+                                let t = new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
+                                pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = new_op(ops, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
-                                let t = new_op(ops, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
-                                pc = new_op(ops, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let rp = new_op(ops, order, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
+                                let t = new_op(ops, order, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
+                                pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                         }
                         old_offset = Some(offset);
                     }
 
-                    let pcu = new_op(ops, Op::Cast { x: pc, dtype: IDX_T });
-                    let offset = new_op(ops, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
+                    let pcu = new_op(ops, order, Op::Cast { x: pc, dtype: IDX_T });
+                    let offset = new_op(ops, order, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
 
-                    let z = new_op(ops, Op::Load { src: load_id, index: offset });
+                    let z = new_op(ops, order, Op::Load { src: global_args[load_id], index: offset });
 
-                    let pcd = new_op(ops, Op::Cast { x: pc, dtype });
+                    let pcd = new_op(ops, order, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
-                    _ = new_op(ops, Op::Binary { x: pcd, y: z, bop: BOp::Mul });
+                    self.ops[op_id] = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
 
-                    let n = self.ops.len();
-                    self.ops.extend(temp_ops);
-                    increment(&mut self.ops[n..], (n - op_id - 1) as isize, op_id..);
-                    op_id = n;
+                    // Put newly created ops into correct block
+                    self.order.splice(i..i, order.into_iter().map(|x| *x));
+
                     load_id += 1;
+
+                    i += order.len();
                     continue;
                 }
                 Op::StoreView { src, .. } => {
-                    let temp_ops: Vec<Op> = self.ops.split_off(op_id + 1);
-                    self.ops.pop();
-                    let axes = get_axes(&self.ops);
-                    let mut index = new_op(&mut self.ops, Op::Const(Constant::idx(0u64)));
+                    let axes = self.get_loops(op_id);
+                    let order = &mut Vec::new();
+                    let mut index = new_op(&mut self.ops, order, Op::Const(Constant::idx(0u64)));
                     let mut st = 1;
 
                     let shape = {
                         let mut shape = Vec::new();
-                        for op in &self.ops {
-                            match op {
+                        for &l_op_id in &self.order {
+                            if l_op_id == op_id {
+                                break;
+                            }
+                            match self[l_op_id] {
                                 Op::Loop { dim, .. } => {
-                                    shape.push(*dim);
+                                    shape.push(dim);
                                 }
                                 Op::EndLoop => {
                                     shape.pop();
@@ -653,58 +785,60 @@ impl Kernel {
                         let x = if *d > 1 {
                             axes[id]
                         } else {
-                            new_op(&mut self.ops, Op::Const(Constant::idx(0)))
+                            new_op(&mut self.ops, order, Op::Const(Constant::idx(0)))
                         };
-                        let y = new_op(&mut self.ops, Op::Const(stride));
-                        let x = new_op(&mut self.ops, Op::Binary { x, y, bop: BOp::Mul });
-                        index = new_op(&mut self.ops, Op::Binary { x, y: index, bop: BOp::Add });
+                        let y = new_op(&mut self.ops, order, Op::Const(stride));
+                        let x = new_op(&mut self.ops, order, Op::Binary { x, y, bop: BOp::Mul });
+                        index = new_op(&mut self.ops, order, Op::Binary { x, y: index, bop: BOp::Add });
                         st *= d;
                     }
 
-                    _ = new_op(&mut self.ops, Op::Store { dst: store_id, x: src, index });
+                    self.ops[op_id] = Op::Store { dst: global_args[n_loads + store_id], x: src, index };
 
-                    let n = self.ops.len();
-                    /*for (i, op) in self.ops.iter().enumerate() {
-                        println!("{i} -> {op:?}");
-                    }
-                    println!("n={n}");*/
-                    self.ops.extend(temp_ops);
-                    increment(&mut self.ops[n..], (n - op_id - 1) as isize, op_id..);
-                    op_id = n;
+                    // Put newly created ops into correct block
+                    self.order.splice(i..i, order.into_iter().map(|x| *x));
+
                     store_id += 1;
+
+                    i += order.len();
                     continue;
                 }
                 _ => {}
             }
-            op_id += 1;
+            i += 1;
         }
-    }*/
+    }
 
-    /*pub fn unfold_pows(&mut self) {
-        let mut op_id = 0;
-        while op_id < self.ops.len() {
+    pub fn unfold_pows(&mut self) {
+        let mut i = 0;
+        while i < self.order.len() {
+            let op_id = self.order[i];
             if let Op::Binary { x, y, bop } = self.ops[op_id] {
                 if bop == BOp::Pow {
-                    let mut tail: Vec<Op> = self.ops.split_off(op_id + 1);
-                    self.ops.pop();
-                    self.ops.push(Op::Unary { x, uop: UOp::Log2 });
-                    self.ops.push(Op::Binary { x: op_id, y, bop: BOp::Mul });
-                    self.ops.push(Op::Unary { x: op_id + 1, uop: UOp::Exp2 });
-                    increment(&mut tail, 2, op_id..);
-                    self.ops.extend(tail);
+                    let x = self.ops.push(Op::Unary { x, uop: UOp::Log2 });
+                    self.order.insert(i, x);
+                    i += 1;
+                    let x = self.ops.push(Op::Binary { x, y, bop: BOp::Mul });
+                    self.order.insert(i, x);
+                    i += 1;
+                    self.ops[op_id] = Op::Unary { x, uop: UOp::Exp2 };
                 }
             }
-            op_id += 1;
+            i += 1;
         }
-    }*/
+    }
 
     pub fn dead_code_elimination(&mut self) {
+        #[cfg(debug_assertions)]
+        self.verify();
+
         let mut params = Vec::new();
         let mut visited = Set::default();
         // We go backward from Stores and gather all needed ops, but we can't remove Loop and Define ops
         for (op_id, op) in self.ops.iter() {
-            if matches!(op, Op::Store { .. } | Op::Loop { .. } | Op::Define { .. }) {
+            if matches!(op, Op::Store { .. } | Op::Loop { .. } | Op::Define { .. } | Op::EndLoop) {
                 params.push(op_id);
+                visited.insert(op_id);
             }
         }
         while let Some(op_id) = params.pop() {
@@ -718,72 +852,89 @@ impl Kernel {
         }
         // Remove from self.order and loops
         self.order.retain(|op_id| !ids.contains(op_id));
-        let mut order = self.order.clone();
-        order.reverse();
-        while let Some(op_id) = order.pop() {
-            if let Op::Loop { ops, .. } = &mut self[op_id] {
-                ops.retain(|op_id| !ids.contains(op_id));
-                order.extend(ops.iter().rev());
-            }
-        }
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
-    /*pub fn common_subexpression_elimination(&mut self) {
-        let mut unique_stack: Vec<Map<Op, OpId>> = Vec::new();
-        unique_stack.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::new()));
-        let mut remaps = Map::with_hasher(BuildHasherDefault::new());
-        for (op_id, op) in self.ops.iter().enumerate() {
-            match op {
+    pub fn common_subexpression_elimination(&mut self) {
+        #[cfg(debug_assertions)]
+        self.verify();
+
+        let mut unique: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
+        unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
+        let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
+        for &op_id in &self.order {
+            match &self.ops[op_id] {
                 Op::Loop { .. } => {
-                    unique_stack.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::new()));
+                    unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
                 }
                 Op::EndLoop => {
-                    unique_stack.pop();
+                    unique.pop();
                 }
-                _ => {
-                    for unique in &unique_stack {
-                        if let Some(&id) = unique.get(op) {
-                            remaps.insert(op_id, id);
-                            break;
-                        }
+                op => {
+                    // Loads and stores violate SSA, so we can't deduplicate them
+                    if matches!(
+                        op,
+                        Op::Define { .. } | Op::Loop { .. } | Op::EndLoop | Op::Load { .. } | Op::Store { .. }
+                    ) {
+                        continue;
                     }
-
-                    if !remaps.contains_key(&op_id)
-                        && !matches!(
-                            op,
-                            Op::Define { .. } | Op::Loop { .. } | Op::EndLoop | Op::Load { .. } | Op::Store { .. }
-                        )
-                    {
-                        unique_stack.last_mut().unwrap().insert(op.clone(), op_id);
+                    let local_unique = unique.last_mut().unwrap();
+                    if let Some(&old_op_id) = local_unique.get(op) {
+                        remaps.insert(op_id, old_op_id);
+                    } else {
+                        local_unique.insert(op.clone(), op_id);
                     }
                 }
             }
         }
-        remap(&mut self.ops, &remaps);
+
+        // Second pass: remap all operands using op.parameters()
+        for op in self.ops.values_mut() {
+            for param in op.parameters_mut() {
+                if let Some(&new_id) = remaps.get(param) {
+                    *param = new_id;
+                }
+            }
+        }
+
+        // Third pass: remove duplicated ops from order and ops
+        let mut i = 0;
+        while i < self.order.len() {
+            let op_id = self.order[i];
+            if remaps.contains_key(&op_id) {
+                self.order.remove(i);
+                self.ops.remove(op_id);
+            } else {
+                i += 1;
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     pub fn move_constants_to_beginning(&mut self) {
-        let n_defines = self.ops.iter().position(|op| !matches!(op, Op::Define { .. })).unwrap();
-        let tail = self.ops.split_off(n_defines);
-        let mut remaps = Map::with_hasher(BuildHasherDefault::new());
-        let n_constants = tail.iter().filter(|op| matches!(op, Op::Const(_))).count();
+        #[cfg(debug_assertions)]
+        self.verify();
 
-        for (i, op) in tail.iter().enumerate() {
-            if matches!(op, Op::Const(_)) {
-                let new_index = self.ops.len();
-                self.ops.push(op.clone());
-                remaps.insert(i + n_defines + n_constants, new_index);
+        let n_defines = self.order.iter().position(|&op_id| !matches!(self[op_id], Op::Define { .. })).unwrap();
+        let mut i = 0;
+        while i < self.order.len() {
+            let op_id = self.order[i];
+            if matches!(self[op_id], Op::Const(_)) {
+                let const_id = self.order.remove(i);
+                self.order.insert(n_defines, const_id);
             }
+            i += 1;
         }
-        self.ops.extend(tail);
-        increment(
-            &mut self.ops[n_defines + remaps.len()..],
-            remaps.len() as isize,
-            n_defines..,
-        );
-        remap(&mut self.ops, &remaps);
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
+    /*
     /// Constant folding
     pub fn constant_folding(&mut self) {
         let mut remaps = Map::with_hasher(BuildHasherDefault::new());
@@ -911,6 +1062,102 @@ impl Kernel {
         }
         remap(&mut self.ops, &remaps);
     }*/
+
+    pub fn verify(&self) {
+        let valid_ids: Set<OpId> = self.ops.ids().collect();
+        for (i, &id) in self.order.iter().enumerate() {
+            if !valid_ids.contains(&id) {
+                self.debug();
+                panic!("order[{}] references invalid OpId {:?}", i, id);
+            }
+        }
+        let mut defined: Map<OpId, usize> = Map::default();
+        let mut def_loop_depth: Map<OpId, usize> = Map::default();
+        let mut loop_depth = 0usize;
+        let mut seen_non_global_define = false;
+        for (idx, &id) in self.order.iter().enumerate() {
+            if defined.contains_key(&id) {
+                self.debug();
+                panic!("OpId {:?} appears multiple times in order", id);
+            }
+            let check_ref = |ref_id: OpId| {
+                if !valid_ids.contains(&ref_id) {
+                    self.debug();
+                    panic!("Op {:?} references invalid OpId {:?}", id, ref_id);
+                }
+                let def_idx = defined.get(&ref_id).unwrap_or_else(|| {
+                    self.debug();
+                    panic!("Op {:?} uses OpId {:?} before it is defined", id, ref_id);
+                });
+                let ref_loop_depth = def_loop_depth[&ref_id];
+                if ref_loop_depth > loop_depth {
+                    self.debug();
+                    panic!(
+                        "Op {:?} at loop depth {} illegally references OpId {:?} defined at deeper loop depth {}",
+                        id, loop_depth, ref_id, ref_loop_depth
+                    );
+                }
+                *def_idx
+            };
+            match self.ops[id] {
+                Op::Const(_) => {}
+                Op::Cast { x, .. } => {
+                    check_ref(x);
+                }
+                Op::Unary { x, .. } => {
+                    check_ref(x);
+                }
+                Op::Binary { x, y, .. } => {
+                    check_ref(x);
+                    check_ref(y);
+                }
+                Op::Load { src, index } => {
+                    check_ref(src);
+                    check_ref(index);
+                }
+                Op::Store { dst, x, index } => {
+                    check_ref(dst);
+                    check_ref(x);
+                    check_ref(index);
+                }
+                Op::Define { scope, len, ro, .. } => {
+                    if ro == false && scope == Scope::Global {
+                        debug_assert_eq!(len, 0)
+                    }
+                    let is_global = matches!(scope, Scope::Global);
+                    if is_global {
+                        if seen_non_global_define {
+                            self.debug();
+                            panic!("Global Define {:?} appears after non-global ops", id);
+                        }
+                    } else {
+                        seen_non_global_define = true;
+                    }
+                }
+                Op::Loop { .. } => {
+                    seen_non_global_define = true;
+                    loop_depth += 1;
+                }
+                Op::EndLoop => {
+                    if loop_depth == 0 {
+                        self.debug();
+                        panic!("EndLoop {:?} without matching Loop", id);
+                    }
+                    loop_depth -= 1;
+                }
+                ref op => unreachable!("Unreachable op {op:?}"),
+            }
+            let defines_value = !matches!(self.ops[id], Op::Store { .. } | Op::EndLoop);
+            if defines_value {
+                defined.insert(id, idx);
+                def_loop_depth.insert(id, loop_depth);
+            }
+        }
+        if loop_depth != 0 {
+            self.debug();
+            panic!("Unclosed Loop: {} loops not terminated", loop_depth);
+        }
+    }
 }
 
 /*

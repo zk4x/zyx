@@ -19,7 +19,7 @@ use nanoserde::DeJson;
 use std::{
     ffi::{CString, c_void},
     fmt::Write,
-    hash::BuildHasherDefault,
+    hash::{BuildHasher, BuildHasherDefault},
     ptr,
     sync::Arc,
 };
@@ -620,7 +620,7 @@ impl OpenCLDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        /*fn new_reg(
+        fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
             registers: &mut Vec<(DType, u32, u8)>,
@@ -662,7 +662,8 @@ impl OpenCLDevice {
 
         let mut gws = Vec::new();
         let mut lws = Vec::new();
-        for op in &kernel.ops {
+        for &op_id in &kernel.order {
+            let op = &kernel[op_id];
             if let &Op::Loop { dim, scope } = op {
                 match scope {
                     Scope::Global => {
@@ -684,72 +685,94 @@ impl OpenCLDevice {
         }
 
         let mut global_args = String::new();
-        for (i, op) in kernel.ops.iter().enumerate() {
-            if let &Op::Define { dtype, scope, ro, .. } = op
-                && scope == Scope::Global
-            {
-                _ = writeln!(
-                    global_args,
-                    "  __global {}{}* p{i},",
-                    if ro { "const " } else { "" },
-                    dtype.ocl()
-                );
+        for &op_id in &kernel.order {
+            let op = &kernel[op_id];
+            if let &Op::Define { dtype, scope, ro, .. } = op {
+                if scope == Scope::Global {
+                    _ = writeln!(
+                        global_args,
+                        "  __global {}{}* p{op_id},",
+                        if ro { "const " } else { "" },
+                        dtype.ocl()
+                    );
+                }
+            } else {
+                break;
             }
         }
         global_args.pop();
         global_args.pop();
         global_args.push('\n');
 
-        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
+        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
         let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
+        #[inline]
+        fn dtype_of(dtypes: &Map<OpId, DType>, id: OpId) -> DType {
+            *dtypes.get(&id).unwrap_or_else(|| panic!("BUG: dtype missing for op {:?}", id))
+        }
+
         // first we will calculate those reference counts.
-        for (i, op) in kernel.ops.iter().enumerate() {
+        for &op_id in &kernel.order {
+            let op = &kernel[op_id];
             match op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } | Op::Null => {
+                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
+
                 Op::Const(x) => {
-                    dtypes.insert(i, x.dtype());
+                    dtypes.insert(op_id, x.dtype());
                 }
+
                 &Op::Define { dtype, .. } => {
-                    dtypes.insert(i, dtype);
+                    dtypes.insert(op_id, dtype);
                 }
+
                 &Op::Load { src, index } => {
-                    dtypes.insert(i, dtypes[&src]);
-                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    dtypes.insert(op_id, dtype_of(&dtypes, src));
+                    *rcs.entry(index).or_insert(0) += 1;
                 }
+
                 &Op::Store { dst, x: src, index } => {
-                    dtypes.insert(i, dtypes[&src]);
-                    rcs.entry(dst).and_modify(|rc| *rc += 1).or_insert(1);
-                    rcs.entry(src).and_modify(|rc| *rc += 1).or_insert(1);
-                    rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
+                    dtypes.insert(op_id, dtype_of(&dtypes, src));
+
+                    *rcs.entry(dst).or_insert(0) += 1;
+                    *rcs.entry(src).or_insert(0) += 1;
+                    *rcs.entry(index).or_insert(0) += 1;
                 }
+
                 &Op::Cast { x, dtype } => {
-                    dtypes.insert(i, dtype);
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    dtypes.insert(op_id, dtype);
+                    *rcs.entry(x).or_insert(0) += 1;
                 }
+
                 &Op::Unary { x, .. } => {
-                    dtypes.insert(i, dtypes[&x]);
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
+                    dtypes.insert(op_id, dtype_of(&dtypes, x));
+                    *rcs.entry(x).or_insert(0) += 1;
                 }
+
                 &Op::Binary { x, y, bop } => {
-                    if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or) {
-                        dtypes.insert(i, DType::Bool);
+                    let dtype = if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or) {
+                        DType::Bool
                     } else {
-                        dtypes.insert(i, dtypes[&x]);
-                    }
-                    rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
-                    rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
+                        dtype_of(&dtypes, x)
+                    };
+
+                    dtypes.insert(op_id, dtype);
+                    *rcs.entry(x).or_insert(0) += 1;
+                    *rcs.entry(y).or_insert(0) += 1;
                 }
+
                 Op::Loop { .. } => {
-                    dtypes.insert(i, DType::U32);
+                    dtypes.insert(op_id, DType::U32);
                 }
+
                 Op::EndLoop => {}
             }
         }
 
-        let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
+        let mut reg_map: Map<OpId, usize> =
+            Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
         let mut registers: Vec<(DType, u32, u8)> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
@@ -760,30 +783,31 @@ impl OpenCLDevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
-        for (i, op) in kernel.ops.iter().enumerate() {
+        for &op_id in &kernel.order {
+            let op = &kernel[op_id];
             //println!("{i} -> {op:?}");
             match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Null => {
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 &Op::Const(x) => {
-                    constants.insert(i, x);
+                    constants.insert(op_id, x);
                 }
                 &Op::Define { dtype, scope, ro, len } => {
                     if scope == Scope::Register {
                         _ = writeln!(
                             source,
-                            "{indent}{}{} p{i}[{len}];",
+                            "{indent}{}{} p{op_id}[{len}];",
                             if ro { "const " } else { "" },
                             dtype.ocl(),
                         );
                     }
                 }
                 &Op::Load { src, index } => {
-                    if let Some(&rc) = rcs.get(&i) {
+                    if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&src];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
-                        let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rc, loop_id);
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
                         _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                     }
                 }
@@ -797,13 +821,13 @@ impl OpenCLDevice {
                 }
                 &Op::Cast { x, dtype } => {
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl());
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
@@ -826,10 +850,10 @@ impl OpenCLDevice {
                     }
                 }
                 &Op::Binary { x, y, bop } => {
-                    let dtype = dtypes[&i];
+                    let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
-                    let reg = new_reg(i, &mut reg_map, &mut registers, dtype, rcs[&i], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = match bop {
                         BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
                         BOp::Sub => writeln!(source, "{indent}r{reg} = {x} - {y};"),
@@ -852,7 +876,7 @@ impl OpenCLDevice {
                     };
                 }
                 &Op::Loop { dim, scope } => {
-                    indices.insert(i, loop_id);
+                    indices.insert(op_id, loop_id);
                     match scope {
                         Scope::Global => {
                             _ = writeln!(
@@ -969,8 +993,7 @@ impl OpenCLDevice {
         let program_name = &CString::new(name).unwrap();
         let kernel = unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &raw mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
-        Ok(self.programs.push(OpenCLProgram { program, kernel, gws, lws }))*/
-        todo!()
+        Ok(self.programs.push(OpenCLProgram { program, kernel, gws, lws }))
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]

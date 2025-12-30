@@ -68,11 +68,6 @@ impl KMKernel {
         self.kernel.apply_movement(func);
     }
 
-    fn shape(&self) -> Vec<Dim> {
-        //self.kernel.shape()
-        todo!()
-    }
-
     fn push(&mut self, op: Op) -> OpId {
         let op_id = self.kernel.ops.push(op);
         self.kernel.order.push(op_id);
@@ -80,9 +75,9 @@ impl KMKernel {
     }
 
     fn debug(&self) {
-        println!("loads={:?}", self.loads);
+        println!("\nloads={:?}", self.loads);
         println!("stores={:?}", self.stores);
-        println!("outputs={:?}", self.outputs);
+        print!("outputs={:?}", self.outputs);
         self.kernel.debug();
     }
 
@@ -315,7 +310,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -329,7 +324,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -349,7 +344,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -364,7 +359,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -425,7 +420,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -454,35 +449,21 @@ impl<'a> Kernelizer<'a> {
         let (mut kid, mut op_id) = self.visited[&x];
         let (mut kidy, mut op_idy) = self.visited[&y];
 
-        /*if let Some(loads) = loads.get(&kid) {
-            println!("loads={loads:?}");
-        }
-        if let Some(stores) = stores.get(&kid) {
-            println!("stores={stores:?}");
-        }
-        println!("outputs={:?}", outputs[&kid]);
-        kernels[kid].debug();
-        println!();
-        if let Some(loads) = loads.get(&kidy) {
-            println!("loads={loads:?}");
-        }
-        if let Some(stores) = stores.get(&kidy) {
-            println!("stores={stores:?}");
-        }
-        println!("outputs={:?}", outputs[&kidy]);
-        kernels[kidy].debug();
-        println!();*/
+        //self.kernels[kid].debug();
+        //self.kernels[kidy].debug();
 
         let kid_stores = !self.kernels[kid].stores.is_empty();
         let kidy_stores = !self.kernels[kidy].stores.is_empty();
 
         let new_op_id = if kid == kidy {
+            //println!("Same kernels for binary");
             let kernel = &mut self.kernels[kid];
             kernel.remove_first_output(x);
             kernel.remove_first_output(y);
             kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
             kernel.push(Op::Binary { x: op_id, y: op_idy, bop })
         } else {
+            //println!("Different kernels for binary");
             // TODO later use this, but this requires global memory sync inside of the kernel
             // as it loads and stores from the same kernel
             //if kid_stores && kidy_stores {
@@ -536,7 +517,12 @@ impl<'a> Kernelizer<'a> {
             // Extend x kernel with y ops
             let mut y_ops_map = Map::with_capacity_and_hasher(50, BuildHasherDefault::new());
             for (op_id, op) in kernel.ops.iter() {
-                let new_op_id = self.kernels[kid].push(op.clone());
+                let mut op = op.clone();
+                for param in op.parameters_mut() {
+                    *param = y_ops_map[param];
+                }
+
+                let new_op_id = self.kernels[kid].push(op);
                 y_ops_map.insert(op_id, new_op_id);
             }
             // Fix visited
@@ -560,6 +546,7 @@ impl<'a> Kernelizer<'a> {
         *self.rcs.get_mut(&x).unwrap() -= 1;
         *self.rcs.get_mut(&y).unwrap() -= 1;
         self.visited.insert(nid, (kid, new_op_id));
+        //self.kernels[kid].debug();
         Ok(())
     }
 
@@ -779,11 +766,6 @@ impl<'a> Kernelizer<'a> {
             // done optimizing, loaded best from disk
             let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), self.debug.ir());
             debug_assert!(opt_res);
-            if self.debug.ir() {
-                println!("\nIR optimized kernel");
-                kernel.debug();
-                println!();
-            }
             let program_id = device.compile(&kernel, self.debug.asm())?;
             if self.debug.kmd() {
                 println!("Kernel launch from memory pool {mpid} with args: {args:?}");
@@ -807,6 +789,7 @@ impl<'a> Kernelizer<'a> {
             let mut okernel;
             let program_id;
             let nanos;
+
             loop {
                 okernel = kernel.clone();
 
