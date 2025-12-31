@@ -21,9 +21,9 @@ use crate::{
 use std::{collections::BTreeSet, hash::BuildHasherDefault, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct KernelId(u32);
+pub struct KMKernelId(u32);
 
-impl SlabId for KernelId {
+impl SlabId for KMKernelId {
     const ZERO: Self = Self(0);
 
     fn inc(&mut self) {
@@ -31,14 +31,14 @@ impl SlabId for KernelId {
     }
 }
 
-impl From<usize> for KernelId {
+impl From<usize> for KMKernelId {
     fn from(value: usize) -> Self {
-        KernelId(value as u32)
+        KMKernelId(value as u32)
     }
 }
 
-impl From<KernelId> for usize {
-    fn from(value: KernelId) -> Self {
+impl From<KMKernelId> for usize {
+    fn from(value: KMKernelId) -> Self {
         value.0 as usize
     }
 }
@@ -160,8 +160,8 @@ struct Kernelizer<'a> {
     virt_realized_nodes: Set<TensorId>,
     must_keep_nodes: Set<TensorId>,
     realized_nodes: Set<TensorId>,
-    kernels: Slab<KernelId, KMKernel>,
-    visited: Map<TensorId, (KernelId, OpId)>,
+    kernels: Slab<KMKernelId, KMKernel>,
+    visited: Map<TensorId, (KMKernelId, OpId)>,
     rcs: Map<TensorId, u32>,
     graph: &'a Graph,
     pools: &'a mut [Pool],
@@ -217,7 +217,7 @@ impl<'a> Kernelizer<'a> {
         self.virt_realized_nodes.contains(&nid)
     }
 
-    fn duplicate_or_store(&mut self, x: TensorId, reduce_dims: Option<Dim>) -> Result<(KernelId, OpId), ZyxError> {
+    fn duplicate_or_store(&mut self, x: TensorId, reduce_dims: Option<Dim>) -> Result<(KMKernelId, OpId), ZyxError> {
         let (mut kid, mut op_id) = self.visited[&x];
 
         if self.kernels[kid].contains_stores() {
@@ -257,7 +257,7 @@ impl<'a> Kernelizer<'a> {
         Ok((kid, op_id))
     }
 
-    fn duplicate_kernel(&mut self, x: TensorId, kid: KernelId) -> KernelId {
+    fn duplicate_kernel(&mut self, x: TensorId, kid: KMKernelId) -> KMKernelId {
         //println!("op_id={op_id}");
         //println!("Duplicating");
         // Instead of copy of the whole kernel, copy only relevant ops
@@ -271,7 +271,7 @@ impl<'a> Kernelizer<'a> {
         self.kernels.push(kernel)
     }
 
-    fn create_load_kernel(&mut self, nid: TensorId) -> (KernelId, OpId) {
+    fn create_load_kernel(&mut self, nid: TensorId) -> (KMKernelId, OpId) {
         //println!("ADDING LOAD for {x} x {}", rc);
         let shape = self.graph.shape(nid);
         let dtype = self.graph.dtype(nid);
@@ -722,17 +722,11 @@ impl<'a> Kernelizer<'a> {
         /***** CACHE and OPTIMIZATION SEARCH *****/
 
         let device = &mut self.devices[dev_id];
-        let dev_id = dev_id as u32;
+        let dev_id = crate::cache::DeviceId(dev_id as u32);
         let pool = &mut self.pools[mpid];
 
         // Send the kernel to kernel cache.
-        let dev_info_id = if let Some(&dev_info_id) = self.cache.device_infos.get(device.info()) {
-            dev_info_id
-        } else {
-            let dev_info_id = self.cache.device_infos.values().max().map_or(0, |id| id.checked_add(1).unwrap());
-            assert!(self.cache.device_infos.insert(device.info().clone(), dev_info_id).is_none());
-            dev_info_id
-        };
+        let dev_info_id = self.cache.get_or_add_dev_info(device.info());
 
         // Launch if it is in cache
         let kernel_id;
@@ -756,9 +750,9 @@ impl<'a> Kernelizer<'a> {
             kernel_id = kid;
         } else {
             // If it is not in cache, we just get new empty kernel id where we insert the kernel
-            kernel_id = self.cache.kernels.values().copied().max().unwrap_or(0).checked_add(1).unwrap();
-            assert!(self.cache.kernels.insert(kernel.clone(), kernel_id).is_none());
             optimizer = Optimizer::new(&kernel, device.info());
+            // a bit unnecessay kernel clone here, but it does not really matter
+            kernel_id = self.cache.insert_kernel(kernel.clone());
         }
 
         // Check if best optimization already found
@@ -869,7 +863,7 @@ impl<'a> Kernelizer<'a> {
 
                 last_time_nanos = if let Ok((program_id, last_time_nanos)) = res {
                     if last_time_nanos < optimizer.best_time_nanos {
-                        self.cache.programs.insert((kernel_id, dev_id as u32), program_id);
+                        self.cache.programs.insert((kernel_id, dev_id), program_id);
                     }
                     last_time_nanos
                 } else {
@@ -1035,8 +1029,8 @@ impl Runtime {
             //kernelizer.debug();
         }
 
-        if kernelizer.kernels.len() > KernelId(0) {
-            let mut kids: Vec<KernelId> = kernelizer.kernels.ids().collect();
+        if kernelizer.kernels.len() > KMKernelId(0) {
+            let mut kids: Vec<KMKernelId> = kernelizer.kernels.ids().collect();
             while let Some(kid) = kids
                 .iter()
                 .find(|&&kid| kernelizer.kernels[kid].loads.iter().all(|x| kernelizer.realized_nodes.contains(x)))
@@ -1064,7 +1058,7 @@ impl Runtime {
 
         #[cfg(debug_assertions)]
         {
-            if kernelizer.kernels.len() > KernelId(0) {
+            if kernelizer.kernels.len() > KMKernelId(0) {
                 println!("realized_nodes={:?}", kernelizer.realized_nodes);
                 println!("Unrealized kernels:");
                 for (kid, kernel) in kernelizer.kernels.iter() {

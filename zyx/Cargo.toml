@@ -16,6 +16,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
+#parking_lot = { version ="*" } # Good for debugging, since std::mutex::Mutex sucks
 # Good, well written minimal dependencies
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.9.0", default-features = false, features = ["std"] } # ISC
@@ -64,7 +65,7 @@ strip = false            # Removes symbols or debuginfo.
 debug-assertions = true  # Enables debug assertions.
 overflow-checks = true   # Enables runtime integer overflow checks.
 lto = false              # Sets link-time optimization.
-panic = 'abort'         # The panic strategy.
+panic = 'unwind'         # The panic strategy.
 incremental = true       # Incremental compilation.
 codegen-units = 16       # Number of code generation units.
 #rpath = false           # Sets the rpath linking option.

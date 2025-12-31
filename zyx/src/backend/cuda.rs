@@ -5,8 +5,6 @@
 
 use std::{
     ffi::{c_char, c_int, c_uint, c_void},
-    fmt::Write,
-    hash::BuildHasherDefault,
     ptr,
     sync::mpsc::{Receiver, Sender, channel},
 };
@@ -15,13 +13,7 @@ use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    DType, Map,
-    dtype::Constant,
-    error::{BackendError, ErrorStatus},
-    graph::{BOp, UOp},
-    kernel::{IDX_T, Kernel, Op, OpId, Scope},
-    shape::Dim,
-    slab::Slab,
+    DType, dtype::Constant, error::{BackendError, ErrorStatus}, kernel::Kernel, shape::Dim, slab::Slab
 };
 
 macro_rules! send_or_continue {

@@ -2,21 +2,28 @@ use crate::{
     Map,
     backend::{Device, DeviceInfo, ProgramId},
     kernel::Kernel,
-    optimizer::Optimizer,
+    optimizer::Optimizer
 };
 use nanoserde::{DeBin, SerBin};
 use std::hash::BuildHasherDefault;
 
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
+pub struct DeviceInfoId(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
+pub struct DeviceId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
+pub struct KernelId(u32);
+
 #[derive(Debug)]
 pub struct Cache {
-    pub device_infos: Map<DeviceInfo, u32>,
-    pub kernels: Map<Kernel, u32>,
+    pub device_infos: Map<DeviceInfo, DeviceInfoId>,
+    pub kernels: Map<Kernel, KernelId>,
     // Finished optimizations of kernels for given devices
-    // kernel id, device info id => optimization, time to run in nanos
-    pub optimizations: Map<(u32, u32), Optimizer>,
+    pub optimizations: Map<(KernelId, DeviceInfoId), Optimizer>,
     // This last one is not stored to disk
-    // kernel id, device id (not device info id) => program id
-    pub programs: Map<(u32, u32), ProgramId>,
+    pub programs: Map<(KernelId, DeviceId), ProgramId>,
 }
 
 impl SerBin for Cache {
@@ -48,7 +55,7 @@ impl DeBin for Cache {
         let mut device_infos = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let key = DeviceInfo::de_bin(offset, bytes)?;
-            let value = u32::de_bin(offset, bytes)?;
+            let value = DeviceInfoId::de_bin(offset, bytes)?;
             device_infos.insert(key, value);
         }
 
@@ -59,7 +66,7 @@ impl DeBin for Cache {
         let mut kernels = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let key = Kernel::de_bin(offset, bytes)?;
-            let value = u32::de_bin(offset, bytes)?;
+            let value = KernelId::de_bin(offset, bytes)?;
             kernels.insert(key, value);
         }
 
@@ -69,8 +76,8 @@ impl DeBin for Cache {
         }
         let mut optimizations = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
-            let k1 = u32::de_bin(offset, bytes)?;
-            let k2 = u32::de_bin(offset, bytes)?;
+            let k1 = KernelId::de_bin(offset, bytes)?;
+            let k2 = DeviceInfoId::de_bin(offset, bytes)?;
             let key = (k1, k2);
             let value = Optimizer::de_bin(offset, bytes)?;
             optimizations.insert(key, value);
@@ -92,12 +99,35 @@ impl Cache {
     }
 
     pub(super) fn deinitialize(&mut self, devices: &mut [Device]) {
-        for (&(_, dev_id), program_id) in &mut self.programs {
-            devices[dev_id as usize].release(*program_id);
+        for (&(_, dev_id), &program_id) in &self.programs {
+            devices[dev_id.0 as usize].release(program_id);
         }
         self.device_infos = Default::default();
         self.kernels = Default::default();
         self.optimizations = Default::default();
+        self.programs = Default::default();
+    }
+
+    pub fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
+        if let Some(&dev_info_id) = self.device_infos.get(device_info) {
+            dev_info_id
+        } else {
+            self.insert_device_info(device_info.clone())
+        }
+    }
+
+    pub fn insert_device_info(&mut self, device_info: DeviceInfo) -> DeviceInfoId {
+        let dev_info_id = DeviceInfoId(self.device_infos.values().max().map_or(0, |id| id.0.checked_add(1).unwrap()));
+        let newly_inserted = self.device_infos.insert(device_info, dev_info_id).is_none();
+        assert!(newly_inserted);
+        dev_info_id
+    }
+
+    pub fn insert_kernel(&mut self, kernel: Kernel) -> KernelId {
+        let kernel_id = KernelId(self.kernels.values().copied().max().map_or(0, |id| id.0.checked_add(1).unwrap()));
+        let newly_inserted = self.kernels.insert(kernel, kernel_id).is_none();
+        assert!(newly_inserted);
+        kernel_id
     }
 }
 

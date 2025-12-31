@@ -2,7 +2,7 @@ use nanoserde::{DeBin, SerBin};
 
 use crate::{
     backend::DeviceInfo,
-    kernel::{Kernel, Op, OpId, Scope},
+    kernel::{Kernel, Op, Scope},
     shape::Dim,
 };
 use std::collections::HashSet;
@@ -55,9 +55,7 @@ impl Optimizer {
         }
 
         kernel.unfold_pows();
-        kernel.debug();
         kernel.unfold_reduces();
-        kernel.debug();
         kernel.unfold_views();
 
         kernel.move_constants_to_beginning();

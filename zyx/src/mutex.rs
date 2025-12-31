@@ -23,6 +23,23 @@ impl<T> Mutex<T> {
     }
 }
 
+// Good for debugging too
+/*pub struct Mutex<T>(parking_lot::Mutex<T>);
+
+impl<T> Mutex<T> {
+    pub const fn new(data: T) -> Self {
+        Self(parking_lot::Mutex::new(data))
+    }
+
+    pub fn lock(&self) -> parking_lot::MutexGuard<'_, T> {
+        self.0.lock()
+    }
+
+    pub fn try_lock(&self) -> Result<parking_lot::MutexGuard<'_, T>, ()> {
+        Ok(self.0.lock())
+    }
+}*/
+
 // Spinlock is better for debugging, but std::mutex::Mutex is better for release
 // Spinlock is also much faster
 /*use std::{

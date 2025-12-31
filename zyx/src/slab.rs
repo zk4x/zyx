@@ -46,7 +46,7 @@ impl<Id: SlabId> Iterator for IdIter<'_, Id> {
     type Item = Id;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // TODO make it fater later like this
+        // TODO make it faster later like this
         /*let mut id = 0;
         for x in &self.empty {
             while x.0 as usize > id {
@@ -103,10 +103,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
     }
 
     pub(crate) fn remove(&mut self, id: Id) {
-        //debug_assert!(!self.empty.contains(&id));
-        if self.empty.contains(&id) {
-            panic!("HUGE issue");
-        }
+        debug_assert!(!self.empty.contains(&id));
         self.empty.insert(id);
         unsafe { self.values[id.into()].assume_init_drop() };
     }

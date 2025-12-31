@@ -982,7 +982,9 @@ impl OpenCLDevice {
         let program_name = &CString::new(name).unwrap();
         let kernel = unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &raw mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
-        Ok(self.programs.push(OpenCLProgram { program, kernel, gws, lws }))
+        let program_id = self.programs.push(OpenCLProgram { program, kernel, gws, lws });
+        //println!("Compiled program {program_id:?}");
+        Ok(program_id)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -1003,12 +1005,12 @@ impl OpenCLDevice {
 
         let queue_id = self.next_queue();
         /*println!(
-            "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
+            "Launch opencl kernel {:?}, program_id {:?} on queue {:?}, gws {:?}, lws {:?}",
             self.programs[program_id].kernel,
-            self.programs[program_id].program,
+            program_id,
             self.queues[queue_id].queue,
-            self.programs[program_id].global_work_size,
-            self.programs[program_id].local_work_size
+            self.programs[program_id].gws,
+            self.programs[program_id].lws
         );*/
         let program = &self.programs[program_id];
         let mut i = 0;
@@ -1062,7 +1064,7 @@ impl OpenCLDevice {
     }
 
     pub fn release(&mut self, program_id: ProgramId) {
-        //println!("Releasing {:?}", program);
+        //println!("Releasing {:?}", program_id);
         let _ =
             unsafe { (self.clReleaseProgram)(self.programs[program_id].program) }.check(ErrorStatus::Deinitialization);
         self.programs.remove(program_id);

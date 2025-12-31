@@ -215,7 +215,7 @@ impl Runtime {
         //println!("DEINIT runtime");
         // drop graph
         self.graph = Graph::new();
-        // Drop programs
+        // Drop programs (kernels)
         self.cache.deinitialize(&mut self.devices);
         // drop devices
         while let Some(mut dev) = self.devices.pop() {
