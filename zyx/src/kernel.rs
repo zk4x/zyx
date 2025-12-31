@@ -413,6 +413,7 @@ impl Kernel {
                 if acc_dtype.is_none() {
                     match self.ops[param] {
                         Op::Define { dtype, .. } => acc_dtype = Some(dtype),
+                        Op::ConstView { value, .. } => acc_dtype = Some(value.dtype()),
                         Op::LoadView { dtype, .. } => acc_dtype = Some(dtype),
                         Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
                         _ => {}

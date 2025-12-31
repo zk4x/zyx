@@ -529,7 +529,9 @@ impl<'a> Kernelizer<'a> {
             for (kidm, op_id) in self.visited.values_mut() {
                 if *kidm == kidy {
                     *kidm = kid;
-                    *op_id = y_ops_map[op_id];
+                    if let Some(new_op_id) = y_ops_map.get(op_id) {
+                        *op_id = *new_op_id;
+                    }
                 }
             }
 
@@ -546,6 +548,7 @@ impl<'a> Kernelizer<'a> {
         *self.rcs.get_mut(&x).unwrap() -= 1;
         *self.rcs.get_mut(&y).unwrap() -= 1;
         self.visited.insert(nid, (kid, new_op_id));
+        //println!("Binary output");
         //self.kernels[kid].debug();
         Ok(())
     }
@@ -1017,6 +1020,24 @@ impl Runtime {
                     Node::Binary { x, y, bop } => kernelizer.add_binary_op(nid, x, y, bop)?,
                 }
             }
+
+            // verify kernelizer.visited
+            /*#[cfg(debug_assertions)]
+            {
+                let mut kernel_op_ids: Map<KMKernelId, Set<OpId>> = Map::default();
+                for (kid, kernel) in kernelizer.kernels.iter() {
+                    kernel_op_ids.insert(kid, kernel.kernel.ops.ids().collect());
+                }
+                for (kid, op_id) in kernelizer.visited.values() {
+                    if !kernel_op_ids[kid].contains(op_id) {
+                        kernelizer.kernels[*kid].debug();
+                        panic!("Missing op_id={op_id} in kernel {kid:?}");
+                    }
+                    if !kernelizer.kernels.contains_key(*kid) {
+                        panic!("Missing kid");
+                    }
+                }
+            }*/
 
             if to_eval.contains(&nid) {
                 kernelizer.add_store(nid)?;

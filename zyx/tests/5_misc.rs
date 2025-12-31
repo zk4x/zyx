@@ -15,6 +15,15 @@ fn memory2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn complex_binary() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2, 4, 3], [1, 5, 1]]).cast(DType::F32);
+    let y = Tensor::from([[2, 4, 3], [1, 5, 7]]).cast(DType::F32);
+    let z = x.sqrt() + y.exp2();
+    Tensor::realize([&z])?;
+    Ok(())
+}
+
+#[test]
 fn tri1() -> Result<(), ZyxError> {
     let x = Tensor::tri(3, 5, 2, DType::I32);
     assert_eq!(x, [[0i32, 0, 1, 1, 1], [0, 0, 0, 1, 1], [0, 0, 0, 0, 1]]);

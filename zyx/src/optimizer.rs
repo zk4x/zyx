@@ -346,7 +346,7 @@ impl LoopUnrollingOpt {
 
     #[must_use]
     fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 4 << index;
+        let unroll_dim = 0; //4 << index;
         let mut endloop_ids = Vec::new();
         let mut i = kernel.order.len();
         'outer_loop: while i > 0 {
