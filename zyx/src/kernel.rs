@@ -401,22 +401,35 @@ impl Kernel {
             let Op::Reduce { x, rop, ref dims } = self.ops[reduce_op_id] else { unreachable!() };
             let dims = dims.clone();
 
-            // Find all relevant ops
+            // Find all relevant ops, this approach adds duplicates multiple times.
+            // It's important for ordering, but in the future we may switch to faster double DFS approach
+            // like the one used in realize graph search, but here this should be sufficiently fast.
             let mut reduce_loop_ops = vec![x];
             let mut params = vec![x];
             let mut acc_dtype = None;
             while let Some(param) = params.pop() {
-                params.extend(self[param].parameters());
+                params.extend(self.ops[param].parameters());
                 reduce_loop_ops.extend(self[param].parameters());
                 if acc_dtype.is_none() {
-                    match self[param] {
+                    match self.ops[param] {
                         Op::Define { dtype, .. } => acc_dtype = Some(dtype),
+                        Op::LoadView { dtype, .. } => acc_dtype = Some(dtype),
                         Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
                         _ => {}
                     }
                 }
             }
             reduce_loop_ops.reverse();
+            // Remove duplicates from reduce_loop_ops, keep only first definition of each value
+            let mut unique = Set::default();
+            let mut i = 0;
+            while i < reduce_loop_ops.len() {
+                if !unique.insert(reduce_loop_ops[i]) {
+                    reduce_loop_ops.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
 
             // Remove ops from order
             self.order.retain(|op_id| !reduce_loop_ops.contains(op_id));
@@ -429,13 +442,13 @@ impl Kernel {
             order.push(const_zero);
 
             // Add accumulator
-            let dtype = DType::F32;
+            let acc_dtype = acc_dtype.unwrap();
             let acc_init_id = self.ops.push(Op::Const(match rop {
-                ROp::Sum => dtype.zero_constant(),
-                ROp::Max => dtype.min_constant(),
+                ROp::Sum => acc_dtype.zero_constant(),
+                ROp::Max => acc_dtype.min_constant(),
             }));
             order.push(acc_init_id);
-            let acc = self.ops.push(Op::Define { dtype, scope: Scope::Register, ro: false, len: 0 });
+            let acc = self.ops.push(Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 0 });
             order.push(acc);
 
             // Zero the accumulator

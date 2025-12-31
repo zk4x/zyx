@@ -90,13 +90,6 @@ impl Clone for Tensor {
 
 impl Drop for Tensor {
     fn drop(&mut self) {
-        //std::println!("dropping");
-        //RT.lock().release(self.id);
-        /*if let Some(mut rt) = RT.try_lock() {
-            rt.release(self.id);
-        } else {
-            println!("Warning: Unable to drop Tensor due to runtime mutex lock.");
-        }*/
         let _ = std::panic::catch_unwind(|| {
             let mut rt = match RT.try_lock() {
                 Ok(rt) => rt,

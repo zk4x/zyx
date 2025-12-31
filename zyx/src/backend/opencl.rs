@@ -19,7 +19,7 @@ use nanoserde::DeJson;
 use std::{
     ffi::{CString, c_void},
     fmt::Write,
-    hash::{BuildHasher, BuildHasherDefault},
+    hash::BuildHasherDefault,
     ptr,
     sync::Arc,
 };
@@ -719,54 +719,43 @@ impl OpenCLDevice {
                 Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
-
                 Op::Const(x) => {
                     dtypes.insert(op_id, x.dtype());
                 }
-
                 &Op::Define { dtype, .. } => {
                     dtypes.insert(op_id, dtype);
                 }
-
                 &Op::Load { src, index } => {
                     dtypes.insert(op_id, dtype_of(&dtypes, src));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-
                 &Op::Store { dst, x: src, index } => {
                     dtypes.insert(op_id, dtype_of(&dtypes, src));
-
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-
                 &Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-
                 &Op::Unary { x, .. } => {
                     dtypes.insert(op_id, dtype_of(&dtypes, x));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
-
                 &Op::Binary { x, y, bop } => {
                     let dtype = if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or) {
                         DType::Bool
                     } else {
                         dtype_of(&dtypes, x)
                     };
-
                     dtypes.insert(op_id, dtype);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
-
                 Op::Loop { .. } => {
                     dtypes.insert(op_id, DType::U32);
                 }
-
                 Op::EndLoop => {}
             }
         }

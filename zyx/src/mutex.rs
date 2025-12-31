@@ -9,7 +9,13 @@ impl<T> Mutex<T> {
     }
 
     pub fn lock(&self) -> MutexGuard<'_, T> {
-        self.0.lock().ok().unwrap()
+        match self.0.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                println!("Poisoned mutex, forcefully recovering");
+                err.into_inner()
+            }
+        }
     }
 
     pub fn try_lock(&self) -> LockResult<MutexGuard<'_, T>> {

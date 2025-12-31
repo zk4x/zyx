@@ -55,7 +55,9 @@ impl Optimizer {
         }
 
         kernel.unfold_pows();
+        kernel.debug();
         kernel.unfold_reduces();
+        kernel.debug();
         kernel.unfold_views();
 
         kernel.move_constants_to_beginning();
