@@ -54,17 +54,16 @@ impl Optimizer {
             return false;
         }
 
-        kernel.unfold_pows();
         kernel.unfold_reduces();
         kernel.unfold_views();
 
         kernel.move_constants_to_beginning();
-        //kernel.constant_folding();
+        kernel.constant_folding();
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
-        //kernel.reorder_commutative();
-        //kernel.loop_invariant_code_motion_all();
-        //kernel.delete_empty_loops();
+        kernel.reorder_commutative();
+        kernel.loop_invariant_code_motion();
+        kernel.delete_empty_loops();
 
         // Unroll and jam for all loops
         if !self.loop_unroll_and_jam_opt.apply_optimization(loop_unroll_and_jam_opt_index, kernel) {
@@ -79,13 +78,14 @@ impl Optimizer {
         // Do a few more iterations to clean up things
         let mut temp_kernel = kernel.clone();
         for _ in 0..100 {
-            //kernel.move_constants_to_beginning();
-            //kernel.constant_folding();
+            kernel.move_constants_to_beginning();
+            kernel.constant_folding();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
-            //kernel.reorder_commutative();
-            //kernel.loop_invariant_code_motion_all();
-            //kernel.delete_empty_loops();
+            kernel.reorder_commutative();
+            kernel.loop_invariant_code_motion();
+            kernel.delete_empty_loops();
+            kernel.unfold_pows();
 
             if *kernel == temp_kernel {
                 break;
