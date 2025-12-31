@@ -599,7 +599,7 @@ impl<'a> Kernelizer<'a> {
         if kernel.stores.is_empty() {
             kernel.debug();
         }
-        let KMKernel { mut kernel, outputs, loads, stores } = kernel;
+        let KMKernel { mut kernel, outputs: _, loads, stores } = kernel;
         //debug_assert!(outputs.is_empty());
         debug_assert!(!stores.is_empty());
         debug_assert!(!kernel.ops.is_empty());

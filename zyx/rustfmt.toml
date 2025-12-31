@@ -8,3 +8,4 @@ overflow_delimited_expr = true
 struct_lit_width = 120
 struct_variant_width = 120
 single_line_let_else_max_width = 120
+single_line_if_else = true

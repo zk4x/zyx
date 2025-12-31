@@ -67,7 +67,7 @@ pub struct Kernel {
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
     Const(Constant),
-    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
+    Define { dtype: DType, scope: Scope, ro: bool, len: Dim },
     Load { src: OpId, index: OpId },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
@@ -122,7 +122,7 @@ pub enum Op {
 
     // ops that only exist after unfolding views and reduces
     Const(Constant),
-    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for globals
+    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
     Load { src: OpId, index: OpId },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
@@ -547,7 +547,7 @@ impl Kernel {
         let mut global_args = Vec::new();
         let mut n_loads = 0;
         for &op_id in &self.order {
-            if let Op::Define { dtype, scope, ro, len } = self[op_id] {
+            if let Op::Define { scope, ro, .. } = self[op_id] {
                 if ro {
                     n_loads += 1;
                 }
@@ -842,9 +842,6 @@ impl Kernel {
     }
 
     pub fn dead_code_elimination(&mut self) {
-        #[cfg(debug_assertions)]
-        self.verify();
-
         let mut params = Vec::new();
         let mut visited = Set::default();
         // We go backward from Stores and gather all needed ops, but we can't remove Loop and Define ops
@@ -871,9 +868,6 @@ impl Kernel {
     }
 
     pub fn common_subexpression_elimination(&mut self) {
-        #[cfg(debug_assertions)]
-        self.verify();
-
         let mut unique: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
         unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
         let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
@@ -929,9 +923,6 @@ impl Kernel {
     }
 
     pub fn move_constants_to_beginning(&mut self) {
-        #[cfg(debug_assertions)]
-        self.verify();
-
         let n_defines = self.order.iter().position(|&op_id| !matches!(self[op_id], Op::Define { .. })).unwrap();
         let mut i = 0;
         while i < self.order.len() {
@@ -947,134 +938,198 @@ impl Kernel {
         self.verify();
     }
 
-    /*
-    /// Constant folding
     pub fn constant_folding(&mut self) {
-        let mut remaps = Map::with_hasher(BuildHasherDefault::new());
-        for op_id in 0..self.ops.len() {
+        fn remap(ops: &mut Slab<OpId, Op>, x: OpId, y: OpId) {
+            for op in ops.values_mut() {
+                for param in op.parameters_mut() {
+                    if *param == x {
+                        *param = y;
+                    }
+                }
+            }
+        }
+
+        for &op_id in &self.order {
             match self.ops[op_id] {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
-                Op::Const { .. }
-                | Op::Load { .. }
-                | Op::Store { .. }
-                | Op::Loop { .. }
-                | Op::EndLoop
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
+                Op::Store { .. }
+                | Op::Const(_)
                 | Op::Define { .. }
-                | Op::Null => {}
+                | Op::Load { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop => {}
                 Op::Cast { x, dtype } => {
-                    if let Op::Const(x) = self.ops[x] {
-                        self.ops[op_id] = Op::Const(x.cast(dtype));
+                    if let Op::Const(cx) = self.ops[x] {
+                        self.ops[op_id] = Op::Const(cx.cast(dtype));
                     }
                 }
                 Op::Unary { x, uop } => {
-                    if let Op::Const(x) = self.ops[x] {
-                        self.ops[op_id] = Op::Const(x.unary(uop));
+                    if let Op::Const(cx) = self.ops[x] {
+                        self.ops[op_id] = Op::Const(cx.unary(uop));
                     }
                 }
-                Op::Binary { x, y, bop } => match (&self.ops[x], &self.ops[y]) {
-                    (&Op::Const(cx), &Op::Const(cy)) => {
+                Op::Binary { x, y, bop } => match (self.ops[x].clone(), self.ops[y].clone()) {
+                    (Op::Const(cx), Op::Const(cy)) => {
                         self.ops[op_id] = Op::Const(Constant::binary(cx, cy, bop));
                     }
-                    (&Op::Const(cx), _) => match bop {
-                        BOp::Add => {
-                            if cx.is_zero() {
-                                remaps.insert(op_id, y);
-                            }
-                        }
-                        BOp::Sub => {
-                            if cx.is_zero() {
-                                self.ops[op_id] = Op::Unary { x: y, uop: UOp::Neg };
-                            }
-                        }
-                        BOp::Mul => {
-                            if cx.is_zero() {
-                                remaps.insert(op_id, x);
-                            } else if cx.is_one() {
-                                remaps.insert(op_id, y);
-                            }
-                        }
-                        BOp::Div => {
-                            if cx.is_zero() {
-                                remaps.insert(op_id, x);
-                            } else if cx.is_one() {
-                                self.ops[op_id] = Op::Unary { x: y, uop: UOp::Reciprocal };
-                            }
-                        }
-                        BOp::Pow => {
-                            if cx.is_zero() {
-                                remaps.insert(op_id, x);
-                            } else if cx.is_one() {
-                                remaps.insert(op_id, x);
-                            } //else if cx.is_two() && cx.dtype().is_shiftable() {
-                            //self.ops.insert(op_id, Op::Constant(cx.dtype().one())); // but we can't insert with remaps
-                            //self.ops[op_id] = Op::Binary { x, y, bop: BOp::BitShiftLeft };
-                            //}
-                        }
-                        BOp::Mod => todo!(),
-                        BOp::Cmplt => todo!(),
-                        BOp::Cmpgt => {}
-                        BOp::Maximum => todo!(),
-                        BOp::Or => todo!(),
-                        BOp::And => todo!(),
-                        BOp::BitXor => todo!(),
-                        BOp::BitOr => todo!(),
-                        BOp::BitAnd => todo!(),
-                        BOp::BitShiftLeft => todo!(),
-                        BOp::BitShiftRight => todo!(),
-                        BOp::NotEq => todo!(),
-                        BOp::Eq => todo!(),
+                    (Op::Const(cx), _) => match bop {
+                        BOp::Add if cx.is_zero() => remap(&mut self.ops, op_id, y),
+                        BOp::Sub if cx.is_zero() => self.ops[op_id] = Op::Unary { x: y, uop: UOp::Neg },
+                        BOp::Mul if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
+                        BOp::Mul if cx.is_one() => remap(&mut self.ops, op_id, y),
+                        BOp::Mul if cx.is_two() => self.ops[op_id] = Op::Binary { x: y, y, bop: BOp::Add },
+                        BOp::Div if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
+                        BOp::Div if cx.is_one() => self.ops[op_id] = Op::Unary { x: y, uop: UOp::Reciprocal },
+                        BOp::Pow if cx.is_one() => self.ops[op_id] = Op::Const(cx.dtype().one_constant()),
+                        BOp::BitShiftLeft if cx.is_zero() => remap(&mut self.ops, op_id, y),
+                        BOp::BitShiftRight if cx.is_zero() => remap(&mut self.ops, op_id, y),
+                        _ => {}
                     },
-                    (_, &Op::Const(cy)) => match bop {
-                        BOp::Add | BOp::Sub => {
-                            if cy.is_zero() {
-                                remaps.insert(op_id, x);
-                            }
-                        }
-                        BOp::Mul => {
-                            if cy.is_zero() {
-                                remaps.insert(op_id, y);
-                            } else if cy.is_one() {
-                                remaps.insert(op_id, x);
-                            }
-                        }
-                        BOp::Div => {
-                            if cy.is_zero() {
-                                panic!("Division by zero constant.");
-                            } else if cy.is_one() {
-                                remaps.insert(op_id, x);
-                            }
-                        }
-                        BOp::Pow => {
-                            if cy.is_zero() {
-                                self.ops[op_id] = Op::Const(cy.dtype().one_constant());
-                            } else if cy.is_one() {
-                                remaps.insert(op_id, x);
-                            } else if cy.is_two() {
-                                self.ops[op_id] = Op::Binary { x, y: x, bop: BOp::Mul };
-                            }
-                        }
-                        BOp::Mod => {
-                            if cy.is_zero() {
-                                panic!("Modulo by zero constant.");
-                            } else if cy.is_one() {
-                                self.ops[op_id] = Op::Const(cy.dtype().zero_constant());
-                            }
-                        }
-                        BOp::Cmplt | BOp::Cmpgt | BOp::NotEq | BOp::And | BOp::Eq => {}
-                        BOp::Maximum => {}
-                        BOp::Or => todo!(),
-                        BOp::BitXor => todo!(),
-                        BOp::BitOr => todo!(),
-                        BOp::BitAnd => todo!(),
-                        BOp::BitShiftLeft => todo!(),
-                        BOp::BitShiftRight => todo!(),
+                    (_, Op::Const(cy)) => match bop {
+                        BOp::Add if cy.is_zero() => remap(&mut self.ops, op_id, x),
+                        BOp::Sub if cy.is_zero() => remap(&mut self.ops, op_id, x),
+                        BOp::Mul if cy.is_zero() => self.ops[op_id] = Op::Const(cy.dtype().zero_constant()),
+                        BOp::Mul if cy.is_one() => remap(&mut self.ops, op_id, x),
+                        BOp::Mul if cy.is_two() => self.ops[op_id] = Op::Binary { x, y: x, bop: BOp::Add },
+                        BOp::Div if cy.is_zero() => panic!("Division by constant zero"),
+                        BOp::Div if cy.is_one() => remap(&mut self.ops, op_id, x),
+                        BOp::Mod if cy.is_zero() => panic!("Module by constant zero"),
+                        BOp::Pow if cy.is_zero() => self.ops[op_id] = Op::Const(cy.dtype().one_constant()),
+                        BOp::Pow if cy.is_one() => remap(&mut self.ops, op_id, x),
+                        BOp::Pow if cy.is_two() => self.ops[op_id] = Op::Binary { x, y: x, bop: BOp::Mul },
+                        BOp::BitShiftLeft if cy.is_zero() => remap(&mut self.ops, op_id, x),
+                        BOp::BitShiftRight if cy.is_zero() => remap(&mut self.ops, op_id, x),
+                        _ => {}
                     },
+                    (x_op, y_op) if x_op == y_op => {
+                        match bop {
+                            BOp::Div => todo!(), // should be constant 1
+                            BOp::Sub => todo!(), // should be constant 0
+                            _ => {}
+                        }
+                    }
                     _ => {}
                 },
             }
         }
-        remap(&mut self.ops, &remaps);
-    }*/
+
+        #[cfg(debug_assertions)]
+        self.verify();
+    }
+
+    pub fn reorder_commutative(&mut self) {
+        // TODO Reorder commutative
+        // Iterate:
+        //   find a chain of commutative ops like add/sub
+        //   reoder by moving loop index last
+        // Ops can be added if they are loop invariant or exist in chain of commutative ops
+        #[cfg(debug_assertions)]
+        self.verify();
+    }
+
+    pub fn loop_invariant_code_motion(&mut self) {
+        let mut i = self.order.len();
+        let mut endloop_is = Vec::new();
+        while i > 0 {
+            i -= 1;
+            let loop_id = self.order[i];
+            if self.ops[loop_id] == Op::EndLoop {
+                endloop_is.push(i);
+            }
+            if let Op::Loop { .. } = self.ops[loop_id] {
+                let mut n_invariant_ops = 0;
+                let mut op_ids_in_loop = Set::default();
+                op_ids_in_loop.insert(self.order[i]); // Loop op is the primary op that breaks LICM
+                for k in i + 1..endloop_is.pop().unwrap() - 1 {
+                    let op_id = self.order[k];
+                    let op = &self.ops[op_id];
+                    if !matches!(op, Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop)
+                        && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
+                    {
+                        let op_id = self.order.remove(k);
+                        self.order.insert(i + n_invariant_ops, op_id);
+                        n_invariant_ops += 1;
+                    } else {
+                        op_ids_in_loop.insert(op_id);
+                    }
+                }
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        self.verify();
+    }
+
+    // Loops that don't contain stores can be deleted
+    pub fn delete_empty_loops(&mut self) {
+        #[cfg(debug_assertions)]
+        self.verify();
+        // TODO make this fast by going in reverse
+        /*for i in 0..self.ops.len() {
+            if matches!(self.ops[i], Op::Loop { .. }) {
+                let mut contains_store = false;
+                let mut end_loop_id = 0;
+                let mut loop_level = 0;
+                for (i, op) in self.ops[i..].iter().enumerate() {
+                    match op {
+                        Op::Store { .. } => {
+                            contains_store = true;
+                            break;
+                        }
+                        Op::Loop { .. } => {
+                            loop_level += 1;
+                        }
+                        Op::EndLoop => {
+                            loop_level -= 1;
+                            if loop_level == 0 {
+                                end_loop_id = i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if !contains_store {
+                    //panic!("Deleting from {i} to {}", i + end_loop_id);
+                    for op in &mut self.ops[i..=i + end_loop_id] {
+                        *op = Op::Null
+                    }
+                }
+            }
+        }*/
+    }
+
+    /// Reshapes, (splits or merges) reduce from original into new_dims
+    pub fn recursively_apply_reshape(
+        &mut self,
+        op_id: OpId,
+        n_old_dims: usize,
+        new_dims: &[Dim],
+        visited: &mut Set<OpId>,
+        skip_last: usize,
+    ) {
+        if !visited.insert(op_id) {
+            return;
+        }
+        match self.ops[op_id] {
+            Op::LoadView { ref mut view, .. } | Op::ConstView { ref mut view, .. } => {
+                let rank = view.rank();
+                view.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
+            }
+            Op::Reduce { x, ref dims, .. } => {
+                let skip_last = skip_last + dims.len();
+                self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
+            }
+            Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
+            }
+            Op::Binary { x, y, .. } => {
+                self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
+                self.recursively_apply_reshape(y, n_old_dims, new_dims, visited, skip_last);
+            }
+            _ => {}
+        }
+    }
 
     pub fn verify(&self) {
         let valid_ids: Set<OpId> = self.ops.ids().collect();
@@ -1299,61 +1354,6 @@ impl Kernel {
         todo!()
     }*/
 
-        pub fn loop_invariant_code_motion_all(&mut self) {
-            let mut op_id = self.ops.len();
-            while op_id > 0 {
-                op_id -= 1;
-                if matches!(self.ops[op_id], Op::Loop { .. }) {
-                    self.loop_invariant_code_motion(op_id);
-                }
-            }
-        }
-
-        pub fn reorder_commutative(&mut self) {
-            // TODO Reorder commutative
-            // Iterate:
-            //   find a chain of commutative ops like add/sub
-            //   reoder by moving loop index last
-        }
-
-        pub fn loop_invariant_code_motion(&mut self, loop_id: OpId) {
-            // LICM
-            // Extract loop body and tail
-            let end_loop_id = self.get_end_loop_id(loop_id);
-
-            let tail = self.ops.split_off(end_loop_id);
-            let mut body = self.ops.split_off(loop_id);
-            // for each op in loop body - if all parameters are invariant, mark as invariant, otherwise do nothing
-            let mut i = 0;
-            while i < body.len() {
-                // If op is invariant
-                if !matches!(
-                    body[i],
-                    Op::Loop { .. } | Op::Store { .. } | Op::Load { .. } | Op::EndLoop | Op::Define { .. }
-                ) && body[i].parameters().all(|x| x < loop_id)
-                {
-                    // Move op out of the loop
-                    let op = body.remove(i);
-                    self.ops.push(op);
-
-                    // Increment and remap all ops in the body accordingly
-                    remap_or_increment(
-                        &mut body,
-                        self.ops.len() + i - 1,
-                        self.ops.len() - 1,
-                        1,
-                        self.ops.len() - 1..self.ops.len() + i - 1,
-                    );
-                } else {
-                    i += 1;
-                }
-            }
-
-            // Add body back to ops
-            self.ops.extend(body);
-            self.ops.extend(tail);
-        }
-
         pub fn loop_unroll(&mut self, loop_id: OpId) {
             let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
             let end_loop_id = self.get_end_loop_id(loop_id);
@@ -1384,85 +1384,4 @@ impl Kernel {
             increment(&mut tail, d, tail_range);
             self.ops.extend(tail);
         }
-
-            /// Reshapes, (splits or merges) reduce from original into new_dims
-            pub fn reshape_reduce(&mut self, reduce_id: OpId, new_dims: &[Dim]) {
-                let Op::Reduce { x, ref mut dims, .. } = self.ops[reduce_id] else { return };
-                let n_old_dims = dims.len();
-                *dims = new_dims.into();
-
-                let mut visited = Set::default();
-                self.recursively_apply_reshape(x, n_old_dims, new_dims, &mut visited, 0);
-            }
-
-            fn recursively_apply_reshape(
-                &mut self,
-                op_id: OpId,
-                n_old_dims: usize,
-                new_dims: &[Dim],
-                visited: &mut Set<OpId>,
-                skip_last: usize,
-            ) {
-                if !visited.insert(op_id) {
-                    return;
-                }
-                match self.ops[op_id] {
-                    Op::LoadView { ref mut view, .. } | Op::ConstView { ref mut view, .. } => {
-                        let rank = view.rank();
-                        view.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
-                    }
-                    Op::Reduce { x, ref dims, .. } => {
-                        let skip_last = skip_last + dims.len();
-                        self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
-                    }
-                    Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                        self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
-                    }
-                    Op::Binary { x, y, .. } => {
-                        self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
-                        self.recursively_apply_reshape(y, n_old_dims, new_dims, visited, skip_last);
-                    }
-                    _ => {}
-                }
-            }
-
-                // Loops that don't contain stores can be deleted
-                pub fn delete_empty_loops(&mut self) {
-                    // TODO make this fast by going in reverse
-                    for i in 0..self.ops.len() {
-                        if matches!(self.ops[i], Op::Loop { .. }) {
-                            let mut contains_store = false;
-                            let mut end_loop_id = 0;
-                            let mut loop_level = 0;
-                            for (i, op) in self.ops[i..].iter().enumerate() {
-                                match op {
-                                    Op::Store { .. } => {
-                                        contains_store = true;
-                                        break;
-                                    }
-                                    Op::Loop { .. } => {
-                                        loop_level += 1;
-                                    }
-                                    Op::EndLoop => {
-                                        loop_level -= 1;
-                                        if loop_level == 0 {
-                                            end_loop_id = i;
-                                            break;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            if !contains_store {
-                                //panic!("Deleting from {i} to {}", i + end_loop_id);
-                                for op in &mut self.ops[i..=i + end_loop_id] {
-                                    *op = Op::Null
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // TODO delete loops that iterate only once
-                // fn delete_single_iteration_loops(&mut self) {}
 }*/
