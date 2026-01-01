@@ -129,7 +129,7 @@ pub enum Op {
 }
 
 impl Op {
-    fn parameters(&self) -> impl Iterator<Item = OpId> {
+    fn parameters(&self) -> impl Iterator<Item = OpId> + DoubleEndedIterator {
         match self {
             Op::ConstView { .. } => vec![],
             Op::LoadView { .. } => vec![],
@@ -148,7 +148,7 @@ impl Op {
         .into_iter()
     }
 
-    pub fn parameters_mut(&mut self) -> impl Iterator<Item = &mut OpId> {
+    pub fn parameters_mut(&mut self) -> impl Iterator<Item = &mut OpId> + DoubleEndedIterator {
         match self {
             Op::ConstView { .. } => vec![],
             Op::LoadView { .. } => vec![],
@@ -401,39 +401,33 @@ impl Kernel {
             let Op::Reduce { x, rop, ref dims } = self.ops[reduce_op_id] else { unreachable!() };
             let dims = dims.clone();
 
-            // Find all relevant ops, this approach adds duplicates multiple times.
-            // It's important for ordering, but in the future we may switch to faster double DFS approach
-            // like the one used in realize graph search, but here this should be sufficiently fast.
-            let mut reduce_loop_ops = vec![x];
+            let mut reduce_loop_ops_set = Set::default();
             let mut params = vec![x];
             let mut acc_dtype = None;
             while let Some(param) = params.pop() {
-                params.extend(self.ops[param].parameters());
-                reduce_loop_ops.extend(self[param].parameters());
-                if acc_dtype.is_none() {
-                    match self.ops[param] {
-                        Op::Define { dtype, .. } => acc_dtype = Some(dtype),
-                        Op::ConstView { value, .. } => acc_dtype = Some(value.dtype()),
-                        Op::LoadView { dtype, .. } => acc_dtype = Some(dtype),
-                        Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
-                        _ => {}
+                if reduce_loop_ops_set.insert(param) {
+                    params.extend(self.ops[param].parameters());
+                    if acc_dtype.is_none() {
+                        match self.ops[param] {
+                            Op::Define { dtype, .. } => acc_dtype = Some(dtype),
+                            Op::ConstView { value, .. } => acc_dtype = Some(value.dtype()),
+                            Op::LoadView { dtype, .. } => acc_dtype = Some(dtype),
+                            Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
+                            _ => {}
+                        }
                     }
                 }
             }
-            reduce_loop_ops.reverse();
-            // Remove duplicates from reduce_loop_ops, keep only first definition of each value
-            let mut unique = Set::default();
-            let mut i = 0;
-            while i < reduce_loop_ops.len() {
-                if !unique.insert(reduce_loop_ops[i]) {
-                    reduce_loop_ops.remove(i);
-                } else {
-                    i += 1;
+            // Sort reduce loop ops by original order
+            let mut reduce_loop_ops = Vec::with_capacity(reduce_loop_ops_set.len());
+            for op_id in &self.order {
+                if reduce_loop_ops_set.contains(op_id) {
+                    reduce_loop_ops.push(*op_id);
                 }
             }
 
             // Remove ops from order
-            self.order.retain(|op_id| !reduce_loop_ops.contains(op_id));
+            self.order.retain(|op_id| !reduce_loop_ops_set.contains(op_id));
 
             // Create new order for loop contents
             let mut order = Vec::new();
@@ -449,7 +443,7 @@ impl Kernel {
                 ROp::Max => acc_dtype.min_constant(),
             }));
             order.push(acc_init_id);
-            let acc = self.ops.push(Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 0 });
+            let acc = self.ops.push(Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 });
             order.push(acc);
 
             // Zero the accumulator
@@ -493,6 +487,9 @@ impl Kernel {
             let reduce_i = self.order.iter().position(|&op_id| op_id == reduce_op_id).unwrap();
             self.order.splice(reduce_i..reduce_i, order);
         }
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     pub fn define_globals(&mut self) {
@@ -515,6 +512,9 @@ impl Kernel {
         }
         order.extend(self.order.drain(..));
         self.order = order;
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     fn get_loops(&self, op_id: OpId) -> Vec<OpId> {
@@ -594,7 +594,7 @@ impl Kernel {
                         // a = offset / ost % dim
                         let mut ost = 1;
                         offset = constant_zero;
-                        for (a, dim) in inner.iter().enumerate().rev() {
+                        for (i, dim) in inner.iter().enumerate().rev() {
                             let a = if let Some(old_offset) = old_offset {
                                 let t_ost = ost;
                                 ost *= dim.d as u64;
@@ -613,7 +613,7 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 new_op(ops, order, Op::Const(Constant::idx(0u64)))
                             } else {
-                                axes[a]
+                                axes[i]
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
@@ -692,8 +692,8 @@ impl Kernel {
                         // a = offset / ost % dim
                         let mut ost = 1;
                         offset = constant_zero;
-                        for (a, dim) in inner.iter().enumerate().rev() {
-                            let a = if let Some(old_offset) = old_offset {
+                        for (i, dim) in inner.iter().enumerate().rev() {
+                            let loop_id = if let Some(old_offset) = old_offset {
                                 /*let ost_c = new_op(ops, Op::Const(Constant::U32(ost)));
                                 ost *= dim.d as u32;
                                 let x = new_op(ops, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div });
@@ -716,36 +716,36 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 constant_zero
                             } else {
-                                axes[a]
+                                axes[i]
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
-                            let t = if dim.lp != 0 {
+                            let padded_loop_id = if dim.lp != 0 {
                                 let lp = new_op(ops, order, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
-                                    new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Sub })
+                                    new_op(ops, order, Op::Binary { x: loop_id, y: lp, bop: BOp::Sub })
                                 } else {
-                                    new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Add })
+                                    new_op(ops, order, Op::Binary { x: loop_id, y: lp, bop: BOp::Add })
                                 }
                             } else {
-                                a
+                                loop_id
                             };
 
                             if dim.st != 0 {
                                 let stride = new_op(ops, order, Op::Const(Constant::idx(dim.st as u64)));
-                                let x = new_op(ops, order, Op::Binary { x: t, y: stride, bop: BOp::Mul });
+                                let x = new_op(ops, order, Op::Binary { x: padded_loop_id, y: stride, bop: BOp::Mul });
                                 offset = new_op(ops, order, Op::Binary { x, y: offset, bop: BOp::Add });
                             }
 
                             // Padding condition
                             if dim.lp > 0 {
                                 let lp = new_op(ops, order, Op::Const(Constant::idx((dim.lp - 1) as u64)));
-                                let t = new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
+                                let t = new_op(ops, order, Op::Binary { x: loop_id, y: lp, bop: BOp::Cmpgt });
                                 pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
                                 let rp = new_op(ops, order, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
-                                let t = new_op(ops, order, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
+                                let t = new_op(ops, order, Op::Binary { x: loop_id, y: rp, bop: BOp::Cmplt });
                                 pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                         }
@@ -821,6 +821,9 @@ impl Kernel {
             }
             i += 1;
         }
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     pub fn unfold_pows(&mut self) {
@@ -840,6 +843,9 @@ impl Kernel {
             }
             i += 1;
         }
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     pub fn dead_code_elimination(&mut self) {
@@ -847,14 +853,17 @@ impl Kernel {
         let mut visited = Set::default();
         // We go backward from Stores and gather all needed ops, but we can't remove Loop and Define ops
         for (op_id, op) in self.ops.iter() {
-            if matches!(op, Op::Store { .. } | Op::Loop { .. } | Op::Define { .. } | Op::EndLoop) {
+            if matches!(
+                op,
+                Op::Store { .. } | Op::Loop { .. } | Op::Define { .. } | Op::EndLoop | Op::StoreView { .. }
+            ) {
                 params.push(op_id);
-                visited.insert(op_id);
             }
         }
         while let Some(op_id) = params.pop() {
-            params.extend(self[op_id].parameters());
-            visited.extend(self[op_id].parameters());
+            if visited.insert(op_id) {
+                params.extend(self[op_id].parameters());
+            }
         }
         // Remove ops that are not in visited both from self.ops and self.order
         let ids: Set<OpId> = self.ops.ids().filter(|op_id| !visited.contains(op_id)).collect();
@@ -1096,6 +1105,9 @@ impl Kernel {
                 }
             }
         }*/
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     /// Reshapes, (splits or merges) reduce from original into new_dims
@@ -1212,7 +1224,14 @@ impl Kernel {
                     }
                     loop_depth -= 1;
                 }
-                ref op => unreachable!("Unreachable op {op:?}"),
+                Op::ConstView { .. } => {}
+                Op::LoadView { .. } => {}
+                Op::StoreView { src, .. } => {
+                    check_ref(src);
+                }
+                Op::Reduce { x, .. } => {
+                    check_ref(x);
+                }
             }
             let defines_value = !matches!(self.ops[id], Op::Store { .. } | Op::EndLoop);
             if defines_value {

@@ -870,15 +870,17 @@ impl OpenCLDevice {
                         Scope::Global => {
                             _ = writeln!(
                                 source,
-                                "{indent}unsigned int idx{loop_id} = get_group_id({loop_id}); // 0..{dim}"
+                                "{indent}unsigned int idx{loop_id} = get_group_id({loop_id}); // 0..={}",
+                                dim - 1
                             );
                             n_global_ids += 1;
                         }
                         Scope::Local => {
                             _ = writeln!(
                                 source,
-                                "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..{dim}",
-                                loop_id - n_global_ids
+                                "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..={}",
+                                loop_id - n_global_ids,
+                                dim - 1
                             );
                         }
                         Scope::Register => {

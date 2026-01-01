@@ -618,7 +618,6 @@ fn binary_y_depends_on_x() -> Result<(), ZyxError> {
         let z = x.reshape(6).unwrap() + y.reshape(6).unwrap() + x.reshape(6).unwrap();
         z.exp2().log2()
     };
-    println!("{z}");
     assert_eq!(z, [6f32, 11., 6., 8., 5., 12.]);
     //Tensor::plot_graph([], "graph").unwrap();
     //println!("{z}");

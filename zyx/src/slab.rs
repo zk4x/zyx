@@ -156,27 +156,24 @@ impl<Id: SlabId, T> Slab<Id, T> {
         id < Id::from(self.values.len()) && !self.empty.contains(&id)
     }
 
-    /*pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (Id, &mut T)> {
         self.values
             .iter_mut()
             .enumerate()
             .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
-    }*/
+    }
 
-    /*pub(crate) fn retain(&mut self, func: impl Fn(&Id) -> bool) -> Set<Id> {
-        let mut deleted = Set::with_capacity_and_hasher(10, Default::default());
-        let mut i = 0;
+    pub(crate) fn retain(&mut self, func: impl Fn(&Id) -> bool) {
+        let mut i = Id::ZERO;
         for x in &mut self.values {
             if !func(&i) && !self.empty.contains(&i) {
-                deleted.insert(i);
                 unsafe { x.assume_init_drop() };
                 self.empty.insert(i);
             }
-            i += 1;
+            i.inc();
         }
-        deleted
-    }*/
+    }
 
     // TODO lower max id by searching for it in self.empty
     #[allow(unused)]

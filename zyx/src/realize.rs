@@ -87,14 +87,13 @@ impl KMKernel {
         outputs.iter().position(|elem| *elem == x).map(|i| outputs.remove(i));
     }
 
-    /*fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KernelId, OpId)>) {
+    fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KMKernelId, OpId)>) {
         let params = self.outputs.iter().map(|tid| visited[tid].1).collect();
         let required = self.get_required_ops(params);
         let mut loaded_tensors = Vec::new();
         let mut load_index = 0;
-        let ops = &mut self.kernel.ops;
         let loads = &self.loads;
-        for (op_id, op) in ops.iter_mut().enumerate() {
+        for (op_id, op) in self.kernel.ops.iter_mut() {
             let is_required = required.contains(&op_id);
             if let Op::LoadView { .. } = op {
                 if is_required {
@@ -102,48 +101,42 @@ impl KMKernel {
                 }
                 load_index += 1;
             }
-            if !is_required {
-                *op = Op::Null;
-            }
         }
+        self.kernel.order.retain(|x| required.contains(x));
+        self.kernel.ops.retain(|x| required.contains(x));
         self.loads = loaded_tensors;
         #[cfg(debug_assertions)]
-        if self.loads.len() != self.kernel.ops.iter().filter(|op| matches!(op, Op::LoadView { .. })).count() {
+        if self.loads.len() != self.kernel.ops.values().filter(|op| matches!(op, Op::LoadView { .. })).count() {
             self.debug();
             panic!();
         }
     }
 
-    fn get_required_ops(
-        &self,
-        mut params: Vec<OpId>,
-    ) -> std::collections::HashSet<usize, BuildHasherDefault<crate::chasher::CHasher>> {
+    fn get_required_ops(&self, mut params: Vec<OpId>) -> Set<OpId> {
         let mut required = Set::default();
         while let Some(param) = params.pop() {
-            if !required.insert(param) {
-                continue;
-            }
-            //println!("param={param}");
-            match &self.kernel.ops[param] {
-                Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                    params.push(*x);
+            if required.insert(param) {
+                //println!("param={param}");
+                match &self.kernel.ops[param] {
+                    Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                        params.push(*x);
+                    }
+                    Op::Binary { x, y, .. } => {
+                        params.push(*x);
+                        params.push(*y);
+                    }
+                    Op::Const(..) | Op::ConstView { .. } | Op::LoadView { .. } => {}
+                    Op::Define { .. }
+                    | Op::StoreView { .. }
+                    | Op::Load { .. }
+                    | Op::Store { .. }
+                    | Op::Loop { .. }
+                    | Op::EndLoop => unreachable!(),
                 }
-                Op::Binary { x, y, .. } => {
-                    params.push(*x);
-                    params.push(*y);
-                }
-                Op::Const(..) | Op::ConstView { .. } | Op::LoadView { .. } => {}
-                Op::Define { .. }
-                | Op::StoreView { .. }
-                | Op::Load { .. }
-                | Op::Store { .. }
-                | Op::Null
-                | Op::Loop { .. }
-                | Op::EndLoop => unreachable!(),
             }
         }
         required
-    }*/
+    }
 }
 
 impl std::ops::Index<OpId> for KMKernel {
@@ -264,10 +257,9 @@ impl<'a> Kernelizer<'a> {
         // and remove these ops from the original if not needed.
         let mut kernel = self.kernels[kid].clone();
         kernel.outputs = vec![x];
-        //kernel.drop_unused_ops(&self.visited);
+        kernel.drop_unused_ops(&self.visited);
         self.kernels[kid].remove_first_output(x);
-        //self.kernels[kid].drop_unused_ops(&self.visited);
-        //self.debug();
+        self.kernels[kid].drop_unused_ops(&self.visited);
         self.kernels.push(kernel)
     }
 
@@ -515,9 +507,9 @@ impl<'a> Kernelizer<'a> {
             let KMKernel { kernel, outputs, loads, stores } = unsafe { self.kernels.remove_and_return(kidy) };
 
             // Extend x kernel with y ops
-            let mut y_ops_map = Map::with_capacity_and_hasher(50, BuildHasherDefault::new());
-            for (op_id, op) in kernel.ops.iter() {
-                let mut op = op.clone();
+            let mut y_ops_map = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
+            for &op_id in &kernel.order {
+                let mut op = kernel.ops[op_id].clone();
                 for param in op.parameters_mut() {
                     *param = y_ops_map[param];
                 }
