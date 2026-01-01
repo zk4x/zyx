@@ -4,7 +4,7 @@ use nanoserde::SerBin;
 
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
-    backend::{Device, ProgramId, SearchConfig},
+    backend::{BufferId, Device, ProgramId, SearchConfig},
     cache::{Cache, get_perf},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
@@ -13,13 +13,13 @@ use crate::{
     optimizer::Optimizer,
     prog_bar::ProgressBar,
     runtime::{Pool, Runtime, deallocate_tensors},
-    schedule::{self, schedule},
+    schedule::schedule,
     shape::Dim,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
 };
-use std::{collections::BTreeSet, hash::BuildHasherDefault, path::PathBuf};
+use std::{hash::BuildHasherDefault, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KMKernelId(u32);
@@ -159,6 +159,7 @@ struct Kernelizer<'a> {
     rcs: Map<TensorId, u32>,
     graph: &'a Graph,
     pools: &'a mut [Pool],
+    temp_data: &'a mut Map<BufferId, Box<[u8]>>,
     devices: &'a mut [Device],
     cache: &'a mut Cache,
     search_config: &'a SearchConfig,
@@ -173,6 +174,7 @@ impl<'a> Kernelizer<'a> {
         rcs: Map<TensorId, u32>,
         graph: &'a Graph,
         pools: &'a mut [Pool],
+        temp_data: &'a mut Map<BufferId, Box<[u8]>>,
         devices: &'a mut [Device],
         cache: &'a mut Cache,
         search_config: &'a SearchConfig,
@@ -191,6 +193,7 @@ impl<'a> Kernelizer<'a> {
             rcs,
             graph,
             pools,
+            temp_data,
             devices,
             cache,
             search_config,
@@ -581,7 +584,7 @@ impl<'a> Kernelizer<'a> {
                     to_remove.insert(tid);
                 }
             }
-            deallocate_tensors(&to_remove, self.pools);
+            deallocate_tensors(&to_remove, self.pools, self.temp_data);
         }
         //println!("ADDED STORE for {x} x {xrc_rem}");
         Ok(())
@@ -861,6 +864,7 @@ impl Runtime {
             rcs,
             &self.graph,
             &mut self.pools,
+            &mut self.temp_data,
             &mut self.devices,
             &mut self.cache,
             &self.search_config,
@@ -947,7 +951,7 @@ impl Runtime {
                         to_remove.insert(tid);
                     }
                 }
-                deallocate_tensors(&to_remove, kernelizer.pools);
+                deallocate_tensors(&to_remove, kernelizer.pools, kernelizer.temp_data);
             }
         }
 
@@ -1045,7 +1049,7 @@ impl Runtime {
                 }
             }
             let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools);
+            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
         } else {
             for &nid in &to_eval {
                 self.graph.add_shape(nid);
@@ -1054,7 +1058,7 @@ impl Runtime {
                 self.graph[nid] = Node::Leaf { dtype };
             }
             let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools);
+            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
         }
 
         #[cfg(debug_assertions)]
@@ -1141,7 +1145,7 @@ impl Runtime {
                 }
             }
             let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools);
+            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
         } else {
             for &nid in &to_eval {
                 self.graph.add_shape(nid);
@@ -1150,7 +1154,7 @@ impl Runtime {
                 self.graph[nid] = Node::Leaf { dtype };
             }
             let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools);
+            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
         }
 
         #[cfg(debug_assertions)]

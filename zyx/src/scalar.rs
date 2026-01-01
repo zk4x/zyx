@@ -46,6 +46,9 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// From little endian bytes
     #[must_use]
     fn from_le_bytes(bytes: &[u8]) -> Self;
+    /// To native endian bytes
+    #[must_use]
+    fn to_ne_bytes(&self) -> &[u8];
     /// Get dtype of Self
     #[must_use]
     fn dtype() -> DType;
@@ -374,6 +377,10 @@ impl Scalar for bf16 {
         let _ = rhs;
         todo!()
     }
+
+    fn to_ne_bytes(&self) -> &[u8] {
+        todo!()
+    }
 }
 
 impl Float for bf16 {
@@ -415,11 +422,6 @@ impl Scalar for f16 {
         f16::from_f32(t.to_f32())
     }
 
-    fn from_u64(t: u64) -> Self {
-        let _ = t;
-        todo!()
-    }
-
     fn from_f32(t: f32) -> Self {
         f16::from_f32(t)
     }
@@ -440,6 +442,11 @@ impl Scalar for f16 {
 
     fn from_u32(t: u32) -> Self {
         f16::from_f64(t.into())
+    }
+
+    fn from_u64(t: u64) -> Self {
+        let _ = t;
+        todo!()
     }
 
     fn from_i8(t: i8) -> Self {
@@ -527,6 +534,10 @@ impl Scalar for f16 {
         f16::from_f32(self.to_f32().pow(rhs.to_f32()))
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -535,8 +546,40 @@ impl Scalar for f16 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != Self::ZERO || rhs != Self::ZERO
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self ^ rhs
+        todo!()
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self | rhs
+        todo!()
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self & rhs
+        todo!()
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -565,39 +608,7 @@ impl Scalar for f16 {
         f16::from_f32(0.00001)
     }
 
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self ^ rhs
-        todo!()
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self | rhs
-        todo!()
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self & rhs
-        todo!()
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
+    fn to_ne_bytes(&self) -> &[u8] {
         todo!()
     }
 }
@@ -641,15 +652,6 @@ impl Scalar for f32 {
         t.into()
     }
 
-    fn from_u16(t: u16) -> Self {
-        t.into()
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    fn from_u64(t: u64) -> Self {
-        t as f32
-    }
-
     fn from_f32(t: f32) -> Self {
         t
     }
@@ -663,8 +665,17 @@ impl Scalar for f32 {
         f32::from(t)
     }
 
+    fn from_u16(t: u16) -> Self {
+        t.into()
+    }
+
     #[allow(clippy::cast_precision_loss)]
     fn from_u32(t: u32) -> Self {
+        t as f32
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn from_u64(t: u64) -> Self {
         t as f32
     }
 
@@ -750,6 +761,10 @@ impl Scalar for f32 {
         self.powf(rhs)
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -758,8 +773,40 @@ impl Scalar for f32 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        !self.is_equal(rhs)
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != 0. || rhs != 0.
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self ^ rhs
+        todo!()
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self | rhs
+        todo!()
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self & rhs
+        todo!()
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -798,40 +845,9 @@ impl Scalar for f32 {
         0.0001
     }
 
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        !self.is_equal(rhs)
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self ^ rhs
-        todo!()
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self | rhs
-        todo!()
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self & rhs
-        todo!()
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
     }
 }
 
@@ -891,11 +907,6 @@ impl Scalar for f64 {
         t.into()
     }
 
-    fn from_u64(t: u64) -> Self {
-        let _ = t;
-        todo!()
-    }
-
     fn from_f32(t: f32) -> Self {
         f64::from(t)
     }
@@ -914,6 +925,11 @@ impl Scalar for f64 {
 
     fn from_u32(t: u32) -> Self {
         t.into()
+    }
+
+    fn from_u64(t: u64) -> Self {
+        let _ = t;
+        todo!()
     }
 
     fn from_i8(t: i8) -> Self {
@@ -999,6 +1015,10 @@ impl Scalar for f64 {
         self.powf(rhs)
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -1007,41 +1027,12 @@ impl Scalar for f64 {
         self > rhs
     }
 
-    fn or(self, rhs: Self) -> bool {
-        self != 0. || rhs != 0.
-    }
-
-    fn and(self, rhs: Self) -> bool {
-        self != 0. && rhs != 0.
-    }
-
-    fn max(self, rhs: Self) -> Self {
-        f64::max(self, rhs)
-    }
-
-    fn max_value() -> Self {
-        f64::MAX
-    }
-
-    fn min_value() -> Self {
-        f64::MIN
-    }
-
-    fn is_equal(self, rhs: Self) -> bool {
-        // Less than 0.1% error is OK
-        (self == -f64::INFINITY && rhs == -f64::INFINITY) || (self - rhs).abs() <= self.abs() * 0.001
-    }
-
-    fn epsilon() -> Self {
-        0.00001
-    }
-
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
     fn noteq(self, rhs: Self) -> bool {
         !self.is_equal(rhs)
+    }
+
+    fn or(self, rhs: Self) -> bool {
+        self != 0. || rhs != 0.
     }
 
     fn bitxor(self, rhs: Self) -> Self {
@@ -1070,6 +1061,36 @@ impl Scalar for f64 {
     fn bitshiftright(self, rhs: Self) -> Self {
         let _ = rhs;
         todo!()
+    }
+
+    fn and(self, rhs: Self) -> bool {
+        self != 0. && rhs != 0.
+    }
+
+    fn max(self, rhs: Self) -> Self {
+        f64::max(self, rhs)
+    }
+
+    fn max_value() -> Self {
+        f64::MAX
+    }
+
+    fn min_value() -> Self {
+        f64::MIN
+    }
+
+    fn is_equal(self, rhs: Self) -> bool {
+        // Less than 0.1% error is OK
+        (self == -f64::INFINITY && rhs == -f64::INFINITY) || (self - rhs).abs() <= self.abs() * 0.001
+    }
+
+    fn epsilon() -> Self {
+        0.00001
+    }
+
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
     }
 }
 
@@ -1116,10 +1137,6 @@ impl Scalar for i8 {
         t as Self
     }
 
-    fn from_u64(t: u64) -> Self {
-        t.try_into().unwrap()
-    }
-
     #[allow(clippy::cast_possible_truncation)]
     fn from_f32(t: f32) -> Self {
         t as Self
@@ -1139,6 +1156,10 @@ impl Scalar for i8 {
     }
 
     fn from_u32(t: u32) -> Self {
+        t.try_into().unwrap()
+    }
+
+    fn from_u64(t: u64) -> Self {
         t.try_into().unwrap()
     }
 
@@ -1223,6 +1244,10 @@ impl Scalar for i8 {
         todo!()
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -1231,8 +1256,34 @@ impl Scalar for i8 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != 0 || rhs != 0
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -1259,34 +1310,9 @@ impl Scalar for i8 {
         0
     }
 
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        self | rhs
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        self & rhs
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
     }
 }
 
@@ -1299,10 +1325,6 @@ impl Scalar for i16 {
     #[allow(clippy::cast_possible_truncation)]
     fn from_f16(t: f16) -> Self {
         t.to_f32() as i16
-    }
-
-    fn from_u64(t: u64) -> Self {
-        t.try_into().unwrap()
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -1328,6 +1350,10 @@ impl Scalar for i16 {
     #[allow(clippy::cast_possible_truncation)]
     fn from_u32(t: u32) -> Self {
         t as i16
+    }
+
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
     }
 
     fn from_i8(t: i8) -> Self {
@@ -1413,6 +1439,10 @@ impl Scalar for i16 {
         todo!()
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -1421,8 +1451,34 @@ impl Scalar for i16 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != 0 || rhs != 0
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -1449,34 +1505,9 @@ impl Scalar for i16 {
         0
     }
 
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        self | rhs
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        self & rhs
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
     }
 }
 
@@ -1489,10 +1520,6 @@ impl Scalar for i32 {
     fn from_f16(t: f16) -> Self {
         let _ = t;
         todo!()
-    }
-
-    fn from_u64(t: u64) -> Self {
-        t.try_into().unwrap()
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -1515,6 +1542,10 @@ impl Scalar for i32 {
 
     fn from_u32(t: u32) -> Self {
         i32::try_from(t).unwrap()
+    }
+
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
     }
 
     fn from_i8(t: i8) -> Self {
@@ -1598,6 +1629,10 @@ impl Scalar for i32 {
         i32::pow(self, u32::try_from(rhs).unwrap())
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -1606,8 +1641,34 @@ impl Scalar for i32 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != 0 || rhs != 0
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -1634,34 +1695,9 @@ impl Scalar for i32 {
         0
     }
 
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        self | rhs
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        self & rhs
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const i32 = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<i32>()) }
     }
 }
 
@@ -1674,10 +1710,6 @@ impl Scalar for i64 {
     fn from_f16(t: f16) -> Self {
         let _ = t;
         todo!()
-    }
-
-    fn from_u64(t: u64) -> Self {
-        t.try_into().unwrap()
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -1700,6 +1732,10 @@ impl Scalar for i64 {
 
     fn from_u32(t: u32) -> Self {
         t.into()
+    }
+
+    fn from_u64(t: u64) -> Self {
+        t.try_into().unwrap()
     }
 
     fn from_i8(t: i8) -> Self {
@@ -1784,6 +1820,10 @@ impl Scalar for i64 {
         i64::pow(self, u32::try_from(rhs).unwrap())
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -1792,8 +1832,34 @@ impl Scalar for i64 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != 0 || rhs != 0
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -1820,34 +1886,9 @@ impl Scalar for i64 {
         0
     }
 
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        self | rhs
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        self & rhs
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
     }
 }
 
@@ -1969,6 +2010,10 @@ impl Scalar for u8 {
         todo!()
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -1977,8 +2022,34 @@ impl Scalar for u8 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != 0 || rhs != 0
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -2005,34 +2076,9 @@ impl Scalar for u8 {
         0
     }
 
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        self | rhs
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        self & rhs
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
     }
 }
 
@@ -2059,6 +2105,10 @@ impl Scalar for u16 {
 
     fn from_u8(t: u8) -> Self {
         t.into()
+    }
+
+    fn from_u16(t: u16) -> Self {
+        t
     }
 
     fn from_u32(t: u32) -> Self {
@@ -2091,6 +2141,11 @@ impl Scalar for u16 {
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
         Self::from_le_bytes([bytes[0], bytes[1]])
+    }
+
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -2150,6 +2205,10 @@ impl Scalar for u16 {
         todo!()
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -2158,8 +2217,34 @@ impl Scalar for u16 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != 0 || rhs != 0
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -2184,40 +2269,6 @@ impl Scalar for u16 {
 
     fn epsilon() -> Self {
         0
-    }
-
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        self | rhs
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        self & rhs
-    }
-
-    fn from_u16(t: u16) -> Self {
-        t
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
     }
 }
 
@@ -2282,6 +2333,11 @@ impl Scalar for u32 {
         Self::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+    }
+
     fn dtype() -> DType {
         DType::U32
     }
@@ -2339,6 +2395,10 @@ impl Scalar for u32 {
         todo!()
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -2347,8 +2407,34 @@ impl Scalar for u32 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != 0 || rhs != 0
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -2373,36 +2459,6 @@ impl Scalar for u32 {
 
     fn epsilon() -> Self {
         0
-    }
-
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        self | rhs
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        self & rhs
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
     }
 }
 
@@ -2469,6 +2525,11 @@ impl Scalar for u64 {
         ])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+    }
+
     fn dtype() -> DType {
         DType::U64
     }
@@ -2526,6 +2587,10 @@ impl Scalar for u64 {
         todo!()
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -2534,8 +2599,33 @@ impl Scalar for u64 {
         self > rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> bool {
         self != 0 || rhs != 0
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        self << rhs
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -2561,35 +2651,6 @@ impl Scalar for u64 {
     fn epsilon() -> Self {
         0
     }
-
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        self | rhs
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        self & rhs
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        self << rhs
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
 }
 
 impl Scalar for bool {
@@ -2599,10 +2660,6 @@ impl Scalar for bool {
 
     fn from_f16(t: f16) -> Self {
         t != f16::ZERO
-    }
-
-    fn from_u64(t: u64) -> Self {
-        t != 0
     }
 
     fn from_f32(t: f32) -> Self {
@@ -2622,6 +2679,10 @@ impl Scalar for bool {
     }
 
     fn from_u32(t: u32) -> Self {
+        t != 0
+    }
+
+    fn from_u64(t: u64) -> Self {
         t != 0
     }
 
@@ -2647,6 +2708,11 @@ impl Scalar for bool {
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
         bytes[0] != 0
+    }
+
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -2708,6 +2774,12 @@ impl Scalar for bool {
         panic!()
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        let _ = rhs;
+        //self % rhs
+        todo!()
+    }
+
     fn cmplt(self, rhs: Self) -> Self {
         !self & rhs
     }
@@ -2716,8 +2788,34 @@ impl Scalar for bool {
         self && !rhs
     }
 
+    fn noteq(self, rhs: Self) -> bool {
+        self != rhs
+    }
+
     fn or(self, rhs: Self) -> Self {
         self || rhs
+    }
+
+    fn bitxor(self, rhs: Self) -> Self {
+        self ^ rhs
+    }
+
+    fn bitor(self, rhs: Self) -> Self {
+        self | rhs
+    }
+
+    fn bitand(self, rhs: Self) -> Self {
+        self & rhs
+    }
+
+    fn bitshiftleft(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
+    }
+
+    fn bitshiftright(self, rhs: Self) -> Self {
+        let _ = rhs;
+        todo!()
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -2742,37 +2840,5 @@ impl Scalar for bool {
 
     fn epsilon() -> Self {
         false
-    }
-
-    fn mod_(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self % rhs
-        todo!()
-    }
-
-    fn noteq(self, rhs: Self) -> bool {
-        self != rhs
-    }
-
-    fn bitxor(self, rhs: Self) -> Self {
-        self ^ rhs
-    }
-
-    fn bitor(self, rhs: Self) -> Self {
-        self | rhs
-    }
-
-    fn bitand(self, rhs: Self) -> Self {
-        self & rhs
-    }
-
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
-    }
-
-    fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
     }
 }

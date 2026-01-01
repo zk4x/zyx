@@ -433,7 +433,10 @@ impl OpenCLMemoryPool {
     }
 
     pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
-        //println!("Deallocate {:?}", self.buffers[buffer_id].ptr);
+        /*println!(
+            "Deallocate {:?} with events {event_wait_list:?}",
+            self.buffers[buffer_id]
+        );*/
         let buffer = &mut self.buffers[buffer_id];
         debug_assert!(!buffer.buffer.is_null(), "Deallocating null buffer is invalid");
         let event_wait_list: Vec<*mut c_void> = event_wait_list
@@ -495,7 +498,9 @@ impl OpenCLMemoryPool {
             )
         }
         .check(ErrorStatus::MemoryCopyH2P)?;
-        Ok(Event::OpenCL(OpenCLEvent { event }))
+        let event = Event::OpenCL(OpenCLEvent { event });
+        //self.sync_events(vec![event.clone()])?;
+        Ok(event)
     }
 
     pub fn pool_to_host(
@@ -985,7 +990,7 @@ impl OpenCLDevice {
         let kernel = unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &raw mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
         let program_id = self.programs.push(OpenCLProgram { program, kernel, gws, lws });
-        //println!("Compiled program {program_id:?}");
+        //println!("Compiled program {:?}", self.programs[program_id]);
         Ok(program_id)
     }
 
@@ -1001,15 +1006,16 @@ impl OpenCLDevice {
         for &arg in args {
             let buffer = &memory_pool.buffers[arg];
             let mut dst = vec![0; buffer.bytes];
+            println!("arg {:?}:", buffer.buffer);
             memory_pool.pool_to_host(arg, &mut dst, vec![]).unwrap();
             println!("{dst:?}");
         }*/
 
         let queue_id = self.next_queue();
         /*println!(
-            "Launch opencl kernel {:?}, program_id {:?} on queue {:?}, gws {:?}, lws {:?}",
+            "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
             self.programs[program_id].kernel,
-            program_id,
+            self.programs[program_id].program,
             self.queues[queue_id].queue,
             self.programs[program_id].gws,
             self.programs[program_id].lws
@@ -1060,8 +1066,16 @@ impl OpenCLDevice {
         }
         .check(ErrorStatus::KernelLaunch)?;
         self.queues[queue_id].load += 1;
-        //unsafe { (self.clFinish)(self.queues[queue_id].queue) }.check(ErrorStatus::KernelLaunch)?;
+        unsafe { (self.clFinish)(self.queues[queue_id].queue) }.check(ErrorStatus::KernelLaunch)?;
         //println!("Launch event: {event:?}");
+
+        /*for &arg in args {
+            let buffer = &memory_pool.buffers[arg];
+            let mut dst = vec![0; buffer.bytes];
+            memory_pool.pool_to_host(arg, &mut dst, vec![]).unwrap();
+            println!("{dst:?}");
+        }*/
+
         Ok(Event::OpenCL(OpenCLEvent { event }))
     }
 

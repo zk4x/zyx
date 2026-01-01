@@ -40,8 +40,8 @@ pub struct Runtime {
     pub search_config: SearchConfig,
     /// Debug mask
     pub debug: DebugMask,
-    /// Temporary storage, TODO limit the number of elements in temporary storage
-    temp_data: Vec<Box<dyn TempData>>,
+    /// Temporary storage
+    pub temp_data: Map<BufferId, Box<[u8]>>,
     /// Cache for constants
     constants: [Constant; NUM_CONSTANTS],
     /// Current number of constants
@@ -54,7 +54,7 @@ pub struct Runtime {
 }
 
 pub trait TempData: Send {
-    fn read(&self) -> &[u8];
+    fn read(&self) -> Box<[u8]>;
     fn bytes(&self) -> Dim;
     fn dtype(&self) -> DType;
 }
@@ -99,7 +99,7 @@ impl Runtime {
             training: false,
             search_config: SearchConfig::new(),
             debug: DebugMask(0),
-            temp_data: Vec::new(),
+            temp_data: Map::with_hasher(BuildHasherDefault::new()),
             constants: [Constant::I32(0); NUM_CONSTANTS],
             constants_len: 0,
             implicit_casts: true,
@@ -122,7 +122,7 @@ impl Runtime {
 
     pub(super) fn release(&mut self, x: TensorId) {
         let to_remove = self.graph.release(&[x]);
-        deallocate_tensors(&to_remove, &mut self.pools);
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
         if self.graph.is_empty() && self.pools.iter().all(|mp| mp.buffer_map.is_empty()) {
             self.deinitialize();
         }
@@ -232,7 +232,7 @@ impl Runtime {
             println!("Timer {name} took {time}us for {iters} iterations, {}us/iter", time/iters);
         }*/
         self.config_dir = None;
-        self.temp_data = Vec::new();
+        self.temp_data = Map::default();
         // These variables are persistent:
         /*self.rng
         self.training
@@ -286,7 +286,7 @@ impl Runtime {
         debug_assert_eq!(shape.iter().product::<Dim>() * dtype.byte_size() as Dim, bytes);
         if bytes == dtype.byte_size() as Dim {
             let value = data.read();
-            let value = Constant::from_le_bytes(value, dtype);
+            let value = Constant::from_le_bytes(&value, dtype);
             if self.constants_len < NUM_CONSTANTS {
                 if !self.constants.contains(&value) {
                     self.constants[self.constants_len] = value;
@@ -328,9 +328,8 @@ impl Runtime {
         }
         let mpid = memory_pool_id as usize;
         let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
-        self.temp_data.push(data);
-        let event =
-            self.pools[mpid].pool.host_to_pool(self.temp_data.last().unwrap().read(), buffer_id, vec![event])?;
+        self.temp_data.insert(buffer_id, data.read());
+        let event = self.pools[mpid].pool.host_to_pool(&self.temp_data[&buffer_id], buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.pools[mpid].buffer_map.insert(id, buffer_id);
         self.pools[mpid].events.insert([buffer_id].into(), event);
@@ -571,7 +570,7 @@ impl Runtime {
     }
 }
 
-pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool]) {
+pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_data: &mut Map<BufferId, Box<[u8]>>) {
     // This is basically tracing GC, seems faster than reference counting
     // remove all buffers that are not used by any tensors
     // Check which buffers will possibly need to be dropped
@@ -593,6 +592,7 @@ pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool]) {
                 events.push(event);
             }
             pool.pool.deallocate(buffer_id, events);
+            temp_data.remove(&buffer_id);
         }
     }
 }

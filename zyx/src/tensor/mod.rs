@@ -3553,10 +3553,8 @@ impl<T: Scalar> TempData for T {
         T::dtype()
     }
 
-    fn read(&self) -> &[u8] {
-        let ptr: *const T = self;
-        let ptr: *const u8 = ptr.cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
+    fn read(&self) -> Box<[u8]> {
+        self.to_ne_bytes().iter().copied().collect()
     }
 }
 
@@ -3575,9 +3573,8 @@ impl<T: Scalar> TempData for Vec<T> {
         T::dtype()
     }
 
-    fn read(&self) -> &[u8] {
-        let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
+    fn read(&self) -> Box<[u8]> {
+        self.iter().flat_map(|x| x.to_ne_bytes()).copied().collect()
     }
 }
 
@@ -3596,9 +3593,8 @@ impl<T: Scalar> TempData for Vec<Vec<T>> {
         T::dtype()
     }
 
-    fn read(&self) -> &[u8] {
-        let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes()) }
+    fn read(&self) -> Box<[u8]> {
+        self.iter().flatten().flat_map(|x| x.to_ne_bytes()).copied().collect()
     }
 }
 
@@ -3618,9 +3614,8 @@ impl<T: Scalar> TempData for &'static [T] {
         T::dtype()
     }
 
-    fn read(&self) -> &[u8] {
-        let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
+    fn read(&self) -> Box<[u8]> {
+        self.iter().flat_map(|x| x.to_ne_bytes()).copied().collect()
     }
 }
 
@@ -3639,9 +3634,8 @@ impl<T: Scalar, const D0: usize> TempData for [T; D0] {
         T::dtype()
     }
 
-    fn read(&self) -> &[u8] {
-        let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
+    fn read(&self) -> Box<[u8]> {
+        self.iter().flat_map(|x| x.to_ne_bytes()).copied().collect()
     }
 }
 
@@ -3661,9 +3655,8 @@ impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
         T::dtype()
     }
 
-    fn read(&self) -> &[u8] {
-        let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
+    fn read(&self) -> Box<[u8]> {
+        self.iter().flatten().flat_map(|x| x.to_ne_bytes()).copied().collect()
     }
 }
 
@@ -3683,9 +3676,8 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData for 
         T::dtype()
     }
 
-    fn read(&self) -> &[u8] {
-        let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
+    fn read(&self) -> Box<[u8]> {
+        self.iter().flatten().flatten().flat_map(|x| x.to_ne_bytes()).copied().collect()
     }
 }
 
@@ -3709,9 +3701,8 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
         T::dtype()
     }
 
-    fn read(&self) -> &[u8] {
-        let ptr: *const u8 = self.as_ptr().cast();
-        unsafe { std::slice::from_raw_parts(ptr, self.bytes() as usize) }
+    fn read(&self) -> Box<[u8]> {
+        self.iter().flatten().flatten().flatten().flat_map(|x| x.to_ne_bytes()).copied().collect()
     }
 }
 

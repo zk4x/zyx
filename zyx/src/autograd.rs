@@ -106,7 +106,7 @@ impl Runtime {
                     self.graph.nodes[nid].1 = Node::Leaf { dtype };
                 }
                 let to_remove = self.graph.release(&to_release);
-                deallocate_tensors(&to_remove, &mut self.pools);
+                deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
                 self.graph.gradient_tape = None;
             }
         }
