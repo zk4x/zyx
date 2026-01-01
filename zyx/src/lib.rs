@@ -66,6 +66,7 @@ mod py_bindings;
 mod rng;
 mod runtime;
 mod scalar;
+mod schedule;
 mod shape;
 mod slab;
 mod tensor;
