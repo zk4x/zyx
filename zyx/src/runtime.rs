@@ -236,12 +236,12 @@ impl Runtime {
         self.debug*/
 
         // Timer
-        for (name, (time, iters)) in crate::ET.lock().iter() {
+        /*for (name, (time, iters)) in crate::ET.lock().iter() {
             println!(
                 "Timer {name} took {time}us for {iters} iterations, {}us/iter",
                 time / iters
             );
-        }
+        }*/
     }
 
     pub(super) const fn manual_seed(&mut self, seed: u64) {

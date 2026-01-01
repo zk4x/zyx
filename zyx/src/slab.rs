@@ -10,6 +10,8 @@ use std::{
     ops::{Index, IndexMut},
 };
 
+use nanoserde::{DeBin, SerBin};
+
 pub trait SlabId:
     std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize>
 {
@@ -284,5 +286,33 @@ impl<T: Clone, Id: SlabId> Clone for Slab<Id, T> {
             empty: self.empty.clone(),
             _index: PhantomData,
         }
+    }
+}
+
+impl<T: SerBin, Id: SlabId + SerBin> SerBin for Slab<Id, T> {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        self.empty.ser_bin(output);
+        self.values.len().ser_bin(output);
+        for value in self.values() {
+            value.ser_bin(output);
+        }
+    }
+}
+
+impl<T: DeBin, Id: SlabId + DeBin> DeBin for Slab<Id, T> {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        let empty = BTreeSet::de_bin(offset, bytes)?;
+        let n_values = usize::de_bin(offset, bytes)?;
+        let mut values = Vec::with_capacity(n_values);
+        for i in 0..n_values {
+            let id: Id = i.into();
+            if empty.contains(&id) {
+                values.push(MaybeUninit::uninit());
+            } else {
+                let value = T::de_bin(offset, bytes)?;
+                values.push(MaybeUninit::new(value));
+            }
+        }
+        Ok(Self { values, empty, _index: Default::default() })
     }
 }
