@@ -1063,8 +1063,6 @@ impl Kernel {
 
     // Loops that don't contain stores can be deleted
     pub fn delete_empty_loops(&mut self) {
-        #[cfg(debug_assertions)]
-        self.verify();
         // TODO make this fast by going in reverse
         /*for i in 0..self.ops.len() {
             if matches!(self.ops[i], Op::Loop { .. }) {
@@ -1385,4 +1383,48 @@ impl Kernel {
             increment(&mut tail, d, tail_range);
             self.ops.extend(tail);
         }
+<<<<<<< HEAD
+=======
+
+            /// Reshapes, (splits or merges) reduce from original into new_dims
+            pub fn reshape_reduce(&mut self, reduce_id: OpId, new_dims: &[Dim]) {
+                let Op::Reduce { x, ref mut dims, .. } = self.ops[reduce_id] else { return };
+                let n_old_dims = dims.len();
+                *dims = new_dims.into();
+
+                let mut visited = Set::default();
+                self.recursively_apply_reshape(x, n_old_dims, new_dims, &mut visited, 0);
+            }
+
+            fn recursively_apply_reshape(
+                &mut self,
+                op_id: OpId,
+                n_old_dims: usize,
+                new_dims: &[Dim],
+                visited: &mut Set<OpId>,
+                skip_last: usize,
+            ) {
+                if !visited.insert(op_id) {
+                    return;
+                }
+                match self.ops[op_id] {
+                    Op::LoadView { ref mut view, .. } | Op::ConstView { ref mut view, .. } => {
+                        let rank = view.rank();
+                        view.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
+                    }
+                    Op::Reduce { x, ref dims, .. } => {
+                        let skip_last = skip_last + dims.len();
+                        self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
+                    }
+                    Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                        self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
+                    }
+                    Op::Binary { x, y, .. } => {
+                        self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
+                        self.recursively_apply_reshape(y, n_old_dims, new_dims, visited, skip_last);
+                    }
+                    _ => {}
+                }
+            }
+>>>>>>> 6d53891434d57c57faa3a4dab808caf27c6ca11c
 }*/
