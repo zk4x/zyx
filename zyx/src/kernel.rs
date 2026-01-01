@@ -849,6 +849,7 @@ impl Kernel {
     }
 
     pub fn dead_code_elimination(&mut self) {
+        let t = crate::Timer::new("dead_code_elimination");
         let mut params = Vec::new();
         let mut visited = Set::default();
         // We go backward from Stores and gather all needed ops, but we can't remove Loop and Define ops
@@ -878,6 +879,7 @@ impl Kernel {
     }
 
     pub fn common_subexpression_elimination(&mut self) {
+        let t = crate::Timer::new("common_subexpression_elimination");
         let mut unique: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
         unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
         let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
@@ -933,22 +935,29 @@ impl Kernel {
     }
 
     pub fn move_constants_to_beginning(&mut self) {
+        let t = crate::Timer::new("move_constants_to_beginning");
         let n_defines = self.order.iter().position(|&op_id| !matches!(self[op_id], Op::Define { .. })).unwrap();
         let mut i = 0;
+        let mut n_constants = 0;
         while i < self.order.len() {
             let op_id = self.order[i];
             if matches!(self[op_id], Op::Const(_)) {
-                let const_id = self.order.remove(i);
-                self.order.insert(n_defines, const_id);
+                if i != n_defines + n_constants {
+                    let const_id = self.order.remove(i);
+                    self.order.insert(n_defines + n_constants, const_id);
+                }
+                n_constants += 1;
             }
             i += 1;
         }
+        drop(t);
 
         #[cfg(debug_assertions)]
         self.verify();
     }
 
     pub fn constant_folding(&mut self) {
+        let t = crate::Timer::new("constant_folding");
         fn remap(ops: &mut Slab<OpId, Op>, x: OpId, y: OpId) {
             for op in ops.values_mut() {
                 for param in op.parameters_mut() {
@@ -1022,6 +1031,7 @@ impl Kernel {
                 },
             }
         }
+        drop(t);
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -1038,6 +1048,7 @@ impl Kernel {
     }
 
     pub fn loop_invariant_code_motion(&mut self) {
+        let t = crate::Timer::new("loop_invariant_code_motion");
         let mut i = self.order.len();
         let mut endloop_is = Vec::new();
         while i > 0 {
@@ -1065,6 +1076,7 @@ impl Kernel {
                 }
             }
         }
+        drop(t);
 
         #[cfg(debug_assertions)]
         self.verify();

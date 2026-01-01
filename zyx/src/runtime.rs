@@ -227,10 +227,6 @@ impl Runtime {
             pool.release_events(events.into_values().collect());
             pool.deinitialize();
         }
-        // Timer
-        /*for (name, (iters, time)) in crate::ET.lock().iter() {
-            println!("Timer {name} took {time}us for {iters} iterations, {}us/iter", time/iters);
-        }*/
         self.config_dir = None;
         self.temp_data = Map::default();
         // These variables are persistent:
@@ -238,6 +234,14 @@ impl Runtime {
         self.training
         self.search_iterations
         self.debug*/
+
+        // Timer
+        for (name, (time, iters)) in crate::ET.lock().iter() {
+            println!(
+                "Timer {name} took {time}us for {iters} iterations, {}us/iter",
+                time / iters
+            );
+        }
     }
 
     pub(super) const fn manual_seed(&mut self, seed: u64) {

@@ -59,13 +59,21 @@ impl Optimizer {
         kernel.unfold_reduces();
         kernel.unfold_views();
 
-        kernel.move_constants_to_beginning();
-        kernel.constant_folding();
-        kernel.common_subexpression_elimination();
-        kernel.dead_code_elimination();
-        kernel.reorder_commutative();
-        kernel.loop_invariant_code_motion();
-        kernel.delete_empty_loops();
+        let mut temp_kernel = kernel.clone();
+        for _ in 0..100 {
+            kernel.move_constants_to_beginning();
+            kernel.constant_folding();
+            kernel.common_subexpression_elimination();
+            kernel.dead_code_elimination();
+            kernel.reorder_commutative();
+            kernel.loop_invariant_code_motion();
+            kernel.delete_empty_loops();
+
+            if *kernel == temp_kernel {
+                break;
+            }
+            temp_kernel = kernel.clone();
+        }
 
         // Unroll and jam for all loops
         if !self.loop_unroll_and_jam_opt.apply_optimization(loop_unroll_and_jam_opt_index, kernel) {
@@ -77,7 +85,9 @@ impl Optimizer {
             return false;
         }
 
-        // Do a few more iterations to clean up things
+        // Convert exponentiation (BOp::Pow) to just exp2 and ln2
+        kernel.unfold_pows();
+
         let mut temp_kernel = kernel.clone();
         for _ in 0..100 {
             kernel.move_constants_to_beginning();
@@ -87,7 +97,6 @@ impl Optimizer {
             kernel.reorder_commutative();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
-            kernel.unfold_pows();
 
             if *kernel == temp_kernel {
                 break;
@@ -346,42 +355,41 @@ impl LoopUnrollingOpt {
 
     #[must_use]
     fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 0; //4 << index;
+        let unroll_dim = 1; //4 << index;
         let mut endloop_ids = Vec::new();
         let mut i = kernel.order.len();
-        'outer_loop: while i > 0 {
+        while i > 0 {
             i -= 1;
             let loop_id = kernel.order[i];
             if kernel.ops[loop_id] == Op::EndLoop {
                 endloop_ids.push(loop_id);
             }
             if let Op::Loop { dim, scope } = kernel.ops[loop_id] {
-                if scope != Scope::Register || dim > unroll_dim || kernel.order.len() * dim > 10000 {
-                    continue 'outer_loop;
-                }
-                kernel.ops[loop_id] = Op::Const(Constant::idx(0));
                 let endloop_id = endloop_ids.pop().unwrap();
-                let endloop_i = kernel.order.iter().rposition(|op_id| *op_id == endloop_id).unwrap();
-                let loop_order: &[OpId] = &kernel.order[i + 1..endloop_i];
-                let mut order = Vec::with_capacity(loop_order.len() * (dim - 1));
-                for idx in 1..dim {
-                    let mut new_ops_map = Map::default();
-                    let new_op_id = kernel.ops.push(Op::Const(Constant::idx(idx as u64)));
-                    new_ops_map.insert(loop_id, new_op_id);
-                    order.push(new_op_id);
-                    for &op_id in loop_order {
-                        let mut op = kernel.ops[op_id].clone();
-                        for param in op.parameters_mut() {
-                            if let Some(&new_param) = new_ops_map.get(param) {
-                                *param = new_param;
-                            }
-                        }
-                        let new_op_id = kernel.ops.push(op);
-                        new_ops_map.insert(op_id, new_op_id);
+                if scope == Scope::Register && dim <= unroll_dim && kernel.order.len() * dim < 10000 {
+                    kernel.ops[loop_id] = Op::Const(Constant::idx(0));
+                    let endloop_i = kernel.order.iter().rposition(|op_id| *op_id == endloop_id).unwrap();
+                    let loop_order: &[OpId] = &kernel.order[i + 1..endloop_i];
+                    let mut order = Vec::with_capacity(loop_order.len() * (dim - 1));
+                    for idx in 1..dim {
+                        let mut new_ops_map = Map::default();
+                        let new_op_id = kernel.ops.push(Op::Const(Constant::idx(idx as u64)));
+                        new_ops_map.insert(loop_id, new_op_id);
                         order.push(new_op_id);
+                        for &op_id in loop_order {
+                            let mut op = kernel.ops[op_id].clone();
+                            for param in op.parameters_mut() {
+                                if let Some(&new_param) = new_ops_map.get(param) {
+                                    *param = new_param;
+                                }
+                            }
+                            let new_op_id = kernel.ops.push(op);
+                            new_ops_map.insert(op_id, new_op_id);
+                            order.push(new_op_id);
+                        }
                     }
+                    kernel.order.splice(endloop_i..=endloop_i, order);
                 }
-                kernel.order.splice(endloop_i..endloop_i + 1, order);
             }
         }
         #[cfg(debug_assertions)]
