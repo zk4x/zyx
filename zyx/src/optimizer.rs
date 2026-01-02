@@ -475,9 +475,10 @@ impl LoopJamOpt {
 
     #[must_use]
     fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 1; //4 << index; // TODO just uncomment this after other things are done
+        let unroll_dim = 8; //4 << index; // TODO just uncomment this after other things are done
         let mut endloop_ids = Vec::new();
         let mut i = kernel.order.len();
+        let mut followed_by_loop = false;
         while i > 0 {
             i -= 1;
             let loop_id = kernel.order[i];
@@ -485,8 +486,15 @@ impl LoopJamOpt {
                 endloop_ids.push(loop_id);
             }
             if let Op::Loop { dim, scope } = kernel.ops[loop_id] {
+                // We can only jam loops into other loops
+                if !followed_by_loop {
+                    followed_by_loop = true;
+                    continue;
+                }
                 let endloop_id = endloop_ids.pop().unwrap();
                 if scope == Scope::Register && dim <= unroll_dim && kernel.order.len() * dim < 10000 {
+
+
                     kernel.ops[loop_id] = Op::Const(Constant::idx(0));
                     let endloop_i = kernel.order.iter().rposition(|op_id| *op_id == endloop_id).unwrap();
                     let loop_order: &[OpId] = &kernel.order[i + 1..endloop_i];
@@ -509,6 +517,8 @@ impl LoopJamOpt {
                         }
                     }
                     kernel.order.splice(endloop_i..=endloop_i, order);
+
+
                 }
             }
         }
