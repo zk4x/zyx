@@ -296,8 +296,8 @@ impl WGPUDevice {
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         let mut gws = Vec::new();
         let mut lws = Vec::new();
-        for op in &kernel.ops {
-            if let &Op::Loop { dim, scope } = op {
+        for &op_id in &kernel.order {
+            if let &Op::Loop { dim, scope } = &kernel.ops[op_id] {
                 match scope {
                     Scope::Global => {
                         gws.push(dim);
@@ -319,17 +319,19 @@ impl WGPUDevice {
 
         let mut arg_ro_flags = Vec::new();
         let mut global_args = String::new();
-        for (i, op) in kernel.ops.iter().enumerate() {
+        let mut max_p = 0;
+        for (op_id, op) in kernel.ops.iter() {
             if let &Op::Define { dtype, scope, ro, .. } = op
                 && scope == Scope::Global
             {
                 writeln!(
                     global_args,
-                    "@group(0) @binding({i}) var<storage, {}> p{i}: array<{}>;",
+                    "@group(0) @binding({max_p}) var<storage, {}> p{op_id}: array<{}>;",
                     if ro { "read" } else { "read_write" },
                     dtype.wgsl()
                 )
                 .unwrap();
+                max_p += 1;
                 arg_ro_flags.push(ro);
             }
         }
@@ -340,98 +342,91 @@ impl WGPUDevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
-        for (i, op) in kernel.ops.iter().enumerate() {
+        for &op_id in &kernel.order {
             //println!("{i} -> {op:?}");
-            match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Null => {
+            match &kernel.ops[op_id] {
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 &Op::Const(x) => {
-                    dtypes.insert(i, x.dtype());
-                    writeln!(source, "{indent}const r{i}: {} = {};", x.dtype().wgsl(), x.wgsl()).unwrap();
+                    dtypes.insert(op_id, x.dtype());
+                    writeln!(source, "{indent}const r{op_id}: {} = {};", x.dtype().wgsl(), x.wgsl()).unwrap();
                 }
                 &Op::Define { dtype, scope, ro: _, len } => {
-                    dtypes.insert(i, dtype);
+                    dtypes.insert(op_id, dtype);
                     if scope == Scope::Register {
-                        writeln!(source, "{indent}var p{i}: array<{}, {len}>;", dtype.wgsl(),).unwrap();
+                        writeln!(source, "{indent}var p{op_id}: array<{}, {len}>;", dtype.wgsl(),).unwrap();
                     }
                 }
                 &Op::Load { src, index } => {
-                    dtypes.insert(i, dtypes[&src]);
-                    writeln!(source, "{indent}let r{i} = p{src}[r{index}];").unwrap();
+                    dtypes.insert(op_id, dtypes[&src]);
+                    writeln!(source, "{indent}let r{op_id} = p{src}[r{index}];").unwrap();
                 }
                 &Op::Store { dst, x: src, index } => {
                     writeln!(source, "{indent}p{dst}[r{}] = r{};", index, src,).unwrap();
                 }
                 &Op::Cast { x, dtype } => {
-                    dtypes.insert(i, dtype);
-                    writeln!(source, "{indent}let r{i} = {}(r{x});", dtype.wgsl()).unwrap();
+                    dtypes.insert(op_id, dtype);
+                    writeln!(source, "{indent}let r{op_id} = {}(r{x});", dtype.wgsl()).unwrap();
                 }
                 &Op::Unary { x, uop } => {
-                    dtypes.insert(i, dtypes[&x]);
+                    dtypes.insert(op_id, dtypes[&x]);
                     let dtype = dtypes[&x];
                     match uop {
                         UOp::BitNot => {
                             todo!();
                         }
-                        UOp::ReLU => {
-                            writeln!(
-                                source,
-                                "{indent}let r{i} = max(r{x}, {});",
-                                dtype.zero_constant().wgsl()
-                            )
-                            .unwrap();
-                        }
-                        UOp::Neg => writeln!(source, "{indent}let r{i} = -r{x};").unwrap(),
+                        UOp::Neg => writeln!(source, "{indent}let r{op_id} = -r{x};").unwrap(),
                         UOp::Exp2 => {
                             //writeln!(source, "{indent}printf(\"%d\\n\", r{reg});").unwrap();
-                            writeln!(source, "{indent}let r{i} = exp2(r{x});").unwrap();
+                            writeln!(source, "{indent}let r{op_id} = exp2(r{x});").unwrap();
                         }
-                        UOp::Log2 => writeln!(source, "{indent}let r{i} = log2(r{x});").unwrap(),
+                        UOp::Log2 => writeln!(source, "{indent}let r{op_id} = log2(r{x});").unwrap(),
                         UOp::Reciprocal => {
-                            writeln!(source, "{indent}let r{i} = {}/r{x};", dtype.one_constant().wgsl()).unwrap();
+                            writeln!(source, "{indent}let r{op_id} = {}/r{x};", dtype.one_constant().wgsl()).unwrap();
                         }
-                        UOp::Sqrt => writeln!(source, "{indent}let r{i} = sqrt(r{x});").unwrap(),
-                        UOp::Sin => writeln!(source, "{indent}let r{i} = sin(r{x});").unwrap(),
-                        UOp::Cos => writeln!(source, "{indent}let r{i} = cos(r{x});").unwrap(),
-                        UOp::Floor => writeln!(source, "{indent}let r{i} = floor(r{x});").unwrap(),
+                        UOp::Sqrt => writeln!(source, "{indent}let r{op_id} = sqrt(r{x});").unwrap(),
+                        UOp::Sin => writeln!(source, "{indent}let r{op_id} = sin(r{x});").unwrap(),
+                        UOp::Cos => writeln!(source, "{indent}let r{op_id} = cos(r{x});").unwrap(),
+                        UOp::Floor => writeln!(source, "{indent}let r{op_id} = floor(r{x});").unwrap(),
                     }
                 }
                 &Op::Binary { x, y, bop } => {
                     if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::Eq | BOp::And | BOp::Or) {
-                        dtypes.insert(i, DType::Bool);
+                        dtypes.insert(op_id, DType::Bool);
                     } else {
-                        dtypes.insert(i, dtypes[&x]);
+                        dtypes.insert(op_id, dtypes[&x]);
                     }
                     match bop {
-                        BOp::Add => writeln!(source, "{indent}let r{i} = r{x} + r{y};").unwrap(),
-                        BOp::Sub => writeln!(source, "{indent}let r{i} = r{x} - r{y};").unwrap(),
-                        BOp::Mul => writeln!(source, "{indent}let r{i} = r{x} * r{y};").unwrap(),
-                        BOp::Div => writeln!(source, "{indent}let r{i} = r{x} / r{y};").unwrap(),
-                        BOp::Pow => writeln!(source, "{indent}let r{i} = pow(r{x}, r{y});").unwrap(),
-                        BOp::Mod => writeln!(source, "{indent}let r{i} = r{x} % r{y};").unwrap(),
-                        BOp::Cmplt => writeln!(source, "{indent}let r{i} = r{x} < r{y};").unwrap(),
-                        BOp::Cmpgt => writeln!(source, "{indent}let r{i} = r{x} > r{y};").unwrap(),
-                        BOp::Maximum => writeln!(source, "{indent}let r{i} = max(r{x}, r{y});").unwrap(),
-                        BOp::Or => writeln!(source, "{indent}let r{i} = r{x} || r{y};").unwrap(),
-                        BOp::And => writeln!(source, "{indent}let r{i} = r{x} && r{y};").unwrap(),
-                        BOp::BitXor => writeln!(source, "{indent}let r{i} = r{x} ^ r{y};").unwrap(),
-                        BOp::BitOr => writeln!(source, "{indent}let r{i} = r{x} | r{y};").unwrap(),
-                        BOp::BitAnd => writeln!(source, "{indent}let r{i} = r{x} & r{y};").unwrap(),
-                        BOp::BitShiftLeft => writeln!(source, "{indent}let r{i} = r{x} << r{y};").unwrap(),
-                        BOp::BitShiftRight => writeln!(source, "{indent}let r{i} = r{x} >> r{y};").unwrap(),
-                        BOp::NotEq => writeln!(source, "{indent}let r{i} = r{x} != r{y};").unwrap(),
-                        BOp::Eq => writeln!(source, "{indent}let r{i} = r{x} == r{y};").unwrap(),
+                        BOp::Add => writeln!(source, "{indent}let r{op_id} = r{x} + r{y};").unwrap(),
+                        BOp::Sub => writeln!(source, "{indent}let r{op_id} = r{x} - r{y};").unwrap(),
+                        BOp::Mul => writeln!(source, "{indent}let r{op_id} = r{x} * r{y};").unwrap(),
+                        BOp::Div => writeln!(source, "{indent}let r{op_id} = r{x} / r{y};").unwrap(),
+                        BOp::Pow => writeln!(source, "{indent}let r{op_id} = pow(r{x}, r{y});").unwrap(),
+                        BOp::Mod => writeln!(source, "{indent}let r{op_id} = r{x} % r{y};").unwrap(),
+                        BOp::Cmplt => writeln!(source, "{indent}let r{op_id} = r{x} < r{y};").unwrap(),
+                        BOp::Cmpgt => writeln!(source, "{indent}let r{op_id} = r{x} > r{y};").unwrap(),
+                        BOp::Maximum => writeln!(source, "{indent}let r{op_id} = max(r{x}, r{y});").unwrap(),
+                        BOp::Or => writeln!(source, "{indent}let r{op_id} = r{x} || r{y};").unwrap(),
+                        BOp::And => writeln!(source, "{indent}let r{op_id} = r{x} && r{y};").unwrap(),
+                        BOp::BitXor => writeln!(source, "{indent}let r{op_id} = r{x} ^ r{y};").unwrap(),
+                        BOp::BitOr => writeln!(source, "{indent}let r{op_id} = r{x} | r{y};").unwrap(),
+                        BOp::BitAnd => writeln!(source, "{indent}let r{op_id} = r{x} & r{y};").unwrap(),
+                        BOp::BitShiftLeft => writeln!(source, "{indent}let r{op_id} = r{x} << r{y};").unwrap(),
+                        BOp::BitShiftRight => writeln!(source, "{indent}let r{op_id} = r{x} >> r{y};").unwrap(),
+                        BOp::NotEq => writeln!(source, "{indent}let r{op_id} = r{x} != r{y};").unwrap(),
+                        BOp::Eq => writeln!(source, "{indent}let r{op_id} = r{x} == r{y};").unwrap(),
                     }
                 }
                 &Op::Loop { dim, scope } => {
-                    dtypes.insert(i, IDX_T);
+                    dtypes.insert(op_id, IDX_T);
                     match scope {
                         Scope::Global => {
                             writeln!(
                                 source,
-                                "{indent}let r{i} = {}(gidx[{loop_id}]); // 0..{dim}",
-                                IDX_T.wgsl()
+                                "{indent}let r{op_id} = {}(gidx[{loop_id}]); // 0..={}",
+                                IDX_T.wgsl(),
+                                    dim - 1
                             )
                             .unwrap();
                             n_global_ids += 1;
@@ -439,16 +434,17 @@ impl WGPUDevice {
                         Scope::Local => {
                             writeln!(
                                 source,
-                                "{indent}let r{i} = {}(lidx[{}]); // 0..{dim}",
+                                "{indent}let r{op_id} = {}(lidx[{}]); // 0..={}",
                                 IDX_T.wgsl(),
-                                loop_id - n_global_ids
+                                loop_id - n_global_ids,
+                                dim - 1
                             )
                             .unwrap();
                         }
                         Scope::Register => {
                             writeln!(
                                 source,
-                                "{indent}for (var r{i}: {} = 0; r{i} < {dim}; r{i} += 1) {{",
+                                "{indent}for (var r{op_id}: {} = 0; r{op_id} < {dim}; r{op_id} += 1) {{",
                                 IDX_T.wgsl()
                             )
                             .unwrap();
