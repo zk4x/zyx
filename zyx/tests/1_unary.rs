@@ -5,11 +5,9 @@ fn relu_1() -> Result<(), ZyxError> {
     let data: [f32; 10] = [
         -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
     ];
-    let zdata: Vec<f32> = Tensor::from(data).relu().try_into()?;
-    for (x, y) in data.iter().zip(zdata) {
-        //println!("{} == {y}", x.max(0.));
-        assert!(x.max(0.).is_equal(y));
-    }
+    let x = Tensor::from(data);
+    let z = x.relu();
+    assert_eq!(z, [0.0f32, 0.001, 1.780, 5.675, 0.0, 0.0, 1.215, 0.0, 0.0, 0.0]);
     Ok(())
 }
 

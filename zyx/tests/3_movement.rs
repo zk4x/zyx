@@ -30,7 +30,7 @@ fn expand_1() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn permute_1() -> Result<(), ZyxError> {
+fn permute_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[4, 5, 2, 1], [3, 4, 1, 4]]);
     let y = x.permute([1, 0])?;
     assert_eq!(y, [[4, 3], [5, 4], [2, 1], [1, 4]]);

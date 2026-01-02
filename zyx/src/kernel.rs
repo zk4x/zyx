@@ -1045,7 +1045,7 @@ impl Kernel {
                 for k in i + 1..endloop_is.pop().unwrap() - 1 {
                     let op_id = self.order[k];
                     let op = &self.ops[op_id];
-                    if !matches!(op, Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop)
+                    if !matches!(op, Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop | Op::Define { .. })
                         && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
                     {
                         let op_id = self.order.remove(k);
