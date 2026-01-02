@@ -311,94 +311,6 @@ impl WorkSizeOpt {
     }
 }
 
-/// loop unrolling plus loop invariant code motion
-#[derive(Debug, Clone, DeBin, SerBin)]
-struct LoopJamOpt {}
-
-impl LoopJamOpt {
-    fn new(_kernel: &Kernel) -> (Self, u32) {
-        (Self {}, 3) // 8, 16, 32 unfolding
-    }
-
-    // TODO
-    #[must_use]
-    fn apply_optimization(&self, _index: u32, _kernel: &mut Kernel) -> bool {
-        /*let unroll_dim = 8 << index;
-        let mut op_id = kernel.ops.len();
-        while op_id > 0 {
-            op_id -= 1;
-            if let Op::Loop { dim, scope } = kernel.ops[op_id] {
-                if scope == Scope::Register && dim <= unroll_dim {
-                    // Check if there is a loop after this (so that we can jam)
-                    if kernel.ops[op_id + 1..].iter().any(|op| matches!(op, Op::Loop { .. })) {
-                        // A reasonable limit for max kernel size
-                        if kernel.ops.len() * dim > 10000 {
-                            continue;
-                        }
-                        // TODO
-                        //kernel.loop_jam(op_id);
-                    }
-                }
-            }
-        }*/
-        true
-    }
-}
-
-/// loop unrolling plus loop invariant code motion
-#[derive(Debug, Clone, DeBin, SerBin)]
-struct LoopUnrollingOpt {}
-
-impl LoopUnrollingOpt {
-    fn new(_kernel: &Kernel) -> (Self, u32) {
-        (Self {}, 4) // 4, 8, 16, 32 unfolding
-    }
-
-    #[must_use]
-    fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 1; //4 << index; // TODO just uncomment this after other things are done
-        let mut endloop_ids = Vec::new();
-        let mut i = kernel.order.len();
-        while i > 0 {
-            i -= 1;
-            let loop_id = kernel.order[i];
-            if kernel.ops[loop_id] == Op::EndLoop {
-                endloop_ids.push(loop_id);
-            }
-            if let Op::Loop { dim, scope } = kernel.ops[loop_id] {
-                let endloop_id = endloop_ids.pop().unwrap();
-                if scope == Scope::Register && dim <= unroll_dim && kernel.order.len() * dim < 10000 {
-                    kernel.ops[loop_id] = Op::Const(Constant::idx(0));
-                    let endloop_i = kernel.order.iter().rposition(|op_id| *op_id == endloop_id).unwrap();
-                    let loop_order: &[OpId] = &kernel.order[i + 1..endloop_i];
-                    let mut order = Vec::with_capacity(loop_order.len() * (dim - 1));
-                    for idx in 1..dim {
-                        let mut new_ops_map = Map::default();
-                        let new_op_id = kernel.ops.push(Op::Const(Constant::idx(idx as u64)));
-                        new_ops_map.insert(loop_id, new_op_id);
-                        order.push(new_op_id);
-                        for &op_id in loop_order {
-                            let mut op = kernel.ops[op_id].clone();
-                            for param in op.parameters_mut() {
-                                if let Some(&new_param) = new_ops_map.get(param) {
-                                    *param = new_param;
-                                }
-                            }
-                            let new_op_id = kernel.ops.push(op);
-                            new_ops_map.insert(op_id, new_op_id);
-                            order.push(new_op_id);
-                        }
-                    }
-                    kernel.order.splice(endloop_i..=endloop_i, order);
-                }
-            }
-        }
-        #[cfg(debug_assertions)]
-        kernel.verify();
-        true
-    }
-}
-
 impl Optimization {
     fn into_indices<const N: usize>(self, max_values: [u32; N]) -> [u32; N] {
         let mut value = self.0;
@@ -494,6 +406,114 @@ impl LoopSplitOpt {
             let mut visited = Set::default();
             this.recursively_apply_reshape(x, n_old_dims, new_dims, &mut visited, 0);
         }
+        true
+    }
+}
+
+/// loop unrolling plus loop invariant code motion
+#[derive(Debug, Clone, DeBin, SerBin)]
+struct LoopUnrollingOpt {}
+
+impl LoopUnrollingOpt {
+    fn new(_kernel: &Kernel) -> (Self, u32) {
+        (Self {}, 4) // 4, 8, 16, 32 unfolding
+    }
+
+    #[must_use]
+    fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
+        let unroll_dim = 1; //4 << index; // TODO just uncomment this after other things are done
+        let mut endloop_ids = Vec::new();
+        let mut i = kernel.order.len();
+        while i > 0 {
+            i -= 1;
+            let loop_id = kernel.order[i];
+            if kernel.ops[loop_id] == Op::EndLoop {
+                endloop_ids.push(loop_id);
+            }
+            if let Op::Loop { dim, scope } = kernel.ops[loop_id] {
+                let endloop_id = endloop_ids.pop().unwrap();
+                if scope == Scope::Register && dim <= unroll_dim && kernel.order.len() * dim < 10000 {
+                    kernel.ops[loop_id] = Op::Const(Constant::idx(0));
+                    let endloop_i = kernel.order.iter().rposition(|op_id| *op_id == endloop_id).unwrap();
+                    let loop_order: &[OpId] = &kernel.order[i + 1..endloop_i];
+                    let mut order = Vec::with_capacity(loop_order.len() * (dim - 1));
+                    for idx in 1..dim {
+                        let mut new_ops_map = Map::default();
+                        let new_op_id = kernel.ops.push(Op::Const(Constant::idx(idx as u64)));
+                        new_ops_map.insert(loop_id, new_op_id);
+                        order.push(new_op_id);
+                        for &op_id in loop_order {
+                            let mut op = kernel.ops[op_id].clone();
+                            for param in op.parameters_mut() {
+                                if let Some(&new_param) = new_ops_map.get(param) {
+                                    *param = new_param;
+                                }
+                            }
+                            let new_op_id = kernel.ops.push(op);
+                            new_ops_map.insert(op_id, new_op_id);
+                            order.push(new_op_id);
+                        }
+                    }
+                    kernel.order.splice(endloop_i..=endloop_i, order);
+                }
+            }
+        }
+        #[cfg(debug_assertions)]
+        kernel.verify();
+        true
+    }
+}
+
+/// loop unrolling plus loop invariant code motion
+#[derive(Debug, Clone, DeBin, SerBin)]
+struct LoopJamOpt {}
+
+impl LoopJamOpt {
+    fn new(_kernel: &Kernel) -> (Self, u32) {
+        (Self {}, 3) // 8, 16, 32 unfolding
+    }
+
+    #[must_use]
+    fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
+        let unroll_dim = 1; //4 << index; // TODO just uncomment this after other things are done
+        let mut endloop_ids = Vec::new();
+        let mut i = kernel.order.len();
+        while i > 0 {
+            i -= 1;
+            let loop_id = kernel.order[i];
+            if kernel.ops[loop_id] == Op::EndLoop {
+                endloop_ids.push(loop_id);
+            }
+            if let Op::Loop { dim, scope } = kernel.ops[loop_id] {
+                let endloop_id = endloop_ids.pop().unwrap();
+                if scope == Scope::Register && dim <= unroll_dim && kernel.order.len() * dim < 10000 {
+                    kernel.ops[loop_id] = Op::Const(Constant::idx(0));
+                    let endloop_i = kernel.order.iter().rposition(|op_id| *op_id == endloop_id).unwrap();
+                    let loop_order: &[OpId] = &kernel.order[i + 1..endloop_i];
+                    let mut order = Vec::with_capacity(loop_order.len() * (dim - 1));
+                    for idx in 1..dim {
+                        let mut new_ops_map = Map::default();
+                        let new_op_id = kernel.ops.push(Op::Const(Constant::idx(idx as u64)));
+                        new_ops_map.insert(loop_id, new_op_id);
+                        order.push(new_op_id);
+                        for &op_id in loop_order {
+                            let mut op = kernel.ops[op_id].clone();
+                            for param in op.parameters_mut() {
+                                if let Some(&new_param) = new_ops_map.get(param) {
+                                    *param = new_param;
+                                }
+                            }
+                            let new_op_id = kernel.ops.push(op);
+                            new_ops_map.insert(op_id, new_op_id);
+                            order.push(new_op_id);
+                        }
+                    }
+                    kernel.order.splice(endloop_i..=endloop_i, order);
+                }
+            }
+        }
+        #[cfg(debug_assertions)]
+        kernel.verify();
         true
     }
 }
