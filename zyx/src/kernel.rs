@@ -13,7 +13,7 @@ use std::{fmt::Display, hash::BuildHasherDefault};
 pub const IDX_T: DType = DType::U32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct OpId(u32);
+pub struct OpId(pub u32);
 
 impl OpId {
     pub fn null() -> Self {

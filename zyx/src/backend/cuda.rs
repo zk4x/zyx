@@ -4,16 +4,14 @@
 // TODO properly deallocate events
 
 use std::{
-    ffi::{c_char, c_int, c_uint, c_void},
-    ptr,
-    sync::mpsc::{Receiver, Sender, channel},
+    ffi::{c_char, c_int, c_uint, c_void}, hash::BuildHasherDefault, ptr, sync::mpsc::{Receiver, Sender, channel}
 };
 
 use libloading::Library;
 use nanoserde::DeJson;
 
 use crate::{
-    DType, dtype::Constant, error::{BackendError, ErrorStatus}, kernel::Kernel, shape::Dim, slab::Slab
+    DType, Map, dtype::Constant, error::{BackendError, ErrorStatus}, graph::{BOp, UOp}, kernel::{IDX_T, Kernel, Op, OpId, Scope}, shape::Dim, slab::Slab
 };
 
 macro_rules! send_or_continue {
@@ -717,15 +715,13 @@ impl CUDADevice {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
-        /*
         //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
         let (ptx, name, gws, lws) = Compiler::new().compile(kernel, self.compute_capability, &self.dev_info, debug_asm)?;
 
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Compile { gws, lws, name, ptx, reply }).unwrap();
-        reply_rx.recv().unwrap()*/
-        todo!()
+        reply_rx.recv().unwrap()
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -1125,59 +1121,58 @@ impl CUDAStatus {
     }
 }
 
-/*
 fn get_dtypes(kernel: &Kernel) -> (Map<OpId, u32>, Map<OpId, DType>) {
-    let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len(), BuildHasherDefault::new());
+    let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
     let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
     // first we will calculate those reference counts.
     let mut loop_ids = Vec::new();
-    for (i, op) in kernel.ops.iter().enumerate() {
-        match op {
-            Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Null => unreachable!(),
+    for &op_id in &kernel.order {
+        match &kernel.ops[op_id] {
+            Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } => unreachable!(),
             Op::Const(x) => {
-                dtypes.insert(i, x.dtype());
+                dtypes.insert(op_id, x.dtype());
             }
             &Op::Define { dtype, .. } => {
-                dtypes.insert(i, dtype);
+                dtypes.insert(op_id, dtype);
             }
             &Op::Load { src, index } => {
-                dtypes.insert(i, dtypes[&src]);
+                dtypes.insert(op_id, dtypes[&src]);
                 rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
             }
             &Op::Store { dst, x: src, index } => {
-                dtypes.insert(i, dtypes[&src]);
+                dtypes.insert(op_id, dtypes[&src]);
                 rcs.entry(dst).and_modify(|rc| *rc += 1).or_insert(1);
                 rcs.entry(src).and_modify(|rc| *rc += 1).or_insert(1);
                 rcs.entry(index).and_modify(|rc| *rc += 1).or_insert(1);
             }
             &Op::Cast { x, dtype } => {
-                dtypes.insert(i, dtype);
+                dtypes.insert(op_id, dtype);
                 rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
             }
             &Op::Unary { x, .. } => {
-                dtypes.insert(i, dtypes[&x]);
+                dtypes.insert(op_id, dtypes[&x]);
                 rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
             }
             &Op::Binary { x, y, bop } => {
                 if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or | BOp::Eq) {
-                    dtypes.insert(i, DType::Bool);
+                    dtypes.insert(op_id, DType::Bool);
                 } else {
-                    dtypes.insert(i, dtypes[&x]);
+                    dtypes.insert(op_id, dtypes[&x]);
                 }
                 rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
                 rcs.entry(y).and_modify(|rc| *rc += 1).or_insert(1);
             }
             Op::Loop { .. } => {
-                dtypes.insert(i, IDX_T);
-                loop_ids.push(i);
+                dtypes.insert(op_id, IDX_T);
+                loop_ids.push(op_id);
             }
             Op::EndLoop => {
                 let x = loop_ids.pop().unwrap();
                 rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
             }
             &Op::Reduce { x, .. } => {
-                dtypes.insert(i, dtypes[&x]);
+                dtypes.insert(op_id, dtypes[&x]);
                 rcs.entry(x).and_modify(|rc| *rc += 1).or_insert(1);
             }
         }
@@ -1303,10 +1298,12 @@ impl Compiler {
         dev_info: &DeviceInfo,
         debug: bool,
     ) -> Result<(Vec<u8>, Box<str>, Vec<usize>, Vec<usize>), BackendError> {
+        use std::fmt::Write;
+
         let mut gws = Vec::new();
         let mut lws = Vec::new();
-        for op in &kernel.ops {
-            if let &Op::Loop { dim, scope } = op {
+        for &op_id in &kernel.order {
+            if let &Op::Loop { dim, scope } = &kernel.ops[op_id] {
                 match scope {
                     Scope::Global => {
                         gws.push(dim);
@@ -1338,10 +1335,10 @@ impl Compiler {
             cc[0], cc[1]
         );
         // Global parameters
-        for (i, op) in kernel.ops.iter().enumerate() {
-            if let &Op::Define { scope, .. } = op {
+        for &op_id in &kernel.order {
+            if let Op::Define { scope, .. } = kernel.ops[op_id] {
                 if scope == Scope::Global {
-                    writeln!(self.header, "{}.param .u64 g{i},", self.indent).unwrap();
+                    writeln!(self.header, "{}.param .u64 g{op_id},", self.indent).unwrap();
                 }
             }
         }
@@ -1354,9 +1351,9 @@ impl Compiler {
         let mut n_global_loops = 0;
         let (rcs, dtypes) = get_dtypes(&kernel);
         let mut loop_id = 0;
-        for (op_id, op) in kernel.ops.iter().enumerate() {
+        for &op_id in &kernel.order {
             //println!("{op_id} x {}: {op:?}", rcs.get(&op_id).unwrap_or(&100));
-            match op {
+            match &kernel.ops[op_id] {
                 Op::Define { dtype, scope, len, .. } => {
                     self.scopes.insert(op_id, *scope);
                     match scope {
@@ -1605,7 +1602,7 @@ impl Compiler {
                         _ = writeln!(self.body, "{}@%r{loop_pred} bra LOOP_{loop_id};", self.indent);
                     }
                 }
-                Op::Null | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
             }
@@ -1615,10 +1612,10 @@ impl Compiler {
         _ = writeln!(self.body, "{}ret;\n}}", self.indent);
 
         // Global argument pointers declaration
-        for (i, op) in kernel.ops.iter().enumerate() {
-            if let &Op::Define { scope, .. } = op {
+        for &op_id in &kernel.order {
+            if let Op::Define { scope, .. } = kernel.ops[op_id] {
                 if scope == Scope::Global {
-                    _ = writeln!(self.header, "{}.reg .s64 %p{i};", self.indent);
+                    _ = writeln!(self.header, "{}.reg .s64 %p{op_id};", self.indent);
                 }
             }
         }
@@ -1637,4 +1634,4 @@ impl Compiler {
         }
         Ok((self.header.into_bytes(), name, gws, lws))
     }
-}*/
+}

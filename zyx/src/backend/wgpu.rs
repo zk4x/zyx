@@ -11,9 +11,7 @@ use crate::{
 use nanoserde::DeJson;
 use pollster::FutureExt;
 use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc};
-use wgpu::{
-    BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource,
-};
+use wgpu::{BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource};
 
 #[derive(DeJson, Debug)]
 pub struct WGPUConfig {
@@ -220,14 +218,13 @@ impl WGPUMemoryPool {
         });
 
         // Record a command to copy the data from the GPU buffer to the download buffer
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("CopyBufferEncoder"),
-        });
+        let mut encoder =
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("CopyBufferEncoder") });
 
         // Copy data from the source buffer to the download buffer
         encoder.copy_buffer_to_buffer(
             &src,
-            0,                // Start at the beginning of the source buffer
+            0, // Start at the beginning of the source buffer
             &download_buffer,
             0,                // Start at the beginning of the destination buffer
             dst.len() as u64, // The number of bytes to copy
@@ -247,8 +244,7 @@ impl WGPUMemoryPool {
         });
 
         // Poll the device to wait for the buffer mapping to complete
-        self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None })
-            .unwrap();  // Make sure polling completes
+        self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None }).unwrap(); // Make sure polling completes
 
         // Wait for the map operation to complete
         let mapping_result = rx.recv().unwrap();
@@ -266,7 +262,6 @@ impl WGPUMemoryPool {
 
         Ok(())
     }
-
 
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         let _ = events;
@@ -426,7 +421,7 @@ impl WGPUDevice {
                                 source,
                                 "{indent}let r{op_id} = {}(gidx[{loop_id}]); // 0..={}",
                                 IDX_T.wgsl(),
-                                    dim - 1
+                                dim - 1
                             )
                             .unwrap();
                             n_global_ids += 1;
@@ -557,7 +552,7 @@ impl WGPUDevice {
         let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &group_layouts,
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
         let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: None,

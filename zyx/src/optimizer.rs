@@ -320,10 +320,11 @@ impl LoopJamOpt {
         (Self {}, 3) // 8, 16, 32 unfolding
     }
 
+    // TODO
     #[must_use]
-    fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 8 << index;
-        /*let mut op_id = kernel.ops.len();
+    fn apply_optimization(&self, _index: u32, _kernel: &mut Kernel) -> bool {
+        /*let unroll_dim = 8 << index;
+        let mut op_id = kernel.ops.len();
         while op_id > 0 {
             op_id -= 1;
             if let Op::Loop { dim, scope } = kernel.ops[op_id] {
@@ -354,8 +355,8 @@ impl LoopUnrollingOpt {
     }
 
     #[must_use]
-    fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 1; //4 << index;
+    fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
+        let unroll_dim = 1; //4 << index; // TODO just uncomment this after other things are done
         let mut endloop_ids = Vec::new();
         let mut i = kernel.order.len();
         while i > 0 {
