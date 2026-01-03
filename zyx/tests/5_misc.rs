@@ -355,8 +355,8 @@ fn matmul_1024() -> Result<(), ZyxError> {
     let z = xyz.remove("z").unwrap();
     let y = xyz.remove("y").unwrap();
     let x = xyz.remove("x").unwrap();
-    //println!("{:?}", x.shape());
-    //println!("{:?}", y.shape());
+    println!("{:?}", x.shape());
+    println!("{:?}", y.shape());
     let dataz: Vec<i64> = z.try_into()?;
     let zz = x.matmul(y)?;
     let datazz: Vec<i64> = zz.try_into()?;

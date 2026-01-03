@@ -1,5 +1,5 @@
 - [ ] backends
-  - [ ] cuda
+  - [x] cuda
     - [x] fix async memcopy
     - [ ] tensor cores
     - [ ] fix load calculation, probably using Atomic usize
@@ -67,7 +67,7 @@
   - [x] kernel flops, memory reads, memory writes
   - [x] global to inner loop splitting
   - [x] inner loop splitting
-  - [ ] unroll and jam
+  - [x] unroll and jam
   - [x] loop unrolling
     - [x] in optimizer
     - [x] in kernel
@@ -77,6 +77,7 @@
   - [ ] tensor cores/tiling
   - [ ] merge all mul + add into mad instructions
   - [ ] local tiling of all variables
+  - [ ] multi step reduce (with multiple accumulators)
   - [ ] streaming dual reduce ops (e.g. streaming softmax)
   - [x] optimizer with search
 - [ ] testing
@@ -97,8 +98,8 @@
   - [x] expand on reduce kernel
   - [x] reshape on reduce kernel
   - [x] permute on reduce kernel
-  - [ ] lot of testing for kernelizer correctness
-  - [ ] more autograd tests
+  - [x] lot of testing for kernelizer correctness
+  - [x] more autograd tests
 - [ ] tensor
   - [ ] gather
   - [ ] scatter

@@ -421,7 +421,7 @@ impl LoopUnrollingOpt {
 
     #[must_use]
     fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 1; //4 << index; // TODO just uncomment this after other things are done
+        let unroll_dim = 16; //4 << index; // TODO just uncomment this after other things are done
         let mut endloop_ids = Vec::new();
         let mut i = kernel.order.len();
         while i > 0 {
@@ -477,22 +477,27 @@ impl LoopJamOpt {
     // It's complex :P
     #[must_use]
     fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 0; //4 << index; // TODO just uncomment this after other things are done
+        let unroll_dim = 64; //4 << index; // TODO just uncomment this after other things are done
 
-        let mut jam_found = false;
+        let mut jam_found;
         loop {
+            jam_found = false;
             let mut active_defines: Vec<(OpId, Set<OpId>)> = Vec::new();
             'a: for &op_id in &kernel.order {
                 match kernel.ops[op_id] {
-                    Op::Loop { .. } => {
-                        active_defines.push((op_id, Set::default()));
+                    Op::Loop { scope, .. } => {
+                        if scope == Scope::Register {
+                            active_defines.push((op_id, Set::default()));
+                        }
                     }
                     Op::EndLoop => {
                         active_defines.pop();
                     }
                     Op::Define { scope, .. } => {
                         if scope == Scope::Register {
-                            active_defines.last_mut().unwrap().1.insert(op_id);
+                            if let Some(define_level) = active_defines.last_mut() {
+                                define_level.1.insert(op_id);
+                            }
                         }
                     }
                     Op::Load { src, .. } => {
@@ -518,9 +523,6 @@ impl LoopJamOpt {
                     _ => {}
                 }
             }
-
-            #[cfg(debug_assertions)]
-            kernel.verify();
 
             if !jam_found {
                 break;

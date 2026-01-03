@@ -611,39 +611,3 @@ pub fn apply_padding(shape: &mut [Dim], padding: &[(isize, isize)]) {
         }
     }
 }
-
-/*
-{
-    kernel.order.splice(i..i + splice_ops_len + 1, order);
-
-    // Fix indexing on defines
-    let mut i = 0;
-    while i < kernel.order.len() {
-        let op_id = kernel.order[i];
-        match kernel.ops[op_id] {
-            Op::Load { src, index } => {
-                if defines.contains(&src) {
-                    let x = kernel.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
-                    let new_index = kernel.ops.push(Op::Binary { x, y: loop_id, bop: BOp::Add });
-                    let Op::Load { index, .. } = &mut kernel.ops[op_id] else { unreachable!() };
-                    *index = new_index;
-                    kernel.order.splice(i..i, [x, new_index]);
-                    i += 2;
-                }
-            }
-            Op::Store { dst, index, .. } => {
-                if defines.contains(&dst) {
-                    let x = kernel.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
-                    let new_index = kernel.ops.push(Op::Binary { x, y: loop_id, bop: BOp::Add });
-                    let Op::Store { index, .. } = &mut kernel.ops[op_id] else { unreachable!() };
-                    *index = new_index;
-                    kernel.order.splice(i..i, [x, new_index]);
-                    i += 2;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-            }
-}
-*/

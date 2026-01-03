@@ -1150,16 +1150,24 @@ impl Kernel {
 
     /// Jam into loop. Yes, it's complex :P
     pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) {
-        self.debug();
-        println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
+        //self.debug();
+        //println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
+
         let mut pre_loop_ops = Vec::new();
         let mut inner_loop_ops = Vec::new();
         let mut post_loop_ops: Vec<OpId> = Vec::new();
 
         let mut stage = 0;
         let mut inner_loop_level = 0;
-        for &op_id in &self.order {
+        let mut splice_ops_len = 0;
+
+        let mut jam_loop_i = 0;
+        for (i, &op_id) in self.order.iter().enumerate() {
+            if stage != 0 {
+                splice_ops_len += 1;
+            }
             if op_id == jam_loop_id {
+                jam_loop_i = i;
                 stage = 1;
             } else if op_id == inner_loop_id {
                 stage = 2;
@@ -1197,7 +1205,8 @@ impl Kernel {
         let Op::Loop { dim: jam_dim, scope } = self.ops[jam_loop_id] else { unreachable!() };
         debug_assert_eq!(scope, Scope::Register);
 
-        println!("pre_loop_ops {pre_loop_ops:?}\ninner_loop_ops {inner_loop_ops:?}\npost_loop_ops {post_loop_ops:?}");
+        //println!("pre_loop_ops {pre_loop_ops:?}\ninner_loop_ops {inner_loop_ops:?}\npost_loop_ops {post_loop_ops:?}");
+        //println!("splice_ops_len {splice_ops_len}");
 
         let mut order = Vec::with_capacity(inner_loop_ops.len() + pre_loop_ops.len() * 2 + 5);
         let const_dim = self.ops.push(Op::Const(Constant::idx(jam_dim as u64)));
@@ -1212,7 +1221,6 @@ impl Kernel {
                 defines.insert(op_id);
             }
         }
-        order.push(jam_loop_id);
         for &op_id in &pre_loop_ops {
             match self.ops[op_id] {
                 Op::Load { .. } => unreachable!(), // from the apply_optimization op this is invariant
@@ -1226,20 +1234,16 @@ impl Kernel {
                         *index = new_index;
                     }
                 }
+                Op::Define { .. } => continue,
                 _ => {}
             }
-            if matches!(self.ops[op_id], Op::Store { .. } | Op::Load { .. }) {
-                order.push(op_id);
-            }
+            order.push(op_id);
         }
         order.push(self.ops.push(Op::EndLoop));
 
         // Inner loop
         let mut remapping = Map::default();
         order.push(inner_loop_ops.remove(0)); // first is the Op::Loop
-        let t_op_id = self.ops.push(self.ops[jam_loop_id].clone()); // replacement jam loop id
-        order.push(t_op_id);
-        remapping.insert(jam_loop_id, t_op_id);
         for &op_id in &pre_loop_ops {
             let mut op = self.ops[op_id].clone();
             if !matches!(op, Op::Define { .. } | Op::Store { .. } | Op::Load { .. }) {
@@ -1279,9 +1283,6 @@ impl Kernel {
         order.push(self.ops.push(Op::EndLoop));
 
         // Post Loop
-        let t_op_id = self.ops.push(self.ops[jam_loop_id].clone()); // replacement jam loop id
-        order.push(t_op_id);
-        remapping.insert(jam_loop_id, t_op_id);
         for &op_id in &pre_loop_ops {
             let mut op = self.ops[op_id].clone();
             if !matches!(op, Op::Define { .. } | Op::Store { .. } | Op::Load { .. }) {
@@ -1319,8 +1320,11 @@ impl Kernel {
             order.push(op_id);
         }
 
+        self.order.splice(jam_loop_i..jam_loop_i + splice_ops_len + 1, order);
+
+        #[cfg(debug_assertions)]
         self.verify();
-        todo!();
+        //todo!();
     }
 
     pub fn verify(&self) {
