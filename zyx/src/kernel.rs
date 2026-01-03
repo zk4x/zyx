@@ -154,6 +154,14 @@ impl Op {
         }
         .into_iter()
     }
+
+    fn remap_params(&mut self, remapping: &Map<OpId, OpId>) {
+        for param in self.parameters_mut() {
+            if let Some(remapped_id) = remapping.get(param) {
+                *param = *remapped_id;
+            }
+        }
+    }
 }
 
 impl std::ops::Index<OpId> for Kernel {
@@ -1140,10 +1148,194 @@ impl Kernel {
         }
     }
 
+    /// Jam into loop. Yes, it's complex :P
+    pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) {
+        self.debug();
+        println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
+        let mut pre_loop_ops = Vec::new();
+        let mut inner_loop_ops = Vec::new();
+        let mut post_loop_ops: Vec<OpId> = Vec::new();
+
+        let mut stage = 0;
+        let mut inner_loop_level = 0;
+        for &op_id in &self.order {
+            if op_id == jam_loop_id {
+                stage = 1;
+            } else if op_id == inner_loop_id {
+                stage = 2;
+            }
+            match stage {
+                0 => {}
+                1 => {
+                    pre_loop_ops.push(op_id);
+                }
+                2 => {
+                    inner_loop_ops.push(op_id);
+                    match self.ops[op_id] {
+                        Op::Loop { .. } => {
+                            inner_loop_level += 1;
+                        }
+                        Op::EndLoop => {
+                            inner_loop_level -= 1;
+                            if inner_loop_level == 0 {
+                                stage = 3;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                3 => {
+                    post_loop_ops.push(op_id);
+                    if self.ops[op_id] == Op::EndLoop {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Op::Loop { dim: jam_dim, scope } = self.ops[jam_loop_id] else { unreachable!() };
+        debug_assert_eq!(scope, Scope::Register);
+
+        println!("pre_loop_ops {pre_loop_ops:?}\ninner_loop_ops {inner_loop_ops:?}\npost_loop_ops {post_loop_ops:?}");
+
+        let mut order = Vec::with_capacity(inner_loop_ops.len() + pre_loop_ops.len() * 2 + 5);
+        let const_dim = self.ops.push(Op::Const(Constant::idx(jam_dim as u64)));
+        order.push(const_dim);
+
+        // Pre loop
+        let mut defines = Set::default();
+        for &op_id in &pre_loop_ops {
+            if let Op::Define { dtype, scope, ro, len } = self.ops[op_id] {
+                self.ops[op_id] = Op::Define { dtype, scope, ro, len: len * jam_dim };
+                order.push(op_id);
+                defines.insert(op_id);
+            }
+        }
+        order.push(jam_loop_id);
+        for &op_id in &pre_loop_ops {
+            match self.ops[op_id] {
+                Op::Load { .. } => unreachable!(), // from the apply_optimization op this is invariant
+                Op::Store { dst, index, .. } => {
+                    if defines.contains(&dst) {
+                        let x = self.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
+                        order.push(x);
+                        let new_index = self.ops.push(Op::Binary { x, y: jam_loop_id, bop: BOp::Add });
+                        order.push(new_index);
+                        let Op::Store { index, .. } = &mut self.ops[op_id] else { unreachable!() };
+                        *index = new_index;
+                    }
+                }
+                _ => {}
+            }
+            if matches!(self.ops[op_id], Op::Store { .. } | Op::Load { .. }) {
+                order.push(op_id);
+            }
+        }
+        order.push(self.ops.push(Op::EndLoop));
+
+        // Inner loop
+        let mut remapping = Map::default();
+        order.push(inner_loop_ops.remove(0)); // first is the Op::Loop
+        let t_op_id = self.ops.push(self.ops[jam_loop_id].clone()); // replacement jam loop id
+        order.push(t_op_id);
+        remapping.insert(jam_loop_id, t_op_id);
+        for &op_id in &pre_loop_ops {
+            let mut op = self.ops[op_id].clone();
+            if !matches!(op, Op::Define { .. } | Op::Store { .. } | Op::Load { .. }) {
+                op.remap_params(&remapping);
+                let t_op_id = self.ops.push(op);
+                order.push(t_op_id);
+                remapping.insert(op_id, t_op_id);
+            }
+        }
+        for &op_id in &inner_loop_ops {
+            self.ops[op_id].remap_params(&remapping);
+            match self.ops[op_id] {
+                Op::Load { src, index } => {
+                    if defines.contains(&src) {
+                        let x = self.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
+                        order.push(x);
+                        let new_index = self.ops.push(Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
+                        order.push(new_index);
+                        let Op::Load { index, .. } = &mut self.ops[op_id] else { unreachable!() };
+                        *index = new_index;
+                    }
+                }
+                Op::Store { dst, index, .. } => {
+                    if defines.contains(&dst) {
+                        let x = self.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
+                        order.push(x);
+                        let new_index = self.ops.push(Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
+                        order.push(new_index);
+                        let Op::Store { index, .. } = &mut self.ops[op_id] else { unreachable!() };
+                        *index = new_index;
+                    }
+                }
+                _ => {}
+            }
+            order.push(op_id);
+        }
+        order.push(self.ops.push(Op::EndLoop));
+
+        // Post Loop
+        let t_op_id = self.ops.push(self.ops[jam_loop_id].clone()); // replacement jam loop id
+        order.push(t_op_id);
+        remapping.insert(jam_loop_id, t_op_id);
+        for &op_id in &pre_loop_ops {
+            let mut op = self.ops[op_id].clone();
+            if !matches!(op, Op::Define { .. } | Op::Store { .. } | Op::Load { .. }) {
+                op.remap_params(&remapping);
+                let t_op_id = self.ops.push(op);
+                order.push(t_op_id);
+                remapping.insert(op_id, t_op_id);
+            }
+        }
+        for &op_id in &post_loop_ops {
+            self.ops[op_id].remap_params(&remapping);
+            match self.ops[op_id] {
+                Op::Load { src, index } => {
+                    if defines.contains(&src) {
+                        let x = self.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
+                        order.push(x);
+                        let new_index = self.ops.push(Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
+                        order.push(new_index);
+                        let Op::Load { index, .. } = &mut self.ops[op_id] else { unreachable!() };
+                        *index = new_index;
+                    }
+                }
+                Op::Store { dst, index, .. } => {
+                    if defines.contains(&dst) {
+                        let x = self.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
+                        order.push(x);
+                        let new_index = self.ops.push(Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
+                        order.push(new_index);
+                        let Op::Store { index, .. } = &mut self.ops[op_id] else { unreachable!() };
+                        *index = new_index;
+                    }
+                }
+                _ => {}
+            }
+            order.push(op_id);
+        }
+
+        self.verify();
+        todo!();
+    }
+
     pub fn verify(&self) {
         let valid_ids: Set<OpId> = self.ops.ids().collect();
         let order_ids: Set<OpId> = self.order.iter().copied().collect();
-        debug_assert_eq!(valid_ids, order_ids);
+        if valid_ids != order_ids {
+            self.debug();
+            for &op_id in valid_ids.difference(&order_ids) {
+                println!("{op_id} -> {:?}", self.ops[op_id]);
+            }
+            panic!(
+                "ops contain ids that are unused in order: {:?}",
+                valid_ids.difference(&order_ids)
+            );
+        }
         let mut defined: Map<OpId, usize> = Map::default();
         let mut def_loop_depth: Map<OpId, usize> = Map::default();
         let mut loop_depth = 0usize;
@@ -1244,110 +1436,6 @@ impl Kernel {
 /// Kernel optimization ops that may or may not be applied, that is they are beneficial for some kernels,
 /// but hurt other kernels or backends.
 impl Kernel {
-    /// Take defines in loop at loop_id and multiply their size
-    /// Take the loop at loop_id and move it into the loop that follows it (jam)
-    pub fn loop_jam(&mut self, loop_id: OpId) {
-        self.debug();
-        // Get loop details
-        let Op::Loop { dim, scope } = self.ops[loop_id] else { unreachable!() };
-        debug_assert_eq!(scope, Scope::Register);
-
-        // Get loop borders
-        let end_loop_id = self.get_end_loop_id(loop_id);
-        let inner_loop_id =
-            self.ops[loop_id + 1..].iter().position(|op| matches!(op, Op::Loop { .. })).unwrap() + loop_id + 1;
-        let end_inner_loop_id = self.get_end_loop_id(inner_loop_id);
-
-        // split kernel into blocks
-        let tail = self.ops.split_off(end_loop_id);
-        let post_loop = self.ops.split_off(end_inner_loop_id + 1);
-        let mut inner_loop = self.ops.split_off(inner_loop_id);
-        let pre_loop = self.ops.split_off(loop_id);
-
-        // Define offset that increases for each inserted op
-        let mut offset = 0;
-
-        // Expand define ops
-        let mut define_map = Map::default();
-        for (i, op) in pre_loop.iter().enumerate() {
-            if let &Op::Define { dtype, scope, ro, len } = op {
-                let new_define_id = self.ops.len();
-                self.ops.push(Op::Define { dtype, scope, ro, len: len * dim });
-                offset += 1;
-                define_map.insert(i + loop_id, new_define_id);
-            }
-        }
-
-        // Add stores of define ops before inner loops
-        let loop_index = self.ops.len();
-        self.ops.push(Op::Loop { dim, scope });
-        offset += 1;
-        for op in &pre_loop {
-            if let &Op::Store { dst, x, index } = op {
-                // TODO fix dst, x, index
-                // for example if index is not just a constant 0, it can't be replaced,
-                // it has to be multiplied by stride and added
-                let dst = define_map.get(&dst).copied().unwrap_or(dst);
-                self.ops.push(Op::Store { dst, x, index: loop_index });
-                offset += 1;
-            }
-        }
-        self.ops.push(Op::EndLoop);
-        offset += 1;
-
-        // ***** JAM THE LOOP *****
-        // *** Put pre loop ***
-        let new_inner_loop_id = self.ops.len();
-        self.ops.push(inner_loop.remove(0));
-        for op in &pre_loop {
-            if matches!(op, Op::Define { .. } | Op::Store { .. }) {
-                self.ops.push(Op::Null);
-            } else {
-                self.ops.push(op.clone());
-            }
-        }
-        // Reindex pre loop
-        println!(
-            "new_inner_loop_id={new_inner_loop_id}, pre_loop.len()={}, offset={offset}, loop_id={loop_id}",
-            pre_loop.len(),
-        );
-        // offset + 1 for inner loop op
-        increment(&mut self.ops[new_inner_loop_id + 1..], offset + 1, loop_id..);
-
-        // *** Put inner loop ***
-        // First increment ops inside inner loop by offset (number of inserted ops)
-        increment(&mut inner_loop, offset, inner_loop_id..);
-        // Remap references to inner loop, now already with applied offset
-        //remap(&mut inner_loop, map);
-        // Increment references to pre loop, again + 1 for inner loop op itself
-        increment(&mut inner_loop, offset + 1, loop_id..inner_loop_id);
-        // Remap references to defines
-        // remape(&mut inner_loop, defines_map);
-        self.ops.extend(inner_loop);
-
-        // Put pre loop before post loop
-        // TODO fix offsets
-        for op in pre_loop {
-            if matches!(op, Op::Define { .. } | Op::Store { .. }) {
-                self.ops.push(Op::Null);
-            } else {
-                self.ops.push(op.clone());
-            }
-        }
-
-        // Resolve parts ofter the inner loop
-        // Put post loop
-        // TODO fix offsets
-        self.ops.extend(post_loop);
-
-        // Put tail
-        // TODO fix offsets
-        self.ops.extend(tail);
-
-        self.debug();
-        panic!();
-    }
-
     // Something like this to upcast local dimensions, that is to do double buffering along local dimensions
     //pub fn upcast_local(&mut self, loop_id: OpId, dim: Dim) {}
 
@@ -1359,85 +1447,4 @@ impl Kernel {
 
     // In tinygrad, thread splits workload across multiple CPU threads
     //pub fn thread(&mut self, loop_id)
-
-    // Loop tiling/vectorization. Tiles all loads.
-    // This may not be needed, it depends how we actually implement tensor cores and double buffering
-    /*pub fn loop_tile(&mut self, loop_id: OpId) {
-        todo!()
-    }*/
-
-        pub fn loop_unroll(&mut self, loop_id: OpId) {
-            let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
-            let end_loop_id = self.get_end_loop_id(loop_id);
-
-            // Get tail and body
-            let mut tail = self.ops.split_off(end_loop_id + 1);
-            self.ops.pop();
-            let loop_body = self.ops.split_off(loop_id + 1);
-            self.ops.pop();
-
-            // Repeat loop body
-            let mut offset = 1;
-            for idx in 0..dim {
-                let mut body = loop_body.clone();
-                // First index as constant
-                let idx_const = self.ops.len();
-                self.ops.push(Op::Const(Constant::idx(idx as u64)));
-
-                remap_or_increment(&mut body, loop_id, idx_const, offset - 1, loop_id + 1..end_loop_id);
-                offset += body.len() + 1;
-                self.ops.extend(body);
-            }
-
-            // Add tail, increment ops
-            let unrolled_body_size = end_loop_id - loop_id;
-            let d = (unrolled_body_size * (dim - 1)) as isize - 1;
-            let tail_range = end_loop_id..;
-            increment(&mut tail, d, tail_range);
-            self.ops.extend(tail);
-        }
-<<<<<<< HEAD
-=======
-
-            /// Reshapes, (splits or merges) reduce from original into new_dims
-            pub fn reshape_reduce(&mut self, reduce_id: OpId, new_dims: &[Dim]) {
-                let Op::Reduce { x, ref mut dims, .. } = self.ops[reduce_id] else { return };
-                let n_old_dims = dims.len();
-                *dims = new_dims.into();
-
-                let mut visited = Set::default();
-                self.recursively_apply_reshape(x, n_old_dims, new_dims, &mut visited, 0);
-            }
-
-            fn recursively_apply_reshape(
-                &mut self,
-                op_id: OpId,
-                n_old_dims: usize,
-                new_dims: &[Dim],
-                visited: &mut Set<OpId>,
-                skip_last: usize,
-            ) {
-                if !visited.insert(op_id) {
-                    return;
-                }
-                match self.ops[op_id] {
-                    Op::LoadView { ref mut view, .. } | Op::ConstView { ref mut view, .. } => {
-                        let rank = view.rank();
-                        view.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
-                    }
-                    Op::Reduce { x, ref dims, .. } => {
-                        let skip_last = skip_last + dims.len();
-                        self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
-                    }
-                    Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                        self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
-                    }
-                    Op::Binary { x, y, .. } => {
-                        self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
-                        self.recursively_apply_reshape(y, n_old_dims, new_dims, visited, skip_last);
-                    }
-                    _ => {}
-                }
-            }
->>>>>>> 6d53891434d57c57faa3a4dab808caf27c6ca11c
 }*/

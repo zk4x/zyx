@@ -4,7 +4,6 @@ use crate::{
     Map, Set,
     backend::DeviceInfo,
     dtype::Constant,
-    graph::BOp,
     kernel::{Kernel, Op, OpId, Scope},
     shape::Dim,
 };
@@ -455,6 +454,7 @@ impl LoopUnrollingOpt {
                             order.push(new_op_id);
                         }
                     }
+                    kernel.ops.remove(endloop_id);
                     kernel.order.splice(endloop_i..=endloop_i, order);
                 }
             }
@@ -474,139 +474,59 @@ impl LoopJamOpt {
         (Self {}, 3) // 8, 16, 32 unfolding
     }
 
+    // It's complex :P
     #[must_use]
     fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 8; //4 << index; // TODO just uncomment this after other things are done
-        let mut endloop_ids = Vec::new();
-        let mut i = kernel.order.len();
-        let mut followed_by_loop = false;
-        while i > 0 {
-            i -= 1;
-            let loop_id = kernel.order[i];
-            if kernel.ops[loop_id] == Op::EndLoop {
-                endloop_ids.push(loop_id);
+        let unroll_dim = 0; //4 << index; // TODO just uncomment this after other things are done
+
+        let mut jam_found = false;
+        loop {
+            let mut active_defines: Vec<(OpId, Set<OpId>)> = Vec::new();
+            'a: for &op_id in &kernel.order {
+                match kernel.ops[op_id] {
+                    Op::Loop { .. } => {
+                        active_defines.push((op_id, Set::default()));
+                    }
+                    Op::EndLoop => {
+                        active_defines.pop();
+                    }
+                    Op::Define { scope, .. } => {
+                        if scope == Scope::Register {
+                            active_defines.last_mut().unwrap().1.insert(op_id);
+                        }
+                    }
+                    Op::Load { src, .. } => {
+                        for (loop_id, define_ids) in &active_defines {
+                            if define_ids.contains(&src) {
+                                let Op::Loop { dim, scope } = kernel.ops[*loop_id] else { unreachable!() };
+                                debug_assert_eq!(scope, Scope::Register);
+                                if dim <= unroll_dim {
+                                    let mut inner_loop_id = active_defines.last().unwrap().0;
+                                    for (id, _) in active_defines.iter().rev() {
+                                        if id == loop_id {
+                                            break;
+                                        }
+                                        inner_loop_id = *id;
+                                    }
+                                    kernel.loop_jam(*loop_id, inner_loop_id);
+                                    jam_found = true;
+                                    break 'a;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
-            if let Op::Loop { dim, scope } = kernel.ops[loop_id] {
-                // We can only jam loops into other loops
-                endloop_ids.pop().unwrap();
 
-                // TODO we have to jam into the loop where the define is being accumulated to,
-                // that is to the loop where the define is being loaded from.
+            #[cfg(debug_assertions)]
+            kernel.verify();
 
-                if !followed_by_loop {
-                    followed_by_loop = true;
-                    continue;
-                }
-                if scope != Scope::Register || dim > unroll_dim || kernel.order.len() * dim > 10000 {
-                    continue;
-                }
-
-                //kernel.debug();
-
-                let mut pre_loop_ops = Vec::new();
-                let mut inner_loop_ops = Vec::new();
-                let mut inner_loop_level = 0;
-                let mut splice_ops_len = 0;
-                for &op_id in &kernel.order[i + 1..] {
-                    splice_ops_len += 1;
-                    if matches!(kernel.ops[op_id], Op::Loop { .. }) {
-                        inner_loop_level += 1;
-                    }
-                    match inner_loop_level {
-                        0 => pre_loop_ops.push(op_id),
-                        _ => inner_loop_ops.push(op_id),
-                    }
-                    if matches!(kernel.ops[op_id], Op::EndLoop) {
-                        inner_loop_level -= 1;
-                        if inner_loop_level == 0 {
-                            break;
-                        }
-                    }
-                }
-
-                //println!("{pre_loop_ops:?}");
-
-                let mut order = Vec::with_capacity(inner_loop_ops.len() + pre_loop_ops.len() * 2 + 5);
-                let const_dim = kernel.ops.push(Op::Const(Constant::idx(dim as u64)));
-                order.push(const_dim);
-
-                let mut defines = Set::default();
-                for &op_id in &pre_loop_ops {
-                    if let Op::Define { dtype, scope, ro, len } = kernel.ops[op_id] {
-                        kernel.ops[op_id] = Op::Define { dtype, scope, ro, len: len * dim };
-                        order.push(op_id);
-                        defines.insert(op_id);
-                    }
-                }
-                order.push(loop_id);
-                for &op_id in &pre_loop_ops {
-                    if matches!(kernel.ops[op_id], Op::Store { .. } | Op::Load { .. }) {
-                        order.push(op_id);
-                    }
-                }
-                order.push(kernel.ops.push(Op::EndLoop));
-
-                // Inner loop
-                order.push(inner_loop_ops.remove(0)); // first is the Op::Loop
-                order.push(loop_id);
-                for &op_id in &pre_loop_ops {
-                    if !matches!(kernel[op_id], Op::Define { .. } | Op::Store { .. } | Op::Load { .. }) {
-                        order.push(op_id);
-                    }
-                }
-                for op_id in inner_loop_ops {
-                    order.push(op_id);
-                }
-                order.push(kernel.ops.push(Op::EndLoop));
-                order.push(loop_id);
-                for &op_id in &pre_loop_ops {
-                    if !matches!(kernel[op_id], Op::Define { .. } | Op::Store { .. } | Op::Load { .. }) {
-                        order.push(op_id);
-                    }
-                }
-
-                kernel.order.splice(i..i + splice_ops_len + 1, order);
-
-                // Fix indexing on defines
-                let mut i = 0;
-                while i < kernel.order.len() {
-                    let op_id = kernel.order[i];
-                    match kernel.ops[op_id] {
-                        Op::Load { src, index } => {
-                            if defines.contains(&src) {
-                                let x = kernel.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
-                                let new_index = kernel.ops.push(Op::Binary { x, y: loop_id, bop: BOp::Add });
-                                let Op::Load { index, .. } = &mut kernel.ops[op_id] else { unreachable!() };
-                                *index = new_index;
-                                kernel.order.splice(i..i, [x, new_index]);
-                                i += 2;
-                            }
-                        }
-                        Op::Store { dst, index, .. } => {
-                            if defines.contains(&dst) {
-                                let x = kernel.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
-                                let new_index = kernel.ops.push(Op::Binary { x, y: loop_id, bop: BOp::Add });
-                                let Op::Store { index, .. } = &mut kernel.ops[op_id] else { unreachable!() };
-                                *index = new_index;
-                                kernel.order.splice(i..i, [x, new_index]);
-                                i += 2;
-                            }
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-
-                kernel.verify();
-
-                kernel.debug();
-                //panic!();
-
-                return true;
+            if !jam_found {
+                break;
             }
         }
-        #[cfg(debug_assertions)]
-        kernel.verify();
+
         true
     }
 }
