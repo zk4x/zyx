@@ -921,20 +921,24 @@ impl Kernel {
     }
 
     pub fn move_constants_to_beginning(&mut self) {
-        let n_defines = self.order.iter().position(|&op_id| !matches!(self[op_id], Op::Define { .. })).unwrap();
-        let mut i = 0;
-        let mut n_constants = 0;
-        while i < self.order.len() {
-            let op_id = self.order[i];
-            if matches!(self[op_id], Op::Const(_)) {
-                if i != n_defines + n_constants {
-                    let const_id = self.order.remove(i);
-                    self.order.insert(n_defines + n_constants, const_id);
-                }
-                n_constants += 1;
+        let mut first_order = Vec::new();
+        let mut second_order = Vec::new();
+        let mut defines_done = false;
+        for &op_id in &self.order {
+            if !defines_done && let Op::Define { .. } = self.ops[op_id] {
+                first_order.push(op_id);
+                continue;
+            } else {
+                defines_done = true;
             }
-            i += 1;
+            if let Op::Const(_) = self.ops[op_id] {
+                first_order.push(op_id);
+                continue;
+            }
+            second_order.push(op_id);
         }
+        self.order = first_order;
+        self.order.extend(second_order);
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -1045,8 +1049,10 @@ impl Kernel {
                 for k in i + 1..endloop_is.pop().unwrap() - 1 {
                     let op_id = self.order[k];
                     let op = &self.ops[op_id];
-                    if !matches!(op, Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop | Op::Define { .. })
-                        && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
+                    if !matches!(
+                        op,
+                        Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop | Op::Define { .. }
+                    ) && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
                     {
                         let op_id = self.order.remove(k);
                         self.order.insert(i + n_invariant_ops, op_id);
