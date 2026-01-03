@@ -1142,12 +1142,8 @@ impl Kernel {
 
     pub fn verify(&self) {
         let valid_ids: Set<OpId> = self.ops.ids().collect();
-        for (i, &id) in self.order.iter().enumerate() {
-            if !valid_ids.contains(&id) {
-                self.debug();
-                panic!("order[{}] references invalid OpId {:?}", i, id);
-            }
-        }
+        let order_ids: Set<OpId> = self.order.iter().copied().collect();
+        debug_assert_eq!(valid_ids, order_ids);
         let mut defined: Map<OpId, usize> = Map::default();
         let mut def_loop_depth: Map<OpId, usize> = Map::default();
         let mut loop_depth = 0usize;
