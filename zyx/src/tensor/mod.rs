@@ -3724,6 +3724,44 @@ impl PartialEq<i32> for Tensor {
     }
 }
 
+impl<T: Scalar> PartialEq<Vec<T>> for Tensor {
+    fn eq(&self, other: &Vec<T>) -> bool {
+        if self.shape() != [other.len()] {
+            return false;
+        }
+        if let Ok(data) = self.clone().try_into() {
+            let data: Vec<T> = data;
+            for (x, y) in data.into_iter().zip(other) {
+                if !Scalar::is_equal(x, *y) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<T: Scalar> PartialEq<Vec<Vec<T>>> for Tensor {
+    fn eq(&self, other: &Vec<Vec<T>>) -> bool {
+        if self.shape() != [other.len(), other[0].len()] {
+            return false;
+        }
+        if let Ok(data) = self.clone().try_into() {
+            let data: Vec<T> = data;
+            for (x, y) in data.into_iter().zip(other.iter().flatten()) {
+                if !Scalar::is_equal(x, *y) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl<T: Scalar, const D0: usize> PartialEq<[T; D0]> for Tensor {
     fn eq(&self, other: &[T; D0]) -> bool {
         if self.shape() != [D0 as Dim] {

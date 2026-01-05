@@ -98,6 +98,47 @@ fn matmul_2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn matmul_3() -> Result<(), ZyxError> {
+    let m = 256;
+    let k = 128;
+    let n = 512;
+
+    let x_data: Vec<Vec<i32>> = (0..m)
+        .map(|i| {
+            (0..k)
+                .map(|j| i as i32 + j as i32)
+                .collect()
+        })
+        .collect();
+
+    let y_data: Vec<Vec<i32>> = (0..k)
+        .map(|i| {
+            (0..n)
+                .map(|j| i as i32 - j as i32)
+                .collect()
+        })
+        .collect();
+
+    let x = Tensor::from(x_data.clone());
+    let y = Tensor::from(y_data.clone());
+
+    let z = x.dot(y)?;
+
+    // Reference matmul (CPU, naive)
+    let mut expected = vec![vec![0i32; n]; m];
+    for i in 0..m {
+        for kk in 0..k {
+            for j in 0..n {
+                expected[i][j] += x_data[i][kk] * y_data[kk][j];
+            }
+        }
+    }
+
+    assert_eq!(z, expected);
+    Ok(())
+}
+
+#[test]
 fn boolean_buffer() -> Result<(), ZyxError> {
     let x = Tensor::from([true, true, false, true]);
     assert_eq!(x, [true, true, false, true]);
@@ -575,7 +616,7 @@ fn iter1() -> Result<(), ZyxError> {
 
 #[test]
 fn bench_mm1() -> Result<(), ZyxError> {
-    const N: usize = 256;
+    const N: usize = 1024;
     let x = Tensor::rand([N, N], zyx::DType::F32)?;
     let y = Tensor::rand([N, N], zyx::DType::F32)?;
     let z = x.matmul(y)?;

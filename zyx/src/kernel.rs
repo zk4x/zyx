@@ -57,11 +57,18 @@ pub struct Kernel {
     pub order: Vec<OpId>,
 }
 
+/*
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Kernel {
+    pub ops: Slab<OpId, Op>,
+    pub order: Vec<OpId>,
+}
+
 // This is SSA representation. All ops return immutable variables.
 // The Define op can define mutable variables.
 // Variables defined by define op can only be accessed with Load on Store ops,
 // using their src and dst fields.
-/*pub enum Op {
+pub enum Op {
     Store { dst: OpId, x: OpId, index: OpId },
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
@@ -71,7 +78,8 @@ pub struct Kernel {
     Load { src: OpId, index: OpId },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
-}*/
+}
+*/
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Scope {
@@ -876,23 +884,33 @@ impl Kernel {
     pub fn common_subexpression_elimination(&mut self) {
         let mut unique: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
         unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
+        let mut unique_loads: Vec<Map<(OpId, OpId), OpId>> = Vec::with_capacity(10);
+        unique_loads.push(Map::with_capacity_and_hasher(5, BuildHasherDefault::new()));
         let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
         for &op_id in &self.order {
             match &self.ops[op_id] {
+                Op::Define { .. } => continue,
                 Op::Loop { .. } => {
                     unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
+                    unique_loads.push(Map::with_capacity_and_hasher(5, BuildHasherDefault::new()));
                 }
                 Op::EndLoop => {
                     unique.pop();
+                    unique_loads.pop();
+                }
+                &Op::Load { src, index } => {
+                    let local_unique = unique_loads.last_mut().unwrap();
+                    if let Some(&old_op_id) = local_unique.get(&(src, index)) {
+                        remaps.insert(op_id, old_op_id);
+                    } else {
+                        local_unique.insert((src, index), op_id);
+                    }
+                }
+                &Op::Store { dst, .. } => {
+                    let local_unique = unique_loads.last_mut().unwrap();
+                    local_unique.retain(|(src, _), _| *src != dst);
                 }
                 op => {
-                    // Loads and stores violate SSA, so we can't deduplicate them
-                    if matches!(
-                        op,
-                        Op::Define { .. } | Op::Loop { .. } | Op::EndLoop | Op::Load { .. } | Op::Store { .. }
-                    ) {
-                        continue;
-                    }
                     let local_unique = unique.last_mut().unwrap();
                     if let Some(&old_op_id) = local_unique.get(op) {
                         remaps.insert(op_id, old_op_id);
@@ -903,7 +921,7 @@ impl Kernel {
             }
         }
 
-        // Second pass: remap all operands using op.parameters()
+        // Second pass: remap all operands
         for op in self.ops.values_mut() {
             for param in op.parameters_mut() {
                 if let Some(&new_id) = remaps.get(param) {
@@ -1078,39 +1096,35 @@ impl Kernel {
 
     // Loops that don't contain stores can be deleted
     pub fn delete_empty_loops(&mut self) {
-        // TODO make this fast by going in reverse
-        /*for i in 0..self.ops.len() {
-            if matches!(self.ops[i], Op::Loop { .. }) {
-                let mut contains_store = false;
-                let mut end_loop_id = 0;
-                let mut loop_level = 0;
-                for (i, op) in self.ops[i..].iter().enumerate() {
-                    match op {
-                        Op::Store { .. } => {
-                            contains_store = true;
-                            break;
-                        }
-                        Op::Loop { .. } => {
-                            loop_level += 1;
-                        }
-                        Op::EndLoop => {
-                            loop_level -= 1;
-                            if loop_level == 0 {
-                                end_loop_id = i;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if !contains_store {
-                    //panic!("Deleting from {i} to {}", i + end_loop_id);
-                    for op in &mut self.ops[i..=i + end_loop_id] {
-                        *op = Op::Null
-                    }
-                }
+        let mut stack: Vec<(bool, Vec<OpId>)> = Vec::new();
+        let mut dead = Set::default();
+
+        for &id in &self.order {
+            for s in &mut stack {
+                s.1.push(id);
             }
-        }*/
+            match self.ops[id] {
+                Op::Loop { .. } => stack.push((false, vec![id])),
+                Op::Store { .. } => {
+                    for s in &mut stack {
+                        s.0 = true
+                    }
+                }
+                Op::EndLoop => {
+                    let (has_store, ops) = stack.pop().unwrap();
+                    if has_store {
+                        if let Some(p) = stack.last_mut() {
+                            p.1.extend(ops);
+                        }
+                    } else {
+                        dead.extend(ops);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.ops.retain(|op_id| !dead.contains(op_id));
+        self.order.retain(|op_id| !dead.contains(op_id));
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -1150,8 +1164,8 @@ impl Kernel {
 
     /// Jam into loop. Yes, it's complex :P
     pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) {
-        //self.debug();
-        //println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
+        self.debug();
+        println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
 
         let mut pre_loop_ops = Vec::new();
         let mut inner_loop_ops = Vec::new();
@@ -1205,8 +1219,8 @@ impl Kernel {
         let Op::Loop { dim: jam_dim, scope } = self.ops[jam_loop_id] else { unreachable!() };
         debug_assert_eq!(scope, Scope::Register);
 
-        //println!("pre_loop_ops {pre_loop_ops:?}\ninner_loop_ops {inner_loop_ops:?}\npost_loop_ops {post_loop_ops:?}");
-        //println!("splice_ops_len {splice_ops_len}");
+        println!("pre_loop_ops {pre_loop_ops:?}\ninner_loop_ops {inner_loop_ops:?}\npost_loop_ops {post_loop_ops:?}");
+        println!("splice_ops_len {splice_ops_len}");
 
         let mut order = Vec::with_capacity(inner_loop_ops.len() + pre_loop_ops.len() * 2 + 5);
         let const_dim = self.ops.push(Op::Const(Constant::idx(jam_dim as u64)));
@@ -1223,7 +1237,7 @@ impl Kernel {
         }
         for &op_id in &pre_loop_ops {
             match self.ops[op_id] {
-                Op::Load { .. } => unreachable!(), // from the apply_optimization op this is invariant
+                //Op::Load { .. } => unreachable!(), // from the apply_optimization op this is invariant
                 Op::Store { dst, index, .. } => {
                     if defines.contains(&dst) {
                         let x = self.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });

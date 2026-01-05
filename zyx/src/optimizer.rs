@@ -124,6 +124,8 @@ impl Optimizer {
             loop_unrolling_opt_max_idx,
             loop_split_opt_max_idx,
         ];
+
+        println!("Optimizing local_work_size_opt_max_idx={local_work_size_opt_max_idx},\nloop_unroll_and_jam_opt_max_idx={loop_unroll_and_jam_opt_max_idx},\nloop_unrolling_opt_max_idx={loop_unrolling_opt_max_idx},\nloop_split_opt_max_idx={loop_split_opt_max_idx}");
         Self {
             max_indices,
             local_work_size_opt,
@@ -257,6 +259,7 @@ impl WorkSizeOpt {
         let max_local_threads = dev_info.max_local_threads;
 
         let max_idx = gws_factors.iter().map(|gd| gd.len() as u32).product();
+        println!("gws={gws:?}, gws_factors={gws_factors:?}, max_local_threads={max_local_threads}");
         (Self { gws, gws_factors, max_local_threads }, max_idx)
     }
 
@@ -416,12 +419,12 @@ struct LoopUnrollingOpt {}
 
 impl LoopUnrollingOpt {
     fn new(_kernel: &Kernel) -> (Self, u32) {
-        (Self {}, 4) // 4, 8, 16, 32 unfolding
+        (Self {}, 2) // 1, 4, 32 unfolding
     }
 
     #[must_use]
-    fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 16; //4 << index; // TODO just uncomment this after other things are done
+    fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
+        let unroll_dim = 1; //[1, 4, 32][index as usize]; // TODO just uncomment this after other things are done
         let mut endloop_ids = Vec::new();
         let mut i = kernel.order.len();
         while i > 0 {
@@ -459,6 +462,7 @@ impl LoopUnrollingOpt {
                 }
             }
         }
+        kernel.debug();
         #[cfg(debug_assertions)]
         kernel.verify();
         true
@@ -471,13 +475,13 @@ struct LoopJamOpt {}
 
 impl LoopJamOpt {
     fn new(_kernel: &Kernel) -> (Self, u32) {
-        (Self {}, 3) // 8, 16, 32 unfolding
+        (Self {}, 2) // 1, 64 loop jam
     }
 
     // It's complex :P
     #[must_use]
-    fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 64; //4 << index; // TODO just uncomment this after other things are done
+    fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
+        let unroll_dim = 64; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
 
         let mut jam_found;
         loop {
@@ -532,6 +536,8 @@ impl LoopJamOpt {
         true
     }
 }
+
+// We can have optimizers specific for certain GPUs, like this optimizer optimizes for RX 580, etc.
 
 // In the future
 /*def wmma_pass(ir):
