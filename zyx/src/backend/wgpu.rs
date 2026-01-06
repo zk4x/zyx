@@ -10,8 +10,11 @@ use crate::{
 };
 use nanoserde::DeJson;
 use pollster::FutureExt;
-use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc};
-use wgpu::{BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource};
+use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc, time::Duration};
+use wgpu::{
+    BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource,
+    SubmissionIndex, wgt::PollType,
+};
 
 #[derive(DeJson, Debug)]
 pub struct WGPUConfig {
@@ -44,7 +47,9 @@ pub struct WGPUDevice {
 }
 
 #[derive(Debug, Clone)]
-pub struct WGPUEvent {}
+pub struct WGPUEvent {
+    submission_index: Option<SubmissionIndex>,
+}
 
 #[derive(Debug)]
 pub(super) struct WGPUProgram {
@@ -152,7 +157,7 @@ impl WGPUMemoryPool {
             mapped_at_creation: false,
         });
         let id = self.buffers.push(buffer);
-        let event = Event::WGPU(WGPUEvent {});
+        let event = Event::WGPU(WGPUEvent { submission_index: None });
         Ok((id, event))
     }
 
@@ -174,7 +179,7 @@ impl WGPUMemoryPool {
         let encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("GpuBuffer::write") });
         self.queue.submit(Some(encoder.finish()));
-        Ok(Event::WGPU(WGPUEvent {}))
+        Ok(Event::WGPU(WGPUEvent { submission_index: None }))
     }
 
     /*pub fn pool_to_host(
@@ -264,7 +269,14 @@ impl WGPUMemoryPool {
     }
 
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
-        let _ = events;
+        for event in events {
+            if let Event::WGPU(event) = event {
+                _ = self.device.poll(PollType::Wait {
+                    submission_index: event.submission_index,
+                    timeout: Some(Duration::from_mins(5)),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -580,8 +592,8 @@ impl WGPUDevice {
                 u32::try_from(program.gws.get(2).copied().unwrap_or(1)).unwrap(),
             );
         }
-        self.queue.submit(Some(encoder.finish()));
-        Ok(Event::WGPU(WGPUEvent {}))
+        let submission_index = Some(self.queue.submit(Some(encoder.finish())));
+        Ok(Event::WGPU(WGPUEvent { submission_index }))
     }
 }
 
