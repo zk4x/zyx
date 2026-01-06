@@ -379,6 +379,24 @@ pub enum BOp {
     Eq,
 }
 
+impl BOp {
+    pub fn is_commutative(&self) -> bool {
+        matches!(
+            self,
+            BOp::Add
+                | BOp::Mul
+                | BOp::Maximum
+                | BOp::Or
+                | BOp::And
+                | BOp::BitXor
+                | BOp::BitOr
+                | BOp::BitAnd
+                | BOp::Eq
+                | BOp::NotEq
+        )
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
 pub enum UOp {
     Neg,

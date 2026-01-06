@@ -121,6 +121,13 @@ pub struct OpenCLDevice {
     ) -> OpenCLStatus,
     //clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
     clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
+    /*clGetCommandQueueInfo: unsafe extern "C" fn(
+        command_queue: *mut c_void,
+        param_name: cl_uint,
+        param_value_size: usize,
+        param_value: *mut std::ffi::c_void,
+        param_value_size_ret: *mut usize,
+    ) -> OpenCLStatus,*/
     //clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
 }
 
@@ -228,6 +235,7 @@ pub(super) fn initialize_device(
     let clFinish = *unsafe { opencl.get(b"clFinish\0") }?;
     let clGetPlatformInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus =
         *unsafe { opencl.get(b"clGetPlatformInfo\0") }?;
+    //let clGetCommandQueueInfo = *unsafe { opencl.get(b"clGetCommandQueueInfo\0") }?;
 
     let library = Arc::new(opencl);
     let platform_ids = {
@@ -291,6 +299,7 @@ pub(super) fn initialize_device(
                 &raw mut status,
             )
         };
+        //println!("init context: {context:?}");
         let Ok(()) = status.check(ErrorStatus::Initialization) else {
             continue;
         };
@@ -339,6 +348,7 @@ pub(super) fn initialize_device(
             let mut queues = Vec::new();
             for _ in 0..8 {
                 let new_queue = unsafe { clCreateCommandQueue(context, dev, 0, &raw mut status) };
+                //println!("Initialized queue {new_queue:?}");
                 queues.push(OpenCLQueue { queue: new_queue, load: 0 });
                 let Ok(()) = status.check(ErrorStatus::Initialization) else {
                     continue;
@@ -347,6 +357,7 @@ pub(super) fn initialize_device(
                     queue = Some(new_queue);
                 }
             }
+            //println!("device: {dev:?}");
             let mut device = OpenCLDevice {
                 ptr: dev,
                 context,
@@ -363,6 +374,7 @@ pub(super) fn initialize_device(
                 clCreateProgramWithSource,
                 clEnqueueNDRangeKernel,
                 clFinish,
+                //clGetCommandQueueInfo,
             };
             let Ok(()) = device.set_info(debug_dev) else {
                 continue;
@@ -990,7 +1002,7 @@ impl OpenCLDevice {
         let kernel = unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &raw mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
         let program_id = self.programs.push(OpenCLProgram { program, kernel, gws, lws });
-        //println!("Compiled program {:?}", self.programs[program_id]);
+        //println!("Compiled program {:?} using context: {:?}", self.programs[program_id], self.context);
         Ok(program_id)
     }
 
@@ -1012,6 +1024,7 @@ impl OpenCLDevice {
         }*/
 
         let queue_id = self.next_queue();
+
         /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
             self.programs[program_id].kernel,
@@ -1136,11 +1149,15 @@ impl OpenCLDevice {
             ))
             .expect("What a vector width...")
                 * 4,
-            local_mem_size: Dim::try_from(u64::from_ne_bytes(
+            local_mem_size: Dim::try_from(usize::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
             ))
             .expect("What a memory size..."),
-            num_registers: 96, // We can only guess or have a map of concrete hardware and respective register counts
+            max_register_bytes: 1024,
+            /*Dim::try_from(usize::from_ne_bytes(
+                self.get_device_data(CL_DEVICE_MAX_PRIVATE_MEMORY_SIZE).unwrap().try_into().unwrap(),
+            ))
+            .expect("What a huge amount of registers"),*/
             tensor_cores: false,
         };
         Ok(())
@@ -1274,6 +1291,7 @@ const CL_DEVICE_LOCAL_MEM_SIZE: cl_uint = 0x1023; // 4131
 //const CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE: cl_uint = 0x101A; // 4122
 const CL_DEVICE_MAX_WORK_GROUP_SIZE: cl_uint = 0x1004; // 4100
 const CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS: cl_uint = 0x1003; // 4099
+//const CL_DEVICE_MAX_PRIVATE_MEMORY_SIZE: cl_uint = 0x1160; // 4448
 const CL_DEVICE_MAX_WORK_ITEM_SIZES: cl_uint = 0x1005; // 4101
 const CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT: cl_uint = 0x100A; // 4106
 const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;

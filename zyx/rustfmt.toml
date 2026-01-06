@@ -9,7 +9,3 @@ struct_lit_width = 120
 struct_variant_width = 120
 single_line_let_else_max_width = 120
 single_line_if_else = true
-se_small_heuristics = "Max"
-match_block_trailing_comma = false
-fn_single_line = true
-struct_lit_single_line = true

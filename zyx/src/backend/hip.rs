@@ -267,7 +267,7 @@ pub(super) fn initialize_device(
                 max_local_threads: 1,
                 max_local_work_dims: vec![1, 1, 1],
                 local_mem_size: 0,
-                num_registers: 96,
+                max_register_bytes: 96,
                 preferred_vector_size: 16,
                 tensor_cores: major > 7,
             },

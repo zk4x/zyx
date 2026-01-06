@@ -197,8 +197,8 @@ pub struct DeviceInfo {
     pub preferred_vector_size: u8,
     /// Local memory size in bytes
     pub local_mem_size: Dim,
-    /// Number of registers per thread
-    pub num_registers: u16,
+    /// private memory size in bytes
+    pub max_register_bytes: Dim,
     /// Does this hardware have tensor cores?
     pub tensor_cores: bool,
 }

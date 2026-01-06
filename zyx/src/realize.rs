@@ -1,7 +1,5 @@
 //! Converts graph to kernels and schedules them to devices
 
-use nanoserde::SerBin;
-
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
     backend::{BufferId, Device, ProgramId, SearchConfig},
@@ -19,6 +17,7 @@ use crate::{
     tensor::TensorId,
     view::View,
 };
+use nanoserde::SerBin;
 use std::{hash::BuildHasherDefault, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -51,7 +51,7 @@ pub(super) fn initialize_device(
             max_local_work_dims: vec![1, 256, 256],
             preferred_vector_size: 8,
             local_mem_size: 1024 * 1024 * 1024,
-            num_registers: 128,
+            max_register_bytes: 128,
             tensor_cores: false,
         },
         memory_pool_id: (memory_pools.len() - 1) as u32,

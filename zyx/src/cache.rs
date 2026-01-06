@@ -2,7 +2,7 @@ use crate::{
     Map,
     backend::{Device, DeviceInfo, ProgramId},
     kernel::Kernel,
-    optimizer::Optimizer
+    optimizer::{self, Optimizer},
 };
 use nanoserde::{DeBin, SerBin};
 use std::hash::BuildHasherDefault;
@@ -21,7 +21,7 @@ pub struct Cache {
     pub device_infos: Map<DeviceInfo, DeviceInfoId>,
     pub kernels: Map<Kernel, KernelId>,
     // Finished optimizations of kernels for given devices
-    pub optimizations: Map<(KernelId, DeviceInfoId), Optimizer>,
+    pub optimizations: Map<(KernelId, DeviceInfoId), optimizer::Optimizer>,
     // This last one is not stored to disk
     pub programs: Map<(KernelId, DeviceId), ProgramId>,
 }
@@ -98,7 +98,7 @@ impl Cache {
         }
     }
 
-    pub(super) fn deinitialize(&mut self, devices: &mut [Device]) {
+    pub fn deinitialize(&mut self, devices: &mut [Device]) {
         for (&(_, dev_id), &program_id) in &self.programs {
             devices[dev_id.0 as usize].release(program_id);
         }

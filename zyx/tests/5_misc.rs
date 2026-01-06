@@ -98,7 +98,7 @@ fn matmul_2() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn matmul_3() -> Result<(), ZyxError> {
+fn matmul_1() -> Result<(), ZyxError> {
     let m = 256;
     let k = 128;
     let n = 512;
@@ -134,7 +134,9 @@ fn matmul_3() -> Result<(), ZyxError> {
         }
     }
 
-    assert_eq!(z, expected);
+    if z != expected {
+        panic!();
+    }
     Ok(())
 }
 
@@ -388,7 +390,7 @@ fn split2() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn matmul_1024() -> Result<(), ZyxError> {
+fn matmul_disk() -> Result<(), ZyxError> {
     //let mut xy: Vec<Tensor> = Tensor::load("xy.safetensors").unwrap();
     //let y = xy.pop().unwrap();
     //let x = xy.pop().unwrap();
