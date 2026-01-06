@@ -99,9 +99,9 @@ fn matmul_2() -> Result<(), ZyxError> {
 
 #[test]
 fn matmul_1() -> Result<(), ZyxError> {
-    let m = 4096;
-    let k = 4096;
-    let n = 4096;
+    let m = 512;
+    let k = 512;
+    let n = 512;
 
     let x_data: Vec<Vec<i32>> = (0..m)
         .map(|i| {

@@ -1151,6 +1151,9 @@ impl Kernel {
     }
 
     pub fn loop_invariant_code_motion(&mut self) {
+        #[cfg(debug_assertions)]
+        self.verify();
+
         let mut i = self.order.len();
         let mut endloop_is = Vec::new();
         while i > 0 {
@@ -1234,98 +1237,55 @@ impl Kernel {
                 valid_ids.difference(&order_ids)
             );
         }
-        let mut defined: Map<OpId, usize> = Map::default();
-        let mut def_loop_depth: Map<OpId, usize> = Map::default();
-        let mut loop_depth = 0usize;
-        let mut seen_non_global_define = false;
-        for (idx, &id) in self.order.iter().enumerate() {
-            if defined.contains_key(&id) {
+        let mut stack = Vec::new();
+        stack.push(Set::default());
+        let check = |x: OpId, stack: &[Set<OpId>]| {
+            if !stack.iter().any(|vec| vec.contains(&x)) {
                 self.debug();
-                panic!("OpId {:?} appears multiple times in order", id);
+                panic!("{x} -> {:?} used before declaration.", self.ops[x]);
             }
-            let check_ref = |ref_id: OpId| {
-                if !valid_ids.contains(&ref_id) {
-                    self.debug();
-                    panic!("Op {:?} references invalid OpId {:?}", id, ref_id);
-                }
-                let def_idx = defined.get(&ref_id).unwrap_or_else(|| {
-                    self.debug();
-                    panic!("Op {:?} uses OpId {:?} before it is defined", id, ref_id);
-                });
-                let ref_loop_depth = def_loop_depth[&ref_id];
-                if ref_loop_depth > loop_depth {
-                    self.debug();
-                    panic!(
-                        "Op {:?} at loop depth {} illegally references OpId {:?} defined at deeper loop depth {}",
-                        id, loop_depth, ref_id, ref_loop_depth
-                    );
-                }
-                *def_idx
-            };
-            match self.ops[id] {
-                Op::Const(_) => {}
-                Op::Cast { x, .. } => {
-                    check_ref(x);
-                }
-                Op::Unary { x, .. } => {
-                    check_ref(x);
-                }
-                Op::Binary { x, y, .. } => {
-                    check_ref(x);
-                    check_ref(y);
-                }
-                Op::Load { src, index } => {
-                    check_ref(src);
-                    check_ref(index);
-                }
-                Op::Store { dst, x, index } => {
-                    check_ref(dst);
-                    check_ref(x);
-                    check_ref(index);
-                }
-                Op::Define { scope, len, ro, .. } => {
-                    if ro == false && scope == Scope::Global {
-                        debug_assert_eq!(len, 0)
-                    }
-                    let is_global = matches!(scope, Scope::Global);
-                    if is_global {
-                        if seen_non_global_define {
-                            self.debug();
-                            panic!("Global Define {:?} appears after non-global ops", id);
-                        }
-                    } else {
-                        seen_non_global_define = true;
-                    }
-                }
-                Op::Loop { .. } => {
-                    seen_non_global_define = true;
-                    loop_depth += 1;
-                }
-                Op::EndLoop => {
-                    if loop_depth == 0 {
-                        self.debug();
-                        panic!("EndLoop {:?} without matching Loop", id);
-                    }
-                    loop_depth -= 1;
-                }
+        };
+        for &op_id in &self.order {
+            stack.last_mut().unwrap().insert(op_id);
+            match self.ops[op_id] {
                 Op::ConstView { .. } => {}
                 Op::LoadView { .. } => {}
                 Op::StoreView { src, .. } => {
-                    check_ref(src);
+                    check(src, &stack);
                 }
-                Op::Reduce { x, .. } => {
-                    check_ref(x);
+                Op::Store { dst, x, index } => {
+                    check(dst, &stack);
+                    check(x, &stack);
+                    check(index, &stack);
                 }
-            }
-            let defines_value = !matches!(self.ops[id], Op::Store { .. } | Op::EndLoop);
-            if defines_value {
-                defined.insert(id, idx);
-                def_loop_depth.insert(id, loop_depth);
+                Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                    check(x, &stack);
+                }
+                Op::Binary { x, y, .. } => {
+                    check(x, &stack);
+                    check(y, &stack);
+                }
+                Op::Const(_) => {}
+                Op::Define { .. } => {}
+                Op::Load { src, index } => {
+                    check(src, &stack);
+                    check(index, &stack);
+                }
+                Op::Loop { .. } => {
+                    stack.push(Set::default());
+                }
+                Op::EndLoop => {
+                    if stack.is_empty() {
+                        self.debug();
+                        panic!("Endloop without matching loop.");
+                    }
+                    stack.pop();
+                }
             }
         }
-        if loop_depth != 0 {
+        if stack.len() != 1 {
             self.debug();
-            panic!("Unclosed Loop: {} loops not terminated", loop_depth);
+            panic!("Missing {} closing endloops.", stack.len());
         }
     }
 }
