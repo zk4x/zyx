@@ -1,5 +1,9 @@
+use crate::{
+    Map,
+    dtype::Constant,
+    kernel::{Kernel, Op, OpId, Scope},
+};
 use nanoserde::{DeBin, SerBin};
-use crate::{Map, dtype::Constant, kernel::{Kernel, Op, OpId, Scope}};
 
 /// loop unrolling
 #[derive(Debug, Clone, DeBin, SerBin)]
@@ -7,12 +11,12 @@ pub struct LoopUnrollingOpt {}
 
 impl LoopUnrollingOpt {
     pub fn new(_kernel: &Kernel) -> (Self, u32) {
-        (Self {}, 2) // 1, 4, 64 unrolling
+        (Self {}, 3)
     }
 
     #[must_use]
-    pub fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 4; //[1, 4, 64][index as usize]; // TODO just uncomment this after other things are done
+    pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
+        let unroll_dim = [1, 4, 32][index as usize]; // TODO just uncomment this after other things are done
         let mut endloop_ids = Vec::new();
         let mut i = kernel.order.len();
         while i > 0 {

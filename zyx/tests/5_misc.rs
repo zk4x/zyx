@@ -1,4 +1,4 @@
-use zyx::{DType, Module, Scalar, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn memory1() {
@@ -99,32 +99,18 @@ fn matmul_2() -> Result<(), ZyxError> {
 
 #[test]
 fn matmul_1() -> Result<(), ZyxError> {
-    let m = 512;
-    let k = 512;
-    let n = 512;
+    let m = 256;
+    let k = 128;
+    let n = 57;
 
-    let x_data: Vec<Vec<i32>> = (0..m)
-        .map(|i| {
-            (0..k)
-                .map(|j| i as i32 + j as i32)
-                .collect()
-        })
-        .collect();
+    let x_data: Vec<Vec<i32>> = (0..m).map(|i| (0..k).map(|j| i as i32 + j as i32).collect()).collect();
 
-    let y_data: Vec<Vec<i32>> = (0..k)
-        .map(|i| {
-            (0..n)
-                .map(|j| i as i32 - j as i32)
-                .collect()
-        })
-        .collect();
+    let y_data: Vec<Vec<i32>> = (0..k).map(|i| (0..n).map(|j| i as i32 - j as i32).collect()).collect();
 
     let x = Tensor::from(x_data.clone());
     let y = Tensor::from(y_data.clone());
 
     let z = x.dot(y)?;
-    z.realize()?;
-    panic!();
 
     // Reference matmul (CPU, naive)
     let mut expected = vec![vec![0i32; n]; m];

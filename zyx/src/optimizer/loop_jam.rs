@@ -1,5 +1,12 @@
+use crate::{
+    Map, Set,
+    backend::DeviceInfo,
+    dtype::Constant,
+    graph::BOp,
+    kernel::{Kernel, Op, OpId, Scope},
+    shape::Dim,
+};
 use nanoserde::{DeBin, SerBin};
-use crate::{Map, Set, backend::DeviceInfo, dtype::Constant, graph::BOp, kernel::{Kernel, Op, OpId, Scope}, shape::Dim};
 
 /// loop unrolling plus loop invariant code motion
 #[derive(Debug, Clone, DeBin, SerBin)]
@@ -9,13 +16,14 @@ pub struct LoopJamOpt {
 
 impl LoopJamOpt {
     pub fn new(_kernel: &Kernel, dev_info: &DeviceInfo) -> (Self, u32) {
+        // TODO make it work per loop?
         (Self { max_register_bytes: dev_info.max_register_bytes }, 2) // 1, 64 loop jam
     }
 
     // It's complex :P
     #[must_use]
-    pub fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 64; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
+    pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
+        let unroll_dim = [1, 64][index as usize]; // TODO just uncomment this after other things are done
 
         let mut jam_found;
         loop {
@@ -86,8 +94,8 @@ impl LoopJamOpt {
 impl Kernel {
     /// Jam into loop. Yes, it's complex :P
     pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) {
-        self.debug();
-        println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
+        //self.debug();
+        //println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
 
         let mut pre_loop_ops = Vec::new();
         let mut inner_loop_ops = Vec::new();
@@ -123,6 +131,7 @@ impl Kernel {
                             inner_loop_level -= 1;
                             if inner_loop_level == 0 {
                                 stage = 3;
+                                inner_loop_level = 1;
                             }
                         }
                         _ => {}
@@ -130,15 +139,24 @@ impl Kernel {
                 }
                 3 => {
                     post_loop_ops.push(op_id);
-                    if self.ops[op_id] == Op::EndLoop {
-                        break;
+                    match self.ops[op_id] {
+                        Op::Loop { .. } => {
+                            inner_loop_level += 1;
+                        }
+                        Op::EndLoop => {
+                            inner_loop_level -= 1;
+                            if inner_loop_level == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ => {}
             }
         }
-        println!("pre_loop_ops {pre_loop_ops:?}\ninner_loop_ops {inner_loop_ops:?}\npost_loop_ops {post_loop_ops:?}");
-        println!("splice_ops_len {splice_ops_len}");
+        //println!("pre_loop_ops {pre_loop_ops:?}\ninner_loop_ops {inner_loop_ops:?}\npost_loop_ops {post_loop_ops:?}");
+        //println!("splice_ops_len {splice_ops_len}");
 
         debug_assert!(!pre_loop_ops.is_empty());
         debug_assert!(!inner_loop_ops.is_empty());

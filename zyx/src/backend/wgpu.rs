@@ -121,7 +121,7 @@ pub(super) fn initialize_device(
             max_local_work_dims: vec![256, 256, 256],
             preferred_vector_size: 4,
             local_mem_size: 64 * 1024,
-            num_registers: 96,
+            max_register_bytes: 512,
             tensor_cores: false,
         },
         memory_pool_id: (memory_pools.len() - 1).try_into().unwrap(),
