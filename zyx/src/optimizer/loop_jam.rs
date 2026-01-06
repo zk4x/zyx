@@ -15,7 +15,7 @@ impl LoopJamOpt {
     // It's complex :P
     #[must_use]
     pub fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 0; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
+        let unroll_dim = 64; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
 
         let mut jam_found;
         loop {

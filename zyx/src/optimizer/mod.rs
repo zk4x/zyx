@@ -63,21 +63,27 @@ impl Optimizer {
         kernel.unfold_reduces();
         kernel.unfold_views();
 
+        kernel.reassociate_commutative();
+
         let mut temp_kernel = kernel.clone();
-        for _ in 0..100 {
+        for i in 0..100 {
             kernel.move_constants_to_beginning();
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
-            kernel.dead_code_elimination();
             kernel.swap_commutative();
-            kernel.reorder_commutative();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
+            kernel.dead_code_elimination();
 
             if *kernel == temp_kernel {
                 break;
             }
             temp_kernel = kernel.clone();
+            #[cfg(debug_assertions)]
+            if i == 99 {
+                kernel.debug();
+                panic!("YO what are you doing bro.");
+            }
         }
 
         if !(LoopUnrollingOpt {}.apply_optimization(0, kernel)) {
@@ -96,22 +102,27 @@ impl Optimizer {
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
         kernel.unfold_pows();
+        kernel.reassociate_commutative();
 
         let mut temp_kernel = kernel.clone();
-        for _ in 0..100 {
+        for i in 0..100 {
             kernel.move_constants_to_beginning();
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
-            kernel.dead_code_elimination();
             kernel.swap_commutative();
-            kernel.reorder_commutative();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
+            kernel.dead_code_elimination();
 
             if *kernel == temp_kernel {
                 break;
             }
             temp_kernel = kernel.clone();
+            #[cfg(debug_assertions)]
+            if i == 99 {
+                kernel.debug();
+                panic!("YO what are you doing bro.");
+            }
         }
 
         kernel.verify();

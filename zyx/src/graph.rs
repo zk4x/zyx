@@ -380,19 +380,33 @@ pub enum BOp {
 }
 
 impl BOp {
+    pub fn is_associative(&self) -> bool {
+        matches!(
+            self,
+            BOp::Add
+                | BOp::Mul
+                | BOp::And
+                | BOp::Or
+                | BOp::BitXor
+                | BOp::BitAnd
+                | BOp::BitOr
+                | BOp::BitShiftLeft
+                | BOp::BitShiftRight
+                | BOp::Maximum
+        )
+    }
+
     pub fn is_commutative(&self) -> bool {
         matches!(
             self,
             BOp::Add
                 | BOp::Mul
-                | BOp::Maximum
-                | BOp::Or
                 | BOp::And
+                | BOp::Or
                 | BOp::BitXor
-                | BOp::BitOr
                 | BOp::BitAnd
-                | BOp::Eq
-                | BOp::NotEq
+                | BOp::BitOr
+                | BOp::Maximum
         )
     }
 }

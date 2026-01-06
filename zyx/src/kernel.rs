@@ -1,4 +1,3 @@
-use nanoserde::{DeBin, SerBin};
 use crate::{
     BLUE, CYAN, DType, GREEN, MAGENTA, Map, RED, RESET, Set, YELLOW,
     dtype::Constant,
@@ -7,6 +6,7 @@ use crate::{
     slab::{Slab, SlabId},
     view::View,
 };
+use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::BuildHasherDefault};
 
 pub const IDX_T: DType = DType::U32;
@@ -868,13 +868,8 @@ impl Kernel {
                 params.extend(self[op_id].parameters());
             }
         }
-        // Remove ops that are not in visited both from self.ops and self.order
-        let ids: Set<OpId> = self.ops.ids().filter(|op_id| !visited.contains(op_id)).collect();
-        for &op_id in &ids {
-            self.ops.remove(op_id);
-        }
-        // Remove from self.order and loops
-        self.order.retain(|op_id| !ids.contains(op_id));
+        self.ops.retain(|op_id| visited.contains(op_id));
+        self.order.retain(|op_id| visited.contains(op_id));
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -1050,33 +1045,32 @@ impl Kernel {
 
     pub fn swap_commutative(&mut self) {
         // Tracks whether a value depends on a loop index
-        let mut loop_dep = Set::default();
-
+        let mut loop_dep: Map<OpId, usize> = Map::default();
+        let mut loop_depth = 0;
         for &op_id in &self.order {
-            let dep = match &self.ops[op_id] {
-                Op::Loop { .. } => true,
-                Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep.contains(x),
-                Op::Binary { x, y, .. } =>
-                    loop_dep.contains(x) || loop_dep.contains(y),
-                Op::Load { src, index } =>
-                    loop_dep.contains(src) || loop_dep.contains(index),
-                Op::Store { x, index, .. } =>
-                    loop_dep.contains(x) || loop_dep.contains(index),
-                _ => false,
+            let depth = match &self.ops[op_id] {
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::Loop { .. } => {
+                    loop_depth += 1;
+                    loop_depth
+                }
+                Op::EndLoop => {
+                    loop_depth -= 1;
+                    loop_depth
+                }
+                Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
+                Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
+                Op::Load { src, index } => loop_dep[src].max(loop_dep[index]),
+                Op::Store { dst, x, index } => loop_dep[dst].max(loop_dep[x]).max(loop_dep[index]),
+                Op::Const(_) | Op::Define { .. } => 0,
             };
+            loop_dep.insert(op_id, depth);
+        }
 
-            if dep {
-                loop_dep.insert(op_id);
-            }
-
-            // Canonicalize commutative ops
-            if let Op::Binary { x, y, bop } = &mut self.ops[op_id] {
+        for op in self.ops.values_mut() {
+            if let Op::Binary { x, y, bop } = op {
                 if bop.is_commutative() {
-                    let xd = loop_dep.contains(x);
-                    let yd = loop_dep.contains(y);
-
-                    // Move loop-dependent operand to the RHS
-                    if xd && !yd {
+                    if loop_dep[&y] < loop_dep[&x] {
                         std::mem::swap(x, y);
                     }
                 }
@@ -1087,12 +1081,71 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn reorder_commutative(&mut self) {
-        // TODO Reorder commutative
-        // Iterate:
-        //   find a chain of commutative ops like add/sub
-        //   reoder by moving loop index last
-        // Ops can be added if they are loop invariant or exist in chain of commutative ops
+    pub fn reassociate_commutative(&mut self) {
+        let mut loop_dep: Map<OpId, usize> = Map::default();
+        let mut loop_depth = 0;
+        for &op_id in &self.order {
+            let depth = match &self.ops[op_id] {
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::Loop { .. } => {
+                    loop_depth += 1;
+                    loop_depth
+                }
+                Op::EndLoop => {
+                    loop_depth -= 1;
+                    loop_depth
+                }
+                Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
+                Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
+                Op::Load { src, index } => loop_dep[src].max(loop_dep[index]),
+                Op::Store { dst, x, index } => loop_dep[dst].max(loop_dep[x]).max(loop_dep[index]),
+                Op::Const(_) | Op::Define { .. } => 0,
+            };
+            loop_dep.insert(op_id, depth);
+        }
+
+        let mut i = 0;
+        while i < self.order.len() {
+            let op_id = self.order[i];
+            i += 1;
+            if let Op::Binary { bop, .. } = self.ops[op_id] {
+                if !bop.is_commutative() || !bop.is_associative() {
+                    continue;
+                }
+
+                // Get all the leafs
+                let mut params = vec![op_id];
+                let mut chain = Vec::new();
+                while let Some(param) = params.pop() {
+                    if let Op::Binary { x, y, bop: t_bop } = self.ops[param] {
+                        if t_bop == bop {
+                            params.push(x);
+                            params.push(y);
+                            continue;
+                        }
+                    }
+                    chain.push(param);
+                }
+                if chain.len() < 2 {
+                    continue;
+                }
+                chain.sort_by_key(|id| loop_dep[id]);
+
+                // Rebuild chain
+                let mut prev_acc = chain[0];
+                let mut j = 1;
+                while j < chain.len() - 1 {
+                    let op = Op::Binary { x: prev_acc, y: chain[j], bop };
+                    let new_acc = self.ops.push(op);
+                    self.order.insert(i - 1, new_acc);
+                    prev_acc = new_acc;
+                    i += 1;
+                    j += 1;
+                }
+                self.ops[op_id] = Op::Binary { x: prev_acc, y: chain[j], bop };
+            }
+        }
+
         #[cfg(debug_assertions)]
         self.verify();
     }

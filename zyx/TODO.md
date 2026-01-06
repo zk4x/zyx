@@ -72,7 +72,7 @@
     - [x] in optimizer
     - [x] in kernel
   - [x] loop invariant code motion
-  - [ ] comutative reorder (put before LICM)
+  - [x] comutative reorder (put before LICM)
   - [ ] vectorization, vector dtypes
   - [ ] tensor cores/tiling
   - [ ] merge all mul + add into mad instructions
