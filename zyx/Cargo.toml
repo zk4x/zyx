@@ -16,7 +16,6 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-#parking_lot = { version ="*" } # Good for debugging, since std::mutex::Mutex sucks
 # Good, well written minimal dependencies
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.9.0", default-features = false, features = ["std"] } # ISC

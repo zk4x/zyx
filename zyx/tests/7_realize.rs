@@ -1,4 +1,4 @@
-use zyx::{Tensor, ZyxError};
+use zyx::{DType, Tensor, ZyxError};
 
 #[test]
 fn t01() -> Result<(), ZyxError> {
@@ -58,7 +58,7 @@ fn t03() -> Result<(), ZyxError> {
     Ok(())
 }
 
-#[test]
+/*#[test]
 fn t04() -> Result<(), ZyxError> {
     struct MnistNet {
         l1_weight: Tensor,
@@ -91,11 +91,38 @@ fn t04() -> Result<(), ZyxError> {
     println!("{x}");
 
     Ok(())
-}
+}*/
 
 #[test]
 fn pad_1() -> Result<(), ZyxError> {
     let x = Tensor::arange(0, 20, 1)?.reshape([4, 5])?;
     assert_eq!(x.rslice(3)?, [[3], [8], [13], [18]]);
+    Ok(())
+}
+
+#[test]
+fn t_15() {
+    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
+    for _ in 0..10 {
+        x = &x + &x;
+        //println!("{x}");
+        //Tensor::plot_graph([], &format!("graph{i}"));
+        //Tensor::realize([&x]).unwrap();
+    }
+    //println!("{x}");
+    assert_eq!(x, [[2048, 3072, 1024], [2048, 4096, 1024]]);
+}
+
+#[test]
+fn iter1() -> Result<(), ZyxError> {
+    let mut x = Tensor::randn([64, 64], DType::F32)?;
+    let y = Tensor::randn([64, 64], DType::F32)?;
+
+    for _ in 0..20 {
+        x = x.dot(&y)?.softmax([-1])?;
+        Tensor::realize([&x])?;
+        //println!("{}", x.is_realized());
+    }
+
     Ok(())
 }

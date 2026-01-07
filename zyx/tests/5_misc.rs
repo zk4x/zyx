@@ -464,19 +464,6 @@ fn t3() {
 }
 
 #[test]
-fn t_15() {
-    let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
-    for _ in 0..10 {
-        x = &x + &x;
-        //println!("{x}");
-        //Tensor::plot_graph([], &format!("graph{i}"));
-        //Tensor::realize([&x]).unwrap();
-    }
-    //println!("{x}");
-    assert_eq!(x, [[2048, 3072, 1024], [2048, 4096, 1024]]);
-}
-
-#[test]
 fn layer_norm() -> Result<(), ZyxError> {
     let weight = Some(Tensor::from([4f32, 5., 1., 2.]));
     let d_dims = weight.as_ref().unwrap().rank();
@@ -588,20 +575,6 @@ fn eye1() {
             [0, 0, 0, 0, 0, 0, 0, 1],
         ]
     );
-}
-
-#[test]
-fn iter1() -> Result<(), ZyxError> {
-    let mut x = Tensor::randn([64, 64], DType::F32)?;
-    let y = Tensor::randn([64, 64], DType::F32)?;
-
-    for _ in 0..20 {
-        x = x.dot(&y)?.softmax([-1])?;
-        Tensor::realize([&x])?;
-        //println!("{}", x.is_realized());
-    }
-
-    Ok(())
 }
 
 #[test]

@@ -63,6 +63,7 @@ impl Optimizer {
         kernel.unfold_reduces();
         kernel.unfold_views();
 
+        kernel.swap_commutative();
         kernel.reassociate_commutative();
 
         let mut temp_kernel = kernel.clone();
@@ -102,6 +103,7 @@ impl Optimizer {
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
         kernel.unfold_pows();
+        kernel.swap_commutative();
         kernel.reassociate_commutative();
 
         let mut temp_kernel = kernel.clone();

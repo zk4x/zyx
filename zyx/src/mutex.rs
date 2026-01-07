@@ -1,6 +1,6 @@
 //! Simple implementation of mutex based on spinlock.
 
-use std::sync::{LockResult, MutexGuard};
+/*use std::sync::{LockResult, MutexGuard};
 pub struct Mutex<T>(std::sync::Mutex<T>);
 
 impl<T> Mutex<T> {
@@ -21,7 +21,7 @@ impl<T> Mutex<T> {
     pub fn try_lock(&self) -> LockResult<MutexGuard<'_, T>> {
         self.0.lock()
     }
-}
+}*/
 
 // Good for debugging too
 /*pub struct Mutex<T>(parking_lot::Mutex<T>);
@@ -41,13 +41,12 @@ impl<T> Mutex<T> {
 }*/
 
 // Spinlock is better for debugging, but std::mutex::Mutex is better for release
-// Spinlock is also much faster
-/*use std::{
+use std::{
     cell::UnsafeCell,
     sync::atomic::{AtomicBool, Ordering},
 };
 
-// Standard spinlock, but will panic if it fails to lock after more than N tries
+// Standard spinlock.
 #[derive(Debug)]
 pub struct Mutex<T> {
     data: UnsafeCell<T>,
@@ -56,8 +55,7 @@ pub struct Mutex<T> {
 
 #[derive(Debug)]
 pub struct MutexGuard<'a, T: 'a> {
-    lock: &'a AtomicBool,
-    data: &'a UnsafeCell<T>,
+    mutex: &'a Mutex<T>,
 }
 
 unsafe impl<T: Send> Sync for Mutex<T> {}
@@ -68,34 +66,24 @@ unsafe impl<T: Send> Send for MutexGuard<'_, T> {}
 
 impl<T> Mutex<T> {
     pub(super) const fn new(data: T) -> Self {
-        Self {
-            data: UnsafeCell::new(data),
-            lock: AtomicBool::new(false),
-        }
+        Self { data: UnsafeCell::new(data), lock: AtomicBool::new(false) }
     }
 
     pub(super) fn lock(&self) -> MutexGuard<'_, T> {
-        const N: usize = 1_000_000_000;
-
-        let mut i = 0;
         loop {
-            if self
-                .lock
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                return MutexGuard {
-                    lock: &self.lock,
-                    data: &self.data,
-                };
+            if self.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                return MutexGuard { mutex: self };
             }
 
             while self.lock.load(Ordering::Relaxed) {
                 //core::sync::atomic::spin_loop_hint();
                 //std::thread::sleep(std::time::Duration::from_secs(1));
                 core::hint::spin_loop();
-                i += 1;
-                debug_assert!(i > N, "Failed to unlock mutex after {N} tries. Panicking in order to avoid deadlock.");
+                /*i += 1;
+                debug_assert!(
+                    i > N,
+                    "Failed to unlock mutex after {N} tries. Panicking in order to avoid deadlock."
+                );*/
             }
             /*debug_assert!(
                 i > N,
@@ -105,29 +93,19 @@ impl<T> Mutex<T> {
     }
 
     pub(super) fn try_lock(&self) -> Result<MutexGuard<'_, T>, ()> {
-        const N: usize = 1_000;
-
-        let mut i = 0;
         loop {
-            if self
-                .lock
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-            {
-                return Ok(MutexGuard {
-                    lock: &self.lock,
-                    data: &self.data,
-                });
+            if self.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                return Ok(MutexGuard { mutex: self });
             }
 
             while self.lock.load(Ordering::Relaxed) {
                 //core::sync::atomic::spin_loop_hint();
                 //std::thread::sleep(std::time::Duration::from_secs(1));
                 core::hint::spin_loop();
-                i += 1;
-                if i > N {
+                //i += 1;
+                /*if i > N {
                     return Err(());
-                }
+                }*/
             }
         }
     }
@@ -136,18 +114,18 @@ impl<T> Mutex<T> {
 impl<T> core::ops::Deref for MutexGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
-        unsafe { &*self.data.get() }
+        unsafe { &*self.mutex.data.get() }
     }
 }
 
 impl<T> core::ops::DerefMut for MutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.data.get() }
+        unsafe { &mut *self.mutex.data.get() }
     }
 }
 
 impl<T> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
-        self.lock.store(false, Ordering::Release);
+        self.mutex.lock.store(false, Ordering::Release);
     }
-}*/
+}

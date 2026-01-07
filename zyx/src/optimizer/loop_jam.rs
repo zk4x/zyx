@@ -17,13 +17,13 @@ pub struct LoopJamOpt {
 impl LoopJamOpt {
     pub fn new(_kernel: &Kernel, dev_info: &DeviceInfo) -> (Self, u32) {
         // TODO make it work per loop?
-        (Self { max_register_bytes: dev_info.max_register_bytes }, 2) // 1, 64 loop jam
+        (Self { max_register_bytes: dev_info.max_register_bytes }, 1) // 1, 64 loop jam
     }
 
     // It's complex :P
     #[must_use]
-    pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = [1, 64][index as usize]; // TODO just uncomment this after other things are done
+    pub fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
+        let unroll_dim = 64; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
 
         let mut jam_found;
         loop {
@@ -71,7 +71,9 @@ impl LoopJamOpt {
                                     if inner_loop_id == *loop_id {
                                         break;
                                     }
-                                    kernel.loop_jam(*loop_id, inner_loop_id);
+                                    if !kernel.loop_jam(*loop_id, inner_loop_id) {
+                                        break 'a;
+                                    };
                                     jam_found = true;
                                     break 'a;
                                 }
@@ -93,7 +95,7 @@ impl LoopJamOpt {
 
 impl Kernel {
     /// Jam into loop. Yes, it's complex :P
-    pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) {
+    pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) -> bool {
         //self.debug();
         //println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
 
@@ -161,6 +163,13 @@ impl Kernel {
         debug_assert!(!pre_loop_ops.is_empty());
         debug_assert!(!inner_loop_ops.is_empty());
         debug_assert!(!post_loop_ops.is_empty());
+
+        // We likely can't just arbitrarily duplicate loads
+        for &op_id in &pre_loop_ops {
+            if let Op::Load { .. } = self.ops[op_id] {
+                return false;
+            }
+        }
 
         let Op::Loop { dim: jam_dim, scope } = self.ops[jam_loop_id] else { unreachable!() };
         debug_assert_eq!(scope, Scope::Register);
@@ -281,5 +290,6 @@ impl Kernel {
 
         #[cfg(debug_assertions)]
         self.verify();
+        true
     }
 }

@@ -1105,7 +1105,7 @@ impl Kernel {
         }
 
         let mut i = 0;
-        while i < self.order.len() {
+        'a: while i < self.order.len() {
             let op_id = self.order[i];
             i += 1;
             if let Op::Binary { bop, .. } = self.ops[op_id] {
@@ -1125,6 +1125,10 @@ impl Kernel {
                         }
                     }
                     chain.push(param);
+                    // We have to be somewhat reasonabe about those chains
+                    if chain.len() > 20 {
+                        continue 'a;
+                    }
                 }
                 if chain.len() < 2 {
                     continue;
@@ -1239,10 +1243,13 @@ impl Kernel {
         }
         let mut stack = Vec::new();
         stack.push(Set::default());
-        let check = |x: OpId, stack: &[Set<OpId>]| {
+        let check = |op_id, x: OpId, stack: &[Set<OpId>]| {
             if !stack.iter().any(|vec| vec.contains(&x)) {
                 self.debug();
-                panic!("{x} -> {:?} used before declaration.", self.ops[x]);
+                panic!(
+                    "{op_id} {:?} uses {x} -> {:?} before declaration.",
+                    self.ops[op_id], self.ops[x]
+                );
             }
         };
         for &op_id in &self.order {
@@ -1251,25 +1258,25 @@ impl Kernel {
                 Op::ConstView { .. } => {}
                 Op::LoadView { .. } => {}
                 Op::StoreView { src, .. } => {
-                    check(src, &stack);
+                    check(op_id, src, &stack);
                 }
                 Op::Store { dst, x, index } => {
-                    check(dst, &stack);
-                    check(x, &stack);
-                    check(index, &stack);
+                    check(op_id, dst, &stack);
+                    check(op_id, x, &stack);
+                    check(op_id, index, &stack);
                 }
                 Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                    check(x, &stack);
+                    check(op_id, x, &stack);
                 }
                 Op::Binary { x, y, .. } => {
-                    check(x, &stack);
-                    check(y, &stack);
+                    check(op_id, x, &stack);
+                    check(op_id, y, &stack);
                 }
                 Op::Const(_) => {}
                 Op::Define { .. } => {}
                 Op::Load { src, index } => {
-                    check(src, &stack);
-                    check(index, &stack);
+                    check(op_id, src, &stack);
+                    check(op_id, index, &stack);
                 }
                 Op::Loop { .. } => {
                     stack.push(Set::default());
