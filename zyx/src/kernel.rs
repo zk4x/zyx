@@ -201,6 +201,7 @@ impl Kernel {
         println!();
         //println!("Kernel shape {:?}", self.shape);
         let mut indent = String::from(" ");
+        let mut ids: Map<OpId, (Dim, Dim)> = Map::default();
         for &op_id in &self.order {
             match self.ops[op_id] {
                 Op::ConstView { value, ref view } => {
@@ -220,19 +221,47 @@ impl Kernel {
                 Op::Define { dtype, scope, ro, len } => {
                     println!("{op_id:>3}{indent}{YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
                 }
-                Op::Const(x) => println!("{op_id:>3}{indent}{MAGENTA}CONST{RESET} {} {x}", x.dtype()),
-                Op::Load { src, index } => println!("{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}]"),
-                Op::Store { dst, x: src, index } => {
-                    println!("{op_id:>3}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}")
+                Op::Const(x) => {
+                    let Constant::U64(v) = x.cast(DType::U64) else { unreachable!() };
+                    let v = usize::from_le_bytes(v);
+                    ids.insert(op_id, (v, v));
+                    println!("{op_id:>3}{indent}{MAGENTA}CONST{RESET} {} {x}", x.dtype());
                 }
-                Op::Cast { x, dtype } => println!("{op_id:>3}{indent}CAST {x} {dtype:?}"),
+                Op::Load { src, index } => println!("{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}]    {}..<{}", ids[&index].0, ids[&index].1),
+                Op::Store { dst, x: src, index } => {
+                    println!("{op_id:>3}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}    {}..<{}", ids[&index].0, ids[&index].1);
+                }
+                Op::Cast { x, dtype } => {
+                    if let Some((l, u)) = ids.get(&x) {
+                        ids.insert(op_id, (*l, *u));
+                    }
+                    println!("{op_id:>3}{indent}CAST {x} {dtype:?}");
+                }
                 Op::Unary { x, uop } => println!("{op_id:>3}{indent}UNARY {uop:?} {x}"),
-                Op::Binary { x, y, bop } => println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}"),
+                Op::Binary { x, y, bop } => {
+                    if let Some((xl, xu)) = ids.get(&x) && let Some((yl, yu)) = ids.get(&y) {
+                        ids.insert(op_id, match bop {
+                            BOp::Add => (xl + yl, xu + yu),
+                            BOp::Sub => (xl - yl, xu - yu),
+                            BOp::Mul => (xl * yl, xu * yu),
+                            BOp::Div => (xl / yl, xu / yu),
+                            BOp::Mod => (xl % yl, xu % yu),
+                            _ => todo!(),
+                        });
+                    }
+                    if let Some((l, u)) = ids.get(&op_id) {
+                        println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}    {l}..<{u}");
+                    } else {
+                        println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}");
+                    }
+                }
                 Op::Loop { dim, scope } => {
-                    println!("{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}");
-                    indent += " ";
+                    ids.insert(op_id, (0, dim));
+                    println!("{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..<{dim}");
+                    indent += "  ";
                 }
                 Op::EndLoop => {
+                    indent.pop();
                     indent.pop();
                     println!("{op_id:>3}{indent}{BLUE}END_LOOP{RESET}");
                 }
@@ -1300,6 +1329,71 @@ impl Kernel {
         if stack.len() != 1 {
             self.debug();
             panic!("Missing {} closing endloops.", stack.len());
+        }
+        self.check_oob();
+    }
+
+    pub fn check_oob(&self) {
+        use std::collections::HashMap;
+        let mut ids: Map<OpId, (usize, usize)> = HashMap::default();
+        let mut defines = Map::default();
+        for &op_id in &self.order {
+            match &self.ops[op_id] {
+                Op::Const(c) => {
+                    let Constant::U64(x) = c.cast(DType::U64) else { unreachable!() };
+                    let v = usize::from_le_bytes(x);
+                    ids.insert(op_id, (v, v));
+                }
+                &Op::Define { len, .. } => {
+                    defines.insert(op_id, len);
+                }
+                &Op::Unary { x, .. } => {
+                    if let Some(_) = ids.get(&x) {
+                        todo!();
+                    }
+                }
+                &Op::Cast { x, .. } => {
+                    if let Some((l, u)) = ids.get(&x) {
+                        ids.insert(op_id, (*l, *u));
+                    }
+                }
+                Op::Binary { x, y, bop } => {
+                    if let Some((xl, xu)) = ids.get(&x) && let Some((yl, yu)) = ids.get(&y) {
+                        ids.insert(op_id, match bop {
+                            BOp::Add => (xl + yl, xu + yu),
+                            BOp::Sub => (xl - yl, xu - yu),
+                            BOp::Mul => (xl * yl, xu * yu),
+                            BOp::Div => (xl / yl, xu / yu),
+                            BOp::Mod => (xl % yl, xu % yu),
+                            _ => todo!(),
+                        });
+                    }
+                    if let Some((l, u)) = ids.get(&op_id) {
+                        ids.insert(op_id, (*l, *u));
+                    }
+                }
+                Op::Loop { dim, .. } => {
+                    ids.insert(op_id, (0, *dim));
+                }
+                Op::Load { src, index } => {
+                    if !ids.contains_key(index) {
+                        panic!("Huge issue. Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
+                    }
+                    let idx_range = ids[index];
+                    if idx_range.1 >= defines[src] {
+                        self.debug();
+                        panic!(
+                            "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
+                            op_id, idx_range, defines[src]
+                        );
+                    }
+                    ids.insert(op_id, (0, 0)); // result not used for OOB
+                }
+                Op::Store { .. } => {
+                    // TODO
+                }
+                _ => {}
+            }
         }
     }
 }

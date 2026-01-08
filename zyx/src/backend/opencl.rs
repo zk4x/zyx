@@ -814,6 +814,7 @@ impl OpenCLDevice {
                         let dtype = dtypes[&src];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
+                        //if src == OpId(28) { _ = writeln!(source, "{indent}printf(\"Load p%d[%d]\\n\", {src}, {idx});"); }
                         _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                     }
                 }
