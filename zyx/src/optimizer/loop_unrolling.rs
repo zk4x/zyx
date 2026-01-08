@@ -11,12 +11,12 @@ pub struct LoopUnrollingOpt {}
 
 impl LoopUnrollingOpt {
     pub fn new(_kernel: &Kernel) -> (Self, u32) {
-        (Self {}, 3)
+        (Self {}, 1)
     }
 
     #[must_use]
     pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = [1, 4, 32][index as usize]; // TODO just uncomment this after other things are done
+        let unroll_dim = [1, 1][index as usize]; //[1, 4, 32][index as usize]; // TODO just uncomment this after other things are done
         let mut endloop_ids = Vec::new();
         let mut i = kernel.order.len();
         while i > 0 {

@@ -137,116 +137,18 @@ impl View {
         //println!("After insert loop {self:?}");
     }*/
 
-    pub fn reshape(&mut self, axes: Range<UAxis>, new_shape: &[Dim]) {
-        fn try_reshape(block: &[RDim], new_shape: &[usize]) -> Vec<RDim> {
-            fn is_contiguous_block(dims: &[RDim]) -> bool {
-                //println!("is contiguous: {dims:?}");
-                let mut expected_stride = dims.last().map_or(1, |rd| rd.st);
-                for rd in dims.iter().rev() {
-                    if rd.lp != 0 || rd.rp != 0 {
-                        return false;
-                    }
-                    if rd.d == 1 {
-                        continue; // Stride doesn't matter if dim == 1
-                    }
-                    if rd.st != expected_stride {
-                        //println!("non-contiguous");
-                        return false;
-                    }
-                    expected_stride *= rd.d;
-                }
-                //println!("contiguous");
-                true
+    pub fn is_reshape_contiguous(&self, axes: Range<UAxis>, new_shape: &[Dim]) -> bool {
+        if let Some(last_block) = self.0.last() {
+            // Try to reshape last block in place
+            let new_block = try_reshape(&last_block[axes.clone()], new_shape);
+            if new_block.is_empty() {
+                return false;
             }
-
-            /*let old_total: usize = block.iter().map(|rd| rd.d).product();
-            let new_total: usize = new_shape.iter().product();
-
-            if old_total != new_total {
-                return Vec::new();
-            }*/
-
-            if block.iter().map(|rd| rd.d).eq(new_shape.iter().copied()) {
-                return block.into(); // Same shape, nothing to do
-            }
-
-            let mut new_dims = vec![RDim { d: 0, st: 0, lp: 0, rp: 0 }; new_shape.len()];
-            let (mut orig_start, mut new_start) = (0, 0);
-            let old_len = block.len();
-            let new_len = new_shape.len();
-
-            while orig_start < old_len && new_start < new_len {
-                let (mut orig_prod, mut new_prod) = (block[orig_start].d, new_shape[new_start]);
-                let (mut i, mut j) = (orig_start + 1, new_start + 1);
-
-                // Expand until products match
-                loop {
-                    match orig_prod.cmp(&new_prod) {
-                        Ordering::Less => {
-                            orig_prod *= block[i].d;
-                            i += 1;
-                            debug_assert!(i <= old_len);
-                        }
-                        Ordering::Greater => {
-                            new_prod *= new_shape[j];
-                            j += 1;
-                            debug_assert!(j <= new_len);
-                        }
-                        Ordering::Equal => {
-                            if i < old_len {
-                                if block[i].d == 1 {
-                                    i += 1;
-                                    continue;
-                                }
-                            }
-                            if j < new_len {
-                                if new_shape[j] == 1 {
-                                    j += 1;
-                                    continue;
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                let orig_slice = &block[orig_start..i];
-                let new_slice_shape = &new_shape[new_start..j];
-
-                if orig_slice.iter().map(|rd| rd.d).eq(new_slice_shape.iter().copied()) {
-                    // Shape unchanged: copy original RDims as-is, skip contiguous check
-                    for (k, rd) in (new_start..j).zip(orig_slice.iter()) {
-                        new_dims[k] = rd.clone();
-                    }
-                } else {
-                    // Shape changed: check contiguity and no padding allowed
-                    if !is_contiguous_block(orig_slice) {
-                        return Vec::new();
-                    }
-
-                    // Recompute strides, zero padding
-                    let mut stride = orig_slice.last().map_or(1, |rd| rd.st);
-                    for k in (new_start..j).rev() {
-                        let dim = new_shape[k];
-                        new_dims[k] = RDim { d: dim, st: if dim == 1 { 0 } else { stride }, lp: 0, rp: 0 };
-                        stride *= dim;
-                    }
-                }
-
-                orig_start = i;
-                new_start = j;
-            }
-
-            if orig_start != old_len || new_start != new_len {
-                //println!("{new_dims:?}");
-                //println!("{orig_start}, {new_start}");
-                //return Vec::new();
-                unreachable!();
-            }
-
-            new_dims
         }
+        true
+    }
 
+    pub fn reshape(&mut self, axes: Range<UAxis>, new_shape: &[Dim]) {
         /*println!(
             "Reshape {:?}, axes {:?} into shape {new_shape:?}, {self}",
             self.shape(),
@@ -479,6 +381,115 @@ impl View {
         old_shape[axis] = Dim::try_from(isize::try_from(old_shape[axis]).unwrap() + left_pad + right_pad).unwrap();
         debug_assert_eq!(self.shape(), old_shape);
     }
+}
+
+fn try_reshape(block: &[RDim], new_shape: &[usize]) -> Vec<RDim> {
+    fn is_contiguous_block(dims: &[RDim]) -> bool {
+        //println!("is contiguous: {dims:?}");
+        let mut expected_stride = dims.last().map_or(1, |rd| rd.st);
+        for rd in dims.iter().rev() {
+            if rd.lp != 0 || rd.rp != 0 {
+                return false;
+            }
+            if rd.d == 1 {
+                continue; // Stride doesn't matter if dim == 1
+            }
+            if rd.st != expected_stride {
+                //println!("non-contiguous");
+                return false;
+            }
+            expected_stride *= rd.d;
+        }
+        //println!("contiguous");
+        true
+    }
+
+    /*let old_total: usize = block.iter().map(|rd| rd.d).product();
+    let new_total: usize = new_shape.iter().product();
+
+    if old_total != new_total {
+        return Vec::new();
+    }*/
+
+    if block.iter().map(|rd| rd.d).eq(new_shape.iter().copied()) {
+        return block.into(); // Same shape, nothing to do
+    }
+
+    let mut new_dims = vec![RDim { d: 0, st: 0, lp: 0, rp: 0 }; new_shape.len()];
+    let (mut orig_start, mut new_start) = (0, 0);
+    let old_len = block.len();
+    let new_len = new_shape.len();
+
+    while orig_start < old_len && new_start < new_len {
+        let (mut orig_prod, mut new_prod) = (block[orig_start].d, new_shape[new_start]);
+        let (mut i, mut j) = (orig_start + 1, new_start + 1);
+
+        // Expand until products match
+        loop {
+            match orig_prod.cmp(&new_prod) {
+                Ordering::Less => {
+                    orig_prod *= block[i].d;
+                    i += 1;
+                    debug_assert!(i <= old_len);
+                }
+                Ordering::Greater => {
+                    new_prod *= new_shape[j];
+                    j += 1;
+                    debug_assert!(j <= new_len);
+                }
+                Ordering::Equal => {
+                    if i < old_len {
+                        if block[i].d == 1 {
+                            i += 1;
+                            continue;
+                        }
+                    }
+                    if j < new_len {
+                        if new_shape[j] == 1 {
+                            j += 1;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        let orig_slice = &block[orig_start..i];
+        let new_slice_shape = &new_shape[new_start..j];
+
+        if orig_slice.iter().map(|rd| rd.d).eq(new_slice_shape.iter().copied()) {
+            // Shape unchanged: copy original RDims as-is, skip contiguous check
+            for (k, rd) in (new_start..j).zip(orig_slice.iter()) {
+                new_dims[k] = rd.clone();
+            }
+        } else {
+            // Shape changed: check contiguity and no padding allowed
+            if !is_contiguous_block(orig_slice) {
+                return Vec::new();
+            }
+
+            // Recompute strides, zero padding
+            let mut stride = orig_slice.last().map_or(1, |rd| rd.st);
+            for k in (new_start..j).rev() {
+                let dim = new_shape[k];
+                new_dims[k] = RDim { d: dim, st: if dim == 1 { 0 } else { stride }, lp: 0, rp: 0 };
+                stride *= dim;
+            }
+        }
+
+        orig_start = i;
+        new_start = j;
+    }
+
+    if orig_start != old_len || new_start != new_len {
+        //println!("{new_dims:?}");
+        //println!("{orig_start}, {new_start}");
+        //return Vec::new();
+        unreachable!();
+    }
+
+    new_dims
 }
 
 impl Display for View {

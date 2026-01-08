@@ -23,7 +23,7 @@ impl LoopJamOpt {
     // It's complex :P
     #[must_use]
     pub fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = 64; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
+        let jam_dim = 64; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
 
         let mut jam_found;
         loop {
@@ -51,7 +51,7 @@ impl LoopJamOpt {
                             if define_ids.contains(&src) {
                                 let Op::Loop { dim, scope } = kernel.ops[*loop_id] else { unreachable!() };
                                 debug_assert_eq!(scope, Scope::Register);
-                                if dim <= unroll_dim {
+                                if dim <= jam_dim {
                                     let mut inner_loop_id = active_defines.last().unwrap().0;
                                     for (id, active_defines) in active_defines.iter().rev() {
                                         for &def_op in active_defines {

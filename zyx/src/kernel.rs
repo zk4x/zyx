@@ -2,7 +2,7 @@ use crate::{
     BLUE, CYAN, DType, GREEN, MAGENTA, Map, RED, RESET, Set, YELLOW,
     dtype::Constant,
     graph::{BOp, ROp, UOp},
-    shape::Dim,
+    shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     view::View,
 };
@@ -366,6 +366,13 @@ impl Kernel {
             }
         }
         unreachable!()
+    }
+
+    pub fn is_reshape_contiguous(&self, range: std::ops::Range<UAxis>, shape: &[Dim]) -> bool {
+        self.ops.values().all(|op| match op {
+            Op::ConstView { view, .. } | Op::LoadView { view, .. } => view.is_reshape_contiguous(range.clone(), shape),
+            _ => true,
+        })
     }
 
     pub fn close_loops(&mut self) {

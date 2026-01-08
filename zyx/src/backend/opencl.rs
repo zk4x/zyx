@@ -1153,7 +1153,7 @@ impl OpenCLDevice {
                 self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
             ))
             .expect("What a memory size..."),
-            max_register_bytes: 1024,
+            max_register_bytes: 256,
             /*Dim::try_from(usize::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_MAX_PRIVATE_MEMORY_SIZE).unwrap().try_into().unwrap(),
             ))
