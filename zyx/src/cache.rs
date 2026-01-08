@@ -159,9 +159,9 @@ pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> S
         1_000_000_000_000.. => (nanos / 6_000_000_000, "min"),
     };
 
-    let (fs, f_us) = value_unit(flop / nanos * 1_000_000_000);
-    let (brs, br_us) = value_unit(bytes_read / nanos * 1_000_000_000);
-    let (bws, bw_us) = value_unit(bytes_written / nanos * 1_000_000_000);
+    let (fs, f_us) = value_unit(flop * 1_000_000 / nanos * 1000);
+    let (brs, br_us) = value_unit(bytes_read * 1_000_000_000 / nanos);
+    let (bws, bw_us) = value_unit(bytes_written * 1_000_000_000 / nanos);
 
     /*format!(
         "{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w, {}.{:02} {f_u}FLOP, {}.{:02} {br_u}B r, {}.{:02} {bw_u}B w",

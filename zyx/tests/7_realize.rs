@@ -58,41 +58,6 @@ fn t03() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[test]
-fn t04() -> Result<(), ZyxError> {
-    struct MnistNet {
-        l1_weight: Tensor,
-        l1_bias: Tensor,
-        l2_weight: Tensor,
-        l2_bias: Tensor,
-    }
-
-    impl MnistNet {
-        fn forward(&self, x: &Tensor) -> Tensor {
-            let x = x.reshape([0, 784]).unwrap();
-            let x = x.matmul(&self.l1_weight.t()).unwrap() + &self.l1_bias;
-            let x = x.relu();
-            let x = x.matmul(&self.l2_weight.t()).unwrap() + &self.l2_bias;
-            x
-        }
-    }
-
-    let state_dict = Tensor::load("../zyx-examples/models/mnist.safetensors")?;
-
-    let net = MnistNet {
-        l1_weight: state_dict["l1.weight"].clone(),
-        l1_bias: state_dict["l1.bias"].clone(),
-        l2_weight: state_dict["l2.weight"].clone(),
-        l2_bias: state_dict["l2.bias"].clone(),
-    };
-
-    let x = Tensor::arange(0f32, 784. * 184., 1.)?;
-    let x = net.forward(&x);
-    println!("{x}");
-
-    Ok(())
-}*/
-
 #[test]
 fn pad_1() -> Result<(), ZyxError> {
     let x = Tensor::arange(0, 20, 1)?.reshape([4, 5])?;
@@ -123,6 +88,43 @@ fn iter1() -> Result<(), ZyxError> {
         Tensor::realize([&x])?;
         //println!("{}", x.is_realized());
     }
+
+    Ok(())
+}
+
+#[test]
+fn t04() -> Result<(), ZyxError> {
+    struct MnistNet {
+        l1_weight: Tensor,
+        l1_bias: Tensor,
+        l2_weight: Tensor,
+        l2_bias: Tensor,
+    }
+
+    impl MnistNet {
+        fn forward(&self, x: &Tensor) -> Tensor {
+            let x = x.reshape([0, 784]).unwrap();
+            let x = x.matmul(&self.l1_weight.t()).unwrap() + &self.l1_bias;
+            let x = x.relu();
+            let x = x.matmul(&self.l2_weight.t()).unwrap() + &self.l2_bias;
+            x
+        }
+    }
+
+    let state_dict = Tensor::load("../zyx-examples/models/mnist.safetensors")?;
+
+    let net = MnistNet {
+        l1_weight: state_dict["l1.weight"].clone(),
+        l1_bias: state_dict["l1.bias"].clone(),
+        l2_weight: state_dict["l2.weight"].clone(),
+        l2_bias: state_dict["l2.bias"].clone(),
+    };
+
+    let x = Tensor::arange(0f32, 784. * 184., 1.)?;
+    let x = net.forward(&x);
+
+    Tensor::realize([&x]);
+    //println!("{x}");
 
     Ok(())
 }

@@ -300,7 +300,7 @@ impl Kernel {
             mw += w;
         }
 
-        //panic!("{}, {}, {}", flop, mr, mw);
+        //println!("{}, {}, {}", flop, mr, mw);
 
         (flop, mr, mw)
     }
