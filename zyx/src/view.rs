@@ -138,6 +138,7 @@ impl View {
     }*/
 
     pub fn is_reshape_contiguous(&self, axes: Range<UAxis>, new_shape: &[Dim]) -> bool {
+        //println!("{:?} reshape to {:?}", self, new_shape);
         if let Some(last_block) = self.0.last() {
             // Try to reshape last block in place
             let new_block = try_reshape(&last_block[axes.clone()], new_shape);

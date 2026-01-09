@@ -415,6 +415,7 @@ impl Kernel {
         unreachable!()
     }
 
+    #[allow(unused)]
     pub fn is_reshape_contiguous(&self, range: std::ops::Range<UAxis>, shape: &[Dim]) -> bool {
         self.ops.values().all(|op| match op {
             Op::ConstView { view, .. } | Op::LoadView { view, .. } => view.is_reshape_contiguous(range.clone(), shape),
