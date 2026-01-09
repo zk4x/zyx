@@ -92,7 +92,6 @@ impl LoopJamOpt {
                 break;
             }
         }
-        kernel.debug();
 
         true
     }

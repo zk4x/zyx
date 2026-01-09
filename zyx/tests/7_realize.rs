@@ -123,7 +123,7 @@ fn t04() -> Result<(), ZyxError> {
     let x = Tensor::arange(0f32, 784. * 184., 1.)?;
     let x = net.forward(&x);
 
-    Tensor::realize([&x]);
+    Tensor::realize([&x])?;
     //println!("{x}");
 
     Ok(())

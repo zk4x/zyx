@@ -222,14 +222,22 @@ impl Kernel {
                     println!("{op_id:>3}{indent}{YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
                 }
                 Op::Const(x) => {
-                    let Constant::U64(v) = x.cast(DType::U64) else { unreachable!() };
-                    let v = usize::from_le_bytes(v);
-                    ids.insert(op_id, (v, v));
+                    if x.is_positive() {
+                        let Constant::U64(v) = x.cast(DType::U64) else { unreachable!() };
+                        let v = usize::from_le_bytes(v);
+                        ids.insert(op_id, (v, v));
+                    }
                     println!("{op_id:>3}{indent}{MAGENTA}CONST{RESET} {} {x}", x.dtype());
                 }
-                Op::Load { src, index } => println!("{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}]    {}..<{}", ids[&index].0, ids[&index].1),
+                Op::Load { src, index } => println!(
+                    "{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}]    {}..={}",
+                    ids[&index].0, ids[&index].1
+                ),
                 Op::Store { dst, x: src, index } => {
-                    println!("{op_id:>3}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}    {}..<{}", ids[&index].0, ids[&index].1);
+                    println!(
+                        "{op_id:>3}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}    {}..={}",
+                        ids[&index].0, ids[&index].1
+                    );
                 }
                 Op::Cast { x, dtype } => {
                     if let Some((l, u)) = ids.get(&x) {
@@ -239,25 +247,35 @@ impl Kernel {
                 }
                 Op::Unary { x, uop } => println!("{op_id:>3}{indent}UNARY {uop:?} {x}"),
                 Op::Binary { x, y, bop } => {
-                    if let Some((xl, xu)) = ids.get(&x) && let Some((yl, yu)) = ids.get(&y) {
-                        ids.insert(op_id, match bop {
-                            BOp::Add => (xl + yl, xu + yu),
-                            BOp::Sub => (xl - yl, xu - yu),
-                            BOp::Mul => (xl * yl, xu * yu),
-                            BOp::Div => (xl / yl, xu / yu),
-                            BOp::Mod => (xl % yl, xu % yu),
-                            _ => todo!(),
-                        });
+                    if let Some(&(xl, xu)) = ids.get(&x)
+                        && let Some(&(yl, yu)) = ids.get(&y)
+                    {
+                        ids.insert(
+                            op_id,
+                            match bop {
+                                BOp::Add => (xl + yl, xu + yu),
+                                BOp::Sub => (xl.wrapping_sub(yl), xu.wrapping_sub(yu)),
+                                BOp::Mul => (xl * yl, xu * yu),
+                                BOp::Div => (xl / yl, xu / yu),
+                                BOp::Mod => (xl % yl, xu % yu),
+                                BOp::Eq => ((xl == yl) as usize, (xu == yu) as usize),
+                                BOp::NotEq => ((xl != yl) as usize, (xu != yu) as usize),
+                                BOp::Cmpgt => ((xl > yl) as usize, (xu > yu) as usize),
+                                BOp::Cmplt => ((xl < yl) as usize, (xu < yu) as usize),
+                                BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
+                                op => todo!("{:?}", op),
+                            },
+                        );
                     }
                     if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}    {l}..<{u}");
+                        println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}    {l}..={u}");
                     } else {
                         println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}");
                     }
                 }
                 Op::Loop { dim, scope } => {
-                    ids.insert(op_id, (0, dim));
-                    println!("{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..<{dim}");
+                    ids.insert(op_id, (0, dim - 1));
+                    println!("{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..={dim}");
                     indent += "  ";
                 }
                 Op::EndLoop => {
@@ -1339,45 +1357,52 @@ impl Kernel {
         let mut defines = Map::default();
         for &op_id in &self.order {
             match &self.ops[op_id] {
-                Op::Const(c) => {
-                    let Constant::U64(x) = c.cast(DType::U64) else { unreachable!() };
-                    let v = usize::from_le_bytes(x);
-                    ids.insert(op_id, (v, v));
+                Op::Const(x) => {
+                    if x.is_positive() {
+                        let Constant::U64(x) = x.cast(DType::U64) else { unreachable!() };
+                        let v = usize::from_le_bytes(x);
+                        ids.insert(op_id, (v, v));
+                    }
                 }
                 &Op::Define { len, .. } => {
                     defines.insert(op_id, len);
-                }
-                &Op::Unary { x, .. } => {
-                    if let Some(_) = ids.get(&x) {
-                        todo!();
-                    }
                 }
                 &Op::Cast { x, .. } => {
                     if let Some((l, u)) = ids.get(&x) {
                         ids.insert(op_id, (*l, *u));
                     }
                 }
-                Op::Binary { x, y, bop } => {
-                    if let Some((xl, xu)) = ids.get(&x) && let Some((yl, yu)) = ids.get(&y) {
-                        ids.insert(op_id, match bop {
-                            BOp::Add => (xl + yl, xu + yu),
-                            BOp::Sub => (xl - yl, xu - yu),
-                            BOp::Mul => (xl * yl, xu * yu),
-                            BOp::Div => (xl / yl, xu / yu),
-                            BOp::Mod => (xl % yl, xu % yu),
-                            _ => todo!(),
-                        });
+                &Op::Binary { x, y, bop } => {
+                    if let Some(&(xl, xu)) = ids.get(&x)
+                        && let Some(&(yl, yu)) = ids.get(&y)
+                    {
+                        ids.insert(
+                            op_id,
+                            match bop {
+                                BOp::Add => (xl.wrapping_add(yl), xu.wrapping_add(yu)),
+                                BOp::Sub => (xl.wrapping_sub(yl), xu.wrapping_sub(yu)),
+                                BOp::Mul => (xl.wrapping_mul(yl), xu.wrapping_mul(yu)),
+                                BOp::Div => (xl / yl, xu / yu),
+                                BOp::Mod => (xl % yl, xu % yu),
+                                BOp::Eq => ((xl == yl) as usize, (xu == yu) as usize),
+                                BOp::NotEq => ((xl != yl) as usize, (xu != yu) as usize),
+                                BOp::Cmpgt => ((xl > yl) as usize, (xu > yu) as usize),
+                                BOp::Cmplt => ((xl < yl) as usize, (xu < yu) as usize),
+                                BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
+                                op => todo!("{:?}", op),
+                            },
+                        );
                     }
                     if let Some((l, u)) = ids.get(&op_id) {
                         ids.insert(op_id, (*l, *u));
                     }
                 }
                 Op::Loop { dim, .. } => {
-                    ids.insert(op_id, (0, *dim));
+                    ids.insert(op_id, (0, dim - 1));
                 }
                 Op::Load { src, index } => {
                     if !ids.contains_key(index) {
-                        panic!("Huge issue. Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
+                        panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
                     }
                     let idx_range = ids[index];
                     if idx_range.1 >= defines[src] {
@@ -1387,7 +1412,6 @@ impl Kernel {
                             op_id, idx_range, defines[src]
                         );
                     }
-                    ids.insert(op_id, (0, 0)); // result not used for OOB
                 }
                 Op::Store { .. } => {
                     // TODO

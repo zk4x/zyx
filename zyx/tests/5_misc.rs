@@ -349,7 +349,7 @@ fn graph_node_reuse() {
 }
 
 #[test]
-fn get() {
+fn get1() {
     let x = Tensor::from([[2, 3, 1], [2, 1, 4]]);
     assert_eq!(x.slice((.., 2..3)).unwrap(), [[1], [4]]);
 }
