@@ -726,7 +726,6 @@ impl<'a> Kernelizer<'a> {
             while let Some(optimization) = optimizer.next_optimization(last_time_nanos)
                 && i < self.search_config.iterations
             {
-                i += 1;
                 let mut kernel = kernel.clone();
                 if !optimizer.apply_optimization(&mut kernel, optimization, self.debug.ir()) {
                     continue;
@@ -775,6 +774,7 @@ impl<'a> Kernelizer<'a> {
                         ),
                     );
                 }
+                i += 1;
             }
             if let Some((_, flop, mem_read, mem_write)) = &progress_bar {
                 println!();

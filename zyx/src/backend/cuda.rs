@@ -440,7 +440,7 @@ pub(super) fn initialize_device(
                         _ = reply.send(Ok(()));
                     }
                     CUDACommand::Compile { gws, lws, name, ptx, reply } => {
-                        //println!("name {name}, gws {gws:?}, lws {lws:?} ptx:\n{:?}", std::ffi::CString::from_vec_with_nul(ptx.clone()).unwrap());
+                        //println!("name {name}, gws {gws:?}, lws {lws:?} ptx:\n{}", std::ffi::CString::from_vec_with_nul(ptx.clone()).unwrap().into_string().unwrap());
 
                         let mut module = ptr::null_mut();
                         if let Err(err) = unsafe {
@@ -457,7 +457,7 @@ pub(super) fn initialize_device(
                             if debug_dev {
                                 println!("Failed to compile ptx kernel with err: {err:?}");
                             }
-                            panic!();
+                            //panic!();
                             _ = reply.send(Err(err));
                             continue;
                         }
@@ -1294,6 +1294,8 @@ impl CUDADevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
+        let mut n_acc_regs = 0;
+
         for &op_id in &kernel.order {
             let op = &kernel[op_id];
             //println!("{i} -> {op:?}");
@@ -1312,6 +1314,7 @@ impl CUDADevice {
                             if ro { "const " } else { "" },
                             dtype.cu(),
                         );
+                        n_acc_regs += len;
                     }
                 }
                 &Op::Load { src, index } => {
@@ -1426,6 +1429,12 @@ impl CUDADevice {
                     }
                 }
             }
+            if registers.len() + n_acc_regs > 64 {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "Kernel with too many registers.".into(),
+                });
+            }
         }
 
         let mut reg_str = String::new();
@@ -1460,7 +1469,9 @@ impl CUDADevice {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
-        let source = format!("{pragma}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\0",);
+        let source =
+            format!("{pragma}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0",);
+
         if debug_asm {
             println!();
             println!("{source}");

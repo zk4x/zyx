@@ -23,7 +23,7 @@ impl LoopJamOpt {
     // It's complex :P
     #[must_use]
     pub fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
-        let jam_dim = 64; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
+        let jam_dim = 32; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
 
         let mut jam_found;
         loop {
@@ -53,8 +53,8 @@ impl LoopJamOpt {
                                 debug_assert_eq!(scope, Scope::Register);
                                 if dim <= jam_dim {
                                     let mut inner_loop_id = active_defines.last().unwrap().0;
-                                    for (id, active_defines) in active_defines.iter().rev() {
-                                        for &def_op in active_defines {
+                                    for (id, _active_defines) in active_defines.iter().rev() {
+                                        /*for &def_op in active_defines {
                                             let Op::Define { len, dtype, .. } = kernel.ops[def_op] else {
                                                 unreachable!()
                                             };
@@ -62,7 +62,7 @@ impl LoopJamOpt {
                                                 // wold overflow the register space
                                                 break 'a;
                                             }
-                                        }
+                                        }*/
                                         if id == loop_id {
                                             break;
                                         }
@@ -100,9 +100,7 @@ impl LoopJamOpt {
 impl Kernel {
     /// Jam into loop. Yes, it's complex :P
     pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) -> bool {
-        //self.debug();
         //println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
-
         let mut pre_loop_ops = Vec::new();
         let mut inner_loop_ops = Vec::new();
         let mut post_loop_ops: Vec<OpId> = Vec::new();

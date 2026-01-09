@@ -346,7 +346,7 @@ pub(super) fn initialize_device(
         for dev in device_ids.iter().copied() {
             // TODO get max queues per device and limit this to that number
             let mut queues = Vec::new();
-            for _ in 0..8 {
+            for _ in 0..2 {
                 let new_queue = unsafe { clCreateCommandQueue(context, dev, 0, &raw mut status) };
                 //println!("Initialized queue {new_queue:?}");
                 queues.push(OpenCLQueue { queue: new_queue, load: 0 });
@@ -803,7 +803,7 @@ impl OpenCLDevice {
                     if scope == Scope::Register {
                         _ = writeln!(
                             source,
-                            "{indent}{}{} p{op_id}[{len}];",
+                            "{indent}__attribute__((aligned(64))) {}{} p{op_id}[{len}];",
                             if ro { "const " } else { "" },
                             dtype.ocl(),
                         );
@@ -920,6 +920,12 @@ impl OpenCLDevice {
                     }
                 }
             }
+            if registers.len() > 128 {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "Kernel with too many registers.".into(),
+                });
+            }
         }
 
         let mut reg_str = String::new();
@@ -1003,7 +1009,7 @@ impl OpenCLDevice {
         let kernel = unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &raw mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
         let program_id = self.programs.push(OpenCLProgram { program, kernel, gws, lws });
-        //println!("Compiled program {:?} using context: {:?}", self.programs[program_id], self.context);
+        println!("Compiled program {:?} using context: {:?}", self.programs[program_id], self.context);
         Ok(program_id)
     }
 
@@ -1026,14 +1032,14 @@ impl OpenCLDevice {
 
         let queue_id = self.next_queue();
 
-        /*println!(
+        println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
             self.programs[program_id].kernel,
             self.programs[program_id].program,
             self.queues[queue_id].queue,
             self.programs[program_id].gws,
             self.programs[program_id].lws
-        );*/
+        );
         let program = &self.programs[program_id];
         let mut i = 0;
         #[allow(clippy::explicit_counter_loop)]

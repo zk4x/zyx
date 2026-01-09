@@ -31,7 +31,7 @@ impl LoopSplitOpt {
                 options.push(dims.clone());
 
                 // Generate all possible factorizations of the total product up to max_depth
-                for d in 2..64 {
+                for d in 1..=8 {
                     if total_product.is_multiple_of(d) {
                         options.push(vec![total_product / d, d]);
                     }

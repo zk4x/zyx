@@ -91,7 +91,7 @@ impl WorkSizeOpt {
 
         let shape: Vec<Dim> = gws.iter().chain(&lws).chain(&rws).copied().collect();
         let n = kernel.shape().len();
-        //if n < 4 && !kernel.is_reshape_contiguous(0..n, &shape) { return false; }
+        if n < 4 && !kernel.is_reshape_contiguous(0..n, &shape) { return false; }
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
 
         {

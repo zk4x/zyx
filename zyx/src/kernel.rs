@@ -275,7 +275,7 @@ impl Kernel {
                 }
                 Op::Loop { dim, scope } => {
                     ids.insert(op_id, (0, dim - 1));
-                    println!("{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..={dim}");
+                    println!("{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..={}", dim - 1);
                     indent += "  ";
                 }
                 Op::EndLoop => {
@@ -553,10 +553,18 @@ impl Kernel {
     pub fn define_globals(&mut self) {
         let mut loads = Vec::new();
         let mut stores = Vec::new();
-        for op in self.ops.values() {
+        for (op_id, op) in self.ops.iter() {
             match op {
                 Op::LoadView { dtype, view } => loads.push((*dtype, view.original_numel())),
-                Op::StoreView { dtype, .. } => stores.push((*dtype, 0)),
+                Op::StoreView { dtype, .. } => {
+                    let loops = self.get_loops(op_id);
+                    let mut len = 1;
+                    for loop_id in loops {
+                        let Op::Loop { dim, .. } = self.ops[loop_id] else { unreachable!() };
+                        len *= dim;
+                    }
+                    stores.push((*dtype, len));
+                }
                 _ => {}
             }
         }
@@ -1406,7 +1414,8 @@ impl Kernel {
                         panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
                     }
                     let idx_range = ids[index];
-                    if idx_range.1 >= defines[src] {
+                    //println!("Max idx range: {}, define {}", idx_range.1, defines[src]);
+                    if idx_range.1 > defines[src] - 1 {
                         self.debug();
                         panic!(
                             "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
