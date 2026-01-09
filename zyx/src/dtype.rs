@@ -436,6 +436,18 @@ impl Constant {
         }
     }
 
+    #[allow(clippy::float_cmp)]
+    pub(crate) fn is_power_of_two(&self) -> bool {
+        match *self {
+            Constant::U32(x) => x != 0 && (x & (x - 1)) == 0,
+            Constant::U64(x) => {
+                let x = u64::from_le_bytes(x);
+                x != 0 && (x & (x - 1)) == 0
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn cast(self, dtype: DType) -> Constant {
         match self {
             Constant::BF16(x) => half::bf16::from_le_bytes(x).cast_dtype(dtype),
@@ -458,24 +470,26 @@ impl Constant {
         use crate::Float;
         fn unary_func<T: Scalar>(x: T, uop: UOp) -> T {
             match uop {
-                UOp::Exp2 | UOp::Log2 | UOp::Reciprocal | UOp::Sqrt | UOp::Sin | UOp::Cos | UOp::Floor => {
+                UOp::Reciprocal | UOp::Sqrt | UOp::Sin | UOp::Cos | UOp::Floor => {
                     unreachable!()
                 }
                 UOp::BitNot => todo!(),
                 UOp::Neg => x.neg(),
+                UOp::Exp2 => x.exp2(),
+                UOp::Log2 => x.log2(),
             }
         }
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
             match uop {
                 UOp::BitNot => todo!(),
                 UOp::Neg => x.neg(),
-                UOp::Exp2 => x.exp2(),
-                UOp::Log2 => x.log2(),
                 UOp::Reciprocal => x.reciprocal(),
                 UOp::Sqrt => x.sqrt(),
                 UOp::Sin => x.sin(),
                 UOp::Cos => x.cos(),
                 UOp::Floor => x.floor(),
+                UOp::Exp2 => x.exp2(),
+                UOp::Log2 => x.log2(),
             }
         }
         match self {

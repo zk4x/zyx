@@ -646,7 +646,7 @@ impl OpenCLDevice {
             current_loop_level: u8,
         ) -> usize {
             for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
-                if *nrc == 0 && *dt == dtype && *loop_level >= current_loop_level {
+                if *nrc == 0 && *dt == dtype && current_loop_level <= *loop_level {
                     reg_map.insert(op_id, i);
                     registers[i].1 = rc;
                     return i;
@@ -664,13 +664,16 @@ impl OpenCLDevice {
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
             registers: &mut [(DType, u32, u8)],
+            loop_level: u8,
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
                 c.ocl()
             } else if let Some(id) = indices.get(&op_id) {
                 format!("idx{id}")
             } else if let Some(reg) = reg_map.get(&op_id) {
-                registers[*reg].1 -= 1;
+                if registers[*reg].2 == loop_level {
+                    registers[*reg].1 -= 1;
+                }
                 format!("r{reg}")
             } else {
                 unreachable!()
@@ -789,6 +792,7 @@ impl OpenCLDevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
+        let mut acc_bytes = 0;
         for &op_id in &kernel.order {
             let op = &kernel[op_id];
             //println!("{i} -> {op:?}");
@@ -803,16 +807,17 @@ impl OpenCLDevice {
                     if scope == Scope::Register {
                         _ = writeln!(
                             source,
-                            "{indent}__attribute__((aligned(64))) {}{} p{op_id}[{len}];",
+                            "{indent}{}{} p{op_id}[{len}] __attribute__ ((aligned));",
                             if ro { "const " } else { "" },
                             dtype.ocl(),
                         );
+                        acc_bytes += dtype.byte_size() as usize * len;
                     }
                 }
                 &Op::Load { src, index } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&src];
-                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
+                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
                         //if src == OpId(28) { _ = writeln!(source, "{indent}printf(\"Load p%d[%d]\\n\", {src}, {idx});"); }
                         _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
@@ -822,18 +827,18 @@ impl OpenCLDevice {
                     _ = writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",
-                        get_var(index, &constants, &indices, &reg_map, &mut registers),
-                        get_var(src, &constants, &indices, &reg_map, &mut registers)
+                        get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id),
+                        get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)
                     );
                 }
                 &Op::Cast { x, dtype } => {
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl());
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
@@ -858,8 +863,8 @@ impl OpenCLDevice {
                 }
                 &Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = match bop {
                         BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
@@ -916,16 +921,21 @@ impl OpenCLDevice {
                         indent.pop();
                         indent.pop();
                         _ = writeln!(source, "{indent}}}");
+                        for reg in &mut registers {
+                            if reg.2 == loop_id {
+                                reg.1 = 0;
+                            }
+                        }
                         loop_id -= 1;
                     }
                 }
             }
-            if registers.len() > 128 {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "Kernel with too many registers.".into(),
-                });
-            }
+        }
+        if registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes > 64 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "Kernel with too many registers.".into(),
+            });
         }
 
         let mut reg_str = String::new();
@@ -1009,7 +1019,10 @@ impl OpenCLDevice {
         let kernel = unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &raw mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
         let program_id = self.programs.push(OpenCLProgram { program, kernel, gws, lws });
-        println!("Compiled program {:?} using context: {:?}", self.programs[program_id], self.context);
+        /*println!(
+            "Compiled program {:?} using context: {:?}",
+            self.programs[program_id], self.context
+        );*/
         Ok(program_id)
     }
 
@@ -1032,14 +1045,14 @@ impl OpenCLDevice {
 
         let queue_id = self.next_queue();
 
-        println!(
+        /*println!(
             "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
             self.programs[program_id].kernel,
             self.programs[program_id].program,
             self.queues[queue_id].queue,
             self.programs[program_id].gws,
             self.programs[program_id].lws
-        );
+        );*/
         let program = &self.programs[program_id];
         let mut i = 0;
         #[allow(clippy::explicit_counter_loop)]

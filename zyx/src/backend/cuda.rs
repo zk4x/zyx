@@ -1169,13 +1169,16 @@ impl CUDADevice {
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
             registers: &mut [(DType, u32, u8)],
+            loop_level: u8,
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
                 c.cu()
             } else if let Some(id) = indices.get(&op_id) {
                 format!("idx{id}")
             } else if let Some(reg) = reg_map.get(&op_id) {
-                registers[*reg].1 -= 1;
+                if loop_level == registers[*reg].2 {
+                    registers[*reg].1 -= 1;
+                }
                 format!("r{reg}")
             } else {
                 unreachable!()
@@ -1294,7 +1297,7 @@ impl CUDADevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
-        let mut n_acc_regs = 0;
+        let mut acc_bytes = 0;
 
         for &op_id in &kernel.order {
             let op = &kernel[op_id];
@@ -1314,13 +1317,13 @@ impl CUDADevice {
                             if ro { "const " } else { "" },
                             dtype.cu(),
                         );
-                        n_acc_regs += len;
+                        acc_bytes += dtype.byte_size() as usize * len;
                     }
                 }
                 &Op::Load { src, index } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&src];
-                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers);
+                        let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
                         //if src == OpId(28) { _ = writeln!(source, "{indent}printf(\"Load p%d[%d]\\n\", {src}, {idx});"); }
                         _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
@@ -1330,18 +1333,18 @@ impl CUDADevice {
                     _ = writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",
-                        get_var(index, &constants, &indices, &reg_map, &mut registers),
-                        get_var(src, &constants, &indices, &reg_map, &mut registers)
+                        get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id),
+                        get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)
                     );
                 }
                 &Op::Cast { x, dtype } => {
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.cu());
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
@@ -1366,8 +1369,8 @@ impl CUDADevice {
                 }
                 &Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers);
-                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers);
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = match bop {
                         BOp::Add => writeln!(source, "{indent}r{reg} = {x} + {y};"),
@@ -1425,16 +1428,21 @@ impl CUDADevice {
                         indent.pop();
                         indent.pop();
                         _ = writeln!(source, "{indent}}}");
+                        for reg in &mut registers {
+                            if reg.2 == loop_id {
+                                reg.1 = 0;
+                            }
+                        }
                         loop_id -= 1;
                     }
                 }
             }
-            if registers.len() + n_acc_regs > 64 {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "Kernel with too many registers.".into(),
-                });
-            }
+        }
+        if registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes > 64 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "Kernel with too many registers.".into(),
+            });
         }
 
         let mut reg_str = String::new();

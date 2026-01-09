@@ -1,5 +1,9 @@
+use crate::{
+    backend::DeviceInfo,
+    kernel::{Kernel, Op, Scope},
+    shape::Dim,
+};
 use nanoserde::{DeBin, SerBin};
-use crate::{backend::DeviceInfo, kernel::{Kernel, Op, Scope}, shape::Dim};
 
 #[derive(Debug, Clone, DeBin, SerBin)]
 pub struct WorkSizeOpt {
@@ -43,7 +47,8 @@ impl WorkSizeOpt {
                     let a = res[i];
                     let b = res[j];
                     if a * b <= d {
-                        if b < 32 { // No point in too large registers
+                        if b < 32 {
+                            // No point in too large registers
                             factors.push([a, b]);
                         }
                     }
@@ -91,7 +96,7 @@ impl WorkSizeOpt {
 
         let shape: Vec<Dim> = gws.iter().chain(&lws).chain(&rws).copied().collect();
         let n = kernel.shape().len();
-        if n < 4 && !kernel.is_reshape_contiguous(0..n, &shape) { return false; }
+        //if n < 4 && !kernel.is_reshape_contiguous(0..n, &shape) { return false; }
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
 
         {

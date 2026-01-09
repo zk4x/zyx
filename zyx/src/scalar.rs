@@ -67,6 +67,12 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// Neg
     #[must_use]
     fn neg(self) -> Self;
+    /// Exp 2
+    #[must_use]
+    fn exp2(self) -> Self;
+    /// Log 2
+    #[must_use]
+    fn log2(self) -> Self;
     /// `ReLU`
     #[must_use]
     fn relu(self) -> Self;
@@ -180,12 +186,6 @@ pub trait Float: Scalar {
     /// Cos
     #[must_use]
     fn cos(self) -> Self;
-    /// Exp 2
-    #[must_use]
-    fn exp2(self) -> Self;
-    /// Log 2
-    #[must_use]
-    fn log2(self) -> Self;
     /// Square root of this scalar.
     #[must_use]
     fn sqrt(self) -> Self;
@@ -198,11 +198,6 @@ impl Scalar for bf16 {
 
     fn from_f16(t: f16) -> Self {
         bf16::from_f32(t.into())
-    }
-
-    fn from_u64(t: u64) -> Self {
-        let _ = t;
-        todo!()
     }
 
     fn from_f32(t: f32) -> Self {
@@ -223,6 +218,11 @@ impl Scalar for bf16 {
 
     fn from_u32(t: u32) -> Self {
         bf16::from_f64(f64::from(t))
+    }
+
+    fn from_u64(t: u64) -> Self {
+        let _ = t;
+        todo!()
     }
 
     fn from_i8(t: i8) -> Self {
@@ -249,6 +249,10 @@ impl Scalar for bf16 {
         bf16::from_le_bytes([bytes[0], bytes[1]])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        todo!()
+    }
+
     fn dtype() -> DType {
         //DType::BF16
         todo!()
@@ -272,6 +276,14 @@ impl Scalar for bf16 {
 
     fn neg(self) -> Self {
         -self
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
     }
 
     fn relu(self) -> Self {
@@ -306,6 +318,10 @@ impl Scalar for bf16 {
         todo!()
     }
 
+    fn mod_(self, rhs: Self) -> Self {
+        self % rhs
+    }
+
     fn cmplt(self, rhs: Self) -> bool {
         self < rhs
     }
@@ -314,40 +330,12 @@ impl Scalar for bf16 {
         self > rhs
     }
 
-    fn or(self, rhs: Self) -> bool {
-        self != Self::ZERO || rhs != Self::ZERO
-    }
-
-    fn and(self, rhs: Self) -> bool {
-        self != Self::ZERO && rhs != Self::ZERO
-    }
-
-    fn max(self, rhs: Self) -> Self {
-        self.max(rhs)
-    }
-
-    fn max_value() -> Self {
-        bf16::MAX
-    }
-
-    fn min_value() -> Self {
-        bf16::MIN
-    }
-
-    fn is_equal(self, rhs: Self) -> bool {
-        self == rhs
-    }
-
-    fn epsilon() -> Self {
-        bf16::MIN_POSITIVE
-    }
-
-    fn mod_(self, rhs: Self) -> Self {
-        self % rhs
-    }
-
     fn noteq(self, rhs: Self) -> bool {
         self != rhs
+    }
+
+    fn or(self, rhs: Self) -> bool {
+        self != Self::ZERO || rhs != Self::ZERO
     }
 
     fn bitxor(self, rhs: Self) -> Self {
@@ -378,8 +366,28 @@ impl Scalar for bf16 {
         todo!()
     }
 
-    fn to_ne_bytes(&self) -> &[u8] {
-        todo!()
+    fn and(self, rhs: Self) -> bool {
+        self != Self::ZERO && rhs != Self::ZERO
+    }
+
+    fn max(self, rhs: Self) -> Self {
+        self.max(rhs)
+    }
+
+    fn max_value() -> Self {
+        bf16::MAX
+    }
+
+    fn min_value() -> Self {
+        bf16::MIN
+    }
+
+    fn is_equal(self, rhs: Self) -> bool {
+        self == rhs
+    }
+
+    fn epsilon() -> Self {
+        bf16::MIN_POSITIVE
     }
 }
 
@@ -401,14 +409,6 @@ impl Float for bf16 {
     }
 
     fn sqrt(self) -> Self {
-        todo!()
-    }
-
-    fn exp2(self) -> Self {
-        todo!()
-    }
-
-    fn log2(self) -> Self {
         todo!()
     }
 }
@@ -478,6 +478,10 @@ impl Scalar for f16 {
         f16::from_le_bytes([bytes[0], bytes[1]])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        todo!()
+    }
+
     fn dtype() -> DType {
         DType::F16
     }
@@ -500,6 +504,14 @@ impl Scalar for f16 {
 
     fn neg(self) -> Self {
         -self
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
     }
 
     fn relu(self) -> Self {
@@ -607,10 +619,6 @@ impl Scalar for f16 {
     fn epsilon() -> Self {
         f16::from_f32(0.00001)
     }
-
-    fn to_ne_bytes(&self) -> &[u8] {
-        todo!()
-    }
 }
 
 impl Float for f16 {
@@ -628,14 +636,6 @@ impl Float for f16 {
 
     fn sqrt(self) -> Self {
         f16::from_f32(self.to_f32().sqrt())
-    }
-
-    fn exp2(self) -> Self {
-        f16::from_f32(self.to_f32().exp2())
-    }
-
-    fn log2(self) -> Self {
-        f16::from_f32(self.to_f32().log2())
     }
 
     fn floor(self) -> Self {
@@ -705,6 +705,11 @@ impl Scalar for f32 {
         f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+    }
+
     fn dtype() -> DType {
         DType::F32
     }
@@ -727,6 +732,14 @@ impl Scalar for f32 {
 
     fn neg(self) -> Self {
         -self
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        self.log2()
     }
 
     fn relu(self) -> Self {
@@ -844,22 +857,9 @@ impl Scalar for f32 {
     fn epsilon() -> Self {
         0.0001
     }
-
-    fn to_ne_bytes(&self) -> &[u8] {
-        let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
-    }
 }
 
 impl Float for f32 {
-    fn exp2(self) -> Self {
-        self.exp2()
-    }
-
-    fn log2(self) -> Self {
-        self.log2()
-    }
-
     fn sin(self) -> Self {
         //libm::sinf(self)
         //let b = 4f32 / PI;
@@ -959,6 +959,11 @@ impl Scalar for f64 {
         ])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+    }
+
     fn dtype() -> DType {
         DType::F64
     }
@@ -981,6 +986,14 @@ impl Scalar for f64 {
 
     fn neg(self) -> Self {
         -self
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
     }
 
     fn relu(self) -> Self {
@@ -1087,22 +1100,9 @@ impl Scalar for f64 {
     fn epsilon() -> Self {
         0.00001
     }
-
-    fn to_ne_bytes(&self) -> &[u8] {
-        let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
-    }
 }
 
 impl Float for f64 {
-    fn exp2(self) -> Self {
-        self.exp2()
-    }
-
-    fn log2(self) -> Self {
-        self.log2()
-    }
-
     fn reciprocal(self) -> Self {
         1.0 / self
     }
@@ -1187,6 +1187,11 @@ impl Scalar for i8 {
         i8::from_le_bytes([bytes[0]])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+    }
+
     fn dtype() -> DType {
         DType::I8
     }
@@ -1209,6 +1214,14 @@ impl Scalar for i8 {
 
     fn neg(self) -> Self {
         -self
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
     }
 
     fn relu(self) -> Self {
@@ -1309,11 +1322,6 @@ impl Scalar for i8 {
     fn epsilon() -> Self {
         0
     }
-
-    fn to_ne_bytes(&self) -> &[u8] {
-        let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
-    }
 }
 
 impl Scalar for i16 {
@@ -1382,6 +1390,11 @@ impl Scalar for i16 {
         i16::from_le_bytes([bytes[0], bytes[1]])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+    }
+
     fn dtype() -> DType {
         DType::I16
     }
@@ -1404,6 +1417,14 @@ impl Scalar for i16 {
 
     fn neg(self) -> Self {
         -self
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
     }
 
     fn relu(self) -> Self {
@@ -1504,11 +1525,6 @@ impl Scalar for i16 {
     fn epsilon() -> Self {
         0
     }
-
-    fn to_ne_bytes(&self) -> &[u8] {
-        let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
-    }
 }
 
 impl Scalar for i32 {
@@ -1573,6 +1589,11 @@ impl Scalar for i32 {
         i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const i32 = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<i32>()) }
+    }
+
     fn dtype() -> DType {
         DType::I32
     }
@@ -1595,6 +1616,14 @@ impl Scalar for i32 {
 
     fn neg(self) -> Self {
         -self
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
     }
 
     fn relu(self) -> Self {
@@ -1694,11 +1723,6 @@ impl Scalar for i32 {
     fn epsilon() -> Self {
         0
     }
-
-    fn to_ne_bytes(&self) -> &[u8] {
-        let i: *const i32 = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<i32>()) }
-    }
 }
 
 impl Scalar for i64 {
@@ -1764,6 +1788,11 @@ impl Scalar for i64 {
         ])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+    }
+
     fn dtype() -> DType {
         DType::I64
     }
@@ -1786,6 +1815,14 @@ impl Scalar for i64 {
 
     fn neg(self) -> Self {
         -self
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
     }
 
     fn relu(self) -> Self {
@@ -1885,11 +1922,6 @@ impl Scalar for i64 {
     fn epsilon() -> Self {
         0
     }
-
-    fn to_ne_bytes(&self) -> &[u8] {
-        let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
-    }
 }
 
 impl Scalar for u8 {
@@ -1953,6 +1985,11 @@ impl Scalar for u8 {
         u8::from_le_bytes([bytes[0]])
     }
 
+    fn to_ne_bytes(&self) -> &[u8] {
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+    }
+
     fn dtype() -> DType {
         DType::U8
     }
@@ -1974,6 +2011,14 @@ impl Scalar for u8 {
     }
 
     fn neg(self) -> Self {
+        todo!()
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
         todo!()
     }
 
@@ -2075,11 +2120,6 @@ impl Scalar for u8 {
     fn epsilon() -> Self {
         0
     }
-
-    fn to_ne_bytes(&self) -> &[u8] {
-        let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
-    }
 }
 
 impl Scalar for u16 {
@@ -2169,6 +2209,14 @@ impl Scalar for u16 {
     }
 
     fn neg(self) -> Self {
+        todo!()
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
         todo!()
     }
 
@@ -2270,6 +2318,27 @@ impl Scalar for u16 {
     fn epsilon() -> Self {
         0
     }
+
+    fn cast<T: Scalar>(self) -> T {
+        use core::mem::transmute_copy as t;
+        unsafe {
+            match Self::dtype() {
+                DType::BF16 => T::from_bf16(t(&self)),
+                DType::F16 => T::from_f16(t(&self)),
+                DType::F32 => T::from_f32(t(&self)),
+                DType::F64 => T::from_f64(t(&self)),
+                DType::U8 => T::from_u8(t(&self)),
+                DType::U16 => T::from_u16(t(&self)),
+                DType::U32 => T::from_u32(t(&self)),
+                DType::U64 => T::from_u64(t(&self)),
+                DType::I8 => T::from_i8(t(&self)),
+                DType::I16 => T::from_i16(t(&self)),
+                DType::I32 => T::from_i32(t(&self)),
+                DType::I64 => T::from_i64(t(&self)),
+                DType::Bool => T::from_bool(t(&self)),
+            }
+        }
+    }
 }
 
 impl Scalar for u32 {
@@ -2362,6 +2431,14 @@ impl Scalar for u32 {
         todo!()
     }
 
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        self.ilog2()
+    }
+
     fn relu(self) -> Self {
         todo!()
     }
@@ -2428,8 +2505,7 @@ impl Scalar for u32 {
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self << rhs
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
@@ -2459,6 +2535,27 @@ impl Scalar for u32 {
 
     fn epsilon() -> Self {
         0
+    }
+
+    fn cast<T: Scalar>(self) -> T {
+        use core::mem::transmute_copy as t;
+        unsafe {
+            match Self::dtype() {
+                DType::BF16 => T::from_bf16(t(&self)),
+                DType::F16 => T::from_f16(t(&self)),
+                DType::F32 => T::from_f32(t(&self)),
+                DType::F64 => T::from_f64(t(&self)),
+                DType::U8 => T::from_u8(t(&self)),
+                DType::U16 => T::from_u16(t(&self)),
+                DType::U32 => T::from_u32(t(&self)),
+                DType::U64 => T::from_u64(t(&self)),
+                DType::I8 => T::from_i8(t(&self)),
+                DType::I16 => T::from_i16(t(&self)),
+                DType::I32 => T::from_i32(t(&self)),
+                DType::I64 => T::from_i64(t(&self)),
+                DType::Bool => T::from_bool(t(&self)),
+            }
+        }
     }
 }
 
@@ -2549,6 +2646,14 @@ impl Scalar for u64 {
     }
 
     fn neg(self) -> Self {
+        todo!()
+    }
+
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
         todo!()
     }
 
@@ -2737,6 +2842,14 @@ impl Scalar for bool {
         panic!()
     }
 
+    fn exp2(self) -> Self {
+        todo!()
+    }
+
+    fn log2(self) -> Self {
+        todo!()
+    }
+
     fn relu(self) -> Self {
         panic!()
     }
@@ -2838,5 +2951,26 @@ impl Scalar for bool {
 
     fn epsilon() -> Self {
         false
+    }
+
+    fn cast<T: Scalar>(self) -> T {
+        use core::mem::transmute_copy as t;
+        unsafe {
+            match Self::dtype() {
+                DType::BF16 => T::from_bf16(t(&self)),
+                DType::F16 => T::from_f16(t(&self)),
+                DType::F32 => T::from_f32(t(&self)),
+                DType::F64 => T::from_f64(t(&self)),
+                DType::U8 => T::from_u8(t(&self)),
+                DType::U16 => T::from_u16(t(&self)),
+                DType::U32 => T::from_u32(t(&self)),
+                DType::U64 => T::from_u64(t(&self)),
+                DType::I8 => T::from_i8(t(&self)),
+                DType::I16 => T::from_i16(t(&self)),
+                DType::I32 => T::from_i32(t(&self)),
+                DType::I64 => T::from_i64(t(&self)),
+                DType::Bool => T::from_bool(t(&self)),
+            }
+        }
     }
 }

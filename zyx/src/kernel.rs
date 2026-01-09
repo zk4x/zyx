@@ -253,7 +253,7 @@ impl Kernel {
                         ids.insert(
                             op_id,
                             match bop {
-                                BOp::Add => (xl + yl, xu + yu),
+                                BOp::Add => (xl.wrapping_add(yl), xu.wrapping_add(yu)),
                                 BOp::Sub => (xl.wrapping_sub(yl), xu.wrapping_sub(yu)),
                                 BOp::Mul => (xl * yl, xu * yu),
                                 BOp::Div => (xl / yl, xu / yu),
@@ -263,6 +263,7 @@ impl Kernel {
                                 BOp::Cmpgt => ((xl > yl) as usize, (xu > yu) as usize),
                                 BOp::Cmplt => ((xl < yl) as usize, (xu < yu) as usize),
                                 BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
+                                BOp::BitShiftLeft => (xl << yl, xu << yu),
                                 op => todo!("{:?}", op),
                             },
                         );
@@ -275,7 +276,10 @@ impl Kernel {
                 }
                 Op::Loop { dim, scope } => {
                     ids.insert(op_id, (0, dim - 1));
-                    println!("{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..={}", dim - 1);
+                    println!(
+                        "{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..={}",
+                        dim - 1
+                    );
                     indent += "  ";
                 }
                 Op::EndLoop => {
@@ -1038,7 +1042,9 @@ impl Kernel {
             }
         }
 
-        for &op_id in &self.order {
+        let mut i = 0;
+        while i < self.order.len() {
+            let op_id = self.order[i];
             match self.ops[op_id] {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
                 Op::Store { .. }
@@ -1067,6 +1073,12 @@ impl Kernel {
                         BOp::Mul if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
                         BOp::Mul if cx.is_one() => remap(&mut self.ops, op_id, y),
                         BOp::Mul if cx.is_two() => self.ops[op_id] = Op::Binary { x: y, y, bop: BOp::Add },
+                        /*BOp::Mul if cx.is_power_of_two() && cx.dtype() == IDX_T => {
+                        let c = self.ops.push(Op::Const(cx.unary(UOp::Log2)));
+                        self.order.insert(i, c);
+                        i += 1;
+                        self.ops[op_id] = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft }
+                        }*/
                         BOp::Div if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
                         BOp::Div if cx.is_one() => self.ops[op_id] = Op::Unary { x: y, uop: UOp::Reciprocal },
                         BOp::Pow if cx.is_one() => self.ops[op_id] = Op::Const(cx.dtype().one_constant()),
@@ -1075,11 +1087,7 @@ impl Kernel {
                         _ => {}
                     },
                     (_, Op::Const(cy)) => match bop {
-                        BOp::Add if cy.is_zero() => remap(&mut self.ops, op_id, x),
                         BOp::Sub if cy.is_zero() => remap(&mut self.ops, op_id, x),
-                        BOp::Mul if cy.is_zero() => self.ops[op_id] = Op::Const(cy.dtype().zero_constant()),
-                        BOp::Mul if cy.is_one() => remap(&mut self.ops, op_id, x),
-                        BOp::Mul if cy.is_two() => self.ops[op_id] = Op::Binary { x, y: x, bop: BOp::Add },
                         BOp::Div if cy.is_zero() => panic!("Division by constant zero"),
                         BOp::Div if cy.is_one() => remap(&mut self.ops, op_id, x),
                         BOp::Mod if cy.is_zero() => panic!("Module by constant zero"),
@@ -1100,6 +1108,7 @@ impl Kernel {
                     _ => {}
                 },
             }
+            i += 1;
         }
 
         #[cfg(debug_assertions)]
@@ -1398,6 +1407,7 @@ impl Kernel {
                                 BOp::Cmpgt => ((xl > yl) as usize, (xu > yu) as usize),
                                 BOp::Cmplt => ((xl < yl) as usize, (xu < yu) as usize),
                                 BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
+                                BOp::BitShiftLeft => (xl << yl, xu << yu),
                                 op => todo!("{:?}", op),
                             },
                         );
