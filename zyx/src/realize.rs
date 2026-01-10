@@ -43,22 +43,15 @@ impl From<KMKernelId> for usize {
     }
 }
 
-/*#[derive(Debug, Clone)]
-struct KMKernel {
-    kernel: Kernel,
-    outputs: Vec<TensorId>,
-    loads: Vec<TensorId>,
-    stores: Vec<TensorId>,
-}*/
-
 struct Kernelizer<'a> {
     // TODO merge as many of these as possible. Perhaps start by mergins rcs and visited
     // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
-    virt_realized_nodes: Set<TensorId>,
-    must_keep_nodes: Set<TensorId>,
-    realized_nodes: Set<TensorId>,
+    must_keep_nodes: Set<TensorId>, // Nodes that were realized before kernelizer was created
+    virt_realized_nodes: Set<TensorId>, // Nodes that appear in kernel stores, but are not realized yet
+    realized_nodes: Set<TensorId>,  // Nodes that are realized
     // TODO later delete this and just directly use the runtime kernel cache
     kernels: Slab<KMKernelId, Kernel>,
+    // We should remove either visited, or rcs
     visited: Map<TensorId, (KMKernelId, OpId)>,
     rcs: Map<TensorId, u32>,
     graph: &'a Graph,

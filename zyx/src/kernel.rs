@@ -152,15 +152,18 @@ impl PartialEq for Kernel {
 }
 impl Eq for Kernel {}
 
-impl DeBin for Kernel {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        todo!()
+impl SerBin for Kernel {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        self.ops.ser_bin(output);
+        self.order.ser_bin(output);
     }
 }
 
-impl SerBin for Kernel {
-    fn ser_bin(&self, output: &mut Vec<u8>) {
-        todo!()
+impl DeBin for Kernel {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        let ops = Slab::<OpId, Op>::de_bin(offset, bytes)?;
+        let order = Vec::<OpId>::de_bin(offset, bytes)?;
+        Ok(Self { ops, order, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new() })
     }
 }
 
