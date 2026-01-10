@@ -7,7 +7,10 @@ use crate::{
     view::View,
 };
 use nanoserde::{DeBin, SerBin};
-use std::{fmt::Display, hash::BuildHasherDefault};
+use std::{
+    fmt::Display,
+    hash::{BuildHasherDefault, Hash},
+};
 
 pub const IDX_T: DType = DType::U32;
 
@@ -50,7 +53,7 @@ impl SlabId for OpId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, DeBin, SerBin)]
+#[derive(Debug, Clone, DeBin, SerBin)]
 pub struct Kernel {
     pub ops: Slab<OpId, Op>,
     pub order: Vec<OpId>,
@@ -87,16 +90,6 @@ pub enum Scope {
     Register,
 }
 
-impl Display for Scope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Scope::Global => "GLOBAL",
-            Scope::Local => "LOCAL",
-            Scope::Register => "REG",
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist only in kernelizer, basically they can be eventually removed.
@@ -119,7 +112,7 @@ pub enum Op {
     // ops that only exist after unfolding views and reduces
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
-    Load { src: OpId, index: OpId, row_major: bool },
+    Load { src: OpId, index: OpId, dims: [Dim; 2], row_major: bool },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
 }
@@ -169,6 +162,30 @@ impl Op {
                 *param = *remapped_id;
             }
         }
+    }
+}
+
+impl Display for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Scope::Global => "GLOBAL",
+            Scope::Local => "LOCAL",
+            Scope::Register => "REG",
+        })
+    }
+}
+
+impl PartialEq for Kernel {
+    fn eq(&self, other: &Self) -> bool {
+        self.ops == other.ops && self.order == other.order
+    }
+}
+impl Eq for Kernel {}
+
+impl Hash for Kernel {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.ops.hash(state);
+        self.order.hash(state);
     }
 }
 
@@ -230,9 +247,11 @@ impl Kernel {
                     }
                     println!("{op_id:>3}{indent}{MAGENTA}CONST{RESET} {} {x}", x.dtype());
                 }
-                Op::Load { src, index, row_major } => println!(
-                    "{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}] row={row_major}    {}..={}",
-                    ids[&index].0, ids[&index].1
+                Op::Load { src, index, dims, row_major } => println!(
+                    "{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}] {}{dims:?}    {}..={}",
+                    if row_major { "" } else { "T" },
+                    ids[&index].0,
+                    ids[&index].1
                 ),
                 Op::Store { dst, x: src, index } => {
                     println!(
@@ -523,7 +542,7 @@ impl Kernel {
             order.extend(reduce_loop_ops);
 
             // Add reduction operation, load from acc, accumulate, store to acc
-            let load_acc = self.ops.push(Op::Load { src: acc, index: const_zero, row_major: true });
+            let load_acc = self.ops.push(Op::Load { src: acc, index: const_zero, dims: [1, 1], row_major: true });
             order.push(load_acc);
             let binary_accumulate = self.ops.push(Op::Binary {
                 x,
@@ -544,7 +563,7 @@ impl Kernel {
             }
 
             // Replace old reduce op with the acc load op
-            self.ops[reduce_op_id] = Op::Load { src: acc, index: const_zero, row_major: true };
+            self.ops[reduce_op_id] = Op::Load { src: acc, index: const_zero, dims: [1, 1], row_major: true };
 
             // Put all things back in self.order
             let reduce_i = self.order.iter().position(|&op_id| op_id == reduce_op_id).unwrap();
@@ -829,7 +848,7 @@ impl Kernel {
                     let z = new_op(
                         ops,
                         order,
-                        Op::Load { src: global_args[load_id], index: offset, row_major: true },
+                        Op::Load { src: global_args[load_id], index: offset, dims: [1, 1], row_major: true },
                     );
 
                     let pcd = new_op(ops, order, Op::Cast { x: pc, dtype });

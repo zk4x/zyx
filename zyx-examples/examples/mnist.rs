@@ -28,11 +28,15 @@ fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
     let train_dataset: HashMap<String, Tensor> = Tensor::load("data/mnist_dataset.safetensors")?;
     //println!("{:?}", train_dataset.keys());
-    let train_x = train_dataset["x_train"].cast(DType::F32) / 255;
     //println!("{:.2}", train_x.slice((-5.., ..))?);
+    /*let train_x = train_dataset["x_train"].cast(DType::F32) / 255;
     let train_y = train_dataset["y_train"].clone();
     let test_x = train_dataset["x_test"].cast(DType::F32) / 255;
-    let test_y = train_dataset["y_test"].clone();
+    let test_y = train_dataset["y_test"].clone();*/
+    let train_x = train_dataset["train_x"].cast(DType::F32) / 255;
+    let train_y = train_dataset["train_y"].clone();
+    let test_x = train_dataset["test_x"].cast(DType::F32) / 255;
+    let test_y = train_dataset["test_y"].clone();
 
     let batch_size = 64usize;
     let num_train = train_x.shape()[0];
