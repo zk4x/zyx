@@ -983,7 +983,7 @@ impl DType {
     pub(super) fn cu(&self) -> &str {
         match self {
             Self::BF16 => "bfloat16",
-            Self::F16 => "half",
+            Self::F16 => "__half",
             Self::F32 => "float",
             Self::F64 => "double",
             Self::I8 => "char",
@@ -1013,7 +1013,11 @@ impl Constant {
         }
         match self {
             &Self::BF16(x) => format!("{}f", half::bf16::from_le_bytes(x)),
-            &Self::F16(x) => format!("__float2half({:.6})", half::f16::from_le_bytes(x)),
+            &Self::F16(x) => {
+                //format!("__float2half({:.6})", half::f16::from_le_bytes(x)
+                let bits: u16 = half::f16::from_le_bytes(x).to_bits();
+                format!("(__half){{0x{:04X}}}", bits)
+            }
             &Self::F32(x) => format!("{}", format_precise(f32::from_le_bytes(x), 9)),
             &Self::F64(x) => format!("{}", format_precise(f64::from_le_bytes(x), 18)),
             Self::U8(x) => format!("{x}"),
@@ -1343,9 +1347,27 @@ impl CUDADevice {
                     );
                 }
                 &Op::Cast { x, dtype } => {
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.cu());
+                    if dtype == DType::F16 {
+                        _ = match dtypes[&x] {
+                            DType::BF16 => todo!(),
+                            DType::F16 => todo!(),
+                            DType::F32 => writeln!(source, "{indent}r{reg} = __float2half({x_var});"),
+                            DType::F64 => todo!(),
+                            DType::U8 => todo!(),
+                            DType::U16 => todo!(),
+                            DType::U32 => todo!(),
+                            DType::U64 => todo!(),
+                            DType::I8 => todo!(),
+                            DType::I16 => todo!(),
+                            DType::I32 => writeln!(source, "{indent}r{reg} = __float2half({x_var});"),
+                            DType::I64 => todo!(),
+                            DType::Bool => todo!(),
+                        };
+                    } else {
+                        _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
+                    }
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
@@ -1466,10 +1488,7 @@ impl CUDADevice {
 
         let mut pragma = String::new();
         if dtypes.values().any(|&x| x == DType::F16) {
-            pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
-        }
-        if dtypes.values().any(|&x| x == DType::F64) {
-            pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
+            pragma += "#include <cuda_fp16.h>";
         }
 
         let mut name = format!(
@@ -1533,12 +1552,15 @@ impl CUDADevice {
             )
         }
         .check(ErrorStatus::KernelCompilation)?;
+
         let df = format!(
             "--gpu-architecture=compute_{}{}\0",
             self.compute_capability[0], self.compute_capability[1]
         );
-        let opts = [df.as_ptr().cast(), c"-I/usr/local/cuda-12.8/include".as_ptr().cast()];
-        if let Err(e) = unsafe { nvrtcCompileProgram(program, 2, opts.as_ptr()) }.check(ErrorStatus::KernelCompilation)
+        let opts = [df.as_ptr().cast()];
+
+        if let Err(e) = unsafe { nvrtcCompileProgram(program, opts.len() as i32, opts.as_ptr()) }
+            .check(ErrorStatus::KernelCompilation)
         {
             println!("CUDA compilation error {e:?}");
             let mut program_log_size: usize = 0;
@@ -1547,11 +1569,7 @@ impl CUDADevice {
             let mut program_log_vec: Vec<u8> = vec![0; program_log_size + 1];
             unsafe { nvrtcGetProgramLog(program, program_log_vec.as_mut_ptr().cast()) }
                 .check(ErrorStatus::KernelCompilation)?;
-            if let Ok(log) = String::from_utf8(program_log_vec) {
-                println!("NVRTC program log:\n{log}",);
-            } else {
-                println!("NVRTC program log is not valid utf8");
-            }
+            println!("{}", String::from_utf8_lossy(&program_log_vec));
         }
         let mut ptx_size: usize = 0;
         unsafe { nvrtcGetPTXSize(program, &raw mut ptx_size) }.check(ErrorStatus::KernelCompilation)?;

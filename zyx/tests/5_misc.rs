@@ -89,6 +89,15 @@ fn fuse_6() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn matmul_3() -> Result<(), ZyxError> {
+    let x = Tensor::from([[2, 4, 3], [1, 5, 1]]).cast(DType::F16);
+    let y = Tensor::from([[2, 4], [3, 1], [5, 1]]).cast(DType::F16);
+    let z = x.dot(y)?;
+    assert_eq!(z, [[31, 15], [22, 10]]);
+    Ok(())
+}
+
+#[test]
 fn matmul_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     let y = Tensor::from([[2, 4], [3, 1], [5, 1]]);
