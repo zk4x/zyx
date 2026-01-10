@@ -157,10 +157,8 @@ impl Optimizer {
             loop_split_opt_defaults,
         ];
 
-        println!(
-            "Optimizing work_size_opt_max_idx={work_size_opt_max_idx},\nloop_jam_opt_max_idx={loop_jam_opt_max_idx},\nloop_unrolling_opt_max_idx={loop_unroll_opt_max_idx},\nloop_split_opt_max_idx={loop_split_opt_max_idx}"
-        );
-        println!("Max default opts: {:?}", default_indices);
+        //println!( "Optimizing work_size_opt_max_idx={work_size_opt_max_idx},\nloop_jam_opt_max_idx={loop_jam_opt_max_idx},\nloop_unrolling_opt_max_idx={loop_unroll_opt_max_idx},\nloop_split_opt_max_idx={loop_split_opt_max_idx}" );
+        //println!("Max default opts: {:?}", default_indices);
 
         Self {
             max_indices,

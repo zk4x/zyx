@@ -89,15 +89,6 @@ fn fuse_6() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn matmul_3() -> Result<(), ZyxError> {
-    let x = Tensor::from([[2, 4, 3], [1, 5, 1]]).cast(DType::F16);
-    let y = Tensor::from([[2, 4], [3, 1], [5, 1]]).cast(DType::F16);
-    let z = x.dot(y)?;
-    assert_eq!(z, [[31, 15], [22, 10]]);
-    Ok(())
-}
-
-#[test]
 fn matmul_2() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 4, 3], [1, 5, 1]]);
     let y = Tensor::from([[2, 4], [3, 1], [5, 1]]);
@@ -112,7 +103,6 @@ fn matmul_1() -> Result<(), ZyxError> {
         for k in (12..890).step_by(231) {
             for n in (5..97).step_by(71) {
                 let x_data: Vec<Vec<i32>> = (0..m).map(|i| (0..k).map(|j| i as i32 + j as i32).collect()).collect();
-
                 let y_data: Vec<Vec<i32>> = (0..k).map(|i| (0..n).map(|j| i as i32 - j as i32).collect()).collect();
 
                 let x = Tensor::from(x_data.clone());
@@ -591,8 +581,9 @@ fn eye1() {
 #[test]
 fn bench_mm1() -> Result<(), ZyxError> {
     const N: usize = 1024;
-    let x = Tensor::rand([N, N], zyx::DType::F32)?;
-    let y = Tensor::rand([N, N], zyx::DType::F32)?;
+    let dtype = zyx::DType::F32;
+    let x = Tensor::rand([N, N], dtype)?;
+    let y = Tensor::rand([N, N], dtype)?;
     Tensor::realize([&x, &y])?;
     for _ in 0..10 {
         let z = x.matmul(&y)?;

@@ -479,7 +479,8 @@ impl Scalar for f16 {
     }
 
     fn to_ne_bytes(&self) -> &[u8] {
-        todo!()
+        let i: *const Self = self;
+        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {

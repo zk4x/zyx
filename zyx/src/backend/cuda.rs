@@ -4,8 +4,9 @@
 // TODO properly deallocate events
 
 use std::{
-    ffi::{c_char, c_int, c_uint, c_void},
+    ffi::{CString, c_char, c_int, c_uint, c_void},
     hash::BuildHasherDefault,
+    path::PathBuf,
     ptr,
     sync::mpsc::{Receiver, Sender, channel},
 };
@@ -64,6 +65,7 @@ pub struct CUDADevice {
     memory_pool_id: u32,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
+    include_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -152,14 +154,25 @@ pub(super) fn initialize_device(
         }
         return Ok(());
     }
-    let cuda_paths = [
-        "/lib/x86_64-linux-gnu/libcuda.so",
-        "/lib64/x86_64-linux-gnu/libcuda.so",
-        "/lib/libcuda.so",
-        "/lib64/libcuda.so",
-        "/usr/lib/libcuda.so",
-        "/usr/lib64/libcuda.so",
-    ];
+
+    let mut cuda_paths = Vec::new();
+    let roots = ["lib", "lib64", "/usr", "/opt"];
+    let mut stack: Vec<PathBuf> = roots.into_iter().map(|p| PathBuf::from(p)).collect();
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.file_name().map(|f| f == "libcuda.so").unwrap_or(false) {
+                    cuda_paths.push(path);
+                }
+            }
+        }
+    }
+    cuda_paths.sort_by_key(|k| k.components().count());
+    //println!("cuda paths: {cuda_paths:?}");
+
     let cuda = cuda_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(cuda) = cuda else {
         if debug_dev {
@@ -167,6 +180,23 @@ pub(super) fn initialize_device(
         }
         return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "CUDA libcuda.so not found.".into() });
     };
+
+    let mut include_path: Option<PathBuf> = None;
+    let roots = [PathBuf::from("/usr"), PathBuf::from("/opt")];
+    let mut stack: Vec<PathBuf> = roots.to_vec();
+    'a: while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.file_name().map(|f| f == "cuda_fp16.h").unwrap_or(false) {
+                    include_path = path.parent().map(|p| p.to_path_buf());
+                    break 'a;
+                }
+            }
+        }
+    }
 
     let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus = *unsafe { cuda.get(b"cuInit\0") }?;
     let cuDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> CUDAStatus =
@@ -589,6 +619,7 @@ pub(super) fn initialize_device(
             },
             memory_pool_id: u32::try_from(memory_pools.len()).expect("You've got more than u32::MAX memory pools?") - 1,
             compute_capability: [major, minor],
+            include_path: include_path.clone(),
         };
         dev.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024, // TODO run a kernel to get an estimate
@@ -983,7 +1014,7 @@ impl DType {
     pub(super) fn cu(&self) -> &str {
         match self {
             Self::BF16 => "bfloat16",
-            Self::F16 => "__half",
+            Self::F16 => "half",
             Self::F32 => "float",
             Self::F64 => "double",
             Self::I8 => "char",
@@ -1016,7 +1047,7 @@ impl Constant {
             &Self::F16(x) => {
                 //format!("__float2half({:.6})", half::f16::from_le_bytes(x)
                 let bits: u16 = half::f16::from_le_bytes(x).to_bits();
-                format!("(__half){{0x{:04X}}}", bits)
+                format!("(half)0x{:04X}", bits)
             }
             &Self::F32(x) => format!("{}", format_precise(f32::from_le_bytes(x), 9)),
             &Self::F64(x) => format!("{}", format_precise(f64::from_le_bytes(x), 18)),
@@ -1349,25 +1380,7 @@ impl CUDADevice {
                 &Op::Cast { x, dtype } => {
                     let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    if dtype == DType::F16 {
-                        _ = match dtypes[&x] {
-                            DType::BF16 => todo!(),
-                            DType::F16 => todo!(),
-                            DType::F32 => writeln!(source, "{indent}r{reg} = __float2half({x_var});"),
-                            DType::F64 => todo!(),
-                            DType::U8 => todo!(),
-                            DType::U16 => todo!(),
-                            DType::U32 => todo!(),
-                            DType::U64 => todo!(),
-                            DType::I8 => todo!(),
-                            DType::I16 => todo!(),
-                            DType::I32 => writeln!(source, "{indent}r{reg} = __float2half({x_var});"),
-                            DType::I64 => todo!(),
-                            DType::Bool => todo!(),
-                        };
-                    } else {
-                        _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
-                    }
+                    _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
@@ -1488,7 +1501,7 @@ impl CUDADevice {
 
         let mut pragma = String::new();
         if dtypes.values().any(|&x| x == DType::F16) {
-            pragma += "#include <cuda_fp16.h>";
+            pragma += "#include <cuda_fp16.h>\n";
         }
 
         let mut name = format!(
@@ -1553,11 +1566,19 @@ impl CUDADevice {
         }
         .check(ErrorStatus::KernelCompilation)?;
 
-        let df = format!(
-            "--gpu-architecture=compute_{}{}\0",
+        let mut opts = vec![format!(
+            "--gpu-architecture=compute_{}{}",
             self.compute_capability[0], self.compute_capability[1]
-        );
-        let opts = [df.as_ptr().cast()];
+        )];
+
+        if let Some(path) = &self.include_path {
+            let path = format!("--include-path={}", path.display());
+            opts.push(path);
+        };
+        // Because rust
+        let opts_cstrings: Vec<CString> = opts.iter().map(|s| CString::new(s.as_str()).unwrap()).collect();
+
+        let opts: Vec<*const i8> = opts_cstrings.iter().map(|c| c.as_ptr()).collect();
 
         if let Err(e) = unsafe { nvrtcCompileProgram(program, opts.len() as i32, opts.as_ptr()) }
             .check(ErrorStatus::KernelCompilation)
