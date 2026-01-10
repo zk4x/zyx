@@ -15,9 +15,9 @@ pub struct LoopJamOpt {
 }
 
 impl LoopJamOpt {
-    pub fn new(_kernel: &Kernel, dev_info: &DeviceInfo) -> (Self, u32) {
+    pub fn new(_kernel: &Kernel, dev_info: &DeviceInfo) -> (Self, u32, Vec<u32>) {
         // TODO make it work per loop?
-        (Self { max_register_bytes: dev_info.max_register_bytes }, 1) // 1, 64 loop jam
+        (Self { max_register_bytes: dev_info.max_register_bytes }, 1, vec![0]) // 1, 64 loop jam
     }
 
     // It's complex :P

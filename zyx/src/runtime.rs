@@ -217,7 +217,6 @@ impl Runtime {
         self.graph = Graph::new();
 
         // It seems there is no point in actually deinitializing anything...
-        /*
         // Drop programs (kernels)
         self.cache.deinitialize(&mut self.devices);
         // drop devices
@@ -231,7 +230,7 @@ impl Runtime {
             pool.deinitialize();
         }
         self.config_dir = None;
-        self.temp_data = Map::default();*/
+        self.temp_data = Map::default();
 
         // These variables are persistent:
         /*self.rng

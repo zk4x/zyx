@@ -436,7 +436,6 @@ impl Constant {
         }
     }
 
-    #[allow(clippy::float_cmp)]
     pub(crate) fn is_power_of_two(&self) -> bool {
         match *self {
             Constant::U32(x) => x != 0 && (x & (x - 1)) == 0,

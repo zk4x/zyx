@@ -7,11 +7,11 @@ use nanoserde::{DeBin, SerBin};
 
 /// loop unrolling
 #[derive(Debug, Clone, DeBin, SerBin)]
-pub struct LoopUnrollingOpt {}
+pub struct LoopUnrollOpt {}
 
-impl LoopUnrollingOpt {
-    pub fn new(_kernel: &Kernel) -> (Self, u32) {
-        (Self {}, 2)
+impl LoopUnrollOpt {
+    pub fn new(_kernel: &Kernel) -> (Self, u32, Vec<u32>) {
+        (Self {}, 2, vec![0, 1])
     }
 
     #[must_use]

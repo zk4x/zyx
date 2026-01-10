@@ -5,6 +5,8 @@ use crate::{
 };
 use nanoserde::{DeBin, SerBin};
 
+// TODO currently this is not good at all. It's too simplistic and does not try hard enough to find good work sizes
+
 #[derive(Debug, Clone, DeBin, SerBin)]
 pub struct WorkSizeOpt {
     gws: Vec<Dim>,
@@ -13,7 +15,7 @@ pub struct WorkSizeOpt {
 }
 
 impl WorkSizeOpt {
-    pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> (Self, u32) {
+    pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> (Self, u32, Vec<u32>) {
         fn divisors(x: usize, limit: usize) -> Vec<usize> {
             debug_assert_ne!(x, 0);
             let mut res = Vec::new();
@@ -47,8 +49,7 @@ impl WorkSizeOpt {
                     let a = res[i];
                     let b = res[j];
                     if a * b <= d {
-                        if b < 32 {
-                            // No point in too large registers
+                        if b <= 64 {
                             factors.push([a, b]);
                         }
                     }
@@ -62,7 +63,7 @@ impl WorkSizeOpt {
 
         let max_idx = gws_factors.iter().map(|gd| gd.len() as u32).product();
         //println!("gws={gws:?}, gws_factors={gws_factors:?}, max_local_threads={max_local_threads}");
-        (Self { gws, gws_factors, max_local_threads }, max_idx)
+        (Self { gws, gws_factors, max_local_threads }, max_idx, vec![0, 1, 2])
     }
 
     // Returns false if this index is invalid

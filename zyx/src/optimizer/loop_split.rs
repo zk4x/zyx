@@ -13,7 +13,7 @@ pub struct LoopSplitOpt {
 }
 
 impl LoopSplitOpt {
-    pub fn new(kernel: &Kernel) -> (Self, u32) {
+    pub fn new(kernel: &Kernel) -> (Self, u32, Vec<u32>) {
         //return (LoopSplitOpt { reduction_splits: Vec::new() }, 10);
 
         let mut reduction_splits = Vec::new();
@@ -42,7 +42,7 @@ impl LoopSplitOpt {
         }
 
         let max_index = reduction_splits.iter().map(|splits| splits.len() as u32).product::<u32>();
-        (LoopSplitOpt { reduction_splits }, max_index)
+        (LoopSplitOpt { reduction_splits }, max_index, (0..max_index).collect())
     }
 
     pub fn apply_optimization(&self, mut index: u32, kernel: &mut Kernel) -> bool {

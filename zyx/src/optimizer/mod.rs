@@ -2,7 +2,7 @@ use crate::{
     backend::DeviceInfo,
     kernel::Kernel,
     optimizer::{
-        loop_jam::LoopJamOpt, loop_split::LoopSplitOpt, loop_unrolling::LoopUnrollingOpt, work_size::WorkSizeOpt,
+        loop_jam::LoopJamOpt, loop_split::LoopSplitOpt, loop_unrolling::LoopUnrollOpt, work_size::WorkSizeOpt,
     },
 };
 use nanoserde::{DeBin, SerBin};
@@ -22,17 +22,18 @@ pub struct Optimizer {
     // optimizations
     work_size_opt: WorkSizeOpt,
     loop_unroll_and_jam_opt: LoopJamOpt,
-    loop_unrolling_opt: LoopUnrollingOpt,
+    loop_unrolling_opt: LoopUnrollOpt,
     loop_split_opt: LoopSplitOpt,
     //inner_loop_swap_opt: InnerLoopSwapOpt, // a bit harder to know max number of optimizations
     max_indices: [u32; 4],
+    default_indices: [Vec<u32>; 4],
     // best optimization found so far
     best_optimization: Optimization,
     // time taken by kernel with the best optimization
     pub best_time_nanos: u64,
     // Which iteration are we on? First 30 iterations are random, then 20 iterations of refinement
     // and remaider is just going over all possible optimizations in deterministic order
-    rand_iteration: u32,
+    default_iteration: u32,
     full_iteration: u32,
     max_iter: u32,
     // Optimizations that were tried during random search and refinement
@@ -88,7 +89,7 @@ impl Optimizer {
         }
 
         //kernel.debug();
-        if !(LoopUnrollingOpt {}.apply_optimization(0, kernel)) {
+        if !(LoopUnrollOpt {}.apply_optimization(0, kernel)) {
             return false;
         };
 
@@ -99,7 +100,7 @@ impl Optimizer {
 
         // Unrolling for all loops
         //if !self.loop_unrolling_opt.apply_optimization(loop_unrolling_opt_index, kernel) { return false; }
-        if !(LoopUnrollingOpt {}.apply_optimization(loop_unrolling_opt_index, kernel)) {
+        if !(LoopUnrollOpt {}.apply_optimization(loop_unrolling_opt_index, kernel)) {
             return false;
         };
 
@@ -139,30 +140,39 @@ impl Optimizer {
     }
 
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
-        let (local_work_size_opt, local_work_size_opt_max_idx) = WorkSizeOpt::new(kernel, dev_info);
-        let (loop_unrolling_opt, loop_unrolling_opt_max_idx) = LoopUnrollingOpt::new(kernel);
-        let (loop_unroll_and_jam_opt, loop_unroll_and_jam_opt_max_idx) = LoopJamOpt::new(kernel, dev_info);
-        let (loop_split_opt, loop_split_opt_max_idx) = LoopSplitOpt::new(kernel);
+        let (work_size_opt, work_size_opt_max_idx, work_size_opt_defaults) = WorkSizeOpt::new(kernel, dev_info);
+        let (loop_unroll_opt, loop_unroll_opt_max_idx, loop_unroll_opt_defaults) = LoopUnrollOpt::new(kernel);
+        let (loop_jam_opt, loop_jam_opt_max_idx, loop_jam_opt_defaults) = LoopJamOpt::new(kernel, dev_info);
+        let (loop_split_opt, loop_split_opt_max_idx, loop_split_opt_defaults) = LoopSplitOpt::new(kernel);
         let max_indices = [
-            local_work_size_opt_max_idx,
-            loop_unroll_and_jam_opt_max_idx,
-            loop_unrolling_opt_max_idx,
+            work_size_opt_max_idx,
+            loop_unroll_opt_max_idx,
+            loop_jam_opt_max_idx,
             loop_split_opt_max_idx,
         ];
+        let default_indices = [
+            work_size_opt_defaults,
+            loop_unroll_opt_defaults,
+            loop_jam_opt_defaults,
+            loop_split_opt_defaults,
+        ];
 
-        /*println!(
-            "Optimizing local_work_size_opt_max_idx={local_work_size_opt_max_idx},\nloop_unroll_and_jam_opt_max_idx={loop_unroll_and_jam_opt_max_idx},\nloop_unrolling_opt_max_idx={loop_unrolling_opt_max_idx},\nloop_split_opt_max_idx={loop_split_opt_max_idx}"
-        );*/
+        println!(
+            "Optimizing work_size_opt_max_idx={work_size_opt_max_idx},\nloop_jam_opt_max_idx={loop_jam_opt_max_idx},\nloop_unrolling_opt_max_idx={loop_unroll_opt_max_idx},\nloop_split_opt_max_idx={loop_split_opt_max_idx}"
+        );
+        println!("Max default opts: {:?}", default_indices);
+
         Self {
             max_indices,
-            work_size_opt: local_work_size_opt,
-            loop_unroll_and_jam_opt,
-            loop_unrolling_opt,
+            default_indices,
+            work_size_opt,
+            loop_unroll_and_jam_opt: loop_jam_opt,
+            loop_unrolling_opt: loop_unroll_opt,
             loop_split_opt,
             best_optimization: Optimization(0),
             best_time_nanos: u64::MAX,
             tried: HashSet::with_capacity(200),
-            rand_iteration: 0,
+            default_iteration: 0,
             full_iteration: 0,
             max_iter: max_indices.iter().product(),
             last: Optimization(0),
@@ -203,11 +213,58 @@ impl Optimizer {
         self.full_iteration >= self.max_iter
     }
 
-    fn random_search(&mut self) -> Option<Optimization> {
-        if self.rand_iteration >= 200 {
+    /*pub fn default_search(&mut self) -> Option<Optimization> {
+        if self.default_iteration >= 200 {
             return None;
         }
-        self.rand_iteration += 1;
+        self.default_iteration += 1;
+
+        // TODO make this fast by checking the last opt and incrementing from there
+        // --- Step 1: try defaults on-the-fly ---
+        // Loop over all combinations of default_indices
+        for &i0 in &self.default_indices[0] {
+            for &i1 in &self.default_indices[1] {
+                for &i2 in &self.default_indices[2] {
+                    for &i3 in &self.default_indices[3] {
+                        // Flatten into single Optimization(u32)
+                        let mut flat_idx = 0;
+                        let mut multiplier = 1;
+                        let indices = [i0, i1, i2, i3];
+                        for (i, &max) in indices.iter().rev().zip(self.max_indices.iter().rev()) {
+                            flat_idx += i * multiplier;
+                            multiplier *= max;
+                        }
+
+                        let opt = Optimization(flat_idx);
+                        if self.tried.insert(opt) {
+                            self.last = opt;
+                            return Some(opt);
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Step 2: fallback to random search over full Cartesian product ---
+        let mut rng = crate::rng::Rng::seed_from_u64(642392);
+        for _ in 0..1_000_000 {
+            let index = rng.range(0..self.max_iter);
+            let opt = Optimization(index);
+            if self.tried.insert(opt) {
+                self.last = opt;
+                return Some(opt);
+            }
+        }
+
+        // --- Step 3: exhausted ---
+        None
+    }*/
+
+    fn random_search(&mut self) -> Option<Optimization> {
+        if self.default_iteration >= 200 {
+            return None;
+        }
+        self.default_iteration += 1;
         let mut rng = crate::rng::Rng::seed_from_u64(642392);
         //let mut rng = crate::rng::Rng::seed_from_systime();
         for _ in 0..1_000_000 {

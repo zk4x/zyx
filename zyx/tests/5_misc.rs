@@ -584,8 +584,11 @@ fn bench_mm1() -> Result<(), ZyxError> {
     const N: usize = 1024;
     let x = Tensor::rand([N, N], zyx::DType::F32)?;
     let y = Tensor::rand([N, N], zyx::DType::F32)?;
-    let z = x.matmul(y)?;
-    Tensor::realize([&z])?;
+    Tensor::realize([&x, &y])?;
+    for _ in 0..10 {
+        let z = x.matmul(&y)?;
+        Tensor::realize([&z])?;
+    }
     Ok(())
 }
 
@@ -909,7 +912,6 @@ fn complex_causal_self_attention() -> Result<(), ZyxError> {
     Ok(())
 }
 
-// TODO get this test working
 #[test]
 fn dot6() -> Result<(), ZyxError> {
     let mut x = Tensor::from([2i32, 3, 1]);

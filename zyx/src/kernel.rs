@@ -1073,12 +1073,12 @@ impl Kernel {
                         BOp::Mul if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
                         BOp::Mul if cx.is_one() => remap(&mut self.ops, op_id, y),
                         BOp::Mul if cx.is_two() => self.ops[op_id] = Op::Binary { x: y, y, bop: BOp::Add },
-                        /*BOp::Mul if cx.is_power_of_two() && cx.dtype() == IDX_T => {
-                        let c = self.ops.push(Op::Const(cx.unary(UOp::Log2)));
-                        self.order.insert(i, c);
-                        i += 1;
-                        self.ops[op_id] = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft }
-                        }*/
+                        BOp::Mul if cx.is_power_of_two() && cx.dtype() == IDX_T => {
+                            let c = self.ops.push(Op::Const(cx.unary(UOp::Log2)));
+                            self.order.insert(i, c);
+                            i += 1;
+                            self.ops[op_id] = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft }
+                        }
                         BOp::Div if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
                         BOp::Div if cx.is_one() => self.ops[op_id] = Op::Unary { x: y, uop: UOp::Reciprocal },
                         BOp::Pow if cx.is_one() => self.ops[op_id] = Op::Const(cx.dtype().one_constant()),

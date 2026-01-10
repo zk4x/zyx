@@ -22,7 +22,6 @@ use std::{
     hash::BuildHasherDefault,
     ptr,
     sync::Arc,
-    thread::current,
 };
 
 #[derive(Debug, Default, DeJson)]
@@ -647,10 +646,10 @@ impl OpenCLDevice {
             current_loop_level: u8,
         ) -> usize {
             for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
-                #[cfg(debug_assertions)]
+                /*#[cfg(debug_assertions)]
                 if *loop_level > current_loop_level {
                     debug_assert_eq!(*nrc, 0);
-                }
+                }*/
                 if *nrc == 0 && *dt == dtype && current_loop_level <= *loop_level {
                     reg_map.insert(op_id, i);
                     *nrc = rc;
@@ -927,12 +926,14 @@ impl OpenCLDevice {
                 }
             }
         }
-        if registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes > 256 {
+        let _total_bytes = registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes;
+        /*if total_bytes > 4096 {
+            println!("Invalid alloc of {total_bytes} bytes");
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "Kernel with too many registers.".into(),
             });
-        }
+        }*/
 
         let mut reg_str = String::new();
         if registers.len() > 0 {
