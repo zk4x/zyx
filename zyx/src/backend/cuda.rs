@@ -1151,9 +1151,14 @@ impl CUDADevice {
             current_loop_level: u8,
         ) -> usize {
             for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
-                if *nrc == 0 && *dt == dtype && *loop_level >= current_loop_level {
+                #[cfg(debug_assertions)]
+                if *loop_level > current_loop_level {
+                    debug_assert_eq!(*nrc, 0);
+                }
+                if *nrc == 0 && *dt == dtype && current_loop_level <= *loop_level {
                     reg_map.insert(op_id, i);
-                    registers[i].1 = rc;
+                    *nrc = rc;
+                    *loop_level = current_loop_level;
                     return i;
                 }
             }
@@ -1428,17 +1433,12 @@ impl CUDADevice {
                         indent.pop();
                         indent.pop();
                         _ = writeln!(source, "{indent}}}");
-                        for reg in &mut registers {
-                            if reg.2 == loop_id {
-                                reg.1 = 0;
-                            }
-                        }
                         loop_id -= 1;
                     }
                 }
             }
         }
-        if registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes > 64 {
+        if registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes > 256 {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "Kernel with too many registers.".into(),

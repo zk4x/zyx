@@ -22,6 +22,7 @@ use std::{
     hash::BuildHasherDefault,
     ptr,
     sync::Arc,
+    thread::current,
 };
 
 #[derive(Debug, Default, DeJson)]
@@ -646,9 +647,14 @@ impl OpenCLDevice {
             current_loop_level: u8,
         ) -> usize {
             for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
+                #[cfg(debug_assertions)]
+                if *loop_level > current_loop_level {
+                    debug_assert_eq!(*nrc, 0);
+                }
                 if *nrc == 0 && *dt == dtype && current_loop_level <= *loop_level {
                     reg_map.insert(op_id, i);
-                    registers[i].1 = rc;
+                    *nrc = rc;
+                    *loop_level = current_loop_level;
                     return i;
                 }
             }
@@ -727,11 +733,6 @@ impl OpenCLDevice {
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
         let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
-        #[inline]
-        fn dtype_of(dtypes: &Map<OpId, DType>, id: OpId) -> DType {
-            *dtypes.get(&id).unwrap_or_else(|| panic!("BUG: dtype missing for op {:?}", id))
-        }
-
         // first we will calculate those reference counts.
         for &op_id in &kernel.order {
             let op = &kernel[op_id];
@@ -746,11 +747,11 @@ impl OpenCLDevice {
                     dtypes.insert(op_id, dtype);
                 }
                 &Op::Load { src, index } => {
-                    dtypes.insert(op_id, dtype_of(&dtypes, src));
+                    dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(index).or_insert(0) += 1;
                 }
                 &Op::Store { dst, x: src, index } => {
-                    dtypes.insert(op_id, dtype_of(&dtypes, src));
+                    dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
                     *rcs.entry(index).or_insert(0) += 1;
@@ -760,14 +761,14 @@ impl OpenCLDevice {
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Unary { x, .. } => {
-                    dtypes.insert(op_id, dtype_of(&dtypes, x));
+                    dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Binary { x, y, bop } => {
                     let dtype = if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or) {
                         DType::Bool
                     } else {
-                        dtype_of(&dtypes, x)
+                        dtypes[&x]
                     };
                     dtypes.insert(op_id, dtype);
                     *rcs.entry(x).or_insert(0) += 1;
@@ -795,7 +796,7 @@ impl OpenCLDevice {
         let mut acc_bytes = 0;
         for &op_id in &kernel.order {
             let op = &kernel[op_id];
-            //println!("{i} -> {op:?}");
+            //println!("{op_id} -> {op:?}");
             match op {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
@@ -921,17 +922,12 @@ impl OpenCLDevice {
                         indent.pop();
                         indent.pop();
                         _ = writeln!(source, "{indent}}}");
-                        for reg in &mut registers {
-                            if reg.2 == loop_id {
-                                reg.1 = 0;
-                            }
-                        }
                         loop_id -= 1;
                     }
                 }
             }
         }
-        if registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes > 64 {
+        if registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes > 256 {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "Kernel with too many registers.".into(),
