@@ -2,8 +2,10 @@ use crate::{
     BLUE, CYAN, DType, GREEN, MAGENTA, Map, RED, RESET, Set, YELLOW,
     dtype::Constant,
     graph::{BOp, ROp, UOp},
+    realize::KMKernelId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
+    tensor::TensorId,
     view::View,
 };
 use nanoserde::{DeBin, SerBin};
@@ -11,53 +13,6 @@ use std::{
     fmt::Display,
     hash::{BuildHasherDefault, Hash},
 };
-
-pub const IDX_T: DType = DType::U32;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct OpId(pub u32);
-
-impl OpId {
-    pub fn null() -> Self {
-        Self(u32::MAX)
-    }
-
-    pub fn is_null(&self) -> bool {
-        self.0 == u32::MAX
-    }
-}
-
-impl std::fmt::Display for OpId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl From<usize> for OpId {
-    fn from(value: usize) -> Self {
-        OpId(value as u32)
-    }
-}
-
-impl From<OpId> for usize {
-    fn from(value: OpId) -> usize {
-        value.0 as usize
-    }
-}
-
-impl SlabId for OpId {
-    const ZERO: Self = Self(0);
-
-    fn inc(&mut self) {
-        self.0 += 1;
-    }
-}
-
-#[derive(Debug, Clone, DeBin, SerBin)]
-pub struct Kernel {
-    pub ops: Slab<OpId, Op>,
-    pub order: Vec<OpId>,
-}
 
 /*
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,12 +38,27 @@ pub enum Op {
 }
 */
 
+// TODO later make this dynamic u32 or u64 depending on max range
+pub const IDX_T: DType = DType::U32;
+
+#[derive(Debug, Clone)]
+pub struct Kernel {
+    pub outputs: Vec<TensorId>,
+    pub loads: Vec<TensorId>,
+    pub stores: Vec<TensorId>,
+    pub ops: Slab<OpId, Op>,
+    pub order: Vec<OpId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Scope {
     Global,
     Local,
     Register,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub struct OpId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
@@ -182,6 +152,18 @@ impl PartialEq for Kernel {
 }
 impl Eq for Kernel {}
 
+impl DeBin for Kernel {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        todo!()
+    }
+}
+
+impl SerBin for Kernel {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        todo!()
+    }
+}
+
 impl Hash for Kernel {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.ops.hash(state);
@@ -217,6 +199,9 @@ impl Kernel {
 
     pub fn debug(&self) {
         println!();
+        println!("\nloads={:?}", self.loads);
+        println!("stores={:?}", self.stores);
+        print!("outputs={:?}", self.outputs);
         //println!("Kernel shape {:?}", self.shape);
         let mut indent = String::from(" ");
         let mut ids: Map<OpId, (Dim, Dim)> = Map::default();
@@ -1514,6 +1499,105 @@ impl Kernel {
                 _ => {}
             }
         }
+    }
+
+    pub fn push(&mut self, op: Op) -> OpId {
+        let op_id = self.ops.push(op);
+        self.order.push(op_id);
+        op_id
+    }
+
+    pub fn remove_first_output(&mut self, x: TensorId) {
+        //println!("removing tensor {x} from kernel {kid:?}");
+        let outputs = &mut self.outputs;
+        outputs.iter().position(|elem| *elem == x).map(|i| outputs.remove(i));
+    }
+
+    pub fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KMKernelId, OpId)>) {
+        let params = self.outputs.iter().map(|tid| visited[tid].1).collect();
+        let required = self.get_required_ops(params);
+        let mut loaded_tensors = Vec::new();
+        let mut load_index = 0;
+        let loads = &self.loads;
+        for (op_id, op) in self.ops.iter_mut() {
+            let is_required = required.contains(&op_id);
+            if let Op::LoadView { .. } = op {
+                if is_required {
+                    loaded_tensors.push(loads[load_index]);
+                }
+                load_index += 1;
+            }
+        }
+        self.order.retain(|x| required.contains(x));
+        self.ops.retain(|x| required.contains(x));
+        self.loads = loaded_tensors;
+        #[cfg(debug_assertions)]
+        if self.loads.len() != self.ops.values().filter(|op| matches!(op, Op::LoadView { .. })).count() {
+            self.debug();
+            panic!();
+        }
+    }
+
+    pub fn get_required_ops(&self, mut params: Vec<OpId>) -> Set<OpId> {
+        let mut required = Set::default();
+        while let Some(param) = params.pop() {
+            if required.insert(param) {
+                //println!("param={param}");
+                match &self.ops[param] {
+                    Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                        params.push(*x);
+                    }
+                    Op::Binary { x, y, .. } => {
+                        params.push(*x);
+                        params.push(*y);
+                    }
+                    Op::Const(..) | Op::ConstView { .. } | Op::LoadView { .. } => {}
+                    Op::Define { .. }
+                    | Op::StoreView { .. }
+                    | Op::Load { .. }
+                    | Op::Store { .. }
+                    | Op::Loop { .. }
+                    | Op::EndLoop => unreachable!(),
+                }
+            }
+        }
+        required
+    }
+}
+
+impl OpId {
+    pub fn null() -> Self {
+        Self(u32::MAX)
+    }
+
+    pub fn is_null(&self) -> bool {
+        self.0 == u32::MAX
+    }
+}
+
+impl std::fmt::Display for OpId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl From<usize> for OpId {
+    fn from(value: usize) -> Self {
+        OpId(value as u32)
+    }
+}
+
+impl From<OpId> for usize {
+    fn from(value: OpId) -> usize {
+        value.0 as usize
+    }
+}
+
+impl SlabId for OpId {
+    const ZERO: Self = Self(0);
+
+    fn inc(&mut self) {
+        self.0 += 1;
     }
 }
 

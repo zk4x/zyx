@@ -1,18 +1,14 @@
-use crate::{ZyxError, backend::Device, graph::Graph, kernel::Kernel, runtime::Pool, shape::Dim, tensor::TensorId};
+use crate::{ZyxError, backend::Device, graph::Graph, runtime::Pool, shape::Dim, tensor::TensorId};
 use std::collections::BTreeSet;
 
 pub fn schedule(
-    kernel: Kernel,
-    loads: Vec<TensorId>,
-    stores: Vec<TensorId>,
+    loads: &[TensorId],
+    stores: &[TensorId],
     graph: &Graph,
     devices: &[Device],
     pools: &mut [Pool],
 ) -> Result<
     (
-        Kernel,
-        Vec<TensorId>,
-        Vec<TensorId>,
         usize,
         usize,
         Vec<crate::backend::Event>,
@@ -21,11 +17,6 @@ pub fn schedule(
     ),
     ZyxError,
 > {
-    if stores.is_empty() {
-        kernel.debug();
-    }
-    debug_assert!(!stores.is_empty());
-    debug_assert!(!kernel.ops.is_empty());
     let required_stores_memory: Dim = stores
         .iter()
         .map(|&tid| graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim)
@@ -64,7 +55,7 @@ pub fn schedule(
     let _ = device_id;
     let mpid = devices[dev_id].memory_pool_id() as usize;
     let mut event_wait_list = Vec::new();
-    for &tid in &loads {
+    for &tid in loads {
         if !pools[mpid].buffer_map.contains_key(&tid) {
             if !pools[mpid].buffer_map.contains_key(&tid) {
                 // Check where the tensor is
@@ -115,7 +106,7 @@ pub fn schedule(
         }
     }
     let mut output_buffers = BTreeSet::new();
-    for &tid in &stores {
+    for &tid in stores {
         let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
         let (buffer_id, event) = pools[mpid].pool.allocate(bytes)?;
         pools[mpid].buffer_map.insert(tid, buffer_id);
@@ -123,20 +114,11 @@ pub fn schedule(
         output_buffers.insert(buffer_id);
     }
     let mut args = Vec::new();
-    for tid in &loads {
+    for tid in loads {
         args.push(pools[mpid].buffer_map[tid]);
     }
-    for tid in &stores {
+    for tid in stores {
         args.push(pools[mpid].buffer_map[tid]);
     }
-    Ok((
-        kernel,
-        loads,
-        stores,
-        dev_id,
-        mpid,
-        event_wait_list,
-        output_buffers,
-        args,
-    ))
+    Ok((dev_id, mpid, event_wait_list, output_buffers, args))
 }

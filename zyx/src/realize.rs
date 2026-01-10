@@ -43,109 +43,13 @@ impl From<KMKernelId> for usize {
     }
 }
 
-#[derive(Debug, Clone)]
+/*#[derive(Debug, Clone)]
 struct KMKernel {
     kernel: Kernel,
     outputs: Vec<TensorId>,
     loads: Vec<TensorId>,
     stores: Vec<TensorId>,
-}
-
-impl KMKernel {
-    fn contains_stores(&self) -> bool {
-        self.kernel.contains_stores()
-    }
-
-    fn is_reduce(&self) -> bool {
-        self.kernel.is_reduce()
-    }
-
-    fn total_reduce_dim(&self, op: OpId) -> Dim {
-        self.kernel.total_reduce_dim(op)
-    }
-
-    fn apply_movement(&mut self, func: impl Fn(&mut View)) {
-        self.kernel.apply_movement(func);
-    }
-
-    fn push(&mut self, op: Op) -> OpId {
-        let op_id = self.kernel.ops.push(op);
-        self.kernel.order.push(op_id);
-        op_id
-    }
-
-    fn debug(&self) {
-        println!("\nloads={:?}", self.loads);
-        println!("stores={:?}", self.stores);
-        print!("outputs={:?}", self.outputs);
-        self.kernel.debug();
-    }
-
-    fn remove_first_output(&mut self, x: TensorId) {
-        //println!("removing tensor {x} from kernel {kid:?}");
-        let outputs = &mut self.outputs;
-        outputs.iter().position(|elem| *elem == x).map(|i| outputs.remove(i));
-    }
-
-    fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KMKernelId, OpId)>) {
-        let params = self.outputs.iter().map(|tid| visited[tid].1).collect();
-        let required = self.get_required_ops(params);
-        let mut loaded_tensors = Vec::new();
-        let mut load_index = 0;
-        let loads = &self.loads;
-        for (op_id, op) in self.kernel.ops.iter_mut() {
-            let is_required = required.contains(&op_id);
-            if let Op::LoadView { .. } = op {
-                if is_required {
-                    loaded_tensors.push(loads[load_index]);
-                }
-                load_index += 1;
-            }
-        }
-        self.kernel.order.retain(|x| required.contains(x));
-        self.kernel.ops.retain(|x| required.contains(x));
-        self.loads = loaded_tensors;
-        #[cfg(debug_assertions)]
-        if self.loads.len() != self.kernel.ops.values().filter(|op| matches!(op, Op::LoadView { .. })).count() {
-            self.debug();
-            panic!();
-        }
-    }
-
-    fn get_required_ops(&self, mut params: Vec<OpId>) -> Set<OpId> {
-        let mut required = Set::default();
-        while let Some(param) = params.pop() {
-            if required.insert(param) {
-                //println!("param={param}");
-                match &self.kernel.ops[param] {
-                    Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                        params.push(*x);
-                    }
-                    Op::Binary { x, y, .. } => {
-                        params.push(*x);
-                        params.push(*y);
-                    }
-                    Op::Const(..) | Op::ConstView { .. } | Op::LoadView { .. } => {}
-                    Op::Define { .. }
-                    | Op::StoreView { .. }
-                    | Op::Load { .. }
-                    | Op::Store { .. }
-                    | Op::Loop { .. }
-                    | Op::EndLoop => unreachable!(),
-                }
-            }
-        }
-        required
-    }
-}
-
-impl std::ops::Index<OpId> for KMKernel {
-    type Output = Op;
-
-    fn index(&self, index: OpId) -> &Self::Output {
-        &self.kernel.ops[index]
-    }
-}
+}*/
 
 struct Kernelizer<'a> {
     // TODO merge as many of these as possible. Perhaps start by mergins rcs and visited
@@ -153,7 +57,8 @@ struct Kernelizer<'a> {
     virt_realized_nodes: Set<TensorId>,
     must_keep_nodes: Set<TensorId>,
     realized_nodes: Set<TensorId>,
-    kernels: Slab<KMKernelId, KMKernel>,
+    // TODO later delete this and just directly use the runtime kernel cache
+    kernels: Slab<KMKernelId, Kernel>,
     visited: Map<TensorId, (KMKernelId, OpId)>,
     rcs: Map<TensorId, u32>,
     graph: &'a Graph,
@@ -272,11 +177,12 @@ impl<'a> Kernelizer<'a> {
         let dtype = self.graph.dtype(nid);
         let mut ops = Slab::with_capacity(100);
         let op_id = ops.push(Op::LoadView { dtype, view: View::contiguous(shape) });
-        let kernel = KMKernel {
-            kernel: Kernel { ops, order: vec![op_id] },
+        let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: vec![nid],
             stores: Vec::new(),
+            ops,
+            order: vec![op_id],
         };
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
@@ -286,11 +192,12 @@ impl<'a> Kernelizer<'a> {
     fn create_const_kernel(&mut self, nid: TensorId, value: Constant) {
         let mut ops = Slab::with_capacity(100);
         let op_id = ops.push(Op::ConstView { value, view: View::contiguous(&[1]) });
-        let kernel = KMKernel {
-            kernel: Kernel { ops, order: vec![op_id] },
+        let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: Vec::new(),
             stores: Vec::new(),
+            ops,
+            order: vec![op_id],
         };
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
@@ -305,7 +212,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -319,7 +226,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -339,7 +246,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -354,7 +261,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -415,7 +322,7 @@ impl<'a> Kernelizer<'a> {
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.kernel.shape());
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }
@@ -507,12 +414,12 @@ impl<'a> Kernelizer<'a> {
             }*/
 
             self.kernels[kidy].remove_first_output(y);
-            let KMKernel { kernel, outputs, loads, stores } = unsafe { self.kernels.remove_and_return(kidy) };
+            let Kernel { outputs, loads, stores, ops, order } = unsafe { self.kernels.remove_and_return(kidy) };
 
             // Extend x kernel with y ops
             let mut y_ops_map = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
-            for &op_id in &kernel.order {
-                let mut op = kernel.ops[op_id].clone();
+            for &op_id in &order {
+                let mut op = ops[op_id].clone();
                 for param in op.parameters_mut() {
                     *param = y_ops_map[param];
                 }
@@ -589,14 +496,19 @@ impl<'a> Kernelizer<'a> {
         Ok(())
     }
 
-    fn launch_kernel(&mut self, kernel: KMKernel) -> Result<(), ZyxError> {
+    fn launch_kernel(&mut self, mut kernel: Kernel) -> Result<(), ZyxError> {
         // Iterate over all memory pools ordered by device speed.
         // Then select first fastest device that has associated memory pool which fits all tensors used
         // as arguments for the kernel that are not yet allocated on that memory pool.
 
-        let KMKernel { kernel, outputs: _, loads, stores } = kernel;
-        let (mut kernel, loads, stores, dev_id, mpid, event_wait_list, output_buffers, args) =
-            schedule(kernel, loads, stores, self.graph, self.devices, self.pools)?;
+        if kernel.stores.is_empty() {
+            kernel.debug();
+        }
+        debug_assert!(!kernel.stores.is_empty());
+        debug_assert!(!kernel.ops.is_empty());
+
+        let (dev_id, mpid, event_wait_list, output_buffers, args) =
+            schedule(&kernel.loads, &kernel.stores, self.graph, self.devices, self.pools)?;
 
         /***** CACHE and OPTIMIZATION SEARCH *****/
 
@@ -651,7 +563,9 @@ impl<'a> Kernelizer<'a> {
 
         if self.debug.sched() {
             print!(
-                "Optimizing kernel stores {stores:?}, loads {loads:?}, max iterations: {}",
+                "Optimizing kernel stores {:?}, loads {:?}, max iterations: {}",
+                kernel.stores,
+                kernel.loads,
                 optimizer.max_iters()
             );
             kernel.debug();
