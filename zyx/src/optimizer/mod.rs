@@ -68,7 +68,7 @@ impl Optimizer {
         kernel.reassociate_commutative();
 
         let mut temp_kernel = kernel.clone();
-        for i in 0..100 {
+        for _i in 0..100 {
             kernel.move_constants_to_beginning();
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
@@ -82,7 +82,7 @@ impl Optimizer {
             }
             temp_kernel = kernel.clone();
             #[cfg(debug_assertions)]
-            if i == 99 {
+            if _i == 99 {
                 kernel.debug();
                 panic!("YO what are you doing bro.");
             }
@@ -110,7 +110,7 @@ impl Optimizer {
         kernel.reassociate_commutative();
 
         let mut temp_kernel = kernel.clone();
-        for i in 0..100 {
+        for _i in 0..100 {
             kernel.move_constants_to_beginning();
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
@@ -124,7 +124,7 @@ impl Optimizer {
             }
             temp_kernel = kernel.clone();
             #[cfg(debug_assertions)]
-            if i == 99 {
+            if _i == 99 {
                 kernel.debug();
                 panic!("YO what are you doing bro.");
             }

@@ -374,7 +374,11 @@ impl WGPUDevice {
                 }
                 &Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
-                    writeln!(source, "{indent}let r{op_id} = {}(r{x});", dtype.wgsl()).unwrap();
+                    if dtype == DType::F16 {
+                        writeln!(source, "{indent}let r{op_id} = {}(f32(r{x}));", dtype.wgsl()).unwrap();
+                    } else {
+                        writeln!(source, "{indent}let r{op_id} = {}(r{x});", dtype.wgsl()).unwrap();
+                    }
                 }
                 &Op::Unary { x, uop } => {
                     dtypes.insert(op_id, dtypes[&x]);
@@ -472,7 +476,7 @@ impl WGPUDevice {
         }
 
         let mut pragma = String::new();
-        if source.contains("f16") {
+        if dtypes.values().any(|&v| v == DType::F16) {
             pragma += "enable f16;\n";
         }
 
