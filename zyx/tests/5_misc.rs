@@ -1028,3 +1028,17 @@ fn test_permute_on_reduce_kernel() {
     assert_eq!(reduced.shape(), &[2, 2]);
     assert_eq!(reduced.slice((0, 0)).unwrap(), 6.0);
 }
+
+#[test]
+fn arange_1() {
+    let x = Tensor::rand([784 * 784], DType::F32).unwrap().exp2().sin();
+    //x = x.sum(0)
+    Tensor::realize([&x]).unwrap();
+}
+
+#[test]
+fn arange_2() {
+    let x = Tensor::arange(0, 10, 1).unwrap().exp2().sin();
+    //x = x.sum(0)
+    Tensor::realize([&x]).unwrap();
+}

@@ -745,7 +745,7 @@ impl OpenCLDevice {
                 &Op::Define { dtype, .. } => {
                     dtypes.insert(op_id, dtype);
                 }
-                &Op::Load { src, index } => {
+                &Op::Load { src, index, .. } => {
                     dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(index).or_insert(0) += 1;
                 }
@@ -814,7 +814,7 @@ impl OpenCLDevice {
                         acc_bytes += dtype.byte_size() as usize * len;
                     }
                 }
-                &Op::Load { src, index } => {
+                &Op::Load { src, index, .. } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&src];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);

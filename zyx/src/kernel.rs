@@ -72,10 +72,10 @@ pub enum Op {
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
-    Const(Constant),
+    Const(Vec<Constant>, dims: [Dim; 2]),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim },
-    Load { src: OpId, index: OpId },
-    Loop { dim: Dim, scope: Scope },
+    Load { src: OpId, index: OpId, dims: [Dim; 2], row_major: bool},
+    Loop { dim: Dim, scope: Scope, dims: [Dim; 2], row_major: bool},
     EndLoop,
 }
 */
@@ -99,7 +99,8 @@ impl Display for Scope {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
-    // ops that exist only in kernelizer
+    // ops that exist only in kernelizer, basically they can be eventually removed.
+    // We can actually handle views at the index level, though the algorithms may be pretty complex
     ConstView { value: Constant, view: View },
     LoadView { dtype: DType, view: View },
     StoreView { src: OpId, dtype: DType },
@@ -118,7 +119,7 @@ pub enum Op {
     // ops that only exist after unfolding views and reduces
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
-    Load { src: OpId, index: OpId },
+    Load { src: OpId, index: OpId, row_major: bool },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
 }
@@ -136,7 +137,7 @@ impl Op {
             Op::Binary { x, y, .. } => vec![*x, *y],
             Op::Const(..) => vec![],
             Op::Define { .. } => vec![],
-            Op::Load { src, index } => vec![*src, *index],
+            Op::Load { src, index, .. } => vec![*src, *index],
             Op::Loop { .. } => vec![],
             Op::EndLoop => vec![],
         }
@@ -155,7 +156,7 @@ impl Op {
             Op::Binary { x, y, .. } => vec![x, y],
             Op::Const(..) => vec![],
             Op::Define { .. } => vec![],
-            Op::Load { src, index } => vec![src, index],
+            Op::Load { src, index, .. } => vec![src, index],
             Op::Loop { .. } => vec![],
             Op::EndLoop => vec![],
         }
@@ -229,8 +230,8 @@ impl Kernel {
                     }
                     println!("{op_id:>3}{indent}{MAGENTA}CONST{RESET} {} {x}", x.dtype());
                 }
-                Op::Load { src, index } => println!(
-                    "{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}]    {}..={}",
+                Op::Load { src, index, row_major } => println!(
+                    "{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}] row={row_major}    {}..={}",
                     ids[&index].0, ids[&index].1
                 ),
                 Op::Store { dst, x: src, index } => {
@@ -522,7 +523,7 @@ impl Kernel {
             order.extend(reduce_loop_ops);
 
             // Add reduction operation, load from acc, accumulate, store to acc
-            let load_acc = self.ops.push(Op::Load { src: acc, index: const_zero });
+            let load_acc = self.ops.push(Op::Load { src: acc, index: const_zero, row_major: true });
             order.push(load_acc);
             let binary_accumulate = self.ops.push(Op::Binary {
                 x,
@@ -543,7 +544,7 @@ impl Kernel {
             }
 
             // Replace old reduce op with the acc load op
-            self.ops[reduce_op_id] = Op::Load { src: acc, index: const_zero };
+            self.ops[reduce_op_id] = Op::Load { src: acc, index: const_zero, row_major: true };
 
             // Put all things back in self.order
             let reduce_i = self.order.iter().position(|&op_id| op_id == reduce_op_id).unwrap();
@@ -825,7 +826,11 @@ impl Kernel {
                     let pcu = new_op(ops, order, Op::Cast { x: pc, dtype: IDX_T });
                     let offset = new_op(ops, order, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
 
-                    let z = new_op(ops, order, Op::Load { src: global_args[load_id], index: offset });
+                    let z = new_op(
+                        ops,
+                        order,
+                        Op::Load { src: global_args[load_id], index: offset, row_major: true },
+                    );
 
                     let pcd = new_op(ops, order, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
@@ -959,7 +964,7 @@ impl Kernel {
                     unique.pop();
                     unique_loads.pop();
                 }
-                &Op::Load { src, index } => {
+                &Op::Load { src, index, .. } => {
                     let local_unique = unique_loads.last_mut().unwrap();
                     if let Some(&old_op_id) = local_unique.get(&(src, index)) {
                         remaps.insert(op_id, old_op_id);
@@ -1068,6 +1073,9 @@ impl Kernel {
                         self.ops[op_id] = Op::Const(Constant::binary(cx, cy, bop));
                     }
                     (Op::Const(cx), _) => match bop {
+                        BOp::And if cx.dtype() == DType::Bool => {
+                            remap(&mut self.ops, op_id, y);
+                        }
                         BOp::Add if cx.is_zero() => remap(&mut self.ops, op_id, y),
                         BOp::Sub if cx.is_zero() => self.ops[op_id] = Op::Unary { x: y, uop: UOp::Neg },
                         BOp::Mul if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
@@ -1077,7 +1085,7 @@ impl Kernel {
                             let c = self.ops.push(Op::Const(cx.unary(UOp::Log2)));
                             self.order.insert(i, c);
                             i += 1;
-                            self.ops[op_id] = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft }
+                            self.ops[op_id] = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft };
                         }
                         BOp::Div if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
                         BOp::Div if cx.is_one() => self.ops[op_id] = Op::Unary { x: y, uop: UOp::Reciprocal },
@@ -1090,7 +1098,20 @@ impl Kernel {
                         BOp::Sub if cy.is_zero() => remap(&mut self.ops, op_id, x),
                         BOp::Div if cy.is_zero() => panic!("Division by constant zero"),
                         BOp::Div if cy.is_one() => remap(&mut self.ops, op_id, x),
+                        BOp::Div if cy.is_power_of_two() && cy.dtype() == IDX_T => {
+                            let c = self.ops.push(Op::Const(cy.unary(UOp::Log2)));
+                            self.order.insert(i, c);
+                            i += 1;
+                            self.ops[op_id] = Op::Binary { x, y: c, bop: BOp::BitShiftRight };
+                        }
                         BOp::Mod if cy.is_zero() => panic!("Module by constant zero"),
+                        BOp::Mod if cy.is_zero() && cy.dtype() == IDX_T => {
+                            let shift = Constant::binary(cy, Constant::idx(1), BOp::Sub);
+                            let c = self.ops.push(Op::Const(shift));
+                            self.order.insert(i, c);
+                            i += 1;
+                            self.ops[op_id] = Op::Binary { x, y: c, bop: BOp::BitAnd };
+                        }
                         BOp::Pow if cy.is_zero() => self.ops[op_id] = Op::Const(cy.dtype().one_constant()),
                         BOp::Pow if cy.is_one() => remap(&mut self.ops, op_id, x),
                         BOp::Pow if cy.is_two() => self.ops[op_id] = Op::Binary { x, y: x, bop: BOp::Mul },
@@ -1115,6 +1136,40 @@ impl Kernel {
         self.verify();
     }
 
+    // Eliminates accs that are not stored into in loops
+    pub fn fold_accs(&self) {
+        /*use Op::*;
+        for (op_id, define_op) in self.ops.iter().filter(|(_, op)| matches!(op, Define { .. })) {
+            // Step 1: Find all Stores to this variable
+            let stores: Vec<_> =
+                self.ops.values().filter(|op| matches!(op, Store { dst, .. } if *dst == op_id)).collect();
+
+            // Step 2: Simulate accumulation / propagation
+            let mut current_value: Option<OpId> = None;
+            for store in stores {
+                let x = store.x;
+                if let Some(prev) = current_value {
+                    // Replace Store with SSA computation: prev + x
+                    let new_val = self.add_op(Binary { x: prev, y: x, bop: BOp::Add });
+                    current_value = Some(new_val);
+                } else {
+                    current_value = Some(x);
+                }
+
+                // Replace all LOADs feeding into this Store with `current_value`
+                for load in self.ops.iter_mut().filter(|op| matches!(op, Load { src, .. } if *src == op_id)) {
+                    load.replace_with(current_value.unwrap());
+                }
+            }
+
+            // Step 3: Remove all Define + Stores for this variable
+            self.ops.remove(op_id);
+            for store in stores {
+                self.ops.remove(store.id);
+            }
+        }*/
+    }
+
     pub fn swap_commutative(&mut self) {
         // Tracks whether a value depends on a loop index
         let mut loop_dep: Map<OpId, usize> = Map::default();
@@ -1132,7 +1187,7 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
-                Op::Load { src, index } => loop_dep[src].max(loop_dep[index]),
+                Op::Load { src, index, .. } => loop_dep[src].max(loop_dep[index]),
                 Op::Store { dst, x, index } => loop_dep[dst].max(loop_dep[x]).max(loop_dep[index]),
                 Op::Const(_) | Op::Define { .. } => 0,
             };
@@ -1169,7 +1224,7 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
-                Op::Load { src, index } => loop_dep[src].max(loop_dep[index]),
+                Op::Load { src, index, .. } => loop_dep[src].max(loop_dep[index]),
                 Op::Store { dst, x, index } => loop_dep[dst].max(loop_dep[x]).max(loop_dep[index]),
                 Op::Const(_) | Op::Define { .. } => 0,
             };
@@ -1346,7 +1401,7 @@ impl Kernel {
                 }
                 Op::Const(_) => {}
                 Op::Define { .. } => {}
-                Op::Load { src, index } => {
+                Op::Load { src, index, .. } => {
                     check(op_id, src, &stack);
                     check(op_id, index, &stack);
                 }
@@ -1408,6 +1463,7 @@ impl Kernel {
                                 BOp::Cmplt => ((xl < yl) as usize, (xu < yu) as usize),
                                 BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
                                 BOp::BitShiftLeft => (xl << yl, xu << yu),
+                                BOp::BitShiftRight => (xl >> yl, xu >> yu),
                                 op => todo!("{:?}", op),
                             },
                         );
@@ -1419,7 +1475,7 @@ impl Kernel {
                 Op::Loop { dim, .. } => {
                     ids.insert(op_id, (0, dim - 1));
                 }
-                Op::Load { src, index } => {
+                Op::Load { src, index, .. } => {
                     if !ids.contains_key(index) {
                         panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
                     }

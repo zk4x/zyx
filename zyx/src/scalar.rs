@@ -2510,8 +2510,7 @@ impl Scalar for u32 {
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self >> rhs
     }
 
     fn and(self, rhs: Self) -> bool {

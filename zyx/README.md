@@ -45,7 +45,7 @@ let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
 
 ## Backends
 
-- [x] `CUDA (PTX)`
+- [x] `CUDA`
 - [x] `OpenCL`
 - [x] `WGPU (WGSL)`
 

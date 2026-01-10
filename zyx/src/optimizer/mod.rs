@@ -11,6 +11,7 @@ use std::collections::HashSet;
 mod loop_jam;
 mod loop_split;
 mod loop_unrolling;
+mod vectorize;
 mod work_size;
 
 // Indices in 0..max_index for each optimization Opt
@@ -64,10 +65,12 @@ impl Optimizer {
         kernel.unfold_reduces();
         kernel.unfold_views();
 
+        kernel.unroll_loops(1);
         kernel.swap_commutative();
         kernel.reassociate_commutative();
 
-        let mut temp_kernel = kernel.clone();
+        // This is only needed for debugging
+        /*let mut temp_kernel = kernel.clone();
         for _i in 0..100 {
             kernel.move_constants_to_beginning();
             kernel.constant_folding();
@@ -86,12 +89,7 @@ impl Optimizer {
                 kernel.debug();
                 panic!("YO what are you doing bro.");
             }
-        }
-
-        //kernel.debug();
-        if !(LoopUnrollOpt {}.apply_optimization(0, kernel)) {
-            return false;
-        };
+        }*/
 
         // Unroll and jam for all loops
         if !self.loop_unroll_and_jam_opt.apply_optimization(loop_unroll_and_jam_opt_index, kernel) {
@@ -99,8 +97,7 @@ impl Optimizer {
         }
 
         // Unrolling for all loops
-        //if !self.loop_unrolling_opt.apply_optimization(loop_unrolling_opt_index, kernel) { return false; }
-        if !(LoopUnrollOpt {}.apply_optimization(loop_unrolling_opt_index, kernel)) {
+        if !self.loop_unrolling_opt.apply_optimization(loop_unrolling_opt_index, kernel) {
             return false;
         };
 

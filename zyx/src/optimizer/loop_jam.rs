@@ -224,7 +224,7 @@ impl Kernel {
         for &op_id in &inner_loop_ops {
             self.ops[op_id].remap_params(&remapping);
             match self.ops[op_id] {
-                Op::Load { src, index } => {
+                Op::Load { src, index, .. } => {
                     if defines.contains(&src) {
                         let x = self.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
                         order.push(x);
@@ -263,7 +263,7 @@ impl Kernel {
         for &op_id in &post_loop_ops {
             self.ops[op_id].remap_params(&remapping);
             match self.ops[op_id] {
-                Op::Load { src, index } => {
+                Op::Load { src, index, .. } => {
                     if defines.contains(&src) {
                         let x = self.ops.push(Op::Binary { x: index, y: const_dim, bop: BOp::Mul });
                         order.push(x);
