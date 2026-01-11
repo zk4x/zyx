@@ -365,7 +365,7 @@ impl WGPUDevice {
                         writeln!(source, "{indent}var p{op_id}: array<{}, {len}>;", dtype.wgsl(),).unwrap();
                     }
                 }
-                &Op::Load { src, index } => {
+                &Op::Load { src, index, .. } => {
                     dtypes.insert(op_id, dtypes[&src]);
                     writeln!(source, "{indent}let r{op_id} = p{src}[r{index}];").unwrap();
                 }

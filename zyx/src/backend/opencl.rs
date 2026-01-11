@@ -480,8 +480,9 @@ impl OpenCLMemoryPool {
         dst: BufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        //println!("Storing {src:?} to {dst:?}");
         let dst = &self.buffers[dst];
+        debug_assert_eq!(src.len(), dst.bytes);
+        //println!("Storing {src:?} with len={} to {dst:?} with capacity={} bytes", src.len(), dst.bytes);
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
             .map(|event| {
@@ -1031,19 +1032,19 @@ impl OpenCLDevice {
         args: &[BufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        /*memory_pool.sync_events(event_wait_list.clone())?;
-        for &arg in args {
+        memory_pool.sync_events(event_wait_list.clone())?;
+        /*for &arg in args {
             let buffer = &memory_pool.buffers[arg];
             let mut dst = vec![0; buffer.bytes];
             println!("arg {:?}:", buffer.buffer);
-            memory_pool.pool_to_host(arg, &mut dst, vec![]).unwrap();
-            println!("{dst:?}");
+            //memory_pool.pool_to_host(arg, &mut dst, vec![]).unwrap();
+            //println!("{dst:?}");
         }*/
 
         let queue_id = self.next_queue();
 
         /*println!(
-            "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}",
+            "Launch opencl kernel {:?}, program {:?} on queue {:?}, gws {:?}, lws {:?}, args: {args:?}",
             self.programs[program_id].kernel,
             self.programs[program_id].program,
             self.queues[queue_id].queue,
@@ -1055,7 +1056,7 @@ impl OpenCLDevice {
         #[allow(clippy::explicit_counter_loop)]
         for &arg in args {
             let arg = &memory_pool.buffers[arg];
-            //println!("Kernel arg: {arg:?} at index {i}");
+            println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &raw const arg.buffer;
             unsafe { (self.clSetKernelArg)(program.kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast()) }
                 .check(ErrorStatus::IncorrectKernelArg)?;

@@ -130,6 +130,87 @@ fn matmul_1() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn batched_matmul() -> Result<(), ZyxError> {
+    for b in (19..25).step_by(4) {
+        for m in (32..67).step_by(31) {
+            for k in (16..256).step_by(173) {
+                for n in (8..128).step_by(59) {
+                    // x: [B, M, K]
+                    let x_data: Vec<Vec<Vec<i32>>> = (0..b)
+                        .map(|bb| {
+                            (0..m)
+                                .map(|i| {
+                                    (0..k)
+                                        .map(|j| bb as i32 + i as i32 + j as i32)
+                                        .collect()
+                                })
+                                .collect()
+                        })
+                        .collect();
+
+                    // y: [B, K, N]
+                    let y_data: Vec<Vec<Vec<i32>>> = (0..b)
+                        .map(|bb| {
+                            (0..k)
+                                .map(|i| {
+                                    (0..n)
+                                        .map(|j| bb as i32 + i as i32 - j as i32)
+                                        .collect()
+                                })
+                                .collect()
+                        })
+                        .collect();
+
+                    let x = Tensor::from(x_data.clone());
+                    let y = Tensor::from(y_data.clone());
+
+                    let z = x.dot(y)?;
+
+                    // Reference batched matmul (CPU, naive)
+                    let mut expected = vec![vec![vec![0i32; n]; m]; b];
+                    for bb in 0..b {
+                        for i in 0..m {
+                            for kk in 0..k {
+                                for j in 0..n {
+                                    expected[bb][i][j] +=
+                                        x_data[bb][i][kk] * y_data[bb][kk][j];
+                                }
+                            }
+                        }
+                    }
+
+                    let expected_shape = vec![b, m, n];
+                    assert_eq!(
+                        z.shape(),
+                        expected_shape,
+                        "Shape mismatch: expected {:?}, got {:?}",
+                        expected_shape,
+                        z.shape()
+                    );
+
+                    // ---- Dtype check ----
+                    assert_eq!(
+                        z.dtype(),
+                        DType::I32,
+                        "Dtype mismatch: expected I32, got {:?}",
+                        z.dtype()
+                    );
+
+                    if z != expected {
+                        //println!("{z}");
+                        panic!(
+                            "Batched matmul mismatch for b={}, m={}, k={}, n={}",
+                            b, m, k, n
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn boolean_buffer() -> Result<(), ZyxError> {
     let x = Tensor::from([true, true, false, true]);
     assert_eq!(x, [true, true, false, true]);

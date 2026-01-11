@@ -3598,6 +3598,26 @@ impl<T: Scalar> TempData for Vec<Vec<T>> {
     }
 }
 
+impl<T: Scalar> From<Vec<Vec<Vec<T>>>> for Tensor {
+    fn from(data: Vec<Vec<Vec<T>>>) -> Self {
+        Tensor { id: RT.lock().new_tensor(vec![data.len(), data[0].len(), data[0][0].len()], Box::new(data)).unwrap() }
+    }
+}
+
+impl<T: Scalar> TempData for Vec<Vec<Vec<T>>> {
+    fn bytes(&self) -> usize {
+        self.len() * self[0].len() * self[0][0].len() * T::byte_size()
+    }
+
+    fn dtype(&self) -> DType {
+        T::dtype()
+    }
+
+    fn read(&self) -> Box<[u8]> {
+        self.iter().flatten().flatten().flat_map(|x| x.to_ne_bytes()).copied().collect()
+    }
+}
+
 impl<T: Scalar> From<&'static [T]> for Tensor {
     fn from(data: &'static [T]) -> Self {
         let n = data.len() as Dim;
@@ -3758,6 +3778,29 @@ impl<T: Scalar> PartialEq<Vec<Vec<T>>> for Tensor {
             true
         } else {
             false
+        }
+    }
+}
+
+impl<T: Scalar> PartialEq<Vec<Vec<Vec<T>>>> for Tensor {
+    fn eq(&self, other: &Vec<Vec<Vec<T>>>) -> bool {
+        if self.shape() != [other.len(), other[0].len(), other[0][0].len()] {
+            return false;
+        }
+        match self.clone().try_into() {
+            Ok(data) => {
+                let data: Vec<T> = data;
+                for (x, y) in data.into_iter().zip(other.iter().flatten().flatten()) {
+                            if !Scalar::is_equal(x, *y) {
+                                return false;
+                            }
+                        }
+                true
+            }
+            Err(e) => {
+                    println!("Comparison failed: {e}");
+                    false
+                }
         }
     }
 }

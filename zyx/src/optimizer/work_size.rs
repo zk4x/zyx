@@ -39,6 +39,7 @@ impl WorkSizeOpt {
         }
 
         let mut gws_factors = Vec::new();
+        //println!("max_local_work_dims = {:?}", dev_info.max_local_work_dims);
         for (d, &max_lwd) in gws.iter().copied().zip(&dev_info.max_local_work_dims) {
             let res = divisors(d, max_lwd);
 
@@ -49,7 +50,7 @@ impl WorkSizeOpt {
                     let a = res[i];
                     let b = res[j];
                     if a * b <= d {
-                        if b <= 64 {
+                        if a <= max_lwd && b <= 64 {
                             factors.push([a, b]);
                         }
                     }
