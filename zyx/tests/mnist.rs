@@ -14,6 +14,9 @@ fn mnist() -> Result<(), ZyxError> {
     impl MnistNet {
         fn forward(&self, x: &Tensor) -> Tensor {
             let x = x.reshape([0, 784]).unwrap();
+            //println!("x={}", x.reshape([0, 28, 28]).unwrap().slice((0, 15..20, 15..20)).unwrap());
+            println!("{}", self.l1_weight.slice((0, 0..10)).unwrap());
+            panic!();
             let x = x.matmul(&self.l1_weight.t()).unwrap() + &self.l1_bias;
             let x = x.relu();
             let x = x.matmul(&self.l2_weight.t()).unwrap() + &self.l2_bias;
@@ -30,17 +33,9 @@ fn mnist() -> Result<(), ZyxError> {
         l2_bias: state_dict["l2.bias"].clone(),
     };
 
-    let x = Tensor::arange(0f32, 784., 1.)? / 784;
-    let x = net.forward(&x);
-
-    Tensor::realize([&x])?;
-    println!("{x}");
-
     let train_dataset: HashMap<String, Tensor> = Tensor::load("../zyx-examples/data/mnist_dataset.safetensors")?;
     let train_x = train_dataset["train_x"].cast(DType::F32) / 255;
-    println!("train_x {}", train_x.id());
     let train_y = train_dataset["train_y"].clone();
-    println!("train_y {}", train_y.id());
     let test_x = train_dataset["test_x"].cast(DType::F32) / 255;
     let test_y = train_dataset["test_y"].clone();
 
@@ -65,6 +60,7 @@ fn mnist() -> Result<(), ZyxError> {
 
             //println!("{}", logits.slice((-5.., ..))?);
             let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
+            println!("{loss}");
 
             let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias]);
 
@@ -102,3 +98,9 @@ fn mnist() -> Result<(), ZyxError> {
     panic!();
     Ok(())
 }
+
+/*
+
+          x=tensor([[ 0.1464, -0.0082, -0.2147, -0.1245,  0.0447,  0.1138,  0.0383,  0.0569,
+                   -0.0029,  0.0660]], grad_fn=<AddBackward0>)
+          */

@@ -22,7 +22,11 @@ class MnistNet(nn.Module):
 
     def forward(self, x):
         x = x.reshape([-1, 784])
+        # print(f"x={x.reshape(-1, 28, 28)[0, 15:20, 15:20]}")
+        # print(f"{self.l1_weight[0, 0:10]}")
         x = x.matmul(self.l1_weight.T) + self.l1_bias
+        print(f"{x}")
+        raise Exception
         x = x.relu()
         x = x.matmul(self.l2_weight.T) + self.l2_bias
         return x
@@ -30,14 +34,6 @@ class MnistNet(nn.Module):
 
 state_dict = load_file("../zyx-examples/models/mnist.safetensors")
 net = MnistNet(state_dict)
-
-x = torch.arange(0.0, 784, 1) / 784
-
-x = net.forward(x)
-
-print(f"{x}")
-
-# tensor([[ 0.1464, -0.0082, -0.2147, -0.1245,  0.0447,  0.1138,  0.0383,  0.0569, -0.0029,  0.0660]])
 
 state_dict = load_file("../zyx-examples/models/mnist.safetensors")
 
@@ -72,6 +68,7 @@ for epoch in range(1, 6):
         optimizer.zero_grad()
 
         logits = net(x)
+        print(f"logits={logits}")
         y_one_hot = F.one_hot(y, num_classes=10).float()
         loss = cross_entropy_one_hot(logits, y_one_hot)
 

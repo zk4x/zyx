@@ -54,6 +54,9 @@ pub fn schedule(
     };
     let _ = device_id;
     let mpid = devices[dev_id].memory_pool_id() as usize;
+
+    //println!("Pools: {:#?}", pools);
+
     let mut event_wait_list = Vec::new();
     for &tid in loads {
         if !pools[mpid].buffer_map.contains_key(&tid) {
@@ -73,7 +76,7 @@ pub fn schedule(
                 let mut byte_slice = vec![0u8; bytes as usize];
 
                 let src = pools[old_mpid].buffer_map[&tid];
-                println!("Loading tensor {tid:?} at buffer id {src:?}");
+                //println!("Loading tensor {tid:?} at buffer id {src:?}");
 
                 // Move the tensor from old pool into temporary in RAM
                 // TODO later we can implement direct GPU to GPU movement, it's easy here,
@@ -92,8 +95,10 @@ pub fn schedule(
                 pools[old_mpid].pool.pool_to_host(src, &mut byte_slice, event_wait_list)?;
 
                 // Delete the tensor from the old pool
-                pools[old_mpid].pool.deallocate(src, vec![]);
                 pools[old_mpid].buffer_map.remove(&tid);
+                if !pools.iter().any(|pool| pool.buffer_map.values().any(|&id| id == src)) {
+                    pools[old_mpid].pool.deallocate(src, vec![]);
+                }
                 //println!("{byte_slice:?}");
 
                 let (dst, event) = pools[mpid].pool.allocate(bytes)?;

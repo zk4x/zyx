@@ -53,11 +53,14 @@ impl DiskMemoryPool {
 
     pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> BufferId {
         // TODO perhaps add verification that the file exists and it contains enough bytes at given offset
-        self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes })
+        let id = self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes });
+        //println!("Create buffer={id:?} on disk from path={path:?}");
+        id
     }
 
     #[allow(clippy::needless_pass_by_value)]
     pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
+        //println!("Deallocate buffer={buffer_id:?} from the disk");
         let _ = event_wait_list;
         if self.buffers.contains_key(buffer_id) {
             let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };

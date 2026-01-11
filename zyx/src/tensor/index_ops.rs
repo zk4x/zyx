@@ -8,8 +8,8 @@ impl<I> std::ops::Index<I> for Tensor {
     fn index(&self, _index: I) -> &Self::Output {
         panic!(
             "Tensor does not support indexing with `[]` because rust only allows indexing on referece types. \
-             Use `.get(...)` instead, which supports ranges, integers, and tuples. \
-             Example: tensor.get((0..3, -1))"
+             Use `.slice(...)` instead, which supports ranges, integers, and tuples. \
+             Example: tensor.slice((0..3, -1))"
         );
     }
 }
@@ -85,6 +85,12 @@ impl Tensor {
         let index = index.into_index();
         let padding_len = index.len();
 
+        if rank < padding_len {
+            return Err(ZyxError::shape_error(
+                format!("Slice with {padding_len} indices, but tensor has rank {rank}").into(),
+            ));
+        }
+
         let padding = std::iter::repeat_n((0, 0), rank - padding_len);
 
         let padding = padding.chain(
@@ -133,7 +139,7 @@ impl Tensor {
         Ok(result)
     }
 
-    /// Same as [Tensor::get], but instead of indexing from first dimensions, it indexes from last dimensions.
+    /// Same as [Tensor::slice], but instead of indexing from first dimensions, it indexes from last dimensions.
     #[allow(clippy::missing_panics_doc)]
     pub fn rslice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
         let shape = self.shape(); // original tensor shape
