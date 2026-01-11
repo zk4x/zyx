@@ -115,6 +115,7 @@ impl<'a> Kernelizer<'a> {
         let (mut kid, mut op_id) = self.visited[&x];
 
         if self.kernels[kid].contains_stores() {
+            //println!("Adding store for duplicate");
             self.add_store(x)?;
             (kid, op_id) = self.create_load_kernel(x);
             if self.kernels[kid].outputs.len() > 1 {
@@ -126,6 +127,7 @@ impl<'a> Kernelizer<'a> {
         if let Some(reduce_dims) = reduce_dims {
             if self.kernels[kid].is_reduce() {
                 if reduce_dims * self.kernels[kid].total_reduce_dim(op_id) > 32000 {
+                    //println!("Adding store for reduce");
                     self.add_store(x)?;
                     (kid, op_id) = self.create_load_kernel(x);
                     if self.kernels[kid].outputs.len() > 1 {
@@ -139,6 +141,7 @@ impl<'a> Kernelizer<'a> {
             //println!("Duplicating kernel");
             //self.kernels[kid].debug();
             if self.kernels[kid].is_reduce() {
+                //println!("Adding store for reduce with outputs");
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
                 if self.kernels[kid].outputs.len() > 1 {
@@ -364,6 +367,7 @@ impl<'a> Kernelizer<'a> {
             //if kid_stores && kidy_stores {
             match (kid_stores, kidy_stores) {
                 (true, true) => {
+                    //println!("Adding store for binary");
                     self.add_store(x)?;
                     (kid, op_id) = self.create_load_kernel(x);
                     if self.kernels[kid].outputs.len() > 1 {
@@ -380,6 +384,7 @@ impl<'a> Kernelizer<'a> {
                     //println!("kidy={:?}", kidy);
                 }
                 (true, false) => {
+                    //println!("Adding store for binary 1");
                     self.add_store(x)?;
                     (kid, op_id) = self.create_load_kernel(x);
                     if self.kernels[kid].outputs.len() > 1 {
@@ -388,6 +393,7 @@ impl<'a> Kernelizer<'a> {
                     }
                 }
                 (false, true) => {
+                    //println!("Adding store for binary 2");
                     self.add_store(y)?;
                     (kidy, op_idy) = self.create_load_kernel(y);
                     //println!("kidy={:?}", kidy);
@@ -450,7 +456,9 @@ impl<'a> Kernelizer<'a> {
 
     /// Stores x and returns remaining reference count to x
     fn add_store(&mut self, x: TensorId) -> Result<(), ZyxError> {
+        //println!("Adding store.");
         let (kid, op_id) = self.visited[&x];
+        //self.kernels[kid].debug();
         if self.virt_realized_nodes.contains(&x) {
             self.visited.remove(&x).unwrap();
             self.kernels[kid].outputs.retain(|&elem| elem != x);
@@ -465,7 +473,6 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].outputs.retain(|&elem| elem != x);
         }
 
-        //kernels[kid].debug();
         if self.kernels[kid].outputs.is_empty()
             && self.kernels[kid].loads.iter().all(|x| self.realized_nodes.contains(x))
         {
@@ -495,6 +502,7 @@ impl<'a> Kernelizer<'a> {
         // as arguments for the kernel that are not yet allocated on that memory pool.
 
         if kernel.stores.is_empty() {
+            println!("Empty stores in this kernel:");
             kernel.debug();
         }
         debug_assert!(!kernel.stores.is_empty());
@@ -555,6 +563,7 @@ impl<'a> Kernelizer<'a> {
         }
 
         if self.debug.sched() {
+            println!();
             print!(
                 "Optimizing kernel stores {:?}, loads {:?}, max iterations: {}",
                 kernel.stores,
@@ -822,7 +831,8 @@ impl Runtime {
                 }
             }*/
 
-            if to_eval.contains(&nid) {
+            if to_eval.contains(&nid) && !kernelizer.realized_nodes.contains(&nid) {
+                //println!("Adding store due to to_eval for {nid}");
                 kernelizer.add_store(nid)?;
                 *kernelizer.rcs.get_mut(&nid).unwrap() -= 1;
                 if kernelizer.rcs[&nid] > 0 {
@@ -842,10 +852,13 @@ impl Runtime {
             {
                 kids.retain(|x| *x != kid);
                 let kernel = unsafe { kernelizer.kernels.remove_and_return(kid) };
+
                 let loads = kernel.loads.clone();
-                let stores = kernel.stores.clone();
-                kernelizer.launch_kernel(kernel)?;
-                kernelizer.realized_nodes.extend(stores);
+                if !kernel.stores.is_empty() {
+                    let stores = kernel.stores.clone();
+                    kernelizer.launch_kernel(kernel)?;
+                    kernelizer.realized_nodes.extend(stores);
+                }
 
                 // Delete unneeded intermediate tensors in memory pools
                 let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());

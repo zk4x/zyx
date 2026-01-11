@@ -201,10 +201,9 @@ impl Kernel {
     }
 
     pub fn debug(&self) {
-        println!();
         println!("\nloads={:?}", self.loads);
         println!("stores={:?}", self.stores);
-        print!("outputs={:?}", self.outputs);
+        println!("outputs={:?}", self.outputs);
         //println!("Kernel shape {:?}", self.shape);
         let mut indent = String::from(" ");
         let mut ids: Map<OpId, (Dim, Dim)> = Map::default();
@@ -272,6 +271,7 @@ impl Kernel {
                                 BOp::Cmplt => ((xl < yl) as usize, (xu < yu) as usize),
                                 BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
                                 BOp::BitShiftLeft => (xl << yl, xu << yu),
+                                BOp::BitShiftRight => (xl >> yl, xu >> yu),
                                 op => todo!("{:?}", op),
                             },
                         );

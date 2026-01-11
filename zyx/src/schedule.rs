@@ -71,7 +71,9 @@ pub fn schedule(
                 let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
                 // No need to initialize here, other than rust is bad.
                 let mut byte_slice = vec![0u8; bytes as usize];
+
                 let src = pools[old_mpid].buffer_map[&tid];
+                println!("Loading tensor {tid:?} at buffer id {src:?}");
 
                 // Move the tensor from old pool into temporary in RAM
                 // TODO later we can implement direct GPU to GPU movement, it's easy here,

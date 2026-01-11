@@ -38,7 +38,7 @@ fn main() -> Result<(), ZyxError> {
     let test_x = train_dataset["test_x"].cast(DType::F32) / 255;
     let test_y = train_dataset["test_y"].clone();
 
-    let batch_size = 64usize;
+    let batch_size = 64;
     let num_train = train_x.shape()[0];
 
     let mut net = MnistNet::new(DType::F32)?;
@@ -48,7 +48,7 @@ fn main() -> Result<(), ZyxError> {
     //net.set_params(&mut state_dict);
 
     let mut optim = SGD {
-        learning_rate: 0.0001,
+        learning_rate: 0.01,
         momentum: 0.6,
         nesterov: false,
         ..Default::default()
@@ -56,7 +56,6 @@ fn main() -> Result<(), ZyxError> {
 
     println!("Training...");
     Tensor::realize_all()?;
-    panic!();
     for epoch in 1..=5 {
         let mut total_loss = 0f32;
         let mut iters = 0;
@@ -69,19 +68,21 @@ fn main() -> Result<(), ZyxError> {
 
             let tape = GradientTape::new();
             let logits = net.forward(&x); //.clamp(-100, 100)?;
-            println!("{:?}, {:?}", logits.shape(), y.shape());
+                                          //println!("{:?}, {:?}", logits.shape(), y.shape());
 
             //println!("{}", logits.slice((-5.., ..))?);
             let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
-            total_loss += loss.item::<f32>();
-            println!("Loss is: {:.8}", loss.item::<f32>());
 
             let grads = tape.gradient(&loss, &net);
+
+            /*for (i, grad) in grads.iter().enumerate() {
+                println!("{i}, grad shape={:?}", grad.as_ref().unwrap().shape());
+            }*/
 
             /*for (i, grad_opt) in grads.iter().enumerate() {
                 if let Some(grad) = grad_opt {
                     // Compute the L2 norm of the gradient (vectorized)
-                    let grad_norm = (grad * grad).sum_all().sqrt();  // ||grad||_2
+                    let grad_norm = (grad * grad).sum_all().sqrt(); // ||grad||_2
                     println!("Grad {} L2 norm: {:?}", i, grad_norm);
 
                     // Compute min/max in a vectorized way
@@ -95,13 +96,19 @@ fn main() -> Result<(), ZyxError> {
 
             optim.update(&mut net, grads);
 
-            Tensor::realize(net.iter().chain(optim.iter()))?;
+            Tensor::realize(net.iter().chain(optim.iter()).chain([&loss]))?;
+            total_loss += loss.item::<f32>();
+            println!("Iters={iters}, loss={:.8}\n\n\n\n", loss.item::<f32>());
 
             iters += 1;
+            //std::thread::sleep(std::time::Duration::from_secs(2));
+            //panic!();
         }
 
         println!("Epoch {epoch}: loss = {total_loss:.4}");
     }
+    // Required losses
+    //let correct_losses = [2.302276134490967, 2.313948631286621, 2.2944066524505615, 2.3102803230285645 2.307297706604004 2.3003830909729004 2.299680471420288
 
     // Evaluation Loop
     println!("Evaluating...");

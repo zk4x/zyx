@@ -3205,7 +3205,7 @@ impl Tensor {
     }
 
     /// Tensor id
-    pub(super) const fn id(&self) -> TensorId {
+    pub const fn id(&self) -> TensorId {
         self.id
     }
 }
