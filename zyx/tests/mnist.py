@@ -1,4 +1,5 @@
 import time
+from operator import ne
 
 import torch
 from safetensors.torch import load_file
@@ -25,8 +26,6 @@ class MnistNet(nn.Module):
         # print(f"x={x.reshape(-1, 28, 28)[0, 15:20, 15:20]}")
         # print(f"{self.l1_weight[0, 0:10]}")
         x = x.matmul(self.l1_weight.T) + self.l1_bias
-        print(f"{x}")
-        raise Exception
         x = x.relu()
         x = x.matmul(self.l2_weight.T) + self.l2_bias
         return x
@@ -68,11 +67,16 @@ for epoch in range(1, 6):
         optimizer.zero_grad()
 
         logits = net(x)
-        print(f"logits={logits}")
+        print(f"{logits[0:4, :4]}")
         y_one_hot = F.one_hot(y, num_classes=10).float()
         loss = cross_entropy_one_hot(logits, y_one_hot)
+        print(f"loss={loss.item()}")
 
         loss.backward()
+
+        print(net.l2_bias.grad)
+        raise Exception
+
         optimizer.step()
 
         total_loss += loss.item()

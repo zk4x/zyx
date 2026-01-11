@@ -15,8 +15,7 @@ fn mnist() -> Result<(), ZyxError> {
         fn forward(&self, x: &Tensor) -> Tensor {
             let x = x.reshape([0, 784]).unwrap();
             //println!("x={}", x.reshape([0, 28, 28]).unwrap().slice((0, 15..20, 15..20)).unwrap());
-            println!("{}", self.l1_weight.slice((0, 0..10)).unwrap());
-            panic!();
+            //println!("{}", self.l1_weight.slice((0, 0..10)).unwrap());
             let x = x.matmul(&self.l1_weight.t()).unwrap() + &self.l1_bias;
             let x = x.relu();
             let x = x.matmul(&self.l2_weight.t()).unwrap() + &self.l2_bias;
@@ -57,6 +56,7 @@ fn mnist() -> Result<(), ZyxError> {
             let tape = GradientTape::new();
             let logits = net.forward(&x); //.clamp(-100, 100)?;
             //println!("{:?}, {:?}", logits.shape(), y.shape());
+            println!("{:.4}", logits.slice((0..4, 0..4)).unwrap());
 
             //println!("{}", logits.slice((-5.., ..))?);
             let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
@@ -64,7 +64,9 @@ fn mnist() -> Result<(), ZyxError> {
 
             let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias]);
 
+            println!("{}", grads[1].clone().unwrap());
             println!("{}", grads[3].clone().unwrap());
+            panic!();
 
             /*for (i, grad) in grads.iter().enumerate() {
                 println!("{i}, grad shape={:?}", grad.as_ref().unwrap().shape());
