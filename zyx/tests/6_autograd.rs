@@ -34,6 +34,141 @@ fn grad_reciprocal() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn grad_exp2() -> Result<(), ZyxError> {
+    let x = Tensor::from([1f32, 2., 0.5]);
+    let tape = GradientTape::new();
+    let y = x.exp2();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    // Analytical gradient
+    let ln2 = std::f32::consts::LN_2;
+    let expected = [2f32.powf(1.0) * ln2, 2f32.powf(2.0) * ln2, 2f32.powf(0.5) * ln2];
+
+    // Direct comparison — no conversions or loops needed
+    assert_eq!(x_grad, expected);
+
+    Ok(())
+}
+
+#[test]
+fn grad_reciprocal_2() -> Result<(), ZyxError> {
+    // Input tensor
+    let x = Tensor::from([2.0, -1.0, 0.5]);
+
+    // Create gradient tape
+    let tape = GradientTape::new();
+
+    // Forward pass: y = 1 / x
+    let y = x.reciprocal();
+
+    // Compute gradients
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    // Expected gradients: dy/dx = -1 / x^2
+    let expected = [-1.0 / 4.0, -1.0 / 1.0, -1.0 / 0.25]; // [-0.25, -1.0, -4.0]
+
+    // Compare
+    assert_eq!(x_grad, expected);
+
+    Ok(())
+}
+
+#[test]
+fn grad_pow_2() -> Result<(), ZyxError> {
+    // Input tensors
+    let x = Tensor::from([2.0, 3.0, 4.0]);
+    let y = Tensor::from([3.0, 2.0, 0.5]);
+
+    // Forward pass: z = x ^ y
+    let tape = GradientTape::new();
+    let z = x.pow(&y)?;
+
+    // Compute gradients
+    let mut grads = tape.gradient(&z, [&x, &y]);
+    let x_grad = grads.remove(0).unwrap();
+    let y_grad = grads.remove(0).unwrap();
+
+    // Convert tensors to Vec<f64> for comparison
+    let x_grad_vec: Vec<f64> = x_grad.try_into().unwrap();
+    let y_grad_vec: Vec<f64> = y_grad.try_into().unwrap();
+
+    // Expected gradients
+    // dz/dx = y * x^(y-1)
+    let expected_x_vec = vec![
+        3.0 * 2.0f64.powf(2.0),  // 3 * 2^(3-1) = 3 * 4 = 12
+        2.0 * 3.0f64.powf(1.0),  // 2 * 3^(2-1) = 2 * 3 = 6
+        0.5 * 4.0f64.powf(-0.5), // 0.5 * 4^(-0.5) = 0.5 * 0.5 = 0.25
+    ];
+
+    // dz/dy = x^y * ln(x)
+    let expected_y_vec = vec![
+        2.0f64.powf(3.0) * 2.0f64.ln(),  // 8 * ln(2)
+        3.0f64.powf(2.0) * 3.0f64.ln(),  // 9 * ln(3)
+        4.0f64.powf(0.5) * 4.0f64.ln(),  // 2 * ln(4)
+    ];
+
+    // Compare gradients element-wise with tolerance
+    let tol = 1e-12;
+    for (a, b) in x_grad_vec.iter().zip(expected_x_vec.iter()) {
+        assert!((a - b).abs() < tol, "x_grad mismatch: {} != {}", a, b);
+    }
+    for (a, b) in y_grad_vec.iter().zip(expected_y_vec.iter()) {
+        assert!((a - b).abs() < tol, "y_grad mismatch: {} != {}", a, b);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn grad_pow_3() -> Result<(), ZyxError> {
+    // Use non-round numbers to expose log2 -> ln approximation errors
+    let x = Tensor::from([1.5, 2.3, 5.7]);
+    let y = Tensor::from([0.7, 1.2, 0.3]);
+
+    // Forward pass: z = x ^ y
+    let tape = GradientTape::new();
+    let z = x.pow(&y)?;
+
+    // Compute gradients
+    let mut grads = tape.gradient(&z, [&x, &y]);
+    let x_grad = grads.remove(0).unwrap();
+    let y_grad = grads.remove(0).unwrap();
+
+    // Convert tensors to Vec<f64> for comparison
+    let x_vec: Vec<f64> = x_grad.clone().try_into().unwrap();
+    let y_vec: Vec<f64> = y_grad.clone().try_into().unwrap();
+    let x_val: Vec<f64> = x.clone().try_into().unwrap();
+    let y_val: Vec<f64> = y.clone().try_into().unwrap();
+
+    // Expected gradients
+    let expected_x_vec: Vec<f64> = x_val
+        .iter()
+        .zip(y_val.iter())
+        .map(|(&xv, &yv): (&f64, &f64)| yv * xv.powf(yv - 1.0))
+        .collect();
+
+    let expected_y_vec: Vec<f64> = x_val
+        .iter()
+        .zip(y_val.iter())
+        .map(|(&xv, &yv): (&f64, &f64)| xv.powf(yv) * xv.ln())
+        .collect();
+
+    // Compare element-wise with tolerance
+    let tol: f64 = 1e-12;
+    for (a, b) in x_vec.iter().zip(expected_x_vec.iter()) {
+        assert!((a - b).abs() < tol, "x_grad mismatch: {} != {}", a, b);
+    }
+    for (a, b) in y_vec.iter().zip(expected_y_vec.iter()) {
+        assert!((a - b).abs() < tol, "y_grad mismatch: {} != {}", a, b);
+    }
+
+    Ok(())
+}
+
+#[test]
 fn grad_cos() -> Result<(), ZyxError> {
     let x = Tensor::from([3f32, 2., 4.]);
     let tape = GradientTape::new();

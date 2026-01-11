@@ -309,16 +309,17 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, x_grad);
                     }
                     UOp::Exp2 => {
+                        // grad_x = grad * 2^x * ln(2)
                         let dtype = self.dtype(x);
-                        let c = std::f64::consts::E.log2();
-                        let temp = self.graph.push(Node::Const { value: Constant::new(c).cast(dtype) });
-                        let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
-                        self.release(temp);
-                        let temp2 = self.binary(nid, temp1, BOp::Mul);
-                        self.release(temp1);
-                        let grad = self.binary(nid, temp2, BOp::Mul);
-                        self.release(temp2);
-                        insert_or_add_grad(self, &mut grads, x, grad);
+                        let ln2 = std::f64::consts::LN_2;
+                        let c = self.graph.push(Node::Const { value: Constant::new(ln2).cast(dtype) });
+                        let c_expanded = self.expand(c, self.shape(x).into()).unwrap();
+                        self.release(c);
+                        let x_mul = self.binary(nid, c_expanded, BOp::Mul);
+                        self.release(c_expanded);
+                        let grad_x = self.binary(grad, x_mul, BOp::Mul);
+                        self.release(x_mul);
+                        insert_or_add_grad(self, &mut grads, x, grad_x);
                     }
                     UOp::Log2 => {
                         let dtype = self.dtype(x);
@@ -418,19 +419,6 @@ impl Runtime {
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
                     ROp::Max => {
-                        // x_grad = (1 - (x < z.expand(x.shape()))) * grad
-                        /*let x_shape: Vec<Dim> = self.shape(x).into();
-                        let z_temp = self.expand(nid, x_shape.clone()).unwrap();
-                        let cmp_t = self.binary(x, z_temp, BOp::Cmplt);
-                        self.release(z_temp);
-                        let ones = self.ones(x_shape, self.dtype(x));
-                        let max_1s = self.binary(ones, cmp_t, BOp::Sub);
-                        self.release(ones);
-                        self.release(cmp_t);
-                        let grad = self.binary(max_1s, grad, BOp::Mul);
-                        self.release(max_1s);
-                        insert_or_add_grad(self, &mut grads, x, grad);*/
-
                         // TODO make this shorter
 
                         // Compute x_grad = (1 - (x < z_broadcasted)) * grad

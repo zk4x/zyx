@@ -62,10 +62,11 @@ fn mnist() -> Result<(), ZyxError> {
             let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
             println!("{loss}");
 
-            let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias]);
+            let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias, &loss]);
 
-            println!("{}", grads[1].clone().unwrap());
+            //println!("{}", grads[1].clone().unwrap());
             println!("{}", grads[3].clone().unwrap());
+            println!("{}", grads[4].clone().unwrap());
             panic!();
 
             /*for (i, grad) in grads.iter().enumerate() {

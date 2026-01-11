@@ -75,6 +75,8 @@ for epoch in range(1, 6):
         loss.backward()
 
         print(net.l2_bias.grad)
+        # tensor([-0.0065, -0.0215,  0.0218, -0.0262, -0.0322,  0.0448,  0.0106,  0.0165, 0.0262, -0.0336])
+
         raise Exception
 
         optimizer.step()
