@@ -1056,7 +1056,7 @@ impl OpenCLDevice {
         #[allow(clippy::explicit_counter_loop)]
         for &arg in args {
             let arg = &memory_pool.buffers[arg];
-            println!("Kernel arg: {arg:?} at index {i}");
+            //println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &raw const arg.buffer;
             unsafe { (self.clSetKernelArg)(program.kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast()) }
                 .check(ErrorStatus::IncorrectKernelArg)?;
@@ -1142,7 +1142,7 @@ impl OpenCLDevice {
         }
         let max_work_item_dims = u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
         let mwis = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
-        let mut max_global_work_dims = vec![0; max_work_item_dims];
+        let mut max_local_work_dims = vec![0; max_work_item_dims];
         for i in 0..max_work_item_dims {
             let max_dim_size: usize = usize::from_ne_bytes([
                 mwis[i * 8],
@@ -1154,14 +1154,14 @@ impl OpenCLDevice {
                 mwis[i * 8 + 6],
                 mwis[i * 8 + 7],
             ]);
-            max_global_work_dims[i] = max_dim_size as Dim;
+            max_local_work_dims[i] = max_dim_size as Dim;
         }
         let mlt = usize::from_ne_bytes(self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?.try_into().unwrap()) as Dim;
         self.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024,
-            max_global_work_dims,
+            max_global_work_dims: vec![100000; max_work_item_dims],
             max_local_threads: mlt,
-            max_local_work_dims: vec![mlt; max_work_item_dims],
+            max_local_work_dims,
             preferred_vector_size: u8::try_from(u32::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
             ))

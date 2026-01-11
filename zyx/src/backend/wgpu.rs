@@ -6,6 +6,7 @@ use crate::{
     graph::{BOp, UOp},
     kernel::{IDX_T, Kernel, Op, OpId, Scope},
     runtime::Pool,
+    shape::Dim,
     slab::Slab,
 };
 use nanoserde::DeJson;
@@ -116,14 +117,19 @@ pub(super) fn initialize_device(
         buffers: Slab::new(),
     });
     memory_pools.push(Pool::new(pool));
+    let limits = device.limits();
     devices.push(Device::WGPU(WGPUDevice {
         device: device.clone(),
         adapter,
         dev_info: DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: vec![1024, 1024, 1024],
-            max_local_threads: 256,
-            max_local_work_dims: vec![256, 256, 256],
+            max_global_work_dims: vec![100000; 3],
+            max_local_threads: limits.max_compute_invocations_per_workgroup as Dim,
+            max_local_work_dims: vec![
+                limits.max_compute_workgroup_size_x as Dim,
+                limits.max_compute_workgroup_size_y as Dim,
+                limits.max_compute_workgroup_size_z as Dim,
+            ],
             preferred_vector_size: 4,
             local_mem_size: 64 * 1024,
             max_register_bytes: 1024,
