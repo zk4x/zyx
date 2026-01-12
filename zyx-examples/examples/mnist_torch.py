@@ -67,7 +67,7 @@ for epoch in range(1, 6):
         optimizer.step()
 
         total_loss += loss.item()
-        print(f"{loss.item()}")
+        print(f"Iter: {i / batch_size} {loss.item()}")
         # time.sleep(3)
 
         iters += 1

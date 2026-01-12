@@ -54,18 +54,27 @@ fn main() -> Result<(), ZyxError> {
         ..Default::default()
     };
 
-    println!("Training...");
+
+    let num_batches = (num_train + batch_size - 1) / batch_size; // ceil division
+    let mut x_batches: Vec<Tensor> = Vec::with_capacity(num_batches);
+    let mut y_batches: Vec<Tensor> = Vec::with_capacity(num_batches);
+    println!("Number of batches={num_batches}");
+
+    for i in (0..num_train).step_by(batch_size) {
+        let end = (i + batch_size).min(num_train);
+        let x_batch = train_x.slice([i..end])?;
+        let y_batch = train_y.slice([i..end])?;
+        x_batches.push(x_batch);
+        y_batches.push(y_batch);
+    }
+
     Tensor::realize_all()?;
+    println!("Training...");
     for epoch in 1..=5 {
         let mut total_loss = 0f32;
         let mut iters = 0;
 
-        for i in (0..num_train).step_by(batch_size) {
-            let end = (i + batch_size).min(num_train);
-
-            let x = train_x.slice([i..end])?;
-            let y = train_y.slice([i..end])?;
-
+        for (x, y) in x_batches.iter().zip(y_batches.iter()) {
             let tape = GradientTape::new();
             let logits = net.forward(&x); //.clamp(-100, 100)?;
                                           //println!("{:?}, {:?}", logits.shape(), y.shape());
@@ -77,21 +86,6 @@ fn main() -> Result<(), ZyxError> {
 
             /*for (i, grad) in grads.iter().enumerate() {
                 println!("{i}, grad shape={:?}", grad.as_ref().unwrap().shape());
-            }*/
-
-            /*for (i, grad_opt) in grads.iter().enumerate() {
-                if let Some(grad) = grad_opt {
-                    // Compute the L2 norm of the gradient (vectorized)
-                    let grad_norm = (grad * grad).sum_all().sqrt(); // ||grad||_2
-                    println!("Grad {} L2 norm: {:?}", i, grad_norm);
-
-                    // Compute min/max in a vectorized way
-                    let grad_min = grad.min_all();
-                    let grad_max = grad.max_all();
-                    println!("Grad {} min/max: {}/{}", i, grad_min, grad_max);
-                } else {
-                    println!("Grad {} is None", i);
-                }
             }*/
 
             optim.update(&mut net, grads);
