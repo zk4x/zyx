@@ -143,6 +143,6 @@
 - examples
   - [x] tiny net
   - [x] tiny net with sigmoid activation
-  - [ ] mnist
-  - [ ] phi LLM
+  - [x] mnist
   - [ ] RNN
+  - [ ] phi LLM

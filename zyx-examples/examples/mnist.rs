@@ -98,7 +98,7 @@ fn main() -> Result<(), ZyxError> {
 
             Tensor::realize(net.iter().chain(optim.iter()).chain([&loss]))?;
             total_loss += loss.item::<f32>();
-            println!("Iters={iters}, loss={:.8}\n\n\n\n", loss.item::<f32>());
+            println!("Iters={iters}, loss={:.8}", loss.item::<f32>());
 
             iters += 1;
             //std::thread::sleep(std::time::Duration::from_secs(2));
