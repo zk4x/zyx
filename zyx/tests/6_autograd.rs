@@ -35,19 +35,14 @@ fn grad_reciprocal() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_exp2() -> Result<(), ZyxError> {
-    let x = Tensor::from([1f32, 2., 0.5]);
+    let data = vec![1f32, 2., 0.5];
+    let x = Tensor::from(data.clone());
     let tape = GradientTape::new();
     let y = x.exp2();
-    let mut grads = tape.gradient(&y, [&x]);
+    let mut grads: Vec<Option<Tensor>> = tape.gradient(&y, [&x]);
     let x_grad = grads.pop().unwrap().unwrap();
-
-    // Analytical gradient
-    let ln2 = std::f32::consts::LN_2;
-    let expected = [2f32.powf(1.0) * ln2, 2f32.powf(2.0) * ln2, 2f32.powf(0.5) * ln2];
-
-    // Direct comparison — no conversions or loops needed
+    let expected: Vec<_> = data.iter().map(|&x| 2f32.powf(x) * std::f32::consts::LN_2).collect();
     assert_eq!(x_grad, expected);
-
     Ok(())
 }
 
@@ -169,7 +164,7 @@ fn grad_pow_3() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn grad_cos() -> Result<(), ZyxError> {
+fn grad_cos_2() -> Result<(), ZyxError> {
     let x = Tensor::from([3f32, 2., 4.]);
     let tape = GradientTape::new();
     let z = x.cos();
@@ -424,5 +419,270 @@ fn grad_t6() -> Result<(), ZyxError> {
     let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
     println!("{bb_grad}");
 
+    Ok(())
+}
+
+#[test]
+fn grad_t7() -> Result<(), ZyxError> {
+    use zyx::{DType, GradientTape};
+    let x = Tensor::rand([8, 10, 10], DType::F32).unwrap();
+    let tape = GradientTape::new();
+
+    let z = x.sum_all();
+
+    let grads = tape.gradient(&z, [&z]);
+
+    assert_eq!(grads[0].clone().unwrap(), [1f32]);
+
+    Ok(())
+}
+
+#[test]
+fn grad_add_2() -> Result<(), ZyxError> {
+    let data = vec![1f32, 2., 3.];
+    let x = Tensor::from(data.clone());
+    let y = Tensor::from(vec![4f32, 5., 6.]);
+    let tape = GradientTape::new();
+
+    let z = &x + y;
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected = vec![1f32; data.len()];
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_sub_2() -> Result<(), ZyxError> {
+    let data = vec![1f32, 2., 3.];
+    let x = Tensor::from(data.clone());
+    let y = Tensor::from(vec![4f32, 5., 6.]);
+    let tape = GradientTape::new();
+
+    let z = &x - y;
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected = vec![1f32; data.len()];
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_mul_2() -> Result<(), ZyxError> {
+    let data = vec![1f32, 2., 3.];
+    let x = Tensor::from(data.clone());
+    let y_data = vec![4f32, 5., 6.];
+    let y = Tensor::from(y_data.clone());
+    let tape = GradientTape::new();
+
+    let z = &x * y;
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    assert_eq!(x_grad, y_data);
+    Ok(())
+}
+
+#[test]
+fn grad_div_2() -> Result<(), ZyxError> {
+    let data = vec![2f32, 4., 6.];
+    let x = Tensor::from(data.clone());
+    let y_data = vec![1f32, 2., 3.];
+    let y = Tensor::from(y_data.clone());
+    let tape = GradientTape::new();
+
+    let z = &x / y;
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected: Vec<_> = y_data.iter().map(|v| 1.0 / v).collect();
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_pow_4() -> Result<(), ZyxError> {
+    let data = vec![1f32, 2., 3.];
+    let x = Tensor::from(data.clone());
+    let y = Tensor::from(vec![2f32; 3]);
+    let tape = GradientTape::new();
+
+    let z = x.pow(&y)?;
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected: Vec<_> = data.iter().map(|&x| 2.0 * x).collect();
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_neg() -> Result<(), ZyxError> {
+    let data = vec![1f32, -2., 3.];
+    let x = Tensor::from(data.clone());
+    let tape = GradientTape::new();
+
+    let y = -&x;
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected = vec![-1f32; data.len()];
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_log2() -> Result<(), ZyxError> {
+    let data = vec![1f32, 2., 4.];
+    let x = Tensor::from(data.clone());
+    let tape = GradientTape::new();
+
+    let y = x.log2();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected: Vec<_> = data
+        .iter()
+        .map(|&x| 1.0 / (x * std::f32::consts::LN_2))
+        .collect();
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_ln() -> Result<(), ZyxError> {
+    let data = vec![1f32, 2., 4.];
+    let x = Tensor::from(data.clone());
+    let tape = GradientTape::new();
+
+    let y = x.ln();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected: Vec<_> = data.iter().map(|&x| 1.0 / x).collect();
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_reciprocal_3() -> Result<(), ZyxError> {
+    let data = vec![1f32, 2., 4.];
+    let x = Tensor::from(data.clone());
+    let tape = GradientTape::new();
+
+    let y = x.reciprocal();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected: Vec<_> = data.iter().map(|&x| -1.0 / (x * x)).collect();
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_sqrt() -> Result<(), ZyxError> {
+    let data = vec![1f32, 4., 9.];
+    let x = Tensor::from(data.clone());
+    let tape = GradientTape::new();
+
+    let y = x.sqrt();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected: Vec<_> = data.iter().map(|&x| 1.0 / (2.0 * x.sqrt())).collect();
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_sin() -> Result<(), ZyxError> {
+    let data = vec![0f32, 1., 2.];
+    let x = Tensor::from(data.clone());
+    let tape = GradientTape::new();
+
+    let y = x.sin();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected: Vec<_> = data.iter().map(|&x| x.cos()).collect();
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_cos() -> Result<(), ZyxError> {
+    let data = vec![0f32, 1., 2.];
+    let x = Tensor::from(data.clone());
+    let tape = GradientTape::new();
+
+    let y = x.cos();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected: Vec<_> = data.iter().map(|&x| -x.sin()).collect();
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_sum() -> Result<(), ZyxError> {
+    let data = vec![1f32, 2., 3.];
+    let x = Tensor::from(data.clone());
+    let tape = GradientTape::new();
+
+    let y = x.sum_all();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected = vec![1f32; data.len()];
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_max() -> Result<(), ZyxError> {
+    let data = vec![1f32, 3., 2.];
+    let x = Tensor::from(data.clone());
+    let tape = GradientTape::new();
+
+    let y = x.max_all();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected = vec![0f32, 1., 0.];
+    assert_eq!(x_grad, expected);
+    Ok(())
+}
+
+#[test]
+fn grad_cmplt_none() -> Result<(), ZyxError> {
+    let x = Tensor::from(vec![1f32, 2., 3.]);
+    let y = Tensor::from(vec![2f32, 2., 2.]);
+    let tape = GradientTape::new();
+
+    let z = x.cmplt(&y)?;
+    let mut grads = tape.gradient(&z, [&x]);
+
+    assert!(grads.pop().unwrap().is_none());
+    Ok(())
+}
+
+#[test]
+fn grad_maximum() -> Result<(), ZyxError> {
+    let x_data = vec![1f32, 5., 2.];
+    let y_data = vec![2f32, 3., 3.];
+
+    let x = Tensor::from(x_data.clone());
+    let y = Tensor::from(y_data.clone());
+    let tape = GradientTape::new();
+
+    let z = x.maximum(&y)?;
+    let mut grads = tape.gradient(&z, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+
+    let expected = vec![0f32, 1., 0.];
+    assert_eq!(x_grad, expected);
     Ok(())
 }

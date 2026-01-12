@@ -201,15 +201,16 @@ impl Graph {
         let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                if !sources.contains(&nid)
+                //if !sources.contains(&nid)
                     //&& !matches!(self.nodes[nid].1, Node::Binary { bop: BOp::Cmplt, .. })
-                    && tape.contains(&nid)
+                    if tape.contains(&nid)
                 {
                     params.extend(self.nodes[nid].1.parameters());
                 }
                 1
             });
         }
+        //println!("rcs={rcs:?}");
         // Order them using rcs reference counts
         let mut order = Vec::new();
         let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
@@ -222,6 +223,7 @@ impl Graph {
                 }
             }
         }
+        //println!("order={order:?}");
         // Build topo, this way it ensures that grad is not used in backprop
         // before it was insert_or_add by all parents.
         let mut topo = Vec::new();

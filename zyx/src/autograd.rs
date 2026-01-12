@@ -311,7 +311,7 @@ impl Runtime {
                     UOp::Exp2 => {
                         // grad_x = grad * 2^x * ln(2)
                         let dtype = self.dtype(x);
-                        let ln2 = std::f64::consts::LN_2;
+                        let ln2 = std::f32::consts::LN_2;
                         let c = self.graph.push(Node::Const { value: Constant::new(ln2).cast(dtype) });
                         let c_expanded = self.expand(c, self.shape(x).into()).unwrap();
                         self.release(c);
@@ -323,7 +323,7 @@ impl Runtime {
                     }
                     UOp::Log2 => {
                         let dtype = self.dtype(x);
-                        let c = std::f64::consts::E.log2();
+                        let c = std::f32::consts::LN_2;
                         let temp = self.graph.push(Node::Const { value: Constant::new(c).cast(dtype) });
                         let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
                         self.release(temp);
