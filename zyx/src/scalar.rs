@@ -735,7 +735,7 @@ impl Scalar for f32 {
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        f32::exp2(self)
     }
 
     fn log2(self) -> Self {

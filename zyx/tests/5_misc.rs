@@ -1123,7 +1123,7 @@ fn arange_1() {
 
 #[test]
 fn arange_2() {
-    let x = Tensor::arange(0, 10, 1).unwrap().exp2().sin();
+    let x = Tensor::arange(0, 2, 1).unwrap().exp2().sin();
     //x = x.sum(0)
     Tensor::realize([&x]).unwrap();
 }

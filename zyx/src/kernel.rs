@@ -47,6 +47,7 @@ pub struct Kernel {
     pub loads: Vec<TensorId>,
     pub stores: Vec<TensorId>,
     pub ops: Slab<OpId, Op>,
+    // TODO porbably just get rid of order and instead use next: OpId for each op
     pub order: Vec<OpId>,
 }
 
@@ -88,6 +89,7 @@ pub enum Op {
 }
 
 impl Op {
+    // TODO use custom non allocating iterator instead of allocating a vec
     fn parameters(&self) -> impl Iterator<Item = OpId> + DoubleEndedIterator {
         match self {
             Op::ConstView { .. } => vec![],
@@ -124,6 +126,10 @@ impl Op {
             Op::EndLoop => vec![],
         }
         .into_iter()
+    }
+
+    pub fn is_const(&mut self) -> bool {
+        matches!(self, Op::Cast { .. })
     }
 
     pub fn remap_params(&mut self, remapping: &Map<OpId, OpId>) {
@@ -1097,6 +1103,7 @@ impl Kernel {
                         BOp::Div if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
                         BOp::Div if cx.is_one() => self.ops[op_id] = Op::Unary { x: y, uop: UOp::Reciprocal },
                         BOp::Pow if cx.is_one() => self.ops[op_id] = Op::Const(cx.dtype().one_constant()),
+                        BOp::Maximum if cx.is_minimum() => remap(&mut self.ops, op_id, y),
                         BOp::BitShiftLeft if cx.is_zero() => remap(&mut self.ops, op_id, y),
                         BOp::BitShiftRight if cx.is_zero() => remap(&mut self.ops, op_id, y),
                         _ => {}
@@ -1143,39 +1150,88 @@ impl Kernel {
         self.verify();
     }
 
+    /*
     // Eliminates accs that are not stored into in loops
-    pub fn fold_accs(&self) {
-        /*use Op::*;
-        for (op_id, define_op) in self.ops.iter().filter(|(_, op)| matches!(op, Define { .. })) {
-            // Step 1: Find all Stores to this variable
-            let stores: Vec<_> =
-                self.ops.values().filter(|op| matches!(op, Store { dst, .. } if *dst == op_id)).collect();
-
-            // Step 2: Simulate accumulation / propagation
-            let mut current_value: Option<OpId> = None;
-            for store in stores {
-                let x = store.x;
-                if let Some(prev) = current_value {
-                    // Replace Store with SSA computation: prev + x
-                    let new_val = self.add_op(Binary { x: prev, y: x, bop: BOp::Add });
-                    current_value = Some(new_val);
-                } else {
-                    current_value = Some(x);
+    pub fn fold_accs(&mut self) {
+        // Check if a define exists without a loop that stores into that define
+        let mut defines = Map::default();
+        let mut loop_level = 0u32;
+        for &op_id in &self.order {
+            match self.ops[op_id] {
+                Op::Define { scope, .. } => {
+                    if scope == Scope::Register {
+                        defines.insert(op_id, loop_level);
+                    }
                 }
-
-                // Replace all LOADs feeding into this Store with `current_value`
-                for load in self.ops.iter_mut().filter(|op| matches!(op, Load { src, .. } if *src == op_id)) {
-                    load.replace_with(current_value.unwrap());
+                Op::Store { dst, .. } => {
+                    if let Some(level) = defines.get(&dst) {
+                        if loop_level > *level {
+                            defines.remove(&dst);
+                        }
+                    }
                 }
+                Op::Loop { scope, .. } if scope == Scope::Register => {
+                    loop_level += 1;
+                }
+                Op::EndLoop => {
+                    loop_level = loop_level.saturating_sub(1);
+                    if loop_level == 0 {
+                        break;
+                    }
+                }
+                _ => {}
             }
-
-            // Step 3: Remove all Define + Stores for this variable
-            self.ops.remove(op_id);
-            for store in stores {
-                self.ops.remove(store.id);
-            }
-        }*/
+        }
+        //println!("defines: {defines:?}");
+        for (define, _) in defines {
+            self.fold_acc(define);
+        }
     }
+
+    pub fn fold_acc(&mut self, define_id: OpId) {
+        let mut i = 0;
+        let mut latest_stores = Vec::new();
+        while i < self.order.len() {
+            let op_id = self.order[i];
+            if op_id == define_id {
+                let Op::Define { len, .. } = self.ops[define_id] else { unreachable!() };
+                self.order.remove(i);
+                self.ops.remove(op_id);
+                latest_stores = vec![OpId::null(); len];
+                break;
+            }
+            i += 1;
+        }
+        let mut remaps = Map::default();
+        while i < self.order.len() {
+            let op_id = self.order[i];
+            match self.ops[op_id] {
+                Op::Store { dst, x, index } => {
+                    if dst == define_id {
+                        self.ops.remove(op_id);
+                        self.order.remove(i);
+                        let Op::Const(index) = self.ops[index] else { unreachable!() };
+                        let Constant::U32(index) = index else { unreachable!() };
+                        latest_stores[index as usize] = x;
+                        continue;
+                    }
+                }
+                Op::Load { src, index, .. } => {
+                    if src == define_id {
+                        self.ops.remove(op_id);
+                        self.order.remove(i);
+                        let Op::Const(index) = self.ops[index] else { unreachable!() };
+                        let Constant::U32(index) = index else { unreachable!() };
+                        remaps.insert(op_id, latest_stores[index as usize]);
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            self.ops[op_id].remap_params(&remaps);
+            i += 1;
+        }
+    }*/
 
     pub fn swap_commutative(&mut self) {
         // Tracks whether a value depends on a loop index
@@ -1201,11 +1257,15 @@ impl Kernel {
             loop_dep.insert(op_id, depth);
         }
 
-        for op in self.ops.values_mut() {
-            if let Op::Binary { x, y, bop } = op {
+        // TODO This is stupid
+        let ids: Set<OpId> = self.ops.ids().collect();
+        for op_id in ids {
+            if let Op::Binary { x, y, bop } = self.ops[op_id] {
                 if bop.is_commutative() {
-                    if loop_dep[&y] < loop_dep[&x] {
-                        std::mem::swap(x, y);
+                    if loop_dep[&y] < loop_dep[&x] || (self.ops[y].is_const() && !self.ops[x].is_const()) {
+                        if let Op::Binary { x, y, .. } = &mut self.ops[op_id] {
+                            std::mem::swap(x, y);
+                        }
                     }
                 }
             }

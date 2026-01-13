@@ -380,6 +380,24 @@ impl Constant {
         }
     }
 
+    pub(crate) fn is_minimum(&self) -> bool {
+        match *self {
+            Constant::BF16(x) => bf16::from_le_bytes(x) == bf16::MIN,
+            Constant::F16(x) => f16::from_le_bytes(x) == f16::MIN,
+            Constant::F32(x) => f32::from_le_bytes(x) == f32::MIN,
+            Constant::F64(x) => f64::from_le_bytes(x) == f64::MIN,
+            Constant::U8(x) => x == u8::MIN,
+            Constant::U16(x) => x == u16::MIN,
+            Constant::U32(x) => x == u32::MIN,
+            Constant::U64(x) => u64::from_le_bytes(x) == u64::MIN,
+            Constant::I8(x) => x == i8::MIN,
+            Constant::I16(x) => x == i16::MIN,
+            Constant::I32(x) => x == i32::MIN,
+            Constant::I64(x) => i64::from_le_bytes(x) == i64::MIN,
+            Constant::Bool(x) => !x,
+        }
+    }
+
     pub(crate) fn is_zero(&self) -> bool {
         match *self {
             Constant::BF16(x) => bf16::from_le_bytes(x) == bf16::ZERO,

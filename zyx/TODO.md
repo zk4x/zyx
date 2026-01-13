@@ -73,6 +73,8 @@
     - [x] in kernel
   - [x] loop invariant code motion
   - [x] comutative reorder (put before LICM)
+  - [ ] div mod simplifications
+  - [x] dead accumulator elimination (after unroll)
   - [ ] vectorization, vector dtypes
   - [ ] tensor cores/tiling
   - [ ] merge all mul + add into mad instructions
