@@ -2637,7 +2637,7 @@ impl Scalar for u64 {
     }
 
     fn byte_size() -> usize {
-        4
+        8
     }
 
     fn abs(self) -> Self {

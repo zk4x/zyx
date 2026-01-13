@@ -287,7 +287,7 @@ impl Runtime {
         }
     }
 
-    pub(super) fn new_tensor(&mut self, shape: Vec<Dim>, data: Box<dyn TempData>) -> Result<TensorId, ZyxError> {
+    pub(super) fn new_tensor(&mut self, shape: Vec<Dim>, data: impl TempData) -> Result<TensorId, ZyxError> {
         let bytes = data.bytes();
         let dtype = data.dtype();
         debug_assert_eq!(shape.iter().product::<Dim>() * dtype.byte_size() as Dim, bytes);

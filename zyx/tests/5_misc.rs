@@ -137,28 +137,12 @@ fn batched_matmul() -> Result<(), ZyxError> {
                 for n in (8..128).step_by(59) {
                     // x: [B, M, K]
                     let x_data: Vec<Vec<Vec<i32>>> = (0..b)
-                        .map(|bb| {
-                            (0..m)
-                                .map(|i| {
-                                    (0..k)
-                                        .map(|j| bb as i32 + i as i32 + j as i32)
-                                        .collect()
-                                })
-                                .collect()
-                        })
+                        .map(|bb| (0..m).map(|i| (0..k).map(|j| bb as i32 + i as i32 + j as i32).collect()).collect())
                         .collect();
 
                     // y: [B, K, N]
                     let y_data: Vec<Vec<Vec<i32>>> = (0..b)
-                        .map(|bb| {
-                            (0..k)
-                                .map(|i| {
-                                    (0..n)
-                                        .map(|j| bb as i32 + i as i32 - j as i32)
-                                        .collect()
-                                })
-                                .collect()
-                        })
+                        .map(|bb| (0..k).map(|i| (0..n).map(|j| bb as i32 + i as i32 - j as i32).collect()).collect())
                         .collect();
 
                     let x = Tensor::from(x_data.clone());
@@ -172,8 +156,7 @@ fn batched_matmul() -> Result<(), ZyxError> {
                         for i in 0..m {
                             for kk in 0..k {
                                 for j in 0..n {
-                                    expected[bb][i][j] +=
-                                        x_data[bb][i][kk] * y_data[bb][kk][j];
+                                    expected[bb][i][j] += x_data[bb][i][kk] * y_data[bb][kk][j];
                                 }
                             }
                         }
@@ -198,10 +181,7 @@ fn batched_matmul() -> Result<(), ZyxError> {
 
                     if z != expected {
                         //println!("{z}");
-                        panic!(
-                            "Batched matmul mismatch for b={}, m={}, k={}, n={}",
-                            b, m, k, n
-                        );
+                        panic!("Batched matmul mismatch for b={}, m={}, k={}, n={}", b, m, k, n);
                     }
                 }
             }
@@ -638,6 +618,37 @@ fn rand_get() -> Result<(), ZyxError> {
     let x = Tensor::rand([3, 12], DType::U8)?;
     let x = x.slice((.., 8..=-2))?;
     assert_eq!(x, [[41u8, 171, 236], [212, 222, 77], [16, 125, 60]]);
+    Ok(())
+}
+
+#[test]
+fn gather_test() -> Result<(), ZyxError> {
+    // Hardcoded 3x5 tensor
+    let x = Tensor::from([
+        [10u8, 20, 30, 40, 50],
+        [11, 21, 31, 41, 51],
+        [12, 22, 32, 42, 52],
+    ]);
+
+    // Indices to gather along axis 1
+    let indices = Tensor::from([
+        [0u8, 2, 4],  // from row 0 take columns 0,2,4
+        [1, 3, 0],    // from row 1 take columns 1,3,0
+        [4, 1, 2],    // from row 2 take columns 4,1,2
+    ]);
+
+    // Perform gather along axis 1
+    let gathered = x.gather(1, &indices)?;
+
+    // Expected output
+    let expected = [
+        [10u8, 30, 50],
+        [21, 41, 11],
+        [52, 22, 32],
+    ];
+
+    assert_eq!(gathered, expected);
+
     Ok(())
 }
 
