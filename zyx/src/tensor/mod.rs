@@ -2942,6 +2942,25 @@ impl Tensor {
         Ok(ret)
     }
 
+    // TODO we also need these two functions for pooling
+    /*def _resolve_pool_pads(self, padding:int|Sequence[int], dims:int) -> Sequence[int]:
+      if not isinstance(padding, int) and not (len(padding) == 2*dims or len(padding) == dims):
+        raise ValueError(f"Padding must be an int or a sequence of length {dims} or {2*dims}, but got {padding=} for {self.shape=} with {dims=}.")
+      return [padding]*2*dims if isinstance(padding, int) else (padding if len(padding) == 2*dims else [p for p in padding for _ in range(2)][::-1])
+
+    def _apply_ceil_mode(self, pads:Sequence[int], k_:tuple[sint, ...], s_:int|tuple[int, ...], d_:int|tuple[int, ...]) -> list[int]:
+      (d_,s_), i_ = (make_tuple(x, len(k_)) for x in (d_,s_)), self.shape[-len(k_):]
+      pads, grouped_pads = list(pads), _flat_to_grouped(pads)
+      # https://arxiv.org/pdf/1603.07285 section 5.1, relationship 15.
+      o_ = [ceildiv(i+pB+pA - (d*(k-1)+1), s) + 1 for i,d,k,s,(pB,pA) in zip(i_,d_,k_,s_,grouped_pads)]
+      for dim,(o,i,s,k,d,(pB,pA)) in enumerate(zip(o_,i_,s_,k_,d_,grouped_pads)):
+        # we have to do additional padding before `_pool` so that `o_` in `_pool` is calculated correctly
+        # `s*(o-1) + (d*(k-1)+1) - (i+pB+pA)` -> last_sliding_window_start + full_kernel_size - padded_input_shape
+        # we decrease padding in the case that a sliding window starts in the end padded region, thereby decreasing `o_` in `_pool`
+        # `smax(s*(o-1) - (pB+i-1), 0)` -> last_sliding_window_start - (pad_before + input_size - zero_offset)
+        pads[-1-dim*2] += s*(o-1) + (d*(k-1)+1) - (i+pB+pA) - smax(s*(o-1) - (pB+i-1), 0)
+      return pads*/
+
     /// Creates a new tensor by repeating the input tensor along its dimensions.
     ///
     /// The `repeats` parameter specifies how many times to repeat each dimension of the tensor. If the length of `repeats`

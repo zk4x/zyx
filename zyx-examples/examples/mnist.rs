@@ -1,8 +1,33 @@
 use std::collections::HashMap;
 use zyx::{DType, GradientTape, Module, Tensor, ZyxError};
-use zyx_nn::{Linear, Module};
+use zyx_nn::{Conv2d, Linear, Module};
 use zyx_optim::SGD;
 
+/*#[derive(Module)]
+struct MnistNet {
+    l1: Conv2d,
+    l2: Conv2d,
+    l3: Linear,
+}
+
+impl MnistNet {
+    fn new(dtype: DType) -> Result<Self, ZyxError> {
+        Ok(Self {
+            l1: Conv2d::new(1, 32, [3, 3], 1, 0, 1, 1, true, dtype)?,
+            l2: Conv2d::new(32, 64, [3, 3], 1, 0, 1, 1, true, dtype)?,
+            l3: Linear::new(1600, 10, true, dtype)?,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Tensor {
+        //let x = x.reshape([0, 784]).unwrap();
+        let x = self.l1.forward(x).unwrap().relu().max_pool2d([2, 2]).unwrap();
+        let x = self.l2.forward(x).unwrap().relu().max_pool2d([2, 2]).unwrap();
+        self.l3.forward(&x).unwrap()
+    }
+}*/
+
+// With linear
 #[derive(Module)]
 struct MnistNet {
     l1: Linear,
@@ -27,19 +52,13 @@ impl MnistNet {
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
     let train_dataset: HashMap<String, Tensor> = Tensor::load("data/mnist_dataset.safetensors")?;
-    //println!("{:?}", train_dataset.keys());
-    //println!("{:.2}", train_x.slice((-5.., ..))?);
-    /*let train_x = train_dataset["x_train"].cast(DType::F32) / 255;
-    let train_y = train_dataset["y_train"].clone();
-    let test_x = train_dataset["x_test"].cast(DType::F32) / 255;
-    let test_y = train_dataset["y_test"].clone();*/
     let train_x = train_dataset["train_x"].cast(DType::F32) / 255;
     let train_y = train_dataset["train_y"].clone();
     let test_x = train_dataset["test_x"].cast(DType::F32) / 255;
     let test_y = train_dataset["test_y"].clone();
 
     let batch_size = 128;
-    let num_train = train_x.shape()[0];
+    let n_train = train_x.shape()[0] as u64;
 
     let mut net = MnistNet::new(DType::F32)?;
     //net.save("models/mnist.safetensors")?;
@@ -54,68 +73,30 @@ fn main() -> Result<(), ZyxError> {
         ..Default::default()
     };
 
-    /*let num_batches = (num_train + batch_size - 1) / batch_size; // ceil division
-    let mut x_batches: Vec<Tensor> = Vec::with_capacity(num_batches);
-    let mut y_batches: Vec<Tensor> = Vec::with_capacity(num_batches);
-    println!("Number of batches={num_batches}");
-
-    for i in (0..num_train).step_by(batch_size) {
-        let end = (i + batch_size).min(num_train);
-        let x_batch = train_x.slice([i..end])?;
-        let y_batch = train_y.slice([i..end])?;
-        x_batches.push(x_batch);
-        y_batches.push(y_batch);
-    }*/
-
-    //(x_batches, y_batches).save("batches.safetensors")?;
-    let loaded = Tensor::load("batches.safetensors")?;
-    let mut x_batches = Vec::new();
-    let mut y_batches = Vec::new();
-    for t in loaded.values() {
-        if t.rank() == 4 {
-            x_batches.push(t);
-        } else {
-            y_batches.push(t);
-        }
-    }
-    //panic!();
+    println!("train_x {:?}, train_y {:?}", train_x.shape(), train_y.shape());
 
     Tensor::realize_all()?;
 
     println!("Training...");
-    for epoch in 1..=5 {
-        let mut total_loss = 0f32;
-        let mut iters = 0;
+    for step in 0..7000usize {
+        Tensor::set_training(true);
+        let tape = GradientTape::new();
+        let samples = Tensor::uniform(batch_size, 0..n_train)?;
+        let x = train_x.gather(0, samples.reshape([batch_size, 1, 1])?.expand([batch_size, 28, 28])?)?;
+        let y = train_y.gather(0, samples)?;
 
-        for (x, y) in x_batches.iter().zip(y_batches.iter()) {
-            let tape = GradientTape::new();
-            let logits = net.forward(&x); //.clamp(-100, 100)?;
-                                          //println!("{:?}, {:?}", logits.shape(), y.shape());
+        let logits = net.forward(&x);
+        let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
+        let grads = tape.gradient(&loss, &net);
+        optim.update(&mut net, grads);
+        Tensor::realize(net.iter().chain(optim.iter()).chain([&loss]))?;
 
-            //println!("{}", logits.slice((-5.., ..))?);
-            let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
-
-            let grads = tape.gradient(&loss, &net);
-
-            /*for (i, grad) in grads.iter().enumerate() {
-                println!("{i}, grad shape={:?}", grad.as_ref().unwrap().shape());
-            }*/
-
-            optim.update(&mut net, grads);
-
-            Tensor::realize(net.iter().chain(optim.iter()).chain([&loss]))?;
-            total_loss += loss.item::<f32>();
-            println!("Iters={iters}, loss={:.8}", loss.item::<f32>());
-
-            iters += 1;
-            //std::thread::sleep(std::time::Duration::from_secs(2));
-            //panic!();
+        if step.is_multiple_of(10) {
+            Tensor::set_training(false);
+            let acc = net.forward(&test_x).argmax_axis(1)?.equal(&test_y)?.mean_all().item::<f32>();
+            println!("step {step}, loss {}, acc {:.2}%", loss.item::<f32>(), acc*100.)
         }
-
-        println!("Epoch {epoch}: loss = {total_loss:.4}");
     }
-    // Required losses
-    //let correct_losses = [2.302276134490967, 2.313948631286621, 2.2944066524505615, 2.3102803230285645 2.307297706604004 2.3003830909729004 2.299680471420288
 
     // Evaluation Loop
     println!("Evaluating...");
