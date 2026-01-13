@@ -254,8 +254,7 @@ impl Scalar for bf16 {
     }
 
     fn dtype() -> DType {
-        //DType::BF16
-        todo!()
+        DType::BF16
     }
 
     fn zero() -> Self {
@@ -2190,7 +2189,7 @@ impl Scalar for u16 {
     }
 
     fn dtype() -> DType {
-        DType::U32
+        DType::U16
     }
 
     fn zero() -> Self {
@@ -2202,7 +2201,7 @@ impl Scalar for u16 {
     }
 
     fn byte_size() -> usize {
-        4
+        2
     }
 
     fn abs(self) -> Self {

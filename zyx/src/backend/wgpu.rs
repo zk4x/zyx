@@ -151,6 +151,8 @@ impl WGPUMemoryPool {
     }
 
     pub fn allocate(&mut self, bytes: usize) -> Result<(BufferId, Event), BackendError> {
+        const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
+        let bytes = (bytes + ALIGN - 1) / ALIGN * ALIGN;
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
@@ -173,7 +175,7 @@ impl WGPUMemoryPool {
         buffer.destroy();
     }
 
-    pub fn host_to_pool(
+    /*pub fn host_to_pool(
         &mut self,
         src: &[u8],
         dst: BufferId,
@@ -185,6 +187,50 @@ impl WGPUMemoryPool {
         let encoder =
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("GpuBuffer::write") });
         self.queue.submit(Some(encoder.finish()));
+        Ok(Event::WGPU(WGPUEvent { submission_index: None }))
+    }*/
+    pub fn host_to_pool(
+        &mut self,
+        src: &[u8],
+        dst: BufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<super::Event, BackendError> {
+        let _ = event_wait_list;
+        let dst = &self.buffers[dst];
+
+        // wgpu requires writes to be multiples of 4 bytes
+        const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
+
+        let aligned_len = (src.len() + ALIGN - 1) / ALIGN * ALIGN;
+
+        // Use write_buffer for the aligned portion
+        if aligned_len > src.len() {
+            // If src.len() is not divisible by 4, we need a tiny slice with padding
+            // Here we can safely use `write_buffer` with padding without allocating a new Vec
+            // by creating a small stack buffer for the extra bytes
+            let mut padded: [u8; ALIGN] = [0; ALIGN];
+            let full_chunks = src.len() / ALIGN;
+            let remaining = src.len() % ALIGN;
+
+            // Write full 4-byte chunks directly
+            if full_chunks > 0 {
+                self.queue.write_buffer(dst, 0, &src[..full_chunks * ALIGN]);
+            }
+
+            // Write the remaining bytes padded with zeros
+            if remaining > 0 {
+                padded[..remaining].copy_from_slice(&src[full_chunks * ALIGN..]);
+                self.queue.write_buffer(dst, (full_chunks * ALIGN) as u64, &padded);
+            }
+        } else {
+            // Already aligned
+            self.queue.write_buffer(dst, 0, src);
+        }
+
+        let encoder =
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("GpuBuffer::write") });
+        self.queue.submit(Some(encoder.finish()));
+
         Ok(Event::WGPU(WGPUEvent { submission_index: None }))
     }
 

@@ -290,6 +290,7 @@ impl Runtime {
     pub(super) fn new_tensor(&mut self, shape: Vec<Dim>, data: impl TempData) -> Result<TensorId, ZyxError> {
         let bytes = data.bytes();
         let dtype = data.dtype();
+        //println!("bytes={} dtype={} shape={:?}", data.bytes(), data.dtype(), shape);
         debug_assert_eq!(shape.iter().product::<Dim>() * dtype.byte_size() as Dim, bytes);
         if bytes == dtype.byte_size() as Dim {
             let value = data.read();

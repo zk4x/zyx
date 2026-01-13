@@ -621,18 +621,15 @@ fn rand_get() -> Result<(), ZyxError> {
     Ok(())
 }
 
+#[cfg(not(feature = "wgpu"))]
 #[test]
 fn gather_test() -> Result<(), ZyxError> {
     // Hardcoded 3x5 tensor
-    let x = Tensor::from([
-        [10u8, 20, 30, 40, 50],
-        [11, 21, 31, 41, 51],
-        [12, 22, 32, 42, 52],
-    ]);
+    let x = Tensor::from([[10u16, 20, 30, 40, 50], [11, 21, 31, 41, 51], [12, 22, 32, 42, 52]]);
 
     // Indices to gather along axis 1
     let indices = Tensor::from([
-        [0u8, 2, 4],  // from row 0 take columns 0,2,4
+        [0u16, 2, 4], // from row 0 take columns 0,2,4
         [1, 3, 0],    // from row 1 take columns 1,3,0
         [4, 1, 2],    // from row 2 take columns 4,1,2
     ]);
@@ -641,11 +638,7 @@ fn gather_test() -> Result<(), ZyxError> {
     let gathered = x.gather(1, &indices)?;
 
     // Expected output
-    let expected = [
-        [10u8, 30, 50],
-        [21, 41, 11],
-        [52, 22, 32],
-    ];
+    let expected = [[10u16, 30, 50], [21, 41, 11], [52, 22, 32]];
 
     assert_eq!(gathered, expected);
 

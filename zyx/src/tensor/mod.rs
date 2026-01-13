@@ -2054,26 +2054,25 @@ impl Tensor {
         let dim = into_axis(axis, shape.len())?;
 
         if shape.len() != index_shape.len() {
-            return Err(ZyxError::shape_error(format!(
-                "self.rank({}) != indices.rank({})",
-                shape.len(),
-                index_shape.len()
-            ).into()));
+            return Err(ZyxError::shape_error(
+                format!("self.rank({}) != indices.rank({})", shape.len(), index_shape.len()).into(),
+            ));
         }
 
         for (d, (&s, &i)) in shape.iter().zip(index_shape.iter()).enumerate() {
             if d != dim && s < i {
-                return Err(ZyxError::shape_error(format!(
-                    "Shape mismatch at dimension {}: self.shape[{}] = {} < indices.shape[{}] = {}",
-                    d, d, s, d, i
-                ).into()));
+                return Err(ZyxError::shape_error(
+                    format!(
+                        "Shape mismatch at dimension {}: self.shape[{}] = {} < indices.shape[{}] = {}",
+                        d, d, s, d, i
+                    )
+                    .into(),
+                ));
             }
         }
 
         // Prepare one-hot along dim
-        let one_hot = indices
-            .unsqueeze(-1)?
-            .one_hot_along_dim(shape[dim], -1)?;
+        let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(shape[dim], -1)?;
 
         // Prepare negative padding for shrink
         let mut padding = Vec::new();
@@ -2166,10 +2165,13 @@ impl Tensor {
     /// One hot along dim
     pub fn one_hot_along_dim(&self, num_classes: Dim, dim: Axis) -> Result<Tensor, ZyxError> {
         if !self.dtype().is_int() {
-            return Err(ZyxError::dtype_error(format!(
-                "_one_hot_along_dim expects integer index tensor, got {:?}",
-                self.dtype()
-            ).into()));
+            return Err(ZyxError::dtype_error(
+                format!(
+                    "_one_hot_along_dim expects integer index tensor, got {:?}",
+                    self.dtype()
+                )
+                .into(),
+            ));
         }
 
         // Resolve negative dim
