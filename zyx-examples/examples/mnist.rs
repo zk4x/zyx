@@ -38,7 +38,7 @@ fn main() -> Result<(), ZyxError> {
     let test_x = train_dataset["test_x"].cast(DType::F32) / 255;
     let test_y = train_dataset["test_y"].clone();
 
-    let batch_size = 64;
+    let batch_size = 128;
     let num_train = train_x.shape()[0];
 
     let mut net = MnistNet::new(DType::F32)?;
@@ -54,8 +54,7 @@ fn main() -> Result<(), ZyxError> {
         ..Default::default()
     };
 
-
-    let num_batches = (num_train + batch_size - 1) / batch_size; // ceil division
+    /*let num_batches = (num_train + batch_size - 1) / batch_size; // ceil division
     let mut x_batches: Vec<Tensor> = Vec::with_capacity(num_batches);
     let mut y_batches: Vec<Tensor> = Vec::with_capacity(num_batches);
     println!("Number of batches={num_batches}");
@@ -66,9 +65,23 @@ fn main() -> Result<(), ZyxError> {
         let y_batch = train_y.slice([i..end])?;
         x_batches.push(x_batch);
         y_batches.push(y_batch);
+    }*/
+
+    //(x_batches, y_batches).save("batches.safetensors")?;
+    let loaded = Tensor::load("batches.safetensors")?;
+    let mut x_batches = Vec::new();
+    let mut y_batches = Vec::new();
+    for t in loaded.values() {
+        if t.rank() == 4 {
+            x_batches.push(t);
+        } else {
+            y_batches.push(t);
+        }
     }
+    //panic!();
 
     Tensor::realize_all()?;
+
     println!("Training...");
     for epoch in 1..=5 {
         let mut total_loss = 0f32;

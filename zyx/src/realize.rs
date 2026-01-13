@@ -508,6 +508,7 @@ impl<'a> Kernelizer<'a> {
         debug_assert!(!kernel.stores.is_empty());
         debug_assert!(!kernel.ops.is_empty());
 
+        //let time_w = std::time::Instant::now();
         let (dev_id, mpid, event_wait_list, output_buffers, args) =
             schedule(&kernel.loads, &kernel.stores, self.graph, self.devices, self.pools)?;
 
@@ -531,6 +532,7 @@ impl<'a> Kernelizer<'a> {
                 }
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 self.pools[mpid].events.insert(output_buffers, event);
+                //println!("Elapsed during kernel launch {:?}", time_w.elapsed());
                 return Ok(());
             } else if let Some(opt) = self.cache.optimizations.get(&(kid, dev_info_id)) {
                 // Continue optimizing using optimizations cached to disk
@@ -899,6 +901,7 @@ impl Runtime {
     }
 
     pub fn realize_selected(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+        //let time_w = std::time::Instant::now();
         let realized_nodes: Set<TensorId> =
             self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
 
@@ -922,6 +925,7 @@ impl Runtime {
                 1
             });
         }
+        //println!("elapsed sdfsdl {:?}", time_w.elapsed());
         // Order them using rcs reference counts
         let mut order = Vec::new();
         let mut internal_rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());

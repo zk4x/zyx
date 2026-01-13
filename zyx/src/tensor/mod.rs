@@ -2006,7 +2006,6 @@ impl Tensor {
         Ok(mean_loss) // Return the mean loss
     }*/
 
-    /*
     /// Gather
     pub fn gather(&self, dim: usize, indices: Tensor) -> Result<Tensor, ZyxError> {
         // Step 1: Ensure the dimensions of the tensors match
@@ -2035,7 +2034,7 @@ impl Tensor {
         }
 
         // Step 3: One-hot encode the indices tensor along the specified dimension
-        let one_hot = indices.unsqueeze(-1)?._one_hot_along_dim(self.shape()[dim])?;
+        let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(self.shape()[dim], -1);
 
         // Step 4: Reshape the tensor to align the indices tensor with the batch dimension
         let reshaped_self = self.shrink(&[0, dim]).unsqueeze(-1).transpose(-1, dim)?;
@@ -2047,7 +2046,7 @@ impl Tensor {
         let result = result.sum(-1, Some(self.dtype()))?;
 
         Ok(result)
-    }*/
+    }
     /*
     assert index.ndim == self.ndim, f"self.ndim must equal index.ndim, {self.ndim=}, {index.ndim=}"
     dim = self._resolve_dim(dim)
@@ -3791,16 +3790,16 @@ impl<T: Scalar> PartialEq<Vec<Vec<Vec<T>>>> for Tensor {
             Ok(data) => {
                 let data: Vec<T> = data;
                 for (x, y) in data.into_iter().zip(other.iter().flatten().flatten()) {
-                            if !Scalar::is_equal(x, *y) {
-                                return false;
-                            }
-                        }
+                    if !Scalar::is_equal(x, *y) {
+                        return false;
+                    }
+                }
                 true
             }
             Err(e) => {
-                    println!("Comparison failed: {e}");
-                    false
-                }
+                println!("Comparison failed: {e}");
+                false
+            }
         }
     }
 }

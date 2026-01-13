@@ -1,9 +1,9 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
 use crate::backend::{BufferId, Config, Device, Event, MemoryPool, SearchConfig};
+use crate::cache::Cache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{BOp, Graph, Node, ROp, UOp};
-use crate::cache::Cache;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{Dim, UAxis, permute, reduce};
@@ -218,7 +218,7 @@ impl Runtime {
 
         // It seems there is no point in actually deinitializing anything...
         // Drop programs (kernels)
-        /*self.cache.deinitialize(&mut self.devices);
+        self.cache.deinitialize(&mut self.devices);
         // drop devices
         while let Some(mut dev) = self.devices.pop() {
             dev.deinitialize();
@@ -230,7 +230,7 @@ impl Runtime {
             pool.deinitialize();
         }
         self.config_dir = None;
-        self.temp_data = Map::default();*/
+        self.temp_data = Map::default();
 
         // These variables are persistent:
         /*self.rng
@@ -336,7 +336,6 @@ impl Runtime {
         let mpid = memory_pool_id as usize;
         let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
         self.temp_data.insert(buffer_id, data.read());
-
 
         //println!("len = {}", self.temp_data[&buffer_id].len());
 

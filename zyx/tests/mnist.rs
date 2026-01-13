@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+/*use std::collections::HashMap;
 
 use zyx::{DType, GradientTape, Tensor, ZyxError};
 
@@ -100,10 +100,10 @@ fn mnist() -> Result<(), ZyxError> {
     }
     panic!();
     Ok(())
-}
+}*/
 
 /*
 
-          x=tensor([[ 0.1464, -0.0082, -0.2147, -0.1245,  0.0447,  0.1138,  0.0383,  0.0569,
-                   -0.0029,  0.0660]], grad_fn=<AddBackward0>)
-          */
+x=tensor([[ 0.1464, -0.0082, -0.2147, -0.1245,  0.0447,  0.1138,  0.0383,  0.0569,
+         -0.0029,  0.0660]], grad_fn=<AddBackward0>)
+*/

@@ -33,7 +33,7 @@ train_y = train_dataset["train_y"].long().to(device)
 test_x = train_dataset["test_x"].float().to(device) / 255.0
 test_y = train_dataset["test_y"].long().to(device)
 
-batch_size = 64
+batch_size = 129
 num_train = train_x.shape[0]
 
 net = MnistNet().to(device)
@@ -52,6 +52,7 @@ for epoch in range(1, 6):
     iters = 0
 
     for i in range(0, num_train, batch_size):
+        now = time.time()
         end = min(i + batch_size, num_train)
 
         x = train_x[i:end]
@@ -67,7 +68,7 @@ for epoch in range(1, 6):
         optimizer.step()
 
         total_loss += loss.item()
-        print(f"Iter: {i / batch_size} {loss.item()}")
+        print(f"Iter: {i / batch_size} {loss.item()}, took {time.time() - now}")
         # time.sleep(3)
 
         iters += 1
