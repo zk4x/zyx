@@ -172,14 +172,13 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let dtype = self.graph.dtype(nid);
         let mut ops = Slab::with_capacity(100);
-        let op_id = ops.push(Op::LoadView { dtype, view: View::contiguous(shape) });
+        let op_id = ops.push(Op::LoadView { next: OpId::null(), dtype, view: View::contiguous(shape) });
         let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: vec![nid],
             stores: Vec::new(),
             start: op_id,
             ops,
-            order: vec![op_id],
         };
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
@@ -188,14 +187,13 @@ impl<'a> Kernelizer<'a> {
 
     fn create_const_kernel(&mut self, nid: TensorId, value: Constant) {
         let mut ops = Slab::with_capacity(100);
-        let op_id = ops.push(Op::ConstView { value, view: View::contiguous(&[1]) });
+        let op_id = ops.push(Op::ConstView { next: OpId::null(), value, view: View::contiguous(&[1]) });
         let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: Vec::new(),
             stores: Vec::new(),
             start: op_id,
             ops,
-            order: vec![op_id],
         };
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
@@ -328,7 +326,7 @@ impl<'a> Kernelizer<'a> {
     fn add_cast_op(&mut self, nid: TensorId, x: TensorId, dtype: DType) {
         let (kid, op_id) = self.visited[&x];
         let kernel = &mut self.kernels[kid];
-        let op_id = kernel.push(Op::Cast { next: OpId::null(), x: op_id, dtype }, op_id);
+        let op_id = kernel.push(Op::Cast { next: OpId::null(), x: op_id, dtype });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -338,7 +336,7 @@ impl<'a> Kernelizer<'a> {
     fn add_unary_op(&mut self, nid: TensorId, x: TensorId, uop: UOp) {
         let (kid, op_id) = self.visited[&x];
         let kernel = &mut self.kernels[kid];
-        let op_id = kernel.push(Op::Unary { next: OpId::null(), x: op_id, uop }, op_id);
+        let op_id = kernel.push(Op::Unary { next: OpId::null(), x: op_id, uop });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -361,7 +359,7 @@ impl<'a> Kernelizer<'a> {
             kernel.remove_first_output(x);
             kernel.remove_first_output(y);
             kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
-            kernel.push(Op::Binary { next: OpId::null(), x: op_id, y: op_idy, bop }, op_id)
+            kernel.push(Op::Binary { next: OpId::null(), x: op_id, y: op_idy, bop })
         } else {
             //println!("Different kernels for binary");
             // TODO later use this, but this requires global memory sync inside of the kernel
@@ -415,7 +413,7 @@ impl<'a> Kernelizer<'a> {
             }*/
 
             self.kernels[kidy].remove_first_output(y);
-            let Kernel { outputs, loads, stores, ops, order } = unsafe { self.kernels.remove_and_return(kidy) };
+            let Kernel { outputs, loads, stores, start, ops } = unsafe { self.kernels.remove_and_return(kidy) };
 
             // Extend x kernel with y ops
             let mut y_ops_map = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
@@ -445,7 +443,7 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].outputs.extend(outputs);
             self.kernels[kid].outputs.extend(vec![nid; self.rcs[&nid] as usize]);
 
-            self.kernels[kid].push(Op::Binary { x: op_id, y: y_ops_map[&op_idy], bop })
+            self.kernels[kid].push(Op::Binary { next: OpId::null(), x: op_id, y: y_ops_map[&op_idy], bop })
         };
 
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -468,7 +466,7 @@ impl<'a> Kernelizer<'a> {
             self.visited.remove(&x).unwrap();
             self.virt_realized_nodes.insert(x);
             let dtype = self.graph.dtype(x);
-            self.kernels[kid].push(Op::StoreView { src: op_id, dtype });
+            self.kernels[kid].push(Op::StoreView { next: OpId::null(), src: op_id, dtype });
             self.kernels[kid].stores.push(x);
 
             // remove all references to x

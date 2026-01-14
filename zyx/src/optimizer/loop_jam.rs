@@ -25,6 +25,7 @@ impl LoopJamOpt {
     pub fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
         let jam_dim = 32; //[1, 64][index as usize]; // TODO just uncomment this after other things are done
 
+        /*
         let mut jam_found;
         loop {
             jam_found = false;
@@ -91,7 +92,7 @@ impl LoopJamOpt {
             if !jam_found {
                 break;
             }
-        }
+        }*/
 
         true
     }
@@ -101,7 +102,7 @@ impl Kernel {
     /// Jam into loop. Yes, it's complex :P
     pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) -> bool {
         //println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
-        let mut pre_loop_ops = Vec::new();
+        /*let mut pre_loop_ops = Vec::new();
         let mut inner_loop_ops = Vec::new();
         let mut post_loop_ops: Vec<OpId> = Vec::new();
 
@@ -288,7 +289,7 @@ impl Kernel {
             order.push(op_id);
         }
 
-        self.order.splice(jam_loop_i..jam_loop_i + splice_ops_len + 1, order);
+        self.order.splice(jam_loop_i..jam_loop_i + splice_ops_len + 1, order);*/
 
         #[cfg(debug_assertions)]
         self.verify();

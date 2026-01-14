@@ -24,7 +24,7 @@ impl LoopUnrollOpt {
 
 impl Kernel {
     pub fn unroll_loops(&mut self, unroll_dim: usize) {
-        let mut endloop_ids = Vec::new();
+        /*let mut endloop_ids = Vec::new();
         let mut i = self.order.len();
         while i > 0 {
             i -= 1;
@@ -38,13 +38,13 @@ impl Kernel {
                     self.unroll_loop(i, loop_id, endloop_id, dim);
                 }
             }
-        }
+        }*/
         #[cfg(debug_assertions)]
         self.verify();
     }
 
     pub fn unroll_loop(&mut self, i: usize, loop_id: OpId, endloop_id: OpId, dim: usize) {
-        self.ops[loop_id] = Op::Const(Constant::idx(0));
+        /*self.ops[loop_id] = Op::Const(Constant::idx(0));
         let endloop_i = self.order.iter().rposition(|op_id| *op_id == endloop_id).unwrap();
         let loop_order: &[OpId] = &self.order[i + 1..endloop_i];
         let mut order = Vec::with_capacity(loop_order.len() * (dim - 1));
@@ -66,6 +66,6 @@ impl Kernel {
             }
         }
         self.ops.remove(endloop_id);
-        self.order.splice(endloop_i..=endloop_i, order);
+        self.order.splice(endloop_i..=endloop_i, order);*/
     }
 }
