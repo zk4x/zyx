@@ -177,6 +177,7 @@ impl<'a> Kernelizer<'a> {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: vec![nid],
             stores: Vec::new(),
+            start: op_id,
             ops,
             order: vec![op_id],
         };
@@ -192,6 +193,7 @@ impl<'a> Kernelizer<'a> {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: Vec::new(),
             stores: Vec::new(),
+            start: op_id,
             ops,
             order: vec![op_id],
         };
@@ -314,7 +316,7 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
         }
         let kernel = &mut self.kernels[kid];
-        let op_id = kernel.push(Op::Reduce { x: op_id, rop, dims });
+        let op_id = kernel.push(Op::Reduce { next: OpId::null(), x: op_id, rop, dims });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -326,7 +328,7 @@ impl<'a> Kernelizer<'a> {
     fn add_cast_op(&mut self, nid: TensorId, x: TensorId, dtype: DType) {
         let (kid, op_id) = self.visited[&x];
         let kernel = &mut self.kernels[kid];
-        let op_id = kernel.push(Op::Cast { x: op_id, dtype });
+        let op_id = kernel.push(Op::Cast { next: OpId::null(), x: op_id, dtype }, op_id);
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -336,7 +338,7 @@ impl<'a> Kernelizer<'a> {
     fn add_unary_op(&mut self, nid: TensorId, x: TensorId, uop: UOp) {
         let (kid, op_id) = self.visited[&x];
         let kernel = &mut self.kernels[kid];
-        let op_id = kernel.push(Op::Unary { x: op_id, uop });
+        let op_id = kernel.push(Op::Unary { next: OpId::null(), x: op_id, uop }, op_id);
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -359,7 +361,7 @@ impl<'a> Kernelizer<'a> {
             kernel.remove_first_output(x);
             kernel.remove_first_output(y);
             kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
-            kernel.push(Op::Binary { x: op_id, y: op_idy, bop })
+            kernel.push(Op::Binary { next: OpId::null(), x: op_id, y: op_idy, bop }, op_id)
         } else {
             //println!("Different kernels for binary");
             // TODO later use this, but this requires global memory sync inside of the kernel

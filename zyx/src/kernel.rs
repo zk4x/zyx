@@ -48,6 +48,7 @@ pub struct Kernel {
     pub stores: Vec<TensorId>,
     pub ops: Slab<OpId, Op>,
     // TODO porbably just get rid of order and instead use next: OpId for each op
+    pub start: OpId,
     pub order: Vec<OpId>,
 }
 
@@ -65,27 +66,28 @@ pub struct OpId(pub u32);
 pub enum Op {
     // ops that exist only in kernelizer, basically they can be eventually removed.
     // We can actually handle views at the index level, though the algorithms may be pretty complex
-    ConstView { value: Constant, view: View },
-    LoadView { dtype: DType, view: View },
-    StoreView { src: OpId, dtype: DType },
-    Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
+    ConstView { next: OpId, value: Constant, view: View },
+    LoadView { next: OpId, dtype: DType, view: View },
+    StoreView { next: OpId, src: OpId, dtype: DType },
+    Reduce { next: OpId, x: OpId, rop: ROp, dims: Vec<Dim> },
     //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
     //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
     //PadIndex(OpId, isize, isize), // Pad index with padding
     //Unsqueeze { axis: Axis, dim: Dim } // Inserts a new loop at given axis
 
     // ops that exist in both
-    Store { dst: OpId, x: OpId, index: OpId },
-    Cast { x: OpId, dtype: DType },
-    Unary { x: OpId, uop: UOp },
-    Binary { x: OpId, y: OpId, bop: BOp },
+    Store { next: OpId, dst: OpId, x: OpId, index: OpId },
+    Cast { next: OpId, x: OpId, dtype: DType },
+    Unary { next: OpId, x: OpId, uop: UOp },
+    // For binary ops, next of x is y, then next of y is the binary op
+    Binary { next: OpId, x: OpId, y: OpId, bop: BOp },
 
     // ops that only exist after unfolding views and reduces
-    Const(Constant),
-    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
-    Load { src: OpId, index: OpId, dims: [Dim; 2], row_major: bool },
-    Loop { dim: Dim, scope: Scope },
-    EndLoop,
+    Const { next: OpId, value: Constant },
+    Define { next: OpId, dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
+    Load { next: OpId, src: OpId, index: OpId, dims: [Dim; 2], row_major: bool },
+    Loop { next: OpId, dim: Dim, scope: Scope },
+    EndLoop { next: OpId },
 }
 
 impl Op {
@@ -96,15 +98,15 @@ impl Op {
             Op::LoadView { .. } => vec![],
             Op::StoreView { src, .. } => vec![*src],
             Op::Reduce { x, .. } => vec![*x],
-            Op::Store { dst, x, index } => vec![*dst, *x, *index],
+            Op::Store { dst, x, index, .. } => vec![*dst, *x, *index],
             Op::Cast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             Op::Binary { x, y, .. } => vec![*x, *y],
-            Op::Const(..) => vec![],
+            Op::Const { .. } => vec![],
             Op::Define { .. } => vec![],
             Op::Load { src, index, .. } => vec![*src, *index],
             Op::Loop { .. } => vec![],
-            Op::EndLoop => vec![],
+            Op::EndLoop { .. } => vec![],
         }
         .into_iter()
     }
@@ -115,17 +117,35 @@ impl Op {
             Op::LoadView { .. } => vec![],
             Op::StoreView { src, .. } => vec![src],
             Op::Reduce { x, .. } => vec![x],
-            Op::Store { dst, x, index } => vec![dst, x, index],
+            Op::Store { dst, x, index, .. } => vec![dst, x, index],
             Op::Cast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],
-            Op::Const(..) => vec![],
+            Op::Const { .. } => vec![],
             Op::Define { .. } => vec![],
             Op::Load { src, index, .. } => vec![src, index],
             Op::Loop { .. } => vec![],
-            Op::EndLoop => vec![],
+            Op::EndLoop { .. } => vec![],
         }
         .into_iter()
+    }
+
+    pub fn set_next(&mut self, next_op: OpId) {
+        match self {
+            Op::ConstView { next, .. }
+            | Op::LoadView { next, .. }
+            | Op::StoreView { next, .. }
+            | Op::Reduce { next, .. }
+            | Op::Store { next, .. }
+            | Op::Cast { next, .. }
+            | Op::Unary { next, .. }
+            | Op::Binary { next, .. }
+            | Op::Const { next, .. }
+            | Op::Define { next, .. }
+            | Op::Load { next, .. }
+            | Op::Loop { next, .. }
+            | Op::EndLoop { next } => *next = next_op,
+        }
     }
 
     pub fn is_const(&mut self) -> bool {
@@ -167,16 +187,16 @@ impl SerBin for Kernel {
 
 impl DeBin for Kernel {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        let start = OpId::de_bin(offset, bytes)?;
         let ops = Slab::<OpId, Op>::de_bin(offset, bytes)?;
-        let order = Vec::<OpId>::de_bin(offset, bytes)?;
-        Ok(Self { ops, order, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new() })
+        Ok(Self { start, ops, order: Vec::new(), outputs: Vec::new(), loads: Vec::new(), stores: Vec::new() })
     }
 }
 
 impl Hash for Kernel {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.start.hash(state);
         self.ops.hash(state);
-        self.order.hash(state);
     }
 }
 
@@ -213,7 +233,8 @@ impl Kernel {
         //println!("Kernel shape {:?}", self.shape);
         let mut indent = String::from(" ");
         let mut ids: Map<OpId, (Dim, Dim)> = Map::default();
-        for &op_id in &self.order {
+        let nid = self.start;
+        while nid != OpId::null() {
             match self.ops[op_id] {
                 Op::ConstView { value, ref view } => {
                     println!("{op_id:>3}{indent}{CYAN}CONST VIEW{RESET} {value} {view}")
@@ -1567,6 +1588,30 @@ impl Kernel {
     pub fn push(&mut self, op: Op) -> OpId {
         let op_id = self.ops.push(op);
         self.order.push(op_id);
+        match op {
+            Op::ConstView { .. } | Op::LoadView { .. } => {}
+            Op::StoreView { next, src, dtype } => todo!(),
+            Op::Reduce { x, .. } => {
+                self.ops[x].set_next(op_id);
+            }
+            Op::Store { x, .. } => {
+                self.ops[x].set_next(op_id);
+            }
+            Op::Cast { x, .. } => {
+                self.ops[x].set_next(op_id);
+            }
+            Op::Unary { x, .. } => {
+                self.ops[x].set_next(op_id);
+            }
+            Op::Binary { next, x, y, bop } => {
+                self.ops[x].set_next(op_id);
+            }
+            Op::Const { next, value } => todo!(),
+            Op::Define { next, dtype, scope, ro, len } => todo!(),
+            Op::Load { next, src, index, dims, row_major } => todo!(),
+            Op::Loop { next, dim, scope } => todo!(),
+            Op::EndLoop { next } => todo!(),
+        }
         op_id
     }
 
