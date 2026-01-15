@@ -103,16 +103,16 @@ impl WorkSizeOpt {
 
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
 
-        let mut next = kernel.start;
+        let mut next = kernel.head;
         {
             for &dim in rws.iter().rev() {
-                next = kernel.ops.push(Op::Loop { next, dim, scope: Scope::Register });
+                next = kernel.ops.push(Op::Loop { prev, next, dim, scope: Scope::Register });
             }
             for &dim in lws.iter().rev() {
-                next = kernel.ops.push(Op::Loop { next, dim, scope: Scope::Local });
+                next = kernel.ops.push(Op::Loop { prev, next, dim, scope: Scope::Local });
             }
             for &dim in gws.iter().rev() {
-                next = kernel.ops.push(Op::Loop { next, dim, scope: Scope::Global });
+                next = kernel.ops.push(Op::Loop { prev, next, dim, scope: Scope::Global });
             }
         };
         true

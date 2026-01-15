@@ -103,7 +103,7 @@
   - [x] lot of testing for kernelizer correctness
   - [x] more autograd tests
 - [ ] tensor
-  - [ ] gather
+  - [x] gather
   - [ ] scatter
   - [ ] solve
   - [ ] inverse of matrix
