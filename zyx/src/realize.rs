@@ -421,15 +421,18 @@ impl<'a> Kernelizer<'a> {
 
             // Extend x kernel with y ops
             let mut y_ops_map = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
-            for &op_id in &order {
-                let mut op = ops[op_id].clone();
+
+            let mut op_id = head;
+            while !op_id.is_null() {
+                let mut op = ops[op_id].op.clone();
                 for param in op.parameters_mut() {
                     *param = y_ops_map[param];
                 }
-
                 let new_op_id = self.kernels[kid].push_back(op);
                 y_ops_map.insert(op_id, new_op_id);
+                op_id = ops[op_id].next;
             }
+
             // Fix visited
             for (kidm, op_id) in self.visited.values_mut() {
                 if *kidm == kidy {

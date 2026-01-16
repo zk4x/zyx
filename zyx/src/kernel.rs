@@ -195,6 +195,7 @@ impl Kernel {
         self.ops.values_mut().map(|op_node| &mut op_node.op)
     }
 
+    #[track_caller]
     pub fn at(&self, op_id: OpId) -> &Op {
         &self.ops[op_id].op
     }
@@ -267,10 +268,21 @@ impl Kernel {
                     if let Some((l, u)) = ids.get(&x) {
                         ids.insert(op_id, (*l, *u));
                     }
-                    println!("{op_id:>3}{indent}CAST {x} {dtype:?}");
+                    if let Some((l, u)) = ids.get(&op_id) {
+                        println!("{op_id:>3}{indent}CAST {x} {dtype:?}    {l}..={u}");
+                    } else {
+                        println!("{op_id:>3}{indent}CAST {x} {dtype:?}");
+                    }
                 }
                 Op::Unary { x, uop, .. } => {
-                    println!("{op_id:>3}{indent}UNARY {uop:?} {x}");
+                    if let Some((l, u)) = ids.get(&x) {
+                        ids.insert(op_id, (*l, *u));
+                    }
+                    if let Some((l, u)) = ids.get(&op_id) {
+                        println!("{op_id:>3}{indent}UNARY {uop:?} {x}    {l}..={u}");
+                    } else {
+                        println!("{op_id:>3}{indent}UNARY {uop:?} {x}");
+                    }
                 }
                 Op::Binary { x, y, bop, .. } => {
                     if let Some(&(xl, xu)) = ids.get(&x)
@@ -588,36 +600,6 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn define_globals(&mut self) {
-        let mut loads: Vec<(DType, Dim)> = Vec::with_capacity(5);
-        let mut stores: Vec<(DType, Dim)> = Vec::with_capacity(5);
-        for (op_id, op) in self.iter_unordered() {
-            match op {
-                Op::LoadView { dtype, view, .. } => loads.push((*dtype, view.original_numel())),
-                Op::StoreView { dtype, .. } => {
-                    let loops = self.get_loops(op_id);
-                    let mut len = 1;
-                    for loop_id in loops {
-                        let Op::Loop { dim, .. } = self.ops[loop_id].op else { unreachable!() };
-                        len *= dim;
-                    }
-                    stores.push((*dtype, len));
-                }
-                _ => {}
-            }
-        }
-        let head = self.head;
-        for (dtype, len) in loads.into_iter() {
-            self.insert(head, Op::Define { dtype, scope: Scope::Global, ro: true, len });
-        }
-        for (dtype, len) in stores.into_iter() {
-            self.insert(head, Op::Define { dtype, scope: Scope::Global, ro: false, len });
-        }
-
-        #[cfg(debug_assertions)]
-        self.verify();
-    }
-
     fn get_loops(&self, last_id: OpId) -> Vec<OpId> {
         let mut loops = Vec::new();
         let mut op_id = self.head;
@@ -641,36 +623,49 @@ impl Kernel {
         loops
     }
 
+    fn new_op(&mut self, op_iter: &mut OpId, op: Op) -> OpId {
+        let op_id = self.insert_after(*op_iter, op);
+        *op_iter = op_id;
+        op_id
+    }
+
     pub fn unfold_views(&mut self) {
-        fn new_op(ops: &mut Slab<OpId, Op>, order: &mut Vec<OpId>, op: Op) -> OpId {
-            let op_id = ops.push(op);
-            order.push(op_id);
-            op_id
-        }
-
-        self.define_globals();
-
-        let mut global_args = Vec::new();
-        let mut n_loads = 0;
-        for &op_id in &self.order {
-            if let Op::Define { scope, ro, .. } = self[op_id] {
-                if ro {
-                    n_loads += 1;
+        // Define globals
+        let mut loads: Vec<(DType, Dim)> = Vec::with_capacity(5);
+        let mut stores: Vec<(DType, Dim)> = Vec::with_capacity(5);
+        for (op_id, op) in self.iter_unordered() {
+            match op {
+                Op::LoadView { dtype, view, .. } => loads.push((*dtype, view.original_numel())),
+                Op::StoreView { dtype, .. } => {
+                    let loops = self.get_loops(op_id);
+                    let mut len = 1;
+                    for loop_id in loops {
+                        let Op::Loop { dim, .. } = self.ops[loop_id].op else { unreachable!() };
+                        len *= dim;
+                    }
+                    stores.push((*dtype, len));
                 }
-                if scope == Scope::Global {
-                    global_args.push(op_id);
-                }
-            } else {
-                break;
+                _ => {}
             }
         }
+        let head = self.head;
+        let mut global_args = Vec::new();
+        let n_loads = loads.len();
+        for (dtype, len) in loads.into_iter() {
+            let op_id = self.insert_before(head, Op::Define { dtype, scope: Scope::Global, ro: true, len });
+            global_args.push(op_id);
+        }
+        for (dtype, len) in stores.into_iter() {
+            let op_id = self.insert_before(head, Op::Define { dtype, scope: Scope::Global, ro: false, len });
+            global_args.push(op_id);
+        }
+
         let mut load_id = 0;
         let mut store_id = 0;
 
-        let mut i = 0;
-        while i < self.order.len() {
-            let op_id = self.order[i];
-            match self[op_id] {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
                 Op::ConstView { value, ref view } => {
                     // With padding, right padding does not affect offset
                     // offset = (a0-lp0)*st0 + a1*st1
@@ -682,11 +677,11 @@ impl Kernel {
                     let axes = self.get_loops(op_id);
 
                     //println!("Unfolding view: {view}");
-                    let ops = &mut self.ops;
 
-                    let order = &mut Vec::new();
-                    let mut pc = new_op(ops, order, Op::Const(Constant::Bool(true)));
-                    let constant_zero = new_op(ops, order, Op::Const(Constant::idx(0)));
+                    let mut opi = self.prev_op(op_id);
+                    let opi = &mut opi;
+                    let mut pc = self.new_op(opi, Op::Const(Constant::Bool(true)));
+                    let constant_zero = self.new_op(opi, Op::Const(Constant::idx(0)));
 
                     let mut offset;
 
@@ -706,67 +701,61 @@ impl Kernel {
                                 let x = if t_ost == 1 {
                                     old_offset
                                 } else {
-                                    let ost_c = new_op(ops, order, Op::Const(Constant::idx(t_ost)));
-                                    new_op(ops, order, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
+                                    let ost_c = self.new_op(opi, Op::Const(Constant::idx(t_ost)));
+                                    self.new_op(opi, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
                                 };
                                 if dim.d == 1 {
                                     constant_zero
                                 } else {
-                                    let dimd_c = new_op(ops, order, Op::Const(Constant::idx(dim.d as u64)));
-                                    new_op(ops, order, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
+                                    let dimd_c = self.new_op(opi, Op::Const(Constant::idx(dim.d as u64)));
+                                    self.new_op(opi, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
                                 }
                             } else if dim.d == 1 {
-                                new_op(ops, order, Op::Const(Constant::idx(0u64)))
+                                self.new_op(opi, Op::Const(Constant::idx(0u64)))
                             } else {
                                 axes[i]
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
-                                let lp = new_op(ops, order, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
+                                let lp = self.new_op(opi, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
-                                    new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Sub })
+                                    self.new_op(opi, Op::Binary { x: a, y: lp, bop: BOp::Sub })
                                 } else {
-                                    new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Add })
+                                    self.new_op(opi, Op::Binary { x: a, y: lp, bop: BOp::Add })
                                 }
                             } else {
                                 a
                             };
 
                             if dim.st != 0 {
-                                let stride = new_op(ops, order, Op::Const(Constant::idx(dim.st as u64)));
-                                let x = new_op(ops, order, Op::Binary { x: t, y: stride, bop: BOp::Mul });
-                                offset = new_op(ops, order, Op::Binary { x, y: offset, bop: BOp::Add });
+                                let stride = self.new_op(opi, Op::Const(Constant::idx(dim.st as u64)));
+                                let x = self.new_op(opi, Op::Binary { x: t, y: stride, bop: BOp::Mul });
+                                offset = self.new_op(opi, Op::Binary { x, y: offset, bop: BOp::Add });
                             }
 
                             // Padding condition
                             if dim.lp > 0 {
-                                let lp = new_op(ops, order, Op::Const(Constant::idx((dim.lp - 1) as u64)));
-                                let t = new_op(ops, order, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
-                                pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let lp = self.new_op(opi, Op::Const(Constant::idx((dim.lp - 1) as u64)));
+                                let t = self.new_op(opi, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
+                                pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = new_op(ops, order, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
-                                let t = new_op(ops, order, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
-                                pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
+                                let t = self.new_op(opi, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
+                                pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                         }
                         old_offset = Some(offset);
                     }
 
-                    let z = new_op(ops, order, Op::Const(value));
+                    let z = self.new_op(opi, Op::Const(value));
 
                     let dtype = value.dtype();
-                    let pcd = new_op(ops, order, Op::Cast { x: pc, dtype });
+                    let pcd = self.new_op(opi, Op::Cast { x: pc, dtype });
 
                     // Nullify z if padding condition is false (if there is padding at that index)
-                    self.ops[op_id] = Op::Binary { x: pcd, y: z, bop: BOp::Mul }; // this is now the new op_id
-
-                    // Put newly created ops into correct order
-                    self.order.splice(i..i, order.into_iter().map(|x| *x));
-
-                    i += order.len();
-                    continue;
+                    self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul }; // this is now the new op_id
                 }
                 Op::LoadView { dtype, ref view } => {
                     // With padding, right padding does not affect offset
@@ -778,15 +767,10 @@ impl Kernel {
                     let view = view.clone();
                     let axes = self.get_loops(op_id);
 
-                    //println!("Unfolding view: {view}");
-                    let ops = &mut self.ops;
-
-                    // We just record the order of all new inserted ops here
-                    // and then just insrt this order into current block
-                    let order = &mut Vec::new();
-
-                    let mut pc = new_op(ops, order, Op::Const(Constant::Bool(true)));
-                    let constant_zero = new_op(ops, order, Op::Const(Constant::idx(0)));
+                    let mut opi = self.prev_op(op_id);
+                    let opi = &mut opi;
+                    let mut pc = self.new_op(opi, Op::Const(Constant::Bool(true)));
+                    let constant_zero = self.new_op(opi, Op::Const(Constant::idx(0)));
                     let mut offset = constant_zero;
                     let mut old_offset: Option<OpId> = None;
                     //println!("View");
@@ -809,14 +793,14 @@ impl Kernel {
                                 let x = if t_ost == 1 {
                                     old_offset
                                 } else {
-                                    let ost_c = new_op(ops, order, Op::Const(Constant::idx(t_ost)));
-                                    new_op(ops, order, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
+                                    let ost_c = self.new_op(opi, Op::Const(Constant::idx(t_ost)));
+                                    self.new_op(opi, Op::Binary { x: old_offset, y: ost_c, bop: BOp::Div })
                                 };
                                 if dim.d == 1 {
                                     constant_zero
                                 } else {
-                                    let dimd_c = new_op(ops, order, Op::Const(Constant::idx(dim.d as u64)));
-                                    new_op(ops, order, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
+                                    let dimd_c = self.new_op(opi, Op::Const(Constant::idx(dim.d as u64)));
+                                    self.new_op(opi, Op::Binary { x, y: dimd_c, bop: BOp::Mod })
                                 }
                             } else if dim.d == 1 {
                                 constant_zero
@@ -826,71 +810,66 @@ impl Kernel {
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let padded_loop_id = if dim.lp != 0 {
-                                let lp = new_op(ops, order, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
+                                let lp = self.new_op(opi, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
-                                    new_op(ops, order, Op::Binary { x: loop_id, y: lp, bop: BOp::Sub })
+                                    self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Sub })
                                 } else {
-                                    new_op(ops, order, Op::Binary { x: loop_id, y: lp, bop: BOp::Add })
+                                    self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Add })
                                 }
                             } else {
                                 loop_id
                             };
 
                             if dim.st != 0 {
-                                let stride = new_op(ops, order, Op::Const(Constant::idx(dim.st as u64)));
-                                let x = new_op(ops, order, Op::Binary { x: padded_loop_id, y: stride, bop: BOp::Mul });
-                                offset = new_op(ops, order, Op::Binary { x, y: offset, bop: BOp::Add });
+                                let stride = self.new_op(opi, Op::Const(Constant::idx(dim.st as u64)));
+                                let x = self.new_op(opi, Op::Binary { x: padded_loop_id, y: stride, bop: BOp::Mul });
+                                offset = self.new_op(opi, Op::Binary { x, y: offset, bop: BOp::Add });
                             }
 
                             // Padding condition
                             if dim.lp > 0 {
-                                let lp = new_op(ops, order, Op::Const(Constant::idx((dim.lp - 1) as u64)));
-                                let t = new_op(ops, order, Op::Binary { x: loop_id, y: lp, bop: BOp::Cmpgt });
-                                pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let lp = self.new_op(opi, Op::Const(Constant::idx((dim.lp - 1) as u64)));
+                                let t = self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Cmpgt });
+                                pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = new_op(ops, order, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
-                                let t = new_op(ops, order, Op::Binary { x: loop_id, y: rp, bop: BOp::Cmplt });
-                                pc = new_op(ops, order, Op::Binary { x: t, y: pc, bop: BOp::And });
+                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
+                                let t = self.new_op(opi, Op::Binary { x: loop_id, y: rp, bop: BOp::Cmplt });
+                                pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                         }
                         old_offset = Some(offset);
                     }
 
-                    let pcu = new_op(ops, order, Op::Cast { x: pc, dtype: IDX_T });
-                    let offset = new_op(ops, order, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
+                    let pcu = self.new_op(opi, Op::Cast { x: pc, dtype: IDX_T });
+                    let offset = self.new_op(opi, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
 
-                    let z = new_op(
-                        ops,
-                        order,
+                    let z = self.new_op(
+                        opi,
                         Op::Load { src: global_args[load_id], index: offset, dims: [1, 1], row_major: true },
                     );
 
-                    let pcd = new_op(ops, order, Op::Cast { x: pc, dtype });
+                    let pcd = self.new_op(opi, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
-                    self.ops[op_id] = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
-
-                    // Put newly created ops into correct block
-                    self.order.splice(i..i, order.into_iter().map(|x| *x));
+                    self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
 
                     load_id += 1;
-
-                    i += order.len();
-                    continue;
                 }
                 Op::StoreView { src, .. } => {
                     let axes = self.get_loops(op_id);
-                    let order = &mut Vec::new();
-                    let mut index = new_op(&mut self.ops, order, Op::Const(Constant::idx(0u64)));
+                    let mut opi = self.prev_op(op_id);
+                    let opi = &mut opi;
+                    let mut index = self.new_op(opi, Op::Const(Constant::idx(0u64)));
                     let mut st = 1;
 
-                    let shape = {
+                    let shape: Vec<Dim> = {
                         let mut shape = Vec::new();
-                        for &l_op_id in &self.order {
+                        let mut l_op_id = self.head;
+                        while !l_op_id.is_null() {
                             if l_op_id == op_id {
                                 break;
                             }
-                            match self[l_op_id] {
+                            match *self.at(l_op_id) {
                                 Op::Loop { dim, .. } => {
                                     shape.push(dim);
                                 }
@@ -899,6 +878,7 @@ impl Kernel {
                                 }
                                 _ => {}
                             }
+                            l_op_id = self.next_op(l_op_id);
                         }
                         shape
                     };
@@ -908,27 +888,21 @@ impl Kernel {
                         let x = if *d > 1 {
                             axes[id]
                         } else {
-                            new_op(&mut self.ops, order, Op::Const(Constant::idx(0)))
+                            self.new_op(opi, Op::Const(Constant::idx(0)))
                         };
-                        let y = new_op(&mut self.ops, order, Op::Const(stride));
-                        let x = new_op(&mut self.ops, order, Op::Binary { x, y, bop: BOp::Mul });
-                        index = new_op(&mut self.ops, order, Op::Binary { x, y: index, bop: BOp::Add });
+                        let y = self.new_op(opi, Op::Const(stride));
+                        let x = self.new_op(opi, Op::Binary { x, y, bop: BOp::Mul });
+                        index = self.new_op(opi, Op::Binary { x, y: index, bop: BOp::Add });
                         st *= d;
                     }
 
-                    self.ops[op_id] = Op::Store { dst: global_args[n_loads + store_id], x: src, index };
-
-                    // Put newly created ops into correct block
-                    self.order.splice(i..i, order.into_iter().map(|x| *x));
+                    self.ops[op_id].op = Op::Store { dst: global_args[n_loads + store_id], x: src, index };
 
                     store_id += 1;
-
-                    i += order.len();
-                    continue;
                 }
                 _ => {}
             }
-            i += 1;
+            op_id = self.next_op(op_id);
         }
 
         #[cfg(debug_assertions)]
@@ -1067,7 +1041,23 @@ impl Kernel {
         self.ops.remove(op_id);
     }
 
-    pub fn insert(&mut self, after_id: OpId, op: Op) {
+    pub fn insert_before(&mut self, before_id: OpId, op: Op) -> OpId {
+        debug_assert!(!before_id.is_null());
+        debug_assert!(!self.ops.is_empty());
+
+        let prev = self.ops[before_id].prev;
+        let op_node = OpNode { prev, next: before_id, op: op };
+        let op_id = self.ops.push(op_node);
+        self.ops[before_id].prev = op_id;
+        if !prev.is_null() {
+            self.ops[prev].next = op_id;
+        } else {
+            self.head = op_id;
+        }
+        op_id
+    }
+
+    pub fn insert_after(&mut self, after_id: OpId, op: Op) -> OpId {
         debug_assert!(!after_id.is_null());
         debug_assert!(!self.ops.is_empty());
 
@@ -1080,9 +1070,10 @@ impl Kernel {
         } else {
             self.tail = op_id;
         }
+        op_id
     }
 
-    pub fn move_op(&mut self, op_id: OpId, after_id: OpId) {
+    pub fn move_op_after(&mut self, op_id: OpId, after_id: OpId) {
         debug_assert!(!op_id.is_null());
         debug_assert!(!after_id.is_null());
         debug_assert!(!self.ops.is_empty());
@@ -1112,6 +1103,10 @@ impl Kernel {
         }
     }
 
+    pub fn prev_op(&self, op_id: OpId) -> OpId {
+        self.ops[op_id].prev
+    }
+
     pub fn next_op(&self, op_id: OpId) -> OpId {
         self.ops[op_id].next
     }
@@ -1122,13 +1117,15 @@ impl Kernel {
             start = self.next_op(start);
         }
 
-        let mut op_id = start;
+        let mut op_id = self.prev_op(start);
         while !op_id.is_null() {
+            let next = self.next_op(op_id);
             if let Op::Const(_) = self.at(op_id) {
-                self.move_op(op_id, start)
+                self.move_op_after(op_id, start)
             }
-            op_id = self.next_op(op_id);
+            op_id = next;
         }
+        self.debug();
 
         #[cfg(debug_assertions)]
         self.verify();

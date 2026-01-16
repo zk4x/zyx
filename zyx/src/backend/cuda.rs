@@ -1227,8 +1227,9 @@ impl CUDADevice {
 
         let mut gws = Vec::new();
         let mut lws = Vec::new();
-        for &op_id in &kernel.order {
-            let op = &kernel[op_id];
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = kernel.at(op_id);
             if let &Op::Loop { dim, scope } = op {
                 match scope {
                     Scope::Global => {
@@ -1240,6 +1241,7 @@ impl CUDADevice {
                     Scope::Register => {}
                 }
             }
+            op_id = kernel.next_op(op_id);
         }
 
         if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
@@ -1250,8 +1252,9 @@ impl CUDADevice {
         }
 
         let mut global_args = String::new();
-        for &op_id in &kernel.order {
-            let op = &kernel[op_id];
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = &kernel.ops[op_id].op;
             if let &Op::Define { dtype, scope, ro, .. } = op {
                 if scope == Scope::Global {
                     _ = writeln!(
@@ -1264,6 +1267,7 @@ impl CUDADevice {
             } else {
                 break;
             }
+            op_id = kernel.next_op(op_id);
         }
         global_args.pop();
         global_args.pop();
@@ -1278,8 +1282,9 @@ impl CUDADevice {
         }
 
         // first we will calculate those reference counts.
-        for &op_id in &kernel.order {
-            let op = &kernel[op_id];
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = kernel.at(op_id);
             match op {
                 Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => {
                     unreachable!()
@@ -1323,6 +1328,7 @@ impl CUDADevice {
                 }
                 Op::EndLoop => {}
             }
+            op_id = kernel.next_op(op_id);
         }
 
         let mut reg_map: Map<OpId, usize> =
@@ -1339,8 +1345,9 @@ impl CUDADevice {
 
         let mut acc_bytes = 0;
 
-        for &op_id in &kernel.order {
-            let op = &kernel[op_id];
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = kernel.at(op_id);
             //println!("{i} -> {op:?}");
             match op {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
@@ -1472,6 +1479,7 @@ impl CUDADevice {
                     }
                 }
             }
+            op_id = kernel.next_op(op_id);
         }
         let _total_bytes = registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes;
         /*if total_bytes > 1024 {

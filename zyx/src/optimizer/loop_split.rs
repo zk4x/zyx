@@ -19,7 +19,7 @@ impl LoopSplitOpt {
         let mut reduction_splits = Vec::new();
 
         // Find all reduction ops
-        for op in kernel.ops.values() {
+        for (_, op) in kernel.iter_unordered() {
             if let Op::Reduce { dims, .. } = op {
                 // Generate all valid splits for these dimensions
                 // Calculate the total product of all dimensions
@@ -53,7 +53,7 @@ impl LoopSplitOpt {
         }
 
         let reduce_ops: Vec<OpId> =
-            kernel.ops.iter().filter(|(_, op)| matches!(op, Op::Reduce { .. })).map(|(op_id, _)| op_id).collect();
+            kernel.iter_unordered().filter(|(_, op)| matches!(op, Op::Reduce { .. })).map(|(op_id, _)| op_id).collect();
 
         for (i, choices) in self.reduction_splits.iter().enumerate() {
             let n = choices.len() as u32;
@@ -64,7 +64,7 @@ impl LoopSplitOpt {
 
             let this = &mut *kernel;
             let new_dims: &[Dim] = &self.reduction_splits[i][idx as usize];
-            let Op::Reduce { x, ref mut dims, .. } = this.ops[reduce_id] else { return false };
+            let Op::Reduce { x, ref mut dims, .. } = this.ops[reduce_id].op else { return false };
             let n_old_dims = dims.len();
             *dims = new_dims.into();
 
@@ -88,7 +88,7 @@ impl Kernel {
         if !visited.insert(op_id) {
             return;
         }
-        match self.ops[op_id] {
+        match self.ops[op_id].op {
             Op::LoadView { ref mut view, .. } | Op::ConstView { ref mut view, .. } => {
                 let rank = view.rank();
                 view.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);

@@ -688,8 +688,9 @@ impl OpenCLDevice {
 
         let mut gws = Vec::new();
         let mut lws = Vec::new();
-        for &op_id in &kernel.order {
-            let op = &kernel[op_id];
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = kernel.at(op_id);
             if let &Op::Loop { dim, scope } = op {
                 match scope {
                     Scope::Global => {
@@ -701,6 +702,7 @@ impl OpenCLDevice {
                     Scope::Register => {}
                 }
             }
+            op_id = kernel.next_op(op_id);
         }
 
         if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
@@ -711,8 +713,9 @@ impl OpenCLDevice {
         }
 
         let mut global_args = String::new();
-        for &op_id in &kernel.order {
-            let op = &kernel[op_id];
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = kernel.at(op_id);
             if let &Op::Define { dtype, scope, ro, .. } = op {
                 if scope == Scope::Global {
                     _ = writeln!(
@@ -725,6 +728,7 @@ impl OpenCLDevice {
             } else {
                 break;
             }
+            op_id = kernel.next_op(op_id);
         }
         global_args.pop();
         global_args.pop();
@@ -734,8 +738,9 @@ impl OpenCLDevice {
         let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         // first we will calculate those reference counts.
-        for &op_id in &kernel.order {
-            let op = &kernel[op_id];
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = kernel.at(op_id);
             match op {
                 Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => {
                     unreachable!()
@@ -779,6 +784,7 @@ impl OpenCLDevice {
                 }
                 Op::EndLoop => {}
             }
+            op_id = kernel.next_op(op_id);
         }
 
         let mut reg_map: Map<OpId, usize> =
@@ -794,8 +800,9 @@ impl OpenCLDevice {
         let mut source = String::with_capacity(1000);
 
         let mut acc_bytes = 0;
-        for &op_id in &kernel.order {
-            let op = &kernel[op_id];
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = kernel.at(op_id);
             //println!("{op_id} -> {op:?}");
             match op {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
@@ -926,6 +933,7 @@ impl OpenCLDevice {
                     }
                 }
             }
+            op_id = kernel.next_op(op_id);
         }
         let _total_bytes = registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes;
         /*if total_bytes > 4096 {
