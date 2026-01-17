@@ -1314,7 +1314,7 @@ impl CUDADevice {
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Binary { x, y, bop } => {
-                    let dtype = if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or) {
+                    let dtype = if bop.returns_bool() {
                         DType::Bool
                     } else {
                         dtype_of(&dtypes, x)

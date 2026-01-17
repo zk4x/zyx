@@ -301,7 +301,7 @@ fn cumsum() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn arange() -> Result<(), ZyxError> {
+fn arange_3() -> Result<(), ZyxError> {
     let x = Tensor::arange(0, 10, 2)?;
     //println!("{x}");
     assert_eq!(x, [0, 2, 4, 6, 8]);
@@ -1130,7 +1130,6 @@ fn arange_2() {
 
 #[test]
 fn rope_2() -> Result<(), ZyxError> {
-    Tensor::set_implicit_casts(false);
     let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8]).reshape([1, 2, 4])?.cast(zyx::DType::F32);
     let base = 10000f32;
 
@@ -1166,7 +1165,13 @@ fn rope_2() -> Result<(), ZyxError> {
     let x = x.rope(sin_enc, cos_enc)?;
     //drop(pos_enc);
 
-    assert_eq!(x.squeeze(0..), [[-3.0f32, -4.0, 1.0, 2.0], [0.42523819, -9.93675995, 8.591808319, 1.12284958]]);
+    assert_eq!(
+        x.squeeze(0..),
+        [
+            [-3.0f32, -4.0, 1.0, 2.0],
+            [0.42523819, -9.93675995, 8.591808319, 1.12284958]
+        ]
+    );
 
     Ok(())
 }

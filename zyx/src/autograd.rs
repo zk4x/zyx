@@ -262,9 +262,11 @@ impl Runtime {
                         let c_ex = self.expand(c, sh).unwrap();
                         self.release(c);
                         let mask_eq = self.binary(x, y, BOp::Eq);
-                        let eq = self.binary(mask_eq, c_ex, BOp::Mul);
-                        self.release(c_ex);
+                        let mask_eq_cast = self.cast(mask_eq, dtype);
                         self.release(mask_eq);
+                        let eq = self.binary(mask_eq_cast, c_ex, BOp::Mul);
+                        self.release(mask_eq_cast);
+                        self.release(c_ex);
                         if req_grad.contains(&x) {
                             let mask_xgt = self.binary(x, y, BOp::Cmpgt);
                             let add = self.binary(mask_xgt, eq, BOp::Add);

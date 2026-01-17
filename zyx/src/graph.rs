@@ -157,7 +157,7 @@ impl Graph {
             match self.nodes[tensor_id].1 {
                 Node::Const { value } => return value.dtype(),
                 Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
-                Node::Binary { bop: BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::Eq | BOp::And | BOp::Or, .. } => {
+                Node::Binary { bop, .. } if bop.returns_bool() => {
                     return DType::Bool;
                 }
                 _ => {
@@ -202,9 +202,8 @@ impl Graph {
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
                 //if !sources.contains(&nid)
-                    //&& !matches!(self.nodes[nid].1, Node::Binary { bop: BOp::Cmplt, .. })
-                    if tape.contains(&nid)
-                {
+                //&& !matches!(self.nodes[nid].1, Node::Binary { bop: BOp::Cmplt, .. })
+                if tape.contains(&nid) {
                     params.extend(self.nodes[nid].1.parameters());
                 }
                 1
@@ -401,14 +400,14 @@ impl BOp {
     pub fn is_commutative(&self) -> bool {
         matches!(
             self,
-            BOp::Add
-                | BOp::Mul
-                | BOp::And
-                | BOp::Or
-                | BOp::BitXor
-                | BOp::BitAnd
-                | BOp::BitOr
-                | BOp::Maximum
+            BOp::Add | BOp::Mul | BOp::And | BOp::Or | BOp::BitXor | BOp::BitAnd | BOp::BitOr | BOp::Maximum
+        )
+    }
+
+    pub fn returns_bool(&self) -> bool {
+        matches!(
+            self,
+            BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::Eq | BOp::And | BOp::Or
         )
     }
 }

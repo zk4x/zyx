@@ -355,8 +355,9 @@ impl WGPUDevice {
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
         let mut gws = Vec::new();
         let mut lws = Vec::new();
-        for &op_id in &kernel.order {
-            if let &Op::Loop { dim, scope } = &kernel.ops[op_id] {
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            if let &Op::Loop { dim, scope } = kernel.at(op_id) {
                 match scope {
                     Scope::Global => {
                         gws.push(dim);
@@ -367,6 +368,7 @@ impl WGPUDevice {
                     Scope::Register => {}
                 }
             }
+            op_id = kernel.next_op(op_id);
         }
 
         if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
@@ -379,7 +381,7 @@ impl WGPUDevice {
         let mut arg_ro_flags = Vec::new();
         let mut global_args = String::new();
         let mut max_p = 0;
-        for (op_id, op) in kernel.ops.iter() {
+        for (op_id, op) in kernel.iter_unordered() {
             if let &Op::Define { dtype, scope, ro, .. } = op
                 && scope == Scope::Global
             {
@@ -401,9 +403,10 @@ impl WGPUDevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
-        for &op_id in &kernel.order {
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
             //println!("{i} -> {op:?}");
-            match &kernel.ops[op_id] {
+            match kernel.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
@@ -525,6 +528,7 @@ impl WGPUDevice {
                     }
                 }
             }
+            op_id = kernel.next_op(op_id);
         }
 
         let mut pragma = String::new();

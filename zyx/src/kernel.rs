@@ -71,7 +71,9 @@ pub struct OpId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist only in kernelizer, basically they can be eventually removed.
-    // We can actually handle views at the index level, though the algorithms may be pretty complex
+    // TODO Get rid of the view, use whatever ops that are needed directly
+    // and then use unfold movement ops function to convert it all into indices.
+    // This will make Op smaller and Copy.
     ConstView { value: Constant, view: View },
     LoadView { dtype: DType, view: View },
     StoreView { src: OpId, dtype: DType },
@@ -293,7 +295,7 @@ impl Kernel {
                             match bop {
                                 BOp::Add => (xl.wrapping_add(yl), xu.wrapping_add(yu)),
                                 BOp::Sub => (xl.wrapping_sub(yl), xu.wrapping_sub(yu)),
-                                BOp::Mul => (xl * yl, xu * yu),
+                                BOp::Mul => (xl.wrapping_mul(yl), xu.wrapping_mul(yu)),
                                 BOp::Div => (xl / yl, xu / yu),
                                 BOp::Mod => (xl % yl, xu % yu),
                                 BOp::Eq => ((xl == yl) as usize, (xu == yu) as usize),
@@ -494,9 +496,7 @@ impl Kernel {
     /// Find all Reduce ops and put them in a Loop block
     /// Add define ops and add reduce operation as BOp::Add or BOp::Max
     pub fn unfold_reduces(&mut self) {
-        self.debug();
-        // This guarantees we start with innermost reduce op
-        /*let mut reduce_op_ids: Vec<OpId> = self
+        let mut reduce_op_ids: Vec<OpId> = self
             .iter_unordered()
             .filter_map(|(id, op)| {
                 if matches!(op, Op::Reduce { .. }) {
@@ -508,8 +508,7 @@ impl Kernel {
             .collect();
 
         while let Some(reduce_op_id) = reduce_op_ids.pop() {
-            let Op::Reduce { x, rop, ref dims } = self.ops[reduce_op_id].op else { unreachable!() };
-            let dims = dims.clone();
+            let Op::Reduce { x, rop, n_axes } = self.ops[reduce_op_id].op else { unreachable!() };
 
             let mut reduce_loop_ops_set = Set::default();
             let mut params = vec![x];
@@ -518,7 +517,7 @@ impl Kernel {
                 if reduce_loop_ops_set.insert(param) {
                     params.extend(self.at(param).parameters());
                     if acc_dtype.is_none() {
-                        match self.ops[param] {
+                        match *self.at(param) {
                             Op::Define { dtype, .. } => acc_dtype = Some(dtype),
                             Op::ConstView { value, .. } => acc_dtype = Some(value.dtype()),
                             Op::LoadView { dtype, .. } => acc_dtype = Some(dtype),
@@ -528,75 +527,69 @@ impl Kernel {
                     }
                 }
             }
+            let acc_dtype = acc_dtype.unwrap();
             // Sort reduce loop ops by original order
-            let mut reduce_loop_ops = Vec::with_capacity(reduce_loop_ops_set.len());
-            for op_id in &self.order {
-                if reduce_loop_ops_set.contains(op_id) {
-                    reduce_loop_ops.push(*op_id);
+            let mut op_id = self.head;
+            let mut loop_start = OpId::NULL;
+            while !op_id.is_null() {
+                if reduce_loop_ops_set.contains(&op_id) {
+                    loop_start = op_id;
+                    break;
                 }
+                op_id = self.next_op(op_id);
             }
-
-            // Remove ops from order
-            self.order.retain(|op_id| !reduce_loop_ops_set.contains(op_id));
-
-            // Create new order for loop contents
-            let mut order = Vec::new();
 
             // Add const zero
-            let const_zero = self.ops.push(Op::Const(Constant::idx(0)));
-            order.push(const_zero);
+            let const_zero = self.insert_before(loop_start, Op::Const(Constant::idx(0)));
 
             // Add accumulator
-            let acc_dtype = acc_dtype.unwrap();
-            let acc_init_id = self.ops.push(Op::Const(match rop {
-                ROp::Sum => acc_dtype.zero_constant(),
-                ROp::Max => acc_dtype.min_constant(),
-            }));
-            order.push(acc_init_id);
-            let acc = self.ops.push(Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 });
-            order.push(acc);
+            let acc_init_id = self.insert_before(
+                loop_start,
+                Op::Const(match rop {
+                    ROp::Sum => acc_dtype.zero_constant(),
+                    ROp::Max => acc_dtype.min_constant(),
+                }),
+            );
+
+            let acc = self.insert_before(
+                loop_start,
+                Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 },
+            );
 
             // Zero the accumulator
-            let zero_acc_op = self.ops.push(Op::Store { dst: acc, x: acc_init_id, index: const_zero });
-            order.push(zero_acc_op);
+            self.insert_before(loop_start, Op::Store { dst: acc, x: acc_init_id, index: const_zero });
 
             // Add Loops for the reduce
-            for &dim in &dims {
-                let loop_id = self.ops.push(Op::Loop { dim, scope: Scope::Register });
-                order.push(loop_id);
+            for dim in self.reduce_dims(reduce_op_id) {
+                self.insert_before(loop_start, Op::Loop { dim, scope: Scope::Register });
             }
 
-            // Add body of the reduce loop
-            order.extend(reduce_loop_ops);
-
             // Add reduction operation, load from acc, accumulate, store to acc
-            let load_acc = self.ops.push(Op::Load { src: acc, index: const_zero, dims: [1, 1], row_major: true });
-            order.push(load_acc);
-            let binary_accumulate = self.ops.push(Op::Binary {
-                x,
-                y: load_acc,
-                bop: match rop {
-                    ROp::Sum => BOp::Add,
-                    ROp::Max => BOp::Maximum,
+            let load_acc = self.insert_before(
+                reduce_op_id,
+                Op::Load { src: acc, index: const_zero, dims: [1, 1], row_major: true },
+            );
+            let bin_acc = self.insert_before(
+                reduce_op_id,
+                Op::Binary {
+                    x,
+                    y: load_acc,
+                    bop: match rop {
+                        ROp::Sum => BOp::Add,
+                        ROp::Max => BOp::Maximum,
+                    },
                 },
-            });
-            order.push(binary_accumulate);
-            let store_acc = self.ops.push(Op::Store { dst: acc, x: binary_accumulate, index: const_zero });
-            order.push(store_acc);
+            );
+            self.insert_before(reduce_op_id, Op::Store { dst: acc, x: bin_acc, index: const_zero });
 
             // Close the reduce loop
-            for _ in 0..dims.len() {
-                let endloop_id = self.ops.push(Op::EndLoop);
-                order.push(endloop_id);
+            for _ in 0..n_axes {
+                self.insert_before(reduce_op_id, Op::EndLoop);
             }
 
             // Replace old reduce op with the acc load op
-            self.ops[reduce_op_id] = Op::Load { src: acc, index: const_zero, dims: [1, 1], row_major: true };
-
-            // Put all things back in self.order
-            let reduce_i = self.order.iter().position(|&op_id| op_id == reduce_op_id).unwrap();
-            self.order.splice(reduce_i..reduce_i, order);
-        }*/
+            self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, dims: [1, 1], row_major: true };
+        }
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -1525,35 +1518,62 @@ impl Kernel {
         };
 
         let mut op_id = self.head;
-        let mut prev;
+        let mut prev: OpId;
+        let mut dtypes: Map<OpId, DType> = Map::default();
         while !op_id.is_null() {
             stack.last_mut().unwrap().insert(op_id);
             match *self.at(op_id) {
-                Op::ConstView { .. } => {}
-                Op::LoadView { .. } => {}
+                Op::ConstView { value, .. } => {
+                    dtypes.insert(op_id, value.dtype());
+                }
+                Op::LoadView { dtype, .. } => {
+                    dtypes.insert(op_id, dtype);
+                }
                 Op::StoreView { src, .. } => {
                     check(op_id, src, &stack);
+                    dtypes.insert(op_id, dtypes[&src]);
                 }
                 Op::Store { dst, x, index } => {
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
                     check(op_id, index, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
                 }
-                Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                Op::Cast { x, dtype } => {
                     check(op_id, x, &stack);
+                    dtypes.insert(op_id, dtype);
                 }
-                Op::Binary { x, y, .. } => {
+                Op::Reduce { x, .. } | Op::Unary { x, .. } => {
+                    check(op_id, x, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
+                Op::Binary { x, y, bop } => {
                     check(op_id, x, &stack);
                     check(op_id, y, &stack);
+                    if dtypes[&x] != dtypes[&y] {
+                        self.debug();
+                        panic!("Binary dtype mismatch on op={op_id}.");
+                    }
+                    if bop.returns_bool() {
+                        dtypes.insert(op_id, DType::Bool);
+                    } else {
+                        dtypes.insert(op_id, dtypes[&x]);
+                    }
                 }
-                Op::Const(_) => {}
-                Op::Define { .. } => {}
+                Op::Const(v) => {
+                    dtypes.insert(op_id, v.dtype());
+                }
+                Op::Define { dtype, .. } => {
+                    dtypes.insert(op_id, dtype);
+                }
                 Op::Load { src, index, .. } => {
                     check(op_id, src, &stack);
                     check(op_id, index, &stack);
+                    dtypes.insert(op_id, dtypes[&src]);
                 }
                 Op::Loop { .. } => {
                     stack.push(Set::default());
+                    dtypes.insert(op_id, IDX_T);
                 }
                 Op::EndLoop => {
                     if stack.is_empty() {

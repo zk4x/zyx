@@ -770,11 +770,7 @@ impl OpenCLDevice {
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Binary { x, y, bop } => {
-                    let dtype = if matches!(bop, BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::And | BOp::Or) {
-                        DType::Bool
-                    } else {
-                        dtypes[&x]
-                    };
+                    let dtype = if bop.returns_bool() { DType::Bool } else { dtypes[&x] };
                     dtypes.insert(op_id, dtype);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
