@@ -19,16 +19,18 @@ impl LoopSplitOpt {
         let mut reduction_splits = Vec::new();
 
         // Find all reduction ops
-        for (_, op) in kernel.iter_unordered() {
-            if let Op::Reduce { dims, .. } = op {
+        for (op_id, op) in kernel.iter_unordered() {
+            if let Op::Reduce { n_axes, .. } = *op {
                 // Generate all valid splits for these dimensions
                 // Calculate the total product of all dimensions
-                let total_product: Dim = dims.iter().product();
+                let mut reduce_dims = kernel.reduce_dims(op_id);
+                reduce_dims.truncate(n_axes);
+                let total_product: Dim = reduce_dims.iter().product();
 
                 let mut options: Vec<Vec<Dim>> = Vec::new();
 
                 // Add original
-                options.push(dims.clone());
+                options.push(reduce_dims);
 
                 // Generate all possible factorizations of the total product up to max_depth
                 for d in 1..=8 {
@@ -62,14 +64,14 @@ impl LoopSplitOpt {
 
             let Some(&reduce_id) = reduce_ops.get(i) else { return false };
 
-            let this = &mut *kernel;
             let new_dims: &[Dim] = &self.reduction_splits[i][idx as usize];
-            let Op::Reduce { x, ref mut dims, .. } = this.ops[reduce_id].op else { return false };
-            let n_old_dims = dims.len();
-            *dims = new_dims.into();
+            let Op::Reduce { x, n_axes, .. } = &mut kernel.ops[reduce_id].op else { return false };
+            let x = *x;
+            let n = *n_axes;
+            *n_axes = new_dims.len();
 
             let mut visited = Set::default();
-            this.recursively_apply_reshape(x, n_old_dims, new_dims, &mut visited, 0);
+            kernel.recursively_apply_reshape(x, n, new_dims, &mut visited, 0);
         }
         true
     }
@@ -93,8 +95,8 @@ impl Kernel {
                 let rank = view.rank();
                 view.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
             }
-            Op::Reduce { x, ref dims, .. } => {
-                let skip_last = skip_last + dims.len();
+            Op::Reduce { x, n_axes, .. } => {
+                let skip_last = skip_last + n_axes;
                 self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
             }
             Op::Cast { x, .. } | Op::Unary { x, .. } => {

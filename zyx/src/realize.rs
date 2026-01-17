@@ -12,7 +12,7 @@ use crate::{
     prog_bar::ProgressBar,
     runtime::{Pool, Runtime, deallocate_tensors},
     schedule::schedule,
-    shape::Dim,
+    shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
@@ -126,7 +126,7 @@ impl<'a> Kernelizer<'a> {
         // if it's reduce
         if let Some(reduce_dims) = reduce_dims {
             if self.kernels[kid].is_reduce() {
-                if reduce_dims * self.kernels[kid].total_reduce_dim(op_id) > 32000 {
+                if reduce_dims * self.kernels[kid].reduce_dims(op_id).iter().product::<Dim>() > 32000 {
                     //println!("Adding store for reduce");
                     self.add_store(x)?;
                     (kid, op_id) = self.create_load_kernel(x);
@@ -272,11 +272,10 @@ impl<'a> Kernelizer<'a> {
 
         let axes = self.graph.axes(nid);
         let shape = self.graph.shape(x);
-        let dims: Vec<Dim> = axes.iter().map(|&a| shape[a]).collect();
 
         // If the kernel has more than one output, or rc of x is more than one,
         // we have to either copy it (if it is small), or store x (if kid is big)
-        let reduce_dims_product: Dim = dims.iter().product();
+        let reduce_dims_product: Dim = axes.iter().map(|&a| shape[a]).product();
         let (kid, op_id) = self.duplicate_or_store(x, Some(reduce_dims_product))?;
         //self.debug();
 
@@ -286,7 +285,6 @@ impl<'a> Kernelizer<'a> {
 
         #[cfg(debug_assertions)]
         {
-            use crate::shape::UAxis;
             let mut sorted_axes: Vec<UAxis> = axes.into();
             sorted_axes.sort_unstable();
             debug_assert_eq!(axes, sorted_axes, "Reduce axes must be sorted.");
@@ -314,11 +312,11 @@ impl<'a> Kernelizer<'a> {
         }
 
         // If all dims are reduced
-        if shape == dims {
+        if shape.len() == axes.len() {
             self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
         }
         let kernel = &mut self.kernels[kid];
-        let op_id = kernel.push_back(Op::Reduce { x: op_id, rop, dims });
+        let op_id = kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -417,20 +415,20 @@ impl<'a> Kernelizer<'a> {
             }*/
 
             self.kernels[kidy].remove_first_output(y);
-            let Kernel { outputs, loads, stores, ops, head, tail } = unsafe { self.kernels.remove_and_return(kidy) };
+            let Kernel { outputs, loads, stores, ops, head, tail: _ } = unsafe { self.kernels.remove_and_return(kidy) };
 
             // Extend x kernel with y ops
             let mut y_ops_map = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
 
-            let mut op_id = head;
-            while !op_id.is_null() {
-                let mut op = ops[op_id].op.clone();
+            let mut i = head;
+            while !i.is_null() {
+                let mut op = ops[i].op.clone();
                 for param in op.parameters_mut() {
                     *param = y_ops_map[param];
                 }
                 let new_op_id = self.kernels[kid].push_back(op);
-                y_ops_map.insert(op_id, new_op_id);
-                op_id = ops[op_id].next;
+                y_ops_map.insert(i, new_op_id);
+                i = ops[i].next;
             }
 
             // Fix visited

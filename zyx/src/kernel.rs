@@ -75,7 +75,7 @@ pub enum Op {
     ConstView { value: Constant, view: View },
     LoadView { dtype: DType, view: View },
     StoreView { src: OpId, dtype: DType },
-    Reduce { x: OpId, rop: ROp, dims: Vec<Dim> },
+    Reduce { x: OpId, rop: ROp, n_axes: UAxis },
     //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
     //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
     //PadIndex(OpId, isize, isize), // Pad index with padding
@@ -230,9 +230,9 @@ impl Kernel {
                 Op::StoreView { src, dtype, .. } => {
                     println!("{op_id:>3}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}");
                 }
-                Op::Reduce { x, rop, ref dims, .. } => {
+                Op::Reduce { x, rop, n_axes, .. } => {
                     println!(
-                        "{op_id:>3}{indent}{RED}REDUCE{RESET} {} {x}, dims={dims:?}",
+                        "{op_id:>3}{indent}{RED}REDUCE{RESET} {} {x}, dims={n_axes:?}",
                         match rop {
                             ROp::Sum => "SUM",
                             ROp::Max => "MAX",
@@ -369,9 +369,10 @@ impl Kernel {
                     debug_assert_eq!(n, visited[y]);
                     (fx + fy + n, rx + ry, wx + wy, n)
                 }
-                Op::Reduce { x, dims, .. } => {
+                Op::Reduce { x, n_axes, .. } => {
                     let (mut f, r, w) = recursive(*x, ops, visited);
                     let mut n = visited[x];
+                    let dims = vec![1, 2, 3]; // TODO fix this
                     let rd = dims.iter().product::<usize>() as u64;
                     n /= rd;
                     f += n * (rd - 1);
@@ -408,22 +409,24 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. }))
     }
 
-    pub fn total_reduce_dim(&self, op: OpId) -> Dim {
-        fn recurse(ops: &Slab<OpId, OpNode>, x: OpId, visited: &mut Set<OpId>) -> Dim {
-            if visited.insert(x) {
-                let mut prod: Dim = 1;
-                if let Op::Reduce { dims, .. } = &ops[x].op {
-                    prod *= dims.iter().product::<Dim>();
-                }
-                for param in ops[x].op.parameters() {
-                    prod *= recurse(ops, param, visited);
-                }
-                return prod;
-            }
-            return 1;
-        }
+    pub fn reduce_dims(&self, op_id: OpId) -> Vec<Dim> {
+        let mut params = vec![op_id];
+        let mut n_reduce_axes = 0;
         let mut visited = Set::default();
-        recurse(&self.ops, op, &mut visited)
+        while let Some(param) = params.pop() {
+            if visited.insert(param) {
+                match self.at(param) {
+                    Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
+                        let n = view.rank();
+                        return view.shape()[n - n_reduce_axes..].into();
+                    }
+                    Op::Reduce { n_axes, .. } => n_reduce_axes += n_axes,
+                    _ => {}
+                }
+                params.extend(self.at(param).parameters());
+            }
+        }
+        unreachable!();
     }
 
     pub fn shape(&self) -> Vec<Dim> {
@@ -445,22 +448,20 @@ impl Kernel {
                 .collect();
         }
         let mut reduce_dims = 0;
-        let mut op_id = self.head;
+        let mut op_id = self.tail;
         while !op_id.is_null() {
             match self.at(op_id) {
                 Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
                     let mut shape = view.shape();
-                    for _ in 0..reduce_dims {
-                        shape.pop();
-                    }
+                    shape.truncate(shape.len() - reduce_dims);
                     return shape;
                 }
-                Op::Reduce { dims, .. } => {
-                    reduce_dims += dims.len();
+                Op::Reduce { n_axes, .. } => {
+                    reduce_dims += n_axes;
                 }
                 _ => {}
             }
-            op_id = self.ops[op_id].next;
+            op_id = self.prev_op(op_id);
         }
         unreachable!()
     }
@@ -493,6 +494,7 @@ impl Kernel {
     /// Find all Reduce ops and put them in a Loop block
     /// Add define ops and add reduce operation as BOp::Add or BOp::Max
     pub fn unfold_reduces(&mut self) {
+        self.debug();
         // This guarantees we start with innermost reduce op
         /*let mut reduce_op_ids: Vec<OpId> = self
             .iter_unordered()
@@ -949,8 +951,10 @@ impl Kernel {
             }
         }
         //self.ops.retain(|op_id| visited.contains(op_id));
-        for op_id in visited {
-            self.remove(op_id);
+        for op_id in self.ops.ids().collect::<Vec<_>>() {
+            if !visited.contains(&op_id) {
+                self.remove(op_id);
+            }
         }
 
         #[cfg(debug_assertions)]
@@ -1078,6 +1082,8 @@ impl Kernel {
         debug_assert!(!after_id.is_null());
         debug_assert!(!self.ops.is_empty());
 
+        //println!("moving op={op_id}, after={after_id}");
+
         // Remove
         let OpNode { prev, next, .. } = self.ops[op_id];
         if !prev.is_null() {
@@ -1117,15 +1123,16 @@ impl Kernel {
             start = self.next_op(start);
         }
 
-        let mut op_id = self.prev_op(start);
+        let mut op_id = start;
+        let mut start = self.prev_op(start);
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Const(_) = self.at(op_id) {
-                self.move_op_after(op_id, start)
+                self.move_op_after(op_id, start);
+                start = op_id;
             }
             op_id = next;
         }
-        self.debug();
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -1518,6 +1525,7 @@ impl Kernel {
         };
 
         let mut op_id = self.head;
+        let mut prev;
         while !op_id.is_null() {
             stack.last_mut().unwrap().insert(op_id);
             match *self.at(op_id) {
@@ -1555,7 +1563,12 @@ impl Kernel {
                     stack.pop();
                 }
             }
+            prev = op_id;
             op_id = self.ops[op_id].next;
+            if !op_id.is_null() && self.ops[op_id].prev != prev {
+                self.debug();
+                panic!("Inconsistency in prev.");
+            }
         }
         if stack.len() != 1 {
             self.debug();

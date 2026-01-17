@@ -113,19 +113,12 @@ impl Optimizer {
         let mut temp_kernel = kernel.clone();
         for _i in 0..100 {
             kernel.move_constants_to_beginning();
-            println!("head={}", kernel.head);
             kernel.swap_commutative();
-            println!("head={}", kernel.head);
             kernel.constant_folding();
-            println!("head={}", kernel.head);
             kernel.common_subexpression_elimination();
-            println!("head={}", kernel.head);
             kernel.loop_invariant_code_motion();
-            println!("head={}", kernel.head);
             kernel.delete_empty_loops();
-            println!("head={}", kernel.head);
             kernel.dead_code_elimination();
-            println!("head={}", kernel.head);
 
             if *kernel == temp_kernel {
                 break;

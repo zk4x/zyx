@@ -1127,3 +1127,46 @@ fn arange_2() {
     //x = x.sum(0)
     Tensor::realize([&x]).unwrap();
 }
+
+#[test]
+fn rope_2() -> Result<(), ZyxError> {
+    Tensor::set_implicit_casts(false);
+    let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8]).reshape([1, 2, 4])?.cast(zyx::DType::F32);
+    let base = 10000f32;
+
+    let [_batch_size, seq_len, embed_dim] = x.dims()?;
+
+    assert_eq!(embed_dim % 2, 0, "Embedding dimension should be even for RoPE.");
+
+    // Generate the position indices
+    let position = Tensor::arange(0., seq_len as f32, 1.)?.unsqueeze(1)?; // Shape: (seq_len, 1)
+
+    // Create a tensor of frequencies for each dimension
+    let mut freqs = Tensor::arange(0., embed_dim as f32 / 2., 1.)?; // Shape: (embed_dim // 2)
+    freqs = Tensor::from(base).pow(freqs * (2.0 / embed_dim as f32))?; // Apply scaling for frequency
+    //println!("freqs={freqs}");
+
+    // Create the positional encoding matrix (sinusoidal)
+    let pos_enc = position * freqs; // Shape: (seq_len, embed_dim // 2)
+    //println!("{pos_enc}");
+
+    // Apply sin and cos to each dimension
+    let sin_enc = pos_enc.sin(); // Shape: (seq_len, embed_dim // 2)
+    let cos_enc = pos_enc.cos(); // Shape: (seq_len, embed_dim // 2)
+    //Tensor::realize([&sin_enc, &cos_enc])?;
+    //println!("{sin_enc}\n{cos_enc}");
+
+    //drop(pos_enc);
+    //Tensor::realize([&sin_enc, &cos_enc])?;
+    //println!("{sin_enc}\n{cos_enc}");
+    //panic!();
+
+    // Combine sin and cos to create the final embedding
+    // The idea is to apply sin/cos to even and odd dimensions
+    let x = x.rope(sin_enc, cos_enc)?;
+    //drop(pos_enc);
+
+    assert_eq!(x.squeeze(0..), [[-3.0f32, -4.0, 1.0, 2.0], [0.42523819, -9.93675995, 8.591808319, 1.12284958]]);
+
+    Ok(())
+}
