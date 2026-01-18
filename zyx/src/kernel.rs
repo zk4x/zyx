@@ -1401,24 +1401,18 @@ impl Kernel {
     }
 
     pub fn loop_invariant_code_motion(&mut self) {
-        #[cfg(debug_assertions)]
-        self.verify();
-
-        /*let mut i = self.order.len();
-        let mut endloop_is = Vec::new();
-        while i > 0 {
-            i -= 1;
-            let loop_id = self.order[i];
-            if self.ops[loop_id] == Op::EndLoop {
+        /*let mut endloop_is = Vec::new();
+        let mut op_id = self.tail;
+        while !op_id.is_null() {
+            if *self.at(op_id) == Op::EndLoop {
                 endloop_is.push(i);
             }
-            if let Op::Loop { .. } = self.ops[loop_id] {
-                let mut n_invariant_ops = 0;
+            if let Op::Loop { .. } = self.at(op_id) {
                 let mut op_ids_in_loop = Set::default();
-                op_ids_in_loop.insert(self.order[i]); // Loop op is the primary op that breaks LICM
+                op_ids_in_loop.insert(op_id); // Loop op is the primary op that breaks LICM
                 for k in i + 1..endloop_is.pop().unwrap() - 1 {
                     let op_id = self.order[k];
-                    let op = &self.ops[op_id];
+                    let op = self.at(op_id);
                     if !matches!(
                         op,
                         Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop | Op::Define { .. }
@@ -1426,7 +1420,6 @@ impl Kernel {
                     {
                         let op_id = self.order.remove(k);
                         self.order.insert(i + n_invariant_ops, op_id);
-                        n_invariant_ops += 1;
                     } else {
                         op_ids_in_loop.insert(op_id);
                     }
@@ -1440,15 +1433,16 @@ impl Kernel {
 
     // Loops that don't contain stores can be deleted
     pub fn delete_empty_loops(&mut self) {
-        /*let mut stack: Vec<(bool, Vec<OpId>)> = Vec::new();
+        let mut stack: Vec<(bool, Vec<OpId>)> = Vec::new();
         let mut dead = Set::default();
 
-        for &id in &self.order {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
             for s in &mut stack {
-                s.1.push(id);
+                s.1.push(op_id);
             }
-            match self.ops[id] {
-                Op::Loop { .. } => stack.push((false, vec![id])),
+            match self.at(op_id) {
+                Op::Loop { .. } => stack.push((false, vec![op_id])),
                 Op::Store { .. } => {
                     for s in &mut stack {
                         s.0 = true
@@ -1466,9 +1460,9 @@ impl Kernel {
                 }
                 _ => {}
             }
+            op_id = self.next_op(op_id);
         }
         self.ops.retain(|op_id| !dead.contains(op_id));
-        self.order.retain(|op_id| !dead.contains(op_id));*/
 
         #[cfg(debug_assertions)]
         self.verify();
