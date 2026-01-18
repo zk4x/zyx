@@ -59,6 +59,15 @@ fn t03() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn t04() -> Result<(), ZyxError> {
+    let input = Tensor::from([5f32, 2., -3.]);
+    let target = Tensor::from([1f32, 0., 0.]);
+    let loss = input.cross_entropy(target, [])?.mean_all();
+    assert_eq!(loss, 0.048907f32);
+    Ok(())
+}
+
+#[test]
 fn pad_1() -> Result<(), ZyxError> {
     let x = Tensor::arange(0, 20, 1)?.reshape([4, 5])?;
     assert_eq!(x.rslice(3)?, [[3], [8], [13], [18]]);

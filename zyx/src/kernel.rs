@@ -9,10 +9,7 @@ use crate::{
     view::View,
 };
 use nanoserde::{DeBin, SerBin};
-use std::{
-    fmt::Display,
-    hash::{BuildHasherDefault, Hash},
-};
+use std::{fmt::Display, hash::Hash};
 
 /*
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -338,69 +335,66 @@ impl Kernel {
     }
 
     pub fn flop_mem_rw(&self) -> (u64, u64, u64) {
-        let stores: Vec<OpId> =
-            self.iter_unordered().filter(|(_, op)| matches!(op, Op::StoreView { .. })).map(|(i, _)| i).collect();
+        #[derive(Clone)]
+        struct Info {
+            shape: Vec<Dim>,
+            flops: u64,
+            mem_read: u64,
+            mem_write: u64,
+        }
 
-        let mut flop = 0;
-        let mut mr = 0;
-        let mut mw = 0;
-        let mut visited = Map::with_hasher(BuildHasherDefault::new());
+        let mut stack: Map<OpId, Info> = Map::default();
 
-        // flop, memory read, memory write, number of elements being processed
-        fn recursive(x: OpId, ops: &Slab<OpId, OpNode>, visited: &mut Map<OpId, u64>) -> (u64, u64, u64) {
-            if visited.contains_key(&x) {
-                return (0, 0, 0);
-            }
-            let (f, r, w, n) = match &ops[x].op {
-                Op::ConstView { view, .. } => (0, 0, 0, view.numel() as u64),
-                Op::LoadView { view, .. } => (0, view.original_numel() as u64, 0, view.numel() as u64),
-                Op::StoreView { src, .. } => {
-                    let (f, r, w) = recursive(*src, ops, visited);
-                    let n = visited[src];
-                    (f, r, w + n, 0)
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let info = match self.at(op_id) {
+                Op::ConstView { view, .. } => {
+                    let shape = view.shape();
+                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
                 }
-                Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                    let (f, r, w) = recursive(*x, ops, visited);
-                    let n = visited[x];
-                    (f + n, r, w, n)
+                Op::LoadView { dtype, view } => {
+                    let shape = view.shape();
+                    let mem_read = view.original_numel() as u64 * dtype.byte_size() as u64;
+                    Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
-                Op::Binary { x, y, .. } => {
-                    let (fx, rx, wx) = recursive(*x, ops, visited);
-                    let (fy, ry, wy) = recursive(*y, ops, visited);
-                    let n = visited[x];
-                    debug_assert_eq!(n, visited[y]);
-                    (fx + fy + n, rx + ry, wx + wy, n)
+                Op::StoreView { src, dtype } => {
+                    let Info { shape, .. } = stack[src].clone();
+                    let mem_write = shape.iter().product::<Dim>() as u64 * dtype.byte_size() as u64;
+                    Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
                 Op::Reduce { x, n_axes, .. } => {
-                    let (mut f, r, w) = recursive(*x, ops, visited);
-                    let mut n = visited[x];
-                    let dims = vec![1, 2, 3]; // TODO fix this
-                    let rd = dims.iter().product::<usize>() as u64;
-                    n /= rd;
-                    f += n * (rd - 1);
-                    (f, r, w, n)
+                    let Info { mut shape, .. } = stack[x].clone();
+                    let rd: Dim = shape[shape.len() - n_axes..].iter().product();
+                    shape.truncate(shape.len() - n_axes);
+                    let n: Dim = shape.iter().product();
+                    let flops = n * (rd - 1);
+                    let flops = flops as u64;
+                    Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
-                Op::Const { .. } => unreachable!(),
-                Op::Define { .. } => unreachable!(),
-                Op::Load { .. } => unreachable!(),
-                Op::Loop { .. } => unreachable!(),
-                Op::EndLoop { .. } => unreachable!(),
-                Op::Store { .. } => unreachable!(),
+                Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                    let Info { shape, .. } = stack[x].clone();
+                    let flops = shape.iter().product::<Dim>() as u64;
+                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                }
+                Op::Binary { x, .. } => {
+                    let Info { shape, .. } = stack[x].clone();
+                    let flops = shape.iter().product::<Dim>() as u64;
+                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                }
+                Op::Store { .. }
+                | Op::Const(_)
+                | Op::Define { .. }
+                | Op::Load { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop => todo!(),
             };
-            visited.insert(x, n);
-            (f, r, w)
+            stack.insert(op_id, info);
+            op_id = self.next_op(op_id);
         }
 
-        for store in stores {
-            let (f, r, w) = recursive(store, &self.ops, &mut visited);
-            flop += f;
-            mr += r;
-            mw += w;
-        }
-
-        //println!("{}, {}, {}", flop, mr, mw);
-
-        (flop, mr, mw)
+        stack.into_values().fold((0, 0, 0), |acc, info| {
+            (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write)
+        })
     }
 
     pub fn contains_stores(&self) -> bool {
@@ -560,7 +554,7 @@ impl Kernel {
             self.insert_before(loop_start, Op::Store { dst: acc, x: acc_init_id, index: const_zero });
 
             // Add Loops for the reduce
-            for dim in self.reduce_dims(reduce_op_id) {
+            for &dim in &self.reduce_dims(reduce_op_id)[..n_axes] {
                 self.insert_before(loop_start, Op::Loop { dim, scope: Scope::Register });
             }
 
@@ -589,10 +583,10 @@ impl Kernel {
 
             // Replace old reduce op with the acc load op
             self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, dims: [1, 1], row_major: true };
-        }
 
-        #[cfg(debug_assertions)]
-        self.verify();
+            #[cfg(debug_assertions)]
+            self.verify();
+        }
     }
 
     fn get_loops(&self, last_id: OpId) -> Vec<OpId> {
@@ -1688,28 +1682,32 @@ impl Kernel {
     }
 
     pub fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KMKernelId, OpId)>) {
-        // TODO not only retain, also delete relevant prev, next
-        /*let params = self.outputs.iter().map(|tid| visited[tid].1).collect();
+        let params = self.outputs.iter().map(|tid| visited[tid].1).collect();
         let required = self.get_required_ops(params);
         let mut loaded_tensors = Vec::new();
         let mut load_index = 0;
-        let loads = &self.loads;
-        for (op_id, op) in self.ops.iter_mut() {
+        let loads = self.loads.clone(); // TODO remove the clone once partial borrows are working in rust
+        let mut op_id = self.head;
+        while !op_id.is_null() {
             let is_required = required.contains(&op_id);
-            if let Op::LoadView { .. } = op {
+            if let Op::LoadView { .. } = self.at(op_id) {
                 if is_required {
                     loaded_tensors.push(loads[load_index]);
                 }
                 load_index += 1;
             }
+            let temp = op_id;
+            op_id = self.next_op(op_id);
+            if !is_required {
+                self.remove(temp);
+            }
         }
-        self.ops.retain(|x| required.contains(x));
         self.loads = loaded_tensors;
         #[cfg(debug_assertions)]
-        if self.loads.len() != self.ops.values().filter(|op| matches!(op, Op::LoadView { .. })).count() {
+        if self.loads.len() != self.ops.values().filter(|op| matches!(op.op, Op::LoadView { .. })).count() {
             self.debug();
             panic!();
-        }*/
+        }
     }
 
     pub fn get_required_ops(&self, mut params: Vec<OpId>) -> Set<OpId> {

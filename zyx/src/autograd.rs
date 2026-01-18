@@ -269,15 +269,19 @@ impl Runtime {
                         self.release(c_ex);
                         if req_grad.contains(&x) {
                             let mask_xgt = self.binary(x, y, BOp::Cmpgt);
-                            let add = self.binary(mask_xgt, eq, BOp::Add);
+                            let mask_xgt_cast = self.cast(mask_xgt, dtype);
                             self.release(mask_xgt);
+                            let add = self.binary(mask_xgt_cast, eq, BOp::Add);
+                            self.release(mask_xgt_cast);
                             let x_grad = self.binary(grad, add, BOp::Mul);
                             self.release(add);
                             insert_or_add_grad(self, &mut grads, x, x_grad);
                         }
                         if req_grad.contains(&y) {
                             let mask_ygt = self.binary(x, y, BOp::Cmplt);
-                            let add = self.binary(mask_ygt, eq, BOp::Add);
+                            let mask_ygt_cast = self.cast(mask_ygt, dtype);
+                            self.release(mask_ygt);
+                            let add = self.binary(mask_ygt_cast, eq, BOp::Add);
                             self.release(mask_ygt);
                             let y_grad = self.binary(grad, add, BOp::Mul);
                             self.release(add);
