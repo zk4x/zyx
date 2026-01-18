@@ -1302,10 +1302,11 @@ impl Kernel {
 
     pub fn swap_commutative(&mut self) {
         // Tracks whether a value depends on a loop index
-        /*let mut loop_dep: Map<OpId, usize> = Map::default();
+        let mut loop_dep: Map<OpId, usize> = Map::default();
         let mut loop_depth = 0;
-        for &op_id in &self.order {
-            let depth = match &self.ops[op_id] {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let depth = match self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -1316,27 +1317,23 @@ impl Kernel {
                     loop_depth
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
-                Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
+                &Op::Binary { x, y, bop } => {
+                    if bop.is_commutative() {
+                        if loop_dep[&y] < loop_dep[&x] || (self.ops[x].op.is_const() && !self.ops[y].op.is_const()) {
+                            if let Op::Binary { x, y, .. } = &mut self.ops[op_id].op {
+                                std::mem::swap(x, y);
+                            }
+                        }
+                    }
+                    loop_dep[&x].max(loop_dep[&y])
+                }
                 Op::Load { src, index, .. } => loop_dep[src].max(loop_dep[index]),
                 Op::Store { dst, x, index } => loop_dep[dst].max(loop_dep[x]).max(loop_dep[index]),
                 Op::Const(_) | Op::Define { .. } => 0,
             };
             loop_dep.insert(op_id, depth);
+            op_id = self.next_op(op_id);
         }
-
-        // TODO This is stupid
-        let ids: Set<OpId> = self.ops.ids().collect();
-        for op_id in ids {
-            if let Op::Binary { x, y, bop } = self.ops[op_id] {
-                if bop.is_commutative() {
-                    if loop_dep[&y] < loop_dep[&x] || (self.ops[y].is_const() && !self.ops[x].is_const()) {
-                        if let Op::Binary { x, y, .. } = &mut self.ops[op_id] {
-                            std::mem::swap(x, y);
-                        }
-                    }
-                }
-            }
-        }*/
 
         #[cfg(debug_assertions)]
         self.verify();
