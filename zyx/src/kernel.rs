@@ -1125,21 +1125,20 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn constant_folding(&mut self) {
-        fn remap(ops: &mut Slab<OpId, Op>, x: OpId, y: OpId) {
-            for op in ops.values_mut() {
-                for param in op.parameters_mut() {
-                    if *param == x {
-                        *param = y;
-                    }
+    fn remap(&mut self, x: OpId, y: OpId) {
+        for op_node in self.ops.values_mut() {
+            for param in op_node.op.parameters_mut() {
+                if *param == x {
+                    *param = y;
                 }
             }
         }
+    }
 
-        /*let mut i = 0;
-        while i < self.order.len() {
-            let op_id = self.order[i];
-            match self.ops[op_id] {
+    pub fn constant_folding(&mut self) {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match *self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
                 Op::Store { .. }
                 | Op::Const(_)
@@ -1148,65 +1147,57 @@ impl Kernel {
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
                 Op::Cast { x, dtype } => {
-                    if let Op::Const(cx) = self.ops[x] {
-                        self.ops[op_id] = Op::Const(cx.cast(dtype));
+                    if let Op::Const(cx) = self.at(x) {
+                        self.ops[op_id].op = Op::Const(cx.cast(dtype));
                     }
                 }
                 Op::Unary { x, uop } => {
-                    if let Op::Const(cx) = self.ops[x] {
-                        self.ops[op_id] = Op::Const(cx.unary(uop));
+                    if let Op::Const(cx) = self.at(x) {
+                        self.ops[op_id].op = Op::Const(cx.unary(uop));
                     }
                 }
-                Op::Binary { x, y, bop } => match (self.ops[x].clone(), self.ops[y].clone()) {
+                Op::Binary { x, y, bop } => match (self.at(x).clone(), self.at(y).clone()) {
                     (Op::Const(cx), Op::Const(cy)) => {
-                        self.ops[op_id] = Op::Const(Constant::binary(cx, cy, bop));
+                        self.ops[op_id].op = Op::Const(Constant::binary(cx, cy, bop));
                     }
                     (Op::Const(cx), _) => match bop {
-                        BOp::And if cx.dtype() == DType::Bool => {
-                            remap(&mut self.ops, op_id, y);
-                        }
-                        BOp::Add if cx.is_zero() => remap(&mut self.ops, op_id, y),
-                        BOp::Sub if cx.is_zero() => self.ops[op_id] = Op::Unary { x: y, uop: UOp::Neg },
-                        BOp::Mul if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
-                        BOp::Mul if cx.is_one() => remap(&mut self.ops, op_id, y),
-                        BOp::Mul if cx.is_two() => self.ops[op_id] = Op::Binary { x: y, y, bop: BOp::Add },
+                        BOp::And if cx.dtype() == DType::Bool => self.remap(op_id, y),
+                        BOp::Add if cx.is_zero() => self.remap(op_id, y),
+                        BOp::Sub if cx.is_zero() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Neg },
+                        BOp::Mul if cx.is_zero() => self.ops[op_id].op = Op::Const(cx.dtype().zero_constant()),
+                        BOp::Mul if cx.is_one() => self.remap(op_id, y),
+                        BOp::Mul if cx.is_two() => self.ops[op_id].op = Op::Binary { x: y, y, bop: BOp::Add },
                         BOp::Mul if cx.is_power_of_two() && cx.dtype() == IDX_T => {
-                            let c = self.ops.push(Op::Const(cx.unary(UOp::Log2)));
-                            self.order.insert(i, c);
-                            i += 1;
-                            self.ops[op_id] = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft };
+                            let c = self.insert_before(op_id, Op::Const(cx.unary(UOp::Log2)));
+                            self.ops[op_id].op = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft };
                         }
-                        BOp::Div if cx.is_zero() => self.ops[op_id] = Op::Const(cx.dtype().zero_constant()),
-                        BOp::Div if cx.is_one() => self.ops[op_id] = Op::Unary { x: y, uop: UOp::Reciprocal },
-                        BOp::Pow if cx.is_one() => self.ops[op_id] = Op::Const(cx.dtype().one_constant()),
-                        BOp::Maximum if cx.is_minimum() => remap(&mut self.ops, op_id, y),
-                        BOp::BitShiftLeft if cx.is_zero() => remap(&mut self.ops, op_id, y),
-                        BOp::BitShiftRight if cx.is_zero() => remap(&mut self.ops, op_id, y),
+                        BOp::Div if cx.is_zero() => self.ops[op_id].op = Op::Const(cx.dtype().zero_constant()),
+                        BOp::Div if cx.is_one() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Reciprocal },
+                        BOp::Pow if cx.is_one() => self.ops[op_id].op = Op::Const(cx.dtype().one_constant()),
+                        BOp::Maximum if cx.is_minimum() => self.remap(op_id, y),
+                        BOp::BitShiftLeft if cx.is_zero() => self.remap(op_id, y),
+                        BOp::BitShiftRight if cx.is_zero() => self.remap(op_id, y),
                         _ => {}
                     },
                     (_, Op::Const(cy)) => match bop {
-                        BOp::Sub if cy.is_zero() => remap(&mut self.ops, op_id, x),
+                        BOp::Sub if cy.is_zero() => self.remap(op_id, x),
                         BOp::Div if cy.is_zero() => panic!("Division by constant zero"),
-                        BOp::Div if cy.is_one() => remap(&mut self.ops, op_id, x),
+                        BOp::Div if cy.is_one() => self.remap(op_id, x),
                         BOp::Div if cy.is_power_of_two() && cy.dtype() == IDX_T => {
-                            let c = self.ops.push(Op::Const(cy.unary(UOp::Log2)));
-                            self.order.insert(i, c);
-                            i += 1;
-                            self.ops[op_id] = Op::Binary { x, y: c, bop: BOp::BitShiftRight };
+                            let y = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
+                            self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitShiftRight };
                         }
                         BOp::Mod if cy.is_zero() => panic!("Module by constant zero"),
                         BOp::Mod if cy.is_zero() && cy.dtype() == IDX_T => {
                             let shift = Constant::binary(cy, Constant::idx(1), BOp::Sub);
-                            let c = self.ops.push(Op::Const(shift));
-                            self.order.insert(i, c);
-                            i += 1;
-                            self.ops[op_id] = Op::Binary { x, y: c, bop: BOp::BitAnd };
+                            let y = self.insert_before(op_id, Op::Const(shift));
+                            self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitAnd };
                         }
-                        BOp::Pow if cy.is_zero() => self.ops[op_id] = Op::Const(cy.dtype().one_constant()),
-                        BOp::Pow if cy.is_one() => remap(&mut self.ops, op_id, x),
-                        BOp::Pow if cy.is_two() => self.ops[op_id] = Op::Binary { x, y: x, bop: BOp::Mul },
-                        BOp::BitShiftLeft if cy.is_zero() => remap(&mut self.ops, op_id, x),
-                        BOp::BitShiftRight if cy.is_zero() => remap(&mut self.ops, op_id, x),
+                        BOp::Pow if cy.is_zero() => self.ops[op_id].op = Op::Const(cy.dtype().one_constant()),
+                        BOp::Pow if cy.is_one() => self.remap(op_id, x),
+                        BOp::Pow if cy.is_two() => self.ops[op_id].op = Op::Binary { x, y: x, bop: BOp::Mul },
+                        BOp::BitShiftLeft if cy.is_zero() => self.remap(op_id, x),
+                        BOp::BitShiftRight if cy.is_zero() => self.remap(op_id, x),
                         _ => {}
                     },
                     (x_op, y_op) if x_op == y_op => {
@@ -1219,8 +1210,8 @@ impl Kernel {
                     _ => {}
                 },
             }
-            i += 1;
-        }*/
+            op_id = self.next_op(op_id);
+        }
 
         #[cfg(debug_assertions)]
         self.verify();

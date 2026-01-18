@@ -73,8 +73,8 @@ fn grad_reciprocal_2() -> Result<(), ZyxError> {
 #[test]
 fn grad_pow_2() -> Result<(), ZyxError> {
     // Input tensors
-    let x = Tensor::from([2.0, 3.0, 4.0]);
-    let y = Tensor::from([3.0, 2.0, 0.5]);
+    let x = Tensor::from([2.0f32, 3.0, 4.0]);
+    let y = Tensor::from([3.0f32, 2.0, 0.5]);
 
     // Forward pass: z = x ^ y
     let tape = GradientTape::new();
@@ -86,26 +86,26 @@ fn grad_pow_2() -> Result<(), ZyxError> {
     let y_grad = grads.remove(0).unwrap();
 
     // Convert tensors to Vec<f64> for comparison
-    let x_grad_vec: Vec<f64> = x_grad.try_into().unwrap();
-    let y_grad_vec: Vec<f64> = y_grad.try_into().unwrap();
+    let x_grad_vec: Vec<f32> = x_grad.try_into().unwrap();
+    let y_grad_vec: Vec<f32> = y_grad.try_into().unwrap();
 
     // Expected gradients
     // dz/dx = y * x^(y-1)
     let expected_x_vec = vec![
-        3.0 * 2.0f64.powf(2.0),  // 3 * 2^(3-1) = 3 * 4 = 12
-        2.0 * 3.0f64.powf(1.0),  // 2 * 3^(2-1) = 2 * 3 = 6
-        0.5 * 4.0f64.powf(-0.5), // 0.5 * 4^(-0.5) = 0.5 * 0.5 = 0.25
+        3.0 * 2.0f32.powf(2.0),  // 3 * 2^(3-1) = 3 * 4 = 12
+        2.0 * 3.0f32.powf(1.0),  // 2 * 3^(2-1) = 2 * 3 = 6
+        0.5 * 4.0f32.powf(-0.5), // 0.5 * 4^(-0.5) = 0.5 * 0.5 = 0.25
     ];
 
     // dz/dy = x^y * ln(x)
     let expected_y_vec = vec![
-        2.0f64.powf(3.0) * 2.0f64.ln(),  // 8 * ln(2)
-        3.0f64.powf(2.0) * 3.0f64.ln(),  // 9 * ln(3)
-        4.0f64.powf(0.5) * 4.0f64.ln(),  // 2 * ln(4)
+        2.0f32.powf(3f32) * 2.0f32.ln(), // 8 * ln(2)
+        3.0f32.powf(2f32) * 3.0f32.ln(), // 9 * ln(3)
+        4.0f32.powf(0.5) * 4.0f32.ln(),  // 2 * ln(4)
     ];
 
     // Compare gradients element-wise with tolerance
-    let tol = 1e-12;
+    let tol = 1e-12f32;
     for (a, b) in x_grad_vec.iter().zip(expected_x_vec.iter()) {
         assert!((a - b).abs() < tol, "x_grad mismatch: {} != {}", a, b);
     }
@@ -139,17 +139,11 @@ fn grad_pow_3() -> Result<(), ZyxError> {
     let y_val: Vec<f64> = y.clone().try_into().unwrap();
 
     // Expected gradients
-    let expected_x_vec: Vec<f64> = x_val
-        .iter()
-        .zip(y_val.iter())
-        .map(|(&xv, &yv): (&f64, &f64)| yv * xv.powf(yv - 1.0))
-        .collect();
+    let expected_x_vec: Vec<f64> =
+        x_val.iter().zip(y_val.iter()).map(|(&xv, &yv): (&f64, &f64)| yv * xv.powf(yv - 1.0)).collect();
 
-    let expected_y_vec: Vec<f64> = x_val
-        .iter()
-        .zip(y_val.iter())
-        .map(|(&xv, &yv): (&f64, &f64)| xv.powf(yv) * xv.ln())
-        .collect();
+    let expected_y_vec: Vec<f64> =
+        x_val.iter().zip(y_val.iter()).map(|(&xv, &yv): (&f64, &f64)| xv.powf(yv) * xv.ln()).collect();
 
     // Compare element-wise with tolerance
     let tol: f64 = 1e-12;
@@ -543,10 +537,7 @@ fn grad_log2() -> Result<(), ZyxError> {
     let mut grads = tape.gradient(&y, [&x]);
     let x_grad = grads.pop().unwrap().unwrap();
 
-    let expected: Vec<_> = data
-        .iter()
-        .map(|&x| 1.0 / (x * std::f32::consts::LN_2))
-        .collect();
+    let expected: Vec<_> = data.iter().map(|&x| 1.0 / (x * std::f32::consts::LN_2)).collect();
     assert_eq!(x_grad, expected);
     Ok(())
 }
