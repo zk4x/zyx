@@ -2,6 +2,7 @@ use crate::{
     Map,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
+    shape::Dim,
 };
 use nanoserde::{DeBin, SerBin};
 
@@ -16,7 +17,7 @@ impl LoopUnrollOpt {
 
     #[must_use]
     pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = [16, 16][index as usize]; //[1, 4, 32][index as usize]; // TODO just uncomment this after other things are done
+        let unroll_dim = [4, 16][index as usize]; // TODO just uncomment this after other things are done
         kernel.unroll_loops(unroll_dim);
         true
     }
@@ -24,48 +25,52 @@ impl LoopUnrollOpt {
 
 impl Kernel {
     pub fn unroll_loops(&mut self, unroll_dim: usize) {
-        /*let mut endloop_ids = Vec::new();
-        let mut i = self.order.len();
-        while i > 0 {
-            i -= 1;
-            let loop_id = self.order[i];
-            if self.ops[loop_id] == Op::EndLoop {
-                endloop_ids.push(loop_id);
+        let mut endloop_ids = Vec::new();
+        let mut op_id = self.tail;
+        while !op_id.is_null() {
+            if self.ops[op_id].op == Op::EndLoop {
+                endloop_ids.push(op_id);
             }
-            if let Op::Loop { dim, scope } = self.ops[loop_id] {
+            if let Op::Loop { dim, scope } = self.ops[op_id].op {
                 let endloop_id = endloop_ids.pop().unwrap();
-                if scope == Scope::Register && dim <= unroll_dim && self.order.len() * dim < 50000 {
-                    self.unroll_loop(i, loop_id, endloop_id, dim);
+                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 as Dim * dim < 50000 {
+                    self.unroll_loop(op_id, endloop_id, dim);
                 }
             }
-        }*/
-        #[cfg(debug_assertions)]
-        self.verify();
+            op_id = self.prev_op(op_id);
+        }
     }
 
-    pub fn unroll_loop(&mut self, i: usize, loop_id: OpId, endloop_id: OpId, dim: usize) {
-        /*self.ops[loop_id] = Op::Const(Constant::idx(0));
-        let endloop_i = self.order.iter().rposition(|op_id| *op_id == endloop_id).unwrap();
-        let loop_order: &[OpId] = &self.order[i + 1..endloop_i];
-        let mut order = Vec::with_capacity(loop_order.len() * (dim - 1));
+    pub fn unroll_loop(&mut self, loop_id: OpId, endloop_id: OpId, dim: usize) {
+        //println!("Unrolling loop={loop_id}, end={endloop_id}, dim={dim}");
+        self.ops[loop_id].op = Op::Const(Constant::idx(0));
+        let last_loop_op = self.prev_op(endloop_id);
+
         for idx in 1..dim {
             let mut new_ops_map = Map::default();
-            let new_op_id = self.ops.push(Op::Const(Constant::idx(idx as u64)));
-            new_ops_map.insert(loop_id, new_op_id);
-            order.push(new_op_id);
-            for &op_id in loop_order {
-                let mut op = self.ops[op_id].clone();
+            let idx_op = self.insert_before(endloop_id, Op::Const(Constant::idx(idx as u64)));
+            new_ops_map.insert(loop_id, idx_op);
+
+            let mut op_id = self.next_op(loop_id);
+            loop {
+                let mut op = self.ops[op_id].op.clone();
                 for param in op.parameters_mut() {
                     if let Some(&new_param) = new_ops_map.get(param) {
                         *param = new_param;
                     }
                 }
-                let new_op_id = self.ops.push(op);
+                let new_op_id = self.insert_before(endloop_id, op);
                 new_ops_map.insert(op_id, new_op_id);
-                order.push(new_op_id);
+
+                if op_id == last_loop_op {
+                    break;
+                }
+                op_id = self.next_op(op_id);
             }
         }
-        self.ops.remove(endloop_id);
-        self.order.splice(endloop_i..=endloop_i, order);*/
+        self.remove(endloop_id);
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 }
