@@ -955,7 +955,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.at(op_id) {
-                Op::Define { .. } => continue,
+                Op::Define { .. } => {}
                 Op::Loop { .. } => {
                     unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
                     unique_loads.push(Map::with_capacity_and_hasher(5, BuildHasherDefault::new()));
@@ -994,7 +994,7 @@ impl Kernel {
             if remaps.contains_key(&op_id) {
                 self.remove(op_id);
             }
-            op_id = self.next_op(temp);
+            op_id = temp;
         }
 
         #[cfg(debug_assertions)]

@@ -183,11 +183,11 @@ impl<Id: SlabId, T> Slab<Id, T> {
     pub(crate) fn next_id(&self, mut id: Id) -> Id {
         loop {
             id.inc();
-            if !self.empty.contains(&id) {
-                return id;
-            }
             if id >= self.len() {
                 return Id::NULL;
+            }
+            if !self.empty.contains(&id) {
+                return id;
             }
         }
     }

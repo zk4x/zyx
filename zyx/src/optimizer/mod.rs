@@ -111,7 +111,7 @@ impl Optimizer {
         kernel.reassociate_commutative();
 
         let mut temp_kernel = kernel.clone();
-        for _i in 0..10 {
+        for _ in 0..10 {
             kernel.move_constants_to_beginning();
             kernel.swap_commutative();
             kernel.constant_folding();
