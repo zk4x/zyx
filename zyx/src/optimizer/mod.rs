@@ -111,7 +111,7 @@ impl Optimizer {
         kernel.reassociate_commutative();
 
         let mut temp_kernel = kernel.clone();
-        for _i in 0..100 {
+        for _i in 0..10 {
             kernel.move_constants_to_beginning();
             kernel.swap_commutative();
             kernel.constant_folding();
@@ -124,11 +124,6 @@ impl Optimizer {
                 break;
             }
             temp_kernel = kernel.clone();
-            #[cfg(debug_assertions)]
-            if _i == 99 {
-                kernel.debug();
-                panic!("YO what are you doing bro.");
-            }
         }
 
         kernel.verify();
