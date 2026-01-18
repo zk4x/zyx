@@ -18,6 +18,7 @@ use std::fmt::{Debug, Display};
 use std::iter::{once, repeat_n};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Bound, Div, Mul, Neg, Not, Range, RangeBounds, Sub};
 use std::path::Path;
+use std::u32;
 
 mod index_ops;
 mod reduce_ops;
@@ -52,6 +53,7 @@ impl From<TensorId> for usize {
 
 impl SlabId for TensorId {
     const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
 
     fn inc(&mut self) {
         self.0 += 1;

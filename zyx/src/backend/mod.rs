@@ -49,6 +49,7 @@ impl From<BufferId> for usize {
 
 impl SlabId for BufferId {
     const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
 
     fn inc(&mut self) {
         self.0 += 1;
@@ -72,6 +73,7 @@ impl From<ProgramId> for usize {
 
 impl SlabId for ProgramId {
     const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
 
     fn inc(&mut self) {
         self.0 += 1;
@@ -100,8 +102,7 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
-    if let Err(err) = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends)
-    {
+    if let Err(err) = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
         }
@@ -117,8 +118,7 @@ pub fn initialize_backends(
         }
     }
     #[cfg(feature = "wgpu")]
-    if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends)
-    {
+    if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
         }

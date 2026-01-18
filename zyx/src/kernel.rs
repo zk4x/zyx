@@ -9,7 +9,10 @@ use crate::{
     view::View,
 };
 use nanoserde::{DeBin, SerBin};
-use std::{fmt::Display, hash::Hash};
+use std::{
+    fmt::Display,
+    hash::{BuildHasherDefault, Hash},
+};
 
 /*
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -899,22 +902,17 @@ impl Kernel {
     }
 
     pub fn unfold_pows(&mut self) {
-        /*let mut i = 0;
-        while i < self.order.len() {
-            let op_id = self.order[i];
-            if let Op::Binary { x, y, bop } = self.ops[op_id] {
+        let mut op_id = self.ops.first_id();
+        while !op_id.is_null() {
+            if let &Op::Binary { x, y, bop } = self.at(op_id) {
                 if bop == BOp::Pow {
-                    let x = self.ops.push(Op::Unary { x, uop: UOp::Log2 });
-                    self.order.insert(i, x);
-                    i += 1;
-                    let x = self.ops.push(Op::Binary { x, y, bop: BOp::Mul });
-                    self.order.insert(i, x);
-                    i += 1;
-                    self.ops[op_id] = Op::Unary { x, uop: UOp::Exp2 };
+                    let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
+                    let x = self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
+                    self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
                 }
             }
-            i += 1;
-        }*/
+            op_id = self.ops.next_id(op_id);
+        }
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -949,13 +947,14 @@ impl Kernel {
     }
 
     pub fn common_subexpression_elimination(&mut self) {
-        /*let mut unique: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
+        let mut unique: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
         unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
         let mut unique_loads: Vec<Map<(OpId, OpId), OpId>> = Vec::with_capacity(10);
         unique_loads.push(Map::with_capacity_and_hasher(5, BuildHasherDefault::new()));
         let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
-        for &op_id in &self.order {
-            match &self.ops[op_id] {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.at(op_id) {
                 Op::Define { .. } => continue,
                 Op::Loop { .. } => {
                     unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
@@ -986,28 +985,17 @@ impl Kernel {
                     }
                 }
             }
-        }
-
-        // Second pass: remap all operands
-        for op in self.ops.values_mut() {
-            for param in op.parameters_mut() {
+            for param in self.ops[op_id].op.parameters_mut() {
                 if let Some(&new_id) = remaps.get(param) {
                     *param = new_id;
                 }
             }
-        }
-
-        // Third pass: remove duplicated ops from order and ops
-        let mut i = 0;
-        while i < self.order.len() {
-            let op_id = self.order[i];
+            let temp = self.next_op(op_id);
             if remaps.contains_key(&op_id) {
-                self.order.remove(i);
-                self.ops.remove(op_id);
-            } else {
-                i += 1;
+                self.remove(op_id);
             }
-        }*/
+            op_id = self.next_op(temp);
+        }
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -1753,6 +1741,7 @@ impl From<OpId> for usize {
 
 impl SlabId for OpId {
     const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
 
     fn inc(&mut self) {
         self.0 += 1;

@@ -25,6 +25,7 @@ pub struct KMKernelId(u32);
 
 impl SlabId for KMKernelId {
     const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
 
     fn inc(&mut self) {
         self.0 += 1;

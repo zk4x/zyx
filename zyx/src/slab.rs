@@ -16,6 +16,7 @@ pub trait SlabId:
     std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize>
 {
     const ZERO: Self;
+    const NULL: Self;
     fn inc(&mut self);
 }
 
@@ -164,6 +165,31 @@ impl<Id: SlabId, T> Slab<Id, T> {
             .enumerate()
             .filter(|(id, _)| !self.empty.contains(&(Id::try_from(*id).unwrap())))
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
+    }
+
+    pub(crate) fn first_id(&self) -> Id {
+        if self.is_empty() {
+            return Id::NULL;
+        }
+        let mut id = Id::ZERO;
+        loop {
+            if !self.empty.contains(&id) {
+                return id;
+            }
+            id.inc();
+        }
+    }
+
+    pub(crate) fn next_id(&self, mut id: Id) -> Id {
+        loop {
+            id.inc();
+            if !self.empty.contains(&id) {
+                return id;
+            }
+            if id >= self.len() {
+                return Id::NULL;
+            }
+        }
     }
 
     pub(crate) fn retain(&mut self, func: impl Fn(&Id) -> bool) {
