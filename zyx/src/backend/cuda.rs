@@ -155,25 +155,37 @@ pub(super) fn initialize_device(
         return Ok(());
     }
 
-    let mut cuda_paths = Vec::new();
-    let roots = ["lib", "lib64", "/usr", "/opt"];
-    let mut stack: Vec<PathBuf> = roots.into_iter().map(|p| PathBuf::from(p)).collect();
-    while let Some(dir) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.file_name().map(|f| f == "libcuda.so").unwrap_or(false) {
-                    cuda_paths.push(path);
+    let cuda_paths = [
+        "/lib64/libcuda.so",
+        "/lib/libcuda.so",
+        "/usr/lib64/libcuda.so",
+        "/usr/lib/libcuda.so",
+        "/lib/x86_64-linux-gnu/libcuda.so",
+        "/lib64/x86_64-linux-gnu/libcuda.so",
+    ];
+    let cuda = if let Some(cuda) = cuda_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok()) {
+        Some(cuda)
+    } else {
+        let mut cuda_paths = Vec::new();
+        let roots = ["lib", "lib64", "/usr", "/opt"];
+        let mut stack: Vec<PathBuf> = roots.into_iter().map(|p| PathBuf::from(p)).collect();
+        while let Some(dir) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.file_name().map(|f| f == "libcuda.so").unwrap_or(false) {
+                        cuda_paths.push(path);
+                    }
                 }
             }
         }
-    }
-    cuda_paths.sort_by_key(|k| k.components().count());
-    //println!("cuda paths: {cuda_paths:?}");
+        cuda_paths.sort_by_key(|k| k.components().count());
+        //println!("cuda paths: {cuda_paths:?}");
+        cuda_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok())
+    };
 
-    let cuda = cuda_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(cuda) = cuda else {
         if debug_dev {
             println!("libcuda.so not found");

@@ -1006,15 +1006,15 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let OpNode { prev, next, .. } = self.ops[op_id];
-        if !prev.is_null() {
-            self.ops[prev].next = next;
-        } else {
+        if prev.is_null() {
             self.head = next;
-        }
-        if !next.is_null() {
-            self.ops[next].prev = prev;
         } else {
+            self.ops[prev].next = next;
+        }
+        if next.is_null() {
             self.tail = prev;
+        } else {
+            self.ops[next].prev = prev;
         }
 
         self.ops.remove(op_id);
@@ -1028,10 +1028,10 @@ impl Kernel {
         let op_node = OpNode { prev, next: before_id, op: op };
         let op_id = self.ops.push(op_node);
         self.ops[before_id].prev = op_id;
-        if !prev.is_null() {
-            self.ops[prev].next = op_id;
-        } else {
+        if prev.is_null() {
             self.head = op_id;
+        } else {
+            self.ops[prev].next = op_id;
         }
         op_id
     }
@@ -1044,10 +1044,10 @@ impl Kernel {
         let op_node = OpNode { prev: after_id, next, op: op };
         let op_id = self.ops.push(op_node);
         self.ops[after_id].next = op_id;
-        if !next.is_null() {
-            self.ops[next].prev = op_id;
-        } else {
+        if next.is_null() {
             self.tail = op_id;
+        } else {
+            self.ops[next].prev = op_id;
         }
         op_id
     }
@@ -1061,15 +1061,15 @@ impl Kernel {
 
         // Remove
         let OpNode { prev, next, .. } = self.ops[op_id];
-        if !prev.is_null() {
-            self.ops[prev].next = next;
-        } else {
+        if prev.is_null() {
             self.head = next;
-        }
-        if !next.is_null() {
-            self.ops[next].prev = prev;
         } else {
+            self.ops[prev].next = next;
+        }
+        if next.is_null() {
             self.tail = prev;
+        } else {
+            self.ops[next].prev = prev;
         }
 
         // Insert
@@ -1077,10 +1077,42 @@ impl Kernel {
         let next = self.ops[after_id].next;
         self.ops[op_id].next = next;
         self.ops[after_id].next = op_id;
-        if !next.is_null() {
-            self.ops[next].prev = op_id;
-        } else {
+        if next.is_null() {
             self.tail = op_id;
+        } else {
+            self.ops[next].prev = op_id;
+        }
+    }
+
+    pub fn move_op_before(&mut self, op_id: OpId, before_id: OpId) {
+        debug_assert!(!op_id.is_null());
+        debug_assert!(!before_id.is_null());
+        debug_assert!(!self.ops.is_empty());
+
+        //println!("moving op={op_id}, before={before_id}");
+
+        // Remove
+        let OpNode { prev, next, .. } = self.ops[op_id];
+        if prev.is_null() {
+            self.head = next;
+        } else {
+            self.ops[prev].next = next;
+        }
+        if next.is_null() {
+            self.tail = prev;
+        } else {
+            self.ops[next].prev = prev;
+        }
+
+        // Insert
+        self.ops[op_id].next = before_id;
+        let prev = self.ops[before_id].prev;
+        self.ops[op_id].prev = prev;
+        self.ops[before_id].prev = op_id;
+        if prev.is_null() {
+            self.head = op_id;
+        } else {
+            self.ops[prev].next = op_id;
         }
     }
 
@@ -1401,31 +1433,37 @@ impl Kernel {
     }
 
     pub fn loop_invariant_code_motion(&mut self) {
-        /*let mut endloop_is = Vec::new();
-        let mut op_id = self.tail;
-        while !op_id.is_null() {
-            if *self.at(op_id) == Op::EndLoop {
-                endloop_is.push(i);
+        let mut endloop_is = Vec::new();
+        let mut loop_id = self.tail;
+        while !loop_id.is_null() {
+            if *self.at(loop_id) == Op::EndLoop {
+                endloop_is.push(loop_id);
             }
-            if let Op::Loop { .. } = self.at(op_id) {
+            if let Op::Loop { .. } = self.at(loop_id) {
                 let mut op_ids_in_loop = Set::default();
-                op_ids_in_loop.insert(op_id); // Loop op is the primary op that breaks LICM
-                for k in i + 1..endloop_is.pop().unwrap() - 1 {
-                    let op_id = self.order[k];
+                op_ids_in_loop.insert(loop_id); // Loop op is the primary op that breaks LICM
+
+                let mut op_id = loop_id;
+                let endloop_id = endloop_is.pop().unwrap();
+                while op_id != endloop_id {
                     let op = self.at(op_id);
+                    let next_op_id = self.next_op(op_id);
+
                     if !matches!(
                         op,
                         Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop | Op::Define { .. }
                     ) && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
                     {
-                        let op_id = self.order.remove(k);
-                        self.order.insert(i + n_invariant_ops, op_id);
+                        self.move_op_before(op_id, loop_id);
                     } else {
                         op_ids_in_loop.insert(op_id);
                     }
+
+                    op_id = next_op_id;
                 }
             }
-        }*/
+            loop_id = self.prev_op(loop_id);
+        }
 
         #[cfg(debug_assertions)]
         self.verify();
