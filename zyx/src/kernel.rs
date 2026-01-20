@@ -1640,6 +1640,7 @@ impl Kernel {
                                 BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
                                 BOp::BitShiftLeft => (xl << yl, xu << yu),
                                 BOp::BitShiftRight => (xl >> yl, xu >> yu),
+                                BOp::Pow => (xl.pow(yl as u32), xu.pow(yu as u32)),
                                 op => todo!("{:?}", op),
                             },
                         );
