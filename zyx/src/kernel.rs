@@ -1237,14 +1237,14 @@ impl Kernel {
         self.verify();
     }
 
-    /*
     // Eliminates accs that are not stored into in loops
     pub fn fold_accs(&mut self) {
         // Check if a define exists without a loop that stores into that define
         let mut defines = Map::default();
         let mut loop_level = 0u32;
-        for &op_id in &self.order {
-            match self.ops[op_id] {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match *self.at(op_id) {
                 Op::Define { scope, .. } => {
                     if scope == Scope::Register {
                         defines.insert(op_id, loop_level);
@@ -1268,6 +1268,7 @@ impl Kernel {
                 }
                 _ => {}
             }
+            op_id = self.next_op(op_id);
         }
         //println!("defines: {defines:?}");
         for (define, _) in defines {
@@ -1276,49 +1277,48 @@ impl Kernel {
     }
 
     pub fn fold_acc(&mut self, define_id: OpId) {
-        let mut i = 0;
-        let mut latest_stores = Vec::new();
-        while i < self.order.len() {
-            let op_id = self.order[i];
-            if op_id == define_id {
-                let Op::Define { len, .. } = self.ops[define_id] else { unreachable!() };
-                self.order.remove(i);
-                self.ops.remove(op_id);
-                latest_stores = vec![OpId::null(); len];
-                break;
-            }
-            i += 1;
-        }
+        let Op::Define { len, .. } = self.ops[define_id].op else { unreachable!() };
+        self.remove(define_id);
+        let mut latest_stores = vec![OpId::NULL; len];
+
         let mut remaps = Map::default();
-        while i < self.order.len() {
-            let op_id = self.order[i];
-            match self.ops[op_id] {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            match *self.at(op_id) {
                 Op::Store { dst, x, index } => {
                     if dst == define_id {
-                        self.ops.remove(op_id);
-                        self.order.remove(i);
-                        let Op::Const(index) = self.ops[index] else { unreachable!() };
-                        let Constant::U32(index) = index else { unreachable!() };
-                        latest_stores[index as usize] = x;
+                        self.remove(op_id);
+                        // x may have been removed as a previous load. If that was the case, the load was redundant
+                        if self.ops.contains_key(x) {
+                            let Op::Const(index) = self.ops[index].op else { unreachable!() };
+                            let Constant::U32(index) = index else { unreachable!() };
+                            latest_stores[index as usize] = x;
+                            //println!("Latest stores = {latest_stores:?}");
+                        }
+                        op_id = next;
                         continue;
                     }
                 }
                 Op::Load { src, index, .. } => {
                     if src == define_id {
-                        self.ops.remove(op_id);
-                        self.order.remove(i);
-                        let Op::Const(index) = self.ops[index] else { unreachable!() };
+                        self.remove(op_id);
+                        let Op::Const(index) = self.ops[index].op else { unreachable!() };
                         let Constant::U32(index) = index else { unreachable!() };
                         remaps.insert(op_id, latest_stores[index as usize]);
+                        op_id = next;
                         continue;
                     }
                 }
                 _ => {}
             }
-            self.ops[op_id].remap_params(&remaps);
-            i += 1;
+            self.ops[op_id].op.remap_params(&remaps);
+            op_id = next;
         }
-    }*/
+
+        #[cfg(debug_assertions)]
+        self.verify();
+    }
 
     pub fn swap_commutative(&mut self) {
         // Tracks whether a value depends on a loop index
@@ -1339,7 +1339,8 @@ impl Kernel {
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 &Op::Binary { x, y, bop } => {
                     if bop.is_commutative() {
-                        if loop_dep[&y] < loop_dep[&x] || (self.ops[x].op.is_const() && !self.ops[y].op.is_const()) {
+                        if loop_dep[&y] < loop_dep[&x] || (self.ops[y].op.is_const() && !self.ops[x].op.is_const()) {
+                            //println!("Swapping {x}, {y}, loop dep {} > {}: {:?}, {:?}", loop_dep[&x], loop_dep[&y], self.ops[x].op, self.ops[y].op);
                             if let Op::Binary { x, y, .. } = &mut self.ops[op_id].op {
                                 std::mem::swap(x, y);
                             }
@@ -1347,9 +1348,7 @@ impl Kernel {
                     }
                     loop_dep[&x].max(loop_dep[&y])
                 }
-                Op::Load { src, index, .. } => loop_dep[src].max(loop_dep[index]),
-                Op::Store { dst, x, index } => loop_dep[dst].max(loop_dep[x]).max(loop_dep[index]),
-                Op::Const(_) | Op::Define { .. } => 0,
+                Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -1362,8 +1361,9 @@ impl Kernel {
     pub fn reassociate_commutative(&mut self) {
         /*let mut loop_dep: Map<OpId, usize> = Map::default();
         let mut loop_depth = 0;
-        for &op_id in &self.order {
-            let depth = match &self.ops[op_id] {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let depth = match self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -1380,13 +1380,12 @@ impl Kernel {
                 Op::Const(_) | Op::Define { .. } => 0,
             };
             loop_dep.insert(op_id, depth);
+            op_id = self.next_op(op_id);
         }
 
-        let mut i = 0;
-        'a: while i < self.order.len() {
-            let op_id = self.order[i];
-            i += 1;
-            if let Op::Binary { bop, .. } = self.ops[op_id] {
+        let mut op_id = self.head;
+        'a: while !op_id.is_null() {
+            if let &Op::Binary { bop, .. } = self.at(op_id) {
                 if !bop.is_commutative() || !bop.is_associative() {
                     continue;
                 }
@@ -1395,7 +1394,7 @@ impl Kernel {
                 let mut params = vec![op_id];
                 let mut chain = Vec::new();
                 while let Some(param) = params.pop() {
-                    if let Op::Binary { x, y, bop: t_bop } = self.ops[param] {
+                    if let &Op::Binary { x, y, bop: t_bop } = self.at(param) {
                         if t_bop == bop {
                             params.push(x);
                             params.push(y);
@@ -1418,14 +1417,15 @@ impl Kernel {
                 let mut j = 1;
                 while j < chain.len() - 1 {
                     let op = Op::Binary { x: prev_acc, y: chain[j], bop };
-                    let new_acc = self.ops.push(op);
-                    self.order.insert(i - 1, new_acc);
+                    let new_acc = self.insert_before(op_id, op);
+                    //let new_acc = self.ops.push(op);
+                    //self.order.insert(i - 1, new_acc);
                     prev_acc = new_acc;
-                    i += 1;
                     j += 1;
                 }
-                self.ops[op_id] = Op::Binary { x: prev_acc, y: chain[j], bop };
+                self.ops[op_id].op = Op::Binary { x: prev_acc, y: chain[j], bop };
             }
+            op_id = self.next_op(op_id);
         }*/
 
         #[cfg(debug_assertions)]

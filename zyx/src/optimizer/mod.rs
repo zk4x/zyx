@@ -102,8 +102,8 @@ impl Optimizer {
         };
 
         // We have to do constant folding before folding accs to guarantee indices are constants
-        //kernel.constant_folding();
-        //kernel.fold_accs();
+        kernel.constant_folding();
+        kernel.fold_accs();
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
         kernel.unfold_pows();
