@@ -17,7 +17,7 @@ impl LoopUnrollOpt {
 
     #[must_use]
     pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = [4, 16][index as usize]; // TODO just uncomment this after other things are done
+        let unroll_dim = [1, 1][index as usize]; // TODO just uncomment this after other things are done
         kernel.unroll_loops(unroll_dim);
         true
     }

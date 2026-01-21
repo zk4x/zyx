@@ -103,7 +103,7 @@ impl Optimizer {
 
         // We have to do constant folding before folding accs to guarantee indices are constants
         kernel.constant_folding();
-        //kernel.fold_accs();
+        kernel.fold_accs();
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
         kernel.unfold_pows();
@@ -117,7 +117,7 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
             kernel.loop_invariant_code_motion();
-            //kernel.delete_empty_loops();
+            kernel.delete_empty_loops();
             kernel.dead_code_elimination();
 
             if *kernel == temp_kernel {

@@ -56,15 +56,6 @@ impl LoopJamOpt {
                                 if dim <= jam_dim {
                                     let mut inner_loop_id = active_defines.last().unwrap().0;
                                     for (id, _active_defines) in active_defines.iter().rev() {
-                                        /*for &def_op in active_defines {
-                                            let Op::Define { len, dtype, .. } = kernel.ops[def_op] else {
-                                                unreachable!()
-                                            };
-                                            if (len * dim) * dtype.byte_size() as Dim > self.max_register_bytes as Dim {
-                                                // wold overflow the register space
-                                                break 'a;
-                                            }
-                                        }*/
                                         if id == loop_id {
                                             break;
                                         }

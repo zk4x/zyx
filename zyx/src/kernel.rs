@@ -14,30 +14,6 @@ use std::{
     hash::{BuildHasherDefault, Hash},
 };
 
-/*
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Kernel {
-    pub ops: Slab<OpId, Op>,
-    pub order: Vec<OpId>,
-}
-
-// This is SSA representation. All ops return immutable variables.
-// The Define op can define mutable variables.
-// Variables defined by define op can only be accessed with Load on Store ops,
-// using their src and dst fields.
-pub enum Op {
-    Store { dst: OpId, x: OpId, index: OpId },
-    Cast { x: OpId, dtype: DType },
-    Unary { x: OpId, uop: UOp },
-    Binary { x: OpId, y: OpId, bop: BOp },
-    Const(Vec<Constant>, dims: [Dim; 2]),
-    Define { dtype: DType, scope: Scope, ro: bool, len: Dim },
-    Load { src: OpId, index: OpId, dims: [Dim; 2], row_major: bool},
-    Loop { dim: Dim, scope: Scope, dims: [Dim; 2], row_major: bool},
-    EndLoop,
-}
-*/
-
 // TODO later make this dynamic u32 or u64 depending on max range
 pub const IDX_T: DType = DType::U32;
 
@@ -1255,17 +1231,18 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, .. } => {
+                    //println!("Store to {dst}, loop_level={loop_level}");
                     if let Some(level) = defines.get(&dst) {
                         if loop_level > *level {
                             defines.remove(&dst);
                         }
                     }
                 }
-                Op::Loop { scope, .. } if scope == Scope::Register => {
+                Op::Loop { .. } => {
                     loop_level += 1;
                 }
                 Op::EndLoop => {
-                    loop_level = loop_level.saturating_sub(1);
+                    loop_level -= 1;
                     if loop_level == 0 {
                         break;
                     }
@@ -1281,6 +1258,7 @@ impl Kernel {
     }
 
     pub fn fold_acc(&mut self, define_id: OpId) {
+        //println!("Folding acc {define_id}");
         let Op::Define { len, .. } = self.ops[define_id].op else { unreachable!() };
         self.remove(define_id);
         let mut latest_stores = vec![OpId::NULL; len];
