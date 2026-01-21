@@ -192,7 +192,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
         }
     }
 
-    pub(crate) fn retain(&mut self, func: impl Fn(&Id) -> bool) {
+    /*pub(crate) fn retain(&mut self, func: impl Fn(&Id) -> bool) {
         let mut i = Id::ZERO;
         for x in &mut self.values {
             if !func(&i) && !self.empty.contains(&i) {
@@ -201,7 +201,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
             }
             i.inc();
         }
-    }
+    }*/
 
     // TODO lower max id by searching for it in self.empty
     #[allow(unused)]

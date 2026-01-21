@@ -70,7 +70,7 @@ impl Optimizer {
         kernel.reassociate_commutative();
 
         // This is only needed for debugging
-        let mut temp_kernel = kernel.clone();
+        /*let mut temp_kernel = kernel.clone();
         for _i in 0..100 {
             kernel.move_constants_to_beginning();
             kernel.constant_folding();
@@ -89,7 +89,7 @@ impl Optimizer {
                 kernel.debug();
                 panic!("YO what are you doing bro.");
             }
-        }
+        }*/
 
         // Unroll and jam for all loops
         if !self.loop_unroll_and_jam_opt.apply_optimization(loop_unroll_and_jam_opt_index, kernel) {
