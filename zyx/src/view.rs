@@ -109,9 +109,9 @@ impl View {
         res
     }
 
-    pub(crate) fn numel(&self) -> usize {
+    /*pub(crate) fn numel(&self) -> usize {
         self.0.last().map_or(1, |inner| inner.iter().map(|dim| dim.d).product())
-    }
+    }*/
 
     /*#[cfg(debug_assertions)]
     pub(crate) fn is_contiguous(&self) -> bool {

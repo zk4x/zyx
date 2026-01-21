@@ -138,8 +138,12 @@ impl Op {
         .into_iter()
     }
 
-    pub fn is_const(&mut self) -> bool {
+    pub fn is_const(&self) -> bool {
         matches!(self, Op::Cast { .. })
+    }
+
+    pub fn is_load(&self) -> bool {
+        matches!(self, Op::Load { .. })
     }
 
     pub fn remap_params(&mut self, remapping: &Map<OpId, OpId>) {
@@ -1338,8 +1342,8 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 &Op::Binary { x, y, bop } => {
-                    if bop.is_commutative() {
-                        if loop_dep[&y] < loop_dep[&x] || (self.ops[y].op.is_const() && !self.ops[x].op.is_const()) {
+                    if bop.is_commutative() && !self.ops[x].op.is_const() {
+                        if loop_dep[&x] > loop_dep[&y] || self.ops[y].op.is_const() {
                             //println!("Swapping {x}, {y}, loop dep {} > {}: {:?}, {:?}", loop_dep[&x], loop_dep[&y], self.ops[x].op, self.ops[y].op);
                             if let Op::Binary { x, y, .. } = &mut self.ops[op_id].op {
                                 std::mem::swap(x, y);
@@ -1500,7 +1504,9 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        self.ops.retain(|op_id| !dead.contains(op_id));
+        for op_id in dead {
+            self.remove(op_id);
+        }
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -1514,7 +1520,7 @@ impl Kernel {
                 self.debug();
                 panic!(
                     "{op_id} {:?} uses {x} -> {:?} before declaration.",
-                    self.ops[op_id], self.ops[x]
+                    self.ops[op_id].op, self.ops[x].op
                 );
             }
         };
