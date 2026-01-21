@@ -1359,7 +1359,7 @@ impl Kernel {
     }
 
     pub fn reassociate_commutative(&mut self) {
-        /*let mut loop_dep: Map<OpId, usize> = Map::default();
+        let mut loop_dep: Map<OpId, usize> = Map::default();
         let mut loop_depth = 0;
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -1375,9 +1375,7 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
-                Op::Load { src, index, .. } => loop_dep[src].max(loop_dep[index]),
-                Op::Store { dst, x, index } => loop_dep[dst].max(loop_dep[x]).max(loop_dep[index]),
-                Op::Const(_) | Op::Define { .. } => 0,
+                Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -1385,9 +1383,11 @@ impl Kernel {
 
         let mut op_id = self.head;
         'a: while !op_id.is_null() {
+            let next = self.next_op(op_id);
             if let &Op::Binary { bop, .. } = self.at(op_id) {
                 if !bop.is_commutative() || !bop.is_associative() {
-                    continue;
+                    op_id = next;
+                    continue 'a;
                 }
 
                 // Get all the leafs
@@ -1404,11 +1404,13 @@ impl Kernel {
                     chain.push(param);
                     // We have to be somewhat reasonabe about those chains
                     if chain.len() > 20 {
+                        op_id = next;
                         continue 'a;
                     }
                 }
                 if chain.len() < 2 {
-                    continue;
+                    op_id = next;
+                    continue 'a;
                 }
                 chain.sort_by_key(|id| loop_dep[id]);
 
@@ -1418,15 +1420,13 @@ impl Kernel {
                 while j < chain.len() - 1 {
                     let op = Op::Binary { x: prev_acc, y: chain[j], bop };
                     let new_acc = self.insert_before(op_id, op);
-                    //let new_acc = self.ops.push(op);
-                    //self.order.insert(i - 1, new_acc);
                     prev_acc = new_acc;
                     j += 1;
                 }
                 self.ops[op_id].op = Op::Binary { x: prev_acc, y: chain[j], bop };
             }
-            op_id = self.next_op(op_id);
-        }*/
+            op_id = next;
+        }
 
         #[cfg(debug_assertions)]
         self.verify();

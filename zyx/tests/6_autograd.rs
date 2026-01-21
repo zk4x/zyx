@@ -85,33 +85,24 @@ fn grad_pow_2() -> Result<(), ZyxError> {
     let x_grad = grads.remove(0).unwrap();
     let y_grad = grads.remove(0).unwrap();
 
-    // Convert tensors to Vec<f64> for comparison
-    let x_grad_vec: Vec<f32> = x_grad.try_into().unwrap();
-    let y_grad_vec: Vec<f32> = y_grad.try_into().unwrap();
 
     // Expected gradients
     // dz/dx = y * x^(y-1)
-    let expected_x_vec = vec![
+    let expected_x = [
         3.0 * 2.0f32.powf(2.0),  // 3 * 2^(3-1) = 3 * 4 = 12
         2.0 * 3.0f32.powf(1.0),  // 2 * 3^(2-1) = 2 * 3 = 6
         0.5 * 4.0f32.powf(-0.5), // 0.5 * 4^(-0.5) = 0.5 * 0.5 = 0.25
     ];
 
     // dz/dy = x^y * ln(x)
-    let expected_y_vec = vec![
+    let expected_y = [
         2.0f32.powf(3f32) * 2.0f32.ln(), // 8 * ln(2)
         3.0f32.powf(2f32) * 3.0f32.ln(), // 9 * ln(3)
         4.0f32.powf(0.5) * 4.0f32.ln(),  // 2 * ln(4)
     ];
 
-    // Compare gradients element-wise with tolerance
-    let tol = 1e-12f32;
-    for (a, b) in x_grad_vec.iter().zip(expected_x_vec.iter()) {
-        assert!((a - b).abs() < tol, "x_grad mismatch: {} != {}", a, b);
-    }
-    for (a, b) in y_grad_vec.iter().zip(expected_y_vec.iter()) {
-        assert!((a - b).abs() < tol, "y_grad mismatch: {} != {}", a, b);
-    }
+    assert_eq!(x_grad, expected_x);
+    assert_eq!(y_grad, expected_y);
 
     Ok(())
 }
