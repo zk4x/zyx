@@ -775,6 +775,12 @@ impl OpenCLDevice {
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
+                &Op::Mad { x, y, z } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                    *rcs.entry(x).or_insert(0) += 1;
+                    *rcs.entry(y).or_insert(0) += 1;
+                    *rcs.entry(z).or_insert(0) += 1;
+                }
                 Op::Loop { .. } => {
                     dtypes.insert(op_id, DType::U32);
                 }
@@ -890,6 +896,14 @@ impl OpenCLDevice {
                         BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
                         BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
                     };
+                }
+                &Op::Mad { x, y, z } => {
+                    let dtype = dtypes[&op_id];
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};");
                 }
                 &Op::Loop { dim, scope } => {
                     indices.insert(op_id, loop_id);

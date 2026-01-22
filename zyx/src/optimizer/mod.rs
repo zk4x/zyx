@@ -126,6 +126,9 @@ impl Optimizer {
             temp_kernel = kernel.clone();
         }
 
+        kernel.fuse_mad();
+        kernel.dead_code_elimination();
+
         kernel.verify();
 
         if debug_ir {

@@ -1335,6 +1335,13 @@ impl CUDADevice {
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
+                &Op::Mad { x, y, z } => {
+                    let dtype = dtype_of(&dtypes, x);
+                    dtypes.insert(op_id, dtype);
+                    *rcs.entry(x).or_insert(0) += 1;
+                    *rcs.entry(y).or_insert(0) += 1;
+                    *rcs.entry(z).or_insert(0) += 1;
+                }
                 Op::Loop { .. } => {
                     dtypes.insert(op_id, DType::U32);
                 }
@@ -1451,6 +1458,14 @@ impl CUDADevice {
                         BOp::NotEq => writeln!(source, "{indent}r{reg} = {x} != {y};"),
                         BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
                     };
+                }
+                &Op::Mad { x, y, z } => {
+                    let dtype = dtypes[&op_id];
+                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"); // CUDA compiler will handle this just fine
                 }
                 &Op::Loop { dim, scope } => {
                     indices.insert(op_id, loop_id);
@@ -1586,7 +1601,9 @@ impl CUDADevice {
         }
         .check(ErrorStatus::KernelCompilation)?;
 
-        let mut opts = vec![format!(
+        let mut opts = vec![
+            "--use_fast_math".into(),
+            format!(
             "--gpu-architecture=compute_{}{}",
             self.compute_capability[0], self.compute_capability[1]
         )];

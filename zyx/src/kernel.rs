@@ -72,6 +72,7 @@ pub enum Op {
     Load { src: OpId, index: OpId, dims: [Dim; 2], row_major: bool },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
+    Mad { x: OpId, y: OpId, z: OpId }, // fused multiply add
 }
 
 impl Op {
@@ -80,17 +81,18 @@ impl Op {
         match self {
             Op::ConstView { .. } => vec![],
             Op::LoadView { .. } => vec![],
-            Op::StoreView { src, .. } => vec![*src],
+            &Op::StoreView { src, .. } => vec![src],
             Op::Reduce { x, .. } => vec![*x],
-            Op::Store { dst, x, index, .. } => vec![*dst, *x, *index],
+            &Op::Store { dst, x, index, .. } => vec![dst, x, index],
             Op::Cast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
-            Op::Binary { x, y, .. } => vec![*x, *y],
+            &Op::Binary { x, y, .. } => vec![x, y],
             Op::Const { .. } => vec![],
             Op::Define { .. } => vec![],
-            Op::Load { src, index, .. } => vec![*src, *index],
+            &Op::Load { src, index, .. } => vec![src, index],
             Op::Loop { .. } => vec![],
             Op::EndLoop { .. } => vec![],
+            &Op::Mad { x, y, z } => vec![x, y, z],
         }
         .into_iter()
     }
@@ -110,6 +112,7 @@ impl Op {
             Op::Load { src, index, .. } => vec![src, index],
             Op::Loop { .. } => vec![],
             Op::EndLoop { .. } => vec![],
+            Op::Mad { x, y, z } => vec![x, y, z],
         }
         .into_iter()
     }
@@ -295,6 +298,25 @@ impl Kernel {
                         println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}");
                     }
                 }
+                Op::Mad { x, y, z } => {
+                    if let Some(&(xl, xu)) = ids.get(&x)
+                        && let Some(&(yl, yu)) = ids.get(&y)
+                        && let Some(&(zl, zu)) = ids.get(&z)
+                    {
+                        ids.insert(
+                            op_id,
+                            (
+                                xl.wrapping_mul(yl).wrapping_add(zl),
+                                xu.wrapping_mul(yu).wrapping_add(zu),
+                            ),
+                        );
+                    }
+                    if let Some((l, u)) = ids.get(&op_id) {
+                        println!("{op_id:>3}{indent}MAD {x} {y} {z}    {l}..={u}");
+                    } else {
+                        println!("{op_id:>3}{indent}MAD {x} {y} {z}");
+                    }
+                }
                 Op::Loop { dim, scope, .. } => {
                     ids.insert(op_id, (0, dim - 1));
                     println!(
@@ -365,6 +387,7 @@ impl Kernel {
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
                 Op::Store { .. }
+                | Op::Mad { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
@@ -1224,12 +1247,38 @@ impl Kernel {
                     }
                     _ => {}
                 },
+                Op::Mad { .. } => {} // TODO
             }
             op_id = self.next_op(op_id);
         }
 
         #[cfg(debug_assertions)]
         self.verify();
+    }
+
+    /// Find all multiply add operations and fuse them
+    pub fn fuse_mad(&mut self) {
+        let mut op_id = self.head;
+        let mut rcs = Map::default();
+        while !op_id.is_null() {
+            for param in self.ops[op_id].op.parameters() {
+                rcs.entry(param).and_modify(|rc| *rc += 1).or_insert(1);
+            }
+            if let Op::Binary { x: xo, y: yo, bop } = self.ops[op_id].op {
+                if bop == BOp::Add {
+                    if let Op::Binary { x, y, bop } = self.ops[xo].op {
+                        if bop == BOp::Mul && rcs[&xo] == 1 {
+                            self.ops[op_id].op = Op::Mad { x, y, z: yo };
+                        }
+                    } else if let Op::Binary { x, y, bop } = self.ops[yo].op {
+                        if bop == BOp::Mul && rcs[&yo] == 1 {
+                            self.ops[op_id].op = Op::Mad { x, y, z: xo };
+                        }
+                    }
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
     }
 
     // Eliminates accs that are not stored into in loops
@@ -1324,7 +1373,11 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::ConstView { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Reduce { .. }
+                | Op::Mad { .. } => unreachable!(),
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -1361,7 +1414,11 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::ConstView { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Reduce { .. }
+                | Op::Mad { .. } => unreachable!(),
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -1561,6 +1618,16 @@ impl Kernel {
                         dtypes.insert(op_id, dtypes[&x]);
                     }
                 }
+                Op::Mad { x, y, z } => {
+                    check(op_id, x, &stack);
+                    check(op_id, y, &stack);
+                    check(op_id, z, &stack);
+                    if dtypes[&x] != dtypes[&y] || dtypes[&x] != dtypes[&z] {
+                        self.debug();
+                        panic!("Mad dtype mismatch on op={op_id}.");
+                    }
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
                 Op::Const(v) => {
                     dtypes.insert(op_id, v.dtype());
                 }
@@ -1644,8 +1711,19 @@ impl Kernel {
                             },
                         );
                     }
-                    if let Some((l, u)) = ids.get(&op_id) {
-                        ids.insert(op_id, (*l, *u));
+                }
+                Op::Mad { x, y, z } => {
+                    if let Some(&(xl, xu)) = ids.get(&x)
+                        && let Some(&(yl, yu)) = ids.get(&y)
+                        && let Some(&(zl, zu)) = ids.get(&z)
+                    {
+                        ids.insert(
+                            op_id,
+                            (
+                                xl.wrapping_mul(yl).wrapping_add(zl),
+                                xu.wrapping_mul(yu).wrapping_add(zu),
+                            ),
+                        );
                     }
                 }
                 Op::Loop { dim, .. } => {
@@ -1733,6 +1811,7 @@ impl Kernel {
                     }
                     Op::Const { .. } | Op::ConstView { .. } | Op::LoadView { .. } => {}
                     Op::Define { .. }
+                    | Op::Mad { .. }
                     | Op::StoreView { .. }
                     | Op::Load { .. }
                     | Op::Store { .. }
