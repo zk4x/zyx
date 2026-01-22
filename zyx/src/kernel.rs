@@ -61,6 +61,13 @@ pub enum Op {
     EndLoop,
     Mad { x: OpId, y: OpId, z: OpId }, // fused multiply add
 
+    // TODO remove dims, row major from load and store
+    // TODO add op vectorize that will create a vectorized representation that can also be used with tensor cores
+    // TODO for tensor cores, we need to unroll the loop jammed loads and vectorize them.
+    //Vectorize { regs: Vec<OpId> },
+    // TODO for tensor cores, we will also need some wmma matmul instruction
+    //WMMASync { x: OpId, y: OpId, z: OpId },
+
     // ops that exist only in kernelizer, basically they can be eventually removed.
     // TODO Get rid of the view, use whatever ops that are needed directly
     // and then use unfold movement ops function to convert it all into indices.
@@ -1663,6 +1670,14 @@ impl Kernel {
             panic!("Missing {} closing endloops.", stack.len());
         }
         self.check_oob();
+    }
+
+    /// This function will unroll define[N] into N x define[1] ops,
+    /// so that we can use scalars instead of arrays in registers.
+    /// But it can also unrool define[16] into 4 x define[4] for float4 vectors, etc.
+    /// May be better to put this in optimizer.
+    pub fn unroll_defines(&mut self) {
+        // TODO
     }
 
     pub fn check_oob(&self) {
