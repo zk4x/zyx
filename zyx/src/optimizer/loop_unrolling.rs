@@ -35,6 +35,9 @@ impl Kernel {
                 let endloop_id = endloop_ids.pop().unwrap();
                 if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 as Dim * dim < 50000 {
                     self.unroll_loop(op_id, endloop_id, dim);
+                } else {
+                    // If we don't unroll inner loop, there is no point in unrolling an outer one
+                    return;
                 }
             }
             op_id = self.prev_op(op_id);
@@ -44,7 +47,7 @@ impl Kernel {
     pub fn unroll_constant_loops(&mut self) {
         let mut endloop_ids = Vec::new();
         let mut op_id = self.tail;
-        let mut constant_loops = Vec::new();
+        let mut constant_loops = vec![true];
         while !op_id.is_null() {
             let prev = self.prev_op(op_id);
             match self.ops[op_id].op {
@@ -55,15 +58,14 @@ impl Kernel {
                 Op::Loop { dim, scope } => {
                     let endloop_id = endloop_ids.pop().unwrap();
                     //println!("Loop {op_id} constant={constant_loops:?}");
-                    if (constant_loops.pop().unwrap()
+                    if dim == 1 || (constant_loops.pop().unwrap()
                         && scope == Scope::Register
                         && self.ops.len().0 as Dim * dim < 100_000)
-                        || dim == 1
                     {
                         self.unroll_loop(op_id, endloop_id, dim);
-                        self.fold_accs();
-                        self.constant_folding();
-                        self.dead_code_elimination();
+                    } else {
+                        // If we don't unroll inner loop, there is no point in unrolling an outer one
+                        return;
                     }
                 }
                 Op::Store { dst, .. } => {
