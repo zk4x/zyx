@@ -41,6 +41,49 @@ impl Kernel {
         }
     }
 
+    pub fn unroll_constant_loops(&mut self) {
+        let mut endloop_ids = Vec::new();
+        let mut op_id = self.tail;
+        let mut constant_loops = Vec::new();
+        while !op_id.is_null() {
+            let prev = self.prev_op(op_id);
+            match self.ops[op_id].op {
+                Op::EndLoop => {
+                    endloop_ids.push(op_id);
+                    constant_loops.push(true);
+                }
+                Op::Loop { dim, scope } => {
+                    let endloop_id = endloop_ids.pop().unwrap();
+                    //println!("Loop {op_id} constant={constant_loops:?}");
+                    if (constant_loops.pop().unwrap()
+                        && scope == Scope::Register
+                        && self.ops.len().0 as Dim * dim < 100_000)
+                        || dim == 1
+                    {
+                        self.unroll_loop(op_id, endloop_id, dim);
+                        self.fold_accs();
+                        self.constant_folding();
+                        self.dead_code_elimination();
+                    }
+                }
+                Op::Store { dst, .. } => {
+                    let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
+                    if scope != Scope::Register {
+                        *constant_loops.last_mut().unwrap() = false;
+                    }
+                }
+                Op::Load { src, .. } => {
+                    let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
+                    if scope != Scope::Register {
+                        *constant_loops.last_mut().unwrap() = false;
+                    }
+                }
+                _ => {}
+            }
+            op_id = prev;
+        }
+    }
+
     pub fn unroll_loop(&mut self, loop_id: OpId, endloop_id: OpId, dim: usize) {
         //println!("Unrolling loop={loop_id}, end={endloop_id}, dim={dim}");
         self.ops[loop_id].op = Op::Const(Constant::idx(0));

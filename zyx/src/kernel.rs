@@ -1135,6 +1135,7 @@ impl Kernel {
         }
     }
 
+    // Constant folding and deletion of useless ops, etc.
     pub fn constant_folding(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -1192,6 +1193,20 @@ impl Kernel {
                             let shift = Constant::binary(cy, Constant::idx(1), BOp::Sub);
                             let y = self.insert_before(op_id, Op::Const(shift));
                             self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitAnd };
+                        }
+                        // Consecutive modulo by constant, pick smallest constant
+                        BOp::Mod if cy.dtype() == IDX_T => {
+                            if let Op::Binary { bop, x: xi, y: yi } = self.ops[x].op {
+                                if bop == BOp::Mod
+                                    && let Op::Const(ciy) = self.ops[yi].op
+                                {
+                                    if ciy > cy {
+                                        self.ops[op_id].op = Op::Binary { x: xi, y, bop: BOp::Mod };
+                                    } else {
+                                        self.ops[op_id].op = Op::Binary { x: xi, y: yi, bop: BOp::Mod };
+                                    }
+                                }
+                            }
                         }
                         BOp::Pow if cy.is_zero() => self.ops[op_id].op = Op::Const(cy.dtype().one_constant()),
                         BOp::Pow if cy.is_one() => self.remap(op_id, x),

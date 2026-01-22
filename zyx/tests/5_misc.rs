@@ -1116,10 +1116,11 @@ fn test_permute_on_reduce_kernel() {
 }
 
 #[test]
-fn arange_1() {
-    let x = Tensor::rand([784 * 784], DType::F32).unwrap().exp2().sin();
+fn arange_1() -> Result<(), ZyxError> {
+    let x = Tensor::arange(0, 784 * 7, 1)?.cast(DType::F32).exp2().sin();
     //x = x.sum(0)
     Tensor::realize([&x]).unwrap();
+    Ok(())
 }
 
 #[test]

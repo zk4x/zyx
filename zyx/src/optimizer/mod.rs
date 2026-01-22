@@ -65,7 +65,6 @@ impl Optimizer {
         kernel.unfold_reduces();
         kernel.unfold_views();
 
-        kernel.unroll_loops(1);
         kernel.swap_commutative();
         kernel.reassociate_commutative();
 
@@ -118,6 +117,7 @@ impl Optimizer {
             kernel.common_subexpression_elimination();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
+            kernel.unroll_constant_loops();
             kernel.dead_code_elimination();
 
             if *kernel == temp_kernel {
