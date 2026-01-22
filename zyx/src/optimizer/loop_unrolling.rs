@@ -55,11 +55,10 @@ impl Kernel {
                 Op::Loop { dim, scope } => {
                     let endloop_id = endloop_ids.pop().unwrap();
                     //println!("Loop {op_id} constant={constant_loops:?}");
-                    if dim == 1 || (constant_loops.pop().unwrap()
-                        && scope == Scope::Register
-                        && self.ops.len().0 as Dim * dim < 5_000)
-                    {
-                        self.unroll_loop(op_id, endloop_id, dim);
+                    if scope == Scope::Register {
+                        if dim == 1 || (constant_loops.pop().unwrap() && self.ops.len().0 as Dim * dim < 5_000) {
+                            self.unroll_loop(op_id, endloop_id, dim);
+                        }
                     }
                 }
                 Op::Store { dst, .. } => {
