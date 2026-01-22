@@ -46,19 +46,6 @@ pub struct OpId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
-    // ops that exist only in kernelizer, basically they can be eventually removed.
-    // TODO Get rid of the view, use whatever ops that are needed directly
-    // and then use unfold movement ops function to convert it all into indices.
-    // This will make Op smaller and Copy.
-    ConstView { value: Constant, view: View },
-    LoadView { dtype: DType, view: View },
-    StoreView { src: OpId, dtype: DType },
-    Reduce { x: OpId, rop: ROp, n_axes: UAxis },
-    //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
-    //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
-    //PadIndex(OpId, isize, isize), // Pad index with padding
-    //Unsqueeze { axis: Axis, dim: Dim } // Inserts a new loop at given axis
-
     // ops that exist in both
     Store { dst: OpId, x: OpId, index: OpId },
     Cast { x: OpId, dtype: DType },
@@ -73,6 +60,19 @@ pub enum Op {
     Loop { dim: Dim, scope: Scope },
     EndLoop,
     Mad { x: OpId, y: OpId, z: OpId }, // fused multiply add
+
+    // ops that exist only in kernelizer, basically they can be eventually removed.
+    // TODO Get rid of the view, use whatever ops that are needed directly
+    // and then use unfold movement ops function to convert it all into indices.
+    // This will make Op smaller and Copy.
+    ConstView { value: Constant, view: View },
+    LoadView { dtype: DType, view: View },
+    StoreView { src: OpId, dtype: DType },
+    Reduce { x: OpId, rop: ROp, n_axes: UAxis },
+    //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
+    //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
+    //PadIndex(OpId, isize, isize), // Pad index with padding
+    //Unsqueeze { axis: Axis, dim: Dim } // Inserts a new loop at given axis
 }
 
 impl Op {

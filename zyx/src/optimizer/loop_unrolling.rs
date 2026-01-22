@@ -17,7 +17,7 @@ impl LoopUnrollOpt {
 
     #[must_use]
     pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = [4, 8][index as usize]; // TODO just uncomment this after other things are done
+        let unroll_dim = [1, 8][index as usize]; // TODO just uncomment this after other things are done
         kernel.unroll_loops(unroll_dim);
         true
     }
@@ -55,8 +55,14 @@ impl Kernel {
                 Op::Loop { dim, scope } => {
                     let endloop_id = endloop_ids.pop().unwrap();
                     //println!("Loop {op_id} constant={constant_loops:?}");
+                    let is_const = constant_loops.pop().unwrap();
+                    if !is_const {
+                        if let Some(inner_loop) = constant_loops.last_mut() {
+                            *inner_loop = false;
+                        }
+                    }
                     if scope == Scope::Register {
-                        if dim == 1 || (constant_loops.pop().unwrap() && self.ops.len().0 as Dim * dim < 5_000) {
+                        if dim == 1 || (is_const && self.ops.len().0 as Dim * dim < 5_000) {
                             self.unroll_loop(op_id, endloop_id, dim);
                         }
                     }
