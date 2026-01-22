@@ -590,9 +590,7 @@ impl WGPUDevice {
                 ty: wgpu::BindingType::Buffer {
                     has_dynamic_offset: false,
                     min_binding_size: None,
-                    ty: wgpu::BufferBindingType::Storage {
-                        read_only: program.arg_ro_flags[bind_id], // TODO make this work properly with read only args
-                    },
+                    ty: wgpu::BufferBindingType::Storage { read_only: program.arg_ro_flags[bind_id] },
                 },
                 count: None,
             };

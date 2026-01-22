@@ -4,7 +4,7 @@
 //! and it does not change existing indices.
 
 use std::{
-    collections::BTreeSet,
+    hash::{BuildHasherDefault, Hash},
     marker::PhantomData,
     mem::MaybeUninit,
     ops::{Index, IndexMut},
@@ -12,8 +12,10 @@ use std::{
 
 use nanoserde::{DeBin, SerBin};
 
+use crate::Set;
+
 pub trait SlabId:
-    std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize>
+    std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize> + Hash
 {
     const ZERO: Self;
     const NULL: Self;
@@ -23,7 +25,7 @@ pub trait SlabId:
 #[derive(Debug)]
 pub struct Slab<Id: SlabId, T> {
     values: Vec<MaybeUninit<T>>,
-    empty: BTreeSet<Id>,
+    empty: Set<Id>,
     _index: PhantomData<Id>,
 }
 
@@ -36,11 +38,11 @@ impl<Id: SlabId, T: std::hash::Hash> std::hash::Hash for Slab<Id, T> {
 struct IdIter<'a, Id> {
     id: Id,
     max_exclusive: Id,
-    empty: &'a BTreeSet<Id>,
+    empty: &'a Set<Id>,
 }
 
 impl<'a, Id: SlabId> IdIter<'a, Id> {
-    const fn new(empty: &'a BTreeSet<Id>, max_exclusive: Id) -> Self {
+    const fn new(empty: &'a Set<Id>, max_exclusive: Id) -> Self {
         Self { id: Id::ZERO, max_exclusive, empty }
     }
 }
@@ -49,20 +51,6 @@ impl<Id: SlabId> Iterator for IdIter<'_, Id> {
     type Item = Id;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // TODO make it faster later like this
-        /*let mut id = 0;
-        for x in &self.empty {
-            while x.0 as usize > id {
-                unsafe { self.values[id].assume_init_drop() };
-                id += 1;
-            }
-            id += 1;
-        }
-        while id < self.values.len() {
-            unsafe { self.values[id].assume_init_drop() };
-            id += 1;
-        }*/
-
         let mut id;
         loop {
             id = self.id;
@@ -86,21 +74,20 @@ impl<Id: SlabId, T> Drop for Slab<Id, T> {
 
 impl<Id: SlabId, T> Slab<Id, T> {
     pub(crate) const fn new() -> Self {
-        Self { values: Vec::new(), empty: BTreeSet::new(), _index: PhantomData }
+        Self { values: Vec::new(), empty: Set::with_hasher(BuildHasherDefault::new()), _index: PhantomData }
     }
 
     pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self { values: Vec::with_capacity(capacity), empty: BTreeSet::new(), _index: PhantomData }
+        Self { values: Vec::with_capacity(capacity), empty: Set::default(), _index: PhantomData }
     }
 
     pub(crate) fn push(&mut self, value: T) -> Id {
-        if let Some(id) = self.empty.pop_first() {
+        if let Some(id) = self.empty.iter().copied().next() {
+            self.empty.remove(&id);
             self.values[id.into()] = MaybeUninit::new(value);
-            //println!("Pushing to empty {id}");
             id
         } else {
             self.values.push(MaybeUninit::new(value));
-            //println!("Pushing {}, empty: {:?}", self.values.len() - 1, self.empty);
             Id::from(self.values.len() - 1)
         }
     }
@@ -250,7 +237,7 @@ impl<Id: SlabId, T> IndexMut<Id> for Slab<Id, T> {
 impl<Id: SlabId, T> FromIterator<(Id, T)> for Slab<Id, T> {
     fn from_iter<I: IntoIterator<Item = (Id, T)>>(iter: I) -> Self {
         let mut values = Vec::new();
-        let mut empty = BTreeSet::new();
+        let mut empty = Set::default();
         let mut i = Id::ZERO;
         for (id, v) in iter {
             while id != i {
@@ -279,10 +266,16 @@ impl<Id: SlabId, T: Eq> Eq for Slab<Id, T> {}
 impl<Id: SlabId, T: PartialOrd> PartialOrd for Slab<Id, T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         let mut iter = self.iter().zip(other.iter());
-        // TODO perhaps we can do the comparison over more than one element if the first elements
-        // are equal
         if let Some((x, y)) = iter.next() {
-            x.partial_cmp(&y)
+            let res = x.partial_cmp(&y);
+            if let Some(res) = res {
+                if res == std::cmp::Ordering::Equal {
+                    if x.eq(&y) {
+                        return Some(std::cmp::Ordering::Equal);
+                    }
+                }
+            }
+            res
         } else {
             Some(self.values.len().cmp(&other.values.len()))
         }
@@ -323,7 +316,7 @@ impl<T: Clone, Id: SlabId> Clone for Slab<Id, T> {
 
 impl<T: SerBin, Id: SlabId + SerBin> SerBin for Slab<Id, T> {
     fn ser_bin(&self, output: &mut Vec<u8>) {
-        self.empty.ser_bin(output);
+        //self.empty.ser_bin(output);
         self.values.len().ser_bin(output);
         for value in self.values() {
             value.ser_bin(output);
@@ -333,7 +326,8 @@ impl<T: SerBin, Id: SlabId + SerBin> SerBin for Slab<Id, T> {
 
 impl<T: DeBin, Id: SlabId + DeBin> DeBin for Slab<Id, T> {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let empty = BTreeSet::de_bin(offset, bytes)?;
+        //let empty = Set::de_bin(offset, bytes)?;
+        let empty: Set<Id> = todo!();
         let n_values = usize::de_bin(offset, bytes)?;
         let mut values = Vec::with_capacity(n_values);
         for i in 0..n_values {

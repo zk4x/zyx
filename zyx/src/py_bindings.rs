@@ -353,8 +353,6 @@ impl Tensor {
         return self.cast(dtype);
     }
 
-    // TODO celu
-
     #[must_use]
     #[pyo3(name = "cos")]
     pub fn cos_py(&self) -> Tensor {
@@ -622,7 +620,12 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "mean", signature = (axes=None, keepdim=false, dtype=None))]
-    pub fn mean_py(&self, axes: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+    pub fn mean_py(
+        &self,
+        axes: Option<&Bound<'_, PyList>>,
+        keepdim: bool,
+        dtype: Option<DType>,
+    ) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
                 let axes: Vec<Axis> =
@@ -633,15 +636,18 @@ impl Tensor {
                     self.reduce_impl::<false>(ReduceOp::Mean, axes, dtype, 0)
                 }
             }
-            None => {
-                self.reduce_impl::<false>(ReduceOp::Mean, [], dtype, 0)
-            }
+            None => self.reduce_impl::<false>(ReduceOp::Mean, [], dtype, 0),
         }
     }
 
     #[must_use]
     #[pyo3(name = "sum", signature = (axes=None, keepdim=false, dtype=None))]
-    pub fn sum_py(&self, axes: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+    pub fn sum_py(
+        &self,
+        axes: Option<&Bound<'_, PyList>>,
+        keepdim: bool,
+        dtype: Option<DType>,
+    ) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
                 let axes: Vec<Axis> =
@@ -652,15 +658,19 @@ impl Tensor {
                     self.reduce_impl::<false>(ReduceOp::Sum, axes, dtype, 0)
                 }
             }
-            None => {
-                self.reduce_impl::<false>(ReduceOp::Sum, [], dtype, 0)
-            }
+            None => self.reduce_impl::<false>(ReduceOp::Sum, [], dtype, 0),
         }
     }
 
     #[must_use]
     #[pyo3(name = "std", signature = (axes=None, correction=1, keepdim=false, dtype=None))]
-    pub fn std_py(&self, axes: Option<&Bound<'_, PyList>>, correction: Dim, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+    pub fn std_py(
+        &self,
+        axes: Option<&Bound<'_, PyList>>,
+        correction: Dim,
+        keepdim: bool,
+        dtype: Option<DType>,
+    ) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
                 let axes: Vec<Axis> =
@@ -671,15 +681,19 @@ impl Tensor {
                     self.reduce_impl::<false>(ReduceOp::Std, axes, dtype, correction)
                 }
             }
-            None => {
-                self.reduce_impl::<false>(ReduceOp::Std, [], dtype, correction)
-            }
+            None => self.reduce_impl::<false>(ReduceOp::Std, [], dtype, correction),
         }
     }
 
     #[must_use]
     #[pyo3(name = "var", signature = (axes=None, correction=1, keepdim=false, dtype=None))]
-    pub fn var_py(&self, axes: Option<&Bound<'_, PyList>>, correction: usize, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+    pub fn var_py(
+        &self,
+        axes: Option<&Bound<'_, PyList>>,
+        correction: usize,
+        keepdim: bool,
+        dtype: Option<DType>,
+    ) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
                 let axes: Vec<Axis> =
@@ -690,9 +704,7 @@ impl Tensor {
                     self.reduce_impl::<false>(ReduceOp::Std, axes, dtype, correction)
                 }
             }
-            None => {
-                self.reduce_impl::<false>(ReduceOp::Std, [], dtype, correction)
-            }
+            None => self.reduce_impl::<false>(ReduceOp::Std, [], dtype, correction),
         }
     }
 

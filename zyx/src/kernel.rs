@@ -47,7 +47,6 @@ pub struct OpId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist in both
-    Store { dst: OpId, x: OpId, index: OpId },
     Cast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     // For binary ops, next of x is y, then next of y is the binary op
@@ -56,7 +55,8 @@ pub enum Op {
     // ops that only exist after unfolding views and reduces
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
-    Load { src: OpId, index: OpId, dims: [Dim; 2], row_major: bool },
+    Store { dst: OpId, x: OpId, index: OpId },                 // TODO add length for contiguous stores
+    Load { src: OpId, index: OpId, len: Dim },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
     Mad { x: OpId, y: OpId, z: OpId }, // fused multiply add
@@ -65,6 +65,7 @@ pub enum Op {
     // TODO add op vectorize that will create a vectorized representation that can also be used with tensor cores
     // TODO for tensor cores, we need to unroll the loop jammed loads and vectorize them.
     //Vectorize { regs: Vec<OpId> },
+    //Devectorize { regs: OpId, idx: usize }, // select a single value from a vector
     // TODO for tensor cores, we will also need some wmma matmul instruction
     //WMMASync { x: OpId, y: OpId, z: OpId },
 
@@ -242,12 +243,10 @@ impl Kernel {
                     }
                     println!("{op_id:>3}{indent}{MAGENTA}CONST{RESET} {} {value}", value.dtype());
                 }
-                Op::Load { src, index, dims, row_major, .. } => {
+                Op::Load { src, index, len, .. } => {
                     println!(
-                        "{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}] {}{dims:?}    {}..={}",
-                        if row_major { "" } else { "T" },
-                        ids[&index].0,
-                        ids[&index].1
+                        "{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}] len={len:?}    {}..={}",
+                        ids[&index].0, ids[&index].1
                     );
                 }
                 Op::Store { dst, x: src, index, .. } => {
@@ -572,10 +571,7 @@ impl Kernel {
             }
 
             // Add reduction operation, load from acc, accumulate, store to acc
-            let load_acc = self.insert_before(
-                reduce_op_id,
-                Op::Load { src: acc, index: const_zero, dims: [1, 1], row_major: true },
-            );
+            let load_acc = self.insert_before(reduce_op_id, Op::Load { src: acc, index: const_zero, len: 1 });
             let bin_acc = self.insert_before(
                 reduce_op_id,
                 Op::Binary {
@@ -595,7 +591,7 @@ impl Kernel {
             }
 
             // Replace old reduce op with the acc load op
-            self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, dims: [1, 1], row_major: true };
+            self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, len: 1 };
 
             #[cfg(debug_assertions)]
             self.verify();
@@ -846,10 +842,7 @@ impl Kernel {
                     let pcu = self.new_op(opi, Op::Cast { x: pc, dtype: IDX_T });
                     let offset = self.new_op(opi, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
 
-                    let z = self.new_op(
-                        opi,
-                        Op::Load { src: global_args[load_id], index: offset, dims: [1, 1], row_major: true },
-                    );
+                    let z = self.new_op(opi, Op::Load { src: global_args[load_id], index: offset, len: 1 });
 
                     let pcd = self.new_op(opi, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
@@ -1672,14 +1665,6 @@ impl Kernel {
         self.check_oob();
     }
 
-    /// This function will unroll define[N] into N x define[1] ops,
-    /// so that we can use scalars instead of arrays in registers.
-    /// But it can also unrool define[16] into 4 x define[4] for float4 vectors, etc.
-    /// May be better to put this in optimizer.
-    pub fn unroll_defines(&mut self) {
-        // TODO
-    }
-
     pub fn check_oob(&self) {
         use std::collections::HashMap;
         let mut ids: Map<OpId, (usize, usize)> = HashMap::default();
@@ -1758,8 +1743,19 @@ impl Kernel {
                         );
                     }
                 }
-                Op::Store { .. } => {
-                    // TODO
+                Op::Store { dst, index, .. } => {
+                    if !ids.contains_key(&index) {
+                        panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
+                    }
+                    let idx_range = ids[&index];
+                    //println!("Max idx range: {}, define {}", idx_range.1, defines[src]);
+                    if idx_range.1 > defines[&dst] - 1 {
+                        self.debug();
+                        panic!(
+                            "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
+                            op_id, idx_range, defines[&dst]
+                        );
+                    }
                 }
                 _ => {}
             }

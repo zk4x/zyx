@@ -5,7 +5,8 @@ use crate::{
 };
 use nanoserde::{DeBin, SerBin};
 
-// TODO currently this is not good at all. It's too simplistic and does not try hard enough to find good work sizes
+// TODO currently this is not good at all. It's too simplistic and does not try hard enough to find good default work sizes
+// TODO also add permutation. It may be potentially beneficial if register and global loops are permuted.
 
 #[derive(Debug, Clone, DeBin, SerBin)]
 pub struct WorkSizeOpt {

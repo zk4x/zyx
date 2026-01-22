@@ -211,53 +211,6 @@ impl Optimizer {
         self.full_iteration >= self.max_iter
     }
 
-    /*pub fn default_search(&mut self) -> Option<Optimization> {
-        if self.default_iteration >= 200 {
-            return None;
-        }
-        self.default_iteration += 1;
-
-        // TODO make this fast by checking the last opt and incrementing from there
-        // --- Step 1: try defaults on-the-fly ---
-        // Loop over all combinations of default_indices
-        for &i0 in &self.default_indices[0] {
-            for &i1 in &self.default_indices[1] {
-                for &i2 in &self.default_indices[2] {
-                    for &i3 in &self.default_indices[3] {
-                        // Flatten into single Optimization(u32)
-                        let mut flat_idx = 0;
-                        let mut multiplier = 1;
-                        let indices = [i0, i1, i2, i3];
-                        for (i, &max) in indices.iter().rev().zip(self.max_indices.iter().rev()) {
-                            flat_idx += i * multiplier;
-                            multiplier *= max;
-                        }
-
-                        let opt = Optimization(flat_idx);
-                        if self.tried.insert(opt) {
-                            self.last = opt;
-                            return Some(opt);
-                        }
-                    }
-                }
-            }
-        }
-
-        // --- Step 2: fallback to random search over full Cartesian product ---
-        let mut rng = crate::rng::Rng::seed_from_u64(642392);
-        for _ in 0..1_000_000 {
-            let index = rng.range(0..self.max_iter);
-            let opt = Optimization(index);
-            if self.tried.insert(opt) {
-                self.last = opt;
-                return Some(opt);
-            }
-        }
-
-        // --- Step 3: exhausted ---
-        None
-    }*/
-
     fn random_search(&mut self) -> Option<Optimization> {
         if self.default_iteration >= 200 {
             return None;
