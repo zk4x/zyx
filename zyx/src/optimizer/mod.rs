@@ -75,6 +75,7 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
             kernel.swap_commutative();
+            kernel.reassociate_commutative();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
             kernel.dead_code_elimination();
@@ -107,12 +108,12 @@ impl Optimizer {
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
         kernel.unfold_pows();
         kernel.swap_commutative();
-        kernel.reassociate_commutative();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..10 {
             kernel.move_constants_to_beginning();
             kernel.swap_commutative();
+            kernel.reassociate_commutative(); // TODO This is changes the kernel on every iteration, fix it
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
             kernel.loop_invariant_code_motion();

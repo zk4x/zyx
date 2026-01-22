@@ -12,12 +12,12 @@ pub struct LoopUnrollOpt {}
 
 impl LoopUnrollOpt {
     pub fn new(_kernel: &Kernel) -> (Self, u32, Vec<u32>) {
-        (Self {}, 2, vec![0, 1])
+        (Self {}, 1, vec![0])
     }
 
     #[must_use]
     pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = [1, 1][index as usize]; // TODO just uncomment this after other things are done
+        let unroll_dim = [4, 8][index as usize]; // TODO just uncomment this after other things are done
         kernel.unroll_loops(unroll_dim);
         true
     }
@@ -33,11 +33,8 @@ impl Kernel {
             }
             if let Op::Loop { dim, scope } = self.ops[op_id].op {
                 let endloop_id = endloop_ids.pop().unwrap();
-                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 as Dim * dim < 50000 {
+                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 as Dim * dim < 1_000 {
                     self.unroll_loop(op_id, endloop_id, dim);
-                } else {
-                    // If we don't unroll inner loop, there is no point in unrolling an outer one
-                    return;
                 }
             }
             op_id = self.prev_op(op_id);
@@ -60,12 +57,9 @@ impl Kernel {
                     //println!("Loop {op_id} constant={constant_loops:?}");
                     if dim == 1 || (constant_loops.pop().unwrap()
                         && scope == Scope::Register
-                        && self.ops.len().0 as Dim * dim < 100_000)
+                        && self.ops.len().0 as Dim * dim < 5_000)
                     {
                         self.unroll_loop(op_id, endloop_id, dim);
-                    } else {
-                        // If we don't unroll inner loop, there is no point in unrolling an outer one
-                        return;
                     }
                 }
                 Op::Store { dst, .. } => {

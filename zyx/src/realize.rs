@@ -656,7 +656,7 @@ impl<'a> Kernelizer<'a> {
                 }
 
                 let res = (|| -> Result<(ProgramId, u64), BackendError> {
-                    let program_id = device.compile(&kernel, self.debug.asm())?;
+                    let program_id = device.compile(&kernel, false)?;
                     let begin = std::time::Instant::now();
                     let event = device.launch(program_id, &mut pool.pool, &args, Vec::new())?;
                     pool.pool.sync_events(vec![event])?;
@@ -705,6 +705,11 @@ impl<'a> Kernelizer<'a> {
                     "Best: {}\n",
                     get_perf(*flop, *mem_read, *mem_write, optimizer.best_time_nanos)
                 );
+                if self.debug.asm() {
+                    assert_eq!(optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), self.debug.ir()), true);
+                    let program_id = device.compile(&kernel, true)?;
+                    device.release(program_id);
+                }
             }
         }
 
