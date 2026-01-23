@@ -128,6 +128,7 @@ impl Optimizer {
         }
 
         kernel.fuse_mad();
+        kernel.vectorize();
         kernel.dead_code_elimination();
 
         kernel.verify();

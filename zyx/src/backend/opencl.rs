@@ -641,8 +641,8 @@ impl OpenCLDevice {
         fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<(DType, u32, u8)>,
-            dtype: DType,
+            registers: &mut Vec<((DType, u8), u32, u8)>,
+            dtype: (DType, u8),
             rc: u32,
             current_loop_level: u8,
         ) -> usize {
@@ -669,7 +669,7 @@ impl OpenCLDevice {
             constants: &Map<OpId, Constant>,
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
-            registers: &mut [(DType, u32, u8)],
+            registers: &mut [((DType, u8), u32, u8)],
             loop_level: u8,
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
@@ -735,7 +735,7 @@ impl OpenCLDevice {
         global_args.push('\n');
 
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut dtypes: Map<OpId, (DType, u8)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         // first we will calculate those reference counts.
         let mut op_id = kernel.head;
@@ -746,23 +746,23 @@ impl OpenCLDevice {
                     unreachable!()
                 }
                 Op::Const(x) => {
-                    dtypes.insert(op_id, x.dtype());
+                    dtypes.insert(op_id, (x.dtype(), 1));
                 }
                 &Op::Define { dtype, .. } => {
-                    dtypes.insert(op_id, dtype);
+                    dtypes.insert(op_id, (dtype, 1));
                 }
                 &Op::Load { src, index, .. } => {
                     dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x: src, index } => {
+                &Op::Store { dst, x: src, index, len } => {
                     dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
                     *rcs.entry(index).or_insert(0) += 1;
                 }
                 &Op::Cast { x, dtype } => {
-                    dtypes.insert(op_id, dtype);
+                    dtypes.insert(op_id, (dtype, 1));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Unary { x, .. } => {
@@ -770,7 +770,7 @@ impl OpenCLDevice {
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Binary { x, y, bop } => {
-                    let dtype = if bop.returns_bool() { DType::Bool } else { dtypes[&x] };
+                    let dtype = if bop.returns_bool() { (DType::Bool, dtypes[&x].1) } else { dtypes[&x] };
                     dtypes.insert(op_id, dtype);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
@@ -782,7 +782,7 @@ impl OpenCLDevice {
                     *rcs.entry(z).or_insert(0) += 1;
                 }
                 Op::Loop { .. } => {
-                    dtypes.insert(op_id, DType::U32);
+                    dtypes.insert(op_id, (DType::U32, 1));
                 }
                 Op::EndLoop => {}
             }
@@ -791,7 +791,7 @@ impl OpenCLDevice {
 
         let mut reg_map: Map<OpId, usize> =
             Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<(DType, u32, u8)> = Vec::new();
+        let mut registers: Vec<((DType, u8), u32, u8)> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -833,7 +833,7 @@ impl OpenCLDevice {
                         _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                     }
                 }
-                &Op::Store { dst, x: src, index } => {
+                &Op::Store { dst, x: src, index, len } => {
                     _ = writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",
@@ -842,8 +842,9 @@ impl OpenCLDevice {
                     );
                 }
                 &Op::Cast { x, dtype } => {
+                    let vlen = dtypes[&x].1;
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl());
                 }
                 &Op::Unary { x, uop } => {
@@ -854,7 +855,7 @@ impl OpenCLDevice {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
                         UOp::Exp2 => {
-                            if dtype == DType::F16 {
+                            if dtype.0 == DType::F16 {
                                 _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
                             } else {
                                 _ = writeln!(source, "{indent}r{reg} = exp2({x});");
@@ -863,7 +864,7 @@ impl OpenCLDevice {
                         }
                         UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
                         UOp::Reciprocal => {
-                            _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().ocl());
+                            _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().ocl());
                         }
                         UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
                         UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
@@ -945,7 +946,7 @@ impl OpenCLDevice {
             }
             op_id = kernel.next_op(op_id);
         }
-        let _total_bytes = registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes;
+        let _total_bytes = registers.iter().map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize).sum::<usize>() + acc_bytes;
         /*if total_bytes > 4096 {
             println!("Invalid alloc of {total_bytes} bytes");
             return Err(BackendError {
@@ -958,13 +959,13 @@ impl OpenCLDevice {
         if registers.len() > 0 {
             let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
-            _ = write!(reg_str, "{indent}{} r0", dt.ocl());
+            _ = write!(reg_str, "{indent}{}{} r0", dt.0.ocl(), if dt.1 == 1 { "".into() } else { format!("{}", dt.1) });
             let mut i = 1;
             for (dt, _, _) in registers {
                 if dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
-                    _ = write!(reg_str, ";\n{indent}{} r{i}", dt.ocl());
+                    _ = write!(reg_str, ";\n{indent}{}{} r{i}", dt.0.ocl(), if dt.1 == 1 { "".into() } else { format!("{}", dt.1) });
                 }
                 prev_dt = dt;
                 i += 1;
@@ -973,10 +974,10 @@ impl OpenCLDevice {
         }
 
         let mut pragma = String::new();
-        if dtypes.values().any(|&x| x == DType::F16) {
+        if dtypes.values().any(|&x| x.0 == DType::F16) {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp16 : enable\n";
         }
-        if dtypes.values().any(|&x| x == DType::F64) {
+        if dtypes.values().any(|&x| x.0 == DType::F64) {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
 

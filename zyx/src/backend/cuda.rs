@@ -1311,7 +1311,7 @@ impl CUDADevice {
                     dtypes.insert(op_id, dtype_of(&dtypes, src));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x: src, index } => {
+                &Op::Store { dst, x: src, index, len } => {
                     dtypes.insert(op_id, dtype_of(&dtypes, src));
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
@@ -1395,7 +1395,7 @@ impl CUDADevice {
                         _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                     }
                 }
-                &Op::Store { dst, x: src, index } => {
+                &Op::Store { dst, x: src, index, len } => {
                     _ = writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",

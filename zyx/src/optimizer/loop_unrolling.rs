@@ -2,7 +2,6 @@ use crate::{
     Map,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
-    shape::Dim,
 };
 use nanoserde::{DeBin, SerBin};
 
@@ -17,7 +16,7 @@ impl LoopUnrollOpt {
 
     #[must_use]
     pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = [1, 8][index as usize];
+        let unroll_dim = [32, 8][index as usize];
         kernel.unroll_loops(unroll_dim);
         true
     }
@@ -33,7 +32,7 @@ impl Kernel {
             }
             if let Op::Loop { dim, scope } = self.ops[op_id].op {
                 let endloop_id = endloop_ids.pop().unwrap();
-                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 as Dim * dim < 1_000 {
+                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 < 5_000 {
                     self.unroll_loop(op_id, endloop_id, dim);
                 }
             }
@@ -62,7 +61,7 @@ impl Kernel {
                         }
                     }
                     if scope == Scope::Register {
-                        if dim == 1 || (is_const && self.ops.len().0 as Dim * dim < 5_000) {
+                        if dim == 1 || (is_const && dim < 500) {
                             self.unroll_loop(op_id, endloop_id, dim);
                         }
                     }

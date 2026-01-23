@@ -1,7 +1,7 @@
 use crate::kernel::Kernel;
 
 impl Kernel {
-    fn vectorize(&self) {
+    pub fn vectorize(&self) {
         todo!()
     }
 

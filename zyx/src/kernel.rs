@@ -55,7 +55,7 @@ pub enum Op {
     // ops that only exist after unfolding views and reduces
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
-    Store { dst: OpId, x: OpId, index: OpId },                 // TODO add length for contiguous stores
+    Store { dst: OpId, x: OpId, index: OpId, len: Dim },
     Load { src: OpId, index: OpId, len: Dim },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
@@ -215,17 +215,17 @@ impl Kernel {
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::ConstView { value, ref view, .. } => {
-                    println!("{op_id:>3}{indent}{CYAN}CONST VIEW{RESET} {value} {view}");
+                    println!("{op_id:>5}{indent}{CYAN}CONST VIEW{RESET} {value} {view}");
                 }
                 Op::LoadView { dtype, ref view, .. } => {
-                    println!("{op_id:>3}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}");
+                    println!("{op_id:>5}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}");
                 }
                 Op::StoreView { src, dtype, .. } => {
-                    println!("{op_id:>3}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}");
+                    println!("{op_id:>5}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}");
                 }
                 Op::Reduce { x, rop, n_axes, .. } => {
                     println!(
-                        "{op_id:>3}{indent}{RED}REDUCE{RESET} {} {x}, dims={n_axes:?}",
+                        "{op_id:>5}{indent}{RED}REDUCE{RESET} {} {x}, dims={n_axes:?}",
                         match rop {
                             ROp::Sum => "SUM",
                             ROp::Max => "MAX",
@@ -233,7 +233,7 @@ impl Kernel {
                     );
                 }
                 Op::Define { dtype, scope, ro, len, .. } => {
-                    println!("{op_id:>3}{indent}{YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
+                    println!("{op_id:>5}{indent}{YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
                 }
                 Op::Const(value) => {
                     if value.is_positive() {
@@ -241,17 +241,17 @@ impl Kernel {
                         let v = usize::from_le_bytes(v);
                         ids.insert(op_id, (v, v));
                     }
-                    println!("{op_id:>3}{indent}{MAGENTA}CONST{RESET} {} {value}", value.dtype());
+                    println!("{op_id:>5}{indent}{MAGENTA}CONST{RESET} {} {value}", value.dtype());
                 }
                 Op::Load { src, index, len, .. } => {
                     println!(
-                        "{op_id:>3}{indent}{GREEN}LOAD{RESET} p{src}[{index}] len={len:?}    {}..={}",
+                        "{op_id:>5}{indent}{GREEN}LOAD{RESET} p{src}[{index}] len={len:?}    {}..={}",
                         ids[&index].0, ids[&index].1
                     );
                 }
                 Op::Store { dst, x: src, index, .. } => {
                     println!(
-                        "{op_id:>3}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}    {}..={}",
+                        "{op_id:>5}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}    {}..={}",
                         ids[&index].0, ids[&index].1
                     );
                 }
@@ -260,9 +260,9 @@ impl Kernel {
                         ids.insert(op_id, (*l, *u));
                     }
                     if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>3}{indent}CAST {x} {dtype:?}    {l}..={u}");
+                        println!("{op_id:>5}{indent}CAST {x} {dtype:?}    {l}..={u}");
                     } else {
-                        println!("{op_id:>3}{indent}CAST {x} {dtype:?}");
+                        println!("{op_id:>5}{indent}CAST {x} {dtype:?}");
                     }
                 }
                 Op::Unary { x, uop, .. } => {
@@ -270,9 +270,9 @@ impl Kernel {
                         ids.insert(op_id, (*l, *u));
                     }
                     if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>3}{indent}UNARY {uop:?} {x}    {l}..={u}");
+                        println!("{op_id:>5}{indent}UNARY {uop:?} {x}    {l}..={u}");
                     } else {
-                        println!("{op_id:>3}{indent}UNARY {uop:?} {x}");
+                        println!("{op_id:>5}{indent}UNARY {uop:?} {x}");
                     }
                 }
                 Op::Binary { x, y, bop, .. } => {
@@ -299,9 +299,9 @@ impl Kernel {
                         );
                     }
                     if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}    {l}..={u}");
+                        println!("{op_id:>5}{indent}BINARY {bop:?} {x} {y}    {l}..={u}");
                     } else {
-                        println!("{op_id:>3}{indent}BINARY {bop:?} {x} {y}");
+                        println!("{op_id:>5}{indent}BINARY {bop:?} {x} {y}");
                     }
                 }
                 Op::Mad { x, y, z } => {
@@ -318,15 +318,15 @@ impl Kernel {
                         );
                     }
                     if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>3}{indent}MAD {x} {y} {z}    {l}..={u}");
+                        println!("{op_id:>5}{indent}MAD {x} {y} {z}    {l}..={u}");
                     } else {
-                        println!("{op_id:>3}{indent}MAD {x} {y} {z}");
+                        println!("{op_id:>5}{indent}MAD {x} {y} {z}");
                     }
                 }
                 Op::Loop { dim, scope, .. } => {
                     ids.insert(op_id, (0, dim - 1));
                     println!(
-                        "{op_id:>3}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..={}",
+                        "{op_id:>5}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..={}",
                         dim - 1
                     );
                     indent += "  ";
@@ -334,7 +334,7 @@ impl Kernel {
                 Op::EndLoop { .. } => {
                     indent.pop();
                     indent.pop();
-                    println!("{op_id:>3}{indent}{BLUE}END_LOOP{RESET}");
+                    println!("{op_id:>5}{indent}{BLUE}END_LOOP{RESET}");
                 }
             }
             op_id = self.ops[op_id].next;
@@ -563,7 +563,7 @@ impl Kernel {
             );
 
             // Zero the accumulator
-            self.insert_before(loop_start, Op::Store { dst: acc, x: acc_init_id, index: const_zero });
+            self.insert_before(loop_start, Op::Store { dst: acc, x: acc_init_id, index: const_zero, len: 1 });
 
             // Add Loops for the reduce
             for &dim in &self.reduce_dims(reduce_op_id)[..n_axes] {
@@ -583,7 +583,7 @@ impl Kernel {
                     },
                 },
             );
-            self.insert_before(reduce_op_id, Op::Store { dst: acc, x: bin_acc, index: const_zero });
+            self.insert_before(reduce_op_id, Op::Store { dst: acc, x: bin_acc, index: const_zero, len: 1 });
 
             // Close the reduce loop
             for _ in 0..n_axes {
@@ -891,7 +891,7 @@ impl Kernel {
                         st *= d;
                     }
 
-                    self.ops[op_id].op = Op::Store { dst: global_args[n_loads + store_id], x: src, index };
+                    self.ops[op_id].op = Op::Store { dst: global_args[n_loads + store_id], x: src, index, len: 1 };
 
                     store_id += 1;
                 }
@@ -1332,7 +1332,7 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
-                Op::Store { dst, x, index } => {
+                Op::Store { dst, x, index, len } => {
                     if dst == define_id {
                         self.remove(op_id);
                         // x may have been removed as a previous load. If that was the case, the load was redundant
@@ -1591,7 +1591,7 @@ impl Kernel {
                     check(op_id, src, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Store { dst, x, index } => {
+                Op::Store { dst, x, index, len } => {
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
                     check(op_id, index, &stack);
