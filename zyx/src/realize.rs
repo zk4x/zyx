@@ -655,21 +655,21 @@ impl<'a> Kernelizer<'a> {
                     continue;
                 }
 
-                let res = (|| -> Result<(ProgramId, u64), BackendError> {
-                    let program_id = device.compile(&kernel, false)?;
+                let compile_closure = (|| -> Result<(ProgramId, u64), BackendError> {
+                    let program_id = device.compile(&kernel, self.debug.asm())?;
                     let begin = std::time::Instant::now();
                     let event = device.launch(program_id, &mut pool.pool, &args, Vec::new())?;
                     pool.pool.sync_events(vec![event])?;
                     Ok((program_id, begin.elapsed().as_nanos() as u64))
                 })();
 
-                last_time_nanos = if let Ok((program_id, last_time_nanos)) = res {
+                last_time_nanos = if let Ok((program_id, last_time_nanos)) = compile_closure {
                     if last_time_nanos < optimizer.best_time_nanos {
                         self.cache.programs.insert((kernel_id, dev_id), program_id);
                     }
                     last_time_nanos
                 } else {
-                    if let Err(err) = res {
+                    if let Err(err) = compile_closure {
                         match err.status {
                             ErrorStatus::KernelCompilation
                             | ErrorStatus::IncorrectKernelArg

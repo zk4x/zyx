@@ -1061,7 +1061,7 @@ impl Constant {
                 let bits: u16 = half::f16::from_le_bytes(x).to_bits();
                 format!("(half)0x{:04X}", bits)
             }
-            &Self::F32(x) => format!("{}", format_precise(f32::from_le_bytes(x), 9)),
+            &Self::F32(x) => format!("{}f", format_precise(f32::from_le_bytes(x), 9)),
             &Self::F64(x) => format!("{}", format_precise(f64::from_le_bytes(x), 18)),
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
@@ -1298,7 +1298,7 @@ impl CUDADevice {
         while !op_id.is_null() {
             let op = kernel.at(op_id);
             match op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => {
+                Op::Vectorize { .. } | Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 Op::Const(x) => {
@@ -1369,7 +1369,7 @@ impl CUDADevice {
             let op = kernel.at(op_id);
             //println!("{i} -> {op:?}");
             match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::Vectorize { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 &Op::Const(x) => {

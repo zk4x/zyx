@@ -110,15 +110,31 @@ impl Optimizer {
         kernel.swap_commutative();
 
         let mut temp_kernel = kernel.clone();
-        for _ in 0..10 {
+        for _ in 0..3 {
             kernel.move_constants_to_beginning();
             kernel.swap_commutative();
             kernel.reassociate_commutative(); // TODO This is changes the kernel on every iteration, fix it
             kernel.constant_folding();
-            kernel.common_subexpression_elimination();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
             kernel.unroll_constant_loops();
+            kernel.common_subexpression_elimination();
+            kernel.dead_code_elimination();
+
+            if *kernel == temp_kernel {
+                break;
+            }
+            temp_kernel = kernel.clone();
+        }
+        let mut temp_kernel = kernel.clone();
+        for _ in 0..10 {
+            kernel.move_constants_to_beginning();
+            kernel.swap_commutative();
+            kernel.constant_folding();
+            kernel.loop_invariant_code_motion();
+            kernel.delete_empty_loops();
+            kernel.unroll_constant_loops();
+            kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
 
             if *kernel == temp_kernel {
@@ -127,9 +143,24 @@ impl Optimizer {
             temp_kernel = kernel.clone();
         }
 
+        kernel.vectorize(4);
         kernel.fuse_mad();
-        kernel.vectorize();
-        kernel.dead_code_elimination();
+        let mut temp_kernel = kernel.clone();
+        for _ in 0..10 {
+            kernel.move_constants_to_beginning();
+            kernel.swap_commutative();
+            kernel.constant_folding();
+            kernel.loop_invariant_code_motion();
+            kernel.delete_empty_loops();
+            kernel.unroll_constant_loops();
+            kernel.common_subexpression_elimination();
+            kernel.dead_code_elimination();
+
+            if *kernel == temp_kernel {
+                break;
+            }
+            temp_kernel = kernel.clone();
+        }
 
         kernel.verify();
 

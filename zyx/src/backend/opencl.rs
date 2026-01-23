@@ -751,18 +751,19 @@ impl OpenCLDevice {
                 &Op::Define { dtype, .. } => {
                     dtypes.insert(op_id, (dtype, 1));
                 }
-                &Op::Load { src, index, .. } => {
-                    dtypes.insert(op_id, dtypes[&src]);
+                &Op::Load { src, index, len } => {
+                    dtypes.insert(op_id, (dtypes[&src].0, len as u8));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
                 &Op::Store { dst, x: src, index, len } => {
+                    debug_assert_eq!(dtypes[&src].1 as usize, len);
                     dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
                     *rcs.entry(index).or_insert(0) += 1;
                 }
                 &Op::Cast { x, dtype } => {
-                    dtypes.insert(op_id, (dtype, 1));
+                    dtypes.insert(op_id, (dtype, dtypes[&x].1));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Unary { x, .. } => {
@@ -770,10 +771,21 @@ impl OpenCLDevice {
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Binary { x, y, bop } => {
-                    let dtype = if bop.returns_bool() { (DType::Bool, dtypes[&x].1) } else { dtypes[&x] };
+                    let dtype = if bop.returns_bool() {
+                        (DType::Bool, dtypes[&x].1)
+                    } else {
+                        dtypes[&x]
+                    };
                     dtypes.insert(op_id, dtype);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
+                }
+                &Op::Vectorize { ref ops } => {
+                    let dtype = dtypes[&ops[0]];
+                    dtypes.insert(op_id, (dtype.0, ops.len() as u8));
+                    for &x in ops {
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
                 }
                 &Op::Mad { x, y, z } => {
                     dtypes.insert(op_id, dtypes[&x]);
@@ -824,19 +836,43 @@ impl OpenCLDevice {
                         acc_bytes += dtype.byte_size() as usize * len;
                     }
                 }
-                &Op::Load { src, index, .. } => {
+                &Op::Load { src, index, len } => {
                     if let Some(&rc) = rcs.get(&op_id) {
-                        let dtype = dtypes[&src];
+                        let Op::Define { scope, .. } = kernel.ops[src].op else { unreachable!() };
+                        let dtype = dtypes[&op_id];
+                        debug_assert_eq!(dtype.1 as usize, len);
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
-                        //if src == OpId(28) { _ = writeln!(source, "{indent}printf(\"Load p%d[%d]\\n\", {src}, {idx});"); }
-                        _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                        //_ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                        let len = if len == 1 { "".into() } else { format!("{len}") };
+                        _ = writeln!(
+                            source,
+                            "{indent}r{reg} = *({} float{len}*)(p{src} + {idx});",
+                            match scope {
+                                Scope::Global => "__global",
+                                Scope::Local => "__local",
+                                Scope::Register => "__private",
+                            },
+                        );
                     }
                 }
                 &Op::Store { dst, x: src, index, len } => {
-                    _ = writeln!(
+                    /*_ = writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",
+                        get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id),
+                        get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)
+                    );*/
+                    let Op::Define { scope, .. } = kernel.ops[dst].op else { unreachable!() };
+                    let len = if len == 1 { "".into() } else { format!("{len}") };
+                    _ = writeln!(
+                        source,
+                        "{indent}*(({} float{len}*)(p{dst} + {})) = {};",
+                        match scope {
+                            Scope::Global => "__global",
+                            Scope::Local => "__local",
+                            Scope::Register => "__private",
+                        },
                         get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id),
                         get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)
                     );
@@ -871,6 +907,19 @@ impl OpenCLDevice {
                         UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
                         UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
                     }
+                }
+                Op::Vectorize { ops } => {
+                    let dtype = dtypes[&op_id];
+                    let mut vars = String::new();
+                    for &x in ops {
+                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                        _ = write!(vars, "{x}, ");
+                    }
+                    vars.pop();
+                    vars.pop();
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    let dtype = dtypes[&op_id];
+                    _ = writeln!(source, "{indent}r{reg} = ({}{})({vars});", dtype.0.ocl(), dtype.1);
                 }
                 &Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
@@ -946,7 +995,9 @@ impl OpenCLDevice {
             }
             op_id = kernel.next_op(op_id);
         }
-        let _total_bytes = registers.iter().map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize).sum::<usize>() + acc_bytes;
+        let _total_bytes =
+            registers.iter().map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize).sum::<usize>()
+                + acc_bytes;
         /*if total_bytes > 4096 {
             println!("Invalid alloc of {total_bytes} bytes");
             return Err(BackendError {
@@ -959,13 +1010,23 @@ impl OpenCLDevice {
         if registers.len() > 0 {
             let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
-            _ = write!(reg_str, "{indent}{}{} r0", dt.0.ocl(), if dt.1 == 1 { "".into() } else { format!("{}", dt.1) });
+            _ = write!(
+                reg_str,
+                "{indent}{}{} r0",
+                dt.0.ocl(),
+                if dt.1 == 1 { "".into() } else { format!("{}", dt.1) }
+            );
             let mut i = 1;
             for (dt, _, _) in registers {
                 if dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
-                    _ = write!(reg_str, ";\n{indent}{}{} r{i}", dt.0.ocl(), if dt.1 == 1 { "".into() } else { format!("{}", dt.1) });
+                    _ = write!(
+                        reg_str,
+                        ";\n{indent}{}{} r{i}",
+                        dt.0.ocl(),
+                        if dt.1 == 1 { "".into() } else { format!("{}", dt.1) }
+                    );
                 }
                 prev_dt = dt;
                 i += 1;
@@ -1283,15 +1344,15 @@ impl DType {
             Self::F16 => "half",
             Self::F32 => "float",
             Self::F64 => "double",
-            Self::U8 => "unsigned char",
-            Self::U16 => "unsigned short",
+            Self::U8 => "uchar",
+            Self::U16 => "ushort",
             Self::I8 => "char",
             Self::I16 => "short",
             Self::I32 => "int",
             Self::I64 => "long",
             Self::Bool => "bool",
-            Self::U32 => "unsigned int",
-            Self::U64 => "unsigned long",
+            Self::U32 => "uint",
+            Self::U64 => "ulong",
         }
     }
 }
@@ -1301,7 +1362,7 @@ impl Constant {
         match self {
             Self::BF16(x) => format!("{:.16}f", half::bf16::from_le_bytes(x)),
             Self::F16(x) => format!("(half){:.16}", half::f16::from_le_bytes(x)),
-            Self::F32(x) => format!("(float){:.16}", f32::from_le_bytes(x)),
+            Self::F32(x) => format!("{:.16}f", f32::from_le_bytes(x)),
             Self::F64(x) => format!("(double){:.16}", f64::from_le_bytes(x)),
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),

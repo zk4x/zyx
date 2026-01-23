@@ -1,5 +1,5 @@
 use crate::{
-    BLUE, CYAN, DType, GREEN, MAGENTA, Map, RED, RESET, Set, YELLOW,
+    BLUE, CYAN, DType, GREEN, MAGENTA, Map, ORANGE, RED, RESET, Set, YELLOW,
     dtype::Constant,
     graph::{BOp, ROp, UOp},
     realize::KMKernelId,
@@ -64,7 +64,7 @@ pub enum Op {
     // TODO remove dims, row major from load and store
     // TODO add op vectorize that will create a vectorized representation that can also be used with tensor cores
     // TODO for tensor cores, we need to unroll the loop jammed loads and vectorize them.
-    //Vectorize { regs: Vec<OpId> },
+    Vectorize { ops: Vec<OpId> },
     //Devectorize { regs: OpId, idx: usize }, // select a single value from a vector
     // TODO for tensor cores, we will also need some wmma matmul instruction
     //WMMASync { x: OpId, y: OpId, z: OpId },
@@ -101,6 +101,7 @@ impl Op {
             Op::Loop { .. } => vec![],
             Op::EndLoop { .. } => vec![],
             &Op::Mad { x, y, z } => vec![x, y, z],
+            Op::Vectorize { ops } => ops.clone(),
         }
         .into_iter()
     }
@@ -121,6 +122,7 @@ impl Op {
             Op::Loop { .. } => vec![],
             Op::EndLoop { .. } => vec![],
             Op::Mad { x, y, z } => vec![x, y, z],
+            Op::Vectorize { ops } => ops.iter_mut().collect(),
         }
         .into_iter()
     }
@@ -249,9 +251,9 @@ impl Kernel {
                         ids[&index].0, ids[&index].1
                     );
                 }
-                Op::Store { dst, x: src, index, .. } => {
+                Op::Store { dst, x: src, index, len } => {
                     println!(
-                        "{op_id:>5}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src}    {}..={}",
+                        "{op_id:>5}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src} len={len}    {}..={}",
                         ids[&index].0, ids[&index].1
                     );
                 }
@@ -336,6 +338,24 @@ impl Kernel {
                     indent.pop();
                     println!("{op_id:>5}{indent}{BLUE}END_LOOP{RESET}");
                 }
+                Op::Vectorize { ref ops } => {
+                    let mut r = None;
+                    for x in ops {
+                        if let Some(&(xl, xu)) = ids.get(x) {
+                            if let Some((l, u)) = r {
+                                r = Some((xl.min(l), xu.max(u)));
+                            } else {
+                                r = Some((xl, xu));
+                            }
+                        }
+                    }
+                    if let Some((xl, xu)) = r {
+                        ids.insert(op_id, (xl, xu));
+                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE {ops:?}{RESET}    {xl}..={xu}");
+                    } else {
+                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE {ops:?}{RESET}");
+                    }
+                }
             }
             op_id = self.ops[op_id].next;
         }
@@ -392,7 +412,8 @@ impl Kernel {
                     let flops = shape.iter().product::<Dim>() as u64;
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
-                Op::Store { .. }
+                Op::Vectorize { .. }
+                | Op::Store { .. }
                 | Op::Mad { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
@@ -563,7 +584,10 @@ impl Kernel {
             );
 
             // Zero the accumulator
-            self.insert_before(loop_start, Op::Store { dst: acc, x: acc_init_id, index: const_zero, len: 1 });
+            self.insert_before(
+                loop_start,
+                Op::Store { dst: acc, x: acc_init_id, index: const_zero, len: 1 },
+            );
 
             // Add Loops for the reduce
             for &dim in &self.reduce_dims(reduce_op_id)[..n_axes] {
@@ -583,7 +607,10 @@ impl Kernel {
                     },
                 },
             );
-            self.insert_before(reduce_op_id, Op::Store { dst: acc, x: bin_acc, index: const_zero, len: 1 });
+            self.insert_before(
+                reduce_op_id,
+                Op::Store { dst: acc, x: bin_acc, index: const_zero, len: 1 },
+            );
 
             // Close the reduce loop
             for _ in 0..n_axes {
@@ -1164,7 +1191,8 @@ impl Kernel {
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
-                Op::Store { .. }
+                Op::Vectorize { .. }
+                | Op::Store { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
@@ -1373,11 +1401,10 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::ConstView { .. }
-                | Op::LoadView { .. }
-                | Op::StoreView { .. }
-                | Op::Reduce { .. }
-                | Op::Mad { .. } => unreachable!(),
+                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::Vectorize { .. } => {
+                    loop_depth
+                }
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -1398,6 +1425,7 @@ impl Kernel {
                     }
                     loop_dep[&x].max(loop_dep[&y])
                 }
+                Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
                 Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
@@ -1418,6 +1446,7 @@ impl Kernel {
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
                 | Op::Reduce { .. }
+                | Op::Vectorize { .. }
                 | Op::Mad { .. } => unreachable!(),
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -1618,6 +1647,17 @@ impl Kernel {
                         dtypes.insert(op_id, dtypes[&x]);
                     }
                 }
+                Op::Vectorize { ref ops } => {
+                    let dtype = dtypes[&ops[0]];
+                    for &x in ops {
+                        check(op_id, x, &stack);
+                        if dtypes[&x] != dtype {
+                            self.debug();
+                            panic!("Vectorize dtype mismatch on op={op_id}.");
+                        }
+                    }
+                    dtypes.insert(op_id, dtype);
+                }
                 Op::Mad { x, y, z } => {
                     check(op_id, x, &stack);
                     check(op_id, y, &stack);
@@ -1660,7 +1700,7 @@ impl Kernel {
         }
         if stack.len() != 1 {
             self.debug();
-            panic!("Missing {} closing endloops.", stack.len());
+            panic!("Wrong {} closing endloops.", stack.len());
         }
         self.check_oob();
     }
@@ -1731,6 +1771,7 @@ impl Kernel {
                 }
                 Op::Load { src, index, .. } => {
                     if !ids.contains_key(&index) {
+                        self.debug();
                         panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
                     }
                     let idx_range = ids[&index];
@@ -1755,6 +1796,21 @@ impl Kernel {
                             "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
                             op_id, idx_range, defines[&dst]
                         );
+                    }
+                }
+                Op::Vectorize { ref ops } => {
+                    let mut r = None;
+                    for x in ops {
+                        if let Some(&(xl, xu)) = ids.get(x) {
+                            if let Some((l, u)) = r {
+                                r = Some((xl.min(l), xu.max(u)));
+                            } else {
+                                r = Some((xl, xu));
+                            }
+                        }
+                    }
+                    if let Some((xl, xu)) = r {
+                        ids.insert(op_id, (xl, xu));
                     }
                 }
                 _ => {}
@@ -1821,7 +1877,8 @@ impl Kernel {
                         params.push(*y);
                     }
                     Op::Const { .. } | Op::ConstView { .. } | Op::LoadView { .. } => {}
-                    Op::Define { .. }
+                    Op::Vectorize { .. }
+                    | Op::Define { .. }
                     | Op::Mad { .. }
                     | Op::StoreView { .. }
                     | Op::Load { .. }

@@ -10,7 +10,6 @@
 #![forbid(rustdoc::bare_urls)]
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
-#![forbid(trivial_casts)]
 #![forbid(invalid_reference_casting)]
 #![deny(clippy::cast_possible_truncation)]
 #![deny(clippy::cast_lossless)]
@@ -138,6 +137,7 @@ impl DebugMask {
 const RED: &str = "\x1b[31m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
+const ORANGE: &str = "\x1b[38;5;208m";
 const BLUE: &str = "\x1b[34m";
 const MAGENTA: &str = "\x1b[35m";
 const CYAN: &str = "\x1b[36m";
