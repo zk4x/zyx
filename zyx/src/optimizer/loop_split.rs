@@ -32,8 +32,8 @@ impl LoopSplitOpt {
                 // Add original
                 options.push(reduce_dims);
 
-                // Generate all possible factorizations of the total product up to max_depth
-                for d in 2..=16 {
+                let defaults = [16, 8];
+                for d in defaults.into_iter().chain((2..=16).filter(|x| !defaults.contains(x))) {
                     if total_product.is_multiple_of(d) {
                         options.push(vec![total_product / d, d]);
                     }
@@ -44,8 +44,9 @@ impl LoopSplitOpt {
         }
 
         let max_index = reduction_splits.iter().map(|splits| splits.len() as u32).product::<u32>();
+
         //println!("reduction_splits={reduction_splits:?}");
-        (LoopSplitOpt { reduction_splits }, max_index, (0..max_index).collect())
+        (LoopSplitOpt { reduction_splits }, max_index, vec![1, 2])
     }
 
     pub fn apply_optimization(&self, mut index: u32, kernel: &mut Kernel) -> bool {

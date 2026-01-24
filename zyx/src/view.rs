@@ -259,7 +259,7 @@ impl View {
         //println!("After reshape: {self}\n");
     }*/
 
-    // If axes are shorter than inner, we just permute the first dimensions
+    /// If axes are shorter than inner, we just permute the first dimensions
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
         let inner = self.0.last_mut().unwrap();

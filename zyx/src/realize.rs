@@ -572,12 +572,7 @@ impl<'a> Kernelizer<'a> {
 
         if self.debug.sched() {
             println!();
-            print!(
-                "Optimizing kernel stores {:?}, loads {:?}, max iterations: {}",
-                kernel.stores,
-                kernel.loads,
-                optimizer.max_iters()
-            );
+            print!("Optimizing kernel max iterations: {}", optimizer.max_iters());
             kernel.debug();
         }
 
@@ -706,7 +701,10 @@ impl<'a> Kernelizer<'a> {
                     get_perf(*flop, *mem_read, *mem_write, optimizer.best_time_nanos)
                 );
                 if self.debug.asm() {
-                    assert_eq!(optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), self.debug.ir()), true);
+                    assert_eq!(
+                        optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), self.debug.ir()),
+                        true
+                    );
                     let program_id = device.compile(&kernel, true)?;
                     device.release(program_id);
                 }

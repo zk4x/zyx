@@ -13,6 +13,7 @@ mod loop_split;
 mod loop_unrolling;
 mod vectorize;
 mod work_size;
+mod wmma;
 
 // Indices in 0..max_index for each optimization Opt
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, DeBin, SerBin)]
@@ -65,9 +66,6 @@ impl Optimizer {
         kernel.unfold_reduces();
         kernel.unfold_views();
 
-        kernel.swap_commutative();
-        kernel.reassociate_commutative();
-
         // This is only needed for debugging
         /*let mut temp_kernel = kernel.clone();
         for _i in 0..100 {
@@ -117,7 +115,7 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
-            kernel.unroll_constant_loops();
+            //kernel.unroll_constant_loops();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
 
