@@ -64,6 +64,7 @@ impl Optimizer {
         }
 
         kernel.unfold_reduces();
+        kernel.debug();
         kernel.unfold_views();
 
         // This is only needed for debugging

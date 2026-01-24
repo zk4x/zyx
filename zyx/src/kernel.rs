@@ -675,31 +675,35 @@ impl Kernel {
     }
 
     pub fn unfold_views(&mut self) {
-        fn permute_vec<T: Clone>(vec: &mut Vec<T>, order: &[usize]) {
+        /*fn permute_vec<T: Clone>(vec: &mut Vec<T>, order: &[usize]) {
             let n = order.len().min(vec.len());
             let original = vec[..n].to_vec();
             for i in 0..n {
                 vec[i] = original[order[i]].clone();
             }
-        }
+        }*/
 
         let mut axes = Vec::new();
         let start = self.head;
         let mut op_id = self.head;
         let mut reduce_loop = OpId::NULL;
-        let mut n_local_loops = 0;
+        //let mut n_local_loops = 0;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::ConstView(ref x) => {
                     let value = x.0;
-                    let view = &x.1;
+                    let mut view = x.1.clone();
                     // With padding, right padding does not affect offset
                     // offset = (a0-lp0)*st0 + a1*st1
                     // Padding condition, negative right padding does not affect it
                     // pc = a0 > lp0-1 && a0 < d0-rp0
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
-                    let view = view.clone();
+
+                    // By reversing, we leave less work for reassociate commutative
+                    let view_axes: Vec<OpId> = axes.iter().copied().rev().collect();
+                    let order: Vec<UAxis> = (0..view.rank()).rev().collect();
+                    view.permute(&order);
 
                     //println!("Unfolding view: {view}");
 
@@ -738,7 +742,7 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 self.new_op(opi, Op::Const(Constant::idx(0u64)))
                             } else {
-                                axes[i]
+                                view_axes[i]
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
@@ -794,19 +798,22 @@ impl Kernel {
 
                     // Permute both view and axes if this is inside of a reduce loop
                     // such that local loops are applied right after the first large reduce
-                    let mut view_axes = axes.clone();
+                    /*let mut view_axes = axes.clone();
                     if !reduce_loop.is_null() {
                         if axes.contains(&reduce_loop) {
                             let order = match n_local_loops {
-                                1 => vec![0, 2, 3, 1],
-                                2 => vec![0, 1, 4, 5, 6, 2, 3],
-                                3 => vec![0, 1, 2, 6, 7, 8, 9, 3, 4, 5],
+                                1 => vec![2, 3, 0, 1],
+                                2 => vec![4, 5, 6, 0, 1, 2, 3],
+                                3 => vec![6, 7, 8, 9, 0, 1, 2, 3, 4, 5],
                                 _ => unreachable!(),
                             };
                             permute_vec(&mut view_axes, &order);
                             view.permute(&order);
                         }
-                    }
+                    }*/
+                    let view_axes: Vec<OpId> = axes.iter().copied().rev().collect();
+                    let order: Vec<UAxis> = (0..view.rank()).rev().collect();
+                    view.permute(&order);
                     //println!("axes={axes:?}");
                     //println!("view_axes={view_axes:?}");
 
