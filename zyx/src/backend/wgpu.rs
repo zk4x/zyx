@@ -424,7 +424,7 @@ impl WGPUDevice {
                     dtypes.insert(op_id, dtypes[&src]);
                     writeln!(source, "{indent}let r{op_id} = p{src}[r{index}];").unwrap();
                 }
-                &Op::Store { dst, x: src, index } => {
+                &Op::Store { dst, x: src, index, vlen } => {
                     writeln!(source, "{indent}p{dst}[r{}] = r{};", index, src,).unwrap();
                 }
                 &Op::Cast { x, dtype } => {
@@ -484,6 +484,11 @@ impl WGPUDevice {
                         BOp::Eq => writeln!(source, "{indent}let r{op_id} = r{x} == r{y};").unwrap(),
                     }
                 }
+                &Op::Mad { x, y, z } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                    writeln!(source, "{indent}let r{op_id} = r{x} * r{y} + r{z};").unwrap();
+                }
+                Op::Vectorize { .. } => todo!(),
                 &Op::Loop { dim, scope } => {
                     dtypes.insert(op_id, IDX_T);
                     match scope {
