@@ -73,8 +73,8 @@ pub enum Op {
     // TODO Get rid of the view, use whatever ops that are needed directly
     // and then use unfold movement ops function to convert it all into indices.
     // This will make Op smaller and Copy.
-    ConstView { value: Constant, view: View },
-    LoadView { dtype: DType, view: View },
+    ConstView(Box<(Constant, View)>),
+    LoadView(Box<(DType, View)>),
     StoreView { src: OpId, dtype: DType },
     Reduce { x: OpId, rop: ROp, n_axes: UAxis },
     //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
@@ -198,9 +198,8 @@ impl Kernel {
     pub fn apply_movement(&mut self, func: impl Fn(&mut View)) {
         for op in self.ops_mut() {
             match op {
-                Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
-                    func(view);
-                }
+                Op::ConstView(x) => func(&mut x.1),
+                Op::LoadView(x) => func(&mut x.1),
                 _ => {}
             }
         }
@@ -216,10 +215,14 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::ConstView { value, ref view, .. } => {
+                Op::ConstView(ref x) => {
+                    let value = x.0;
+                    let view = &x.1;
                     println!("{op_id:>5}{indent}{CYAN}CONST VIEW{RESET} {value} {view}");
                 }
-                Op::LoadView { dtype, ref view, .. } => {
+                Op::LoadView(ref x) => {
+                    let dtype = x.0;
+                    let view = &x.1;
                     println!("{op_id:>5}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}");
                 }
                 Op::StoreView { src, dtype, .. } => {
@@ -379,11 +382,12 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let info = match self.at(op_id) {
-                Op::ConstView { view, .. } => {
-                    let shape = view.shape();
+                Op::ConstView(x) => {
+                    let shape = x.1.shape();
                     Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
                 }
-                Op::LoadView { dtype, view } => {
+                Op::LoadView(x) => {
+                    let (dtype, view) = x.as_ref();
                     let shape = view.shape();
                     let mem_read = view.original_numel() as u64 * dtype.byte_size() as u64;
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
@@ -445,7 +449,13 @@ impl Kernel {
         while let Some(param) = params.pop() {
             if visited.insert(param) {
                 match self.at(param) {
-                    Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
+                    Op::ConstView(x) => {
+                        let view = &x.1;
+                        let n = view.rank();
+                        return view.shape()[n - n_reduce_axes..].into();
+                    }
+                    Op::LoadView(x) => {
+                        let view = &x.1;
                         let n = view.rank();
                         return view.shape()[n - n_reduce_axes..].into();
                     }
@@ -480,8 +490,13 @@ impl Kernel {
         let mut op_id = self.tail;
         while !op_id.is_null() {
             match self.at(op_id) {
-                Op::ConstView { view, .. } | Op::LoadView { view, .. } => {
-                    let mut shape = view.shape();
+                Op::ConstView(x) => {
+                    let mut shape = x.1.shape();
+                    shape.truncate(shape.len() - reduce_dims);
+                    return shape;
+                }
+                Op::LoadView(x) => {
+                    let mut shape = x.1.shape();
                     shape.truncate(shape.len() - reduce_dims);
                     return shape;
                 }
@@ -498,7 +513,8 @@ impl Kernel {
     #[allow(unused)]
     pub fn is_reshape_contiguous(&self, range: std::ops::Range<UAxis>, shape: &[Dim]) -> bool {
         self.ops.values().all(|node| match &node.op {
-            Op::ConstView { view, .. } | Op::LoadView { view, .. } => view.is_reshape_contiguous(range.clone(), shape),
+            Op::ConstView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
+            Op::LoadView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
             _ => true,
         })
     }
@@ -544,11 +560,11 @@ impl Kernel {
                 if reduce_loop_ops_set.insert(param) {
                     params.extend(self.at(param).parameters());
                     if acc_dtype.is_none() {
-                        match *self.at(param) {
-                            Op::Define { dtype, .. } => acc_dtype = Some(dtype),
-                            Op::ConstView { value, .. } => acc_dtype = Some(value.dtype()),
-                            Op::LoadView { dtype, .. } => acc_dtype = Some(dtype),
-                            Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
+                        match self.at(param) {
+                            &Op::Define { dtype, .. } => acc_dtype = Some(dtype),
+                            Op::ConstView(x) => acc_dtype = Some(x.0.dtype()),
+                            Op::LoadView(x) => acc_dtype = Some(x.0),
+                            &Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
                             _ => {}
                         }
                     }
@@ -660,7 +676,7 @@ impl Kernel {
         let mut stores: Vec<(DType, Dim)> = Vec::with_capacity(5);
         for (op_id, op) in self.iter_unordered() {
             match op {
-                Op::LoadView { dtype, view, .. } => loads.push((*dtype, view.original_numel())),
+                Op::LoadView(x) => loads.push((x.0, x.1.original_numel())),
                 Op::StoreView { dtype, .. } => {
                     let loops = self.get_loops(op_id);
                     let mut len = 1;
@@ -691,7 +707,9 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::ConstView { value, ref view } => {
+                Op::ConstView(ref x) => {
+                    let value = x.0;
+                    let view = &x.1;
                     // With padding, right padding does not affect offset
                     // offset = (a0-lp0)*st0 + a1*st1
                     // Padding condition, negative right padding does not affect it
@@ -782,7 +800,9 @@ impl Kernel {
                     // Nullify z if padding condition is false (if there is padding at that index)
                     self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul }; // this is now the new op_id
                 }
-                Op::LoadView { dtype, ref view } => {
+                Op::LoadView(ref x) => {
+                    let dtype = x.0;
+                    let view = &x.1;
                     // With padding, right padding does not affect offset
                     // offset = (a0-lp0)*st0 + a1*st1 + a2*st2 + (a3-lp3)*st3 + ...
                     // Padding condition, negative right padding does not affect it
@@ -1610,11 +1630,11 @@ impl Kernel {
         while !op_id.is_null() {
             stack.last_mut().unwrap().insert(op_id);
             match *self.at(op_id) {
-                Op::ConstView { value, .. } => {
-                    dtypes.insert(op_id, value.dtype());
+                Op::ConstView(ref x) => {
+                    dtypes.insert(op_id, x.0.dtype());
                 }
-                Op::LoadView { dtype, .. } => {
-                    dtypes.insert(op_id, dtype);
+                Op::LoadView(ref x) => {
+                    dtypes.insert(op_id, x.0);
                 }
                 Op::StoreView { src, .. } => {
                     check(op_id, src, &stack);

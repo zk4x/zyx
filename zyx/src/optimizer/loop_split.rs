@@ -44,7 +44,7 @@ impl LoopSplitOpt {
         }
 
         let max_index = reduction_splits.iter().map(|splits| splits.len() as u32).product::<u32>();
-        println!("reduction_splits={reduction_splits:?}");
+        //println!("reduction_splits={reduction_splits:?}");
         (LoopSplitOpt { reduction_splits }, max_index, (0..max_index).collect())
     }
 
@@ -91,19 +91,23 @@ impl Kernel {
         if !visited.insert(op_id) {
             return;
         }
-        match self.ops[op_id].op {
-            Op::LoadView { ref mut view, .. } | Op::ConstView { ref mut view, .. } => {
-                let rank = view.rank();
-                view.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
+        match &mut self.ops[op_id].op {
+            Op::LoadView(x) => {
+                let rank = x.1.rank();
+                x.1.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
             }
-            Op::Reduce { x, n_axes, .. } => {
+            Op::ConstView(x) => {
+                let rank = x.1.rank();
+                x.1.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
+            }
+            &mut Op::Reduce { x, n_axes, .. } => {
                 let skip_last = skip_last + n_axes;
                 self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
             }
-            Op::Cast { x, .. } | Op::Unary { x, .. } => {
+            &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
                 self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
             }
-            Op::Binary { x, y, .. } => {
+            &mut Op::Binary { x, y, .. } => {
                 self.recursively_apply_reshape(x, n_old_dims, new_dims, visited, skip_last);
                 self.recursively_apply_reshape(y, n_old_dims, new_dims, visited, skip_last);
             }

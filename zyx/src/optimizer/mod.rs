@@ -126,25 +126,10 @@ impl Optimizer {
             }
             temp_kernel = kernel.clone();
         }
-        let mut temp_kernel = kernel.clone();
-        for _ in 0..10 {
-            kernel.move_constants_to_beginning();
-            kernel.swap_commutative();
-            kernel.constant_folding();
-            kernel.loop_invariant_code_motion();
-            kernel.delete_empty_loops();
-            kernel.unroll_constant_loops();
-            kernel.common_subexpression_elimination();
-            kernel.dead_code_elimination();
 
-            if *kernel == temp_kernel {
-                break;
-            }
-            temp_kernel = kernel.clone();
-        }
-
-        kernel.vectorize(4);
+        //kernel.vectorize(4);
         kernel.fuse_mad();
+
         let mut temp_kernel = kernel.clone();
         for _ in 0..10 {
             kernel.move_constants_to_beginning();

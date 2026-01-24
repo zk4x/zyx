@@ -173,7 +173,7 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let dtype = self.graph.dtype(nid);
         let mut ops = Slab::with_capacity(100);
-        let op = Op::LoadView { dtype, view: View::contiguous(shape) };
+        let op = Op::LoadView(Box::new((dtype, View::contiguous(shape))));
         let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
         let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
@@ -190,7 +190,7 @@ impl<'a> Kernelizer<'a> {
 
     fn create_const_kernel(&mut self, nid: TensorId, value: Constant) {
         let mut ops = Slab::with_capacity(100);
-        let op = Op::ConstView { value, view: View::contiguous(&[1]) };
+        let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
         let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
         let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
