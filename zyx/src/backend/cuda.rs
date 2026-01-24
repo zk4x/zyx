@@ -748,6 +748,7 @@ impl CUDAMemoryPool {
         reply_rx.recv().unwrap()
     }
 
+    #[allow(unused)]
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         self.tx.send(CUDACommand::ReleaseEvents { events }).unwrap();
@@ -755,6 +756,7 @@ impl CUDAMemoryPool {
 }
 
 impl CUDADevice {
+    #[allow(unused)]
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn deinitialize(&mut self) {
         let _ = self;
@@ -1298,7 +1300,11 @@ impl CUDADevice {
         while !op_id.is_null() {
             let op = kernel.at(op_id);
             match op {
-                Op::Vectorize { .. } | Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => {
+                Op::Vectorize { .. }
+                | Op::ConstView { .. }
+                | Op::StoreView { .. }
+                | Op::LoadView { .. }
+                | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 Op::Const(x) => {
@@ -1369,7 +1375,11 @@ impl CUDADevice {
             let op = kernel.at(op_id);
             //println!("{i} -> {op:?}");
             match op {
-                Op::Vectorize { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::Vectorize { .. }
+                | Op::ConstView { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 &Op::Const(x) => {
@@ -1604,9 +1614,10 @@ impl CUDADevice {
         let mut opts = vec![
             "--use_fast_math".into(),
             format!(
-            "--gpu-architecture=compute_{}{}",
-            self.compute_capability[0], self.compute_capability[1]
-        )];
+                "--gpu-architecture=compute_{}{}",
+                self.compute_capability[0], self.compute_capability[1]
+            ),
+        ];
 
         if let Some(path) = &self.include_path {
             let path = format!("--include-path={}", path.display());

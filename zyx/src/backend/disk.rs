@@ -92,6 +92,7 @@ impl DiskMemoryPool {
         Ok(())
     }
 
+    #[allow(unused)]
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn release_events(&mut self, events: Vec<Event>) {

@@ -98,6 +98,7 @@ impl Cache {
         }
     }
 
+    #[allow(unused)]
     pub fn deinitialize(&mut self, devices: &mut [Device]) {
         for (&(_, dev_id), &program_id) in &self.programs {
             devices[dev_id.0 as usize].release(program_id);

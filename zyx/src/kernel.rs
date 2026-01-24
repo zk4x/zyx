@@ -671,39 +671,8 @@ impl Kernel {
     }
 
     pub fn unfold_views(&mut self) {
-        // Define globals
-        let mut loads: Vec<(DType, Dim)> = Vec::with_capacity(5);
-        let mut stores: Vec<(DType, Dim)> = Vec::with_capacity(5);
-        for (op_id, op) in self.iter_unordered() {
-            match op {
-                Op::LoadView(x) => loads.push((x.0, x.1.original_numel())),
-                Op::StoreView { dtype, .. } => {
-                    let loops = self.get_loops(op_id);
-                    let mut len = 1;
-                    for loop_id in loops {
-                        let Op::Loop { dim, .. } = self.ops[loop_id].op else { unreachable!() };
-                        len *= dim;
-                    }
-                    stores.push((*dtype, len));
-                }
-                _ => {}
-            }
-        }
-        let head = self.head;
-        let mut global_args = Vec::new();
-        let n_loads = loads.len();
-        for (dtype, len) in loads.into_iter() {
-            let op_id = self.insert_before(head, Op::Define { dtype, scope: Scope::Global, ro: true, len });
-            global_args.push(op_id);
-        }
-        for (dtype, len) in stores.into_iter() {
-            let op_id = self.insert_before(head, Op::Define { dtype, scope: Scope::Global, ro: false, len });
-            global_args.push(op_id);
-        }
-
-        let mut load_id = 0;
-        let mut store_id = 0;
-
+        let mut axes = Vec::new();
+        let start = self.head;
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
@@ -717,7 +686,6 @@ impl Kernel {
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
                     let view = view.clone();
-                    let axes = self.get_loops(op_id);
 
                     //println!("Unfolding view: {view}");
 
@@ -802,15 +770,15 @@ impl Kernel {
                 }
                 Op::LoadView(ref x) => {
                     let dtype = x.0;
-                    let view = &x.1;
                     // With padding, right padding does not affect offset
                     // offset = (a0-lp0)*st0 + a1*st1 + a2*st2 + (a3-lp3)*st3 + ...
                     // Padding condition, negative right padding does not affect it
                     // pc = a0 > lp0-1 && a0 < d0-rp0
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
-                    let view = view.clone();
-                    let axes = self.get_loops(op_id);
+                    let view = x.1.clone();
+
+                    //view.permute(axes);
 
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
@@ -889,16 +857,17 @@ impl Kernel {
                     let pcu = self.new_op(opi, Op::Cast { x: pc, dtype: IDX_T });
                     let offset = self.new_op(opi, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
 
-                    let z = self.new_op(opi, Op::Load { src: global_args[load_id], index: offset, vlen: 1 });
+                    let src = self.insert_before(
+                        start,
+                        Op::Define { dtype, scope: Scope::Global, ro: true, len: view.original_numel() },
+                    );
+                    let z = self.new_op(opi, Op::Load { src, index: offset, vlen: 1 });
 
                     let pcd = self.new_op(opi, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
                     self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
-
-                    load_id += 1;
                 }
-                Op::StoreView { src, .. } => {
-                    let axes = self.get_loops(op_id);
+                Op::StoreView { dtype, src, .. } => {
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
                     let mut index = self.new_op(opi, Op::Const(Constant::idx(0u64)));
@@ -938,13 +907,36 @@ impl Kernel {
                         st *= d;
                     }
 
-                    self.ops[op_id].op = Op::Store { dst: global_args[n_loads + store_id], x: src, index, vlen: 1 };
-
-                    store_id += 1;
+                    let len = shape.iter().product();
+                    let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
+                    self.ops[op_id].op = Op::Store { dst, x: src, index, vlen: 1 };
+                }
+                Op::Loop { .. } => {
+                    axes.push(op_id);
+                }
+                Op::EndLoop => {
+                    axes.pop();
                 }
                 _ => {}
             }
             op_id = self.next_op(op_id);
+        }
+
+        // Reorder defines of global args so that stores are after loads
+        let mut op_id = self.prev_op(start);
+        let mut last_load = OpId::NULL;
+        while !op_id.is_null() {
+            let Op::Define { ro, .. } = self.ops[op_id].op else { unreachable!() };
+            if ro {
+                if last_load.is_null() {
+                    last_load = op_id;
+                }
+            } else {
+                if !last_load.is_null() {
+                    self.move_op_after(op_id, last_load);
+                }
+            }
+            op_id = self.prev_op(op_id);
         }
 
         #[cfg(debug_assertions)]
@@ -1422,9 +1414,7 @@ impl Kernel {
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
-                Op::Vectorize { .. } => {
-                    loop_depth
-                }
+                Op::Vectorize { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth

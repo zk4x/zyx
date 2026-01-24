@@ -12,8 +12,8 @@ mod loop_jam;
 mod loop_split;
 mod loop_unrolling;
 mod vectorize;
-mod work_size;
 mod wmma;
+mod work_size;
 
 // Indices in 0..max_index for each optimization Opt
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, DeBin, SerBin)]
@@ -94,6 +94,8 @@ impl Optimizer {
             return false;
         }
 
+        //kernel.vectorize(4);
+
         // Unrolling for all loops
         if !self.loop_unrolling_opt.apply_optimization(loop_unrolling_opt_index, kernel) {
             return false;
@@ -105,7 +107,6 @@ impl Optimizer {
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
         kernel.unfold_pows();
-        kernel.swap_commutative();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..3 {
@@ -125,9 +126,6 @@ impl Optimizer {
             temp_kernel = kernel.clone();
         }
 
-        //kernel.vectorize(4);
-        kernel.fuse_mad();
-
         let mut temp_kernel = kernel.clone();
         for _ in 0..10 {
             kernel.move_constants_to_beginning();
@@ -144,6 +142,10 @@ impl Optimizer {
             }
             temp_kernel = kernel.clone();
         }
+
+        kernel.fuse_mad();
+        kernel.common_subexpression_elimination();
+        kernel.dead_code_elimination();
 
         kernel.verify();
 

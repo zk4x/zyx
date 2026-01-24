@@ -51,7 +51,7 @@ impl WorkSizeOpt {
                     let a = res[i];
                     let b = res[j];
                     if a * b <= d {
-                        if a <= max_lwd && b <= 64 {
+                        if a <= max_lwd && b <= 16 {
                             factors.push([a, b]);
                         }
                     }
@@ -107,8 +107,6 @@ impl WorkSizeOpt {
         //gws = vec![32, 32];
         //lws = vec![8, 8];
         //rws = vec![4, 4];
-
-        //kernel.apply_movement(|view| view.permute(&[0, 1, 4, 2, 3])); // LOL, this just makes things fast :D
 
         {
             let head = kernel.head;

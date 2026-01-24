@@ -216,6 +216,7 @@ pub enum MemoryPool {
 }
 
 impl MemoryPool {
+    #[allow(unused)]
     pub fn deinitialize(&mut self) {
         match self {
             MemoryPool::Dummy(pool) => pool.deinitialize(),
