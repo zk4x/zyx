@@ -33,7 +33,7 @@ impl LoopSplitOpt {
                 options.push(reduce_dims);
 
                 // Generate all possible factorizations of the total product up to max_depth
-                for d in 1..=8 {
+                for d in 2..=16 {
                     if total_product.is_multiple_of(d) {
                         options.push(vec![total_product / d, d]);
                     }
@@ -44,6 +44,7 @@ impl LoopSplitOpt {
         }
 
         let max_index = reduction_splits.iter().map(|splits| splits.len() as u32).product::<u32>();
+        println!("reduction_splits={reduction_splits:?}");
         (LoopSplitOpt { reduction_splits }, max_index, (0..max_index).collect())
     }
 

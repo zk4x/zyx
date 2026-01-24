@@ -74,10 +74,11 @@
   - [x] loop invariant code motion
   - [x] comutative reorder (put before LICM)
   - [ ] div mod simplifications
+    - [x] consequtive modulos
   - [x] dead accumulator elimination (after unroll)
-  - [ ] vectorization, vector dtypes
+  - [x] vectorization, vector dtypes
   - [ ] tensor cores/tiling
-  - [ ] merge all mul + add into mad instructions
+  - [x] merge all mul + add into mad instructions
   - [ ] local tiling of all variables
   - [ ] multi step reduce (with multiple accumulators)
   - [ ] streaming dual reduce ops (e.g. streaming softmax)

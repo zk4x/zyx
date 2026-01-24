@@ -1,6 +1,6 @@
 use crate::{dtype::Constant, graph::BOp, kernel::{Kernel, Op, OpId, Scope}};
 
-impl Kernel {
+/*impl Kernel {
     /// This function will unroll define[N] into N x define[1] ops,
     /// so that we can use scalars instead of arrays in registers.
     /// But it can also unrool define[16] into 4 x define[4] for float4 vectors, etc.
@@ -8,11 +8,11 @@ impl Kernel {
     pub fn unroll_defines(&mut self) {
         // TODO
     }
-}
+}*/
 
 impl Kernel {
     pub fn vectorize(&mut self, vectorize_dim: usize) {
-        /*let mut op_id = self.tail;
+        let mut op_id = self.tail;
         let mut loop_stack = Vec::new();
         while !op_id.is_null() {
             match *self.at(op_id) {
@@ -28,7 +28,7 @@ impl Kernel {
                 _ => {}
             }
             op_id = self.prev_op(op_id);
-        }*/
+        }
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -39,6 +39,7 @@ impl Kernel {
         println!("Vectorizing loop={loop_id}, endloop={endloop_id}");
         let mut op_id = loop_id;
         let Op::Loop { dim: loop_dim, scope } = self.ops[loop_id].op else { unreachable!() };
+        debug_assert!(loop_dim < 258);
         let mut c_indices = Vec::new();
         for i in 0..loop_dim {
             let cid = self.insert_before(loop_id, Op::Const(Constant::idx(i as u64)));
@@ -52,16 +53,16 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::Load { index, .. } => {
                     if let Some(idx) = self.get_vectorized_index(index, loop_id) {
-                        let Op::Load { index, len, .. } = &mut self.ops[op_id].op else { unreachable!() };
+                        let Op::Load { index, vlen: len, .. } = &mut self.ops[op_id].op else { unreachable!() };
                         *index = idx;
-                        *len *= loop_dim;
+                        *len *= loop_dim as u8;
                     }
                 }
                 Op::Store { index, .. } => {
                     if let Some(idx) = self.get_vectorized_index(index, loop_id) {
-                        let Op::Store { index, len, .. } = &mut self.ops[op_id].op else { unreachable!() };
+                        let Op::Store { index, vlen: len, .. } = &mut self.ops[op_id].op else { unreachable!() };
                         *index = idx;
-                        *len *= loop_dim;
+                        *len *= loop_dim as u8;
                     }
                 }
                 _ => {}

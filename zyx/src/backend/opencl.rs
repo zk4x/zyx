@@ -4,6 +4,13 @@
 #![allow(non_snake_case)]
 #![allow(clippy::question_mark)]
 
+const VEC_COMPONENTS: [&str; 16] = [
+    "x", "y", "z", "w",
+    "s0", "s1", "s2", "s3",
+    "s4", "s5", "s6", "s7",
+    "s8", "s9", "sa", "sb",
+];
+
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
 use crate::{
     DType, Map,
@@ -751,12 +758,12 @@ impl OpenCLDevice {
                 &Op::Define { dtype, .. } => {
                     dtypes.insert(op_id, (dtype, 1));
                 }
-                &Op::Load { src, index, len } => {
+                &Op::Load { src, index, vlen: len } => {
                     dtypes.insert(op_id, (dtypes[&src].0, len as u8));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x: src, index, len } => {
-                    debug_assert_eq!(dtypes[&src].1 as usize, len);
+                &Op::Store { dst, x: src, index, vlen } => {
+                    debug_assert_eq!(dtypes[&src].1, vlen);
                     dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
@@ -836,46 +843,38 @@ impl OpenCLDevice {
                         acc_bytes += dtype.byte_size() as usize * len;
                     }
                 }
-                &Op::Load { src, index, len } => {
+                &Op::Load { src, index, vlen } => {
                     if let Some(&rc) = rcs.get(&op_id) {
-                        let Op::Define { scope, .. } = kernel.ops[src].op else { unreachable!() };
                         let dtype = dtypes[&op_id];
-                        debug_assert_eq!(dtype.1 as usize, len);
+                        debug_assert_eq!(dtype.1, vlen);
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
-                        //_ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
-                        let len = if len == 1 { "".into() } else { format!("{len}") };
-                        _ = writeln!(
-                            source,
-                            "{indent}r{reg} = *({} float{len}*)(p{src} + {idx});",
-                            match scope {
-                                Scope::Global => "__global",
-                                Scope::Local => "__local",
-                                Scope::Register => "__private",
-                            },
-                        );
+                        if vlen > 1 {
+                            for i in 0..vlen {
+                                _ = writeln!(source, "{indent}r{reg}.{} = p{src}[{idx}];", VEC_COMPONENTS[i as usize]);
+                            }
+                        }else {
+                            _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                        }
                     }
                 }
-                &Op::Store { dst, x: src, index, len } => {
+                &Op::Store { dst, x: src, index, vlen } => {
                     /*_ = writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",
                         get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id),
                         get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)
                     );*/
-                    let Op::Define { scope, .. } = kernel.ops[dst].op else { unreachable!() };
-                    let len = if len == 1 { "".into() } else { format!("{len}") };
-                    _ = writeln!(
-                        source,
-                        "{indent}*(({} float{len}*)(p{dst} + {})) = {};",
-                        match scope {
-                            Scope::Global => "__global",
-                            Scope::Local => "__local",
-                            Scope::Register => "__private",
-                        },
-                        get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id),
-                        get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)
-                    );
+                    //let Op::Define { scope, .. } = kernel.ops[dst].op else { unreachable!() };
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    if vlen > 1 {
+                        for i in 0..vlen {
+                            _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.{};", VEC_COMPONENTS[i as usize]);
+                        }
+                    } else {
+                        _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                    }
                 }
                 &Op::Cast { x, dtype } => {
                     let vlen = dtypes[&x].1;

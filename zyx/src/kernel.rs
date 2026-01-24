@@ -55,8 +55,8 @@ pub enum Op {
     // ops that only exist after unfolding views and reduces
     Const(Constant),
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
-    Store { dst: OpId, x: OpId, index: OpId, len: Dim },
-    Load { src: OpId, index: OpId, len: Dim },
+    Store { dst: OpId, x: OpId, index: OpId, vlen: u8 },
+    Load { src: OpId, index: OpId, vlen: u8 },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
     Mad { x: OpId, y: OpId, z: OpId }, // fused multiply add
@@ -245,13 +245,13 @@ impl Kernel {
                     }
                     println!("{op_id:>5}{indent}{MAGENTA}CONST{RESET} {} {value}", value.dtype());
                 }
-                Op::Load { src, index, len, .. } => {
+                Op::Load { src, index, vlen: len, .. } => {
                     println!(
                         "{op_id:>5}{indent}{GREEN}LOAD{RESET} p{src}[{index}] len={len:?}    {}..={}",
                         ids[&index].0, ids[&index].1
                     );
                 }
-                Op::Store { dst, x: src, index, len } => {
+                Op::Store { dst, x: src, index, vlen: len } => {
                     println!(
                         "{op_id:>5}{indent}{RED}STORE{RESET} p{dst}[{index}] <- {src} len={len}    {}..={}",
                         ids[&index].0, ids[&index].1
@@ -586,7 +586,7 @@ impl Kernel {
             // Zero the accumulator
             self.insert_before(
                 loop_start,
-                Op::Store { dst: acc, x: acc_init_id, index: const_zero, len: 1 },
+                Op::Store { dst: acc, x: acc_init_id, index: const_zero, vlen: 1 },
             );
 
             // Add Loops for the reduce
@@ -595,7 +595,7 @@ impl Kernel {
             }
 
             // Add reduction operation, load from acc, accumulate, store to acc
-            let load_acc = self.insert_before(reduce_op_id, Op::Load { src: acc, index: const_zero, len: 1 });
+            let load_acc = self.insert_before(reduce_op_id, Op::Load { src: acc, index: const_zero, vlen: 1 });
             let bin_acc = self.insert_before(
                 reduce_op_id,
                 Op::Binary {
@@ -609,7 +609,7 @@ impl Kernel {
             );
             self.insert_before(
                 reduce_op_id,
-                Op::Store { dst: acc, x: bin_acc, index: const_zero, len: 1 },
+                Op::Store { dst: acc, x: bin_acc, index: const_zero, vlen: 1 },
             );
 
             // Close the reduce loop
@@ -618,7 +618,7 @@ impl Kernel {
             }
 
             // Replace old reduce op with the acc load op
-            self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, len: 1 };
+            self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, vlen: 1 };
 
             #[cfg(debug_assertions)]
             self.verify();
@@ -869,7 +869,7 @@ impl Kernel {
                     let pcu = self.new_op(opi, Op::Cast { x: pc, dtype: IDX_T });
                     let offset = self.new_op(opi, Op::Binary { x: pcu, y: offset, bop: BOp::Mul });
 
-                    let z = self.new_op(opi, Op::Load { src: global_args[load_id], index: offset, len: 1 });
+                    let z = self.new_op(opi, Op::Load { src: global_args[load_id], index: offset, vlen: 1 });
 
                     let pcd = self.new_op(opi, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
@@ -918,7 +918,7 @@ impl Kernel {
                         st *= d;
                     }
 
-                    self.ops[op_id].op = Op::Store { dst: global_args[n_loads + store_id], x: src, index, len: 1 };
+                    self.ops[op_id].op = Op::Store { dst: global_args[n_loads + store_id], x: src, index, vlen: 1 };
 
                     store_id += 1;
                 }
@@ -1360,7 +1360,7 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
-                Op::Store { dst, x, index, len } => {
+                Op::Store { dst, x, index, vlen } => {
                     if dst == define_id {
                         self.remove(op_id);
                         // x may have been removed as a previous load. If that was the case, the load was redundant
@@ -1620,7 +1620,7 @@ impl Kernel {
                     check(op_id, src, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Store { dst, x, index, len } => {
+                Op::Store { dst, x, index, vlen: len } => {
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
                     check(op_id, index, &stack);
