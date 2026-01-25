@@ -748,7 +748,6 @@ impl CUDAMemoryPool {
         reply_rx.recv().unwrap()
     }
 
-    #[allow(unused)]
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         self.tx.send(CUDACommand::ReleaseEvents { events }).unwrap();
@@ -756,7 +755,6 @@ impl CUDAMemoryPool {
 }
 
 impl CUDADevice {
-    #[allow(unused)]
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn deinitialize(&mut self) {
         let _ = self;
@@ -1301,6 +1299,7 @@ impl CUDADevice {
             let op = kernel.at(op_id);
             match op {
                 Op::Vectorize { .. }
+                | Op::MMA { .. }
                 | Op::ConstView { .. }
                 | Op::StoreView { .. }
                 | Op::LoadView { .. }
@@ -1317,7 +1316,7 @@ impl CUDADevice {
                     dtypes.insert(op_id, dtype_of(&dtypes, src));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x: src, index, vlen: len } => {
+                &Op::Store { dst, x: src, index, vlen: _ } => {
                     dtypes.insert(op_id, dtype_of(&dtypes, src));
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
@@ -1376,6 +1375,7 @@ impl CUDADevice {
             //println!("{i} -> {op:?}");
             match op {
                 Op::Vectorize { .. }
+                | Op::MMA { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
@@ -1405,7 +1405,7 @@ impl CUDADevice {
                         _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                     }
                 }
-                &Op::Store { dst, x: src, index, vlen: len } => {
+                &Op::Store { dst, x: src, index, vlen: _ } => {
                     _ = writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",
@@ -1686,3 +1686,15 @@ impl nvrtcResult {
         }
     }
 }
+
+static WMMA_FUNCS: &'static str = r#"
+__device__ half4 __MMA_8_16_8_half_half(half4 a, half2 b, half4 c){
+  int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
+  asm("mma.sync.aligned.m16n8k8.row.col.f16.f16.f16.f16"
+      "{%0, %1}, {%2, %3},"
+      "{%4}, {%0, %1};"
+    : "+r"(c_pk[0]), "+r"(c_pk[1])
+    : "r"(a_pk[0]), "r"(a_pk[1]), "r"(b_pk[0]));
+  return c;
+}
+"#;

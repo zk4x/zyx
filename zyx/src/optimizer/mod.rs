@@ -23,7 +23,7 @@ pub struct Optimization(u32);
 pub struct Optimizer {
     // optimizations
     work_size_opt: WorkSizeOpt,
-    loop_unroll_and_jam_opt: LoopJamOpt,
+    loop_jam_opt: LoopJamOpt,
     loop_unrolling_opt: LoopUnrollOpt,
     loop_split_opt: LoopSplitOpt,
     //inner_loop_swap_opt: InnerLoopSwapOpt, // a bit harder to know max number of optimizations
@@ -33,9 +33,9 @@ pub struct Optimizer {
     best_optimization: Optimization,
     // time taken by kernel with the best optimization
     pub best_time_nanos: u64,
-    // Which iteration are we on? First 30 iterations are random, then 20 iterations of refinement
-    // and remaider is just going over all possible optimizations in deterministic order
+    // Which iteration are we on? This is for default and random.
     default_iteration: u32,
+    // This is the deterministic order for iterations, up to max_iter
     full_iteration: u32,
     max_iter: u32,
     // Optimizations that were tried during random search and refinement
@@ -49,7 +49,7 @@ impl Optimizer {
     pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization, debug_ir: bool) -> bool {
         let [
             local_work_size_opt_index,
-            loop_unroll_and_jam_opt_index,
+            loop_jam_opt_index,
             loop_unrolling_opt_index,
             loop_split_opt_index,
         ] = optimization.into_indices(self.max_indices);
@@ -74,8 +74,6 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.common_subexpression_elimination();
             kernel.swap_commutative();
-            kernel.reassociate_commutative();
-            kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
             kernel.dead_code_elimination();
 
@@ -90,8 +88,9 @@ impl Optimizer {
             }
         }*/
 
+        // WARNING. We cannot do LICM before loop jam for now
         // Unroll and jam for all loops
-        if !self.loop_unroll_and_jam_opt.apply_optimization(loop_unroll_and_jam_opt_index, kernel) {
+        if !self.loop_jam_opt.apply_optimization(loop_jam_opt_index, kernel) {
             return false;
         }
 
@@ -110,14 +109,14 @@ impl Optimizer {
         kernel.unfold_pows();
 
         let mut temp_kernel = kernel.clone();
-        for _ in 0..3 {
+        for _ in 0..2 {
             kernel.move_constants_to_beginning();
             kernel.swap_commutative();
             kernel.reassociate_commutative(); // TODO This is changes the kernel on every iteration, fix it
             kernel.constant_folding();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
-            //kernel.unroll_constant_loops();
+            kernel.unroll_constant_loops();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
 
@@ -182,7 +181,7 @@ impl Optimizer {
             max_indices,
             default_indices,
             work_size_opt,
-            loop_unroll_and_jam_opt: loop_jam_opt,
+            loop_jam_opt,
             loop_unrolling_opt: loop_unroll_opt,
             loop_split_opt,
             best_optimization: Optimization(0),
@@ -212,10 +211,10 @@ impl Optimizer {
             self.best_time_nanos = last_time_nanos;
             self.best_optimization = self.last;
         }
-        let opt = if let Some(opt) = self.random_search() {
+        let opt = if let Some(opt) = self.default_search() {
             Some(opt)
-        //} else if let Some(opt) = self.refinement_search(last_time_nanos) {
-        //Some(opt)
+        } else if let Some(opt) = self.random_search() {
+            Some(opt)
         } else {
             self.deterministic_search()
         };
@@ -229,8 +228,36 @@ impl Optimizer {
         self.full_iteration >= self.max_iter
     }
 
-    fn random_search(&mut self) -> Option<Optimization> {
+    fn default_search(&mut self) -> Option<Optimization> {
         if self.default_iteration >= 200 {
+            return None;
+        }
+        self.default_iteration += 1;
+
+        for &d0 in &self.default_indices[0] {
+            for &d1 in &self.default_indices[1] {
+                for &d2 in &self.default_indices[2] {
+                    for &d3 in &self.default_indices[3] {
+                        let dims = [d0, d1, d2, d3];
+                        let mut index = 0;
+                        let mut stride = 1;
+                        for i in (0..dims.len()).rev() {
+                            index += dims[i] * stride;
+                            stride *= self.max_indices[i];
+                        }
+                        let opt = Optimization(index);
+                        if self.tried.insert(opt) {
+                            return Some(opt);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn random_search(&mut self) -> Option<Optimization> {
+        if self.default_iteration >= 500 {
             return None;
         }
         self.default_iteration += 1;

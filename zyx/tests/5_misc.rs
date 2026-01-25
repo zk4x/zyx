@@ -1,5 +1,30 @@
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
+pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
+    let mut c = vec![0f32; m * n];
+
+    unsafe {
+        matrixmultiply::sgemm(
+            m,
+            k,
+            n,
+            1.0,
+            a.as_ptr(),
+            k as isize,
+            1,
+            b.as_ptr(),
+            n as isize,
+            1,
+            0.0,
+            c.as_mut_ptr(),
+            n as isize,
+            1,
+        )
+    };
+
+    c
+}
+
 #[test]
 fn memory1() {
     let x = Tensor::from([[2, 3], [4, 5]]);
@@ -669,11 +694,20 @@ fn bench_mm1() -> Result<(), ZyxError> {
     let dtype = zyx::DType::F32;
     let x = Tensor::rand([N, N], dtype)?;
     let y = Tensor::rand([N, N], dtype)?;
-    Tensor::realize([&x, &y])?;
-    for _ in 0..10 {
-        let z = x.matmul(&y)?;
-        Tensor::realize([&z])?;
+
+    let x_data: Vec<f32> = x.clone().try_into()?;
+    let y_data: Vec<f32> = y.clone().try_into()?;
+
+    let z = x.matmul(&y)?;
+
+    let z_data: Vec<f32> = z.try_into()?;
+    let expected = matmul(&x_data, &y_data, N, N, N);
+    for (x, y) in z_data.into_iter().zip(expected) {
+        if !x.is_equal(y) {
+            panic!("Wrong matmul");
+        }
     }
+
     Ok(())
 }
 

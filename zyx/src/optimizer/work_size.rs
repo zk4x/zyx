@@ -62,10 +62,11 @@ impl WorkSizeOpt {
         }
 
         let max_local_threads = dev_info.max_local_threads;
-
         let max_idx = gws_factors.iter().map(|gd| gd.len() as u32).product();
+
         //println!("gws={gws:?}, gws_factors={gws_factors:?}, max_local_threads={max_local_threads}");
-        (Self { gws, gws_factors, max_local_threads }, max_idx, vec![0, 1, 2])
+
+        (Self { gws, gws_factors, max_local_threads }, max_idx, vec![0])
     }
 
     // Returns false if this index is invalid
@@ -97,16 +98,29 @@ impl WorkSizeOpt {
             *g /= l * r;
         }
 
-        let shape: Vec<Dim> = gws.iter().chain(&lws).chain(&rws).copied().collect();
+        /*gws = vec![64, 8];
+        lws = vec![1, 32];
+        rws = vec![16, 4];*/
+
+        //let shape: Vec<Dim> = gws.iter().chain(&lws).chain(&rws).copied().collect();
+
+        let mut shape: Vec<Dim> = Vec::new();
+        for i in 0..gws.len() {
+            shape.push(gws[i]);
+            shape.push(lws[i]);
+            shape.push(rws[i]);
+        }
+
         let n = kernel.shape().len();
-
-        //if n < 4 && !kernel.is_reshape_contiguous(0..n, &shape) { return false; }
-
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
 
-        //gws = vec![32, 32];
-        //lws = vec![8, 8];
-        //rws = vec![4, 4];
+        // Permute, to make things fast
+        match gws.len() {
+            1 => {}
+            2 => kernel.apply_movement(|view| view.permute(&[0, 3, 1, 4, 2, 5])),
+            3 => kernel.apply_movement(|view| view.permute(&[0, 3, 6, 1, 4, 7, 2, 5, 8])),
+            _ => unreachable!()
+        }
 
         {
             let head = kernel.head;

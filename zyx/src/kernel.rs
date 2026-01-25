@@ -3,7 +3,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, ROp, UOp},
     realize::KMKernelId,
-    shape::{Dim, UAxis},
+    shape::{Dim, UAxis, permute},
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
@@ -59,15 +59,14 @@ pub enum Op {
     Load { src: OpId, index: OpId, vlen: u8 },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
-    Mad { x: OpId, y: OpId, z: OpId }, // fused multiply add
+    // fused multiply add
+    Mad { x: OpId, y: OpId, z: OpId },
+    // fused matmul, a, b, c are fragments, each is a vector, c is accumulator
+    // TODO would be adding d useful?
+    MMA { m: u8, n: u8, k: u8, c: OpId, a: OpId, b: OpId },
 
-    // TODO remove dims, row major from load and store
-    // TODO add op vectorize that will create a vectorized representation that can also be used with tensor cores
-    // TODO for tensor cores, we need to unroll the loop jammed loads and vectorize them.
     Vectorize { ops: Vec<OpId> },
     //Devectorize { regs: OpId, idx: usize }, // select a single value from a vector
-    // TODO for tensor cores, we will also need some wmma matmul instruction
-    //WMMASync { x: OpId, y: OpId, z: OpId },
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
     // TODO Get rid of the view, use whatever ops that are needed directly
@@ -85,7 +84,7 @@ pub enum Op {
 
 impl Op {
     // TODO use custom non allocating iterator instead of allocating a vec
-    fn parameters(&self) -> impl Iterator<Item = OpId> + DoubleEndedIterator {
+    pub fn parameters(&self) -> impl Iterator<Item = OpId> + DoubleEndedIterator {
         match self {
             Op::ConstView { .. } => vec![],
             Op::LoadView { .. } => vec![],
@@ -102,6 +101,7 @@ impl Op {
             Op::EndLoop { .. } => vec![],
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.clone(),
+            &Op::MMA { a, b, c, .. } => vec![a, b, c],
         }
         .into_iter()
     }
@@ -123,6 +123,7 @@ impl Op {
             Op::EndLoop { .. } => vec![],
             Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.iter_mut().collect(),
+            Op::MMA { a, b, c, .. } => vec![a, b, c],
         }
         .into_iter()
     }
@@ -328,6 +329,9 @@ impl Kernel {
                         println!("{op_id:>5}{indent}MAD {x} {y} {z}");
                     }
                 }
+                Op::MMA { m, n, k, c, a, b } => {
+                    println!("{op_id:>5}{indent}{ORANGE}MMA{RESET} m{m}n{n}k{k} c={c} a={a} b={b}");
+                }
                 Op::Loop { dim, scope, .. } => {
                     ids.insert(op_id, (0, dim - 1));
                     println!(
@@ -358,9 +362,9 @@ impl Kernel {
                     }
                     if let Some((xl, xu)) = r {
                         ids.insert(op_id, (xl, xu));
-                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE {ops:?}{RESET}    {xl}..={xu}");
+                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE{RESET} {ops:?}    {xl}..={xu}");
                     } else {
-                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE {ops:?}{RESET}");
+                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE{RESET} {ops:?}");
                     }
                 }
             }
@@ -420,7 +424,8 @@ impl Kernel {
                     let flops = shape.iter().product::<Dim>() as u64;
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
-                Op::Vectorize { .. }
+                Op::MMA { .. }
+                | Op::Vectorize { .. }
                 | Op::Store { .. }
                 | Op::Mad { .. }
                 | Op::Const(_)
@@ -645,29 +650,6 @@ impl Kernel {
         }
     }
 
-    fn get_loops(&self, last_id: OpId) -> Vec<OpId> {
-        let mut loops = Vec::new();
-        let mut op_id = self.head;
-
-        while !op_id.is_null() {
-            if op_id == last_id {
-                return loops;
-            }
-            match self.at(op_id) {
-                Op::Loop { .. } => {
-                    loops.push(op_id);
-                }
-                Op::EndLoop => {
-                    loops.pop();
-                }
-                _ => {}
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        loops
-    }
-
     fn new_op(&mut self, op_iter: &mut OpId, op: Op) -> OpId {
         let op_id = self.insert_after(*op_iter, op);
         *op_iter = op_id;
@@ -675,35 +657,25 @@ impl Kernel {
     }
 
     pub fn unfold_views(&mut self) {
-        /*fn permute_vec<T: Clone>(vec: &mut Vec<T>, order: &[usize]) {
-            let n = order.len().min(vec.len());
-            let original = vec[..n].to_vec();
-            for i in 0..n {
-                vec[i] = original[order[i]].clone();
-            }
-        }*/
-
         let mut axes = Vec::new();
         let start = self.head;
         let mut op_id = self.head;
         let mut reduce_loop = OpId::NULL;
-        //let mut n_local_loops = 0;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::ConstView(ref x) => {
                     let value = x.0;
-                    let mut view = x.1.clone();
                     // With padding, right padding does not affect offset
                     // offset = (a0-lp0)*st0 + a1*st1
                     // Padding condition, negative right padding does not affect it
                     // pc = a0 > lp0-1 && a0 < d0-rp0
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
+                    let mut view = x.1.clone();
 
-                    // By reversing, we leave less work for reassociate commutative
-                    let view_axes: Vec<OpId> = axes.iter().copied().rev().collect();
-                    let order: Vec<UAxis> = (0..view.rank()).rev().collect();
-                    view.permute(&order);
+                    let mut view_axes = axes.clone();
+                    view.reverse();
+                    view_axes.reverse();
 
                     //println!("Unfolding view: {view}");
 
@@ -796,26 +768,9 @@ impl Kernel {
                     // x = pc * value[offset]
                     let mut view = x.1.clone();
 
-                    // Permute both view and axes if this is inside of a reduce loop
-                    // such that local loops are applied right after the first large reduce
-                    /*let mut view_axes = axes.clone();
-                    if !reduce_loop.is_null() {
-                        if axes.contains(&reduce_loop) {
-                            let order = match n_local_loops {
-                                1 => vec![2, 3, 0, 1],
-                                2 => vec![4, 5, 6, 0, 1, 2, 3],
-                                3 => vec![6, 7, 8, 9, 0, 1, 2, 3, 4, 5],
-                                _ => unreachable!(),
-                            };
-                            permute_vec(&mut view_axes, &order);
-                            view.permute(&order);
-                        }
-                    }*/
-                    let view_axes: Vec<OpId> = axes.iter().copied().rev().collect();
-                    let order: Vec<UAxis> = (0..view.rank()).rev().collect();
-                    view.permute(&order);
-                    //println!("axes={axes:?}");
-                    //println!("view_axes={view_axes:?}");
+                    let mut view_axes = axes.clone();
+                    view.reverse();
+                    view_axes.reverse();
 
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
@@ -905,11 +860,14 @@ impl Kernel {
                     self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                 }
                 Op::StoreView { dtype, src, .. } => {
+                    // TODO make this shorter and nicer to read
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
                     let mut index = self.new_op(opi, Op::Const(Constant::idx(0u64)));
-                    let mut st = 1;
 
+                    let mut gws = Vec::new();
+                    let mut lws = Vec::new();
+                    let mut rws = Vec::new();
                     let shape: Vec<Dim> = {
                         let mut shape = Vec::new();
                         let mut l_op_id = self.head;
@@ -918,7 +876,12 @@ impl Kernel {
                                 break;
                             }
                             match *self.at(l_op_id) {
-                                Op::Loop { dim, .. } => {
+                                Op::Loop { dim, scope } => {
+                                    match scope {
+                                        Scope::Global => gws.push(dim),
+                                        Scope::Local => lws.push(dim),
+                                        Scope::Register => rws.push(dim),
+                                    }
                                     shape.push(dim);
                                 }
                                 Op::EndLoop => {
@@ -931,9 +894,58 @@ impl Kernel {
                         shape
                     };
 
-                    for (id, d) in shape.iter().enumerate().rev() {
+                    let mut original_shape = shape.clone();
+                    match gws.len() {
+                        1 => {}
+                        2 => {
+                            original_shape[0] = gws[0];
+                            original_shape[1] = lws[0];
+                            original_shape[2] = rws[0];
+                            original_shape[3] = gws[1];
+                            original_shape[4] = lws[1];
+                            original_shape[5] = rws[1];
+                        }
+                        3 => {
+                            original_shape[0] = gws[0];
+                            original_shape[1] = lws[0];
+                            original_shape[2] = rws[0];
+                            original_shape[3] = gws[1];
+                            original_shape[4] = lws[1];
+                            original_shape[5] = rws[1];
+                            original_shape[6] = gws[2];
+                            original_shape[7] = lws[2];
+                            original_shape[8] = rws[2];
+                        }
+                        _ => unreachable!(),
+                    }
+                    let mut original_strides = Vec::new();
+                    let mut orig_stride = 1;
+                    for d in original_shape.iter().rev() {
+                        original_strides.push(orig_stride);
+                        orig_stride *= d;
+                    }
+                    original_strides.reverse();
+
+                    // This is permute order for performance, work_size.rs applies it too
+                    let (permuted_shape, permuted_strides) = match gws.len() {
+                        1 => (original_shape, original_strides),
+                        2 => (
+                            permute(&original_shape, &[0, 3, 1, 4, 2, 5]),
+                            permute(&original_strides, &[0, 3, 1, 4, 2, 5]),
+                        ),
+                        3 => (
+                            permute(&original_shape, &[0, 3, 6, 1, 4, 7, 2, 5, 8]),
+                            permute(&original_strides, &[0, 3, 6, 1, 4, 7, 2, 5, 8]),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    debug_assert_eq!(permuted_shape, shape);
+
+                    //println!("permuted_shape={permuted_shape:?}, permuted_strides={permuted_strides:?}");
+
+                    for (id, (d, st)) in permuted_shape.into_iter().zip(permuted_strides).enumerate() {
                         let stride = Constant::idx(st as u64);
-                        let x = if *d > 1 {
+                        let x = if d > 1 {
                             axes[id]
                         } else {
                             self.new_op(opi, Op::Const(Constant::idx(0)))
@@ -941,7 +953,6 @@ impl Kernel {
                         let y = self.new_op(opi, Op::Const(stride));
                         let x = self.new_op(opi, Op::Binary { x, y, bop: BOp::Mul });
                         index = self.new_op(opi, Op::Binary { x, y: index, bop: BOp::Add });
-                        st *= d;
                     }
 
                     let len = shape.iter().product();
@@ -949,9 +960,6 @@ impl Kernel {
                     self.ops[op_id].op = Op::Store { dst, x: src, index, vlen: 1 };
                 }
                 Op::Loop { scope, .. } => {
-                    if scope == Scope::Local {
-                        n_local_loops += 1;
-                    }
                     axes.push(op_id);
                     if scope == Scope::Register && reduce_loop.is_null() {
                         if let Op::Store { dst, .. } = self.ops[self.prev_op(op_id)].op {
@@ -1252,7 +1260,8 @@ impl Kernel {
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
-                Op::Vectorize { .. }
+                Op::MMA { .. }
+                | Op::Vectorize { .. }
                 | Op::Store { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
@@ -1422,6 +1431,9 @@ impl Kernel {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
                 Op::Store { dst, x, index, vlen } => {
+                    if vlen > 1 {
+                        todo!()
+                    }
                     if dst == define_id {
                         self.remove(op_id);
                         // x may have been removed as a previous load. If that was the case, the load was redundant
@@ -1463,7 +1475,7 @@ impl Kernel {
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
-                Op::Vectorize { .. } => loop_depth,
+                Op::MMA { .. } | Op::Vectorize { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -1506,6 +1518,7 @@ impl Kernel {
                 | Op::StoreView { .. }
                 | Op::Reduce { .. }
                 | Op::Vectorize { .. }
+                | Op::MMA { .. }
                 | Op::Mad { .. } => unreachable!(),
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -1679,7 +1692,7 @@ impl Kernel {
                     check(op_id, src, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Store { dst, x, index, vlen: len } => {
+                Op::Store { dst, x, index, vlen: _ } => {
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
                     check(op_id, index, &stack);
@@ -1714,6 +1727,17 @@ impl Kernel {
                             self.debug();
                             panic!("Vectorize dtype mismatch on op={op_id}.");
                         }
+                    }
+                    dtypes.insert(op_id, dtype);
+                }
+                Op::MMA { c, a, b, .. } => {
+                    let dtype = dtypes[&c];
+                    check(op_id, c, &stack);
+                    check(op_id, a, &stack);
+                    check(op_id, b, &stack);
+                    if dtypes[&a] != dtype || dtypes[&b] != dtype {
+                        self.debug();
+                        panic!("MMA dtype mismatch on op={op_id}.");
                     }
                     dtypes.insert(op_id, dtype);
                 }
@@ -1937,6 +1961,7 @@ impl Kernel {
                     }
                     Op::Const { .. } | Op::ConstView { .. } | Op::LoadView { .. } => {}
                     Op::Vectorize { .. }
+                    | Op::MMA { .. }
                     | Op::Define { .. }
                     | Op::Mad { .. }
                     | Op::StoreView { .. }

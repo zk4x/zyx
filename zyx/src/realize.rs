@@ -12,7 +12,7 @@ use crate::{
     prog_bar::ProgressBar,
     runtime::{Pool, Runtime, deallocate_tensors},
     schedule::schedule,
-    shape::{Dim, UAxis},
+    shape::Dim,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
@@ -286,6 +286,7 @@ impl<'a> Kernelizer<'a> {
 
         #[cfg(debug_assertions)]
         {
+            use crate::shape::UAxis;
             let mut sorted_axes: Vec<UAxis> = axes.into();
             sorted_axes.sort_unstable();
             debug_assert_eq!(axes, sorted_axes, "Reduce axes must be sorted.");

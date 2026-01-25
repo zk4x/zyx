@@ -12,5 +12,5 @@ use crate::kernel::Kernel;
 
 impl Kernel {
     /// Turns inner loops into tensor core instructions if possible
-    fn apply_wmma() {}
+    fn fuse_wmma() {}
 }
