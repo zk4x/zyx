@@ -3,7 +3,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, ROp, UOp},
     realize::KMKernelId,
-    shape::{Dim, UAxis},
+    shape::{Dim, UAxis, permute},
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
@@ -84,7 +84,7 @@ pub enum Op {
 
 impl Op {
     // TODO use custom non allocating iterator instead of allocating a vec
-    fn parameters(&self) -> impl Iterator<Item = OpId> + DoubleEndedIterator {
+    pub fn parameters(&self) -> impl Iterator<Item = OpId> + DoubleEndedIterator {
         match self {
             Op::ConstView { .. } => vec![],
             Op::LoadView { .. } => vec![],
@@ -860,11 +860,14 @@ impl Kernel {
                     self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                 }
                 Op::StoreView { dtype, src, .. } => {
+                    // TODO make this shorter and nicer to read
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
                     let mut index = self.new_op(opi, Op::Const(Constant::idx(0u64)));
-                    let mut st = 1;
 
+                    let mut gws = Vec::new();
+                    let mut lws = Vec::new();
+                    let mut rws = Vec::new();
                     let shape: Vec<Dim> = {
                         let mut shape = Vec::new();
                         let mut l_op_id = self.head;
@@ -873,7 +876,12 @@ impl Kernel {
                                 break;
                             }
                             match *self.at(l_op_id) {
-                                Op::Loop { dim, .. } => {
+                                Op::Loop { dim, scope } => {
+                                    match scope {
+                                        Scope::Global => gws.push(dim),
+                                        Scope::Local => lws.push(dim),
+                                        Scope::Register => rws.push(dim),
+                                    }
                                     shape.push(dim);
                                 }
                                 Op::EndLoop => {
@@ -886,9 +894,58 @@ impl Kernel {
                         shape
                     };
 
-                    for (id, d) in shape.iter().enumerate().rev() {
+                    let mut original_shape = shape.clone();
+                    match gws.len() {
+                        1 => {}
+                        2 => {
+                            original_shape[0] = gws[0];
+                            original_shape[1] = lws[0];
+                            original_shape[2] = rws[0];
+                            original_shape[3] = gws[1];
+                            original_shape[4] = lws[1];
+                            original_shape[5] = rws[1];
+                        }
+                        3 => {
+                            original_shape[0] = gws[0];
+                            original_shape[1] = lws[0];
+                            original_shape[2] = rws[0];
+                            original_shape[3] = gws[1];
+                            original_shape[4] = lws[1];
+                            original_shape[5] = rws[1];
+                            original_shape[6] = gws[2];
+                            original_shape[7] = lws[2];
+                            original_shape[8] = rws[2];
+                        }
+                        _ => unreachable!(),
+                    }
+                    let mut original_strides = Vec::new();
+                    let mut orig_stride = 1;
+                    for d in original_shape.iter().rev() {
+                        original_strides.push(orig_stride);
+                        orig_stride *= d;
+                    }
+                    original_strides.reverse();
+
+                    // This is permute order for performance, work_size.rs applies it too
+                    let (permuted_shape, permuted_strides) = match gws.len() {
+                        1 => (original_shape, original_strides),
+                        2 => (
+                            permute(&original_shape, &[0, 3, 1, 4, 2, 5]),
+                            permute(&original_strides, &[0, 3, 1, 4, 2, 5]),
+                        ),
+                        3 => (
+                            permute(&original_shape, &[0, 3, 6, 1, 4, 7, 2, 5, 8]),
+                            permute(&original_strides, &[0, 3, 6, 1, 4, 7, 2, 5, 8]),
+                        ),
+                        _ => unreachable!(),
+                    };
+                    debug_assert_eq!(permuted_shape, shape);
+
+                    //println!("permuted_shape={permuted_shape:?}, permuted_strides={permuted_strides:?}");
+
+                    for (id, (d, st)) in permuted_shape.into_iter().zip(permuted_strides).enumerate() {
                         let stride = Constant::idx(st as u64);
-                        let x = if *d > 1 {
+                        let x = if d > 1 {
                             axes[id]
                         } else {
                             self.new_op(opi, Op::Const(Constant::idx(0)))
@@ -896,7 +953,6 @@ impl Kernel {
                         let y = self.new_op(opi, Op::Const(stride));
                         let x = self.new_op(opi, Op::Binary { x, y, bop: BOp::Mul });
                         index = self.new_op(opi, Op::Binary { x, y: index, bop: BOp::Add });
-                        st *= d;
                     }
 
                     let len = shape.iter().product();

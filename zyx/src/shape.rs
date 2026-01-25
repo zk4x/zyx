@@ -128,9 +128,10 @@ pub fn into_axes(axes: impl IntoIterator<Item = Axis>, rank: UAxis) -> Result<Ve
     Ok(res)
 }
 
-pub fn permute(shape: &[Dim], axes: &[UAxis]) -> Vec<Dim> {
+#[must_use]
+pub fn permute<T: Clone>(shape: &[T], axes: &[UAxis]) -> Vec<T> {
     debug_assert_eq!(shape.len(), axes.len());
-    axes.iter().map(|a| shape[*a as usize]).collect()
+    axes.iter().map(|a| shape[*a as usize].clone()).collect()
 }
 
 pub fn reduce(shape: &[Dim], axes: &[UAxis]) -> Vec<Dim> {

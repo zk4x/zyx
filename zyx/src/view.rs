@@ -150,11 +150,11 @@ impl View {
     }
 
     pub fn reshape(&mut self, axes: Range<UAxis>, new_shape: &[Dim]) {
-        println!(
+        /*println!(
             "Reshape {:?}, axes {:?} into shape {new_shape:?}, {self}",
             self.shape(),
             axes.clone()
-        );
+        );*/
         debug_assert!(
             axes.end <= self.0.last().map_or(1, Vec::len) as Dim,
             "Reshape axes range {axes:?} is greater than view's rank {}",
