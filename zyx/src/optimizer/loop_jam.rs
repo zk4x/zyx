@@ -93,7 +93,8 @@ impl LoopJamOpt {
 impl Kernel {
     /// Jam into loop. Yes, it's complex :P
     pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) -> bool {
-        //println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
+        self.debug();
+        println!("Loop jam, jam_loop={jam_loop_id}, inner_loop={inner_loop_id}");
 
         let mut op_id = jam_loop_id;
         while op_id != inner_loop_id {

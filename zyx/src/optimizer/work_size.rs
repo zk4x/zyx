@@ -98,16 +98,19 @@ impl WorkSizeOpt {
             *g /= l * r;
         }
 
+        // TODO we can also apply different permutations on the views here, which may be beneficial
+        // for certain kernels. Also we need to properly change the length of the loops to match those permutations.
+
+        gws = vec![8, 64];
+        lws = vec![32, 1];
+        rws = vec![4, 16];
+
         let shape: Vec<Dim> = gws.iter().chain(&lws).chain(&rws).copied().collect();
         let n = kernel.shape().len();
 
         //if n < 4 && !kernel.is_reshape_contiguous(0..n, &shape) { return false; }
 
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
-
-        //gws = vec![16, 16];
-        //lws = vec![32, 16];
-        //rws = vec![2, 4];
 
         {
             let head = kernel.head;

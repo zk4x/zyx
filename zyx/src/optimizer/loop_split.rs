@@ -32,7 +32,7 @@ impl LoopSplitOpt {
                 // Add original
                 options.push(reduce_dims);
 
-                let defaults = [16, 8];
+                let defaults = [4, 2];
                 for d in defaults.into_iter().chain((2..=16).filter(|x| !defaults.contains(x))) {
                     if total_product.is_multiple_of(d) {
                         options.push(vec![total_product / d, d]);

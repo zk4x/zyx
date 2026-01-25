@@ -32,7 +32,7 @@ impl Kernel {
             }
             if let Op::Loop { dim, scope } = self.ops[op_id].op {
                 let endloop_id = endloop_ids.pop().unwrap();
-                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 1_000 {
+                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 5_000 {
                     self.unroll_loop(op_id, endloop_id, dim);
                 }
             }
