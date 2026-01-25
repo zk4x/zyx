@@ -32,12 +32,35 @@ impl Kernel {
             }
             if let Op::Loop { dim, scope } = self.ops[op_id].op {
                 let endloop_id = endloop_ids.pop().unwrap();
-                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 < 5_000 {
+                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 1_000 {
                     self.unroll_loop(op_id, endloop_id, dim);
                 }
             }
             op_id = self.prev_op(op_id);
         }
+    }
+
+    fn n_ops_in_loop(&self, loop_id: OpId) -> usize {
+        let mut op_id = self.next_op(loop_id);
+        let mut n_loops = 1;
+        let mut n_ops = 0;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::Loop { .. } => {
+                    n_loops += 1;
+                }
+                Op::EndLoop => {
+                    n_loops -= 1;
+                    if n_loops == 0 {
+                        return n_ops;
+                    }
+                }
+                _ => {}
+            }
+            n_ops += 1;
+            op_id = self.next_op(op_id);
+        }
+        n_ops
     }
 
     pub fn unroll_constant_loops(&mut self) {
@@ -61,7 +84,7 @@ impl Kernel {
                         }
                     }
                     if scope == Scope::Register {
-                        if dim == 1 || (is_const && dim < 500) {
+                        if dim == 1 || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 5_000) {
                             self.unroll_loop(op_id, endloop_id, dim);
                         }
                     }
