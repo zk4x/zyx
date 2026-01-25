@@ -748,7 +748,6 @@ impl CUDAMemoryPool {
         reply_rx.recv().unwrap()
     }
 
-    #[allow(unused)]
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         self.tx.send(CUDACommand::ReleaseEvents { events }).unwrap();
@@ -756,7 +755,6 @@ impl CUDAMemoryPool {
 }
 
 impl CUDADevice {
-    #[allow(unused)]
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub const fn deinitialize(&mut self) {
         let _ = self;
@@ -1317,7 +1315,7 @@ impl CUDADevice {
                     dtypes.insert(op_id, dtype_of(&dtypes, src));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x: src, index, vlen: len } => {
+                &Op::Store { dst, x: src, index, vlen: _ } => {
                     dtypes.insert(op_id, dtype_of(&dtypes, src));
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
@@ -1405,7 +1403,7 @@ impl CUDADevice {
                         _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                     }
                 }
-                &Op::Store { dst, x: src, index, vlen: len } => {
+                &Op::Store { dst, x: src, index, vlen: _ } => {
                     _ = writeln!(
                         source,
                         "{indent}p{dst}[{}] = {};",

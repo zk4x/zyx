@@ -109,14 +109,14 @@ impl Optimizer {
         kernel.unfold_pows();
 
         let mut temp_kernel = kernel.clone();
-        for _ in 0..3 {
+        for _ in 0..2 {
             kernel.move_constants_to_beginning();
             kernel.swap_commutative();
             kernel.reassociate_commutative(); // TODO This is changes the kernel on every iteration, fix it
             kernel.constant_folding();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
-            //kernel.unroll_constant_loops();
+            kernel.unroll_constant_loops();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
 

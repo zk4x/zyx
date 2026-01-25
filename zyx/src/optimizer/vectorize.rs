@@ -11,6 +11,7 @@ use crate::{dtype::Constant, graph::BOp, kernel::{Kernel, Op, OpId, Scope}};
 }*/
 
 impl Kernel {
+    #[allow(unused)]
     pub fn vectorize(&mut self, vectorize_dim: usize) {
         let mut op_id = self.tail;
         let mut loop_stack = Vec::new();

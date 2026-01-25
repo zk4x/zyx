@@ -645,29 +645,6 @@ impl Kernel {
         }
     }
 
-    fn get_loops(&self, last_id: OpId) -> Vec<OpId> {
-        let mut loops = Vec::new();
-        let mut op_id = self.head;
-
-        while !op_id.is_null() {
-            if op_id == last_id {
-                return loops;
-            }
-            match self.at(op_id) {
-                Op::Loop { .. } => {
-                    loops.push(op_id);
-                }
-                Op::EndLoop => {
-                    loops.pop();
-                }
-                _ => {}
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        loops
-    }
-
     fn new_op(&mut self, op_iter: &mut OpId, op: Op) -> OpId {
         let op_id = self.insert_after(*op_iter, op);
         *op_iter = op_id;
@@ -675,31 +652,25 @@ impl Kernel {
     }
 
     pub fn unfold_views(&mut self) {
-        fn permute_vec<T: Clone>(vec: &mut Vec<T>, order: &[usize]) {
-            let n = order.len().min(vec.len());
-            let original = vec[..n].to_vec();
-            for i in 0..n {
-                vec[i] = original[order[i]].clone();
-            }
-        }
-
         let mut axes = Vec::new();
         let start = self.head;
         let mut op_id = self.head;
         let mut reduce_loop = OpId::NULL;
-        let mut n_local_loops = 0;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::ConstView(ref x) => {
                     let value = x.0;
-                    let view = &x.1;
                     // With padding, right padding does not affect offset
                     // offset = (a0-lp0)*st0 + a1*st1
                     // Padding condition, negative right padding does not affect it
                     // pc = a0 > lp0-1 && a0 < d0-rp0
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
-                    let view = view.clone();
+                    let mut view = x.1.clone();
+
+                    let mut view_axes = axes.clone();
+                    view.reverse();
+                    view_axes.reverse();
 
                     //println!("Unfolding view: {view}");
 
@@ -738,7 +709,7 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 self.new_op(opi, Op::Const(Constant::idx(0u64)))
                             } else {
-                                axes[i]
+                                view_axes[i]
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
@@ -792,23 +763,9 @@ impl Kernel {
                     // x = pc * value[offset]
                     let mut view = x.1.clone();
 
-                    // Permute both view and axes if this is inside of a reduce loop
-                    // such that local loops are applied right after the first large reduce
                     let mut view_axes = axes.clone();
-                    if !reduce_loop.is_null() {
-                        if axes.contains(&reduce_loop) {
-                            let order = match n_local_loops {
-                                1 => vec![0, 2, 3, 1],
-                                2 => vec![0, 1, 4, 5, 6, 2, 3],
-                                3 => vec![0, 1, 2, 6, 7, 8, 9, 3, 4, 5],
-                                _ => unreachable!(),
-                            };
-                            permute_vec(&mut view_axes, &order);
-                            view.permute(&order);
-                        }
-                    }
-                    //println!("axes={axes:?}");
-                    //println!("view_axes={view_axes:?}");
+                    view.reverse();
+                    view_axes.reverse();
 
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
@@ -942,9 +899,6 @@ impl Kernel {
                     self.ops[op_id].op = Op::Store { dst, x: src, index, vlen: 1 };
                 }
                 Op::Loop { scope, .. } => {
-                    if scope == Scope::Local {
-                        n_local_loops += 1;
-                    }
                     axes.push(op_id);
                     if scope == Scope::Register && reduce_loop.is_null() {
                         if let Op::Store { dst, .. } = self.ops[self.prev_op(op_id)].op {
@@ -1415,6 +1369,9 @@ impl Kernel {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
                 Op::Store { dst, x, index, vlen } => {
+                    if vlen > 1 {
+                        todo!()
+                    }
                     if dst == define_id {
                         self.remove(op_id);
                         // x may have been removed as a previous load. If that was the case, the load was redundant
@@ -1672,7 +1629,7 @@ impl Kernel {
                     check(op_id, src, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Store { dst, x, index, vlen: len } => {
+                Op::Store { dst, x, index, vlen: _ } => {
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
                     check(op_id, index, &stack);

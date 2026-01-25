@@ -324,6 +324,7 @@ impl MemoryPool {
     }
 
     // Drop events without synchronization, non-blocking
+    #[allow(unused)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         match self {
             MemoryPool::Dummy(pool) => pool.release_events(events),
@@ -348,6 +349,7 @@ pub enum Device {
 }
 
 impl Device {
+    #[allow(unused)]
     pub const fn deinitialize(&mut self) {
         match self {
             Device::Dummy(dev) => dev.deinitialize(),
