@@ -59,15 +59,14 @@ pub enum Op {
     Load { src: OpId, index: OpId, vlen: u8 },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
-    Mad { x: OpId, y: OpId, z: OpId }, // fused multiply add
+    // fused multiply add
+    Mad { x: OpId, y: OpId, z: OpId },
+    // fused matmul, a, b, c are fragments, each is a vector, c is accumulator
+    // TODO would be adding d useful?
+    MMA { m: u8, n: u8, k: u8, c: OpId, a: OpId, b: OpId },
 
-    // TODO remove dims, row major from load and store
-    // TODO add op vectorize that will create a vectorized representation that can also be used with tensor cores
-    // TODO for tensor cores, we need to unroll the loop jammed loads and vectorize them.
     Vectorize { ops: Vec<OpId> },
     //Devectorize { regs: OpId, idx: usize }, // select a single value from a vector
-    // TODO for tensor cores, we will also need some wmma matmul instruction
-    //WMMASync { x: OpId, y: OpId, z: OpId },
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
     // TODO Get rid of the view, use whatever ops that are needed directly
@@ -102,6 +101,7 @@ impl Op {
             Op::EndLoop { .. } => vec![],
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.clone(),
+            &Op::MMA { a, b, c, .. } => vec![a, b, c],
         }
         .into_iter()
     }
@@ -123,6 +123,7 @@ impl Op {
             Op::EndLoop { .. } => vec![],
             Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.iter_mut().collect(),
+            Op::MMA { a, b, c, .. } => vec![a, b, c],
         }
         .into_iter()
     }
@@ -328,6 +329,9 @@ impl Kernel {
                         println!("{op_id:>5}{indent}MAD {x} {y} {z}");
                     }
                 }
+                Op::MMA { m, n, k, c, a, b } => {
+                    println!("{op_id:>5}{indent}{ORANGE}MMA{RESET} m{m}n{n}k{k} c={c} a={a} b={b}");
+                }
                 Op::Loop { dim, scope, .. } => {
                     ids.insert(op_id, (0, dim - 1));
                     println!(
@@ -358,9 +362,9 @@ impl Kernel {
                     }
                     if let Some((xl, xu)) = r {
                         ids.insert(op_id, (xl, xu));
-                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE {ops:?}{RESET}    {xl}..={xu}");
+                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE{RESET} {ops:?}    {xl}..={xu}");
                     } else {
-                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE {ops:?}{RESET}");
+                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE{RESET} {ops:?}");
                     }
                 }
             }
@@ -420,7 +424,8 @@ impl Kernel {
                     let flops = shape.iter().product::<Dim>() as u64;
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
-                Op::Vectorize { .. }
+                Op::MMA { .. }
+                | Op::Vectorize { .. }
                 | Op::Store { .. }
                 | Op::Mad { .. }
                 | Op::Const(_)
@@ -1199,7 +1204,8 @@ impl Kernel {
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
-                Op::Vectorize { .. }
+                Op::MMA { .. }
+                | Op::Vectorize { .. }
                 | Op::Store { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
@@ -1413,7 +1419,7 @@ impl Kernel {
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
-                Op::Vectorize { .. } => loop_depth,
+                Op::MMA { .. } | Op::Vectorize { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -1456,6 +1462,7 @@ impl Kernel {
                 | Op::StoreView { .. }
                 | Op::Reduce { .. }
                 | Op::Vectorize { .. }
+                | Op::MMA { .. }
                 | Op::Mad { .. } => unreachable!(),
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -1664,6 +1671,17 @@ impl Kernel {
                             self.debug();
                             panic!("Vectorize dtype mismatch on op={op_id}.");
                         }
+                    }
+                    dtypes.insert(op_id, dtype);
+                }
+                Op::MMA { c, a, b, .. } => {
+                    let dtype = dtypes[&c];
+                    check(op_id, c, &stack);
+                    check(op_id, a, &stack);
+                    check(op_id, b, &stack);
+                    if dtypes[&a] != dtype || dtypes[&b] != dtype {
+                        self.debug();
+                        panic!("MMA dtype mismatch on op={op_id}.");
                     }
                     dtypes.insert(op_id, dtype);
                 }
@@ -1887,6 +1905,7 @@ impl Kernel {
                     }
                     Op::Const { .. } | Op::ConstView { .. } | Op::LoadView { .. } => {}
                     Op::Vectorize { .. }
+                    | Op::MMA { .. }
                     | Op::Define { .. }
                     | Op::Mad { .. }
                     | Op::StoreView { .. }

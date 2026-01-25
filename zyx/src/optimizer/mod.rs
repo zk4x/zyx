@@ -33,9 +33,9 @@ pub struct Optimizer {
     best_optimization: Optimization,
     // time taken by kernel with the best optimization
     pub best_time_nanos: u64,
-    // Which iteration are we on? First 30 iterations are random, then 20 iterations of refinement
-    // and remaider is just going over all possible optimizations in deterministic order
+    // Which iteration are we on? This is for default and random.
     default_iteration: u32,
+    // This is the deterministic order for iterations, up to max_iter
     full_iteration: u32,
     max_iter: u32,
     // Optimizations that were tried during random search and refinement
@@ -211,10 +211,10 @@ impl Optimizer {
             self.best_time_nanos = last_time_nanos;
             self.best_optimization = self.last;
         }
-        let opt = if let Some(opt) = self.random_search() {
+        let opt = if let Some(opt) = self.default_search() {
             Some(opt)
-        //} else if let Some(opt) = self.refinement_search(last_time_nanos) {
-        //Some(opt)
+        } else if let Some(opt) = self.random_search() {
+            Some(opt)
         } else {
             self.deterministic_search()
         };
@@ -228,8 +228,36 @@ impl Optimizer {
         self.full_iteration >= self.max_iter
     }
 
-    fn random_search(&mut self) -> Option<Optimization> {
+    fn default_search(&mut self) -> Option<Optimization> {
         if self.default_iteration >= 200 {
+            return None;
+        }
+        self.default_iteration += 1;
+
+        for &d0 in &self.default_indices[0] {
+            for &d1 in &self.default_indices[1] {
+                for &d2 in &self.default_indices[2] {
+                    for &d3 in &self.default_indices[3] {
+                        let dims = [d0, d1, d2, d3];
+                        let mut index = 0;
+                        let mut stride = 1;
+                        for i in (0..dims.len()).rev() {
+                            index += dims[i] * stride;
+                            stride *= self.max_indices[i];
+                        }
+                        let opt = Optimization(index);
+                        if self.tried.insert(opt) {
+                            return Some(opt);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn random_search(&mut self) -> Option<Optimization> {
+        if self.default_iteration >= 500 {
             return None;
         }
         self.default_iteration += 1;

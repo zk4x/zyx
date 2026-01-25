@@ -62,9 +62,10 @@ impl WorkSizeOpt {
         }
 
         let max_local_threads = dev_info.max_local_threads;
-
         let max_idx = gws_factors.iter().map(|gd| gd.len() as u32).product();
+
         //println!("gws={gws:?}, gws_factors={gws_factors:?}, max_local_threads={max_local_threads}");
+
         (Self { gws, gws_factors, max_local_threads }, max_idx, vec![0, 1, 2])
     }
 
@@ -104,9 +105,9 @@ impl WorkSizeOpt {
 
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
 
-        //gws = vec![32, 32];
-        //lws = vec![8, 8];
-        //rws = vec![4, 4];
+        gws = vec![32, 32];
+        lws = vec![8, 8];
+        rws = vec![4, 4];
 
         {
             let head = kernel.head;

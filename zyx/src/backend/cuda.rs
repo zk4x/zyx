@@ -1299,6 +1299,7 @@ impl CUDADevice {
             let op = kernel.at(op_id);
             match op {
                 Op::Vectorize { .. }
+                | Op::MMA { .. }
                 | Op::ConstView { .. }
                 | Op::StoreView { .. }
                 | Op::LoadView { .. }
@@ -1374,6 +1375,7 @@ impl CUDADevice {
             //println!("{i} -> {op:?}");
             match op {
                 Op::Vectorize { .. }
+                | Op::MMA { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
@@ -1684,3 +1686,15 @@ impl nvrtcResult {
         }
     }
 }
+
+static WMMA_FUNCS: &'static str = r#"
+__device__ half4 __MMA_8_16_8_half_half(half4 a, half2 b, half4 c){
+  int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
+  asm("mma.sync.aligned.m16n8k8.row.col.f16.f16.f16.f16"
+      "{%0, %1}, {%2, %3},"
+      "{%4}, {%0, %1};"
+    : "+r"(c_pk[0]), "+r"(c_pk[1])
+    : "r"(a_pk[0]), "r"(a_pk[1]), "r"(b_pk[0]));
+  return c;
+}
+"#;
