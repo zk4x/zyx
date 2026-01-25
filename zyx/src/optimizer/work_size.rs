@@ -105,9 +105,9 @@ impl WorkSizeOpt {
 
         kernel.apply_movement(|view| view.reshape(0..n, &shape));
 
-        //gws = vec![32, 32];
-        //lws = vec![8, 8];
-        //rws = vec![4, 4];
+        //gws = vec![16, 16];
+        //lws = vec![32, 16];
+        //rws = vec![2, 4];
 
         {
             let head = kernel.head;

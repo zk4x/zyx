@@ -38,6 +38,9 @@ pyo3 = { version = "0.25.1", optional = true, features = ["extension-module", "a
 # Vulkano, will be later removed, once we sort out direct vulkan bindings
 #vulkano = { version = "*", optional = true }
 
+[dev-dependencies]
+matrixmultiply = "*"
+
 [lib]
 crate-type = ["lib"] #, "cdylib"]
 
