@@ -407,7 +407,11 @@ impl WGPUDevice {
         while !op_id.is_null() {
             //println!("{i} -> {op:?}");
             match kernel.at(op_id) {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::MMA { .. }
+                | Op::ConstView { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Reduce { .. } => {
                     unreachable!()
                 }
                 &Op::Const(x) => {
