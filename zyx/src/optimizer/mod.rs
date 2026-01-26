@@ -108,7 +108,9 @@ impl Optimizer {
         kernel.unfold_pows();
         kernel.fuse_mad();
 
-        //kernel.unroll_loops(4);
+        // TODO first unroll loops and then vectorize
+        kernel.unroll_loops(4);
+        kernel.vectorize_ops();
         kernel.swap_commutative();
         kernel.loop_invariant_code_motion();
         kernel.move_constants_to_beginning();

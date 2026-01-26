@@ -86,4 +86,11 @@ impl Kernel {
         }
         None
     }
+
+    /// Searches the whole kernel. If it finds ops that can be groupped together, puts vectorize before and devectorize after them and groups (vectorizes) them.
+    pub fn vectorize_ops(&mut self) {
+        // A simple version is to use devectorize op and gradually keep looking for groups of ops to devectorize and last step would be to simply merge vectorize and devectorize ops together.
+        // And merge vectorize ops with loads and devectorize ops with stores if the last stride is 1
+
+    }
 }
