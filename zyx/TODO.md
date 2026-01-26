@@ -76,10 +76,15 @@
   - [ ] div mod simplifications
     - [x] consequtive modulos
   - [x] dead accumulator elimination (after unroll)
-  - [x] vectorization, vector dtypes
-  - [ ] tensor cores/tiling
+  - [ ] vectorization, vector dtypes
+    - [x] vector dtypes
+    - [ ] automatic vectorization
+  - [x] register tiling
+  - [ ] tensor cores
   - [x] merge all mul + add into mad instructions
   - [ ] local tiling of all variables
+    - [ ] local tiling for accumulators in large reduces
+    - [ ] local tiling for caching
   - [ ] multi step reduce (with multiple accumulators)
   - [ ] streaming dual reduce ops (e.g. streaming softmax)
   - [x] optimizer with search

@@ -64,9 +64,9 @@ pub enum Op {
     // fused matmul, a, b, c are fragments, each is a vector, c is accumulator
     // TODO would be adding d useful?
     MMA { m: u8, n: u8, k: u8, c: OpId, a: OpId, b: OpId },
-
+    // Vectorization, YAY!
     Vectorize { ops: Vec<OpId> },
-    //Devectorize { regs: OpId, idx: usize }, // select a single value from a vector
+    Devectorize { vec: OpId, idx: usize }, // select a single value from a vector
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
     // TODO Get rid of the view, use whatever ops that are needed directly
@@ -101,6 +101,7 @@ impl Op {
             Op::EndLoop { .. } => vec![],
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.clone(),
+            &Op::Devectorize { vec, .. }  => vec![vec],
             &Op::MMA { a, b, c, .. } => vec![a, b, c],
         }
         .into_iter()
@@ -123,6 +124,7 @@ impl Op {
             Op::EndLoop { .. } => vec![],
             Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.iter_mut().collect(),
+            Op::Devectorize { vec, .. }  => vec![vec],
             Op::MMA { a, b, c, .. } => vec![a, b, c],
         }
         .into_iter()
@@ -367,6 +369,16 @@ impl Kernel {
                         println!("{op_id:>5}{indent}{ORANGE}VECTORIZE{RESET} {ops:?}");
                     }
                 }
+                Op::Devectorize { vec, idx } => {
+                    if let Some((l, u)) = ids.get(&vec) {
+                        ids.insert(op_id, (*l, *u));
+                    }
+                    if let Some((l, u)) = ids.get(&op_id) {
+                        println!("{op_id:>5}{indent}{ORANGE}DEVECTORIZE {vec}[{idx}]    {l}..={u}");
+                    } else {
+                        println!("{op_id:>5}{indent}{ORANGE}DEVECTORIZE {vec}[{idx}]");
+                    }
+                }
             }
             op_id = self.ops[op_id].next;
         }
@@ -426,6 +438,7 @@ impl Kernel {
                 }
                 Op::MMA { .. }
                 | Op::Vectorize { .. }
+                | Op::Devectorize { .. }
                 | Op::Store { .. }
                 | Op::Mad { .. }
                 | Op::Const(_)
@@ -526,6 +539,11 @@ impl Kernel {
             Op::LoadView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
             _ => true,
         })
+    }
+
+    /// Fuses multiple reduce ops together if possible
+    pub fn fuse_reduces(&mut self) {
+        // TODO
     }
 
     pub fn close_loops(&mut self) {
@@ -1261,7 +1279,8 @@ impl Kernel {
             match *self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
                 Op::MMA { .. }
-                | Op::Vectorize { .. }
+                | Op::Vectorize { .. } // TODO
+                | Op::Devectorize { .. } // TODO
                 | Op::Store { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
@@ -1483,7 +1502,7 @@ impl Kernel {
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
-                Op::MMA { .. } | Op::Vectorize { .. } => loop_depth,
+                Op::Devectorize { .. } | Op::MMA { .. } | Op::Vectorize { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -1533,6 +1552,7 @@ impl Kernel {
                     }
                     max
                 }
+                Op::Devectorize { .. } => todo!(),
                 Op::Mad { x, y, z } => loop_dep[x].max(loop_dep[y]).max(loop_dep[z]),
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -1744,6 +1764,7 @@ impl Kernel {
                     }
                     dtypes.insert(op_id, dtype);
                 }
+                Op::Devectorize { .. } => todo!(),
                 Op::MMA { c, a, b, .. } => {
                     let dtype = dtypes[&c];
                     check(op_id, c, &stack);
@@ -1975,6 +1996,7 @@ impl Kernel {
                     }
                     Op::Const { .. } | Op::ConstView { .. } | Op::LoadView { .. } => {}
                     Op::Vectorize { .. }
+                    | Op::Devectorize { .. }
                     | Op::MMA { .. }
                     | Op::Define { .. }
                     | Op::Mad { .. }

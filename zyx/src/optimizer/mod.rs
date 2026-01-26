@@ -47,6 +47,8 @@ pub struct Optimizer {
 impl Optimizer {
     #[must_use]
     pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization, debug_ir: bool) -> bool {
+        kernel.fuse_reduces();
+
         let [
             local_work_size_opt_index,
             loop_jam_opt_index,
@@ -93,8 +95,6 @@ impl Optimizer {
             return false;
         }
 
-        //kernel.vectorize(4);
-
         // Unrolling for all loops
         if !self.loop_unrolling_opt.apply_optimization(loop_unrolling_opt_index, kernel) {
             return false;
@@ -105,18 +105,17 @@ impl Optimizer {
         kernel.fold_accs();
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
+        // It's done AFTER constant folding
         kernel.unfold_pows();
         kernel.fuse_mad();
 
-        // TODO first unroll loops and then vectorize
-        kernel.unroll_loops(4);
         kernel.vectorize_ops();
         kernel.swap_commutative();
         kernel.loop_invariant_code_motion();
         kernel.move_constants_to_beginning();
-        kernel.constant_folding();
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
+        // Use tensor cores if possible
         kernel.fuse_mma();
 
         let mut temp_kernel = kernel.clone();
