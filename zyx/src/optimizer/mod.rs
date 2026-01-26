@@ -106,6 +106,7 @@ impl Optimizer {
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
         kernel.unfold_pows();
+        kernel.fuse_mad();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..2 {
@@ -142,7 +143,6 @@ impl Optimizer {
             temp_kernel = kernel.clone();
         }
 
-        kernel.fuse_mad();
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
 

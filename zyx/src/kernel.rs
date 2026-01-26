@@ -1345,7 +1345,15 @@ impl Kernel {
                     }
                     _ => {}
                 },
-                Op::Mad { .. } => {} // TODO
+                Op::Mad { x, y, z } => {
+                    match (self.at(x).clone(), self.at(y).clone(), self.at(z).clone()) {
+                        (Op::Const(cx), Op::Const(cy), Op::Const(cz)) => {
+                            let mul = Constant::binary(cx, cy, BOp::Mul);
+                            self.ops[op_id].op = Op::Const(Constant::binary(mul, cz, BOp::Add));
+                        }
+                        _ => {}
+                    }
+                }
             }
             op_id = self.next_op(op_id);
         }
@@ -1517,9 +1525,15 @@ impl Kernel {
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
                 | Op::Reduce { .. }
-                | Op::Vectorize { .. }
-                | Op::MMA { .. }
-                | Op::Mad { .. } => unreachable!(),
+                | Op::MMA { .. }  => unreachable!(),
+                Op::Vectorize { ops } => {
+                    let mut max = 0;
+                    for op in ops {
+                        max = max.max(loop_dep[op]);
+                    }
+                    max
+                }
+                Op::Mad { x, y, z } => loop_dep[x].max(loop_dep[y]).max(loop_dep[z]),
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
