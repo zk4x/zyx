@@ -12,7 +12,7 @@ mod loop_jam;
 mod loop_split;
 mod loop_unrolling;
 mod vectorize;
-mod wmma;
+mod mma;
 mod work_size;
 
 // Indices in 0..max_index for each optimization Opt
@@ -107,6 +107,15 @@ impl Optimizer {
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
         kernel.unfold_pows();
         kernel.fuse_mad();
+
+        //kernel.unroll_loops(4);
+        kernel.swap_commutative();
+        kernel.loop_invariant_code_motion();
+        kernel.move_constants_to_beginning();
+        kernel.constant_folding();
+        kernel.common_subexpression_elimination();
+        kernel.dead_code_elimination();
+        kernel.fuse_mma();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..2 {

@@ -98,9 +98,9 @@ impl WorkSizeOpt {
             *g /= l * r;
         }
 
-        gws = vec![64, 8];
-        lws = vec![1, 32];
-        rws = vec![16, 4];
+        gws = vec![32, 16];
+        lws = vec![16, 16];
+        rws = vec![2, 4];
 
         let mut shape: Vec<Dim> = Vec::new();
         for i in 0..gws.len() {
