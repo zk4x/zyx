@@ -1194,6 +1194,11 @@ impl Kernel {
         let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
         let mut op_id = self.head;
         while !op_id.is_null() {
+            for param in self.ops[op_id].op.parameters_mut() {
+                if let Some(&new_id) = remaps.get(param) {
+                    *param = new_id;
+                }
+            }
             match self.at(op_id) {
                 Op::Define { .. } => {}
                 Op::Loop { .. } => {
@@ -1223,11 +1228,6 @@ impl Kernel {
                     } else {
                         local_unique.insert(op.clone(), op_id);
                     }
-                }
-            }
-            for param in self.ops[op_id].op.parameters_mut() {
-                if let Some(&new_id) = remaps.get(param) {
-                    *param = new_id;
                 }
             }
             let temp = self.next_op(op_id);

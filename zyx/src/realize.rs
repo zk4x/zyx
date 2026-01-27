@@ -594,10 +594,15 @@ impl<'a> Kernelizer<'a> {
                     continue;
                 }
 
-                if let Ok(pid) = device.compile(&okernel, self.debug.asm()) {
-                    program_id = pid;
-                } else {
-                    continue;
+                match device.compile(&okernel, self.debug.asm()) {
+                    Ok(pid) => program_id = pid,
+                    Err(err) => {
+                        if cfg!(debug_assertions) {
+                            panic!("{err}");
+                        } else {
+                            continue;
+                        }
+                    }
                 }
 
                 if self.debug.kmd() {

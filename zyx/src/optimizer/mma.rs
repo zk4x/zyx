@@ -20,11 +20,12 @@ impl Kernel {
         self.swap_commutative();
         self.loop_invariant_code_motion();
         self.move_constants_to_beginning();
+        self.constant_folding();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
-        self.vectorize_loops(2);
 
         self.debug();
+
         let mut op_id = self.head;
         while !op_id.is_null() {
             if self.is_mma_store(op_id) {

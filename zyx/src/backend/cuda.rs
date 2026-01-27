@@ -1376,8 +1376,7 @@ impl CUDADevice {
             let op = kernel.at(op_id);
             //println!("{i} -> {op:?}");
             match op {
-                Op::Vectorize { .. }
-                | Op::Devectorize { .. }
+                Op::Devectorize { .. }
                 | Op::MMA { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
@@ -1472,6 +1471,19 @@ impl CUDADevice {
                         BOp::Eq => writeln!(source, "{indent}r{reg} = {x} == {y};"),
                     };
                 }
+                Op::Vectorize { ops } => {
+                    let dtype = dtypes[&op_id];
+                    let mut vars = String::new();
+                    for &x in ops {
+                        let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
+                        _ = write!(vars, "{x}, ");
+                    }
+                    vars.pop();
+                    vars.pop();
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    let dtype = dtypes[&op_id];
+                    _ = writeln!(source, "{indent}r{reg} = ({}{})({vars});", dtype.0.cu(), dtype.1);
+                }
                 &Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -1534,13 +1546,13 @@ impl CUDADevice {
         if registers.len() > 0 {
             let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
-            _ = write!(reg_str, "{indent}{}{} r0", dt.0.cu(), dt.1);
+            _ = write!(reg_str, "{indent}{}{} r0", dt.0.cu(), if dt.1 > 1 { format!("{}", dt.1) } else { "".into() });
             let mut i = 1;
             for (dt, _, _) in registers {
                 if dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
-                    _ = write!(reg_str, ";\n{indent}{}{} r{i}", dt.0.cu(), dt.1);
+                    _ = write!(reg_str, ";\n{indent}{}{} r{i}", dt.0.cu(), if dt.1 > 1 { format!("{}", dt.1) } else { "".into() });
                 }
                 prev_dt = dt;
                 i += 1;
