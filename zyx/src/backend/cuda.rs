@@ -1192,8 +1192,8 @@ impl CUDADevice {
         fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<(DType, u32, u8)>,
-            dtype: DType,
+            registers: &mut Vec<((DType, u8), u32, u8)>,
+            dtype: (DType, u8),
             rc: u32,
             current_loop_level: u8,
         ) -> usize {
@@ -1220,7 +1220,7 @@ impl CUDADevice {
             constants: &Map<OpId, Constant>,
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
-            registers: &mut [(DType, u32, u8)],
+            registers: &mut [((DType, u8), u32, u8)],
             loop_level: u8,
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
@@ -1286,20 +1286,14 @@ impl CUDADevice {
         global_args.push('\n');
 
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-
-        #[inline]
-        fn dtype_of(dtypes: &Map<OpId, DType>, id: OpId) -> DType {
-            *dtypes.get(&id).unwrap_or_else(|| panic!("BUG: dtype missing for op {:?}", id))
-        }
+        let mut dtypes: Map<OpId, (DType, u8)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         // first we will calculate those reference counts.
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             let op = kernel.at(op_id);
             match op {
-                Op::Vectorize { .. }
-                | Op::Devectorize { .. }
+                Op::Devectorize { .. }
                 | Op::MMA { .. }
                 | Op::ConstView { .. }
                 | Op::StoreView { .. }
@@ -1307,49 +1301,56 @@ impl CUDADevice {
                 | Op::Reduce { .. } => {
                     unreachable!()
                 }
+                Op::Vectorize { ops } => {
+                    let dtype = dtypes[&ops[0]];
+                    dtypes.insert(op_id, (dtype.0, ops.len() as u8));
+                    for &x in ops {
+                        *rcs.entry(x).or_insert(0) += 1;
+                    }
+                }
                 Op::Const(x) => {
-                    dtypes.insert(op_id, x.dtype());
+                    dtypes.insert(op_id, (x.dtype(), 1));
                 }
                 &Op::Define { dtype, .. } => {
-                    dtypes.insert(op_id, dtype);
+                    dtypes.insert(op_id, (dtype, 1));
                 }
-                &Op::Load { src, index, .. } => {
-                    dtypes.insert(op_id, dtype_of(&dtypes, src));
+                &Op::Load { src, index, vlen } => {
+                    dtypes.insert(op_id, (dtypes[&src].0, vlen));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x: src, index, vlen: _ } => {
-                    dtypes.insert(op_id, dtype_of(&dtypes, src));
+                &Op::Store { dst, x, index, vlen } => {
+                    debug_assert_eq!(dtypes[&x].1, vlen);
+                    dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(dst).or_insert(0) += 1;
-                    *rcs.entry(src).or_insert(0) += 1;
+                    *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(index).or_insert(0) += 1;
                 }
                 &Op::Cast { x, dtype } => {
-                    dtypes.insert(op_id, dtype);
+                    dtypes.insert(op_id, (dtype, dtypes[&x].1));
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Unary { x, .. } => {
-                    dtypes.insert(op_id, dtype_of(&dtypes, x));
+                    dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Binary { x, y, bop } => {
                     let dtype = if bop.returns_bool() {
-                        DType::Bool
+                        (DType::Bool, dtypes[&x].1)
                     } else {
-                        dtype_of(&dtypes, x)
+                        dtypes[&x]
                     };
                     dtypes.insert(op_id, dtype);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
                 &Op::Mad { x, y, z } => {
-                    let dtype = dtype_of(&dtypes, x);
-                    dtypes.insert(op_id, dtype);
+                    dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(z).or_insert(0) += 1;
                 }
                 Op::Loop { .. } => {
-                    dtypes.insert(op_id, DType::U32);
+                    dtypes.insert(op_id, (DType::U32, 1));
                 }
                 Op::EndLoop => {}
             }
@@ -1358,7 +1359,7 @@ impl CUDADevice {
 
         let mut reg_map: Map<OpId, usize> =
             Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<(DType, u32, u8)> = Vec::new();
+        let mut registers: Vec<((DType, u8), u32, u8)> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -1417,7 +1418,7 @@ impl CUDADevice {
                 }
                 &Op::Cast { x, dtype } => {
                     let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, dtypes[&x].1), rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
                 }
                 &Op::Unary { x, uop } => {
@@ -1428,7 +1429,7 @@ impl CUDADevice {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
                         UOp::Exp2 => {
-                            if dtype == DType::F16 {
+                            if dtype.0 == DType::F16 {
                                 _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
                             } else {
                                 _ = writeln!(source, "{indent}r{reg} = exp2({x});");
@@ -1437,7 +1438,7 @@ impl CUDADevice {
                         }
                         UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
                         UOp::Reciprocal => {
-                            _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.one_constant().cu());
+                            _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().cu());
                         }
                         UOp::Sqrt => _ = writeln!(source, "{indent}r{reg} = sqrt({x});"),
                         UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
@@ -1520,7 +1521,8 @@ impl CUDADevice {
             }
             op_id = kernel.next_op(op_id);
         }
-        let _total_bytes = registers.iter().map(|(dtype, ..)| dtype.byte_size() as usize).sum::<usize>() + acc_bytes;
+        let _total_bytes =
+            registers.iter().map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize).sum::<usize>() + acc_bytes;
         /*if total_bytes > 1024 {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
@@ -1532,13 +1534,13 @@ impl CUDADevice {
         if registers.len() > 0 {
             let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
-            _ = write!(reg_str, "{indent}{} r0", dt.cu());
+            _ = write!(reg_str, "{indent}{}{} r0", dt.0.cu(), dt.1);
             let mut i = 1;
             for (dt, _, _) in registers {
                 if dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
-                    _ = write!(reg_str, ";\n{indent}{} r{i}", dt.cu());
+                    _ = write!(reg_str, ";\n{indent}{}{} r{i}", dt.0.cu(), dt.1);
                 }
                 prev_dt = dt;
                 i += 1;
@@ -1547,7 +1549,7 @@ impl CUDADevice {
         }
 
         let mut pragma = String::new();
-        if dtypes.values().any(|&x| x == DType::F16) {
+        if dtypes.values().any(|&x| x.0 == DType::F16) {
             pragma += "#include <cuda_fp16.h>\n";
         }
 

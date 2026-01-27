@@ -189,6 +189,129 @@ impl Hash for Kernel {
 }
 
 impl Kernel {
+    pub fn remove(&mut self, op_id: OpId) {
+        debug_assert!(!op_id.is_null());
+        debug_assert!(!self.ops.is_empty());
+
+        let OpNode { prev, next, .. } = self.ops[op_id];
+        if prev.is_null() {
+            self.head = next;
+        } else {
+            self.ops[prev].next = next;
+        }
+        if next.is_null() {
+            self.tail = prev;
+        } else {
+            self.ops[next].prev = prev;
+        }
+
+        self.ops.remove(op_id);
+    }
+
+    pub fn insert_before(&mut self, before_id: OpId, op: Op) -> OpId {
+        debug_assert!(!before_id.is_null());
+        debug_assert!(!self.ops.is_empty());
+
+        let prev = self.ops[before_id].prev;
+        let op_node = OpNode { prev, next: before_id, op: op };
+        let op_id = self.ops.push(op_node);
+        self.ops[before_id].prev = op_id;
+        if prev.is_null() {
+            self.head = op_id;
+        } else {
+            self.ops[prev].next = op_id;
+        }
+        op_id
+    }
+
+    pub fn insert_after(&mut self, after_id: OpId, op: Op) -> OpId {
+        debug_assert!(!after_id.is_null());
+        debug_assert!(!self.ops.is_empty());
+
+        let next = self.ops[after_id].next;
+        let op_node = OpNode { prev: after_id, next, op: op };
+        let op_id = self.ops.push(op_node);
+        self.ops[after_id].next = op_id;
+        if next.is_null() {
+            self.tail = op_id;
+        } else {
+            self.ops[next].prev = op_id;
+        }
+        op_id
+    }
+
+    pub fn move_op_after(&mut self, op_id: OpId, after_id: OpId) {
+        debug_assert!(!op_id.is_null());
+        debug_assert!(!after_id.is_null());
+        debug_assert!(!self.ops.is_empty());
+
+        //println!("moving op={op_id}, after={after_id}");
+
+        // Remove
+        let OpNode { prev, next, .. } = self.ops[op_id];
+        if prev.is_null() {
+            self.head = next;
+        } else {
+            self.ops[prev].next = next;
+        }
+        if next.is_null() {
+            self.tail = prev;
+        } else {
+            self.ops[next].prev = prev;
+        }
+
+        // Insert
+        self.ops[op_id].prev = after_id;
+        let next = self.ops[after_id].next;
+        self.ops[op_id].next = next;
+        self.ops[after_id].next = op_id;
+        if next.is_null() {
+            self.tail = op_id;
+        } else {
+            self.ops[next].prev = op_id;
+        }
+    }
+
+    pub fn move_op_before(&mut self, op_id: OpId, before_id: OpId) {
+        debug_assert!(!op_id.is_null());
+        debug_assert!(!before_id.is_null());
+        debug_assert!(!self.ops.is_empty());
+
+        //println!("moving op={op_id}, before={before_id}");
+
+        // Remove
+        let OpNode { prev, next, .. } = self.ops[op_id];
+        if prev.is_null() {
+            self.head = next;
+        } else {
+            self.ops[prev].next = next;
+        }
+        if next.is_null() {
+            self.tail = prev;
+        } else {
+            self.ops[next].prev = prev;
+        }
+
+        // Insert
+        self.ops[op_id].next = before_id;
+        let prev = self.ops[before_id].prev;
+        self.ops[op_id].prev = prev;
+        self.ops[before_id].prev = op_id;
+        if prev.is_null() {
+            self.head = op_id;
+        } else {
+            self.ops[prev].next = op_id;
+        }
+    }
+
+    pub fn prev_op(&self, op_id: OpId) -> OpId {
+        self.ops[op_id].prev
+    }
+
+    pub fn next_op(&self, op_id: OpId) -> OpId {
+        self.ops[op_id].next
+    }
+
     pub fn ops_mut(&mut self) -> impl Iterator<Item = &mut Op> {
         self.ops.values_mut().map(|op_node| &mut op_node.op)
     }
@@ -1118,129 +1241,6 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn remove(&mut self, op_id: OpId) {
-        debug_assert!(!op_id.is_null());
-        debug_assert!(!self.ops.is_empty());
-
-        let OpNode { prev, next, .. } = self.ops[op_id];
-        if prev.is_null() {
-            self.head = next;
-        } else {
-            self.ops[prev].next = next;
-        }
-        if next.is_null() {
-            self.tail = prev;
-        } else {
-            self.ops[next].prev = prev;
-        }
-
-        self.ops.remove(op_id);
-    }
-
-    pub fn insert_before(&mut self, before_id: OpId, op: Op) -> OpId {
-        debug_assert!(!before_id.is_null());
-        debug_assert!(!self.ops.is_empty());
-
-        let prev = self.ops[before_id].prev;
-        let op_node = OpNode { prev, next: before_id, op: op };
-        let op_id = self.ops.push(op_node);
-        self.ops[before_id].prev = op_id;
-        if prev.is_null() {
-            self.head = op_id;
-        } else {
-            self.ops[prev].next = op_id;
-        }
-        op_id
-    }
-
-    pub fn insert_after(&mut self, after_id: OpId, op: Op) -> OpId {
-        debug_assert!(!after_id.is_null());
-        debug_assert!(!self.ops.is_empty());
-
-        let next = self.ops[after_id].next;
-        let op_node = OpNode { prev: after_id, next, op: op };
-        let op_id = self.ops.push(op_node);
-        self.ops[after_id].next = op_id;
-        if next.is_null() {
-            self.tail = op_id;
-        } else {
-            self.ops[next].prev = op_id;
-        }
-        op_id
-    }
-
-    pub fn move_op_after(&mut self, op_id: OpId, after_id: OpId) {
-        debug_assert!(!op_id.is_null());
-        debug_assert!(!after_id.is_null());
-        debug_assert!(!self.ops.is_empty());
-
-        //println!("moving op={op_id}, after={after_id}");
-
-        // Remove
-        let OpNode { prev, next, .. } = self.ops[op_id];
-        if prev.is_null() {
-            self.head = next;
-        } else {
-            self.ops[prev].next = next;
-        }
-        if next.is_null() {
-            self.tail = prev;
-        } else {
-            self.ops[next].prev = prev;
-        }
-
-        // Insert
-        self.ops[op_id].prev = after_id;
-        let next = self.ops[after_id].next;
-        self.ops[op_id].next = next;
-        self.ops[after_id].next = op_id;
-        if next.is_null() {
-            self.tail = op_id;
-        } else {
-            self.ops[next].prev = op_id;
-        }
-    }
-
-    pub fn move_op_before(&mut self, op_id: OpId, before_id: OpId) {
-        debug_assert!(!op_id.is_null());
-        debug_assert!(!before_id.is_null());
-        debug_assert!(!self.ops.is_empty());
-
-        //println!("moving op={op_id}, before={before_id}");
-
-        // Remove
-        let OpNode { prev, next, .. } = self.ops[op_id];
-        if prev.is_null() {
-            self.head = next;
-        } else {
-            self.ops[prev].next = next;
-        }
-        if next.is_null() {
-            self.tail = prev;
-        } else {
-            self.ops[next].prev = prev;
-        }
-
-        // Insert
-        self.ops[op_id].next = before_id;
-        let prev = self.ops[before_id].prev;
-        self.ops[op_id].prev = prev;
-        self.ops[before_id].prev = op_id;
-        if prev.is_null() {
-            self.head = op_id;
-        } else {
-            self.ops[prev].next = op_id;
-        }
-    }
-
-    pub fn prev_op(&self, op_id: OpId) -> OpId {
-        self.ops[op_id].prev
-    }
-
-    pub fn next_op(&self, op_id: OpId) -> OpId {
-        self.ops[op_id].next
-    }
-
     pub fn move_constants_to_beginning(&mut self) {
         let mut start = self.head;
         while let Op::Define { .. } = self.at(start) {
@@ -1408,6 +1408,8 @@ impl Kernel {
 
     // Eliminates accs that are not stored into in loops
     pub fn fold_accs(&mut self) {
+        // We have to do constant folding before folding accs to guarantee indices are constants
+        self.constant_folding();
         // Check if a define exists without a loop that stores into that define
         let mut defines = Map::default();
         let mut loop_level = 0u32;

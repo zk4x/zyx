@@ -100,8 +100,6 @@ impl Optimizer {
             return false;
         };
 
-        // We have to do constant folding before folding accs to guarantee indices are constants
-        kernel.constant_folding();
         kernel.fold_accs();
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
@@ -109,12 +107,6 @@ impl Optimizer {
         kernel.unfold_pows();
         kernel.fuse_mad();
 
-        kernel.vectorize_ops();
-        kernel.swap_commutative();
-        kernel.loop_invariant_code_motion();
-        kernel.move_constants_to_beginning();
-        kernel.common_subexpression_elimination();
-        kernel.dead_code_elimination();
         // Use tensor cores if possible
         kernel.fuse_mma();
 

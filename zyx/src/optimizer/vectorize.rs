@@ -11,7 +11,6 @@ use crate::{dtype::Constant, graph::BOp, kernel::{Kernel, Op, OpId, Scope}};
 }*/
 
 impl Kernel {
-    #[allow(unused)]
     pub fn vectorize_loops(&mut self, vectorize_dim: usize) {
         let mut op_id = self.tail;
         let mut loop_stack = Vec::new();
@@ -37,6 +36,7 @@ impl Kernel {
 
     // Move ops that can be vectorized outside of the loop
     pub fn vectorize_loop(&mut self, loop_id: OpId, endloop_id: OpId) {
+        self.debug();
         println!("Vectorizing loop={loop_id}, endloop={endloop_id}");
         let mut op_id = loop_id;
         let Op::Loop { dim: loop_dim, scope } = self.ops[loop_id].op else { unreachable!() };
@@ -88,9 +88,9 @@ impl Kernel {
     }
 
     /// Searches the whole kernel. If it finds ops that can be groupped together, puts vectorize before and devectorize after them and groups (vectorizes) them.
+    #[allow(unused)]
     pub fn vectorize_ops(&mut self) {
         // A simple version is to use devectorize op and gradually keep looking for groups of ops to devectorize and last step would be to simply merge vectorize and devectorize ops together.
         // And merge vectorize ops with loads and devectorize ops with stores if the last stride is 1
-
     }
 }

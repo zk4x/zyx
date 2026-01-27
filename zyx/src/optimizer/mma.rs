@@ -17,6 +17,13 @@ use crate::{
 impl Kernel {
     /// Turns inner loops into tensor core instructions if possible
     pub fn fuse_mma(&mut self) {
+        self.swap_commutative();
+        self.loop_invariant_code_motion();
+        self.move_constants_to_beginning();
+        self.common_subexpression_elimination();
+        self.dead_code_elimination();
+        self.vectorize_loops(2);
+
         self.debug();
         let mut op_id = self.head;
         while !op_id.is_null() {
