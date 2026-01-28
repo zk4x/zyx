@@ -9,20 +9,19 @@
 //
 
 use crate::{
-    DType,
-    graph::BOp,
-    kernel::{Kernel, Op, OpId, Scope},
+    DType, graph::BOp, kernel::{Kernel, Op, OpId, Scope}, shape::Dim
 };
 
 impl Kernel {
     /// Turns inner loops into tensor core instructions if possible
     pub fn fuse_mma(&mut self) {
         self.swap_commutative();
+        self.reassociate_commutative();
         self.loop_invariant_code_motion();
-        self.move_constants_to_beginning();
         self.constant_folding();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
+        self.move_constants_to_beginning();
 
         self.debug();
 
@@ -37,24 +36,26 @@ impl Kernel {
 
     pub fn is_mma_store(&self, store_op_id: OpId) -> bool {
         use DType::*; use Op::*; use BOp::*; use Scope::*;
-        let &Store { dst, x: store_x, index, vlen: 1 } = self.at(store_op_id) else { return false };
+        let &Store { dst, x, index, vlen: 1 } = self.at(store_op_id) else { return false };
         {
             // Check that the index is looping over 4x2 element accumulator
-            let &Binary { x, y, bop: Add } = self.at(index) else { return false; };
+            /*let &Binary { x, y, bop: Add } = self.at(index) else { return false; };
             let &Loop { dim: 2, scope: Register } = self.at(y) else { return false; };
             let &Binary { x, y, bop: Add } = self.at(x) else { return false; };
             if x != y { return false; } // it's loop + loop for stride of 2
-            let &Loop { dim: 4, scope: Register } = self.at(x) else { return false; };
+            let &Loop { dim: 4, scope: Register } = self.at(x) else { return false; };*/
         }
         // The destination must be accumulator
         let &Define { dtype: F32, scope: Register, ro: false, len: 8 } = self.at(dst) else { return false; };
         // It must store addition
-        let &Binary { x, y, bop: Add } = self.at(store_x) else { return false };
+        let &Binary { x: load_x, y, bop: Add } = self.at(x) else { return false };
         // add must add f32 casted mul result to a load from an accumulator
-        let &Cast { x, dtype: F32 } = self.at(x) else { return false; };
-        let &Load { src, index, vlen: 1 } = self.at(y) else { return false; };
+        let &Cast { x, dtype: F32 } = self.at(y) else { return false; };
+        let &Load { src, index, vlen: 1 } = self.at(load_x) else { return false; };
         {
             // Check the index
+            let loop_strides = self.get_strides(index);
+            println!("loop_strides={loop_strides:?}");
         }
         // right side must be f32 accumulator with length of 8
         let &Define { dtype: F32, scope: Register, ro: false, len: 8 } = self.at(src) else { return false; };
@@ -67,6 +68,8 @@ impl Kernel {
         let &Define { dtype: F16, scope: Scope::Global, ro: true, len: _ } = self.at(src) else { return false; };
         {
             // Check the index
+            let loop_strides = self.get_strides(index);
+            println!("loop_strides={loop_strides:?}");
         }
         // y load
         let &Load { src, index, vlen: 1 } = self.at(y) else { return false; };
@@ -74,8 +77,35 @@ impl Kernel {
         let &Define { dtype: F16, scope: Scope::Global, ro: true, len: _ } = self.at(src) else { return false; };
         {
             // Check the index
+            let loop_strides = self.get_strides(index);
+            println!("loop_strides={loop_strides:?}");
         }
         return true;
+    }
+
+    /// Returns vector of strides
+    fn get_strides(&self, index_id: OpId) -> Vec<(OpId, Dim)> {
+        use Op::*;
+        let mut loop_strides = Vec::new();
+
+        let mut mad_id = index_id;
+        while let &Mad { x, y, z } = self.at(mad_id) {
+            if let Loop { .. } = self.at(x) {
+                let Const(c) = self.at(y) else { unreachable!() };
+                loop_strides.push((x, c.as_dim()));
+                mad_id = z;
+            } else if let Loop { .. } = self.at(y) {
+                let Const(c) = self.at(x) else { unreachable!() };
+                loop_strides.push((y, c.as_dim()));
+                mad_id = z;
+            } else if let Loop { .. } = self.at(z) {
+                loop_strides.push((z, 1));
+                mad_id = x;
+            }
+            println!("mad_id={mad_id} {:?}", self.ops[mad_id].op);
+        }
+
+        loop_strides
     }
 }
 

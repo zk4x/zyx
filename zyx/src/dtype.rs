@@ -3,7 +3,7 @@
 use crate::{
     Scalar, ZyxError,
     graph::{BOp, UOp},
-    kernel::IDX_T,
+    kernel::IDX_T, shape::Dim,
 };
 use half::{bf16, f16};
 use nanoserde::{DeBin, SerBin};
@@ -114,22 +114,6 @@ impl DType {
             | Self::F32
             | Self::F64
             | Self::Bool
-            | Self::I8
-            | Self::I16
-            | Self::I32
-            | Self::I64 => false,
-            Self::U8 | Self::U16 | Self::U32 | Self::U64 => true,
-        }
-    }
-
-    #[must_use]
-    pub(super) const fn _is_shiftable(self) -> bool {
-        match self {
-            Self::BF16
-            | Self::F16
-            | Self::F32
-            | Self::F64
-            | DType::Bool
             | Self::I8
             | Self::I16
             | Self::I32
@@ -285,6 +269,25 @@ impl Constant {
             DType::I32 => Self::I32(unsafe { t(&x) }),
             DType::I64 => Self::I64(unsafe { t(&x) }),
             DType::Bool => Self::Bool(unsafe { t(&x) }),
+        }
+    }
+
+    #[must_use]
+    pub(super) fn as_dim(self) -> Dim {
+        match self {
+            Constant::BF16(_) => todo!(),
+            Constant::F16(_) => todo!(),
+            Constant::F32(_) => todo!(),
+            Constant::F64(_) => todo!(),
+            Constant::U8(_) => todo!(),
+            Constant::U16(_) => todo!(),
+            Constant::U32(d) => d as Dim,
+            Constant::U64(_) => todo!(),
+            Constant::I8(_) => todo!(),
+            Constant::I16(_) => todo!(),
+            Constant::I32(_) => todo!(),
+            Constant::I64(_) => todo!(),
+            Constant::Bool(_) => todo!(),
         }
     }
 

@@ -1516,7 +1516,7 @@ impl Kernel {
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 &Op::Binary { x, y, bop } => {
                     if bop.is_commutative() && !self.ops[x].op.is_const() {
-                        if loop_dep[&x] > loop_dep[&y] || self.ops[y].op.is_const() {
+                        if loop_dep[&x] > loop_dep[&y] || self.ops[y].op.is_const() || self.ops[x].op.is_load() {
                             //println!("Swapping {x}, {y}, loop dep {} > {}: {:?}, {:?}", loop_dep[&x], loop_dep[&y], self.ops[x].op, self.ops[y].op);
                             if let Op::Binary { x, y, .. } = &mut self.ops[op_id].op {
                                 std::mem::swap(x, y);
