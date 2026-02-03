@@ -15,6 +15,8 @@ use crate::{
 impl Kernel {
     /// Turns inner loops into tensor core instructions if possible
     pub fn fuse_mma(&mut self) {
+        use Op::*;
+        use Scope::*;
         self.swap_commutative();
         self.reassociate_commutative();
         self.loop_invariant_code_motion();
@@ -25,12 +27,27 @@ impl Kernel {
 
         self.debug();
 
-        let mut op_id = self.head;
+        let mut op_id = self.tail;
+        let mut loop_dims = Vec::new();
         while !op_id.is_null() {
-            if self.is_mma_store(op_id) {
+            /*if self.is_mma_store(op_id) {
                 println!("Found MMA store at {op_id}");
+            }*/
+            match self.ops[op_id].op {
+                Loop { dim, scope } => {
+                    if scope == Register {
+                        loop_dims.push(dim);
+                        if loop_dims == vec![2, 4, 16] {
+                            println!("Found the loop trifecta");
+                        }
+                    }
+                }
+                EndLoop => {
+                    loop_dims.clear();
+                }
+                _ => {}
             }
-            op_id = self.next_op(op_id);
+            op_id = self.prev_op(op_id);
         }
     }
 
