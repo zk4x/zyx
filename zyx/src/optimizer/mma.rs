@@ -39,6 +39,7 @@ impl Kernel {
                         loop_dims.push(dim);
                         if loop_dims == vec![2, 4, 16] {
                             println!("Found the loop trifecta");
+                            self.get_mma_info(op_id);
                         }
                     }
                 }
@@ -49,6 +50,44 @@ impl Kernel {
             }
             op_id = self.prev_op(op_id);
         }
+    }
+
+    fn get_mma_info(&self, k_loop_id: OpId) -> bool {
+        use Op::*;
+
+        let op_id = k_loop_id;
+        //let mut indices: Vec<_> = Vec::new();
+        let mut n_endloops = 0;
+        while !op_id.is_null() {
+            println!("{op_id} -> {:?}", self.ops[op_id].op);
+            match &self.ops[op_id].op {
+                Cast { x, dtype } => todo!(),
+                Unary { x, uop } => todo!(),
+                Binary { x, y, bop } => todo!(),
+                Const(constant) => todo!(),
+                Define { dtype, scope, ro, len } => todo!(),
+                Store { dst, x, index, vlen } => todo!(),
+                Load { src, index, vlen } => todo!(),
+                Loop { dim, scope } => todo!(),
+                EndLoop => {
+                    n_endloops += 1;
+                    if n_endloops == 3 {
+                        return true;
+                    }
+                }
+                Mad { x, y, z } => todo!(),
+                MMA { m, n, k, c, a, b } => todo!(),
+                Vectorize { ops } => todo!(),
+                Devectorize { vec, idx } => todo!(),
+                ConstView(_) => todo!(),
+                LoadView(_) => todo!(),
+                StoreView { src, dtype } => todo!(),
+                Reduce { x, rop, n_axes } => todo!(),
+            }
+
+            self.next_op(op_id);
+        }
+        true
     }
 
     pub fn is_mma_store(&self, store_op_id: OpId) -> bool {
