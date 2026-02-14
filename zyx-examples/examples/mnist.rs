@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use zyx::{DType, GradientTape, Module, Tensor, ZyxError};
-use zyx_nn::{Conv2d, Linear, Module};
+use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
+// Convolutional mnist
 /*#[derive(Module)]
 struct MnistNet {
     l1: Conv2d,
@@ -13,16 +14,16 @@ struct MnistNet {
 impl MnistNet {
     fn new(dtype: DType) -> Result<Self, ZyxError> {
         Ok(Self {
-            l1: Conv2d::new(1, 32, [3, 3], 1, 0, 1, 1, true, dtype)?,
-            l2: Conv2d::new(32, 64, [3, 3], 1, 0, 1, 1, true, dtype)?,
+            l1: zyx_nn::Conv2d::new(1, 32, [3, 3], 1, 0, 1, 1, true, dtype)?,
+            l2: zyx_nn::Conv2d::new(32, 64, [3, 3], 1, 0, 1, 1, true, dtype)?,
             l3: Linear::new(1600, 10, true, dtype)?,
         })
     }
 
     fn forward(&self, x: &Tensor) -> Tensor {
         //let x = x.reshape([0, 784]).unwrap();
-        let x = self.l1.forward(x).unwrap().relu().max_pool2d([2, 2]).unwrap();
-        let x = self.l2.forward(x).unwrap().relu().max_pool2d([2, 2]).unwrap();
+        let x = self.l1.forward(x).unwrap().relu().max_pool([2, 2], [2, 2], 1, [(0, 0)], false, false).unwrap();
+        let x = self.l2.forward(x).unwrap().relu().max_pool([2, 2], [2, 2], 1, [(0, 0)], false, false).unwrap();
         self.l3.forward(&x).unwrap()
     }
 }*/
