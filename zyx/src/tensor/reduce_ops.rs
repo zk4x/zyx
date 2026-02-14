@@ -1,7 +1,5 @@
 use crate::{
-    DType, RT, Tensor, ZyxError,
-    shape::{Dim, UAxis, into_axes},
-    tensor::Axis,
+    DType, RT, Tensor, ZyxError, graph::ROp, shape::{Dim, UAxis, into_axes}, tensor::Axis
 };
 use paste::paste;
 
@@ -62,7 +60,7 @@ impl Tensor {
                 } else {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
-                Tensor { id: RT.lock().sum_reduce(x.id, axes_vec.clone()) }
+                Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), ROp::Sum) }
             }
             ReduceOp::Max => {
                 let x = if let Some(dtype) = dtype {
@@ -70,20 +68,21 @@ impl Tensor {
                 } else {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
-                Tensor { id: RT.lock().max_reduce(x.id, axes_vec.clone()) }
+                Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), ROp::Max) }
+            }
+            ReduceOp::Prod => {
+                let x = if let Some(dtype) = dtype {
+                    self.cast(dtype)
+                } else {
+                    self.cast(reduce_acc_dtype(x_dtype))
+                };
+                Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), ROp::Prod) }
             }
             ReduceOp::Min => {
                 if let Some(dtype) = dtype {
                     self.inverse().max_dtype(axes, dtype)?.inverse()
                 } else {
                     self.inverse().max(axes)?.inverse()
-                }
-            }
-            ReduceOp::Prod => {
-                if let Some(dtype) = dtype {
-                    self.log2().sum_dtype(axes, dtype)?.exp2()
-                } else {
-                    self.log2().sum(axes)?.exp2()
                 }
             }
             ReduceOp::Mean => {

@@ -107,7 +107,8 @@ impl Optimizer {
         kernel.unfold_pows();
 
         // Use tensor cores if possible
-        kernel.fuse_mma();
+        //kernel.vectorize_loads();
+        //kernel.fuse_mma();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..2 {

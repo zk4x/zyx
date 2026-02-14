@@ -429,6 +429,7 @@ pub enum UOp {
 pub enum ROp {
     Sum,
     Max,
+    Prod,
 }
 
 /// Graph node, each node is one operation. Nodes

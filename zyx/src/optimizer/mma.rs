@@ -13,7 +13,8 @@ use crate::{
 };
 
 impl Kernel {
-    /// Turns inner loops into tensor core instructions if possible
+    /// Finds loop trifectas and if possible, LICM moves these instructions before those loops
+    /// and converts them into MMA instructions.
     pub fn fuse_mma(&mut self) {
         use Op::*;
         use Scope::*;
@@ -53,11 +54,14 @@ impl Kernel {
     }
 
     fn get_mma_info(&self, k_loop_id: OpId) -> bool {
-        use Op::*;
+        use Op::*; use Scope::*;
 
-        let op_id = k_loop_id;
+        let mut op_id = k_loop_id;
         //let mut indices: Vec<_> = Vec::new();
         let mut n_endloops = 0;
+
+        let mut loop_ids = Vec::new();
+
         while !op_id.is_null() {
             println!("{op_id} -> {:?}", self.ops[op_id].op);
             match &self.ops[op_id].op {
@@ -68,7 +72,10 @@ impl Kernel {
                 Define { dtype, scope, ro, len } => todo!(),
                 Store { dst, x, index, vlen } => todo!(),
                 Load { src, index, vlen } => todo!(),
-                Loop { dim, scope } => todo!(),
+                &Loop { dim, scope } => {
+                    debug_assert_eq!(scope, Register);
+                    loop_ids.push((op_id, dim));
+                }
                 EndLoop => {
                     n_endloops += 1;
                     if n_endloops == 3 {
@@ -85,7 +92,7 @@ impl Kernel {
                 Reduce { x, rop, n_axes } => todo!(),
             }
 
-            self.next_op(op_id);
+            op_id = self.next_op(op_id);
         }
         true
     }

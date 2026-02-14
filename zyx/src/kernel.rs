@@ -360,6 +360,7 @@ impl Kernel {
                         match rop {
                             ROp::Sum => "SUM",
                             ROp::Max => "MAX",
+                            ROp::Prod => "PROD",
                         }
                     );
                 }
@@ -741,6 +742,7 @@ impl Kernel {
                 Op::Const(match rop {
                     ROp::Sum => acc_dtype.zero_constant(),
                     ROp::Max => acc_dtype.min_constant(),
+                    ROp::Prod => acc_dtype.one_constant(),
                 }),
             );
 
@@ -770,6 +772,7 @@ impl Kernel {
                     bop: match rop {
                         ROp::Sum => BOp::Add,
                         ROp::Max => BOp::Maximum,
+                        ROp::Prod => BOp::Mul,
                     },
                 },
             );

@@ -6,7 +6,7 @@
 
 use crate::dtype::DType;
 use crate::error::ZyxError;
-use crate::graph::{BOp, UOp};
+use crate::graph::{BOp, ROp, UOp};
 use crate::runtime::{TempData, apply_padding};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
@@ -16,12 +16,13 @@ use core::cmp::Ordering;
 use half::{bf16, f16};
 use std::fmt::{Debug, Display};
 use std::iter::{once, repeat_n};
-use std::ops::{Add, BitAnd, BitOr, BitXor, Bound, Div, Mul, Neg, Not, Range, RangeBounds, Sub};
+use std::ops::{Bound, Mul, Neg, Not, Range, RangeBounds};
 use std::path::Path;
 use std::u32;
 
 mod index_ops;
 mod reduce_ops;
+mod binary_ops;
 
 /// Signed axis, when we need negative axes for indexing, reduces and so on...
 pub type Axis = i32;
@@ -1565,35 +1566,6 @@ impl Tensor {
 
         Ok(Tensor { id: RT.lock().reshape(self.id, shape) })
     }
-    /*pub fn reshape(&self, shape: impl IntoShape) -> Result<Tensor, ZyxError> {
-        let mut shape: Vec<Dim> = shape.into_shape().collect();
-
-        let infer_count = shape.iter().filter(|&&d| d == 0).count();
-        if infer_count > 1 {
-            return Err(ZyxError::shape_error("Can only infer one dimension".into()));
-        }
-
-        let numel = self.numel();
-
-        if infer_count > 0 {
-            let total: Dim = shape.iter().map(|&x| if x == 0 { 1 } else { x }).product();
-            let inferred_dim = numel / total;
-            shape = shape.into_iter().map(|x| if x == 0 { inferred_dim } else { x }).collect();
-        }
-
-        if shape.iter().product::<Dim>() != numel {
-            return Err(ZyxError::shape_error(
-                format!(
-                    "Invalid reshape: total elements mismatch. Tensor has {} elements, but new shape {:?} multiplies to {}",
-                    numel,
-                    shape,
-                    shape.iter().product::<Dim>()
-                ).into()
-            ));
-        }
-
-        Ok(Tensor { id: RT.lock().reshape(self.id, shape) })
-    }*/
 
     /// Transpose (swap) the last two dimensions of this tensor.
     ///
@@ -1695,21 +1667,7 @@ impl Tensor {
     /// Returns error if axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn cumsum(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        let axis = into_axis(axis, self.rank())?;
-        //println!("Cumsum, shape: {:?}", self.shape());
-        let pl_sz = isize::try_from(self.shape()[axis as usize] - 1).unwrap();
-        let k = self.shape()[axis as usize];
-        let axis = Axis::try_from(axis).unwrap();
-        let mut x = self.transpose(axis, -1)?;
-        x = x.pad_zeros([(pl_sz, 0)])?;
-        //println!("{x:?} padded");
-        x = x.pool(k, 1, 1)?;
-        //println!("{x:?} pooled");
-        x = x.sum([-1])?;
-        //println!("{x:?} summed");
-        x = x.transpose(axis, -1)?;
-        //println!("{x:?} transposed");
-        Ok(x)
+        self.cum_reduce(axis, ROp::Sum)
     }
 
     /// Comulative max along axis.
@@ -1719,16 +1677,7 @@ impl Tensor {
     /// Returns error if axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn cummax(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        let axis = into_axis(axis, self.rank())?;
-        let pl_sz = isize::try_from(self.shape()[axis as usize] - 1).unwrap();
-        let k = self.shape()[axis as usize];
-        let axis = Axis::try_from(axis).unwrap();
-        let mut x = self.transpose(axis, -1)?;
-        x = x.pad_zeros([(pl_sz, 0)])?;
-        x = x.pool(k, 1, 1)?;
-        x = x.max([-1])?;
-        x = x.transpose(axis, -1)?;
-        Ok(x)
+        self.cum_reduce(axis, ROp::Max)
     }
 
     /// Comulative product along axis.
@@ -1738,14 +1687,22 @@ impl Tensor {
     /// Returns error if axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn cumprod(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        let axis = into_axis(axis, self.rank())?;
-        let pl_sz = isize::try_from(self.shape()[axis as usize] - 1).unwrap();
-        let k = self.shape()[axis as usize];
-        let axis = Axis::try_from(axis).unwrap();
+        self.cum_reduce(axis, ROp::Prod)
+    }
+
+    /// Cumulative reduce along axis
+    fn cum_reduce(&self, axis: Axis, rop: ROp) -> Result<Tensor, ZyxError> {
+        let shape = self.shape();
+        let uaxis = into_axis(axis, shape.len())?;
+        let pl_sz = isize::try_from(shape[uaxis] - 1).unwrap();
         let mut x = self.transpose(axis, -1)?;
         x = x.pad_zeros([(pl_sz, 0)])?;
-        x = x.pool(k, 1, 1)?;
-        x = x.log2().sum([-1])?.exp2();
+        x = x.pool(shape[uaxis], 1, 1)?;
+        x = match rop {
+            ROp::Sum => x.sum([-1])?,
+            ROp::Max => x.max([-1])?,
+            ROp::Prod => x.prod([-1])?,
+        };
         x = x.transpose(axis, -1)?;
         Ok(x)
     }
@@ -2965,6 +2922,56 @@ impl Tensor {
         pads[-1-dim*2] += s*(o-1) + (d*(k-1)+1) - (i+pB+pA) - smax(s*(o-1) - (pB+i-1), 0)
       return pads*/
 
+    fn max_pool(&self,  kernel_size: impl IntoShape, stride: impl IntoShape, dilation: impl IntoShape) -> Tensor {
+        todo!()
+    }
+
+    /*
+    def max_pool2d(self, kernel_size:tuple[int, ...]=(2,2), stride=None, dilation=1, padding:int|tuple[int, ...]=0,
+                   ceil_mode=False, return_indices=False) -> Tensor | tuple[Tensor, Tensor]:
+      """
+      Applies max pooling over a tensor.
+
+      This function supports three different types of `padding`
+
+      1. `int` (single value):
+        Applies the same padding value uniformly to all spatial dimensions.
+
+      2. `tuple[int, ...]` (length = number of spatial dimensions):
+        Specifies a distinct padding value for each spatial dimension in the form `(padding_height, padding_width, ...)`.
+
+      3. `tuple[int, ...]` (length = 2 * number of spatial dimensions):
+        Specifies explicit padding for each side of each spatial dimension in the form
+        `(padding_left, padding_right, padding_top, padding_bottom, ...)`.
+
+      When `ceil_mode` is set to `True`, output shape will be determined using ceil division.
+      When `return_indices` is set to `True`, the argmax will be returned along with the max values.
+
+      NOTE: unlike PyTorch, this implementation is not limited to only 2d pooling and instead works for any number of dimensions.
+
+      ```python exec="true" source="above" session="tensor" result="python"
+      t = Tensor.arange(25).reshape(1, 1, 5, 5)
+      print(t.max_pool2d().numpy())
+      ```
+      ```python exec="true" source="above" session="tensor" result="python"
+      print(t.max_pool2d(ceil_mode=True).numpy())
+      ```
+      ```python exec="true" source="above" session="tensor" result="python"
+      print(t.max_pool2d(padding=1).numpy())
+      ```
+      """
+      axis = tuple(range(-len(k_ := make_tuple(kernel_size, 2)), 0))
+      pads = self._resolve_pool_pads(padding, len(k_))
+      if ceil_mode: pads = self._apply_ceil_mode(pads, k_, stride if stride is not None else k_, dilation)
+      pooled = self.pad(pads, value=dtypes.min(self.dtype))._pool(k_, stride if stride is not None else k_, dilation)
+      if not return_indices: return pooled.max(axis)
+      spatial_sz = int(math.prod(spatial_shape := self.shape[-len(k_):]))
+      idx = Tensor.arange(spatial_sz,0,-1, requires_grad=False, device=self.device).reshape(spatial_shape)
+      m = pooled == pooled.max(axis, keepdim=True)
+      idx = m * idx.pad(pads, value=dtypes.min(idx.dtype))._pool(k_, stride if stride is not None else k_, dilation)
+      return pooled.max(axis), spatial_sz - idx.max(axis)
+    */
+
     /// Creates a new tensor by repeating the input tensor along its dimensions.
     ///
     /// The `repeats` parameter specifies how many times to repeat each dimension of the tensor. If the length of `repeats`
@@ -4026,148 +4033,6 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
     }
 }
 
-impl<IT: Into<Tensor>> Add<IT> for Tensor {
-    type Output = Tensor;
-    fn add(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Add) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> Add<IT> for &Tensor {
-    type Output = Tensor;
-    fn add(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Add) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> Sub<IT> for Tensor {
-    type Output = Tensor;
-    fn sub(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> Sub<IT> for &Tensor {
-    type Output = Tensor;
-    fn sub(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Sub) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> Mul<IT> for Tensor {
-    type Output = Tensor;
-    fn mul(self, rhs: IT) -> Self::Output {
-        let rhs = rhs.into();
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Mul) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> Mul<IT> for &Tensor {
-    type Output = Tensor;
-    fn mul(self, rhs: IT) -> Self::Output {
-        let rhs = rhs.into();
-        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Mul) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> Div<IT> for Tensor {
-    type Output = Tensor;
-    fn div(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Div) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> Div<IT> for &Tensor {
-    type Output = Tensor;
-    fn div(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::Div) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> BitOr<IT> for Tensor {
-    type Output = Tensor;
-    fn bitor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitOr) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> BitOr<IT> for &Tensor {
-    type Output = Tensor;
-    fn bitor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitOr) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> BitXor<IT> for Tensor {
-    type Output = Tensor;
-    fn bitxor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitXor) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> BitXor<IT> for &Tensor {
-    type Output = Tensor;
-    fn bitxor(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitXor) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> BitAnd<IT> for Tensor {
-    type Output = Tensor;
-    fn bitand(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self, rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitAnd) };
-        tensor
-    }
-}
-
-impl<IT: Into<Tensor>> BitAnd<IT> for &Tensor {
-    type Output = Tensor;
-    fn bitand(self, rhs: IT) -> Self::Output {
-        let (x, y) = Tensor::broadcast(self.clone(), rhs).unwrap();
-        #[allow(clippy::let_and_return)] // otherwise it deadlocks
-        let tensor = Tensor { id: RT.lock().binary(x.id, y.id, BOp::BitAnd) };
-        tensor
-    }
-}
-
 impl Neg for Tensor {
     type Output = Tensor;
     fn neg(self) -> Self::Output {
@@ -4195,105 +4060,3 @@ impl Not for &Tensor {
         self.equal(0).unwrap()
     }
 }
-
-macro_rules! impl_trait {
-    ($trait:ident for $type:ty, $fn_name:ident) => {
-        impl $trait<Tensor> for $type {
-            type Output = Tensor;
-            fn $fn_name(self, rhs: Tensor) -> Self::Output {
-                Tensor::from(self).$fn_name(rhs)
-            }
-        }
-
-        impl $trait<&Tensor> for $type {
-            type Output = Tensor;
-            fn $fn_name(self, rhs: &Tensor) -> Self::Output {
-                Tensor::from(self).$fn_name(rhs)
-            }
-        }
-    };
-}
-
-impl_trait!(Add for bf16, add);
-impl_trait!(Add for f16, add);
-impl_trait!(Add for f32, add);
-impl_trait!(Add for f64, add);
-impl_trait!(Add for u8, add);
-impl_trait!(Add for u32, add);
-impl_trait!(Add for i8, add);
-impl_trait!(Add for i16, add);
-impl_trait!(Add for i32, add);
-impl_trait!(Add for i64, add);
-impl_trait!(Add for bool, add);
-
-impl_trait!(Sub for bf16, sub);
-impl_trait!(Sub for f16, sub);
-impl_trait!(Sub for f32, sub);
-impl_trait!(Sub for f64, sub);
-impl_trait!(Sub for u8, sub);
-impl_trait!(Sub for u32, sub);
-impl_trait!(Sub for i8, sub);
-impl_trait!(Sub for i16, sub);
-impl_trait!(Sub for i32, sub);
-impl_trait!(Sub for i64, sub);
-impl_trait!(Sub for bool, sub);
-
-impl_trait!(Mul for bf16, mul);
-impl_trait!(Mul for f16, mul);
-impl_trait!(Mul for f32, mul);
-impl_trait!(Mul for f64, mul);
-impl_trait!(Mul for u8, mul);
-impl_trait!(Mul for u32, mul);
-impl_trait!(Mul for i8, mul);
-impl_trait!(Mul for i16, mul);
-impl_trait!(Mul for i32, mul);
-impl_trait!(Mul for i64, mul);
-impl_trait!(Mul for bool, mul);
-
-impl_trait!(Div for bf16, div);
-impl_trait!(Div for f16, div);
-impl_trait!(Div for f32, div);
-impl_trait!(Div for f64, div);
-impl_trait!(Div for u8, div);
-impl_trait!(Div for u32, div);
-impl_trait!(Div for i8, div);
-impl_trait!(Div for i16, div);
-impl_trait!(Div for i32, div);
-impl_trait!(Div for i64, div);
-impl_trait!(Div for bool, div);
-
-impl_trait!(BitXor for bf16, bitxor);
-impl_trait!(BitXor for f16, bitxor);
-impl_trait!(BitXor for f32, bitxor);
-impl_trait!(BitXor for f64, bitxor);
-impl_trait!(BitXor for u8, bitxor);
-impl_trait!(BitXor for u32, bitxor);
-impl_trait!(BitXor for i8, bitxor);
-impl_trait!(BitXor for i16, bitxor);
-impl_trait!(BitXor for i32, bitxor);
-impl_trait!(BitXor for i64, bitxor);
-impl_trait!(BitXor for bool, bitxor);
-
-impl_trait!(BitOr for bf16, bitor);
-impl_trait!(BitOr for f16, bitor);
-impl_trait!(BitOr for f32, bitor);
-impl_trait!(BitOr for f64, bitor);
-impl_trait!(BitOr for u8, bitor);
-impl_trait!(BitOr for u32, bitor);
-impl_trait!(BitOr for i8, bitor);
-impl_trait!(BitOr for i16, bitor);
-impl_trait!(BitOr for i32, bitor);
-impl_trait!(BitOr for i64, bitor);
-impl_trait!(BitOr for bool, bitor);
-
-impl_trait!(BitAnd for bf16, bitand);
-impl_trait!(BitAnd for f16, bitand);
-impl_trait!(BitAnd for f32, bitand);
-impl_trait!(BitAnd for f64, bitand);
-impl_trait!(BitAnd for u8, bitand);
-impl_trait!(BitAnd for u32, bitand);
-impl_trait!(BitAnd for i8, bitand);
-impl_trait!(BitAnd for i16, bitand);
-impl_trait!(BitAnd for i32, bitand);
-impl_trait!(BitAnd for i64, bitand);
-impl_trait!(BitAnd for bool, bitand);

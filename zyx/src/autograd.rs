@@ -389,7 +389,7 @@ impl Runtime {
                         .collect();
                     //println!("x shape {:?}, nid shape {:?}, expand_axes: {:?}", x_shape, sh, expand_axes);
                     debug_assert!(!expand_axes.is_empty());
-                    let temp = self.sum_reduce(grad, expand_axes);
+                    let temp = self.reduce(grad, expand_axes, ROp::Sum);
                     let grad = self.reshape(temp, x_shape);
                     self.release(temp);
                     insert_or_add_grad(self, &mut grads, x, grad);
@@ -478,6 +478,7 @@ impl Runtime {
 
                         insert_or_add_grad(self, &mut grads, x, grad_x);
                     }
+                    ROp::Prod => todo!(),
                 },
             }
         }

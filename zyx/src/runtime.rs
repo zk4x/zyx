@@ -498,27 +498,14 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn sum_reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>) -> TensorId {
+    pub(super) fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: ROp) -> TensorId {
         let sh = self.shape(x);
         axes.sort_unstable();
         if axes.is_empty() {
             axes = (0..sh.len() as UAxis).collect();
         }
         let shape = reduce(sh, &axes);
-        let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Sum }, shape);
-        self.graph.push_axes(id, axes);
-        id
-    }
-
-    #[must_use]
-    pub(super) fn max_reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>) -> TensorId {
-        let sh = self.shape(x);
-        axes.sort_unstable();
-        if axes.is_empty() {
-            axes = (0..sh.len() as UAxis).collect();
-        }
-        let shape = reduce(sh, &axes);
-        let id = self.graph.push_wshape(Node::Reduce { x, rop: ROp::Max }, shape);
+        let id = self.graph.push_wshape(Node::Reduce { x, rop }, shape);
         self.graph.push_axes(id, axes);
         id
     }
