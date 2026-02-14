@@ -1373,6 +1373,26 @@ impl Kernel {
                             let mul = Constant::binary(cx, cy, BOp::Mul);
                             self.ops[op_id].op = Op::Const(Constant::binary(mul, cz, BOp::Add));
                         }
+                        (Op::Const(cx), Op::Const(cy), _) => {
+                            let mul = Constant::binary(cx, cy, BOp::Mul);
+                            let x = self.insert_before(op_id, Op::Const(mul));
+                            self.ops[op_id].op = Op::Binary { x, y: z, bop: BOp::Add };
+                        }
+                        (Op::Const(cx), _, _) if cx.is_zero() => {
+                            self.remap(op_id, z);
+                        }
+                        (Op::Const(cx), _, _) if cx.is_one() => {
+                            self.ops[op_id].op = Op::Binary { x: y, y: z, bop: BOp::Add };
+                        }
+                        (_, Op::Const(cy), _) if cy.is_zero() => {
+                            self.remap(op_id, z);
+                        }
+                        (_, Op::Const(cy), _) if cy.is_one() => {
+                            self.ops[op_id].op = Op::Binary { x, y: z, bop: BOp::Add };
+                        }
+                        (_, _, Op::Const(cz)) if cz.is_zero() => {
+                            self.ops[op_id].op = Op::Binary { x, y, bop: BOp::Mul };
+                        }
                         _ => {}
                     }
                 }
