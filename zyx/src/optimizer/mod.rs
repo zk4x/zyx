@@ -56,6 +56,9 @@ impl Optimizer {
             loop_split_opt_index,
         ] = optimization.into_indices(self.max_indices);
 
+        // TODO when view is removed, unfold movement ops will directly generate indices
+        kernel.unfold_movement_ops();
+
         if !self.work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
             return false;
         }

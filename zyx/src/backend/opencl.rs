@@ -5,10 +5,7 @@
 #![allow(clippy::question_mark)]
 
 const VEC_COMPONENTS: [&str; 16] = [
-    "x", "y", "z", "w",
-    "s0", "s1", "s2", "s3",
-    "s4", "s5", "s6", "s7",
-    "s8", "s9", "sa", "sb",
+    "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
 ];
 
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
@@ -749,7 +746,11 @@ impl OpenCLDevice {
         while !op_id.is_null() {
             let op = kernel.at(op_id);
             match op {
-                Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Reduce { .. } => {
+                Op::ConstView { .. }
+                | Op::StoreView { .. }
+                | Op::LoadView { .. }
+                | Op::Reduce { .. }
+                | Op::Movement { .. } => {
                     unreachable!()
                 }
                 Op::Const(x) => {
@@ -828,7 +829,11 @@ impl OpenCLDevice {
             let op = kernel.at(op_id);
             //println!("{op_id} -> {op:?}");
             match op {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                Op::ConstView { .. }
+                | Op::LoadView { .. }
+                | Op::StoreView { .. }
+                | Op::Reduce { .. }
+                | Op::Movement { .. } => {
                     unreachable!()
                 }
                 &Op::Const(x) => {
@@ -855,7 +860,7 @@ impl OpenCLDevice {
                             for i in 0..vlen {
                                 _ = writeln!(source, "{indent}r{reg}.{} = p{src}[{idx}];", VEC_COMPONENTS[i as usize]);
                             }
-                        }else {
+                        } else {
                             _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                         }
                     }
@@ -872,7 +877,11 @@ impl OpenCLDevice {
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     if vlen > 1 {
                         for i in 0..vlen {
-                            _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.{};", VEC_COMPONENTS[i as usize]);
+                            _ = writeln!(
+                                source,
+                                "{indent}p{dst}[{idx} + {i}] = {x}.{};",
+                                VEC_COMPONENTS[i as usize]
+                            );
                         }
                     } else {
                         _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");

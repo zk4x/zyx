@@ -81,7 +81,7 @@ impl LoopSplitOpt {
 
 impl Kernel {
     /// Reshapes, (splits or merges) reduce from original into new_dims
-    fn recursively_apply_reshape(
+    pub fn recursively_apply_reshape(
         &mut self,
         op_id: OpId,
         n_old_dims: usize,

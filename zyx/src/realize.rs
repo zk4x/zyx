@@ -7,7 +7,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{BOp, Graph, Node, ROp, UOp},
-    kernel::{Kernel, Op, OpId, OpNode},
+    kernel::{Kernel, MovementOp, Op, OpId, OpNode},
     optimizer::Optimizer,
     prog_bar::ProgressBar,
     runtime::{Pool, Runtime, deallocate_tensors},
@@ -240,10 +240,13 @@ impl<'a> Kernelizer<'a> {
         // op that is unfoldable into indices, since it does not change
         // global work size.
         let (kid, op_id) = self.duplicate_or_store(x, None)?;
-        let n = self.graph.shape(x).len();
+        //let n = self.graph.shape(x).len();
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
-        kernel.apply_movement(|view| view.reshape(0..n, shape));
+
+        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MovementOp::Reshape(shape.into())) });
+        //kernel.apply_movement(|view| view.reshape(0..n, shape));
+
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;

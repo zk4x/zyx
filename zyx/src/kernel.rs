@@ -45,6 +45,15 @@ pub enum Scope {
 pub struct OpId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum MovementOp {
+    Reshape(Vec<Dim>),
+    //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
+    //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
+    //PadIndex(OpId, isize, isize), // Pad index with padding
+    //Unsqueeze { axis: Axis, dim: Dim } // Inserts a new loop at given axis
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist in both
     Cast { x: OpId, dtype: DType },
@@ -72,14 +81,12 @@ pub enum Op {
     // TODO Get rid of the view, use whatever ops that are needed directly
     // and then use unfold movement ops function to convert it all into indices.
     // This will make Op smaller and Copy.
+    // TODO Use MovementOp instead for all the movement.
     ConstView(Box<(Constant, View)>),
     LoadView(Box<(DType, View)>),
     StoreView { src: OpId, dtype: DType },
+    Movement { x: OpId, mop: Box<MovementOp> },
     Reduce { x: OpId, rop: ROp, n_axes: UAxis },
-    //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
-    //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
-    //PadIndex(OpId, isize, isize), // Pad index with padding
-    //Unsqueeze { axis: Axis, dim: Dim } // Inserts a new loop at given axis
 }
 
 impl Op {
@@ -88,6 +95,7 @@ impl Op {
         match self {
             Op::ConstView { .. } => vec![],
             Op::LoadView { .. } => vec![],
+            &Op::Movement { x, .. } => vec![x],
             &Op::StoreView { src, .. } => vec![src],
             Op::Reduce { x, .. } => vec![*x],
             &Op::Store { dst, x, index, .. } => vec![dst, x, index],
@@ -101,7 +109,7 @@ impl Op {
             Op::EndLoop { .. } => vec![],
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.clone(),
-            &Op::Devectorize { vec, .. }  => vec![vec],
+            &Op::Devectorize { vec, .. } => vec![vec],
             &Op::MMA { a, b, c, .. } => vec![a, b, c],
         }
         .into_iter()
@@ -112,6 +120,7 @@ impl Op {
             Op::ConstView { .. } => vec![],
             Op::LoadView { .. } => vec![],
             Op::StoreView { src, .. } => vec![src],
+            Op::Movement { x, .. } => vec![x],
             Op::Reduce { x, .. } => vec![x],
             Op::Store { dst, x, index, .. } => vec![dst, x, index],
             Op::Cast { x, .. } => vec![x],
@@ -124,7 +133,7 @@ impl Op {
             Op::EndLoop { .. } => vec![],
             Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.iter_mut().collect(),
-            Op::Devectorize { vec, .. }  => vec![vec],
+            Op::Devectorize { vec, .. } => vec![vec],
             Op::MMA { a, b, c, .. } => vec![a, b, c],
         }
         .into_iter()
@@ -498,11 +507,16 @@ impl Kernel {
                         ids.insert(op_id, (*l, *u));
                     }
                     if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>5}{indent}{ORANGE}DEVECTORIZE {vec}[{idx}]    {l}..={u}");
+                        println!("{op_id:>5}{indent}{ORANGE}DEVECTORIZE{RESET} {vec}[{idx}]    {l}..={u}");
                     } else {
-                        println!("{op_id:>5}{indent}{ORANGE}DEVECTORIZE {vec}[{idx}]");
+                        println!("{op_id:>5}{indent}{ORANGE}DEVECTORIZE{RESET} {vec}[{idx}]");
                     }
                 }
+                Op::Movement { x, ref mop } => match mop.as_ref() {
+                    MovementOp::Reshape(shape) => {
+                        println!("{op_id:>5}{indent}{CYAN}RESHAPE{RESET} {x} -> {shape:?}");
+                    }
+                },
             }
             op_id = self.ops[op_id].next;
         }
@@ -541,6 +555,9 @@ impl Kernel {
                     let mem_write = shape.iter().product::<Dim>() as u64 * dtype.byte_size() as u64;
                     Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
+                Op::Movement { mop, .. } => match mop.as_ref() {
+                    MovementOp::Reshape(shape) => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                },
                 Op::Reduce { x, n_axes, .. } => {
                     let Info { mut shape, .. } = stack[x].clone();
                     let rd: Dim = shape[shape.len() - n_axes..].iter().product();
@@ -649,6 +666,15 @@ impl Kernel {
                 Op::Reduce { n_axes, .. } => {
                     reduce_dims += n_axes;
                 }
+                Op::Movement { mop, .. } => {
+                    match mop.as_ref() {
+                        MovementOp::Reshape(shape) => {
+                            let mut shape = shape.clone();
+                            shape.truncate(shape.len() - reduce_dims);
+                            return shape;
+                        }
+                    }
+                }
                 _ => {}
             }
             op_id = self.prev_op(op_id);
@@ -685,6 +711,48 @@ impl Kernel {
             self.push_back(Op::EndLoop);
             loop_id -= 1;
         }
+    }
+
+    /// Apply  movement ops on views. Later this will directly generate indices
+    pub fn unfold_movement_ops(&mut self) {
+        self.debug();
+        let mut shapes: Map<OpId, Vec<Dim>> = Map::default();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next_op_id = self.next_op(op_id);
+            match self.ops[op_id].op {
+                Op::Cast { x, dtype } => {
+                    shapes.insert(op_id, shapes[&x].clone());
+                }
+                Op::Unary { x, uop } => {
+                    shapes.insert(op_id, shapes[&x].clone());
+                }
+                Op::Binary { x, y, bop } => {
+                    shapes.insert(op_id, shapes[&x].clone());
+                }
+                Op::ConstView(ref view) => {
+                    shapes.insert(op_id, view.1.shape());
+                }
+                Op::LoadView(ref view) => {
+                    shapes.insert(op_id, view.1.shape());
+                }
+                Op::Movement { x, ref mop } => {
+                    match mop.as_ref() {
+                        MovementOp::Reshape(new_dims) => {
+                            shapes.insert(op_id, new_dims.clone());
+                            self.recursively_apply_reshape(x, shapes[&x].len(), &shapes[&op_id], &mut Set::default(), 0);
+                            self.remap(op_id, x);
+                            self.remove(op_id);
+                        }
+                    }
+                }
+                Op::Reduce { x, rop, n_axes } => todo!(),
+                _ => {}
+            }
+            op_id = next_op_id;
+        }
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     /// Find all Reduce ops and put them in a Loop block
@@ -1280,7 +1348,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
+                Op::Movement { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
                 Op::MMA { .. }
                 | Op::Vectorize { .. } // TODO
                 | Op::Devectorize { .. } // TODO
@@ -1526,7 +1594,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
+                Op::Movement { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => unreachable!(),
                 Op::Devectorize { .. } | Op::MMA { .. } | Op::Vectorize { .. } => loop_depth,
                 Op::Loop { .. } => {
                     loop_depth += 1;
@@ -1565,11 +1633,12 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::ConstView { .. }
+                Op::Movement { .. }
+                | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
                 | Op::Reduce { .. }
-                | Op::MMA { .. }  => unreachable!(),
+                | Op::MMA { .. } => unreachable!(),
                 Op::Vectorize { ops } => {
                     let mut max = 0;
                     for op in ops {
@@ -1833,6 +1902,10 @@ impl Kernel {
                     }
                     stack.pop();
                 }
+                Op::Movement { x, ref mop } => {
+                    check(op_id, x, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
             }
             prev = op_id;
             op_id = self.ops[op_id].next;
@@ -2012,7 +2085,7 @@ impl Kernel {
             if required.insert(param) {
                 //println!("param={param}");
                 match self.at(param) {
-                    Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                    Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } | Op::Movement { x, .. }=> {
                         params.push(*x);
                     }
                     Op::Binary { x, y, .. } => {
