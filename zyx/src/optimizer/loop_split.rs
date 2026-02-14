@@ -115,4 +115,37 @@ impl Kernel {
             _ => {}
         }
     }
+
+    pub fn recursively_apply_expand(
+        &mut self,
+        op_id: OpId,
+        n_old_dims: usize,
+        new_dims: &[Dim],
+        visited: &mut Set<OpId>,
+        skip_last: usize,
+    ) {
+        if !visited.insert(op_id) {
+            return;
+        }
+        match &mut self.ops[op_id].op {
+            Op::LoadView(x) => {
+                x.1.expand(new_dims);
+            }
+            Op::ConstView(x) => {
+                x.1.expand(new_dims);
+            }
+            &mut Op::Reduce { x, n_axes, .. } => {
+                let skip_last = skip_last + n_axes;
+                self.recursively_apply_expand(x, n_old_dims, new_dims, visited, skip_last);
+            }
+            &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
+                self.recursively_apply_expand(x, n_old_dims, new_dims, visited, skip_last);
+            }
+            &mut Op::Binary { x, y, .. } => {
+                self.recursively_apply_expand(x, n_old_dims, new_dims, visited, skip_last);
+                self.recursively_apply_expand(y, n_old_dims, new_dims, visited, skip_last);
+            }
+            _ => {}
+        }
+    }
 }

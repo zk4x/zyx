@@ -209,21 +209,10 @@ impl<'a> Kernelizer<'a> {
         let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
-        kernel.apply_movement(|view| view.expand(shape));
-        kernel.remove_first_output(x);
-        kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
-        *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
-        self.visited.insert(nid, (kid, op_id));
-        Ok(())
-    }
 
-    fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
-        // TODO instead of store add permute op that swaps indices in IR
-        let (kid, op_id) = self.duplicate_or_store(x, None)?;
-        let axes = self.graph.axes(nid);
-        let kernel = &mut self.kernels[kid];
-        kernel.apply_movement(|view| view.permute(axes));
+        //kernel.apply_movement(|view| view.expand(shape));
+        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MovementOp::Expand(shape.into())) });
+
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -240,13 +229,25 @@ impl<'a> Kernelizer<'a> {
         // op that is unfoldable into indices, since it does not change
         // global work size.
         let (kid, op_id) = self.duplicate_or_store(x, None)?;
-        //let n = self.graph.shape(x).len();
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
         let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MovementOp::Reshape(shape.into())) });
-        //kernel.apply_movement(|view| view.reshape(0..n, shape));
 
+        kernel.remove_first_output(x);
+        kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
+        *self.rcs.get_mut(&x).unwrap() -= 1;
+        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
+        self.visited.insert(nid, (kid, op_id));
+        Ok(())
+    }
+
+    fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
+        // TODO instead of store add permute op that swaps indices in IR
+        let (kid, op_id) = self.duplicate_or_store(x, None)?;
+        let axes = self.graph.axes(nid);
+        let kernel = &mut self.kernels[kid];
+        kernel.apply_movement(|view| view.permute(axes));
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
