@@ -1,7 +1,7 @@
 use half::f16;
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
-pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
+fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     let mut c = vec![0f32; m * n];
 
     unsafe {
@@ -24,6 +24,33 @@ pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     };
 
     c
+}
+
+#[test]
+fn test_max_pool() -> Result<(), ZyxError> {
+    // Create a 4x4 tensor
+    let input = Tensor::from([
+        [1.0, 2.0, 3.0, 4.0],
+        [5.0, 6.0, 7.0, 8.0],
+        [9.0, 10.0, 11.0, 12.0],
+        [13.0, 14.0, 15.0, 16.0],
+    ]);
+
+    // Perform max pooling with 2x2 kernel and stride 2x2
+    let output = input.max_pool(
+        [2, 2],           // kernel_size
+        [2, 2],           // stride
+        [1, 1],           // dilation
+        [(0, 0), (0, 0)], // padding (no padding)
+        false,            // ceil_mode
+        false,            // return_indices
+    )?;
+
+    // Verify the output shape and values
+    assert_eq!(output.shape(), [2, 2]);
+    assert_eq!(output, [[6.0, 8.0], [14.0, 16.0]]);
+
+    Ok(())
 }
 
 #[test]
@@ -1032,8 +1059,7 @@ fn complex_causal_self_attention() -> Result<(), ZyxError> {
     Ok(())
 }
 
-// TODO dot6, we need flattening, because CUDA has problems compiling such deeply nested kernels
-/*#[test]
+#[test]
 fn dot6() -> Result<(), ZyxError> {
     let mut x = Tensor::from([2i32, 3, 1]);
     let w = Tensor::from([[2i32, 3, 2], [2, 1, 1], [4, 1, 4]]);
@@ -1042,7 +1068,7 @@ fn dot6() -> Result<(), ZyxError> {
     }
     assert_eq!(x, [492004322i32, 323660910, 445342573]);
     Ok(())
-}*/
+}
 
 #[test]
 fn dot4() -> Result<(), ZyxError> {
@@ -1053,7 +1079,6 @@ fn dot4() -> Result<(), ZyxError> {
         x = x.dot(&w)? + &b;
         //Tensor::realize([&x]).unwrap();
     }
-    println!("{x}");
     assert_eq!(x, [671627020i32, 441824135, 607929878]);
     Ok(())
 }

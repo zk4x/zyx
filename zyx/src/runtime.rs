@@ -289,6 +289,12 @@ impl Runtime {
         }
     }
 
+    pub(super) fn new_constant(&mut self, value: Constant) -> TensorId {
+        self.constants[self.constants_len] = value;
+        self.constants_len += 1;
+        self.graph.push(Node::Const { value })
+    }
+
     pub(super) fn new_tensor(&mut self, shape: Vec<Dim>, data: impl TempData) -> Result<TensorId, ZyxError> {
         let bytes = data.bytes();
         let dtype = data.dtype();

@@ -20,9 +20,9 @@ use std::ops::{Bound, Mul, Neg, Not, Range, RangeBounds};
 use std::path::Path;
 use std::u32;
 
+mod binary_ops;
 mod index_ops;
 mod reduce_ops;
-mod binary_ops;
 
 /// Signed axis, when we need negative axes for indexing, reduces and so on...
 pub type Axis = i32;
@@ -1805,11 +1805,9 @@ impl Tensor {
         let y = rhs.t();
         let xshape = self.shape();
         let yshape = y.shape();
-        //println!("xshape {xshape:?}, yshape {yshape:?}");
         let xrank = xshape.len();
         let yrank = yshape.len();
         if xshape[xrank - 1] != yshape[yrank - 1] {
-            //yshape[-(yrank.min(2) as i64)],
             return Err(ZyxError::ShapeError(
                 format!("Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}").into(),
             ));
@@ -1821,8 +1819,6 @@ impl Tensor {
             .chain([1])
             .chain(yshape[yrank - yrank.min(2)..yrank].iter().copied())
             .collect::<Vec<usize>>();
-        //std::println!("{x_shape:?}");
-        //std::println!("{y_shape:?}");
         (self.reshape(x_shape)? * y.reshape(y_shape)?).sum([-1])?.reshape(
             xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<usize>>(),
         )
@@ -1835,11 +1831,9 @@ impl Tensor {
         let y = rhs.t();
         let xshape = self.shape();
         let yshape = y.shape();
-        //println!("xshape {xshape:?}, yshape {yshape:?}");
         let xrank = xshape.len();
         let yrank = yshape.len();
         if xshape[xrank - 1] != yshape[yrank - 1] {
-            //yshape[-(yrank.min(2) as i64)],
             return Err(ZyxError::ShapeError(
                 format!("Cannot dot tensors with shapes {xshape:?} and {org_y_shape:?}").into(),
             ));
@@ -1851,8 +1845,6 @@ impl Tensor {
             .chain([1])
             .chain(yshape[yrank - yrank.min(2)..yrank].iter().copied())
             .collect::<Vec<usize>>();
-        //std::println!("{x_shape:?}");
-        //std::println!("{y_shape:?}");
         (self.reshape(x_shape)?.cast(out_dtype) * y.reshape(y_shape)?.cast(out_dtype)).sum([-1])?.reshape(
             xshape[0..xshape.len() - 1].iter().copied().chain([yshape[yshape.len() - 2]]).collect::<Vec<usize>>(),
         )
@@ -2049,20 +2041,7 @@ impl Tensor {
         Ok(result)
     }
 
-    /*
-    assert index.ndim == self.ndim, f"self.ndim must equal index.ndim, {self.ndim=}, {index.ndim=}"
-    dim = self._resolve_dim(dim)
-    assert all(s >= i for d,(s,i) in enumerate(zip(self.shape, index.shape)) if d != dim), "requires self.shape[d] >= index.shape[d] for all d != dim"
-    index = index.to(self.device)
-    x = self.shrink(tuple((0, i) if d != dim else None for d,i in enumerate(index.shape))).unsqueeze(-1).transpose(-1, dim)
-    return (index.unsqueeze(-1)._one_hot_along_dim(self.shape[dim]).where(x, 0)).sum(-1, dtype=self.dtype)
-    */
-
-    /*if not dtypes.is_int(self.dtype): raise RuntimeError(f"expect integer dtype, getting {self.dtype=}")
-    if num_classes == -1: num_classes = (self.max()+1).item()
-    return self[..., None]._one_hot_along_dim(num_classes).where(1, 0)*/
-
-    /// Shrink like in tinygrad
+    /// Shrink
     pub fn shrink<I>(&self, dims: I) -> Result<Tensor, ZyxError>
     where
         I: IntoIterator<Item = (Dim, Dim)>,
@@ -2088,39 +2067,6 @@ impl Tensor {
         self.unsqueeze(-1).unwrap().one_hot_along_dim(num_classes, -1).unwrap().where_(1, 0).unwrap()
     }
 
-    /*fn one_hot_along_dim(&self, num_classes: Dim, dim: Axis) -> Tensor {
-        // Step 1: Check if the tensor is of integer dtype
-        if !self.dtype().is_int() {
-            panic!(
-                "_one_hot_along_dim expects an integer index tensor, getting {:?}",
-                self.dtype()
-            );
-        }
-
-        // Step 2: Determine the target dimension (resolving negative dim)
-        let dim = if dim < 0 { self.rank() as Axis + dim } else { dim };
-        let offset = self.rank() as Axis - dim - 1;
-
-        // Step 3: Choose appropriate data type based on num_classes
-        let dt = if num_classes > i32::MAX as usize {
-            DType::I64
-        } else {
-            DType::I32
-        };
-
-        // Step 4: Create the arange tensor
-        let arange = Tensor::arange(0, num_classes as i64, 1).unwrap().cast(dt);
-
-        // Step 5: Reshape the arange tensor
-        let mut reshaped_arange = arange.reshape(num_classes).unwrap();
-        let mut new_shape = vec![num_classes as usize];
-        new_shape.extend(vec![1; offset as usize]);
-        reshaped_arange = reshaped_arange.reshape(&new_shape).unwrap();
-
-        // Step 6: Perform the comparison to get the one-hot encoded tensor
-        self.equal(&reshaped_arange).unwrap() // Compare the tensors element-wise
-    }*/
-
     /// One hot along dim
     pub fn one_hot_along_dim(&self, num_classes: Dim, dim: Axis) -> Result<Tensor, ZyxError> {
         if !self.dtype().is_int() {
@@ -2133,20 +2079,16 @@ impl Tensor {
             ));
         }
 
-        // Resolve negative dim
-        let dim = if dim < 0 { self.rank() as Axis + dim } else { dim };
+        let rank = self.rank();
+        let dim = if dim < 0 { rank as Axis + dim } else { dim };
+        let offset = rank as Axis - dim - 1;
 
-        // offset = ndim - dim - 1
-        let offset = self.rank() as Axis - dim - 1;
-
-        // Choose dtype for arange
         let dt = if num_classes > i32::MAX as usize {
             DType::I64
         } else {
             DType::I32
         };
 
-        // Create arange tensor [0, 1, ..., num_classes-1]
         let arange = Tensor::arange(0, num_classes as i64, 1)?.cast(dt);
 
         // Reshape to [num_classes, 1, 1, ..., 1] with `offset` ones
@@ -2647,14 +2589,6 @@ impl Tensor {
         let i_ = &shape[rank - k_.len()..];
         let o_: Vec<usize> =
             (i_, d_.iter(), k_.iter(), s_.iter()).zip().map(|(i, d, k, s)| (i - d * (k - 1)).div_ceil(*s)).collect();
-        /*i_
-        .iter()
-        .copied()
-        .zip(d_.iter().copied())
-        .zip(k_.iter().copied())
-        .zip(s_.iter().copied())
-        .map(|(((i, d), k), s)| (i - d * (k - 1)).div_ceil(s))
-        .collect();*/
         //println!("s_ {s_:?}, d_ {d_:?}, i_ {i_:?} o_ {o_:?}");
         let repeats: Vec<usize> = repeat_n(1, rank - k_.len())
             .chain(
@@ -2922,55 +2856,40 @@ impl Tensor {
         pads[-1-dim*2] += s*(o-1) + (d*(k-1)+1) - (i+pB+pA) - smax(s*(o-1) - (pB+i-1), 0)
       return pads*/
 
-    fn max_pool(&self,  kernel_size: impl IntoShape, stride: impl IntoShape, dilation: impl IntoShape) -> Tensor {
+    /// Max pool
+    pub fn max_pool(
+        &self,
+        kernel_size: impl IntoShape,
+        stride: impl IntoShape,
+        dilation: impl IntoShape,
+        padding: impl IntoIterator<Item = (isize, isize)>,
+        ceil_mode: bool,
+        return_indices: bool,
+    ) -> Result<Tensor, ZyxError> {
+        let kernel_size: Vec<usize> = kernel_size.into_shape().collect();
+        let axis: Vec<Axis> = (-(kernel_size.len() as Axis)..0).collect();
+
+        let padding: Vec<(isize, isize)> = padding.into_iter().collect();
+
+        //if ceil_mode: pads = self._apply_ceil_mode(pads, k_, stride if stride is not None else k_, dilation)
+        // TODO
+
+        let dtype = self.dtype();
+        let value: Tensor = Tensor { id: RT.lock().new_constant(dtype.min_constant()) };
+        let pooled = self.pad(padding, value)?.pool(kernel_size, stride, dilation)?;
+
+        if !return_indices {
+            return pooled.max(axis);
+        }
+
+        //spatial_sz = int(math.prod(spatial_shape := self.shape[-len(k_):]))
+        //idx = Tensor.arange(spatial_sz,0,-1, requires_grad=False, device=self.device).reshape(spatial_shape)
+        //m = pooled == pooled.max(axis, keepdim=True)
+        //idx = m * idx.pad(pads, value=dtypes.min(idx.dtype))._pool(k_, stride if stride is not None else k_, dilation)
+        //return pooled.max(axis), spatial_sz - idx.max(axis)
+
         todo!()
     }
-
-    /*
-    def max_pool2d(self, kernel_size:tuple[int, ...]=(2,2), stride=None, dilation=1, padding:int|tuple[int, ...]=0,
-                   ceil_mode=False, return_indices=False) -> Tensor | tuple[Tensor, Tensor]:
-      """
-      Applies max pooling over a tensor.
-
-      This function supports three different types of `padding`
-
-      1. `int` (single value):
-        Applies the same padding value uniformly to all spatial dimensions.
-
-      2. `tuple[int, ...]` (length = number of spatial dimensions):
-        Specifies a distinct padding value for each spatial dimension in the form `(padding_height, padding_width, ...)`.
-
-      3. `tuple[int, ...]` (length = 2 * number of spatial dimensions):
-        Specifies explicit padding for each side of each spatial dimension in the form
-        `(padding_left, padding_right, padding_top, padding_bottom, ...)`.
-
-      When `ceil_mode` is set to `True`, output shape will be determined using ceil division.
-      When `return_indices` is set to `True`, the argmax will be returned along with the max values.
-
-      NOTE: unlike PyTorch, this implementation is not limited to only 2d pooling and instead works for any number of dimensions.
-
-      ```python exec="true" source="above" session="tensor" result="python"
-      t = Tensor.arange(25).reshape(1, 1, 5, 5)
-      print(t.max_pool2d().numpy())
-      ```
-      ```python exec="true" source="above" session="tensor" result="python"
-      print(t.max_pool2d(ceil_mode=True).numpy())
-      ```
-      ```python exec="true" source="above" session="tensor" result="python"
-      print(t.max_pool2d(padding=1).numpy())
-      ```
-      """
-      axis = tuple(range(-len(k_ := make_tuple(kernel_size, 2)), 0))
-      pads = self._resolve_pool_pads(padding, len(k_))
-      if ceil_mode: pads = self._apply_ceil_mode(pads, k_, stride if stride is not None else k_, dilation)
-      pooled = self.pad(pads, value=dtypes.min(self.dtype))._pool(k_, stride if stride is not None else k_, dilation)
-      if not return_indices: return pooled.max(axis)
-      spatial_sz = int(math.prod(spatial_shape := self.shape[-len(k_):]))
-      idx = Tensor.arange(spatial_sz,0,-1, requires_grad=False, device=self.device).reshape(spatial_shape)
-      m = pooled == pooled.max(axis, keepdim=True)
-      idx = m * idx.pad(pads, value=dtypes.min(idx.dtype))._pool(k_, stride if stride is not None else k_, dilation)
-      return pooled.max(axis), spatial_sz - idx.max(axis)
-    */
 
     /// Creates a new tensor by repeating the input tensor along its dimensions.
     ///
