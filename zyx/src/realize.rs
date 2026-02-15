@@ -7,12 +7,12 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{BOp, Graph, Node, ROp, UOp},
-    kernel::{Kernel, MovementOp, Op, OpId, OpNode},
+    kernel::{Kernel, MoveOp, Op, OpId, OpNode},
     optimizer::Optimizer,
     prog_bar::ProgressBar,
     runtime::{Pool, Runtime, deallocate_tensors},
     schedule::schedule,
-    shape::Dim,
+    shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
@@ -211,7 +211,7 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         //kernel.apply_movement(|view| view.expand(shape));
-        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MovementOp::Expand(shape.into())) });
+        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Expand(shape.into())) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -232,7 +232,7 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
-        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MovementOp::Reshape(shape.into())) });
+        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Reshape(shape.into())) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -245,9 +245,12 @@ impl<'a> Kernelizer<'a> {
     fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add permute op that swaps indices in IR
         let (kid, op_id) = self.duplicate_or_store(x, None)?;
-        let axes = self.graph.axes(nid);
+        let axes: Vec<UAxis> = self.graph.axes(nid).into();
         let kernel = &mut self.kernels[kid];
-        kernel.apply_movement(|view| view.permute(axes));
+
+        let shape = self.graph.shape(nid).into();
+        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape }) });
+
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -259,10 +262,14 @@ impl<'a> Kernelizer<'a> {
     fn add_pad_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of duplication add pad op that adds if statement into ir (e.g. if idx < padding)
         let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
-        let padding = self.graph.padding(nid);
-        let rank = self.graph.shape(nid).len();
+        let padding = self.graph.padding(nid).into();
         let kernel = &mut self.kernels[kid];
-        kernel.apply_movement(|view| view.pad(rank, padding));
+
+        //let rank = self.graph.shape(nid).len();
+        //kernel.apply_movement(|view| view.pad(rank, padding));
+        let shape = self.graph.shape(nid).into();
+        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape }) });
+
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -281,7 +288,7 @@ impl<'a> Kernelizer<'a> {
         // If the kernel has more than one output, or rc of x is more than one,
         // we have to either copy it (if it is small), or store x (if kid is big)
         let reduce_dims_product: Dim = axes.iter().map(|&a| shape[a]).product();
-        let (kid, op_id) = self.duplicate_or_store(x, Some(reduce_dims_product))?;
+        let (kid, mut op_id) = self.duplicate_or_store(x, Some(reduce_dims_product))?;
         //self.debug();
 
         /*for kernel in kernels.iter() {
@@ -314,7 +321,11 @@ impl<'a> Kernelizer<'a> {
             }
             permute_axes.extend(max_axis + 1..n);
             permute_axes.extend_from_slice(axes);
-            self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
+
+            //self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
+            let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
+            op_id = self.kernels[kid]
+                .push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
         }
 
         // If all dims are reduced

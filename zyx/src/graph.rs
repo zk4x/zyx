@@ -19,7 +19,7 @@ pub struct Graph {
     pub gradient_tape_ref_count: u32,
     pub gradient_tape: Option<Set<TensorId>>,
     pub shapes: Map<TensorId, Box<[Dim]>>,
-    paddings: Map<TensorId, Box<[(isize, isize)]>>,
+    paddings: Map<TensorId, Box<[(i32, i32)]>>,
     axes: Map<TensorId, Box<[UAxis]>>,
 }
 
@@ -109,7 +109,7 @@ impl Graph {
         id
     }
 
-    pub(super) fn push_padding(&mut self, id: TensorId, padding: Vec<(isize, isize)>) {
+    pub(super) fn push_padding(&mut self, id: TensorId, padding: Vec<(i32, i32)>) {
         self.paddings.insert(id, padding.into_boxed_slice());
     }
 
@@ -168,7 +168,7 @@ impl Graph {
         panic!("DType of {tensor_id:?} could not be found. This is internal bug.")
     }
 
-    pub(super) fn padding(&self, tensor_id: TensorId) -> &[(isize, isize)] {
+    pub(super) fn padding(&self, tensor_id: TensorId) -> &[(i32, i32)] {
         &self.paddings[&tensor_id]
     }
 

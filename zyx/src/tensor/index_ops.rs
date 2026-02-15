@@ -28,7 +28,7 @@ impl Tensor {
     ///   - A single integer (e.g., `0`, `-1`)
     ///   - A `Range` (e.g., `0..3`, `2..`, `..5`, `..`)
     ///   - A tuple of integers/ranges for multi-dimensional access (e.g., `(0, 1..3, -1, ..)`), up to 8D
-    ///   - A `Vec<Range<isize>>` for dynamic indexing
+    ///   - A `Vec<Range<i32>>` for dynamic indexing
     ///   - A slice `&[impl IntoRange]` for general-purpose indexing
     ///
     /// # Returns
@@ -99,35 +99,35 @@ impl Tensor {
                 .enumerate()
                 .map(|(axis, (dim_index, dim_size))| match dim_index {
                     DimIndex::Range { start, end } => {
-                        let s = if start < 0 { start + dim_size as isize } else { start };
-                        let e = if end > dim_size as isize {
-                            dim_size as isize
+                        let s = if start < 0 { start + dim_size as i32 } else { start };
+                        let e = if end > dim_size as i32 {
+                            dim_size as i32
                         } else if end < 0 {
-                            end + dim_size as isize
+                            end + dim_size as i32
                         } else {
                             end
                         };
-                        (-s, -(dim_size as isize - e))
+                        (-s, -(dim_size as i32 - e))
                     }
                     DimIndex::Index(i) => {
                         squeeze_axes.push(axis as i32);
-                        let i = if i < 0 { i + dim_size as isize } else { i };
-                        (-i, -(dim_size as isize - i - 1))
+                        let i = if i < 0 { i + dim_size as i32 } else { i };
+                        (-i, -(dim_size as i32 - i - 1))
                     }
                     DimIndex::RangeFull => (0, 0),
                     DimIndex::RangeFrom { start } => {
-                        let s = if start < 0 { start + dim_size as isize } else { start };
+                        let s = if start < 0 { start + dim_size as i32 } else { start };
                         (-s, 0)
                     }
                     DimIndex::RangeTo { end } => {
-                        let e = if end > dim_size as isize {
-                            dim_size as isize
+                        let e = if end > dim_size as i32 {
+                            dim_size as i32
                         } else if end < 0 {
-                            end + dim_size as isize
+                            end + dim_size as i32
                         } else {
                             end
                         };
-                        (0, -(dim_size as isize - e))
+                        (0, -(dim_size as i32 - e))
                     }
                 })
                 .rev(),
@@ -152,35 +152,35 @@ impl Tensor {
         let padding =
             index.zip(shape.into_iter().rev()).enumerate().map(|(axis, (dim_index, dim_size))| match dim_index {
                 DimIndex::Range { start, end } => {
-                    let s = if start < 0 { start + dim_size as isize } else { start };
-                    let e = if end > dim_size as isize {
-                        dim_size as isize
+                    let s = if start < 0 { start + dim_size as i32 } else { start };
+                    let e = if end > dim_size as i32 {
+                        dim_size as i32
                     } else if end < 0 {
-                        end + dim_size as isize
+                        end + dim_size as i32
                     } else {
                         end
                     };
-                    (-s, -(dim_size as isize - e))
+                    (-s, -(dim_size as i32 - e))
                 }
                 DimIndex::Index(i) => {
                     squeeze_axes.push(axis as i32);
-                    let i = if i < 0 { i + dim_size as isize } else { i };
-                    (-i, -(dim_size as isize - i - 1))
+                    let i = if i < 0 { i + dim_size as i32 } else { i };
+                    (-i, -(dim_size as i32 - i - 1))
                 }
                 DimIndex::RangeFull => (0, 0),
                 DimIndex::RangeFrom { start } => {
-                    let s = if start < 0 { start + dim_size as isize } else { start };
+                    let s = if start < 0 { start + dim_size as i32 } else { start };
                     (-s, 0)
                 }
                 DimIndex::RangeTo { end } => {
-                    let e = if end > dim_size as isize {
-                        dim_size as isize
+                    let e = if end > dim_size as i32 {
+                        dim_size as i32
                     } else if end < 0 {
-                        end + dim_size as isize
+                        end + dim_size as i32
                     } else {
                         end
                     };
-                    (0, -(dim_size as isize - e))
+                    (0, -(dim_size as i32 - e))
                 }
             });
 
@@ -216,7 +216,7 @@ impl Tensor {
         let n = *self.shape().last().expect("Shape in invalid state. Internal bug.");
         self.flatten(..)
             .unwrap()
-            .pad_zeros([(0, isize::try_from(n).unwrap())])
+            .pad_zeros([(0, i32::try_from(n).unwrap())])
             .unwrap()
             .reshape([n, n + 1])
             .unwrap()
@@ -231,13 +231,13 @@ impl Tensor {
 #[derive(Clone, Debug)]
 pub enum DimIndex {
     /// Single index
-    Index(isize),
+    Index(i32),
     /// Range
-    Range { start: isize, end: isize },
+    Range { start: i32, end: i32 },
     /// Range from
-    RangeFrom { start: isize },
+    RangeFrom { start: i32 },
     /// Range to
-    RangeTo { end: isize },
+    RangeTo { end: i32 },
     /// Range full
     RangeFull,
 }
@@ -247,13 +247,13 @@ pub trait IntoIndex {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator;
 }
 
-impl Into<DimIndex> for i32 {
+impl Into<DimIndex> for isize {
     fn into(self) -> DimIndex {
-        DimIndex::Index(self as isize)
+        DimIndex::Index(self as i32)
     }
 }
 
-impl Into<DimIndex> for isize {
+impl Into<DimIndex> for i32 {
     fn into(self) -> DimIndex {
         DimIndex::Index(self)
     }
@@ -261,17 +261,17 @@ impl Into<DimIndex> for isize {
 
 impl Into<DimIndex> for usize {
     fn into(self) -> DimIndex {
-        DimIndex::Index(self as isize)
-    }
-}
-
-impl Into<DimIndex> for Range<i32> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: self.start as isize, end: self.end as isize }
+        DimIndex::Index(self as i32)
     }
 }
 
 impl Into<DimIndex> for Range<isize> {
+    fn into(self) -> DimIndex {
+        DimIndex::Range { start: self.start as i32, end: self.end as i32 }
+    }
+}
+
+impl Into<DimIndex> for Range<i32> {
     fn into(self) -> DimIndex {
         DimIndex::Range { start: self.start, end: self.end }
     }
@@ -279,17 +279,17 @@ impl Into<DimIndex> for Range<isize> {
 
 impl Into<DimIndex> for Range<usize> {
     fn into(self) -> DimIndex {
-        DimIndex::Range { start: self.start as isize, end: self.end as isize }
-    }
-}
-
-impl Into<DimIndex> for RangeInclusive<i32> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: *self.start() as isize, end: *self.end() as isize + 1 }
+        DimIndex::Range { start: self.start as i32, end: self.end as i32 }
     }
 }
 
 impl Into<DimIndex> for RangeInclusive<isize> {
+    fn into(self) -> DimIndex {
+        DimIndex::Range { start: *self.start() as i32, end: *self.end() as i32 + 1 }
+    }
+}
+
+impl Into<DimIndex> for RangeInclusive<i32> {
     fn into(self) -> DimIndex {
         DimIndex::Range { start: *self.start(), end: self.end() + 1 }
     }
@@ -297,17 +297,17 @@ impl Into<DimIndex> for RangeInclusive<isize> {
 
 impl Into<DimIndex> for RangeInclusive<usize> {
     fn into(self) -> DimIndex {
-        DimIndex::Range { start: *self.start() as isize, end: *self.end() as isize + 1 }
-    }
-}
-
-impl Into<DimIndex> for RangeFrom<i32> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeFrom { start: self.start as isize }
+        DimIndex::Range { start: *self.start() as i32, end: *self.end() as i32 + 1 }
     }
 }
 
 impl Into<DimIndex> for RangeFrom<isize> {
+    fn into(self) -> DimIndex {
+        DimIndex::RangeFrom { start: self.start as i32 }
+    }
+}
+
+impl Into<DimIndex> for RangeFrom<i32> {
     fn into(self) -> DimIndex {
         DimIndex::RangeFrom { start: self.start }
     }
@@ -315,17 +315,17 @@ impl Into<DimIndex> for RangeFrom<isize> {
 
 impl Into<DimIndex> for RangeFrom<usize> {
     fn into(self) -> DimIndex {
-        DimIndex::RangeFrom { start: self.start as isize }
-    }
-}
-
-impl Into<DimIndex> for RangeTo<i32> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeTo { end: self.end as isize }
+        DimIndex::RangeFrom { start: self.start as i32 }
     }
 }
 
 impl Into<DimIndex> for RangeTo<isize> {
+    fn into(self) -> DimIndex {
+        DimIndex::RangeTo { end: self.end as i32 }
+    }
+}
+
+impl Into<DimIndex> for RangeTo<i32> {
     fn into(self) -> DimIndex {
         DimIndex::RangeTo { end: self.end }
     }
@@ -333,7 +333,7 @@ impl Into<DimIndex> for RangeTo<isize> {
 
 impl Into<DimIndex> for RangeTo<usize> {
     fn into(self) -> DimIndex {
-        DimIndex::RangeTo { end: self.end as isize }
+        DimIndex::RangeTo { end: self.end as i32 }
     }
 }
 

@@ -717,7 +717,7 @@ impl Tensor {
     #[must_use]
     pub fn eye(n: Dim, dtype: DType) -> Tensor {
         Tensor::ones(vec![n, 1], dtype)
-            .pad_zeros([(0, isize::try_from(n).unwrap())])
+            .pad_zeros([(0, i32::try_from(n).unwrap())])
             .unwrap()
             .reshape([n + 1, n])
             .unwrap()
@@ -1376,8 +1376,8 @@ impl Tensor {
     /// Returns error if self cannot be padded by padding.
     #[allow(clippy::missing_panics_doc)]
     #[track_caller]
-    pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (isize, isize)>) -> Result<Tensor, ZyxError> {
-        let padding: Vec<(isize, isize)> = padding.into_iter().collect();
+    pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (i32, i32)>) -> Result<Tensor, ZyxError> {
+        let padding: Vec<(i32, i32)> = padding.into_iter().collect();
         let shape = self.shape();
         let rank = shape.len();
 
@@ -1398,7 +1398,7 @@ impl Tensor {
             if r < 0 {
                 total -= r;
             }
-            if shape[rank - i - 1] as isize + l + r < 0 {
+            if shape[rank - i - 1] as i32 + l + r < 0 {
                 return Err(ZyxError::shape_error(
                     format!(
                         "Invalid padding left={l}, right={r} on dimension size {}",
@@ -1451,12 +1451,12 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     pub fn pad(
         &self,
-        padding: impl IntoIterator<Item = (isize, isize)>,
+        padding: impl IntoIterator<Item = (i32, i32)>,
         value: impl Into<Tensor>,
     ) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
         let value: Tensor = value.into();
-        let padding: Vec<(isize, isize)> = padding.into_iter().collect();
+        let padding: Vec<(i32, i32)> = padding.into_iter().collect();
         let mut sh = self.shape();
         if value.dtype() != dtype {
             return Err(ZyxError::dtype_error(
@@ -1493,13 +1493,13 @@ impl Tensor {
         let shape = self.shape();
         let rank = shape.len() as UAxis;
         let axis = into_axis(axis, rank)?;
-        let dim = isize::try_from(shape[axis as usize]).unwrap();
-        let padding: Vec<(isize, isize)> = once((
-            -isize::try_from(start).unwrap(),
-            -dim + isize::try_from(length).unwrap() + isize::try_from(start).unwrap(),
+        let dim = i32::try_from(shape[axis as usize]).unwrap();
+        let padding: Vec<(i32, i32)> = once((
+            -i32::try_from(start).unwrap(),
+            -dim + i32::try_from(length).unwrap() + i32::try_from(start).unwrap(),
         ))
         .chain(repeat_n((0, 0), (rank - axis - 1) as usize))
-        .collect::<Vec<(isize, isize)>>()
+        .collect::<Vec<(i32, i32)>>()
         .into_iter()
         .rev()
         .collect();
@@ -1694,7 +1694,7 @@ impl Tensor {
     fn cum_reduce(&self, axis: Axis, rop: ROp) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let uaxis = into_axis(axis, shape.len())?;
-        let pl_sz = isize::try_from(shape[uaxis] - 1).unwrap();
+        let pl_sz = i32::try_from(shape[uaxis] - 1).unwrap();
         let mut x = self.transpose(axis, -1)?;
         x = x.pad_zeros([(pl_sz, 0)])?;
         x = x.pool(shape[uaxis], 1, 1)?;
@@ -2031,7 +2031,7 @@ impl Tensor {
             if d == dim {
                 padding.push((0, 0));
             } else {
-                padding.push((0, -(shape[d] as isize - index_shape[d] as isize)));
+                padding.push((0, -(shape[d] as i32 - index_shape[d] as i32)));
             }
         }
 
@@ -2052,7 +2052,7 @@ impl Tensor {
                 .into_iter()
                 .rev()
                 .zip(dims.into_iter().rev())
-                .map(|(d, (s, e))| (-(s as isize), -((d - e) as isize))),
+                .map(|(d, (s, e))| (-(s as i32), -((d - e) as i32))),
         )
     }
 
@@ -2283,16 +2283,15 @@ impl Tensor {
                 }
             }
         }
-        let mut offset = 0isize;
-        let mut offset2 = tensors.iter().fold(0, |acc, t| acc + isize::try_from(t.shape()[dim]).unwrap());
+        let mut offset = 0i32;
+        let mut offset2 = tensors.iter().fold(0, |acc, t| acc + i32::try_from(t.shape()[dim]).unwrap());
         let mut shape = tensors[0].shape();
         shape[dim] = Dim::try_from(offset2).unwrap();
         let mut res = None;
         for tensor in tensors {
-            let d = isize::try_from(tensor.shape()[dim]).unwrap();
+            let d = i32::try_from(tensor.shape()[dim]).unwrap();
             offset2 -= d;
-            let padding: Vec<(isize, isize)> =
-                repeat_n((0isize, 0isize), rank - dim - 1).chain([(offset, offset2)]).collect();
+            let padding: Vec<(i32, i32)> = repeat_n((0, 0), rank - dim - 1).chain([(offset, offset2)]).collect();
             let t = tensor.pad_zeros(padding)?;
             if let Some(r) = res {
                 res = Some(r + t);
@@ -2520,28 +2519,28 @@ impl Tensor {
     /// Tri
     #[must_use]
     #[track_caller]
-    pub fn tri(r: Dim, c: Dim, diagonal: isize, dtype: DType) -> Tensor {
-        if r == 0 || c == 0 || diagonal >= c as isize {
+    pub fn tri(r: Dim, c: Dim, diagonal: i32, dtype: DType) -> Tensor {
+        if r == 0 || c == 0 || diagonal >= c as i32 {
             return Tensor::zeros([r, c], dtype);
         }
-        if r as isize + diagonal <= 0 {
+        if r as i32 + diagonal <= 0 {
             return Tensor::ones([r, c], dtype);
         }
         let s = r + c - 1;
-        let t = Tensor::ones([s, s], dtype).pad_zeros([(0, s as isize)]).unwrap();
+        let t = Tensor::ones([s, s], dtype).pad_zeros([(0, s as i32)]).unwrap();
         let t = t.reshape([2 * s * s]).unwrap();
-        let t = t.pad_zeros([(0, -(s as isize))]).unwrap();
+        let t = t.pad_zeros([(0, -(s as i32))]).unwrap();
         let t = t.reshape([s, 2 * s - 1]).unwrap();
-        let t = t.pad_zeros([(0, -((2 * s - 1 - s) as isize))]).unwrap();
+        let t = t.pad_zeros([(0, -((2 * s - 1 - s) as i32))]).unwrap();
         if diagonal <= 0 {
-            t.slice((0..r, (-diagonal) as usize..(c as isize - diagonal) as usize)).unwrap()
+            t.slice((0..r, (-diagonal) as usize..(c as i32 - diagonal) as usize)).unwrap()
         } else {
             t.slice((diagonal as usize..(r + diagonal as usize), 0..c)).unwrap()
         }
     }
 
     /// Returns upper triangular part of the input tensor, other elements are set to zero
-    pub fn triu(&self, diagonal: isize) -> Result<Tensor, ZyxError> {
+    pub fn triu(&self, diagonal: i32) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal, device=self.device, dtype=dtypes.bool).where(self, self.zeros_like())
         let [r, c] = self.rdims::<2>()?;
         Tensor::tri(r, c, diagonal, DType::Bool).where_(self, Tensor::zeros_like(self))
@@ -2550,7 +2549,7 @@ impl Tensor {
     /// Returns lower triangular part of the input tensor, other elements are set to zero
     /// # Errors
     /// Returns error if self's rank < 2
-    pub fn tril(&self, diagonal: isize) -> Result<Tensor, ZyxError> {
+    pub fn tril(&self, diagonal: i32) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal+1, device=self.device, dtype=dtypes.bool).where(self.zeros_like(), self)
         let [r, c] = self.rdims::<2>()?;
         Tensor::tri(r, c, diagonal + 1, DType::Bool).where_(Tensor::zeros_like(self), self)
@@ -2796,7 +2795,7 @@ impl Tensor {
         }
 
         let x = self
-            .pad_zeros(padding_.chunks(2).map(|x| (isize::try_from(x[0]).unwrap(), isize::try_from(x[1]).unwrap())))
+            .pad_zeros(padding_.chunks(2).map(|x| (i32::try_from(x[0]).unwrap(), i32::try_from(x[1]).unwrap())))
             .unwrap()
             .pool(hw, stride, dilation)
             .unwrap();
@@ -2862,14 +2861,14 @@ impl Tensor {
         kernel_size: impl IntoShape,
         stride: impl IntoShape,
         dilation: impl IntoShape,
-        padding: impl IntoIterator<Item = (isize, isize)>,
+        padding: impl IntoIterator<Item = (i32, i32)>,
         ceil_mode: bool,
         return_indices: bool,
     ) -> Result<Tensor, ZyxError> {
         let kernel_size: Vec<usize> = kernel_size.into_shape().collect();
         let axis: Vec<Axis> = (-(kernel_size.len() as Axis)..0).collect();
 
-        let padding: Vec<(isize, isize)> = padding.into_iter().collect();
+        let padding: Vec<(i32, i32)> = padding.into_iter().collect();
 
         //if ceil_mode: pads = self._apply_ceil_mode(pads, k_, stride if stride is not None else k_, dilation)
         // TODO

@@ -494,7 +494,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(isize, isize)>) -> TensorId {
+    pub(super) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(i32, i32)>) -> TensorId {
         let mut shape: Vec<Dim> = self.shape(x).into();
         //println!("Self shape: {shape:?}, padding: {padding:?}");
         apply_padding(&mut shape, &padding);
@@ -603,10 +603,10 @@ pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_da
     }
 }
 
-pub fn apply_padding(shape: &mut [Dim], padding: &[(isize, isize)]) {
+pub fn apply_padding(shape: &mut [Dim], padding: &[(i32, i32)]) {
     let mut i = 0;
     for d in shape.iter_mut().rev() {
-        *d = Dim::try_from(isize::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
+        *d = Dim::try_from(i32::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
         i += 1;
         if i >= padding.len() {
             break;

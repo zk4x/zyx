@@ -45,11 +45,12 @@ pub enum Scope {
 pub struct OpId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum MovementOp {
+pub enum MoveOp {
     Reshape(Vec<Dim>),
     Expand(Vec<Dim>),
-    // Permute(Vec<UAxis>),
-    // Pad()
+    Permute { axes: Vec<UAxis>, shape: Vec<Dim> },
+    Pad { padding: Vec<(i32, i32)>, shape: Vec<Dim> },
+    // Pad(Vec<(isize, isize)>),
     //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
     //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
     //PadIndex(OpId, isize, isize), // Pad index with padding
@@ -88,7 +89,7 @@ pub enum Op {
     ConstView(Box<(Constant, View)>),
     LoadView(Box<(DType, View)>),
     StoreView { src: OpId, dtype: DType },
-    Movement { x: OpId, mop: Box<MovementOp> },
+    Movement { x: OpId, mop: Box<MoveOp> },
     Reduce { x: OpId, rop: ROp, n_axes: UAxis },
 }
 
@@ -516,11 +517,17 @@ impl Kernel {
                     }
                 }
                 Op::Movement { x, ref mop } => match mop.as_ref() {
-                    MovementOp::Reshape(shape) => {
+                    MoveOp::Reshape(shape) => {
                         println!("{op_id:>5}{indent}{CYAN}RESHAPE{RESET} {x} -> {shape:?}");
                     }
-                    MovementOp::Expand(shape) => {
+                    MoveOp::Expand(shape) => {
                         println!("{op_id:>5}{indent}{CYAN}EXPAND{RESET} {x} -> {shape:?}");
+                    }
+                    MoveOp::Permute { axes, shape } => {
+                        println!("{op_id:>5}{indent}{CYAN}PERMUTE{RESET} {x} axes={axes:?} -> {shape:?}");
+                    }
+                    MoveOp::Pad { padding, shape } => {
+                        println!("{op_id:>5}{indent}{CYAN}PAD{RESET} {x} padding={padding:?} -> {shape:?}");
                     }
                 },
             }
@@ -562,8 +569,10 @@ impl Kernel {
                     Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
                 Op::Movement { mop, .. } => match mop.as_ref() {
-                    MovementOp::Reshape(shape) => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MovementOp::Expand(shape) => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Reshape(shape) => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Expand(shape) => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Permute { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Pad { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                 },
                 Op::Reduce { x, n_axes, .. } => {
                     let Info { mut shape, .. } = stack[x].clone();
@@ -674,12 +683,22 @@ impl Kernel {
                     reduce_dims += n_axes;
                 }
                 Op::Movement { mop, .. } => match mop.as_ref() {
-                    MovementOp::Reshape(shape) => {
+                    MoveOp::Reshape(shape) => {
                         let mut shape = shape.clone();
                         shape.truncate(shape.len() - reduce_dims);
                         return shape;
                     }
-                    MovementOp::Expand(shape) => {
+                    MoveOp::Expand(shape) => {
+                        let mut shape = shape.clone();
+                        shape.truncate(shape.len() - reduce_dims);
+                        return shape;
+                    }
+                    MoveOp::Permute { shape, .. } => {
+                        let mut shape = shape.clone();
+                        shape.truncate(shape.len() - reduce_dims);
+                        return shape;
+                    }
+                    MoveOp::Pad { shape, .. } => {
                         let mut shape = shape.clone();
                         shape.truncate(shape.len() - reduce_dims);
                         return shape;
@@ -731,13 +750,13 @@ impl Kernel {
         while !op_id.is_null() {
             let next_op_id = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Cast { x, dtype } => {
+                Op::Cast { x, .. } => {
                     shapes.insert(op_id, shapes[&x].clone());
                 }
-                Op::Unary { x, uop } => {
+                Op::Unary { x, .. } => {
                     shapes.insert(op_id, shapes[&x].clone());
                 }
-                Op::Binary { x, y, bop } => {
+                Op::Binary { x, .. } => {
                     shapes.insert(op_id, shapes[&x].clone());
                 }
                 Op::ConstView(ref view) => {
@@ -747,20 +766,34 @@ impl Kernel {
                     shapes.insert(op_id, view.1.shape());
                 }
                 Op::Movement { x, ref mop } => match mop.as_ref() {
-                    MovementOp::Reshape(new_dims) => {
+                    MoveOp::Reshape(new_dims) => {
                         shapes.insert(op_id, new_dims.clone());
-                        self.recursively_apply_reshape(x, shapes[&x].len(), &shapes[&op_id], &mut Set::default(), 0);
+                        self.recursively_reshape(x, shapes[&x].len(), &shapes[&op_id], &mut Set::default(), 0);
                         self.remap(op_id, x);
                         self.remove(op_id);
                     }
-                    MovementOp::Expand(new_dims) => {
+                    MoveOp::Expand(new_dims) => {
                         shapes.insert(op_id, new_dims.clone());
-                        self.recursively_apply_expand(x, shapes[&x].len(), &shapes[&op_id], &mut Set::default(), 0);
+                        self.recursively_expand(x, shapes[&x].len(), &shapes[&op_id], &mut Set::default(), 0);
+                        self.remap(op_id, x);
+                        self.remove(op_id);
+                    }
+                    MoveOp::Permute { axes, shape } => {
+                        shapes.insert(op_id, shape.clone());
+                        self.recursively_permute(x, shapes[&x].len(), &axes.clone(), &mut Set::default(), 0);
+                        self.remap(op_id, x);
+                        self.remove(op_id);
+                    }
+                    MoveOp::Pad { padding, shape } => {
+                        shapes.insert(op_id, shape.clone());
+                        self.recursively_pad(x, shapes[&x].len(), &padding.clone(), &mut Set::default(), 0);
                         self.remap(op_id, x);
                         self.remove(op_id);
                     }
                 },
-                Op::Reduce { x, rop, n_axes } => todo!(),
+                Op::Reduce { x, .. } => {
+                    shapes.insert(op_id, shapes[&x].clone());
+                }
                 _ => {}
             }
             op_id = next_op_id;
@@ -968,7 +1001,7 @@ impl Kernel {
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
+                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as i32 - dim.rp) as u64)));
                                 let t = self.new_op(opi, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
@@ -1064,7 +1097,7 @@ impl Kernel {
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as isize - dim.rp) as u64)));
+                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as i32 - dim.rp) as u64)));
                                 let t = self.new_op(opi, Op::Binary { x: loop_id, y: rp, bop: BOp::Cmplt });
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
