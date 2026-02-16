@@ -211,7 +211,7 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         //kernel.apply_movement(|view| view.expand(shape));
-        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand(shape.into())) });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: shape.into() }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -232,9 +232,7 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
-        let rank = self.graph.shape(x).len();
-        let op_id =
-            kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { rank, shape: shape.into() }) });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape.into() }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -325,7 +323,7 @@ impl<'a> Kernelizer<'a> {
             permute_axes.extend_from_slice(axes);
 
             //self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
-            if permute_axes.iter().copied().eq(0..permute_axes.len()) {
+            if !permute_axes.iter().copied().eq(0..permute_axes.len()) {
                 let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
                 op_id = self.kernels[kid]
                     .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
@@ -341,8 +339,8 @@ impl<'a> Kernelizer<'a> {
         // If all dims are reduced
         if shape.len() == axes.len() {
             //self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
-            op_id = self.kernels[kid]
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { rank: 0, shape: vec![1] }) });
+            op_id =
+                self.kernels[kid].push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: vec![1] }) });
         }
 
         debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());

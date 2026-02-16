@@ -34,7 +34,7 @@ fn sub() -> Result<(), ZyxError> {
     let x = Tensor::from(datax);
     let y = Tensor::from(datay);
     let z = x - y;
-    println!("{z}");
+    //println!("{z}");
     let dataz: Vec<f32> = z.try_into()?;
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
         assert_eq!(x - y, z);
@@ -87,7 +87,7 @@ fn pow() -> Result<(), ZyxError> {
     for ((x, y), z) in datax.iter().zip(datay).zip(dataz) {
         //assert!((x.pow(y) - z).abs() < 0.00001);
         let x = x.pow(y);
-        println!("{x}, {z}");
+        //println!("{x}, {z}");
         assert!(x.is_equal(z));
     }
     Ok(())

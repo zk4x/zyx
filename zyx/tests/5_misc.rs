@@ -1,6 +1,7 @@
 use half::f16;
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
+#[allow(unused)]
 fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     let mut c = vec![0f32; m * n];
 
@@ -254,7 +255,7 @@ fn boolean_buffer() -> Result<(), ZyxError> {
 fn mix_expand_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
-    println!("{:?}", x.shape());
+    //println!("{:?}", x.shape());
     x = x.expand([2, 2])?;
     assert_eq!(x, [[9i32, 7], [9, 7]]);
     Ok(())
@@ -284,8 +285,8 @@ fn mix_expand_reshape_reduce() -> Result<(), ZyxError> {
     let y = x.expand([2, 2])?;
     x = x.reshape([2, 1])?.expand([2, 2])?;
     Tensor::realize([&x, &y])?;
-    println!("{y}");
-    println!("{x}");
+    //println!("{y}");
+    //println!("{x}");
     assert_eq!(y, [[9i32, 7], [9, 7]]);
     assert_eq!(x, [[9i32, 9], [7, 7]]);
     Ok(())
@@ -390,7 +391,8 @@ fn const_() -> Result<(), ZyxError> {
 fn graph_shapes() -> Result<(), ZyxError> {
     let x: Tensor = 2.into();
     let y = x.expand([1, 1])?;
-    println!("{y}");
+    //println!("{y}");
+    assert_eq!(y, [[2]]);
     Ok(())
 }
 
@@ -501,8 +503,8 @@ fn matmul_disk() -> Result<(), ZyxError> {
     let z = xyz.remove("z").unwrap();
     let y = xyz.remove("y").unwrap();
     let x = xyz.remove("x").unwrap();
-    println!("{:?}", x.shape());
-    println!("{:?}", y.shape());
+    //println!("{:?}", x.shape());
+    //println!("{:?}", y.shape());
     let dataz: Vec<i64> = z.try_into()?;
     let zz = x.matmul(y)?;
     let datazz: Vec<i64> = zz.try_into()?;
@@ -615,7 +617,7 @@ fn multiple_stores() -> Result<(), ZyxError> {
     let y = x.ln();
     let z = y.tanh();
     Tensor::realize([&y, &z])?;
-    println!("{z:.14}");
+    //println!("{z:.14}");
     assert_eq!(
         z,
         [
@@ -644,7 +646,7 @@ fn dot2() -> Result<(), ZyxError> {
 fn repeat1() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
     x = x.repeat([2, 3, 1])?;
-    println!("{x}");
+    //println!("{x}");
     assert_eq!(
         x,
         [
@@ -716,6 +718,7 @@ fn eye1() {
     );
 }
 
+#[allow(unused)]
 #[test]
 fn bench_mm1() -> Result<(), ZyxError> {
     const N: usize = 1024;
@@ -808,7 +811,7 @@ fn conv1() -> Result<(), ZyxError> {
     let w = Tensor::ones([1, 1, 2, 2], DType::F32);
     let x = t.conv(&w, None, 1, 1, 1, 0)?;
 
-    println!("{x}");
+    //println!("{x}");
 
     Ok(())
 }
@@ -820,11 +823,11 @@ fn graph_tensor_ordering() -> Result<(), ZyxError> {
         let z1 = x.exp2() + x.log2(); // 3
         z1.exp2() // 4
     };
-    println!("{z2}");
+    //println!("{z2}");
     let z3 = {
         z2.exp2() * z2 // 6
     };
-    println!("{z3}");
+    //println!("{z3}");
 
     Ok(())
 }
