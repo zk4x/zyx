@@ -750,7 +750,7 @@ impl OpenCLDevice {
                 | Op::StoreView { .. }
                 | Op::LoadView { .. }
                 | Op::Reduce { .. }
-                | Op::Movement { .. } => {
+                | Op::Move { .. } => {
                     unreachable!()
                 }
                 Op::Const(x) => {
@@ -833,7 +833,7 @@ impl OpenCLDevice {
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
                 | Op::Reduce { .. }
-                | Op::Movement { .. } => {
+                | Op::Move { .. } => {
                     unreachable!()
                 }
                 &Op::Const(x) => {

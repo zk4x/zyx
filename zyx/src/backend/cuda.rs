@@ -1298,7 +1298,7 @@ impl CUDADevice {
                 | Op::ConstView { .. }
                 | Op::StoreView { .. }
                 | Op::LoadView { .. }
-                | Op::Movement { .. }
+                | Op::Move { .. }
                 | Op::Reduce { .. } => {
                     unreachable!()
                 }
@@ -1378,7 +1378,7 @@ impl CUDADevice {
             //println!("{i} -> {op:?}");
             match op {
                 Op::Devectorize { .. }
-                | Op::Movement { .. }
+                | Op::Move { .. }
                 | Op::MMA { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }

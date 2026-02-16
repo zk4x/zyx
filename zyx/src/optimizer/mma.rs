@@ -65,7 +65,7 @@ impl Kernel {
         while !op_id.is_null() {
             println!("{op_id} -> {:?}", self.ops[op_id].op);
             match &self.ops[op_id].op {
-                Op::Movement { .. } => todo!(),
+                Op::Move { .. } => todo!(),
                 Cast { x, dtype } => todo!(),
                 Unary { x, uop } => todo!(),
                 Binary { x, y, bop } => todo!(),

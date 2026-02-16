@@ -211,7 +211,7 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         //kernel.apply_movement(|view| view.expand(shape));
-        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Expand(shape.into())) });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand(shape.into())) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -232,7 +232,9 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
-        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Reshape(shape.into())) });
+        let rank = self.graph.shape(x).len();
+        let op_id =
+            kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { rank, shape: shape.into() }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -249,7 +251,7 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape }) });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -268,7 +270,7 @@ impl<'a> Kernelizer<'a> {
         //let rank = self.graph.shape(nid).len();
         //kernel.apply_movement(|view| view.pad(rank, padding));
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape }) });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -325,19 +327,23 @@ impl<'a> Kernelizer<'a> {
             //self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
             let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
             op_id = self.kernels[kid]
-                .push_back(Op::Movement { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
+                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
         }
 
-        // If all dims are reduced
-        if shape.len() == axes.len() {
-            self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
-        }
         let kernel = &mut self.kernels[kid];
-        let op_id = kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
+        op_id = kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
-        debug_assert_eq!(self.graph.shape(nid), kernel.shape());
+
+        // If all dims are reduced
+        if shape.len() == axes.len() {
+            //self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
+            op_id = self.kernels[kid]
+                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { rank: 0, shape: vec![1] }) });
+        }
+
+        debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
         self.visited.insert(nid, (kid, op_id));
         Ok(())
     }

@@ -149,7 +149,7 @@ impl View {
         true
     }
 
-    pub fn reshape(&mut self, axes: Range<UAxis>, new_shape: &[Dim]) {
+    pub fn reshape(&mut self, mut axes: Range<UAxis>, new_shape: &[Dim]) {
         /*println!(
             "Reshape {:?}, axes {:?} into shape {new_shape:?}, {self}",
             self.shape(),
@@ -168,9 +168,16 @@ impl View {
             new_shape
         );
 
+        let mut new_shape: Vec<Dim> = new_shape.into();
+        // Means we are inserting new dims in front
+        if axes.end == 0 {
+            axes.end = 1;
+            new_shape.push(self.0.last().unwrap()[0].d);
+        }
+
         if let Some(last_block) = self.0.last_mut() {
             // Try to reshape last block in place
-            let new_block = try_reshape(&last_block[axes.clone()], new_shape);
+            let new_block = try_reshape(&last_block[axes.clone()], &new_shape);
             if !new_block.is_empty() {
                 // Reshape succeeded in place, done
                 _ = last_block.splice(axes, new_block);
@@ -313,9 +320,10 @@ impl View {
         dim.st = 0;
     }*/
 
-    pub fn pad(&mut self, rank: Dim, padding: &[(i32, i32)]) {
+    pub fn pad(&mut self, padding: &[(i32, i32)]) {
         //println!("view: {:?} padding: {padding:?}", self.shape());
-        for (axis, &(lp, rp)) in (0..rank).rev().zip(padding) {
+        let rank = self.rank();
+        for (axis, &(lp, rp)) in (rank - padding.len()..rank).rev().zip(padding) {
             if lp != 0 || rp != 0 {
                 self.pad_axis(axis, lp, rp);
             }

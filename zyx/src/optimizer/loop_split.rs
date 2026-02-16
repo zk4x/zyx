@@ -1,6 +1,6 @@
 use crate::{
     Set,
-    kernel::{Kernel, Op, OpId},
+    kernel::{Kernel, MoveOp, Op, OpId},
     shape::{Dim, UAxis},
 };
 use nanoserde::{DeBin, SerBin};
@@ -111,105 +111,6 @@ impl Kernel {
             &mut Op::Binary { x, y, .. } => {
                 self.recursively_reshape(x, n_old_dims, new_dims, visited, skip_last);
                 self.recursively_reshape(y, n_old_dims, new_dims, visited, skip_last);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn recursively_expand(
-        &mut self,
-        op_id: OpId,
-        n_old_dims: usize,
-        new_dims: &[Dim],
-        visited: &mut Set<OpId>,
-        skip_last: usize,
-    ) {
-        if !visited.insert(op_id) {
-            return;
-        }
-        match &mut self.ops[op_id].op {
-            Op::LoadView(x) => {
-                x.1.expand(new_dims);
-            }
-            Op::ConstView(x) => {
-                x.1.expand(new_dims);
-            }
-            &mut Op::Reduce { x, n_axes, .. } => {
-                let skip_last = skip_last + n_axes;
-                self.recursively_expand(x, n_old_dims, new_dims, visited, skip_last);
-            }
-            &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
-                self.recursively_expand(x, n_old_dims, new_dims, visited, skip_last);
-            }
-            &mut Op::Binary { x, y, .. } => {
-                self.recursively_expand(x, n_old_dims, new_dims, visited, skip_last);
-                self.recursively_expand(y, n_old_dims, new_dims, visited, skip_last);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn recursively_permute(
-        &mut self,
-        op_id: OpId,
-        n_old_dims: usize,
-        axes: &[UAxis],
-        visited: &mut Set<OpId>,
-        skip_last: usize,
-    ) {
-        if !visited.insert(op_id) {
-            return;
-        }
-        match &mut self.ops[op_id].op {
-            Op::LoadView(x) => {
-                x.1.permute(axes);
-            }
-            Op::ConstView(x) => {
-                x.1.permute(axes);
-            }
-            &mut Op::Reduce { x, n_axes, .. } => {
-                let skip_last = skip_last + n_axes;
-                self.recursively_permute(x, n_old_dims, axes, visited, skip_last);
-            }
-            &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
-                self.recursively_permute(x, n_old_dims, axes, visited, skip_last);
-            }
-            &mut Op::Binary { x, y, .. } => {
-                self.recursively_permute(x, n_old_dims, axes, visited, skip_last);
-                self.recursively_permute(y, n_old_dims, axes, visited, skip_last);
-            }
-            _ => {}
-        }
-    }
-
-    pub fn recursively_pad(
-        &mut self,
-        op_id: OpId,
-        n_old_dims: usize,
-        padding: &[(i32, i32)],
-        visited: &mut Set<OpId>,
-        skip_last: usize,
-    ) {
-        if !visited.insert(op_id) {
-            return;
-        }
-        match &mut self.ops[op_id].op {
-            Op::LoadView(x) => {
-                x.1.pad(padding.len(), padding);
-            }
-            Op::ConstView(x) => {
-                x.1.pad(padding.len(), padding);
-            }
-            &mut Op::Reduce { x, n_axes, .. } => {
-                let skip_last = skip_last + n_axes;
-                self.recursively_pad(x, n_old_dims, padding, visited, skip_last);
-            }
-            &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
-                self.recursively_pad(x, n_old_dims, padding, visited, skip_last);
-            }
-            &mut Op::Binary { x, y, .. } => {
-                self.recursively_pad(x, n_old_dims, padding, visited, skip_last);
-                self.recursively_pad(y, n_old_dims, padding, visited, skip_last);
             }
             _ => {}
         }
