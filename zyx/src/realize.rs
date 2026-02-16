@@ -325,9 +325,11 @@ impl<'a> Kernelizer<'a> {
             permute_axes.extend_from_slice(axes);
 
             //self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
-            let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
-            op_id = self.kernels[kid]
-                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
+            if permute_axes.iter().copied().eq(0..permute_axes.len()) {
+                let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
+                op_id = self.kernels[kid]
+                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
+            }
         }
 
         let kernel = &mut self.kernels[kid];

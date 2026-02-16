@@ -3,7 +3,8 @@
 use crate::{
     Scalar, ZyxError,
     graph::{BOp, UOp},
-    kernel::IDX_T, shape::Dim,
+    kernel::IDX_T,
+    shape::Dim,
 };
 use half::{bf16, f16};
 use nanoserde::{DeBin, SerBin};
@@ -272,6 +273,7 @@ impl Constant {
         }
     }
 
+    #[allow(unused)]
     #[must_use]
     pub(super) fn as_dim(self) -> Dim {
         match self {

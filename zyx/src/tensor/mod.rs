@@ -2870,6 +2870,9 @@ impl Tensor {
 
         let padding: Vec<(i32, i32)> = padding.into_iter().collect();
 
+        if ceil_mode {
+            todo!("ceil mode is not implemented yet")
+        }
         //if ceil_mode: pads = self._apply_ceil_mode(pads, k_, stride if stride is not None else k_, dilation)
         // TODO
 

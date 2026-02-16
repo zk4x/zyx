@@ -787,7 +787,7 @@ impl Kernel {
 
     /// Apply  movement ops on views. Later this will directly generate indices
     pub fn unfold_movement_ops(&mut self) {
-        self.debug();
+        //self.debug();
         let mut shapes: Map<OpId, Vec<Dim>> = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -810,7 +810,7 @@ impl Kernel {
                 }
                 Op::Move { x, ref mop } => {
                     shapes.insert(op_id, mop.shape().into());
-                    self.recursively_move(x, &mop.clone(), &mut Set::default());
+                    self.recursively_move(x, &mop.clone(), &mut Set::default(), 0);
                 }
                 Op::Reduce { x, n_axes, .. } => {
                     println!("shape={:?}", shapes[&x]);
@@ -824,7 +824,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next_op_id = self.next_op(op_id);
-            if let Op::Move {x, .. } = self.ops[op_id].op {
+            if let Op::Move { x, .. } = self.ops[op_id].op {
                 self.remap(op_id, x);
                 self.remove(op_id);
             }
@@ -832,10 +832,9 @@ impl Kernel {
         }
         #[cfg(debug_assertions)]
         self.verify();
-        self.debug();
     }
 
-    pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>) {
+    pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
         if !visited.insert(op_id) {
             return;
         }
@@ -846,26 +845,26 @@ impl Kernel {
                 }
                 MoveOp::Expand(shape) => x.1.expand(&shape),
                 MoveOp::Permute { axes, .. } => x.1.permute(&axes),
-                MoveOp::Pad { padding, .. } => x.1.pad(&padding),
+                MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, &padding),
             },
             Op::ConstView(x) => match move_op {
-                MoveOp::Reshape { rank, shape } => x.1.reshape(0..*rank, &shape),
+                MoveOp::Reshape { rank, shape } => x.1.reshape(0..rank - n_reduce_axes, &shape),
                 MoveOp::Expand(shape) => x.1.expand(&shape),
                 MoveOp::Permute { axes, .. } => x.1.permute(&axes),
-                MoveOp::Pad { padding, .. } => x.1.pad(&padding),
+                MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, &padding),
             },
-            &mut Op::Reduce { x, .. } => {
-                self.recursively_move(x, move_op, visited);
+            &mut Op::Reduce { x, n_axes, .. } => {
+                self.recursively_move(x, move_op, visited, n_reduce_axes + n_axes);
             }
             &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
-                self.recursively_move(x, move_op, visited);
+                self.recursively_move(x, move_op, visited, n_reduce_axes);
             }
             &mut Op::Binary { x, y, .. } => {
-                self.recursively_move(x, move_op, visited);
-                self.recursively_move(y, move_op, visited);
+                self.recursively_move(x, move_op, visited, n_reduce_axes);
+                self.recursively_move(y, move_op, visited, n_reduce_axes);
             }
             &mut Op::Move { x, .. } => {
-                self.recursively_move(x, move_op, visited);
+                self.recursively_move(x, move_op, visited, n_reduce_axes);
             }
             _ => {}
         }
@@ -2022,7 +2021,7 @@ impl Kernel {
                     }
                     stack.pop();
                 }
-                Op::Move { x, ref mop } => {
+                Op::Move { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }

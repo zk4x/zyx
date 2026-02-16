@@ -1,7 +1,7 @@
 use crate::{
     Set,
-    kernel::{Kernel, MoveOp, Op, OpId},
-    shape::{Dim, UAxis},
+    kernel::{Kernel, Op, OpId},
+    shape::Dim,
 };
 use nanoserde::{DeBin, SerBin};
 
