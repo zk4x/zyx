@@ -811,10 +811,31 @@ fn conv1() -> Result<(), ZyxError> {
     let w = Tensor::ones([1, 1, 2, 2], DType::F32);
     let x = t.conv(&w, None, 1, 1, 1, 0)?;
 
-    //println!("{x}");
+    assert_eq!(x, [[[[8f32, 12.,], [20., 24.]]]]);
 
     Ok(())
 }
+
+/*#[test]
+fn conv2() -> Result<(), ZyxError> {
+    // Input: 0..24 → [1,1,5,5]
+    let t = Tensor::arange(0f32, 25., 1.)?.reshape([1, 1, 5, 5])?;
+
+    // 2x2 kernel of ones
+    let w = Tensor::ones([1, 1, 2, 2], DType::F32);
+
+    // groups=1, stride=2, dilation=2, padding=1
+    let x = t.conv(&w, None, 1, 2, 2, 1)?;
+
+    // Expected output shape calculation:
+    // effective_kernel = dilation*(k-1)+1 = 2*(2-1)+1 = 3
+    // out = floor((5 + 2*1 - 3)/2) + 1 = 3
+    assert_eq!(x.shape(), [1, 1, 3, 3]);
+
+    assert_eq!(x, [[[[0., 4., 4.], [20., 48., 28.], [20., 44., 24.]]]]);
+
+    Ok(())
+}*/
 
 #[test]
 fn graph_tensor_ordering() -> Result<(), ZyxError> {
@@ -824,7 +845,7 @@ fn graph_tensor_ordering() -> Result<(), ZyxError> {
         z1.exp2() // 4
     };
     //println!("{z2}");
-    let z3 = {
+    let _z3 = {
         z2.exp2() * z2 // 6
     };
     //println!("{z3}");
