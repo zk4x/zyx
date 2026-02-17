@@ -68,6 +68,29 @@ impl MoveOp {
     }
 }
 
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum MMADims {
+    m8n8k16,
+    m16n8k8,
+    m16n8k16,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum MMALayout {
+    row_row,
+    row_col,
+    col_row,
+    col_col,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum MMADType {
+    f16_f16_f16_f32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist in both
@@ -87,7 +110,7 @@ pub enum Op {
     Mad { x: OpId, y: OpId, z: OpId },
     // fused matmul, a, b, c are fragments, each is a vector, c is accumulator
     // TODO would be adding d useful?
-    MMA { m: u8, n: u8, k: u8, c: OpId, a: OpId, b: OpId },
+    MMA { dims: MMADims, layout: MMALayout, dtype: MMADType, c: OpId, a: OpId, b: OpId },
     // Vectorization, YAY!
     Vectorize { ops: Vec<OpId> },
     Devectorize { vec: OpId, idx: usize }, // select a single value from a vector
@@ -479,8 +502,8 @@ impl Kernel {
                         println!("{op_id:>5}{indent}MAD {x} {y} {z}");
                     }
                 }
-                Op::MMA { m, n, k, c, a, b } => {
-                    println!("{op_id:>5}{indent}{ORANGE}MMA{RESET} m{m}n{n}k{k} c={c} a={a} b={b}");
+                Op::MMA { dims, layout, dtype, c, a, b } => {
+                    println!("{op_id:>5}{indent}{ORANGE}MMA{RESET} {dims:?}.{layout:?}.{dtype:?} c={c} a={a} b={b}");
                 }
                 Op::Loop { dim, scope, .. } => {
                     ids.insert(op_id, (0, dim - 1));
@@ -764,6 +787,64 @@ impl Kernel {
         // TODO
     }
 
+    /// Get index loop ids, dimensions and strides
+    /// returns loop_id -> (dimension, stride)
+    pub fn get_indices(&self, index: OpId) -> Map<OpId, (Dim, Dim)> {
+        use Op::*;
+        //println!("Get index {index}");
+
+        let mut params = vec![index];
+        let mut indices = Map::default();
+
+        while let Some(param) = params.pop() {
+            match self.ops[param].op {
+                Binary { x, y, bop } => {
+                    if bop == BOp::Add {
+                        if let Loop { dim, .. } = self.ops[x].op {
+                            indices.insert(x, (dim, 1));
+                            params.push(y);
+                        }
+                        if let Loop { dim, .. } = self.ops[y].op {
+                            indices.insert(x, (dim, 1));
+                            params.push(x);
+                        }
+                    }
+                    if bop == BOp::Mul {
+                        match (&self.ops[x].op, &self.ops[y].op) {
+                            (Loop { dim, .. }, Const(c)) => {
+                                indices.insert(x, (*dim, c.as_dim()));
+                            }
+                            (Const(c), Loop { dim, .. }) => {
+                                indices.insert(y, (*dim, c.as_dim()));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Mad { x, y, z } => {
+                    if let Loop { dim, .. } = self.ops[z].op {
+                        indices.insert(z, (dim, 1));
+                    } else {
+                        params.push(z);
+                    }
+                    match (&self.ops[x].op, &self.ops[y].op) {
+                        (Loop { dim, .. }, Const(c)) => {
+                            indices.insert(x, (*dim, c.as_dim()));
+                        }
+                        (Const(c), Loop { dim, .. }) => {
+                            indices.insert(y, (*dim, c.as_dim()));
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        indices
+    }
+
+    /// Add loop closing ops (EndLoop)
     pub fn close_loops(&mut self) {
         let mut loop_id = 0;
         let mut op_id = self.head;

@@ -69,6 +69,8 @@ impl Optimizer {
         }
 
         kernel.unfold_reduces();
+
+        // TODO move this functionality into unfold movement ops
         kernel.unfold_views();
 
         // This is only needed for debugging
@@ -110,8 +112,7 @@ impl Optimizer {
         kernel.unfold_pows();
 
         // Use tensor cores if possible
-        //kernel.vectorize_loads();
-        //kernel.fuse_mma();
+        kernel.fuse_mma();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..2 {

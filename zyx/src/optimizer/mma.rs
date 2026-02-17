@@ -9,8 +9,23 @@
 //
 
 use crate::{
-    DType, graph::BOp, kernel::{Kernel, Op, OpId, Scope}, shape::Dim
+    DType, Map,
+    graph::BOp,
+    kernel::{Kernel, Op, OpId, Scope},
+    shape::Dim,
 };
+
+struct StoreRow {
+    a_op: OpId(10),
+    a_base_op: OpId(1),
+    a_offset: 0,
+    b_op: OpId(11),
+    b_base_op: OpId(2),
+    b_offset: 1,
+    c_op: OpId(20),
+    c_offset: 0,
+    cast: true,
+}
 
 impl Kernel {
     /// Finds loop trifectas and if possible, LICM moves these instructions before those loops
@@ -18,6 +33,8 @@ impl Kernel {
     pub fn fuse_mma(&mut self) {
         use Op::*;
         use Scope::*;
+
+        self.unroll_loops(4);
         self.swap_commutative();
         self.reassociate_commutative();
         self.loop_invariant_code_motion();
@@ -26,10 +43,15 @@ impl Kernel {
         self.dead_code_elimination();
         self.move_constants_to_beginning();
 
+        self.vectorize_loads();
+        //self.vectorize_stores();
+        todo!();
+
         self.debug();
 
         let mut op_id = self.tail;
         let mut loop_dims = Vec::new();
+        let mut loop_ids = Vec::new();
         while !op_id.is_null() {
             /*if self.is_mma_store(op_id) {
                 println!("Found MMA store at {op_id}");
@@ -38,14 +60,27 @@ impl Kernel {
                 Loop { dim, scope } => {
                     if scope == Register {
                         loop_dims.push(dim);
+                        loop_ids.push(op_id);
+                        // TODO replace with MMAKind::is_loop_trifecta(loop_dims)
                         if loop_dims == vec![2, 4, 16] {
                             println!("Found the loop trifecta");
-                            self.get_mma_info(op_id);
+                            //self.get_mma_ops(op_id);
+                            let mut i = op_id;
+                            while !i.is_null() {
+                                let mma_ops = self.is_mma_store(&loop_ids, i, 8);
+                                if !mma_ops.is_empty() {
+                                    // TODO delete the store from here and add loads, stores and cast operations as necessary before
+                                    // the first loop_id in loop_ids
+                                    todo!()
+                                }
+                                i = self.next_op(i);
+                            }
                         }
                     }
                 }
                 EndLoop => {
                     loop_dims.clear();
+                    loop_ids.clear();
                 }
                 _ => {}
             }
@@ -53,54 +88,14 @@ impl Kernel {
         }
     }
 
-    fn get_mma_info(&self, k_loop_id: OpId) -> bool {
-        use Op::*; use Scope::*;
-
-        let mut op_id = k_loop_id;
-        //let mut indices: Vec<_> = Vec::new();
-        let mut n_endloops = 0;
-
-        let mut loop_ids = Vec::new();
-
-        while !op_id.is_null() {
-            println!("{op_id} -> {:?}", self.ops[op_id].op);
-            match &self.ops[op_id].op {
-                Op::Move { .. } => todo!(),
-                Cast { x, dtype } => todo!(),
-                Unary { x, uop } => todo!(),
-                Binary { x, y, bop } => todo!(),
-                Const(constant) => todo!(),
-                Define { dtype, scope, ro, len } => todo!(),
-                Store { dst, x, index, vlen } => todo!(),
-                Load { src, index, vlen } => todo!(),
-                &Loop { dim, scope } => {
-                    debug_assert_eq!(scope, Register);
-                    loop_ids.push((op_id, dim));
-                }
-                EndLoop => {
-                    n_endloops += 1;
-                    if n_endloops == 3 {
-                        return true;
-                    }
-                }
-                Mad { x, y, z } => todo!(),
-                MMA { m, n, k, c, a, b } => todo!(),
-                Vectorize { ops } => todo!(),
-                Devectorize { vec, idx } => todo!(),
-                ConstView(_) => todo!(),
-                LoadView(_) => todo!(),
-                StoreView { src, dtype } => todo!(),
-                Reduce { x, rop, n_axes } => todo!(),
-            }
-
-            op_id = self.next_op(op_id);
-        }
-        true
-    }
-
-    pub fn is_mma_store(&self, store_op_id: OpId) -> bool {
-        use DType::*; use Op::*; use BOp::*; use Scope::*;
-        let &Store { dst, x, index, vlen: 1 } = self.at(store_op_id) else { return false };
+    /// Returns ops that will replace the store op with MMA ops
+    pub fn is_mma_store(&self, loop_ids: &[OpId], store_op_id: OpId, acc_len: Dim) -> Vec<Op> {
+        use BOp::*;
+        use DType::*;
+        use Op::*;
+        use Scope::*;
+        let mut ops = Vec::new();
+        let &Store { dst, x, index, vlen: 1 } = self.at(store_op_id) else { return Vec::new() };
         {
             // Check that the index is looping over 4x2 element accumulator
             /*let &Binary { x, y, bop: Add } = self.at(index) else { return false; };
@@ -110,66 +105,69 @@ impl Kernel {
             let &Loop { dim: 4, scope: Register } = self.at(x) else { return false; };*/
         }
         // The destination must be accumulator
-        let &Define { dtype: F32, scope: Register, ro: false, len: 8 } = self.at(dst) else { return false; };
+        let &Define { dtype: F32, scope: Register, ro: false, len: 8 } = self.at(dst) else {
+            return Vec::new();
+        };
         // It must store addition
-        let &Binary { x: load_x, y, bop: Add } = self.at(x) else { return false };
+        let &Binary { x: load_x, y, bop: Add } = self.at(x) else { return Vec::new() };
         // add must add f32 casted mul result to a load from an accumulator
-        let &Cast { x, dtype: F32 } = self.at(y) else { return false; };
-        let &Load { src, index, vlen: 1 } = self.at(load_x) else { return false; };
+        let &Cast { x, dtype: F32 } = self.at(y) else {
+            return Vec::new();
+        };
+        let &Load { src, index, vlen: 1 } = self.at(load_x) else {
+            return Vec::new();
+        };
         {
-            // Check the index
-            let loop_strides = self.get_strides(index);
-            println!("loop_strides={loop_strides:?}");
+            // Check the index for accumulator
+            let loop_strides = self.get_indices(index);
+            let req_loop_strides_map = [(loop_ids[1], (4, 2)), (loop_ids[2], (2, 1))].into_iter().collect();
+            if loop_strides != req_loop_strides_map {
+                return Vec::new();
+            }
         }
         // right side must be f32 accumulator with length of 8
-        let &Define { dtype: F32, scope: Register, ro: false, len: 8 } = self.at(src) else { return false; };
+        let &Define { dtype: F32, scope: Register, ro: false, len: acc_len } = self.at(src) else {
+            return Vec::new();
+        };
         // x must be multiply
-        let &Binary { x, y, bop: Mul } = self.at(x) else { return false; };
+        let &Binary { x, y, bop: Mul } = self.at(x) else {
+            return Vec::new();
+        };
+
         // inputs to that multiply must be two loads
         // x load
-        let &Load { src, index, vlen: 1 } = self.at(x) else { return false; };
+        let &Load { src, index, vlen: 1 } = self.at(x) else {
+            return Vec::new();
+        };
         // src of x load must be global arg
-        let &Define { dtype: F16, scope: Scope::Global, ro: true, len: _ } = self.at(src) else { return false; };
+        let &Define { dtype: F16, scope: Scope::Global, ro: true, len: _ } = self.at(src) else {
+            return Vec::new();
+        };
         {
             // Check the index
-            let loop_strides = self.get_strides(index);
+            let loop_strides = self.get_indices(index);
             println!("loop_strides={loop_strides:?}");
+
+            let indices = self.get_indices(index);
+            println!("{indices:?}");
+
+            ops.push(Load { src, index: todo!(), vlen: 4 });
         }
+
         // y load
-        let &Load { src, index, vlen: 1 } = self.at(y) else { return false; };
+        let &Load { src, index, vlen: 1 } = self.at(y) else {
+            return Vec::new();
+        };
         // src of y load must be global arg
-        let &Define { dtype: F16, scope: Scope::Global, ro: true, len: _ } = self.at(src) else { return false; };
+        let &Define { dtype: F16, scope: Scope::Global, ro: true, len: _ } = self.at(src) else {
+            return Vec::new();
+        };
         {
             // Check the index
-            let loop_strides = self.get_strides(index);
+            let loop_strides = self.get_indices(index);
             println!("loop_strides={loop_strides:?}");
         }
-        return true;
-    }
-
-    /// Returns vector of strides
-    fn get_strides(&self, index_id: OpId) -> Vec<(OpId, Dim)> {
-        use Op::*;
-        let mut loop_strides = Vec::new();
-
-        let mut mad_id = index_id;
-        while let &Mad { x, y, z } = self.at(mad_id) {
-            if let Loop { .. } = self.at(x) {
-                let Const(c) = self.at(y) else { unreachable!() };
-                loop_strides.push((x, c.as_dim()));
-                mad_id = z;
-            } else if let Loop { .. } = self.at(y) {
-                let Const(c) = self.at(x) else { unreachable!() };
-                loop_strides.push((y, c.as_dim()));
-                mad_id = z;
-            } else if let Loop { .. } = self.at(z) {
-                loop_strides.push((z, 1));
-                mad_id = x;
-            }
-            println!("mad_id={mad_id} {:?}", self.ops[mad_id].op);
-        }
-
-        loop_strides
+        return ops;
     }
 }
 
