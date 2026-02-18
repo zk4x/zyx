@@ -16,15 +16,15 @@ use crate::{
 };
 
 struct StoreRow {
-    a_op: OpId(10),
-    a_base_op: OpId(1),
-    a_offset: 0,
-    b_op: OpId(11),
-    b_base_op: OpId(2),
-    b_offset: 1,
-    c_op: OpId(20),
-    c_offset: 0,
-    cast: true,
+    a: OpId,
+    a_base_index: OpId,
+    a_offset: Dim,
+    b: OpId,
+    b_base_index: OpId,
+    b_offset: Dim,
+    c: OpId,
+    c_offset: Dim,
+    cast: bool,
 }
 
 impl Kernel {

@@ -3,6 +3,7 @@ use crate::{
 };
 
 impl Kernel {
+    #[allow(unused)]
     pub fn vectorize_loads(&mut self) {
 
         // TODO for now this function ignores aliasing of stores and loads.
@@ -119,5 +120,6 @@ impl Kernel {
         todo!();
     }
 
+    #[allow(unused)]
     pub fn vectorize_stores(&mut self) {}
 }
