@@ -105,14 +105,10 @@ impl Optimizer {
             return false;
         };
 
-        kernel.fuse_mad();
-
-        // Convert exponentiation (BOp::Pow) to just exp2 and ln2
-        // It's done AFTER constant folding
-        kernel.unfold_pows();
-
         // Use tensor cores if possible
         kernel.fuse_mma();
+
+        kernel.fuse_mad();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..2 {
@@ -131,6 +127,9 @@ impl Optimizer {
             }
             temp_kernel = kernel.clone();
         }
+
+        // Convert exponentiation (BOp::Pow) to just exp2 and ln2
+        kernel.unfold_pows();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..10 {

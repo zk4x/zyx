@@ -1638,6 +1638,7 @@ impl CUDADevice {
         ];
 
         if let Some(path) = &self.include_path {
+            //println!("path = {}", path.display());
             let path = format!("--include-path={}", path.display());
             opts.push(path);
         };

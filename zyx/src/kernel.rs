@@ -789,6 +789,7 @@ impl Kernel {
 
     /// Get index loop ids, dimensions and strides
     /// returns loop_id -> (dimension, stride)
+    /// if returned loop_id is OpId::NULL, the stride is constant and dimension is 0 (unknown)
     pub fn get_indices(&self, index: OpId) -> Map<OpId, (Dim, Dim)> {
         use Op::*;
         //println!("Get index {index}");
@@ -803,10 +804,12 @@ impl Kernel {
                         if let Loop { dim, .. } = self.ops[x].op {
                             indices.insert(x, (dim, 1));
                             params.push(y);
-                        }
-                        if let Loop { dim, .. } = self.ops[y].op {
+                        } else if let Loop { dim, .. } = self.ops[y].op {
                             indices.insert(x, (dim, 1));
                             params.push(x);
+                        } else {
+                            params.push(x);
+                            params.push(y);
                         }
                     }
                     if bop == BOp::Mul {
@@ -836,6 +839,9 @@ impl Kernel {
                         }
                         _ => {}
                     }
+                }
+                Const(c) => {
+                    indices.insert(OpId::NULL, (0, c.as_dim()));
                 }
                 _ => {}
             }
