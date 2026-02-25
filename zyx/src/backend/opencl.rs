@@ -695,7 +695,7 @@ impl OpenCLDevice {
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             let op = kernel.at(op_id);
-            if let &Op::Loop { dim, scope } = op {
+            if let &Op::Index { dim, scope } = op {
                 match scope {
                     Scope::Global => {
                         gws.push(dim);
@@ -985,33 +985,13 @@ impl OpenCLDevice {
                         Scope::Register => {}
                     }
                 }
-                &Op::Loop { dim, scope } => {
+                &Op::Loop { dim } => {
                     indices.insert(op_id, loop_id);
-                    match scope {
-                        Scope::Global => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = get_group_id({loop_id}); // 0..={}",
-                                dim - 1
-                            );
-                            n_global_ids += 1;
-                        }
-                        Scope::Local => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..={}",
-                                loop_id - n_global_ids,
-                                dim - 1
-                            );
-                        }
-                        Scope::Register => {
-                            _ = writeln!(
-                                source,
-                                "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
-                            );
-                            indent += "  ";
-                        }
-                    }
+                    _ = writeln!(
+                        source,
+                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
+                    );
+                    indent += "  ";
                     loop_id += 1;
                 }
                 Op::EndLoop => {

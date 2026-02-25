@@ -1242,7 +1242,7 @@ impl CUDADevice {
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             let op = kernel.at(op_id);
-            if let &Op::Loop { dim, scope } = op {
+            if let &Op::Index { dim, scope } = op {
                 match scope {
                     Scope::Global => {
                         gws.push(dim);
@@ -1422,7 +1422,14 @@ impl CUDADevice {
                 }
                 &Op::Cast { x, dtype } => {
                     let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, dtypes[&x].1), rcs[&op_id], loop_id);
+                    let reg = new_reg(
+                        op_id,
+                        &mut reg_map,
+                        &mut registers,
+                        (dtype, dtypes[&x].1),
+                        rcs[&op_id],
+                        loop_id,
+                    );
                     _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
                 }
                 &Op::Unary { x, uop } => {
@@ -1521,34 +1528,13 @@ impl CUDADevice {
                     }
                     loop_id += 1;
                 }
-                &Op::Loop { dim, scope } => {
+                &Op::Loop { dim } => {
                     indices.insert(op_id, loop_id);
-                    match scope {
-                        Scope::Global => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = blockIdx.{}; // 0..={}",
-                                ["x", "y", "z"][loop_id as usize],
-                                dim - 1
-                            );
-                            n_global_ids += 1;
-                        }
-                        Scope::Local => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = threadIdx.{}; // 0..={}",
-                                ["x", "y", "z"][(loop_id - n_global_ids) as usize],
-                                dim - 1
-                            );
-                        }
-                        Scope::Register => {
-                            _ = writeln!(
-                                source,
-                                "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
-                            );
-                            indent += "  ";
-                        }
-                    }
+                    _ = writeln!(
+                        source,
+                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
+                    );
+                    indent += "  ";
                     loop_id += 1;
                 }
                 Op::EndLoop => {
@@ -1563,7 +1549,8 @@ impl CUDADevice {
             op_id = kernel.next_op(op_id);
         }
         let _total_bytes =
-            registers.iter().map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize).sum::<usize>() + acc_bytes;
+            registers.iter().map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize).sum::<usize>()
+                + acc_bytes;
         /*if total_bytes > 1024 {
             return Err(BackendError {
                 status: ErrorStatus::KernelCompilation,
@@ -1575,13 +1562,23 @@ impl CUDADevice {
         if registers.len() > 0 {
             let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
-            _ = write!(reg_str, "{indent}{}{} r0", dt.0.cu(), if dt.1 > 1 { format!("{}", dt.1) } else { "".into() });
+            _ = write!(
+                reg_str,
+                "{indent}{}{} r0",
+                dt.0.cu(),
+                if dt.1 > 1 { format!("{}", dt.1) } else { "".into() }
+            );
             let mut i = 1;
             for (dt, _, _) in registers {
                 if dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
-                    _ = write!(reg_str, ";\n{indent}{}{} r{i}", dt.0.cu(), if dt.1 > 1 { format!("{}", dt.1) } else { "".into() });
+                    _ = write!(
+                        reg_str,
+                        ";\n{indent}{}{} r{i}",
+                        dt.0.cu(),
+                        if dt.1 > 1 { format!("{}", dt.1) } else { "".into() }
+                    );
                 }
                 prev_dt = dt;
                 i += 1;

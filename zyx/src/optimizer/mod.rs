@@ -62,7 +62,6 @@ impl Optimizer {
         if !self.work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
             return false;
         }
-        kernel.close_loops();
 
         if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
             return false;
@@ -106,7 +105,7 @@ impl Optimizer {
         };
 
         // Use tensor cores if possible
-        //kernel.fuse_mma(dev_info);
+        kernel.fuse_mma(dev_info);
 
         kernel.fuse_mad();
 

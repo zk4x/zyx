@@ -32,10 +32,8 @@ impl LoopJamOpt {
             'a: while !op_id.is_null() {
                 let next = kernel.next_op(op_id);
                 match *kernel.at(op_id) {
-                    Op::Loop { scope, .. } => {
-                        if scope == Scope::Register {
-                            active_defines.push((op_id, Set::default()));
-                        }
+                    Op::Loop { .. } => {
+                        active_defines.push((op_id, Set::default()));
                     }
                     Op::EndLoop => {
                         active_defines.pop();
@@ -50,8 +48,7 @@ impl LoopJamOpt {
                     Op::Load { src, .. } => {
                         for (loop_id, define_ids) in &active_defines {
                             if define_ids.contains(&src) {
-                                let Op::Loop { dim, scope } = kernel.ops[*loop_id].op else { unreachable!() };
-                                debug_assert_eq!(scope, Scope::Register);
+                                let Op::Loop { dim } = kernel.ops[*loop_id].op else { unreachable!() };
                                 if dim <= jam_dim {
                                     let inner_loop_id = active_defines.last().unwrap().0;
 
@@ -166,8 +163,7 @@ impl Kernel {
         //println!("Loop jam, jam_loop={jam_loop_id}, middle_loop={middle_loop_id}, inner_loop={inner_loop_id}");
         //println!("end_middle_loop={end_middle_loop_id}, pre_loop_ops={pre_loop_ops:?}");
 
-        let Op::Loop { dim: jam_dim, scope } = self.ops[jam_loop_id].op else { unreachable!() };
-        debug_assert_eq!(scope, Scope::Register);
+        let Op::Loop { dim: jam_dim } = self.ops[jam_loop_id].op else { unreachable!() };
 
         // Add constnat for dimension, will be used for indexing
         let const_jam_dim = self.insert_before(jam_loop_id, Op::Const(Constant::idx(jam_dim as u64)));

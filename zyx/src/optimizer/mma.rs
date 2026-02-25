@@ -32,7 +32,6 @@ impl Kernel {
     /// and converts them into MMA instructions.
     pub fn fuse_mma(&mut self, dev_info: &DeviceInfo) {
         use Op::*;
-        use Scope::*;
 
         self.unroll_loops(4);
         self.swap_commutative();
@@ -43,11 +42,11 @@ impl Kernel {
         self.dead_code_elimination();
         self.move_constants_to_beginning();
 
-        self.debug();
-
         if !self.warpize_threads() {
             return
         }
+
+        self.debug();
 
         let mut stores = Vec::new();
 
@@ -68,8 +67,8 @@ impl Kernel {
                 }
                 Store { .. } => {
                     if let Some(&k_loop_id) = loop_ids.last() {
-                        let Loop { dim, scope } = self.ops[k_loop_id].op else { unreachable!() };
-                        if scope == Register && dim == 8 {
+                        let Loop { dim } = self.ops[k_loop_id].op else { unreachable!() };
+                        if dim == 8 {
                             if let Some(store_info) = self.mma_store_info(op_id, k_loop_id) {
                                 stores.last_mut().unwrap().push(store_info);
                             }
@@ -162,7 +161,7 @@ impl Kernel {
         let mut local_loops = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Loop { dim, scope } = self.ops[op_id].op {
+            if let Op::Index { dim, scope } = self.ops[op_id].op {
                 if scope == Scope::Local {
                     local_dims.push(dim);
                     local_loops.push(op_id);
@@ -182,7 +181,7 @@ impl Kernel {
             return false
         }
 
-        let warp_loop = self.insert_before(local_loops[0], Op::Loop { dim: local_dims[0]*n, scope: Scope::Local });
+        let warp_loop = self.insert_before(local_loops[0], Op::Index { dim: local_dims[0]*n, scope: Scope::Local });
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));
         self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));

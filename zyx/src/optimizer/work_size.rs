@@ -98,9 +98,9 @@ impl WorkSizeOpt {
             *g /= l * r;
         }
 
-        //gws = vec![64, 128];
-        //lws = vec![8, 4];
-        //rws = vec![2, 2];
+        gws = vec![64, 128];
+        lws = vec![8, 4];
+        rws = vec![2, 2];
 
         let mut shape: Vec<Dim> = Vec::new();
         for i in 0..gws.len() {
@@ -123,13 +123,14 @@ impl WorkSizeOpt {
         {
             let head = kernel.head;
             for &dim in gws.iter() {
-                kernel.insert_before(head, Op::Loop { dim, scope: Scope::Global });
+                kernel.insert_before(head, Op::Index { dim, scope: Scope::Global });
             }
             for &dim in lws.iter() {
-                kernel.insert_before(head, Op::Loop { dim, scope: Scope::Local });
+                kernel.insert_before(head, Op::Index { dim, scope: Scope::Local });
             }
             for &dim in rws.iter() {
-                kernel.insert_before(head, Op::Loop { dim, scope: Scope::Register });
+                kernel.insert_before(head, Op::Loop { dim });
+                kernel.push_back(Op::EndLoop);
             }
         };
 

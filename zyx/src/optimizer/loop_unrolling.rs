@@ -30,9 +30,9 @@ impl Kernel {
             if self.ops[op_id].op == Op::EndLoop {
                 endloop_ids.push(op_id);
             }
-            if let Op::Loop { dim, scope } = self.ops[op_id].op {
+            if let Op::Loop { dim } = self.ops[op_id].op {
                 let endloop_id = endloop_ids.pop().unwrap();
-                if scope == Scope::Register && dim <= unroll_dim && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 5_000 {
+                if dim <= unroll_dim && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 5_000 {
                     self.unroll_loop(op_id, endloop_id, dim);
                 }
             }
@@ -74,7 +74,7 @@ impl Kernel {
                     endloop_ids.push(op_id);
                     constant_loops.push(true);
                 }
-                Op::Loop { dim, scope } => {
+                Op::Loop { dim } => {
                     let endloop_id = endloop_ids.pop().unwrap();
                     //println!("Loop {op_id} constant={constant_loops:?}");
                     let is_const = constant_loops.pop().unwrap();
@@ -83,10 +83,8 @@ impl Kernel {
                             *inner_loop = false;
                         }
                     }
-                    if scope == Scope::Register {
-                        if dim == 1 || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 5_000) {
-                            self.unroll_loop(op_id, endloop_id, dim);
-                        }
+                    if dim == 1 || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 5_000) {
+                        self.unroll_loop(op_id, endloop_id, dim);
                     }
                 }
                 Op::Store { dst, .. } => {

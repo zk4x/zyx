@@ -105,7 +105,7 @@ pub enum Op {
     Store { dst: OpId, x: OpId, index: OpId, vlen: u8 },
     Load { src: OpId, index: OpId, vlen: u8 },
     Index { dim: Dim, scope: Scope },
-    Loop { dim: Dim, scope: Scope },
+    Loop { dim: Dim },
     EndLoop,
     // fused multiply add
     Mad { x: OpId, y: OpId, z: OpId },
@@ -515,15 +515,13 @@ impl Kernel {
                         dim - 1
                     );
                 }
-                Op::Loop { dim, scope } => {
+                Op::Loop { dim } => {
                     ids.insert(op_id, (0, dim - 1));
                     println!(
-                        "{op_id:>5}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..={}",
+                        "{op_id:>5}{indent}{BLUE}LOOP{RESET} dim={dim}    0..={}",
                         dim - 1
                     );
-                    if scope == Scope::Register {
-                        indent += "  ";
-                    }
+                    indent += "  ";
                 }
                 Op::EndLoop { .. } => {
                     if indent.len() > 1 {
@@ -712,12 +710,8 @@ impl Kernel {
                 .ops
                 .values()
                 .filter_map(|x| {
-                    if let Op::Loop { dim, scope, .. } = x.op {
-                        if matches!(scope, Scope::Global | Scope::Local) {
-                            Some(dim)
-                        } else {
-                            None
-                        }
+                    if let Op::Index { dim, .. } = x.op {
+                        Some(dim)
                     } else {
                         None
                     }
@@ -859,24 +853,6 @@ impl Kernel {
         }
 
         indices
-    }
-
-    /// Add loop closing ops (EndLoop)
-    pub fn close_loops(&mut self) {
-        let mut loop_id = 0;
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            match self.at(op_id) {
-                Op::Loop { .. } => loop_id += 1,
-                Op::EndLoop { .. } => loop_id -= 1,
-                _ => {}
-            }
-            op_id = self.ops[op_id].next;
-        }
-        while loop_id > 0 {
-            self.push_back(Op::EndLoop);
-            loop_id -= 1;
-        }
     }
 
     /// Apply  movement ops on views. Later this will directly generate indices
@@ -1035,7 +1011,7 @@ impl Kernel {
 
             // Add Loops for the reduce
             for &dim in &self.reduce_dims(reduce_op_id)[..n_axes] {
-                self.insert_before(loop_start, Op::Loop { dim, scope: Scope::Register });
+                self.insert_before(loop_start, Op::Loop { dim });
             }
 
             // Add reduction operation, load from acc, accumulate, store to acc
@@ -1296,12 +1272,16 @@ impl Kernel {
                                 break;
                             }
                             match *self.at(l_op_id) {
-                                Op::Loop { dim, scope } => {
+                                Op::Index { dim, scope } => {
                                     match scope {
                                         Scope::Global => gws.push(dim),
                                         Scope::Local => lws.push(dim),
-                                        Scope::Register => rws.push(dim),
+                                        Scope::Register => {}
                                     }
+                                    shape.push(dim);
+                                }
+                                Op::Loop { dim } => {
+                                    rws.push(dim);
                                     shape.push(dim);
                                 }
                                 Op::EndLoop => {
@@ -1379,9 +1359,12 @@ impl Kernel {
                     let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
                     self.ops[op_id].op = Op::Store { dst, x: src, index, vlen: 1 };
                 }
-                Op::Loop { scope, .. } => {
+                Op::Index { .. } => {
                     axes.push(op_id);
-                    if scope == Scope::Register && reduce_loop.is_null() {
+                }
+                Op::Loop { .. } => {
+                    axes.push(op_id);
+                    if reduce_loop.is_null() {
                         if let Op::Store { dst, .. } = self.ops[self.prev_op(op_id)].op {
                             if let Op::Define { scope, .. } = self.ops[dst].op {
                                 if scope == Scope::Register {
@@ -1444,7 +1427,7 @@ impl Kernel {
         for (op_id, op) in self.iter_unordered() {
             if matches!(
                 op,
-                Op::Store { .. } | Op::Loop { .. } | Op::Define { .. } | Op::EndLoop { .. } | Op::StoreView { .. }
+                Op::Index { .. } | Op::Store { .. } | Op::Loop { .. } | Op::Define { .. } | Op::EndLoop { .. } | Op::StoreView { .. }
             ) {
                 params.push(op_id);
             }
@@ -1480,6 +1463,7 @@ impl Kernel {
             }
             match self.at(op_id) {
                 Op::Define { .. } => {}
+                Op::Index { .. } => {}
                 Op::Loop { .. } => {
                     unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
                     unique_loads.push(Map::with_capacity_and_hasher(5, BuildHasherDefault::new()));
@@ -1734,9 +1718,6 @@ impl Kernel {
                 }
                 Op::EndLoop => {
                     loop_level -= 1;
-                    if loop_level == 0 {
-                        break;
-                    }
                 }
                 _ => {}
             }
@@ -2105,7 +2086,6 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&src]);
                 }
                 Op::Index { .. } => {
-                    stack.push(Set::default());
                     dtypes.insert(op_id, IDX_T);
                 }
                 Op::Loop { .. } => {
@@ -2198,6 +2178,9 @@ impl Kernel {
                             ),
                         );
                     }
+                }
+                Op::Index { dim, .. } => {
+                    ids.insert(op_id, (0, dim - 1));
                 }
                 Op::Loop { dim, .. } => {
                     ids.insert(op_id, (0, dim - 1));
