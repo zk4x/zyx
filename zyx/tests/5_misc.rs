@@ -727,17 +727,19 @@ fn bench_mm1() -> Result<(), ZyxError> {
     let y = Tensor::rand([N, N], dtype)?;
 
     let x_data: Vec<f16> = x.clone().try_into()?;
+    let x_data: Vec<f32> = x_data.iter().map(|x| x.to_f32()).collect();
     let y_data: Vec<f16> = y.clone().try_into()?;
+    let y_data: Vec<f32> = y_data.iter().map(|x| x.to_f32()).collect();
 
     let z = x.matmul(&y)?;
 
     let z_data: Vec<f16> = z.try_into()?;
-    /*let expected = matmul(&x_data, &y_data, N, N, N);
+    let expected = matmul(&x_data, &y_data, N, N, N);
     for (x, y) in z_data.into_iter().zip(expected) {
-        if !x.is_equal(y) {
+        if !x.to_f32().is_equal(y) {
             panic!("Wrong matmul");
         }
-    }*/
+    }
 
     Ok(())
 }

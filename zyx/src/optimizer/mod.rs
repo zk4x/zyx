@@ -46,7 +46,7 @@ pub struct Optimizer {
 
 impl Optimizer {
     #[must_use]
-    pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization, debug_ir: bool) -> bool {
+    pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization, dev_info: &DeviceInfo, debug_ir: bool) -> bool {
         kernel.fuse_reduces();
 
         let [
@@ -106,7 +106,7 @@ impl Optimizer {
         };
 
         // Use tensor cores if possible
-        kernel.fuse_mma();
+        //kernel.fuse_mma(dev_info);
 
         kernel.fuse_mad();
 

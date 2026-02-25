@@ -580,7 +580,7 @@ impl<'a> Kernelizer<'a> {
         // Check if best optimization already found
         if optimizer.fully_optimized() || (self.search_config.iterations == 0 && !optimizer.is_new()) {
             // done optimizing, loaded best from disk
-            let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), self.debug.ir());
+            let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), device.info(), self.debug.ir());
             debug_assert!(opt_res);
             let program_id = device.compile(&kernel, self.debug.asm())?;
             if self.debug.kmd() {
@@ -611,7 +611,7 @@ impl<'a> Kernelizer<'a> {
                     return Err(ZyxError::KernelLaunchFailure);
                 };
 
-                if !optimizer.apply_optimization(&mut okernel, optimization, self.debug.ir()) {
+                if !optimizer.apply_optimization(&mut okernel, optimization, device.info(), self.debug.ir()) {
                     continue;
                 }
 
@@ -673,7 +673,7 @@ impl<'a> Kernelizer<'a> {
                 && i < self.search_config.iterations
             {
                 let mut kernel = kernel.clone();
-                if !optimizer.apply_optimization(&mut kernel, optimization, self.debug.ir()) {
+                if !optimizer.apply_optimization(&mut kernel, optimization, device.info(), self.debug.ir()) {
                     continue;
                 }
 
@@ -729,7 +729,7 @@ impl<'a> Kernelizer<'a> {
                 );
                 if self.debug.asm() {
                     assert_eq!(
-                        optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), self.debug.ir()),
+                        optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), device.info(), self.debug.ir()),
                         true
                     );
                     let program_id = device.compile(&kernel, true)?;

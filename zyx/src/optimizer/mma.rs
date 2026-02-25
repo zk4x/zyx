@@ -9,7 +9,7 @@
 //
 
 use crate::{
-    DType, Map, graph::BOp, kernel::{Kernel, Op, OpId, Scope}, shape::Dim
+    DType, Map, backend::DeviceInfo, dtype::Constant, graph::BOp, kernel::{Kernel, Op, OpId, Scope}, shape::Dim
 };
 
 #[derive(Debug)]
@@ -30,7 +30,7 @@ struct MMAStore {
 impl Kernel {
     /// Finds loop trifectas and if possible, LICM moves these instructions before those loops
     /// and converts them into MMA instructions.
-    pub fn fuse_mma(&mut self) {
+    pub fn fuse_mma(&mut self, dev_info: &DeviceInfo) {
         use Op::*;
         use Scope::*;
 
@@ -44,6 +44,10 @@ impl Kernel {
         self.move_constants_to_beginning();
 
         self.debug();
+
+        if !self.warpize_threads() {
+            return
+        }
 
         let mut stores = Vec::new();
 
@@ -65,7 +69,7 @@ impl Kernel {
                 Store { .. } => {
                     if let Some(&k_loop_id) = loop_ids.last() {
                         let Loop { dim, scope } = self.ops[k_loop_id].op else { unreachable!() };
-                        if scope == Register && dim == 16 {
+                        if scope == Register && dim == 8 {
                             if let Some(store_info) = self.mma_store_info(op_id, k_loop_id) {
                                 stores.last_mut().unwrap().push(store_info);
                             }
@@ -150,5 +154,40 @@ impl Kernel {
         for store in stores {
             println!("{store:?}");
         }
+    }
+
+    /// Ensures threads have warp size compatible dimension
+    fn warpize_threads(&mut self) -> bool {
+        let mut local_dims = Vec::new();
+        let mut local_loops = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Loop { dim, scope } = self.ops[op_id].op {
+                if scope == Scope::Local {
+                    local_dims.push(dim);
+                    local_loops.push(op_id);
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        if local_loops.len() < 2 {
+            return false
+        }
+
+        // For now
+        let n = 4;
+
+        if local_dims[1] != n {
+            return false
+        }
+
+        let warp_loop = self.insert_before(local_loops[0], Op::Loop { dim: local_dims[0]*n, scope: Scope::Local });
+        let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));
+        self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
+        let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));
+        self.ops[local_loops[1]].op = Op::Binary { x: warp_loop, y, bop: BOp::Mod };
+
+        true
     }
 }
