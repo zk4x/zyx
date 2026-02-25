@@ -1350,6 +1350,9 @@ impl CUDADevice {
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(z).or_insert(0) += 1;
                 }
+                Op::Index { .. } => {
+                    dtypes.insert(op_id, (DType::U32, 1));
+                }
                 Op::Loop { .. } => {
                     dtypes.insert(op_id, (DType::U32, 1));
                 }
@@ -1493,6 +1496,30 @@ impl CUDADevice {
                     let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};"); // CUDA compiler will handle this just fine
+                }
+                &Op::Index { dim, scope } => {
+                    indices.insert(op_id, loop_id);
+                    match scope {
+                        Scope::Global => {
+                            _ = writeln!(
+                                source,
+                                "{indent}unsigned int idx{loop_id} = blockIdx.{}; // 0..={}",
+                                ["x", "y", "z"][loop_id as usize],
+                                dim - 1
+                            );
+                            n_global_ids += 1;
+                        }
+                        Scope::Local => {
+                            _ = writeln!(
+                                source,
+                                "{indent}unsigned int idx{loop_id} = threadIdx.{}; // 0..={}",
+                                ["x", "y", "z"][(loop_id - n_global_ids) as usize],
+                                dim - 1
+                            );
+                        }
+                        Scope::Register => {}
+                    }
+                    loop_id += 1;
                 }
                 &Op::Loop { dim, scope } => {
                     indices.insert(op_id, loop_id);

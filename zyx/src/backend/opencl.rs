@@ -803,6 +803,9 @@ impl OpenCLDevice {
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(z).or_insert(0) += 1;
                 }
+                Op::Index { .. } => {
+                    dtypes.insert(op_id, (DType::U32, 1));
+                }
                 Op::Loop { .. } => {
                     dtypes.insert(op_id, (DType::U32, 1));
                 }
@@ -866,13 +869,6 @@ impl OpenCLDevice {
                     }
                 }
                 &Op::Store { dst, x: src, index, vlen } => {
-                    /*_ = writeln!(
-                        source,
-                        "{indent}p{dst}[{}] = {};",
-                        get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id),
-                        get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)
-                    );*/
-                    //let Op::Define { scope, .. } = kernel.ops[dst].op else { unreachable!() };
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     if vlen > 1 {
@@ -966,6 +962,28 @@ impl OpenCLDevice {
                     let z = get_var(z, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};");
+                }
+                &Op::Index { dim, scope } => {
+                    indices.insert(op_id, loop_id);
+                    match scope {
+                        Scope::Global => {
+                            _ = writeln!(
+                                source,
+                                "{indent}unsigned int idx{loop_id} = get_group_id({loop_id}); // 0..={}",
+                                dim - 1
+                            );
+                            n_global_ids += 1;
+                        }
+                        Scope::Local => {
+                            _ = writeln!(
+                                source,
+                                "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..={}",
+                                loop_id - n_global_ids,
+                                dim - 1
+                            );
+                        }
+                        Scope::Register => {}
+                    }
                 }
                 &Op::Loop { dim, scope } => {
                     indices.insert(op_id, loop_id);

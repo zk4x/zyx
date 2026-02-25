@@ -104,6 +104,7 @@ pub enum Op {
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
     Store { dst: OpId, x: OpId, index: OpId, vlen: u8 },
     Load { src: OpId, index: OpId, vlen: u8 },
+    Index { dim: Dim, scope: Scope },
     Loop { dim: Dim, scope: Scope },
     EndLoop,
     // fused multiply add
@@ -143,6 +144,7 @@ impl Op {
             Op::Const { .. } => vec![],
             Op::Define { .. } => vec![],
             &Op::Load { src, index, .. } => vec![src, index],
+            Op::Index { .. } => vec![],
             Op::Loop { .. } => vec![],
             Op::EndLoop { .. } => vec![],
             &Op::Mad { x, y, z } => vec![x, y, z],
@@ -167,6 +169,7 @@ impl Op {
             Op::Const { .. } => vec![],
             Op::Define { .. } => vec![],
             Op::Load { src, index, .. } => vec![src, index],
+            Op::Index { .. } => vec![],
             Op::Loop { .. } => vec![],
             Op::EndLoop { .. } => vec![],
             Op::Mad { x, y, z } => vec![x, y, z],
@@ -505,7 +508,14 @@ impl Kernel {
                 Op::MMA { dims, layout, dtype, c, a, b } => {
                     println!("{op_id:>5}{indent}{ORANGE}MMA{RESET} {dims:?}.{layout:?}.{dtype:?} c={c} a={a} b={b}");
                 }
-                Op::Loop { dim, scope, .. } => {
+                Op::Index { dim, scope } => {
+                    ids.insert(op_id, (0, dim - 1));
+                    println!(
+                        "{op_id:>5}{indent}{BLUE}INDEX{RESET} {scope} dim={dim}    0..={}",
+                        dim - 1
+                    );
+                }
+                Op::Loop { dim, scope } => {
                     ids.insert(op_id, (0, dim - 1));
                     println!(
                         "{op_id:>5}{indent}{BLUE}LOOP{RESET} {scope} dim={dim}    0..={}",
@@ -635,6 +645,7 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
+                | Op::Index { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => todo!(),
             };
@@ -1553,6 +1564,7 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Define { .. }
                 | Op::Load { .. }
+                | Op::Index { .. }
                 | Op::Loop { .. }
                 | Op::EndLoop => {}
                 Op::Cast { x, dtype } => {
@@ -1818,7 +1830,7 @@ impl Kernel {
                     loop_dep[&x].max(loop_dep[&y])
                 }
                 Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
-                Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => loop_depth,
+                Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -1859,7 +1871,7 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
-                Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => loop_depth,
+                Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -2092,6 +2104,10 @@ impl Kernel {
                     check(op_id, index, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
+                Op::Index { .. } => {
+                    stack.push(Set::default());
+                    dtypes.insert(op_id, IDX_T);
+                }
                 Op::Loop { .. } => {
                     stack.push(Set::default());
                     dtypes.insert(op_id, IDX_T);
@@ -2302,6 +2318,7 @@ impl Kernel {
                     | Op::StoreView { .. }
                     | Op::Load { .. }
                     | Op::Store { .. }
+                    | Op::Index { .. }
                     | Op::Loop { .. }
                     | Op::EndLoop { .. } => unreachable!(),
                 }
