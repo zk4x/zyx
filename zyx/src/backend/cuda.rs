@@ -1294,7 +1294,7 @@ impl CUDADevice {
             let op = kernel.at(op_id);
             match op {
                 Op::Devectorize { .. }
-                | Op::MMA { .. }
+                | Op::WMMA { .. }
                 | Op::ConstView { .. }
                 | Op::StoreView { .. }
                 | Op::LoadView { .. }
@@ -1382,7 +1382,7 @@ impl CUDADevice {
             match op {
                 Op::Devectorize { .. }
                 | Op::Move { .. }
-                | Op::MMA { .. }
+                | Op::WMMA { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }

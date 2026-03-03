@@ -796,7 +796,7 @@ impl OpenCLDevice {
                     }
                 }
                 &Op::Devectorize { .. } => todo!(),
-                Op::MMA { .. } => todo!(),
+                Op::WMMA { .. } => todo!(),
                 &Op::Mad { x, y, z } => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
@@ -928,7 +928,7 @@ impl OpenCLDevice {
                     _ = writeln!(source, "{indent}r{reg} = ({}{})({vars});", dtype.0.ocl(), dtype.1);
                 }
                 &Op::Devectorize { .. } => todo!(),
-                Op::MMA { .. } => todo!(),
+                Op::WMMA { .. } => todo!(),
                 &Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id];
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);

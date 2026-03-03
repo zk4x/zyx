@@ -9,11 +9,17 @@
 //
 
 use crate::{
-    DType, Map, backend::DeviceInfo, dtype::Constant, graph::BOp, kernel::{Kernel, Op, OpId, Scope}, shape::Dim
+    DType, Map,
+    backend::DeviceInfo,
+    dtype::Constant,
+    graph::BOp,
+    kernel::{Kernel, MMADType, MMADims, MMALayout, Op, OpId, Scope},
+    shape::Dim,
 };
 
 #[derive(Debug)]
 struct MMAStore {
+    store_id: OpId,
     a: OpId,
     a_index: Map<OpId, Dim>,
     a_offset: Dim,
@@ -42,16 +48,11 @@ impl Kernel {
         self.dead_code_elimination();
         self.move_constants_to_beginning();
 
-        if !self.warpize_threads() {
-            return
-        }
-
-        self.debug();
-
         let mut stores = Vec::new();
 
         let mut op_id = self.head;
         let mut loop_ids = Vec::new();
+        let mut mma_exists = false;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Loop { .. } => {
@@ -61,7 +62,10 @@ impl Kernel {
                 EndLoop => {
                     if let Some(k_loop_id) = loop_ids.pop() {
                         if let Some(stores) = stores.pop() {
-                            self.write_mma_op(&stores, k_loop_id);
+                            if !stores.is_empty() {
+                                self.write_mma_op(&stores, k_loop_id);
+                                mma_exists = true;
+                            }
                         }
                     }
                 }
@@ -79,6 +83,11 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
+
+        if mma_exists {
+            let can_warpize_threads = self.warpize_threads();
+            assert!(can_warpize_threads);
+        }
     }
 
     fn mma_store_info(&self, store_id: OpId, k_loop_id: OpId) -> Option<MMAStore> {
@@ -87,7 +96,9 @@ impl Kernel {
 
         let &Store { dst: acc_id, x, index: store_idx, vlen: 1 } = self.at(store_id) else { return None };
         let (c_base_index, c_offset) = self.index_base_and_offset(store_idx, k_loop_id);
-        if c_base_index.keys().any(|k| !k.is_null()) { return None } // Accumulator does not have a base index
+        if c_base_index.keys().any(|k| !k.is_null()) {
+            return None;
+        } // Accumulator does not have a base index
 
         let &Binary { x, mut y, bop: Add } = self.at(x) else { return None };
         let (src, index) = if let &Load { src, index, vlen: 1 } = self.at(x) {
@@ -113,6 +124,7 @@ impl Kernel {
             let (b_base_index, b_offset) = self.index_base_and_offset(index, k_loop_id);
 
             Some(MMAStore {
+                store_id,
                 a,
                 a_index: a_base_index,
                 a_offset,
@@ -150,8 +162,47 @@ impl Kernel {
     }
 
     fn write_mma_op(&mut self, stores: &[MMAStore], k_loop_id: OpId) {
+        self.debug();
         for store in stores {
             println!("{store:?}");
+        }
+
+        // A load
+        let mut index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
+        for (&i, &st) in &stores[0].a_index {
+            let stride = self.insert_before(k_loop_id, Op::Const(Constant::idx(st as u64)));
+            index = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
+        }
+        let a_load = self.insert_before(k_loop_id, Op::Load { src: stores[0].a, index, vlen: 2 });
+
+        // B load
+        let mut index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
+        for (&i, &st) in &stores[0].b_index {
+            let stride = self.insert_before(k_loop_id, Op::Const(Constant::idx(st as u64)));
+            index = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
+        }
+        let b_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index, vlen: 1 });
+        let b_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index, vlen: 1 });
+        let b_load = self.insert_before(k_loop_id, Op::Vectorize { ops: vec![b_load1, b_load2] });
+
+        // C load
+        let index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
+        let c_load = self.insert_before(k_loop_id, Op::Load { src: stores[0].c, index, vlen: 4 });
+
+        self.insert_before(
+            k_loop_id,
+            Op::WMMA {
+                dims: MMADims::m16n8k8,
+                layout: MMALayout::row_col,
+                dtype: MMADType::f16_f16_f16_f32,
+                c: c_load,
+                a: a_load,
+                b: b_load,
+            },
+        );
+
+        for store in stores {
+            self.remove(store.store_id);
         }
     }
 
@@ -171,17 +222,20 @@ impl Kernel {
         }
 
         if local_loops.len() < 2 {
-            return false
+            return false;
         }
 
         // For now
         let n = 4;
 
         if local_dims[1] != n {
-            return false
+            return false;
         }
 
-        let warp_loop = self.insert_before(local_loops[0], Op::Index { dim: local_dims[0]*n, scope: Scope::Local });
+        let warp_loop = self.insert_before(
+            local_loops[0],
+            Op::Index { dim: local_dims[0] * n, scope: Scope::Local },
+        );
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));
         self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));
