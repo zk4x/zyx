@@ -357,7 +357,7 @@ impl WGPUDevice {
         let mut lws = Vec::new();
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let &Op::Loop { dim, scope } = kernel.at(op_id) {
+            if let &Op::Index { dim, scope } = kernel.at(op_id) {
                 match scope {
                     Scope::Global => {
                         gws.push(dim);
@@ -407,10 +407,11 @@ impl WGPUDevice {
         while !op_id.is_null() {
             //println!("{i} -> {op:?}");
             match kernel.at(op_id) {
-                Op::MMA { .. }
+                Op::WMMA { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
+                | Op::Move { .. }
                 | Op::Reduce { .. } => {
                     unreachable!()
                 }
@@ -493,7 +494,8 @@ impl WGPUDevice {
                     writeln!(source, "{indent}let r{op_id} = r{x} * r{y} + r{z};").unwrap();
                 }
                 Op::Vectorize { .. } => todo!(),
-                &Op::Loop { dim, scope } => {
+                Op::Devectorize { .. } => todo!(),
+                &Op::Index { dim, scope } => {
                     dtypes.insert(op_id, IDX_T);
                     match scope {
                         Scope::Global => {
@@ -516,16 +518,19 @@ impl WGPUDevice {
                             )
                             .unwrap();
                         }
-                        Scope::Register => {
-                            writeln!(
-                                source,
-                                "{indent}for (var r{op_id}: {} = 0; r{op_id} < {dim}; r{op_id} += 1) {{",
-                                IDX_T.wgsl()
-                            )
-                            .unwrap();
-                            indent += "  ";
-                        }
+                        Scope::Register => {}
                     }
+                    loop_id += 1;
+                }
+                &Op::Loop { dim } => {
+                    dtypes.insert(op_id, IDX_T);
+                    writeln!(
+                        source,
+                        "{indent}for (var r{op_id}: {} = 0; r{op_id} < {dim}; r{op_id} += 1) {{",
+                        IDX_T.wgsl()
+                    )
+                    .unwrap();
+                    indent += "  ";
                     loop_id += 1;
                 }
                 Op::EndLoop => {

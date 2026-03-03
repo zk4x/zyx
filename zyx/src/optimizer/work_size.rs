@@ -98,9 +98,9 @@ impl WorkSizeOpt {
             *g /= l * r;
         }
 
-        gws = vec![64, 128];
-        lws = vec![8, 4];
-        rws = vec![2, 2];
+        //gws = vec![64, 128];
+        //lws = vec![8, 4];
+        //rws = vec![2, 2];
 
         let mut shape: Vec<Dim> = Vec::new();
         for i in 0..gws.len() {
@@ -117,7 +117,7 @@ impl WorkSizeOpt {
             1 => {}
             2 => kernel.apply_movement(|view| view.permute(&[0, 3, 1, 4, 2, 5])),
             3 => kernel.apply_movement(|view| view.permute(&[0, 3, 6, 1, 4, 7, 2, 5, 8])),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
 
         {

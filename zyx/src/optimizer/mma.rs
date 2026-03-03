@@ -39,6 +39,10 @@ impl Kernel {
     pub fn fuse_mma(&mut self, dev_info: &DeviceInfo) {
         use Op::*;
 
+        if !dev_info.tensor_cores {
+            return;
+        }
+
         self.unroll_loops(4);
         self.swap_commutative();
         //self.reassociate_commutative();
@@ -138,8 +142,30 @@ impl Kernel {
                 c_dtype: dtype,
             })
         } else {
+            let x = y;
             // Version without cast
-            todo!()
+            let &Binary { x, y, bop: Mul } = self.at(x) else { return None };
+            let &Load { src: a, index, vlen: 1 } = self.at(x) else { return None };
+            let Define { dtype: a_dtype, .. } = self.ops[a].op else { unreachable!() };
+            let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
+            let &Load { src: b, index, vlen: 1 } = self.at(y) else { return None };
+            let Define { dtype: b_dtype, .. } = self.ops[b].op else { unreachable!() };
+            let (b_base_index, b_offset) = self.index_base_and_offset(index, k_loop_id);
+
+            Some(MMAStore {
+                store_id,
+                a,
+                a_index: a_base_index,
+                a_offset,
+                a_dtype,
+                b,
+                b_index: b_base_index,
+                b_offset,
+                b_dtype,
+                c: acc_id,
+                c_offset,
+                c_dtype: a_dtype,
+            })
         }
     }
 
@@ -186,7 +212,10 @@ impl Kernel {
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
         let a_load4 = self.insert_before(k_loop_id, Op::Load { src: stores[3].a, index, vlen: 1 });
 
-        let a_load = self.insert_before(k_loop_id, Op::Vectorize { ops: vec![a_load1, a_load2, a_load3, a_load4] });
+        let a_load = self.insert_before(
+            k_loop_id,
+            Op::Vectorize { ops: vec![a_load1, a_load2, a_load3, a_load4] },
+        );
 
         // B load
         let mut idx = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
