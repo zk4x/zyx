@@ -3,6 +3,10 @@
 
 // TODO properly deallocate events
 
+const VEC_COMPONENTS: [&str; 16] = [
+    "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
+];
+
 use std::{
     ffi::{CString, c_char, c_int, c_uint, c_void},
     hash::BuildHasherDefault,
@@ -19,7 +23,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::{BOp, UOp},
-    kernel::{Kernel, Op, OpId, Scope},
+    kernel::{Kernel, MMADType, MMADims, Op, OpId, Scope},
     shape::Dim,
     slab::Slab,
 };
@@ -1233,7 +1237,7 @@ impl CUDADevice {
                 }
                 format!("r{reg}")
             } else {
-                unreachable!()
+                unreachable!("op_id={op_id}")
             }
         }
 
@@ -1294,7 +1298,6 @@ impl CUDADevice {
             let op = kernel.at(op_id);
             match op {
                 Op::Devectorize { .. }
-                | Op::WMMA { .. }
                 | Op::ConstView { .. }
                 | Op::StoreView { .. }
                 | Op::LoadView { .. }
@@ -1308,6 +1311,19 @@ impl CUDADevice {
                     for &x in ops {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
+                }
+                &Op::WMMA { dims, layout, dtype, c, a, b } => {
+                    let dtype = match dtype {
+                        MMADType::f16_f16_f16_f32 => DType::F32,
+                    };
+                    match dims {
+                        MMADims::m8n8k16 => dtypes.insert(op_id, (dtype, 4)),
+                        MMADims::m16n8k8 => dtypes.insert(op_id, (dtype, 4)),
+                        MMADims::m16n8k16 => dtypes.insert(op_id, (dtype, 4)),
+                    };
+                    *rcs.entry(a).or_insert(0) += 1;
+                    *rcs.entry(b).or_insert(0) += 1;
+                    *rcs.entry(c).or_insert(0) += 1;
                 }
                 Op::Const(x) => {
                     dtypes.insert(op_id, (x.dtype(), 1));
@@ -1372,6 +1388,7 @@ impl CUDADevice {
         let mut loop_id = 0;
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
+        let mut helper_funcs = String::new();
 
         let mut acc_bytes = 0;
 
@@ -1382,7 +1399,6 @@ impl CUDADevice {
             match op {
                 Op::Devectorize { .. }
                 | Op::Move { .. }
-                | Op::WMMA { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
@@ -1403,21 +1419,65 @@ impl CUDADevice {
                         acc_bytes += dtype.byte_size() as usize * len;
                     }
                 }
-                &Op::Load { src, index, .. } => {
+                &Op::Load { src, index, vlen } => {
                     if let Some(&rc) = rcs.get(&op_id) {
-                        let dtype = dtypes[&src];
+                        let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
                         //if src == OpId(28) { _ = writeln!(source, "{indent}printf(\"Load p%d[%d]\\n\", {src}, {idx});"); }
-                        _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                        //_ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                        if vlen > 1 {
+                            _ = writeln!(
+                                source,
+                                "{indent}r{reg} = reinterpret_cast<const {}{}*>(p{src})[{idx}];",
+                                dtype.0.cu(),
+                                dtype.1
+                            );
+                        } else {
+                            _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                        }
                     }
                 }
-                &Op::Store { dst, x: src, index, vlen: _ } => {
+                &Op::Store { dst, x: src, index, vlen } => {
+                    let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    if vlen > 1 {
+                        for i in 0..vlen {
+                            _ = writeln!(
+                                source,
+                                "{indent}p{dst}[{idx} + {i}] = {x}.{};",
+                                VEC_COMPONENTS[i as usize]
+                            );
+                        }
+                    } else {
+                        _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                    }
+                }
+                &Op::WMMA { dims, layout, dtype, c, a, b } => {
+                    helper_funcs += r#"__device__ float4 wmma_m16n8k8_row_col_f32_f16_f16_f32(half4 a, half2 b, float4 c) {
+  int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
+  asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"
+    "{%0, %1, %2, %3}, {%4, %5},"
+    "{%6}, {%0, %1, %2, %3};"
+  : "+r"(c_pk[0]), "+r"(c_pk[1]), "+r"(c_pk[2]), "+r"(c_pk[3])
+  : "r"(a_pk[0]), "r"(a_pk[1]), "r"(b_pk[0]));
+  return c;
+}
+"#;
+                    let a = get_var(a, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let b = get_var(b, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let c = get_var(c, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let reg = new_reg(
+                        op_id,
+                        &mut reg_map,
+                        &mut registers,
+                        dtypes[&op_id],
+                        rcs[&op_id],
+                        loop_id,
+                    );
                     _ = writeln!(
                         source,
-                        "{indent}p{dst}[{}] = {};",
-                        get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id),
-                        get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id)
+                        "{indent}r{reg} = wmma_m16n8k8_row_col_f32_f16_f16_f32({a}, {b}, {c});"
                     );
                 }
                 &Op::Cast { x, dtype } => {
@@ -1493,8 +1553,8 @@ impl CUDADevice {
                     vars.pop();
                     vars.pop();
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                    let dtype = dtypes[&op_id];
-                    _ = writeln!(source, "{indent}r{reg} = ({}{})({vars});", dtype.0.cu(), dtype.1);
+                    //let dtype = dtypes[&op_id];
+                    _ = writeln!(source, "{indent}r{reg} = {{{vars}}};"); //, dtype.0.cu(), dtype.1);
                 }
                 &Op::Mad { x, y, z } => {
                     let dtype = dtypes[&op_id];
@@ -1589,6 +1649,7 @@ impl CUDADevice {
         let mut pragma = String::new();
         if dtypes.values().any(|&x| x.0 == DType::F16) {
             pragma += "#include <cuda_fp16.h>\n";
+            pragma += "struct __align__(8) half4 { half x, y, z, w; };\n";
         }
 
         let mut name = format!(
@@ -1597,8 +1658,9 @@ impl CUDADevice {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
-        let source =
-            format!("{pragma}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0",);
+        let source = format!(
+            "{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0",
+        );
 
         if debug_asm {
             println!();
@@ -1729,15 +1791,3 @@ impl nvrtcResult {
         }
     }
 }
-
-/*static WMMA_FUNCS: &'static str = r#"
-__device__ half4 __MMA_8_16_8_half_half(half4 a, half2 b, half4 c){
-  int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
-  asm("mma.sync.aligned.m16n8k8.row.col.f16.f16.f16.f16"
-      "{%0, %1}, {%2, %3},"
-      "{%4}, {%0, %1};"
-    : "+r"(c_pk[0]), "+r"(c_pk[1])
-    : "r"(a_pk[0]), "r"(a_pk[1]), "r"(b_pk[0]));
-  return c;
-}
-"#;*/

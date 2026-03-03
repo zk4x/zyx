@@ -11,8 +11,8 @@ use std::collections::HashSet;
 mod loop_jam;
 mod loop_split;
 mod loop_unrolling;
-mod vectorize;
 mod mma;
+mod vectorize;
 mod work_size;
 
 // Indices in 0..max_index for each optimization Opt
@@ -46,7 +46,13 @@ pub struct Optimizer {
 
 impl Optimizer {
     #[must_use]
-    pub fn apply_optimization(&self, kernel: &mut Kernel, optimization: Optimization, dev_info: &DeviceInfo, debug_ir: bool) -> bool {
+    pub fn apply_optimization(
+        &self,
+        kernel: &mut Kernel,
+        optimization: Optimization,
+        dev_info: &DeviceInfo,
+        debug_ir: bool,
+    ) -> bool {
         kernel.fuse_reduces();
 
         let [

@@ -1464,6 +1464,7 @@ impl Kernel {
                 op,
                 Op::Index { .. }
                     | Op::Store { .. }
+                    | Op::WMMA { .. }
                     | Op::Loop { .. }
                     | Op::Define { .. }
                     | Op::EndLoop { .. }
@@ -1871,8 +1872,7 @@ impl Kernel {
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
-                | Op::Reduce { .. }
-                | Op::WMMA { .. } => unreachable!(),
+                | Op::Reduce { .. } => unreachable!(),
                 Op::Vectorize { ops } => {
                     let mut max = 0;
                     for op in ops {
@@ -1892,7 +1892,7 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
-                Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => loop_depth,
+                Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } | Op::WMMA { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -2003,11 +2003,6 @@ impl Kernel {
                         s.0 = true
                     }
                 }
-                Op::WMMA { .. } => {
-                    for s in &mut stack {
-                        s.0 = true
-                    }
-                }
                 Op::EndLoop => {
                     let (has_store, ops) = stack.pop().unwrap();
                     if has_store {
@@ -2103,7 +2098,7 @@ impl Kernel {
                     check(op_id, c, &stack);
                     check(op_id, a, &stack);
                     check(op_id, b, &stack);
-                    if dtypes[&a] != dtype || dtypes[&b] != dtype {
+                    if dtypes[&a] != dtypes[&b] {
                         self.debug();
                         panic!("MMA dtype mismatch on op={op_id}.");
                     }

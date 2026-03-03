@@ -168,20 +168,36 @@ impl Kernel {
         }
 
         // A load
-        let mut index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
+        // TODO we need to put the warp row with stride 1, while offset needs to be adjusted
+        let mut idx = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
         for (&i, &st) in &stores[0].a_index {
             let stride = self.insert_before(k_loop_id, Op::Const(Constant::idx(st as u64)));
-            index = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
+            let y = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
+            idx = self.insert_before(k_loop_id, Op::Binary { x: idx, y, bop: BOp::Add });
         }
-        let a_load = self.insert_before(k_loop_id, Op::Load { src: stores[0].a, index, vlen: 2 });
+        let a_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].a, index: idx, vlen: 1 });
+        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].a_offset as u64)));
+        let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
+        let a_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[1].a, index, vlen: 1 });
+        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[2].a_offset as u64)));
+        let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
+        let a_load3 = self.insert_before(k_loop_id, Op::Load { src: stores[2].a, index, vlen: 1 });
+        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[3].a_offset as u64)));
+        let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
+        let a_load4 = self.insert_before(k_loop_id, Op::Load { src: stores[3].a, index, vlen: 1 });
+
+        let a_load = self.insert_before(k_loop_id, Op::Vectorize { ops: vec![a_load1, a_load2, a_load3, a_load4] });
 
         // B load
-        let mut index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
+        let mut idx = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
         for (&i, &st) in &stores[0].b_index {
             let stride = self.insert_before(k_loop_id, Op::Const(Constant::idx(st as u64)));
-            index = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
+            let y = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
+            idx = self.insert_before(k_loop_id, Op::Binary { x: idx, y, bop: BOp::Add });
         }
-        let b_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index, vlen: 1 });
+        let b_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index: idx, vlen: 1 });
+        let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].b_offset as u64)));
+        let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
         let b_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index, vlen: 1 });
         let b_load = self.insert_before(k_loop_id, Op::Vectorize { ops: vec![b_load1, b_load2] });
 
@@ -189,7 +205,7 @@ impl Kernel {
         let index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
         let c_load = self.insert_before(k_loop_id, Op::Load { src: stores[0].c, index, vlen: 4 });
 
-        self.insert_before(
+        let wmma_op = self.insert_before(
             k_loop_id,
             Op::WMMA {
                 dims: MMADims::m16n8k8,
@@ -200,10 +216,14 @@ impl Kernel {
                 b: b_load,
             },
         );
+        self.insert_after(wmma_op, Op::Store { dst: stores[0].c, x: wmma_op, index, vlen: 4 });
 
         for store in stores {
             self.remove(store.store_id);
         }
+
+        //self.debug();
+        //todo!();
     }
 
     /// Ensures threads have warp size compatible dimension
