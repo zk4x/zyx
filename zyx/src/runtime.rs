@@ -3,7 +3,7 @@ use crate::backend::{BufferId, Config, Device, Event, MemoryPool, SearchConfig};
 use crate::cache::Cache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
-use crate::graph::{BOp, Graph, Node, ROp, UOp};
+use crate::graph::{BOp, Graph, Node, UOp};
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{Dim, UAxis, permute, reduce};
@@ -504,7 +504,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(super) fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: ROp) -> TensorId {
+    pub(super) fn reduce(&mut self, x: TensorId, mut axes: Vec<UAxis>, rop: BOp) -> TensorId {
         let sh = self.shape(x);
         axes.sort_unstable();
         if axes.is_empty() {

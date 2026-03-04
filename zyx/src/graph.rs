@@ -368,7 +368,7 @@ pub enum BOp {
     Mod,
     Cmplt,
     Cmpgt,
-    Maximum,
+    Max,
     Or,
     And,
     BitXor,
@@ -393,14 +393,14 @@ impl BOp {
                 | BOp::BitOr
                 | BOp::BitShiftLeft
                 | BOp::BitShiftRight
-                | BOp::Maximum
+                | BOp::Max
         )
     }
 
     pub fn is_commutative(&self) -> bool {
         matches!(
             self,
-            BOp::Add | BOp::Mul | BOp::And | BOp::Or | BOp::BitXor | BOp::BitAnd | BOp::BitOr | BOp::Maximum
+            BOp::Add | BOp::Mul | BOp::And | BOp::Or | BOp::BitXor | BOp::BitAnd | BOp::BitOr | BOp::Max
         )
     }
 
@@ -425,13 +425,6 @@ pub enum UOp {
     Floor,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
-pub enum ROp {
-    Sum,
-    Max,
-    Prod,
-}
-
 /// Graph node, each node is one operation. Nodes
 /// represent the opset that is available on tensors.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -445,10 +438,10 @@ pub enum Node {
     // Reshape can be sometimes axis split or axis join
     Reshape { x: TensorId },
     Pad { x: TensorId },
-    Reduce { x: TensorId, rop: ROp },
+    Reduce { x: TensorId, rop: BOp },
     Cast { x: TensorId, dtype: DType },
     Unary { x: TensorId, uop: UOp },
-    Binary { bop: BOp, x: TensorId, y: TensorId },
+    Binary { x: TensorId, y: TensorId, bop: BOp },
 }
 
 pub struct NodeParametersIterator {

@@ -1,7 +1,7 @@
 use crate::{
     Map, RT, Set, Tensor,
     dtype::Constant,
-    graph::{BOp, Node, ROp, UOp},
+    graph::{BOp, Node, UOp},
     runtime::{Runtime, deallocate_tensors},
     shape::{Dim, UAxis},
     tensor::TensorId,
@@ -247,7 +247,7 @@ impl Runtime {
                             insert_or_add_grad(self, &mut grads, y, y_grad);
                         }
                     }
-                    BOp::Maximum => {
+                    BOp::Max => {
                         //# Create masks for where x > y, x < y, and x == y
                         //mask_x_greater = (x > y).to(grad_output.dtype)
                         //mask_y_greater = (x < y).to(grad_output.dtype)
@@ -389,7 +389,7 @@ impl Runtime {
                         .collect();
                     //println!("x shape {:?}, nid shape {:?}, expand_axes: {:?}", x_shape, sh, expand_axes);
                     debug_assert!(!expand_axes.is_empty());
-                    let temp = self.reduce(grad, expand_axes, ROp::Sum);
+                    let temp = self.reduce(grad, expand_axes, BOp::Add);
                     let grad = self.reshape(temp, x_shape);
                     self.release(temp);
                     insert_or_add_grad(self, &mut grads, x, grad);
@@ -409,7 +409,7 @@ impl Runtime {
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
                 Node::Reduce { x, rop } => match rop {
-                    ROp::Sum => {
+                    BOp::Add => {
                         //println!("Reduce backward, z shape: {z_shape:?}, x shape: {x_shape:?}, reduce axes: {:?}", self.graph.axes(nid));
                         let x_shape: Vec<Dim> = self.shape(x).into();
                         let mut z_shape: Vec<Dim> = self.shape(nid).into();
@@ -424,7 +424,7 @@ impl Runtime {
                         self.release(temp);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
-                    ROp::Max => {
+                    BOp::Max => {
                         // TODO make this shorter
 
                         // Compute x_grad = (1 - (x < z_broadcasted)) * grad
@@ -478,7 +478,8 @@ impl Runtime {
 
                         insert_or_add_grad(self, &mut grads, x, grad_x);
                     }
-                    ROp::Prod => todo!(),
+                    BOp::Mul => todo!(),
+                    _ => unreachable!(),
                 },
             }
         }

@@ -1,7 +1,7 @@
 use crate::{
     BLUE, CYAN, DType, GREEN, MAGENTA, Map, ORANGE, RED, RESET, Set, YELLOW,
     dtype::Constant,
-    graph::{BOp, ROp, UOp},
+    graph::{BOp, UOp},
     realize::KMKernelId,
     shape::{Dim, UAxis, permute},
     slab::{Slab, SlabId},
@@ -125,7 +125,7 @@ pub enum Op {
     LoadView(Box<(DType, View)>),
     StoreView { src: OpId, dtype: DType },
     Move { x: OpId, mop: Box<MoveOp> },
-    Reduce { x: OpId, rop: ROp, n_axes: UAxis },
+    Reduce { x: OpId, rop: BOp, n_axes: UAxis },
 }
 
 impl Op {
@@ -413,9 +413,10 @@ impl Kernel {
                     println!(
                         "{op_id:>5}{indent}{RED}REDUCE{RESET} {} {x}, dims={n_axes:?} {}",
                         match rop {
-                            ROp::Sum => "SUM",
-                            ROp::Max => "MAX",
-                            ROp::Prod => "PROD",
+                            BOp::Add => "SUM",
+                            BOp::Max => "MAX",
+                            BOp::Mul => "PROD",
+                            _ => unreachable!(),
                         },
                         dtypes[&op_id]
                     );
@@ -494,7 +495,10 @@ impl Kernel {
                         );
                     }
                     if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>5}{indent}BINARY {} {bop:?} {x} {y}    {l}..={u}", dtypes[&op_id]);
+                        println!(
+                            "{op_id:>5}{indent}BINARY {} {bop:?} {x} {y}    {l}..={u}",
+                            dtypes[&op_id]
+                        );
                     } else {
                         println!("{op_id:>5}{indent}BINARY {} {bop:?} {x} {y}", dtypes[&op_id]);
                     }
@@ -521,7 +525,10 @@ impl Kernel {
                 }
                 Op::WMMA { dims, layout, dtype, c, a, b } => {
                     dtypes.insert(op_id, dtypes[&c]);
-                    println!("{op_id:>5}{indent}{ORANGE}WMMA{RESET} {} {dims:?}.{layout:?}.{dtype:?} c={c} a={a} b={b}", dtypes[&op_id]);
+                    println!(
+                        "{op_id:>5}{indent}{ORANGE}WMMA{RESET} {} {dims:?}.{layout:?}.{dtype:?} c={c} a={a} b={b}",
+                        dtypes[&op_id]
+                    );
                 }
                 Op::Index { dim, scope } => {
                     dtypes.insert(op_id, IDX_T);
@@ -534,7 +541,10 @@ impl Kernel {
                 Op::Loop { dim } => {
                     dtypes.insert(op_id, IDX_T);
                     ids.insert(op_id, (0, dim - 1));
-                    println!("{op_id:>5}{indent}{BLUE}LOOP{RESET} {IDX_T} dim={dim}    0..={}", dim - 1);
+                    println!(
+                        "{op_id:>5}{indent}{BLUE}LOOP{RESET} {IDX_T} dim={dim}    0..={}",
+                        dim - 1
+                    );
                     indent += "  ";
                 }
                 Op::EndLoop { .. } => {
@@ -558,7 +568,10 @@ impl Kernel {
                     }
                     if let Some((xl, xu)) = r {
                         ids.insert(op_id, (xl, xu));
-                        println!("{op_id:>5}{indent}{ORANGE}VECTORIZE{RESET} {} {ops:?}    {xl}..={xu}", dtypes[&op_id]);
+                        println!(
+                            "{op_id:>5}{indent}{ORANGE}VECTORIZE{RESET} {} {ops:?}    {xl}..={xu}",
+                            dtypes[&op_id]
+                        );
                     } else {
                         println!("{op_id:>5}{indent}{ORANGE}VECTORIZE{RESET} {} {ops:?}", dtypes[&op_id]);
                     }
@@ -569,25 +582,43 @@ impl Kernel {
                         ids.insert(op_id, (*l, *u));
                     }
                     if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>5}{indent}{ORANGE}DEVECTORIZE{RESET} {} {vec}[{idx}]    {l}..={u}", dtypes[&op_id]);
+                        println!(
+                            "{op_id:>5}{indent}{ORANGE}DEVECTORIZE{RESET} {} {vec}[{idx}]    {l}..={u}",
+                            dtypes[&op_id]
+                        );
                     } else {
-                        println!("{op_id:>5}{indent}{ORANGE}DEVECTORIZE{RESET} {} {vec}[{idx}]", dtypes[&op_id]);
+                        println!(
+                            "{op_id:>5}{indent}{ORANGE}DEVECTORIZE{RESET} {} {vec}[{idx}]",
+                            dtypes[&op_id]
+                        );
                     }
                 }
                 Op::Move { x, ref mop } => {
                     dtypes.insert(op_id, dtypes[&x]);
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
-                            println!("{op_id:>5}{indent}{CYAN}RESHAPE{RESET} {} {x} -> {shape:?}", dtypes[&op_id]);
+                            println!(
+                                "{op_id:>5}{indent}{CYAN}RESHAPE{RESET} {} {x} -> {shape:?}",
+                                dtypes[&op_id]
+                            );
                         }
                         MoveOp::Expand { shape } => {
-                            println!("{op_id:>5}{indent}{CYAN}EXPAND{RESET} {} {x} -> {shape:?}", dtypes[&op_id]);
+                            println!(
+                                "{op_id:>5}{indent}{CYAN}EXPAND{RESET} {} {x} -> {shape:?}",
+                                dtypes[&op_id]
+                            );
                         }
                         MoveOp::Permute { axes, shape } => {
-                            println!("{op_id:>5}{indent}{CYAN}PERMUTE{RESET} {} {x} axes={axes:?} -> {shape:?}", dtypes[&op_id]);
+                            println!(
+                                "{op_id:>5}{indent}{CYAN}PERMUTE{RESET} {} {x} axes={axes:?} -> {shape:?}",
+                                dtypes[&op_id]
+                            );
                         }
                         MoveOp::Pad { padding, shape } => {
-                            println!("{op_id:>5}{indent}{CYAN}PAD{RESET} {} {x} padding={padding:?} -> {shape:?}", dtypes[&op_id]);
+                            println!(
+                                "{op_id:>5}{indent}{CYAN}PAD{RESET} {} {x} padding={padding:?} -> {shape:?}",
+                                dtypes[&op_id]
+                            );
                         }
                     };
                 }
@@ -1027,9 +1058,10 @@ impl Kernel {
             let acc_init_id = self.insert_before(
                 loop_start,
                 Op::Const(match rop {
-                    ROp::Sum => acc_dtype.zero_constant(),
-                    ROp::Max => acc_dtype.min_constant(),
-                    ROp::Prod => acc_dtype.one_constant(),
+                    BOp::Add => acc_dtype.zero_constant(),
+                    BOp::Max => acc_dtype.min_constant(),
+                    BOp::Mul => acc_dtype.one_constant(),
+                    _ => unreachable!(),
                 }),
             );
 
@@ -1051,18 +1083,7 @@ impl Kernel {
 
             // Add reduction operation, load from acc, accumulate, store to acc
             let load_acc = self.insert_before(reduce_op_id, Op::Load { src: acc, index: const_zero, vlen: 1 });
-            let bin_acc = self.insert_before(
-                reduce_op_id,
-                Op::Binary {
-                    x,
-                    y: load_acc,
-                    bop: match rop {
-                        ROp::Sum => BOp::Add,
-                        ROp::Max => BOp::Maximum,
-                        ROp::Prod => BOp::Mul,
-                    },
-                },
-            );
+            let bin_acc = self.insert_before(reduce_op_id, Op::Binary { x, y: load_acc, bop: rop });
             self.insert_before(
                 reduce_op_id,
                 Op::Store { dst: acc, x: bin_acc, index: const_zero, vlen: 1 },
@@ -1620,7 +1641,7 @@ impl Kernel {
                         BOp::Div if cx.is_zero() => self.ops[op_id].op = Op::Const(cx.dtype().zero_constant()),
                         BOp::Div if cx.is_one() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Reciprocal },
                         BOp::Pow if cx.is_one() => self.ops[op_id].op = Op::Const(cx.dtype().one_constant()),
-                        BOp::Maximum if cx.is_minimum() => self.remap(op_id, y),
+                        BOp::Max if cx.is_minimum() => self.remap(op_id, y),
                         BOp::BitShiftLeft if cx.is_zero() => self.remap(op_id, y),
                         BOp::BitShiftRight if cx.is_zero() => self.remap(op_id, y),
                         _ => {}
@@ -1892,7 +1913,12 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
-                Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } | Op::WMMA { .. } => loop_depth,
+                Op::Index { .. }
+                | Op::Load { .. }
+                | Op::Store { .. }
+                | Op::Const(_)
+                | Op::Define { .. }
+                | Op::WMMA { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);

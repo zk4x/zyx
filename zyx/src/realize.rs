@@ -6,7 +6,7 @@ use crate::{
     cache::{Cache, get_perf},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{BOp, Graph, Node, ROp, UOp},
+    graph::{BOp, Graph, Node, UOp},
     kernel::{Kernel, MoveOp, Op, OpId, OpNode},
     optimizer::Optimizer,
     prog_bar::ProgressBar,
@@ -278,7 +278,7 @@ impl<'a> Kernelizer<'a> {
         Ok(())
     }
 
-    fn add_reduce_op(&mut self, nid: TensorId, x: TensorId, rop: ROp) -> Result<(), ZyxError> {
+    fn add_reduce_op(&mut self, nid: TensorId, x: TensorId, rop: BOp) -> Result<(), ZyxError> {
         // Don't apply reduce if the kernel already contains reduce
         // and the resulting shape's dimension is less than 256
 
@@ -580,7 +580,12 @@ impl<'a> Kernelizer<'a> {
         // Check if best optimization already found
         if optimizer.fully_optimized() || (self.search_config.iterations == 0 && !optimizer.is_new()) {
             // done optimizing, loaded best from disk
-            let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), device.info(), self.debug.ir());
+            let opt_res = optimizer.apply_optimization(
+                &mut kernel,
+                optimizer.best_optimization(),
+                device.info(),
+                self.debug.ir(),
+            );
             debug_assert!(opt_res);
             let program_id = device.compile(&kernel, self.debug.asm())?;
             if self.debug.kmd() {
@@ -729,7 +734,12 @@ impl<'a> Kernelizer<'a> {
                 );
                 if self.debug.asm() {
                     assert_eq!(
-                        optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), device.info(), self.debug.ir()),
+                        optimizer.apply_optimization(
+                            &mut kernel,
+                            optimizer.best_optimization(),
+                            device.info(),
+                            self.debug.ir()
+                        ),
                         true
                     );
                     let program_id = device.compile(&kernel, true)?;

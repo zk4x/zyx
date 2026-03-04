@@ -6,7 +6,7 @@
 
 use crate::dtype::DType;
 use crate::error::ZyxError;
-use crate::graph::{BOp, ROp, UOp};
+use crate::graph::{BOp, UOp};
 use crate::runtime::{TempData, apply_padding};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
@@ -1667,7 +1667,7 @@ impl Tensor {
     /// Returns error if axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn cumsum(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        self.cum_reduce(axis, ROp::Sum)
+        self.cum_reduce(axis, BOp::Add)
     }
 
     /// Comulative max along axis.
@@ -1677,7 +1677,7 @@ impl Tensor {
     /// Returns error if axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn cummax(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        self.cum_reduce(axis, ROp::Max)
+        self.cum_reduce(axis, BOp::Max)
     }
 
     /// Comulative product along axis.
@@ -1687,11 +1687,11 @@ impl Tensor {
     /// Returns error if axis is out of range.
     #[allow(clippy::missing_panics_doc)]
     pub fn cumprod(&self, axis: Axis) -> Result<Tensor, ZyxError> {
-        self.cum_reduce(axis, ROp::Prod)
+        self.cum_reduce(axis, BOp::Mul)
     }
 
     /// Cumulative reduce along axis
-    fn cum_reduce(&self, axis: Axis, rop: ROp) -> Result<Tensor, ZyxError> {
+    fn cum_reduce(&self, axis: Axis, rop: BOp) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let uaxis = into_axis(axis, shape.len())?;
         let pl_sz = i32::try_from(shape[uaxis] - 1).unwrap();
@@ -1699,9 +1699,10 @@ impl Tensor {
         x = x.pad_zeros([(pl_sz, 0)])?;
         x = x.pool(shape[uaxis], 1, 1)?;
         x = match rop {
-            ROp::Sum => x.sum([-1])?,
-            ROp::Max => x.max([-1])?,
-            ROp::Prod => x.prod([-1])?,
+            BOp::Add => x.sum([-1])?,
+            BOp::Max => x.max([-1])?,
+            BOp::Mul => x.prod([-1])?,
+            _ => unreachable!(),
         };
         x = x.transpose(axis, -1)?;
         Ok(x)
@@ -1781,7 +1782,7 @@ impl Tensor {
     /// Returns error if the tensors have non broadcasteable shapes.
     pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
-        let id = RT.lock().binary(x.id, y.id, BOp::Maximum);
+        let id = RT.lock().binary(x.id, y.id, BOp::Max);
         Ok(Tensor { id })
     }
 

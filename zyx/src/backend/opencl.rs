@@ -943,7 +943,7 @@ impl OpenCLDevice {
                         BOp::Mod => writeln!(source, "{indent}r{reg} = {x} % {y};"),
                         BOp::Cmplt => writeln!(source, "{indent}r{reg} = {x} < {y};"),
                         BOp::Cmpgt => writeln!(source, "{indent}r{reg} = {x} > {y};"),
-                        BOp::Maximum => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
+                        BOp::Max => writeln!(source, "{indent}r{reg} = max({x}, {y});"),
                         BOp::Or => writeln!(source, "{indent}r{reg} = {x} || {y};"),
                         BOp::And => writeln!(source, "{indent}r{reg} = {x} && {y};"),
                         BOp::BitXor => writeln!(source, "{indent}r{reg} = {x} ^ {y};"),
