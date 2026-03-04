@@ -984,6 +984,7 @@ impl OpenCLDevice {
                         }
                         Scope::Register => {}
                     }
+                    loop_id += 1;
                 }
                 &Op::Loop { dim } => {
                     indices.insert(op_id, loop_id);
