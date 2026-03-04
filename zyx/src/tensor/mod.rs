@@ -1302,7 +1302,7 @@ impl Tensor {
     /// Expands the tensor along a given axis to a new dimension.
     ///
     /// # Arguments
-    /// * `axis` – The axis to expand. It can be an integer index or a `SAxis` value.
+    /// * `axis` – The axis to expand, integer index..
     /// * `dim`  – The new size that the chosen axis should have.
     ///
     /// # Returns

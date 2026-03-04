@@ -690,18 +690,18 @@ impl OpenCLDevice {
             }
         }
 
-        let mut gws = Vec::new();
-        let mut lws = Vec::new();
+        let mut gws = vec![1; 3];
+        let mut lws = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             let op = kernel.at(op_id);
-            if let &Op::Index { dim, scope } = op {
+            if let &Op::Index { len: dim, scope, axis } = op {
                 match scope {
                     Scope::Global => {
-                        gws.push(dim);
+                        gws[axis as usize] = dim;
                     }
                     Scope::Local => {
-                        lws.push(dim);
+                        lws[axis as usize] = dim;
                     }
                     Scope::Register => {}
                 }
@@ -821,7 +821,6 @@ impl OpenCLDevice {
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
 
-        let mut n_global_ids = 0;
         let mut loop_id = 0;
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
@@ -963,22 +962,20 @@ impl OpenCLDevice {
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = {x} * {y} + {z};");
                 }
-                &Op::Index { dim, scope } => {
+                &Op::Index { len: dim, scope, axis } => {
                     indices.insert(op_id, loop_id);
                     match scope {
                         Scope::Global => {
                             _ = writeln!(
                                 source,
-                                "{indent}unsigned int idx{loop_id} = get_group_id({loop_id}); // 0..={}",
+                                "{indent}unsigned int idx{loop_id} = get_group_id({axis}); // 0..={}",
                                 dim - 1
                             );
-                            n_global_ids += 1;
                         }
                         Scope::Local => {
                             _ = writeln!(
                                 source,
-                                "{indent}unsigned int idx{loop_id} = get_local_id({}); // 0..={}",
-                                loop_id - n_global_ids,
+                                "{indent}unsigned int idx{loop_id} = get_local_id({axis}); // 0..={}",
                                 dim - 1
                             );
                         }
@@ -986,7 +983,7 @@ impl OpenCLDevice {
                     }
                     loop_id += 1;
                 }
-                &Op::Loop { dim } => {
+                &Op::Loop { len: dim } => {
                     indices.insert(op_id, loop_id);
                     _ = writeln!(
                         source,
@@ -996,12 +993,10 @@ impl OpenCLDevice {
                     loop_id += 1;
                 }
                 Op::EndLoop => {
-                    if loop_id as usize > lws.len() + gws.len() {
-                        indent.pop();
-                        indent.pop();
-                        _ = writeln!(source, "{indent}}}");
-                        loop_id -= 1;
-                    }
+                    indent.pop();
+                    indent.pop();
+                    _ = writeln!(source, "{indent}}}");
+                    loop_id -= 1;
                 }
             }
             op_id = kernel.next_op(op_id);

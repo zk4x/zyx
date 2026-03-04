@@ -50,7 +50,6 @@ pub enum MoveOp {
     Expand { shape: Vec<Dim> },
     Permute { axes: Vec<UAxis>, shape: Vec<Dim> },
     Pad { padding: Vec<(i32, i32)>, shape: Vec<Dim> },
-    // Pad(Vec<(isize, isize)>),
     //MergeIndices { x: OpId, y: OpId }, // creates index for merge of loops x and y (i.e. x * y_len + y)
     //PermuteIndices(Vec<OpId>), // Permute for indices, just swapping indices around
     //PadIndex(OpId, isize, isize), // Pad index with padding
@@ -104,14 +103,13 @@ pub enum Op {
     Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
     Store { dst: OpId, x: OpId, index: OpId, vlen: u8 },
     Load { src: OpId, index: OpId, vlen: u8 },
-    Index { dim: Dim, scope: Scope },
-    Loop { dim: Dim },
+    Index { len: Dim, scope: Scope, axis: u32 },
+    Loop { len: Dim },
     EndLoop,
     // fused multiply add
     Mad { x: OpId, y: OpId, z: OpId },
-    // fused matmul, a, b, c are fragments, each is a vector, c is accumulator
-    // TODO would be adding d useful?
-    WMMA { dims: MMADims, layout: MMALayout, dtype: MMADType, c: OpId, a: OpId, b: OpId },
+    // fused matmul, a, b, c are fragments, each is a vector, c is accumulator, returns new accumulated vector d
+    WMMA { dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId },
     // Vectorization, YAY!
     Vectorize { ops: Vec<OpId> },
     Devectorize { vec: OpId, idx: usize }, // select a single value from a vector
@@ -449,7 +447,7 @@ impl Kernel {
                     );
                 }
                 Op::Cast { x, dtype, .. } => {
-                    dtypes.insert(op_id, dtypes[&x]);
+                    dtypes.insert(op_id, dtype);
                     if let Some((l, u)) = ids.get(&x) {
                         ids.insert(op_id, (*l, *u));
                     }
@@ -530,20 +528,20 @@ impl Kernel {
                         dtypes[&op_id]
                     );
                 }
-                Op::Index { dim, scope } => {
+                Op::Index { len, scope, axis } => {
                     dtypes.insert(op_id, IDX_T);
-                    ids.insert(op_id, (0, dim - 1));
+                    ids.insert(op_id, (0, len - 1));
                     println!(
-                        "{op_id:>5}{indent}{BLUE}INDEX{RESET} {IDX_T} {scope} dim={dim}    0..={}",
-                        dim - 1
+                        "{op_id:>5}{indent}{BLUE}INDEX{RESET} {IDX_T} {scope}_{axis} len={len}    0..={}",
+                        len - 1
                     );
                 }
-                Op::Loop { dim } => {
+                Op::Loop { len } => {
                     dtypes.insert(op_id, IDX_T);
-                    ids.insert(op_id, (0, dim - 1));
+                    ids.insert(op_id, (0, len - 1));
                     println!(
-                        "{op_id:>5}{indent}{BLUE}LOOP{RESET} {IDX_T} dim={dim}    0..={}",
-                        dim - 1
+                        "{op_id:>5}{indent}{BLUE}LOOP{RESET} {IDX_T} len={len}    0..={}",
+                        len - 1
                     );
                     indent += "  ";
                 }
@@ -760,7 +758,7 @@ impl Kernel {
                 .ops
                 .values()
                 .filter_map(|x| {
-                    if let Op::Index { dim, .. } = x.op {
+                    if let Op::Index { len: dim, .. } = x.op {
                         Some(dim)
                     } else {
                         None
@@ -856,16 +854,16 @@ impl Kernel {
             match self.ops[param].op {
                 Binary { x, y, bop } => {
                     if bop == BOp::Add {
-                        if let Loop { dim } = self.ops[x].op {
+                        if let Loop { len: dim } = self.ops[x].op {
                             indices.insert(x, (dim, 1));
                             params.push(y);
-                        } else if let Index { dim, .. } = self.ops[x].op {
+                        } else if let Index { len: dim, .. } = self.ops[x].op {
                             indices.insert(x, (dim, 1));
                             params.push(y);
-                        } else if let Loop { dim } = self.ops[y].op {
+                        } else if let Loop { len: dim } = self.ops[y].op {
                             indices.insert(y, (dim, 1));
                             params.push(x);
-                        } else if let Index { dim, .. } = self.ops[y].op {
+                        } else if let Index { len: dim, .. } = self.ops[y].op {
                             indices.insert(y, (dim, 1));
                             params.push(x);
                         } else {
@@ -875,16 +873,16 @@ impl Kernel {
                     }
                     if bop == BOp::Mul {
                         match (&self.ops[x].op, &self.ops[y].op) {
-                            (Loop { dim }, Const(c)) => {
+                            (Loop { len: dim }, Const(c)) => {
                                 indices.insert(x, (*dim, c.as_dim()));
                             }
-                            (Index { dim, .. }, Const(c)) => {
+                            (Index { len: dim, .. }, Const(c)) => {
                                 indices.insert(x, (*dim, c.as_dim()));
                             }
-                            (Const(c), Loop { dim }) => {
+                            (Const(c), Loop { len: dim }) => {
                                 indices.insert(y, (*dim, c.as_dim()));
                             }
-                            (Const(c), Index { dim, .. }) => {
+                            (Const(c), Index { len: dim, .. }) => {
                                 indices.insert(y, (*dim, c.as_dim()));
                             }
                             _ => {} //op => println!("op={op:?}"),
@@ -892,18 +890,18 @@ impl Kernel {
                     }
                 }
                 Mad { x, y, z } => {
-                    if let Loop { dim } = self.ops[z].op {
+                    if let Loop { len: dim } = self.ops[z].op {
                         indices.insert(z, (dim, 1));
-                    } else if let Index { dim, .. } = self.ops[z].op {
+                    } else if let Index { len: dim, .. } = self.ops[z].op {
                         indices.insert(z, (dim, 1));
                     } else {
                         params.push(z);
                     }
                     match (&self.ops[x].op, &self.ops[y].op) {
-                        (Loop { dim, .. }, Const(c)) => {
+                        (Loop { len: dim, .. }, Const(c)) => {
                             indices.insert(x, (*dim, c.as_dim()));
                         }
-                        (Const(c), Loop { dim, .. }) => {
+                        (Const(c), Loop { len: dim, .. }) => {
                             indices.insert(y, (*dim, c.as_dim()));
                         }
                         _ => {}
@@ -1078,7 +1076,7 @@ impl Kernel {
 
             // Add Loops for the reduce
             for &dim in &self.reduce_dims(reduce_op_id)[..n_axes] {
-                self.insert_before(loop_start, Op::Loop { dim });
+                self.insert_before(loop_start, Op::Loop { len: dim });
             }
 
             // Add reduction operation, load from acc, accumulate, store to acc
@@ -1328,15 +1326,15 @@ impl Kernel {
                                 break;
                             }
                             match *self.at(l_op_id) {
-                                Op::Index { dim, scope } => {
+                                Op::Index { len, scope, axis: _ } => {
                                     match scope {
-                                        Scope::Global => gws.push(dim),
-                                        Scope::Local => lws.push(dim),
+                                        Scope::Global => gws.push(len),
+                                        Scope::Local => lws.push(len),
                                         Scope::Register => {}
                                     }
-                                    shape.push(dim);
+                                    shape.push(len);
                                 }
-                                Op::Loop { dim } => {
+                                Op::Loop { len: dim } => {
                                     rws.push(dim);
                                     shape.push(dim);
                                 }
@@ -1483,8 +1481,7 @@ impl Kernel {
         for (op_id, op) in self.iter_unordered() {
             if matches!(
                 op,
-                Op::Index { .. }
-                    | Op::Store { .. }
+                Op::Store { .. }
                     | Op::WMMA { .. }
                     | Op::Loop { .. }
                     | Op::Define { .. }
@@ -1525,7 +1522,6 @@ impl Kernel {
             }
             match self.at(op_id) {
                 Op::Define { .. } => {}
-                Op::Index { .. } => {}
                 Op::Loop { .. } => {
                     unique.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::new()));
                     unique_loads.push(Map::with_capacity_and_hasher(5, BuildHasherDefault::new()));
@@ -2245,10 +2241,10 @@ impl Kernel {
                         );
                     }
                 }
-                Op::Index { dim, .. } => {
+                Op::Index { len: dim, .. } => {
                     ids.insert(op_id, (0, dim - 1));
                 }
-                Op::Loop { dim, .. } => {
+                Op::Loop { len: dim, .. } => {
                     ids.insert(op_id, (0, dim - 1));
                 }
                 Op::Load { src, index, .. } => {

@@ -30,7 +30,7 @@ impl Kernel {
             if self.ops[op_id].op == Op::EndLoop {
                 endloop_ids.push(op_id);
             }
-            if let Op::Loop { dim } = self.ops[op_id].op {
+            if let Op::Loop { len: dim } = self.ops[op_id].op {
                 let endloop_id = endloop_ids.pop().unwrap();
                 if dim <= unroll_dim && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 5_000 {
                     self.unroll_loop(op_id, endloop_id, dim);
@@ -74,7 +74,7 @@ impl Kernel {
                     endloop_ids.push(op_id);
                     constant_loops.push(true);
                 }
-                Op::Loop { dim } => {
+                Op::Loop { len: dim } => {
                     let endloop_id = endloop_ids.pop().unwrap();
                     //println!("Loop {op_id} constant={constant_loops:?}");
                     let is_const = constant_loops.pop().unwrap();
@@ -83,7 +83,9 @@ impl Kernel {
                             *inner_loop = false;
                         }
                     }
-                    if dim == 1 || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 5_000) {
+                    if dim == 1
+                        || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (dim - 1)) < 5_000)
+                    {
                         self.unroll_loop(op_id, endloop_id, dim);
                     }
                 }
