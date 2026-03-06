@@ -63,7 +63,7 @@ impl Optimizer {
         ] = optimization.into_indices(self.max_indices);
 
         // TODO when view is removed, unfold movement ops will directly generate indices
-        kernel.unfold_movement_ops();
+        //kernel.unfold_movement_ops();
 
         if !self.work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
             return false;
@@ -73,10 +73,10 @@ impl Optimizer {
             return false;
         }
 
-        kernel.unfold_reduces();
+        //kernel.unfold_reduces();
 
         // TODO move this functionality into unfold movement ops
-        kernel.unfold_views();
+        //kernel.unfold_views();
 
         // This is only needed for debugging
         /*let mut temp_kernel = kernel.clone();

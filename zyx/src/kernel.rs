@@ -3,7 +3,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, UOp},
     realize::KMKernelId,
-    shape::{Dim, UAxis, permute},
+    shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
@@ -91,6 +91,14 @@ pub enum MMADType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+struct RDim {
+    ax: OpId,
+    st: Dim,
+    lp: i32,
+    rp: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist in both
     Cast { x: OpId, dtype: DType },
@@ -120,10 +128,13 @@ pub enum Op {
     // This will make Op smaller and Copy.
     // TODO Use MovementOp instead for all the movement.
     ConstView(Box<(Constant, View)>),
-    LoadView(Box<(DType, View)>),
+    //LoadView(Box<(DType, View)>),
+    // This is: LoadView { dtype: DType, axes: Vec<OpId>, strides: Vec<Dim>, offset: Dim },
+    LoadView(Box<(DType, Vec<RDim>)>),
     StoreView { src: OpId, dtype: DType },
     Move { x: OpId, mop: Box<MoveOp> },
     Reduce { x: OpId, rop: BOp, n_axes: UAxis },
+
 }
 
 impl Op {
@@ -369,7 +380,7 @@ impl Kernel {
         &self.ops[op_id].op
     }
 
-    pub fn apply_movement(&mut self, func: impl Fn(&mut View)) {
+    /*pub fn apply_movement(&mut self, func: impl Fn(&mut View)) {
         for op in self.ops_mut() {
             match op {
                 Op::ConstView(x) => func(&mut x.1),
@@ -377,7 +388,7 @@ impl Kernel {
                 _ => {}
             }
         }
-    }
+    }*/
 
     pub fn debug(&self) {
         println!("\nloads={:?}", self.loads);
@@ -398,9 +409,9 @@ impl Kernel {
                 }
                 Op::LoadView(ref x) => {
                     let dtype = x.0;
-                    let view = &x.1;
+                    let dims = &x.1;
                     dtypes.insert(op_id, dtype);
-                    println!("{op_id:>5}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}");
+                    println!("{op_id:>5}{indent}{CYAN}LOAD VIEW{RESET} {dims:?}");
                 }
                 Op::StoreView { src, dtype, .. } => {
                     dtypes.insert(op_id, dtype);
@@ -648,9 +659,15 @@ impl Kernel {
                     Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
                 }
                 Op::LoadView(x) => {
-                    let (dtype, view) = x.as_ref();
-                    let shape = view.shape();
-                    let mem_read = view.original_numel() as u64 * dtype.byte_size() as u64;
+                    let (dtype, dims) = x.as_ref();
+                    let mut shape = Vec::new();
+                    for dim in dims {
+                        match self.ops[dim.ax].op {
+                            Op::Index { len, .. } | Op::Loop { len } => shape.push(len),
+                            _ => {}
+                        }
+                    }
+                    let mem_read = shape.iter().product::<Dim>() as u64 * dtype.byte_size() as u64;
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
                 Op::StoreView { src, dtype } => {
@@ -712,7 +729,7 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. }))
     }
 
-    pub fn reduce_dims(&self, op_id: OpId) -> Vec<Dim> {
+    /*pub fn reduce_dims(&self, op_id: OpId) -> Vec<Dim> {
         let mut params = vec![op_id];
         let mut n_reduce_axes = 0;
         let mut visited = Set::default();
@@ -750,7 +767,7 @@ impl Kernel {
             }
         }
         unreachable!();
-    }
+    }*/
 
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.values().any(|x| matches!(x.op, Op::Loop { .. })) {
@@ -779,7 +796,13 @@ impl Kernel {
                     return shape;
                 }
                 Op::LoadView(x) => {
-                    let shape = x.1.shape();
+                    let mut shape = Vec::new();
+                    for dim in &x.1 {
+                        match self.ops[dim.ax].op {
+                            Op::Index { len, .. } | Op::Loop { len } => shape.push(len),
+                            _ => {}
+                        }
+                    }
                     let shape: Vec<Dim> = shape[..shape.len() - reduce_dims].into();
                     if shape.is_empty() {
                         return vec![1];
@@ -824,15 +847,6 @@ impl Kernel {
             op_id = self.prev_op(op_id);
         }
         unreachable!()
-    }
-
-    #[allow(unused)]
-    pub fn is_reshape_contiguous(&self, range: std::ops::Range<UAxis>, shape: &[Dim]) -> bool {
-        self.ops.values().all(|node| match &node.op {
-            Op::ConstView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
-            Op::LoadView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
-            _ => true,
-        })
     }
 
     /// Fuses multiple reduce ops together if possible
@@ -920,7 +934,7 @@ impl Kernel {
     }
 
     /// Apply  movement ops on views. Later this will directly generate indices
-    pub fn unfold_movement_ops(&mut self) {
+    /*pub fn unfold_movement_ops(&mut self) {
         let mut shapes: Map<OpId, Vec<Dim>> = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -965,9 +979,9 @@ impl Kernel {
         }
         #[cfg(debug_assertions)]
         self.verify();
-    }
+    }*/
 
-    pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
+    /*pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
         if !visited.insert(op_id) {
             return;
         }
@@ -1001,11 +1015,11 @@ impl Kernel {
             }
             _ => {}
         }
-    }
+    }*/
 
     /// Find all Reduce ops and put them in a Loop block
     /// Add define ops and add reduce operation as BOp::Add or BOp::Max
-    pub fn unfold_reduces(&mut self) {
+    /*pub fn unfold_reduces(&mut self) {
         let mut reduce_op_ids: Vec<OpId> = self
             .iter_unordered()
             .filter_map(|(id, op)| {
@@ -1098,7 +1112,7 @@ impl Kernel {
             #[cfg(debug_assertions)]
             self.verify();
         }
-    }
+    }*/
 
     fn new_op(&mut self, op_iter: &mut OpId, op: Op) -> OpId {
         let op_id = self.insert_after(*op_iter, op);
@@ -1106,7 +1120,7 @@ impl Kernel {
         op_id
     }
 
-    pub fn unfold_views(&mut self) {
+    /*pub fn unfold_views(&mut self) {
         let mut axes = Vec::new();
         let start = self.head;
         let mut op_id = self.head;
@@ -1455,7 +1469,7 @@ impl Kernel {
 
         #[cfg(debug_assertions)]
         self.verify();
-    }
+    }*/
 
     pub fn unfold_pows(&mut self) {
         let mut op_id = self.ops.first_id();
