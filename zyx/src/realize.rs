@@ -580,12 +580,7 @@ impl<'a> Kernelizer<'a> {
         // Check if best optimization already found
         if optimizer.fully_optimized() || (self.search_config.iterations == 0 && !optimizer.is_new()) {
             // done optimizing, loaded best from disk
-            let opt_res = optimizer.apply_optimization(
-                &mut kernel,
-                optimizer.best_optimization(),
-                device.info(),
-                self.debug.ir(),
-            );
+            let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), device.info(), self.debug.ir());
             debug_assert!(opt_res);
             let program_id = device.compile(&kernel, self.debug.asm())?;
             if self.debug.kmd() {
@@ -734,12 +729,7 @@ impl<'a> Kernelizer<'a> {
                 );
                 if self.debug.asm() {
                     assert_eq!(
-                        optimizer.apply_optimization(
-                            &mut kernel,
-                            optimizer.best_optimization(),
-                            device.info(),
-                            self.debug.ir()
-                        ),
+                        optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), device.info(), self.debug.ir()),
                         true
                     );
                     let program_id = device.compile(&kernel, true)?;
