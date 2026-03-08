@@ -169,7 +169,6 @@ impl<'a> Kernelizer<'a> {
     }
 
     fn create_load_kernel(&mut self, nid: TensorId) -> (KMKernelId, OpId) {
-        //println!("ADDING LOAD for {x} x {}", rc);
         let shape = self.graph.shape(nid);
         let dtype = self.graph.dtype(nid);
         let mut ops = Slab::with_capacity(100);
@@ -225,9 +224,7 @@ impl<'a> Kernelizer<'a> {
         debug_assert!(self.visited.contains_key(&x), "Missing tensor {x} in visited.");
         // TODO duplicate or store only if this is not mergeable.
         // Otherwise if it is like unsqueeze or splitting two dims
-        // or fusing two dims, it can be represented by a custom
-        // op that is unfoldable into indices, since it does not change
-        // global work size.
+        // or fusing two dims, it does not need to be duplicated.
         let (kid, op_id) = self.duplicate_or_store(x, None)?;
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
