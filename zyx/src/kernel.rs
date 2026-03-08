@@ -984,6 +984,7 @@ impl Kernel {
                             }
                         }
                         MoveOp::Pad { padding, shape } => {
+                            self.debug();
                             debug_assert_eq!(running_dims.len(), padding.len());
                             for (&idx_id, &(lp, rp)) in running_dims.iter().zip(padding) {
                                 let Op::Index { len, scope, axis } = &mut self.ops[idx_id].op else { unreachable!() };
