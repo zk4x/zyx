@@ -1586,11 +1586,11 @@ impl CUDADevice {
                     }
                     loop_id += 1;
                 }
-                &Op::Loop { len: dim } => {
+                &Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
                     _ = writeln!(
                         source,
-                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {dim}; ++idx{loop_id}) {{"
+                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
                     );
                     indent += "  ";
                     loop_id += 1;

@@ -123,17 +123,17 @@ impl WorkSizeOpt {
         {
             let head = kernel.head;
             let mut axis = 0;
-            for &dim in gws.iter() {
-                kernel.insert_before(head, Op::Index { len: dim, scope: Scope::Global, axis });
+            for &len in gws.iter() {
+                kernel.insert_before(head, Op::Index { len, scope: Scope::Global, axis });
                 axis += 1;
             }
             let mut axis = 0;
-            for &dim in lws.iter() {
-                kernel.insert_before(head, Op::Index { len: dim, scope: Scope::Local, axis });
+            for &len in lws.iter() {
+                kernel.insert_before(head, Op::Index { len, scope: Scope::Local, axis });
                 axis += 1;
             }
-            for &dim in rws.iter() {
-                kernel.insert_before(head, Op::Loop { len: dim });
+            for &len in rws.iter() {
+                kernel.insert_before(head, Op::Loop { len, axis: 0 });
                 kernel.push_back(Op::EndLoop);
             }
         };

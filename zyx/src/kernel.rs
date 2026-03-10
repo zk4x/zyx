@@ -52,17 +52,6 @@ pub enum MoveOp {
     Pad { padding: Vec<(i32, i32)>, shape: Vec<Dim> },
 }
 
-impl MoveOp {
-    fn shape(&self) -> &[Dim] {
-        match self {
-            MoveOp::Reshape { shape }
-            | MoveOp::Expand { shape }
-            | MoveOp::Permute { shape, .. }
-            | MoveOp::Pad { shape, .. } => shape,
-        }
-    }
-}
-
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MMADims {
@@ -100,7 +89,7 @@ pub enum Op {
     Store { dst: OpId, x: OpId, index: OpId, vlen: u8 },
     Load { src: OpId, index: OpId, vlen: u8 },
     Index { len: Dim, scope: Scope, axis: u32 },
-    Loop { len: Dim },
+    Loop { len: Dim, axis: u32 },
     EndLoop,
     // fused multiply add
     Mad { x: OpId, y: OpId, z: OpId },
@@ -532,11 +521,11 @@ impl Kernel {
                         len - 1
                     );
                 }
-                Op::Loop { len } => {
+                Op::Loop { len, axis } => {
                     dtypes.insert(op_id, IDX_T);
                     ids.insert(op_id, (0, len - 1));
                     println!(
-                        "{op_id:>5}{indent}{BLUE}LOOP{RESET} {IDX_T} len={len}    0..={}",
+                        "{op_id:>5}{indent}{BLUE}LOOP{RESET}_{axis} {IDX_T} len={len}    0..={}",
                         len - 1
                     );
                     indent += "  ";
@@ -850,17 +839,17 @@ impl Kernel {
             match self.ops[param].op {
                 Binary { x, y, bop } => {
                     if bop == BOp::Add {
-                        if let Loop { len: dim } = self.ops[x].op {
-                            indices.insert(x, (dim, 1));
+                        if let Loop { len, .. } = self.ops[x].op {
+                            indices.insert(x, (len, 1));
                             params.push(y);
-                        } else if let Index { len: dim, .. } = self.ops[x].op {
-                            indices.insert(x, (dim, 1));
+                        } else if let Index { len, .. } = self.ops[x].op {
+                            indices.insert(x, (len, 1));
                             params.push(y);
-                        } else if let Loop { len: dim } = self.ops[y].op {
-                            indices.insert(y, (dim, 1));
+                        } else if let Loop { len, .. } = self.ops[y].op {
+                            indices.insert(y, (len, 1));
                             params.push(x);
-                        } else if let Index { len: dim, .. } = self.ops[y].op {
-                            indices.insert(y, (dim, 1));
+                        } else if let Index { len, .. } = self.ops[y].op {
+                            indices.insert(y, (len, 1));
                             params.push(x);
                         } else {
                             params.push(x);
@@ -869,27 +858,27 @@ impl Kernel {
                     }
                     if bop == BOp::Mul {
                         match (&self.ops[x].op, &self.ops[y].op) {
-                            (Loop { len: dim }, Const(c)) => {
-                                indices.insert(x, (*dim, c.as_dim()));
+                            (Loop { len, .. }, Const(c)) => {
+                                indices.insert(x, (*len, c.as_dim()));
                             }
-                            (Index { len: dim, .. }, Const(c)) => {
-                                indices.insert(x, (*dim, c.as_dim()));
+                            (Index { len, .. }, Const(c)) => {
+                                indices.insert(x, (*len, c.as_dim()));
                             }
-                            (Const(c), Loop { len: dim }) => {
-                                indices.insert(y, (*dim, c.as_dim()));
+                            (Const(c), Loop { len, .. }) => {
+                                indices.insert(y, (*len, c.as_dim()));
                             }
-                            (Const(c), Index { len: dim, .. }) => {
-                                indices.insert(y, (*dim, c.as_dim()));
+                            (Const(c), Index { len, .. }) => {
+                                indices.insert(y, (*len, c.as_dim()));
                             }
                             _ => {} //op => println!("op={op:?}"),
                         }
                     }
                 }
                 Mad { x, y, z } => {
-                    if let Loop { len: dim } = self.ops[z].op {
-                        indices.insert(z, (dim, 1));
-                    } else if let Index { len: dim, .. } = self.ops[z].op {
-                        indices.insert(z, (dim, 1));
+                    if let Loop { len, .. } = self.ops[z].op {
+                        indices.insert(z, (len, 1));
+                    } else if let Index { len, .. } = self.ops[z].op {
+                        indices.insert(z, (len, 1));
                     } else {
                         params.push(z);
                     }
@@ -917,99 +906,137 @@ impl Kernel {
 
     /// Apply  movement ops on views. Later this will directly generate indices
     pub fn unfold_movement_ops(&mut self) {
-        let mut running_shape: Vec<Dim> = Vec::new();
-        let mut running_dims: Vec<OpId> = Vec::new();
+        let mut running_dims: Map<OpId, Vec<OpId>> = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::ConstView(ref x) => {
+                    running_dims.insert(op_id, Vec::new());
                     let view = &x.1;
                     let shape = view.shape();
-                    if running_shape.is_empty() {
-                        let mut axis = 0;
-                        for &len in &shape {
-                            let idx_id = self.insert_before(op_id, Op::Index { len, scope: Scope::Global, axis });
-                            running_dims.push(idx_id);
-                            axis += 1;
-                        }
+                    let mut axis = 0;
+                    for &len in &shape {
+                        let idx_id = self.insert_before(op_id, Op::Index { len, scope: Scope::Global, axis });
+                        running_dims.get_mut(&op_id).unwrap().push(idx_id);
+                        axis += 1;
                     }
-                    running_shape = shape;
                 }
                 Op::LoadView(ref x) => {
+                    running_dims.insert(op_id, Vec::new());
                     let view = &x.1;
                     let shape = view.shape();
-                    if running_shape.is_empty() {
-                        let mut axis = 0;
-                        for &len in &shape {
-                            let idx_id = self.insert_before(op_id, Op::Index { len, scope: Scope::Global, axis });
-                            running_dims.push(idx_id);
-                            axis += 1;
-                        }
+                    let mut axis = 0;
+                    for &len in &shape {
+                        let idx_id = self.insert_before(op_id, Op::Index { len, scope: Scope::Global, axis });
+                        running_dims.get_mut(&op_id).unwrap().push(idx_id);
+                        axis += 1;
                     }
-                    running_shape = shape;
                 }
                 Op::Move { x, ref mop } => {
+                    running_dims.insert(op_id, running_dims[&x].clone());
                     let mop = mop.clone();
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
-                            for &idx_id in &running_dims {
-                                self.remove(idx_id);
-                            }
-                            running_dims.clear();
                             let mut axis = 0;
+                            running_dims.get_mut(&op_id).unwrap().clear();
                             for &len in shape {
                                 let idx_id = if len == 1 {
-                                    self.insert_before(op_id, Op::Index { len, scope: Scope::Global, axis })
+                                    OpId::NULL
                                 } else {
-                                    self.insert_after(self.head, Op::Index { len, scope: Scope::Global, axis })
+                                    self.insert_before(op_id, Op::Index { len, scope: Scope::Global, axis })
                                 };
-                                running_dims.push(idx_id);
+                                running_dims.get_mut(&op_id).unwrap().push(idx_id);
                                 axis += 1;
                             }
                         }
                         MoveOp::Expand { shape } => {
-                            for (&idx_id, &d) in running_dims.iter().zip(shape) {
-                                let Op::Index { len, scope, axis } = &mut self.ops[idx_id].op else { unreachable!() };
-                                debug_assert_eq!(*scope, Scope::Global);
-                                if *len != d {
-                                    debug_assert_eq!(*len, 1);
-                                    *len = d;
+                            let mut axis = 0;
+                            for (idx_id, &d) in running_dims.get_mut(&op_id).unwrap().iter_mut().zip(shape) {
+                                if idx_id.is_null() {
+                                    *idx_id = if self.is_preceded_by_reduce(op_id) {
+                                        self.insert_before(op_id, Op::Loop { len: d, axis })
+                                    } else {
+                                        self.insert_before(op_id, Op::Index { len: d, scope: Scope::Global, axis })
+                                    };
+                                } else {
+                                    let Op::Index { len, scope, .. } = &mut self.ops[*idx_id].op else {
+                                        unreachable!()
+                                    };
+                                    debug_assert_eq!(*scope, Scope::Global);
+                                    if *len != d {
+                                        debug_assert_eq!(*len, 1);
+                                        *len = d;
+                                    }
                                 }
+                                axis += 1;
                             }
                         }
-                        MoveOp::Permute { axes, shape } => {
-                            for &idx_id in &running_dims {
-                                let Op::Index { len, scope, axis } = &mut self.ops[idx_id].op else { unreachable!() };
-                                *axis = axes[*axis as usize] as u32;
-                            }
+                        MoveOp::Permute { axes, .. } => {
+                            *running_dims.get_mut(&op_id).unwrap() = crate::shape::permute(&running_dims[&op_id], axes);
                         }
-                        MoveOp::Pad { padding, shape } => {
-                            self.debug();
-                            debug_assert_eq!(running_dims.len(), padding.len());
-                            for (&idx_id, &(lp, rp)) in running_dims.iter().zip(padding) {
-                                let Op::Index { len, scope, axis } = &mut self.ops[idx_id].op else { unreachable!() };
+                        MoveOp::Pad { padding, .. } => {
+                            debug_assert_eq!(running_dims[&op_id].len(), padding.len());
+                            for (&idx_id, &(lp, rp)) in running_dims[&op_id].iter().zip(padding) {
+                                let Op::Index { len, .. } = &mut self.ops[idx_id].op else { unreachable!() };
                                 *len = (*len as i64 + lp as i64 + rp as i64) as Dim;
                             }
                         }
                     }
                     self.recursively_move(x, &mop, &mut Set::default(), 0);
                 }
-                Op::Reduce { x, rop, n_axes } => {
-                    for i in running_shape.len() - n_axes..running_shape.len() {
-                        for &idx_id in &running_dims {
-                            let &Op::Index { len, scope, axis } = &self.ops[idx_id].op else { unreachable!() };
-                            debug_assert_eq!(scope, Scope::Global);
-                            if axis == i as u32 {
-                                self.ops[idx_id].op = Op::Loop { len };
+                Op::Reduce { n_axes, x, .. } => {
+                    running_dims.insert(op_id, running_dims[&x].clone());
+                    for &idx_id in &running_dims[&op_id] {
+                        let &Op::Index { len, scope, axis } = &self.ops[idx_id].op else { unreachable!() };
+                        debug_assert_eq!(scope, Scope::Global);
+                        if (running_dims[&op_id].len() - n_axes..running_dims[&op_id].len()).contains(&(axis as usize))
+                        {
+                            self.ops[idx_id].op = Op::Loop { len, axis };
+                        }
+                    }
+                }
+                Op::Unary { x, .. } | Op::Cast { x, .. } | Op::StoreView { src: x, .. } => {
+                    running_dims.insert(op_id, running_dims[&x].clone());
+                }
+                Op::Binary { x, y, .. } => {
+                    self.debug();
+                    println!("{x} {y}, {:?} {:?}", running_dims[&x], running_dims[&y]);
+                    // If running dims from x and y use indices vs loops, only loops can remain in the running_dims
+                    // and indices must be destoyed.
+                    let mut new_dims = Vec::new();
+                    for (&rdx, &rdy) in running_dims[&x].iter().zip(&running_dims[&y]) {
+                        match (rdx.is_null(), rdy.is_null()) {
+                            (true, true) => new_dims.push(OpId::NULL),
+                            (true, false) => new_dims.push(rdy),
+                            (false, true) => new_dims.push(rdx),
+                            (false, false) => {
+                                if self.ops[rdx].op != self.ops[rdy].op {
+                                    match (&self.ops[rdx].op, &self.ops[rdy].op) {
+                                        (Op::Index { .. }, Op::Index { .. }) => unreachable!(),
+                                        (Op::Index { .. }, Op::Loop { .. }) => new_dims.push(rdy),
+                                        (Op::Loop { .. }, Op::Index { .. }) => new_dims.push(rdx),
+                                        (Op::Loop { .. }, Op::Loop { .. }) => unreachable!(),
+                                        _ => unreachable!(),
+                                    }
+                                } else {
+                                    new_dims.push(rdx);
+                                }
                             }
                         }
                     }
-                    todo!()
+                    running_dims.insert(op_id, new_dims);
                 }
                 _ => {}
             }
             op_id = self.next_op(op_id);
         }
+        // Close loops
+        for &idx_id in &running_dims[&self.tail] {
+            if let Op::Loop { .. } = self.ops[idx_id].op {
+                self.push_back(Op::EndLoop);
+            }
+        }
+        // Remove all movement ops as no longer needed
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next_op_id = self.next_op(op_id);
@@ -1019,8 +1046,21 @@ impl Kernel {
             }
             op_id = next_op_id;
         }
+        /*self.common_subexpression_elimination();
         self.debug();
-        todo!();
+        todo!();*/
+    }
+
+    pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
+        let mut params = vec![x];
+        while let Some(param) = params.pop() {
+            if let Op::Reduce { .. } = self.at(param) {
+                return true;
+            } else {
+                params.extend(self.ops[param].op.parameters());
+            }
+        }
+        false
     }
 
     pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
@@ -1132,8 +1172,8 @@ impl Kernel {
             );
 
             // Add Loops for the reduce
-            for &dim in &self.reduce_dims(reduce_op_id)[..n_axes] {
-                self.insert_before(loop_start, Op::Loop { len: dim });
+            for &len in &self.reduce_dims(reduce_op_id)[..n_axes] {
+                self.insert_before(loop_start, Op::Loop { len, axis: 0 });
             }
 
             // Add reduction operation, load from acc, accumulate, store to acc
@@ -1391,9 +1431,9 @@ impl Kernel {
                                     }
                                     shape.push(len);
                                 }
-                                Op::Loop { len: dim } => {
-                                    rws.push(dim);
-                                    shape.push(dim);
+                                Op::Loop { len, .. } => {
+                                    rws.push(len);
+                                    shape.push(len);
                                 }
                                 Op::EndLoop => {
                                     shape.pop();
@@ -2108,7 +2148,7 @@ impl Kernel {
         let mut stack = Vec::new();
         stack.push(Set::default());
         let check = |op_id, x: OpId, stack: &[Set<OpId>]| {
-            if !stack.iter().any(|vec| vec.contains(&x)) {
+            if !stack.iter().any(|set| set.contains(&x)) {
                 self.debug();
                 panic!(
                     "{op_id} {:?} uses {x} -> {:?} before declaration.",
@@ -2121,7 +2161,6 @@ impl Kernel {
         let mut prev: OpId;
         let mut dtypes: Map<OpId, DType> = Map::default();
         while !op_id.is_null() {
-            stack.last_mut().unwrap().insert(op_id);
             match *self.at(op_id) {
                 Op::ConstView(ref x) => {
                     dtypes.insert(op_id, x.0.dtype());
@@ -2143,7 +2182,14 @@ impl Kernel {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtype);
                 }
-                Op::Reduce { x, .. } | Op::Unary { x, .. } => {
+                Op::Reduce { x, .. } => {
+                    check(op_id, x, &stack);
+                    dtypes.insert(op_id, dtypes[&x]);
+                    if stack.len() > 1 {
+                        stack.pop();
+                    }
+                }
+                Op::Unary { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
@@ -2223,6 +2269,7 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&x]);
                 }
             }
+            stack.last_mut().unwrap().insert(op_id);
             prev = op_id;
             op_id = self.ops[op_id].next;
             if !op_id.is_null() && self.ops[op_id].prev != prev {

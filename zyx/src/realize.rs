@@ -12,7 +12,7 @@ use crate::{
     prog_bar::ProgressBar,
     runtime::{Pool, Runtime, deallocate_tensors},
     schedule::schedule,
-    shape::{Dim, UAxis},
+    shape::Dim,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
@@ -242,7 +242,7 @@ impl<'a> Kernelizer<'a> {
     fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add permute op that swaps indices in IR
         let (kid, op_id) = self.duplicate_or_store(x, None)?;
-        let axes: Vec<UAxis> = self.graph.axes(nid).into();
+        let axes: Vec<_> = self.graph.axes(nid).into();
         let kernel = &mut self.kernels[kid];
 
         let shape = self.graph.shape(nid).into();
@@ -577,7 +577,12 @@ impl<'a> Kernelizer<'a> {
         // Check if best optimization already found
         if optimizer.fully_optimized() || (self.search_config.iterations == 0 && !optimizer.is_new()) {
             // done optimizing, loaded best from disk
-            let opt_res = optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), device.info(), self.debug.ir());
+            let opt_res = optimizer.apply_optimization(
+                &mut kernel,
+                optimizer.best_optimization(),
+                device.info(),
+                self.debug.ir(),
+            );
             debug_assert!(opt_res);
             let program_id = device.compile(&kernel, self.debug.asm())?;
             if self.debug.kmd() {
@@ -726,7 +731,12 @@ impl<'a> Kernelizer<'a> {
                 );
                 if self.debug.asm() {
                     assert_eq!(
-                        optimizer.apply_optimization(&mut kernel, optimizer.best_optimization(), device.info(), self.debug.ir()),
+                        optimizer.apply_optimization(
+                            &mut kernel,
+                            optimizer.best_optimization(),
+                            device.info(),
+                            self.debug.ir()
+                        ),
                         true
                     );
                     let program_id = device.compile(&kernel, true)?;

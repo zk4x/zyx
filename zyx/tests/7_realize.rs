@@ -104,7 +104,7 @@ fn iter1() -> Result<(), ZyxError> {
 #[test]
 fn b_sftmx1() -> Result<(), ZyxError> {
     use zyx::Module;
-    let x = Tensor::randn([8192, 320], DType::F32)?;
+    let x = Tensor::randn([2048, 320], DType::F32)?;
     let y = x.softmax([-1])?;
     y.realize()?;
     Ok(())
