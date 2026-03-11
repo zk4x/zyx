@@ -365,7 +365,7 @@ impl<'a> Kernelizer<'a> {
         self.visited.insert(nid, (kid, op_id));
     }
 
-    fn add_binary_op(&mut self, nid: TensorId, x: TensorId, y: TensorId, bop: BOp) -> Result<(), ZyxError> {
+    fn add_binary_op(&mut self, nid: TensorId, mut x: TensorId, mut y: TensorId, bop: BOp) -> Result<(), ZyxError> {
         let (mut kid, mut op_id) = self.visited[&x];
         let (mut kidy, mut op_idy) = self.visited[&y];
 
@@ -428,11 +428,11 @@ impl<'a> Kernelizer<'a> {
                 (false, false) => {}
             }
 
-            /*if !kid_stores && kidy_stores {
-                //println!("Swap x, y");
-                (kid, kidy) = (kidy, kid);
-                (op_id, op_idy) = (op_idy, op_id);
-            }*/
+            if self.kernels[kidy].is_reduce() && !self.kernels[kid].is_reduce() {
+                std::mem::swap(&mut kid, &mut kidy);
+                std::mem::swap(&mut op_id, &mut op_idy);
+                std::mem::swap(&mut x, &mut y);
+            }
 
             self.kernels[kidy].remove_first_output(y);
             let Kernel { outputs, loads, stores, ops, head, tail: _ } = unsafe { self.kernels.remove_and_return(kidy) };

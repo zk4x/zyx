@@ -89,7 +89,7 @@ pub enum Op {
     Store { dst: OpId, x: OpId, index: OpId, vlen: u8 },
     Load { src: OpId, index: OpId, vlen: u8 },
     Index { len: Dim, scope: Scope, axis: u32 },
-    Loop { len: Dim },
+    Loop { len: Dim, axis: u32 },
     EndLoop,
     // fused multiply add
     Mad { x: OpId, y: OpId, z: OpId },
@@ -521,11 +521,11 @@ impl Kernel {
                         len - 1
                     );
                 }
-                Op::Loop { len } => {
+                Op::Loop { len, axis } => {
                     dtypes.insert(op_id, IDX_T);
                     ids.insert(op_id, (0, len - 1));
                     println!(
-                        "{op_id:>5}{indent}{BLUE}LOOP{RESET} {IDX_T} len={len}    0..={}",
+                        "{op_id:>5}{indent}{BLUE}LOOP{RESET}_{axis} {IDX_T} len={len}    0..={}",
                         len - 1
                     );
                     indent += "  ";
@@ -906,12 +906,13 @@ impl Kernel {
 
     /// Apply  movement ops on views. Later this will directly generate indices
     pub fn unfold_movement_ops(&mut self) {
-        #[derive(Debug, Clone, Copy)]
+        self.debug();
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Axis {
             Index,
             Loop,
         }
-        let mut running_dims: Map<OpId, (u32, OpId, Vec<(Dim, Axis)>)> = Map::default();
+        let mut running_dims: Map<OpId, Vec<(u32, OpId, Dim, Axis)>> = Map::default();
         let mut order = 0;
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -922,38 +923,94 @@ impl Kernel {
                     let shape = view.shape();
                     let mut rdims = Vec::new();
                     for &dim in &shape {
-                        rdims.push((dim, Axis::Index));
+                        rdims.push((order, op_id, dim, Axis::Index));
                     }
-                    running_dims.insert(op_id, (order, op_id, rdims));
+                    running_dims.insert(op_id, rdims);
                 }
                 Op::LoadView(ref x) => {
                     let view = &x.1;
                     let shape = view.shape();
                     let mut rdims = Vec::new();
                     for &dim in &shape {
-                        rdims.push((dim, Axis::Index));
+                        rdims.push((order, op_id, dim, Axis::Index));
                     }
-                    running_dims.insert(op_id, (order, op_id, rdims));
+                    running_dims.insert(op_id, rdims);
                 }
                 Op::Move { x, ref mop } => {
                     running_dims.insert(op_id, running_dims[&x].clone());
-                    let (_, _, rdims) = running_dims.get_mut(&op_id).unwrap();
+                    let rdims = running_dims.get_mut(&op_id).unwrap();
                     let mop = mop.clone();
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
+                            let preceded_by_reduce = self.is_preceded_by_reduce(x);
+
+                            let &(rorder, rid, _, _) = rdims.iter().min_by_key(|x| x.0).unwrap();
+
                             rdims.clear();
-                            for &len in shape {
-                                if len == 1 && self.is_preceded_by_reduce(x) {
-                                    rdims.push((len, Axis::Loop));
-                                } else {
-                                    rdims.push((len, Axis::Index));
-                                };
+                            for &d in shape {
+                                if d == 1 {
+                                    if preceded_by_reduce {
+                                        rdims.push((rorder, rid, d, Axis::Index));
+                                    } else {
+                                        rdims.push((rorder, rid, d, Axis::Index));
+                                    }
+                                }
                             }
+
+                            use std::cmp::Ordering;
+                            let mut o_range = 0..1;
+                            let mut n_range = 0..1;
+
+                            let o_shape: Vec<Dim> = rdims.iter().map(|rd| rd.2).collect();
+                            let mut nrdims = Vec::new();
+
+                            loop {
+                                let o_prod: Dim = o_shape[o_range.clone()].iter().product();
+                                let n_prod: Dim = n_shape[o_range.clone()].iter().product();
+                                match o_prod.cmp(&n_prod) {
+                                    Ordering::Less => {
+                                        o_range.end += 1;
+                                    }
+                                    Ordering::Greater => {
+                                        n_range.end += 1;
+                                    }
+                                    Ordering::Equal => {
+                                        if o_range.end == o_shape.len() {
+                                            n_range.end = n_shape.len();
+                                        }
+                                        if n_range.end == n_shape.len() {
+                                            o_range.end = o_shape.len();
+                                        }
+
+                                        //if preceded_by_reduce {
+                                        //rdims.push((order, op_id, 1, Axis::Index));
+                                        //} else {
+                                        if rdims[o_range.clone()].iter().any(|x| x.3 == Axis::Loop) {
+                                            todo!();
+                                        } else {
+                                            let &(rorder, rid, _, _) =
+                                                rdims[o_range.clone()].iter().min_by_key(|x| x.0).unwrap();
+                                            for &d in &n_shape[n_range.clone()] {
+                                                nrdims.push((rorder, rid, d, Axis::Index));
+                                            }
+                                        }
+                                        //}
+
+                                        if o_range.end == o_shape.len() && n_range.end == n_shape.len() {
+                                            break;
+                                        }
+
+                                        o_range = o_range.end..o_range.end + 1;
+                                        n_range = n_range.end..o_range.end + 1;
+                                    }
+                                }
+                            }
+                            *rdims = nrdims;
                         }
                         MoveOp::Expand { shape } => {
                             debug_assert_eq!(rdims.len(), shape.len());
                             for (rdim, &len) in rdims.iter_mut().zip(shape) {
-                                rdim.0 = len;
+                                rdim.2 = len;
                             }
                         }
                         MoveOp::Permute { axes, .. } => {
@@ -963,7 +1020,7 @@ impl Kernel {
                         MoveOp::Pad { padding, .. } => {
                             debug_assert_eq!(rdims.len(), padding.len());
                             for (rdim, &(lp, rp)) in rdims.iter_mut().zip(padding) {
-                                rdim.0 = (rdim.0 as i64 + lp as i64 + rp as i64) as Dim;
+                                rdim.2 = (rdim.2 as i64 + lp as i64 + rp as i64) as Dim;
                             }
                         }
                     }
@@ -971,10 +1028,12 @@ impl Kernel {
                 }
                 Op::Reduce { n_axes, x, .. } => {
                     running_dims.insert(op_id, running_dims[&x].clone());
-                    let (_, before_id, rdims) = running_dims.get_mut(&op_id).unwrap();
+                    let rdims = running_dims.get_mut(&op_id).unwrap();
+                    let mut axis = rdims.len() as u32;
                     for _ in 0..n_axes {
-                        let (len, _) = rdims.pop().unwrap();
-                        self.insert_before(*before_id, Op::Loop { len });
+                        axis -= 1;
+                        let rdim = rdims.pop().unwrap();
+                        self.insert_before(rdim.1, Op::Loop { len: rdim.2, axis });
                     }
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } | Op::StoreView { src: x, .. } => {
@@ -984,31 +1043,27 @@ impl Kernel {
                     //println!("{x} {y}, {:?} {:?}", running_dims[&x], running_dims[&y]);
                     // If running dims from x and y use indices vs loops, only loops can remain in the running_dims
                     // and indices must be destoyed.
-                    let (order_x, before_id_x, ref rdims_x) = running_dims[&x];
-                    let (order_y, before_id_y, ref rdims_y) = running_dims[&y];
+                    let rdims_x = &running_dims[&x];
+                    let rdims_y = &running_dims[&y];
 
                     let mut rdims = Vec::new();
                     debug_assert_eq!(rdims_x.len(), rdims_y.len());
                     for (&rdx, rdy) in rdims_x.iter().zip(rdims_y) {
-                        debug_assert_eq!(rdx.0, rdy.0);
-                        match (rdx.1, rdy.1) {
+                        debug_assert_eq!(rdx.2, rdy.2);
+                        match (rdx.3, rdy.3) {
                             (Axis::Index, Axis::Index) | (Axis::Loop, Axis::Loop) => {
-                                rdims.push((rdx.0, rdx.1));
+                                rdims.push((rdx.0, rdx.1, rdx.2, rdx.3));
                             }
                             (Axis::Index, Axis::Loop) => {
-                                rdims.push((rdy.0, rdy.1));
+                                rdims.push((rdy.0, rdy.1, rdy.2, rdy.3));
                             }
                             (Axis::Loop, Axis::Index) => {
-                                rdims.push((rdx.0, rdx.1));
+                                rdims.push((rdx.0, rdx.1, rdx.2, rdx.3));
                             }
                         }
                     }
 
-                    if order_x < order_y {
-                        running_dims.insert(op_id, (order_x, before_id_x, rdims));
-                    } else {
-                        running_dims.insert(op_id, (order_y, before_id_y, rdims));
-                    }
+                    running_dims.insert(op_id, rdims);
                 }
                 _ => {}
             }
@@ -1016,15 +1071,15 @@ impl Kernel {
         }
 
         // Add indices or loops as needed
-        let (_, before_id, ref rdims) = running_dims[&self.tail];
+        let rdims = &running_dims[&self.tail];
         let mut axis = 0;
-        for &(len, raxis) in rdims {
+        for &(_, before_id, len, raxis) in rdims {
             match raxis {
                 Axis::Index => {
                     self.insert_before(before_id, Op::Index { len, scope: Scope::Global, axis });
                 }
                 Axis::Loop => {
-                    self.insert_before(before_id, Op::Loop { len });
+                    self.insert_before(before_id, Op::Loop { len, axis });
                 }
             }
             axis += 1;
@@ -1165,7 +1220,7 @@ impl Kernel {
 
             // Add Loops for the reduce
             for &len in &self.reduce_dims(reduce_op_id)[..n_axes] {
-                self.insert_before(loop_start, Op::Loop { len });
+                self.insert_before(loop_start, Op::Loop { len, axis: 0 });
             }
 
             // Add reduction operation, load from acc, accumulate, store to acc
