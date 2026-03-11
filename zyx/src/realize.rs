@@ -428,10 +428,12 @@ impl<'a> Kernelizer<'a> {
                 (false, false) => {}
             }
 
+            let mut swapped_xy = false;
             if self.kernels[kidy].is_reduce() && !self.kernels[kid].is_reduce() {
                 std::mem::swap(&mut kid, &mut kidy);
                 std::mem::swap(&mut op_id, &mut op_idy);
                 std::mem::swap(&mut x, &mut y);
+                swapped_xy = true;
             }
 
             self.kernels[kidy].remove_first_output(y);
@@ -468,7 +470,12 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].outputs.extend(outputs);
             self.kernels[kid].outputs.extend(vec![nid; self.rcs[&nid] as usize]);
 
-            self.kernels[kid].push_back(Op::Binary { x: op_id, y: y_ops_map[&op_idy], bop })
+            let op = if swapped_xy {
+                Op::Binary { x: y_ops_map[&op_idy], y: op_id, bop }
+            } else {
+                Op::Binary { x: op_id, y: y_ops_map[&op_idy], bop }
+            };
+            self.kernels[kid].push_back(op)
         };
 
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -923,10 +930,7 @@ impl Runtime {
             if kernelizer.kernels.len() > KMKernelId(0) {
                 println!("realized_nodes={:?}", kernelizer.realized_nodes);
                 println!("Unrealized kernels:");
-                for (kid, kernel) in kernelizer.kernels.iter() {
-                    println!("loads={:?}", kernel.loads);
-                    println!("stores={:?}", kernel.stores);
-                    println!("{kid:?}, outputs={:?}", kernel.outputs);
+                for kernel in kernelizer.kernels.values() {
                     kernel.debug();
                     println!();
                 }

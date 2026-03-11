@@ -156,6 +156,31 @@ impl DType {
         }
     }
 
+    /// Get initial constant for initializing accumulator for reduction op
+    #[must_use]
+    pub(super) fn init_for_rop(self, rop: BOp) -> Constant {
+        match rop {
+            BOp::Add => self.zero_constant(),
+            BOp::Sub => todo!(),
+            BOp::Mul => self.one_constant(),
+            BOp::Div => todo!(),
+            BOp::Pow => todo!(),
+            BOp::Mod => todo!(),
+            BOp::Cmplt => todo!(),
+            BOp::Cmpgt => todo!(),
+            BOp::Max => self.min_constant(),
+            BOp::Or => todo!(),
+            BOp::And => todo!(),
+            BOp::BitXor => todo!(),
+            BOp::BitOr => todo!(),
+            BOp::BitAnd => todo!(),
+            BOp::BitShiftLeft => todo!(),
+            BOp::BitShiftRight => todo!(),
+            BOp::NotEq => todo!(),
+            BOp::Eq => todo!(),
+        }
+    }
+
     #[must_use]
     pub(super) const fn zero_constant(self) -> Constant {
         match self {

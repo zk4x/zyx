@@ -32,8 +32,6 @@ impl WorkSizeOpt {
             res
         }
 
-        kernel.debug();
-
         let mut gws = kernel.shape();
         // If gws > dev_info.max_global_work_dims.len(), then we join the starting dimensions
         while gws.len() > dev_info.max_global_work_dims.len() {
@@ -110,6 +108,8 @@ impl WorkSizeOpt {
             shape.push(lws[i]);
             shape.push(rws[i]);
         }
+
+        //println!("gws={gws:?}, lws={lws:?}, rws={rws:?}");
 
         let n = kernel.shape().len();
         kernel.apply_movement(|view| view.reshape(0..n, &shape));

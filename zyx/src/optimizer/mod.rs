@@ -64,6 +64,7 @@ impl Optimizer {
 
         // TODO when view is removed, unfold movement ops will directly generate indices
         kernel.unfold_movement_ops();
+        kernel.unfold_reduces();
 
         if !self.work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
             return false;
@@ -73,31 +74,8 @@ impl Optimizer {
             return false;
         }
 
-        kernel.unfold_reduces();
-
         // TODO move this functionality into unfold movement ops
         kernel.unfold_views();
-
-        // This is only needed for debugging
-        /*let mut temp_kernel = kernel.clone();
-        for _i in 0..100 {
-            kernel.move_constants_to_beginning();
-            kernel.constant_folding();
-            kernel.common_subexpression_elimination();
-            kernel.swap_commutative();
-            kernel.delete_empty_loops();
-            kernel.dead_code_elimination();
-
-            if *kernel == temp_kernel {
-                break;
-            }
-            temp_kernel = kernel.clone();
-            #[cfg(debug_assertions)]
-            if _i == 99 {
-                kernel.debug();
-                panic!("YO what are you doing bro.");
-            }
-        }*/
 
         // WARNING. We cannot do LICM before loop jam for now
         // Unroll and jam for all loops
@@ -169,6 +147,7 @@ impl Optimizer {
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
         let mut kernel = kernel.clone();
         kernel.unfold_movement_ops();
+        kernel.unfold_reduces();
         let (work_size_opt, work_size_opt_max_idx, work_size_opt_defaults) = WorkSizeOpt::new(&kernel, dev_info);
         let (loop_unroll_opt, loop_unroll_opt_max_idx, loop_unroll_opt_defaults) = LoopUnrollOpt::new(&kernel);
         let (loop_jam_opt, loop_jam_opt_max_idx, loop_jam_opt_defaults) = LoopJamOpt::new(&kernel, dev_info);

@@ -744,12 +744,13 @@ impl Kernel {
     }
 
     pub fn shape(&self) -> Vec<Dim> {
-        if self.ops.values().any(|x| matches!(x.op, Op::Loop { .. })) {
+        if self.ops.values().any(|x| matches!(x.op, Op::Index { .. })) {
             return self
                 .ops
                 .values()
                 .filter_map(|x| {
-                    if let Op::Index { len: dim, .. } = x.op {
+                    // TODO include both global and local, order by axis
+                    if let Op::Index { len: dim, scope, axis } = x.op {
                         Some(dim)
                     } else {
                         None
@@ -912,7 +913,6 @@ impl Kernel {
 
     /// Apply  movement ops on views. Later this will directly generate indices
     pub fn unfold_movement_ops(&mut self) {
-        self.debug();
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Axis {
             Index,
@@ -953,7 +953,7 @@ impl Kernel {
                             rdims.clear();
                             for &d in shape {
                                 if d == 1 && preceded_by_reduce {
-                                    println!("Inserting loop at op_id={op_id}");
+                                    //println!("Inserting loop at op_id={op_id}");
                                     rdims.push((rorder, op_id, d, Axis::Loop));
                                 } else {
                                     rdims.push((rorder, rid, d, Axis::Index));
@@ -986,7 +986,7 @@ impl Kernel {
                     for _ in 0..n_axes {
                         axis -= 1;
                         let (_, before_id, len, _) = rdims.pop().unwrap();
-                        println!("reduce before_id={before_id}");
+                        //println!("reduce before_id={before_id}");
                         self.insert_before(before_id, Op::Loop { len, axis });
                     }
                 }
@@ -1028,7 +1028,7 @@ impl Kernel {
         let rdims = &running_dims[&self.tail];
         let mut axis = 0;
         for &(_, before_id, len, raxis) in rdims {
-            println!("before_id={before_id}, raxis={raxis:?}");
+            //println!("before_id={before_id}, raxis={raxis:?}");
             match raxis {
                 Axis::Index => {
                     self.insert_before(self.head, Op::Index { len, scope: Scope::Global, axis });
@@ -1051,9 +1051,8 @@ impl Kernel {
             }
             op_id = next_op_id;
         }
+        #[cfg(debug_assertions)]
         self.verify();
-        self.debug();
-        todo!();
     }
 
     pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
@@ -1105,99 +1104,75 @@ impl Kernel {
         }
     }
 
-    /// Find all Reduce ops and put them in a Loop block
-    /// Add define ops and add reduce operation as BOp::Add or BOp::Max
     pub fn unfold_reduces(&mut self) {
-        let mut reduce_op_ids: Vec<OpId> = self
-            .iter_unordered()
-            .filter_map(|(id, op)| {
-                if matches!(op, Op::Reduce { .. }) {
-                    Some(id)
-                } else {
-                    None
+        let mut dtypes = Map::default();
+        let mut loops = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::ConstView(ref x) => {
+                    dtypes.insert(op_id, x.0.dtype());
                 }
-            })
-            .collect();
-
-        while let Some(reduce_op_id) = reduce_op_ids.pop() {
-            let Op::Reduce { x, rop, n_axes } = self.ops[reduce_op_id].op else { unreachable!() };
-
-            let mut reduce_loop_ops_set = Set::default();
-            let mut params = vec![x];
-            let mut acc_dtype = None;
-            while let Some(param) = params.pop() {
-                if reduce_loop_ops_set.insert(param) {
-                    params.extend(self.at(param).parameters());
-                    if acc_dtype.is_none() {
-                        match self.at(param) {
-                            &Op::Define { dtype, .. } => acc_dtype = Some(dtype),
-                            Op::ConstView(x) => acc_dtype = Some(x.0.dtype()),
-                            Op::LoadView(x) => acc_dtype = Some(x.0),
-                            &Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
-                            _ => {}
-                        }
+                Op::LoadView(ref x) => {
+                    dtypes.insert(op_id, x.0);
+                }
+                Op::Define { dtype, .. } => {
+                    dtypes.insert(op_id, dtype);
+                }
+                Op::Const(constant) => {
+                    dtypes.insert(op_id, constant.dtype());
+                }
+                Op::Load { src, .. } => {
+                    dtypes.insert(op_id, dtypes[&src]);
+                }
+                Op::Cast { dtype, .. } => {
+                    dtypes.insert(op_id, dtype);
+                }
+                Op::Unary { x, .. } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
+                Op::Binary { x, .. } => {
+                    dtypes.insert(op_id, dtypes[&x]);
+                }
+                Op::Loop { .. } => {
+                    loops.push(op_id);
+                }
+                Op::EndLoop => {
+                    loops.pop();
+                }
+                Op::Reduce { x, rop, n_axes } => {
+                    let dtype = dtypes[&x];
+                    dtypes.insert(op_id, dtype);
+                    let loop_id = loops[loops.len() - n_axes];
+                    let Op::Loop { .. } = self.ops[loop_id].op else { unreachable!() };
+                    let index = self.insert_before(loop_id, Op::Const(Constant::idx(0)));
+                    let acc_init_const = self.insert_before(loop_id, Op::Const(dtype.init_for_rop(rop)));
+                    let acc =
+                        self.insert_before(loop_id, Op::Define { dtype, scope: Scope::Register, ro: false, len: 1 });
+                    self.insert_before(loop_id, Op::Store { dst: acc, x: acc_init_const, index, vlen: 1 });
+                    let acc_load = self.insert_before(op_id, Op::Load { src: acc, index, vlen: 1 });
+                    let acc_op = self.insert_before(op_id, Op::Binary { x, y: acc_load, bop: rop });
+                    self.insert_before(op_id, Op::Store { dst: acc, x: acc_op, index, vlen: 1 });
+                    for _ in 0..n_axes {
+                        self.insert_before(op_id, Op::EndLoop);
+                        loops.pop();
                     }
+                    self.ops[op_id].op = Op::Load { src: acc, index, vlen: 1 };
                 }
+                Op::StoreView { .. } | Op::Index { .. } | Op::Store { .. } => {}
+                Op::Move { .. } => unreachable!("Can't unfold reduces before unfolding movement ops"),
+                _ => todo!(),
             }
-            let acc_dtype = acc_dtype.unwrap();
-            let mut op_id = self.head;
-            let mut loop_start = OpId::NULL;
-            while !op_id.is_null() {
-                if reduce_loop_ops_set.contains(&op_id) {
-                    loop_start = op_id;
-                    break;
-                }
-                op_id = self.next_op(op_id);
-            }
-
-            // Add const zero
-            let const_zero = self.insert_before(loop_start, Op::Const(Constant::idx(0)));
-
-            // Add accumulator
-            let acc_init_id = self.insert_before(
-                loop_start,
-                Op::Const(match rop {
-                    BOp::Add => acc_dtype.zero_constant(),
-                    BOp::Max => acc_dtype.min_constant(),
-                    BOp::Mul => acc_dtype.one_constant(),
-                    _ => unreachable!(),
-                }),
-            );
-            let acc = self.insert_before(
-                loop_start,
-                Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 },
-            );
-
-            // Zero the accumulator
-            self.insert_before(
-                loop_start,
-                Op::Store { dst: acc, x: acc_init_id, index: const_zero, vlen: 1 },
-            );
-
-            // Add Loops for the reduce
-            for &len in &self.reduce_dims(reduce_op_id)[..n_axes] {
-                self.insert_before(loop_start, Op::Loop { len, axis: 0 });
-            }
-
-            // Add reduction operation, load from acc, accumulate, store to acc
-            let load_acc = self.insert_before(reduce_op_id, Op::Load { src: acc, index: const_zero, vlen: 1 });
-            let bin_acc = self.insert_before(reduce_op_id, Op::Binary { x, y: load_acc, bop: rop });
-            self.insert_before(
-                reduce_op_id,
-                Op::Store { dst: acc, x: bin_acc, index: const_zero, vlen: 1 },
-            );
-
-            // Close the reduce loop
-            for _ in 0..n_axes {
-                self.insert_before(reduce_op_id, Op::EndLoop);
-            }
-
-            // Replace old reduce op with the acc load op
-            self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, vlen: 1 };
-
-            #[cfg(debug_assertions)]
-            self.verify();
+            op_id = self.next_op(op_id);
         }
+
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            op_id = self.next_op(op_id);
+        }
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     fn new_op(&mut self, op_iter: &mut OpId, op: Op) -> OpId {
