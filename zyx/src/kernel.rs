@@ -373,6 +373,7 @@ impl Kernel {
         let mut ids: Map<OpId, (Dim, Dim)> = Map::default();
         let mut dtypes: Map<OpId, DType> = Map::default();
         let mut op_id = self.head;
+        let mut has_loops = false;
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::ConstView(ref x) => {
@@ -393,6 +394,10 @@ impl Kernel {
                 }
                 Op::Reduce { x, rop, n_axes, .. } => {
                     dtypes.insert(op_id, dtypes[&x]);
+                    if has_loops {
+                        indent.pop();
+                        indent.pop();
+                    }
                     println!(
                         "{op_id:>5}{indent}{RED}REDUCE{RESET} {} {x}, dims={n_axes:?} {}",
                         match rop {
@@ -522,6 +527,7 @@ impl Kernel {
                     );
                 }
                 Op::Loop { len, axis } => {
+                    has_loops = true;
                     dtypes.insert(op_id, IDX_T);
                     ids.insert(op_id, (0, len - 1));
                     println!(
@@ -943,69 +949,16 @@ impl Kernel {
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
                             let preceded_by_reduce = self.is_preceded_by_reduce(x);
-
                             let &(rorder, rid, _, _) = rdims.iter().min_by_key(|x| x.0).unwrap();
-
                             rdims.clear();
                             for &d in shape {
-                                if d == 1 {
-                                    if preceded_by_reduce {
-                                        rdims.push((rorder, rid, d, Axis::Index));
-                                    } else {
-                                        rdims.push((rorder, rid, d, Axis::Index));
-                                    }
+                                if d == 1 && preceded_by_reduce {
+                                    println!("Inserting loop at op_id={op_id}");
+                                    rdims.push((rorder, op_id, d, Axis::Loop));
+                                } else {
+                                    rdims.push((rorder, rid, d, Axis::Index));
                                 }
                             }
-
-                            use std::cmp::Ordering;
-                            let mut o_range = 0..1;
-                            let mut n_range = 0..1;
-
-                            let o_shape: Vec<Dim> = rdims.iter().map(|rd| rd.2).collect();
-                            let mut nrdims = Vec::new();
-
-                            loop {
-                                let o_prod: Dim = o_shape[o_range.clone()].iter().product();
-                                let n_prod: Dim = n_shape[o_range.clone()].iter().product();
-                                match o_prod.cmp(&n_prod) {
-                                    Ordering::Less => {
-                                        o_range.end += 1;
-                                    }
-                                    Ordering::Greater => {
-                                        n_range.end += 1;
-                                    }
-                                    Ordering::Equal => {
-                                        if o_range.end == o_shape.len() {
-                                            n_range.end = n_shape.len();
-                                        }
-                                        if n_range.end == n_shape.len() {
-                                            o_range.end = o_shape.len();
-                                        }
-
-                                        //if preceded_by_reduce {
-                                        //rdims.push((order, op_id, 1, Axis::Index));
-                                        //} else {
-                                        if rdims[o_range.clone()].iter().any(|x| x.3 == Axis::Loop) {
-                                            todo!();
-                                        } else {
-                                            let &(rorder, rid, _, _) =
-                                                rdims[o_range.clone()].iter().min_by_key(|x| x.0).unwrap();
-                                            for &d in &n_shape[n_range.clone()] {
-                                                nrdims.push((rorder, rid, d, Axis::Index));
-                                            }
-                                        }
-                                        //}
-
-                                        if o_range.end == o_shape.len() && n_range.end == n_shape.len() {
-                                            break;
-                                        }
-
-                                        o_range = o_range.end..o_range.end + 1;
-                                        n_range = n_range.end..o_range.end + 1;
-                                    }
-                                }
-                            }
-                            *rdims = nrdims;
                         }
                         MoveOp::Expand { shape } => {
                             debug_assert_eq!(rdims.len(), shape.len());
@@ -1032,8 +985,9 @@ impl Kernel {
                     let mut axis = rdims.len() as u32;
                     for _ in 0..n_axes {
                         axis -= 1;
-                        let rdim = rdims.pop().unwrap();
-                        self.insert_before(rdim.1, Op::Loop { len: rdim.2, axis });
+                        let (_, before_id, len, _) = rdims.pop().unwrap();
+                        println!("reduce before_id={before_id}");
+                        self.insert_before(before_id, Op::Loop { len, axis });
                     }
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } | Op::StoreView { src: x, .. } => {
@@ -1074,12 +1028,14 @@ impl Kernel {
         let rdims = &running_dims[&self.tail];
         let mut axis = 0;
         for &(_, before_id, len, raxis) in rdims {
+            println!("before_id={before_id}, raxis={raxis:?}");
             match raxis {
                 Axis::Index => {
-                    self.insert_before(before_id, Op::Index { len, scope: Scope::Global, axis });
+                    self.insert_before(self.head, Op::Index { len, scope: Scope::Global, axis });
                 }
                 Axis::Loop => {
                     self.insert_before(before_id, Op::Loop { len, axis });
+                    self.insert_after(self.tail, Op::EndLoop);
                 }
             }
             axis += 1;
@@ -1095,7 +1051,7 @@ impl Kernel {
             }
             op_id = next_op_id;
         }
-        self.common_subexpression_elimination();
+        self.verify();
         self.debug();
         todo!();
     }
