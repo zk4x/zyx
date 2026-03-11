@@ -32,6 +32,8 @@ impl WorkSizeOpt {
             res
         }
 
+        kernel.debug();
+
         let mut gws = kernel.shape();
         // If gws > dev_info.max_global_work_dims.len(), then we join the starting dimensions
         while gws.len() > dev_info.max_global_work_dims.len() {

@@ -167,10 +167,12 @@ impl Optimizer {
     }
 
     pub fn new(kernel: &Kernel, dev_info: &DeviceInfo) -> Self {
-        let (work_size_opt, work_size_opt_max_idx, work_size_opt_defaults) = WorkSizeOpt::new(kernel, dev_info);
-        let (loop_unroll_opt, loop_unroll_opt_max_idx, loop_unroll_opt_defaults) = LoopUnrollOpt::new(kernel);
-        let (loop_jam_opt, loop_jam_opt_max_idx, loop_jam_opt_defaults) = LoopJamOpt::new(kernel, dev_info);
-        let (loop_split_opt, loop_split_opt_max_idx, loop_split_opt_defaults) = LoopSplitOpt::new(kernel);
+        let mut kernel = kernel.clone();
+        kernel.unfold_movement_ops();
+        let (work_size_opt, work_size_opt_max_idx, work_size_opt_defaults) = WorkSizeOpt::new(&kernel, dev_info);
+        let (loop_unroll_opt, loop_unroll_opt_max_idx, loop_unroll_opt_defaults) = LoopUnrollOpt::new(&kernel);
+        let (loop_jam_opt, loop_jam_opt_max_idx, loop_jam_opt_defaults) = LoopJamOpt::new(&kernel, dev_info);
+        let (loop_split_opt, loop_split_opt_max_idx, loop_split_opt_defaults) = LoopSplitOpt::new(&kernel);
         let max_indices = [
             work_size_opt_max_idx,
             loop_unroll_opt_max_idx,

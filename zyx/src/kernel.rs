@@ -906,31 +906,34 @@ impl Kernel {
 
     /// Apply  movement ops on views. Later this will directly generate indices
     pub fn unfold_movement_ops(&mut self) {
-        let mut running_dims: Map<OpId, Vec<OpId>> = Map::default();
+        #[derive(Debug, Clone, Copy)]
+        enum Axis {
+            Original,
+            Expanded,
+        }
+        let mut running_dims: Map<OpId, (u32, Vec<(Dim, OpId, Axis)>)> = Map::default();
+        let mut order = 0;
         let mut op_id = self.head;
         while !op_id.is_null() {
+            order += 1;
             match self.ops[op_id].op {
                 Op::ConstView(ref x) => {
-                    running_dims.insert(op_id, Vec::new());
                     let view = &x.1;
                     let shape = view.shape();
-                    let mut axis = 0;
-                    for &len in &shape {
-                        let idx_id = self.insert_before(op_id, Op::Index { len, scope: Scope::Global, axis });
-                        running_dims.get_mut(&op_id).unwrap().push(idx_id);
-                        axis += 1;
+                    let mut rdims = Vec::new();
+                    for &dim in &shape {
+                        rdims.push((dim, op_id, Axis::Original));
                     }
+                    running_dims.insert(op_id, (order, rdims));
                 }
                 Op::LoadView(ref x) => {
-                    running_dims.insert(op_id, Vec::new());
                     let view = &x.1;
                     let shape = view.shape();
-                    let mut axis = 0;
-                    for &len in &shape {
-                        let idx_id = self.insert_before(op_id, Op::Index { len, scope: Scope::Global, axis });
-                        running_dims.get_mut(&op_id).unwrap().push(idx_id);
-                        axis += 1;
+                    let mut rdims = Vec::new();
+                    for &dim in &shape {
+                        rdims.push((dim, op_id, Axis::Original));
                     }
+                    running_dims.insert(op_id, (order, rdims));
                 }
                 Op::Move { x, ref mop } => {
                     running_dims.insert(op_id, running_dims[&x].clone());
@@ -985,6 +988,8 @@ impl Kernel {
                     self.recursively_move(x, &mop, &mut Set::default(), 0);
                 }
                 Op::Reduce { n_axes, x, .. } => {
+                    // When there is a reduce, we can search for oldest op that is reduced,
+                    // then insert n_axes loops before it.
                     running_dims.insert(op_id, running_dims[&x].clone());
                     for &idx_id in &running_dims[&op_id] {
                         let &Op::Index { len, scope, axis } = &self.ops[idx_id].op else { unreachable!() };
@@ -999,8 +1004,7 @@ impl Kernel {
                     running_dims.insert(op_id, running_dims[&x].clone());
                 }
                 Op::Binary { x, y, .. } => {
-                    self.debug();
-                    println!("{x} {y}, {:?} {:?}", running_dims[&x], running_dims[&y]);
+                    //println!("{x} {y}, {:?} {:?}", running_dims[&x], running_dims[&y]);
                     // If running dims from x and y use indices vs loops, only loops can remain in the running_dims
                     // and indices must be destoyed.
                     let mut new_dims = Vec::new();
@@ -1046,8 +1050,8 @@ impl Kernel {
             }
             op_id = next_op_id;
         }
-        /*self.common_subexpression_elimination();
-        self.debug();
+        self.common_subexpression_elimination();
+        /*self.debug();
         todo!();*/
     }
 
@@ -1135,7 +1139,6 @@ impl Kernel {
                 }
             }
             let acc_dtype = acc_dtype.unwrap();
-            // Sort reduce loop ops by original order
             let mut op_id = self.head;
             let mut loop_start = OpId::NULL;
             while !op_id.is_null() {
@@ -1159,7 +1162,6 @@ impl Kernel {
                     _ => unreachable!(),
                 }),
             );
-
             let acc = self.insert_before(
                 loop_start,
                 Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 },
@@ -1640,11 +1642,13 @@ impl Kernel {
                     local_unique.retain(|(src, _), _| *src != dst);
                 }
                 op => {
-                    let local_unique = unique.last_mut().unwrap();
-                    if let Some(&old_op_id) = local_unique.get(op) {
-                        remaps.insert(op_id, old_op_id);
-                    } else {
-                        local_unique.insert(op.clone(), op_id);
+                    //let local_unique = unique.last_mut().unwrap();
+                    for local_unique in unique.iter_mut() {
+                        if let Some(&old_op_id) = local_unique.get(op) {
+                            remaps.insert(op_id, old_op_id);
+                        } else {
+                            local_unique.insert(op.clone(), op_id);
+                        }
                     }
                 }
             }
