@@ -135,7 +135,7 @@ impl WorkSizeOpt {
                 axis += 1;
             }
             for &len in rws.iter() {
-                kernel.insert_before(head, Op::Loop { len, axis: 0 });
+                kernel.insert_before(head, Op::Loop { len });
                 kernel.push_back(Op::EndLoop);
             }
         };
