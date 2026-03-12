@@ -12,7 +12,6 @@ use crate::{
     prog_bar::ProgressBar,
     runtime::{Pool, Runtime, deallocate_tensors},
     schedule::schedule,
-    shape::Dim,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
@@ -112,10 +111,10 @@ impl<'a> Kernelizer<'a> {
         self.virt_realized_nodes.contains(&nid)
     }
 
-    fn duplicate_or_store(&mut self, x: TensorId, reduce_dims: Option<Dim>) -> Result<(KMKernelId, OpId), ZyxError> {
+    /*fn duplicate_or_store(&mut self, x: TensorId, reduce_dims: Option<Dim>) -> Result<(KMKernelId, OpId), ZyxError> {
         let (mut kid, mut op_id) = self.visited[&x];
 
-        if self.kernels[kid].contains_stores() {
+        /*if self.kernels[kid].contains_stores() {
             //println!("Adding store for duplicate");
             self.add_store(x)?;
             (kid, op_id) = self.create_load_kernel(x);
@@ -136,11 +135,14 @@ impl<'a> Kernelizer<'a> {
                     }
                 }
             }
-        }
+        }*/
 
+        // If values inside reduction need to be used elsewhere, we have to duplicate
         if self.kernels[kid].outputs.len() > 1 {
             //println!("Duplicating kernel");
             //self.kernels[kid].debug();
+            //let split_reduce_dim = 1024; // Can be tuned later, or hardware based, likely needs to be MUCH higher for streaming softmax
+            //let reduce_dims_big = self.kernels[kid].reduce_dims(op_id).iter().product::<Dim>() > split_reduce_dim;
             if self.kernels[kid].is_reduce() {
                 //println!("Adding store for reduce with outputs");
                 self.add_store(x)?;
@@ -152,8 +154,9 @@ impl<'a> Kernelizer<'a> {
                 kid = self.duplicate_kernel(x, kid);
             }
         }
+
         Ok((kid, op_id))
-    }
+    }*/
 
     fn duplicate_kernel(&mut self, x: TensorId, kid: KMKernelId) -> KMKernelId {
         //println!("op_id={op_id}");
@@ -205,7 +208,8 @@ impl<'a> Kernelizer<'a> {
 
     fn add_expand_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add expand op that inserts loop in IR
-        let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
+        let (kid, op_id) = self.visited[&x];
+        //let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
@@ -222,10 +226,9 @@ impl<'a> Kernelizer<'a> {
 
     fn add_reshape_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         debug_assert!(self.visited.contains_key(&x), "Missing tensor {x} in visited.");
-        // TODO duplicate or store only if this is not mergeable.
-        // Otherwise if it is like unsqueeze or splitting two dims
-        // or fusing two dims, it does not need to be duplicated.
-        let (kid, op_id) = self.duplicate_or_store(x, None)?;
+        // TODO duplicate if it's non affine store on reduce kernel
+        let (kid, op_id) = self.visited[&x];
+        //let (kid, op_id) = self.duplicate_or_store(x, None)?;
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
@@ -241,7 +244,8 @@ impl<'a> Kernelizer<'a> {
 
     fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add permute op that swaps indices in IR
-        let (kid, op_id) = self.duplicate_or_store(x, None)?;
+        let (kid, op_id) = self.visited[&x];
+        //let (kid, op_id) = self.duplicate_or_store(x, None)?;
         let axes: Vec<_> = self.graph.axes(nid).into();
         let kernel = &mut self.kernels[kid];
 
@@ -258,7 +262,8 @@ impl<'a> Kernelizer<'a> {
 
     fn add_pad_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of duplication add pad op that adds if statement into ir (e.g. if idx < padding)
-        let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
+        let (kid, op_id) = self.visited[&x];
+        //let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
         let padding = self.graph.padding(nid).into();
         let kernel = &mut self.kernels[kid];
 
@@ -284,9 +289,25 @@ impl<'a> Kernelizer<'a> {
 
         // If the kernel has more than one output, or rc of x is more than one,
         // we have to either copy it (if it is small), or store x (if kid is big)
-        let reduce_dims_product: Dim = axes.iter().map(|&a| shape[a]).product();
-        let (kid, mut op_id) = self.duplicate_or_store(x, Some(reduce_dims_product))?;
+        //let reduce_dims_product: Dim = axes.iter().map(|&a| shape[a]).product();
+        //let (kid, mut op_id) = self.duplicate_or_store(x, Some(reduce_dims_product))?;
         //self.debug();
+        let (mut kid, mut op_id) = self.visited[&x];
+        if self.kernels[kid].outputs.len() > 1 {
+            // small reduces can be duplicated in the future
+            //let split_reduce_dim = 2048;
+            //let is_big_reduce = reduce_dims_product * self.kernels[kid].reduce_dims(op_id).iter().product::<Dim>() > split_reduce_dim;
+            let is_big_reduce = true;
+            if self.kernels[kid].is_reduce() && is_big_reduce {
+                self.add_store(x)?;
+                (kid, op_id) = self.create_load_kernel(x);
+                if self.kernels[kid].outputs.len() > 1 {
+                    kid = self.duplicate_kernel(x, kid);
+                }
+            } else {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
 
         /*for kernel in kernels.iter() {
             println!("{:?}, {}", kernel.0, kernel.1.n_outputs);
@@ -773,23 +794,6 @@ impl Runtime {
         order: &[TensorId],
         to_eval: &Set<TensorId>,
     ) -> Result<(), ZyxError> {
-        /*let rcs = if rcs.is_empty() {
-            let mut rcs = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-            for &nid in order {
-                if !realized_nodes.contains(&nid) {
-                    for nid in self.graph[nid].parameters() {
-                        rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-                    }
-                }
-            }
-            for &nid in to_eval {
-                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
-            }
-            rcs
-        } else {
-            rcs
-        };*/
-
         #[cfg(debug_assertions)]
         {
             let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());

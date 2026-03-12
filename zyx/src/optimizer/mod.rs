@@ -62,35 +62,18 @@ impl Optimizer {
             loop_split_opt_index,
         ] = optimization.into_indices(self.max_indices);
 
-        // TODO when view is removed, unfold movement ops will directly generate indices
         kernel.unfold_movement_ops();
-        kernel.unfold_reduces();
 
-        if !self.work_size_opt.apply_optimization(local_work_size_opt_index, kernel) {
+        if !self.work_size_opt.apply_optimization(local_work_size_opt_index, kernel)
+            || !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel)
+            || !self.loop_jam_opt.apply_optimization(loop_jam_opt_index, kernel) // WARNING: LICM restriction
+            || !self.loop_unrolling_opt.apply_optimization(loop_unrolling_opt_index, kernel)
+        {
             return false;
         }
-
-        if !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel) {
-            return false;
-        }
-
-        // TODO move this functionality into unfold movement ops
-        kernel.unfold_views();
-
-        // WARNING. We cannot do LICM before loop jam for now
-        // Unroll and jam for all loops
-        if !self.loop_jam_opt.apply_optimization(loop_jam_opt_index, kernel) {
-            return false;
-        }
-
-        // Unrolling for all loops
-        if !self.loop_unrolling_opt.apply_optimization(loop_unrolling_opt_index, kernel) {
-            return false;
-        };
 
         // Use tensor cores if possible
         kernel.fuse_mma(dev_info);
-
         kernel.fuse_mad();
 
         let mut temp_kernel = kernel.clone();

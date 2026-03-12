@@ -41,23 +41,24 @@
 - [ ] kernelizer
   - [x] all dim reduce
   - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
-  - [ ] improve reshape node
+  - [x] improve reshape node
     - [x] merges, splits, reshapes of non reduce axes
-    - [ ] inserting new loops to the end of the kernel
+    - [x] inserting new loops to the end of the kernel
   - [ ] improve expand node (should almost never store)
   - [ ] improve permute node (should never store)
   - [ ] improve pad node (should almost never store)
   - [ ] pad could also work even with kernels that store stuff, just pad the store view
-  - [ ] binary op improved synchronization (with dependent loads and stores)
+  - [ ] binary op improved fusion (with dependent loads and stores)
   - [x] expand reduce bug
   - [x] fix is expandable conditions
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
-    - [ ] softmax fusion test (eventually should be single kernel)
+    - [x] softmax fusion test (eventually should be single kernel)
     - [ ] just asserts that various graphs fuse into single kernel
   - [x] scheduling to multiple devices
   - [x] fix bug when running phi3, panic on min_kernel function
   - [ ] automatic sharding across devices
   - [x] automatic dropping of unneeded tensors
+  - [ ] deduplicate tensor loads
 - [ ] kernel
   - [x] default optimizations
   - [x] indexing for padded views
@@ -65,8 +66,8 @@
   - [x] common subexpression elimination
   - [x] dead store elimination
   - [x] kernel flops, memory reads, memory writes
-  - [x] global to inner loop splitting
-  - [x] inner loop splitting
+  - [ ] global to inner loop splitting
+  - [ ] inner loop splitting
   - [x] unroll and jam
   - [x] loop unrolling
     - [x] in optimizer

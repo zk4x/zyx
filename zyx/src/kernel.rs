@@ -3,7 +3,7 @@ use crate::{
     dtype::Constant,
     graph::{BOp, UOp},
     realize::KMKernelId,
-    shape::{Dim, UAxis, permute},
+    shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
@@ -911,7 +911,8 @@ impl Kernel {
         indices
     }
 
-    /// Apply  movement ops on views. Later this will directly generate indices
+    /// Apply  movement ops on views.
+    /// Generates indices on views and unfolds reduce ops.
     pub fn unfold_movement_ops(&mut self) {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Axis {
@@ -953,8 +954,7 @@ impl Kernel {
                             rdims.clear();
                             for &d in shape {
                                 if d == 1 && preceded_by_reduce {
-                                    //println!("Inserting loop at op_id={op_id}");
-                                    rdims.push((rorder, op_id, d, Axis::Loop));
+                                    rdims.push((order, op_id, d, Axis::Loop));
                                 } else {
                                     rdims.push((rorder, rid, d, Axis::Index));
                                 }
@@ -962,8 +962,31 @@ impl Kernel {
                         }
                         MoveOp::Expand { shape } => {
                             debug_assert_eq!(rdims.len(), shape.len());
+                            let preceded_by_reduce = self.is_preceded_by_reduce(x);
+                            let mut axis = 0;
                             for (rdim, &len) in rdims.iter_mut().zip(shape) {
-                                rdim.2 = len;
+                                if rdim.2 != len {
+                                    debug_assert_eq!(rdim.2, 1);
+                                    if preceded_by_reduce {
+                                        match rdim.3 {
+                                            Axis::Index => {
+                                                self.insert_before(
+                                                    rdim.1,
+                                                    Op::Index { len: 1, scope: Scope::Global, axis },
+                                                );
+                                            }
+                                            Axis::Loop => {
+                                                self.insert_before(rdim.1, Op::Loop { len: 1, axis });
+                                                self.insert_before(op_id, Op::EndLoop);
+                                            }
+                                        }
+                                        rdim.0 = order;
+                                        rdim.1 = op_id;
+                                        rdim.3 = Axis::Loop;
+                                    }
+                                    rdim.2 = len;
+                                }
+                                axis += 1;
                             }
                         }
                         MoveOp::Permute { axes, .. } => {
@@ -1006,16 +1029,29 @@ impl Kernel {
                         debug_assert_eq!(rdx.2, rdy.2);
                         match (rdx.3, rdy.3) {
                             (Axis::Index, Axis::Index) | (Axis::Loop, Axis::Loop) => {
-                                rdims.push((rdx.0, rdx.1, rdx.2, rdx.3));
+                                if rdx.0 < rdy.0 {
+                                    rdims.push((rdx.0, rdx.1, rdx.2, rdx.3));
+                                } else {
+                                    rdims.push((rdy.0, rdy.1, rdx.2, rdx.3));
+                                }
                             }
                             (Axis::Index, Axis::Loop) => {
-                                rdims.push((rdy.0, rdy.1, rdy.2, rdy.3));
+                                if rdx.0 < rdy.0 {
+                                    rdims.push((rdx.0, rdx.1, rdy.2, Axis::Loop));
+                                } else {
+                                    rdims.push((rdy.0, rdy.1, rdy.2, Axis::Loop));
+                                }
                             }
                             (Axis::Loop, Axis::Index) => {
-                                rdims.push((rdx.0, rdx.1, rdx.2, rdx.3));
+                                if rdx.0 < rdy.0 {
+                                    rdims.push((rdx.0, rdx.1, rdx.2, Axis::Loop));
+                                } else {
+                                    rdims.push((rdy.0, rdy.1, rdx.2, Axis::Loop));
+                                }
                             }
                         }
                     }
+                    println!("rdims={rdims:?}");
 
                     running_dims.insert(op_id, rdims);
                 }
@@ -1051,8 +1087,16 @@ impl Kernel {
             }
             op_id = next_op_id;
         }
+
         #[cfg(debug_assertions)]
         self.verify();
+
+        self.unfold_reduces();
+        self.debug();
+        self.unfold_views();
+        self.debug();
+
+        todo!();
     }
 
     pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
@@ -1067,6 +1111,8 @@ impl Kernel {
         false
     }
 
+    /// TODO this function likely needs to be removed and the stuff needs to be applied more directly
+    /// in unfold_movement_ops function
     pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
         if !visited.insert(op_id) {
             return;
@@ -1074,7 +1120,6 @@ impl Kernel {
         match &mut self.ops[op_id].op {
             Op::LoadView(x) => match move_op {
                 MoveOp::Reshape { shape } => {
-                    // TODO skip unsqueeze dimensions
                     x.1.reshape(0..x.1.rank() - n_reduce_axes, &shape);
                 }
                 MoveOp::Expand { shape } => x.1.expand(&shape),
@@ -1087,9 +1132,16 @@ impl Kernel {
                 MoveOp::Permute { axes, .. } => x.1.permute(&axes),
                 MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, &padding),
             },
-            &mut Op::Reduce { x, n_axes, .. } => {
-                self.recursively_move(x, move_op, visited, n_reduce_axes + n_axes);
-            }
+            &mut Op::Reduce { x, n_axes, .. } => match move_op {
+                MoveOp::Reshape { .. } => {}
+                MoveOp::Expand { .. } => {}
+                MoveOp::Permute { .. } => {
+                    self.recursively_move(x, move_op, visited, n_reduce_axes + n_axes);
+                }
+                MoveOp::Pad { .. } => {
+                    self.recursively_move(x, move_op, visited, n_reduce_axes + n_axes);
+                }
+            },
             &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
                 self.recursively_move(x, move_op, visited, n_reduce_axes);
             }
@@ -1389,86 +1441,6 @@ impl Kernel {
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
                     let mut index = self.new_op(opi, Op::Const(Constant::idx(0u64)));
-
-                    let mut gws = Vec::new();
-                    let mut lws = Vec::new();
-                    let mut rws = Vec::new();
-                    let shape: Vec<Dim> = {
-                        let mut shape = Vec::new();
-                        let mut l_op_id = self.head;
-                        while !l_op_id.is_null() {
-                            if l_op_id == op_id {
-                                break;
-                            }
-                            match *self.at(l_op_id) {
-                                Op::Index { len, scope, axis: _ } => {
-                                    match scope {
-                                        Scope::Global => gws.push(len),
-                                        Scope::Local => lws.push(len),
-                                        Scope::Register => {}
-                                    }
-                                    shape.push(len);
-                                }
-                                Op::Loop { len, .. } => {
-                                    rws.push(len);
-                                    shape.push(len);
-                                }
-                                Op::EndLoop => {
-                                    shape.pop();
-                                }
-                                _ => {}
-                            }
-                            l_op_id = self.next_op(l_op_id);
-                        }
-                        shape
-                    };
-
-                    let mut original_shape = shape.clone();
-                    match gws.len() {
-                        1 => {}
-                        2 => {
-                            original_shape[0] = gws[0];
-                            original_shape[1] = lws[0];
-                            original_shape[2] = rws[0];
-                            original_shape[3] = gws[1];
-                            original_shape[4] = lws[1];
-                            original_shape[5] = rws[1];
-                        }
-                        3 => {
-                            original_shape[0] = gws[0];
-                            original_shape[1] = lws[0];
-                            original_shape[2] = rws[0];
-                            original_shape[3] = gws[1];
-                            original_shape[4] = lws[1];
-                            original_shape[5] = rws[1];
-                            original_shape[6] = gws[2];
-                            original_shape[7] = lws[2];
-                            original_shape[8] = rws[2];
-                        }
-                        _ => unreachable!(),
-                    }
-                    let mut original_strides = Vec::new();
-                    let mut orig_stride = 1;
-                    for d in original_shape.iter().rev() {
-                        original_strides.push(orig_stride);
-                        orig_stride *= d;
-                    }
-                    original_strides.reverse();
-
-                    // This is permute order for performance, work_size.rs applies it too
-                    let (permuted_shape, permuted_strides) = match gws.len() {
-                        1 => (original_shape, original_strides),
-                        2 => (
-                            permute(&original_shape, &[0, 3, 1, 4, 2, 5]),
-                            permute(&original_strides, &[0, 3, 1, 4, 2, 5]),
-                        ),
-                        3 => (
-                            permute(&original_shape, &[0, 3, 6, 1, 4, 7, 2, 5, 8]),
-                            permute(&original_strides, &[0, 3, 6, 1, 4, 7, 2, 5, 8]),
-                        ),
-                        _ => unreachable!(),
-                    };
-                    debug_assert_eq!(permuted_shape, shape);
 
                     //println!("permuted_shape={permuted_shape:?}, permuted_strides={permuted_strides:?}");
 
