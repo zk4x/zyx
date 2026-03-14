@@ -1,5 +1,5 @@
 use crate::{
-    BLUE, CYAN, DType, GREEN, MAGENTA, Map, ORANGE, RED, RESET, Set, YELLOW,
+    BLUE, BOLD, CYAN, DType, GREEN, GREY, MAGENTA, Map, ORANGE, RED, RESET, Set, YELLOW,
     dtype::Constant,
     graph::{BOp, UOp},
     realize::KMKernelId,
@@ -10,6 +10,7 @@ use crate::{
 };
 use nanoserde::{DeBin, SerBin};
 use std::{
+    collections::BTreeMap,
     fmt::Display,
     hash::{BuildHasherDefault, Hash},
 };
@@ -183,9 +184,9 @@ impl Op {
 impl Display for Scope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Scope::Global => "GLOBAL",
-            Scope::Local => "LOCAL",
-            Scope::Register => "REG",
+            Scope::Global => "global",
+            Scope::Local => "local",
+            Scope::Register => "reg",
         })
     }
 }
@@ -370,100 +371,154 @@ impl Kernel {
         println!("outputs={:?}", self.outputs);
         //println!("Kernel shape {:?}", self.shape);
         let mut indent = String::from(" ");
-        let mut ids: Map<OpId, (Dim, Dim)> = Map::default();
+        let mut bounds: Map<OpId, (Dim, Dim)> = Map::default();
         let mut dtypes: Map<OpId, DType> = Map::default();
         let mut op_id = self.head;
         let mut has_loops = false;
+        let mut id_map = Map::default();
+        let mut max_id = 0;
         while !op_id.is_null() {
+            //println!("op_id={op_id}");
+            max_id += 1;
             match *self.at(op_id) {
                 Op::ConstView(ref x) => {
+                    id_map.insert(op_id, max_id);
                     let value = x.0;
                     let view = &x.1;
-                    dtypes.insert(op_id, value.dtype());
-                    println!("{op_id:>5}{indent}{CYAN}CONST VIEW{RESET} {value} {view}");
+                    let dtype = value.dtype();
+                    dtypes.insert(op_id, dtype);
+                    println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {CYAN}{value}{RESET} {view}");
                 }
                 Op::LoadView(ref x) => {
+                    id_map.insert(op_id, max_id);
                     let dtype = x.0;
                     let view = &x.1;
                     dtypes.insert(op_id, dtype);
-                    println!("{op_id:>5}{indent}{CYAN}LOAD VIEW{RESET} {dtype} {view}");
+                    println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {CYAN}load{RESET} {view}");
                 }
                 Op::StoreView { src, dtype, .. } => {
+                    id_map.insert(op_id, max_id);
+                    let src = id_map[&src];
                     dtypes.insert(op_id, dtype);
-                    println!("{op_id:>5}{indent}{CYAN}STORE VIEW{RESET} {src} {dtype}");
+                    println!("{indent}{CYAN}store{RESET} r{src}");
                 }
                 Op::Reduce { x, rop, n_axes, .. } => {
-                    dtypes.insert(op_id, dtypes[&x]);
+                    id_map.insert(op_id, max_id);
+                    let dtype = dtypes[&x];
+                    dtypes.insert(op_id, dtype);
+                    let x = id_map[&x];
                     if has_loops {
                         indent.pop();
                         indent.pop();
                     }
                     println!(
-                        "{op_id:>5}{indent}{RED}REDUCE{RESET} {} {x}, dims={n_axes:?} {}",
+                        "{indent}r{max_id}{GREY}: {dtype}{RESET} = {RED}reduce {}{RESET} r{x}, dims={n_axes:?} {}",
                         match rop {
-                            BOp::Add => "SUM",
-                            BOp::Max => "MAX",
-                            BOp::Mul => "PROD",
+                            BOp::Add => "sum",
+                            BOp::Max => "max",
+                            BOp::Mul => "prod",
                             _ => unreachable!(),
                         },
                         dtypes[&op_id]
                     );
                 }
                 Op::Define { dtype, scope, ro, len, .. } => {
+                    id_map.insert(op_id, max_id);
                     dtypes.insert(op_id, dtype);
-                    println!("{op_id:>5}{indent}{YELLOW}DEFINE{RESET} {scope} {dtype}, len={len}, ro={ro}");
+                    let ro = if ro { "" } else { "mut " };
+                    println!(
+                        "{indent}{RED}r{max_id}{RESET}{GREY}: {dtype}{RESET} = {YELLOW}def {ro}{RESET}{scope}, len={len}"
+                    );
                 }
                 Op::Const(value) => {
-                    dtypes.insert(op_id, value.dtype());
+                    id_map.insert(op_id, max_id);
+                    let dtype = value.dtype();
+                    dtypes.insert(op_id, dtype);
                     if value.is_positive() {
                         let Constant::U64(v) = value.cast(DType::U64) else { unreachable!() };
                         let v = usize::from_le_bytes(v);
-                        ids.insert(op_id, (v, v));
+                        bounds.insert(op_id, (v, v));
                     }
-                    println!("{op_id:>5}{indent}{MAGENTA}CONST{RESET} {} {value}", value.dtype());
+                    println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {MAGENTA}{value}{RESET}");
                 }
                 Op::Load { src, index, vlen: len } => {
-                    dtypes.insert(op_id, dtypes[&src]);
-                    println!(
-                        "{op_id:>5}{indent}{GREEN}LOAD{RESET} {} p{src}[{index}] len={len:?}    {}..={}",
-                        dtypes[&op_id], ids[&index].0, ids[&index].1
-                    );
+                    id_map.insert(op_id, max_id);
+                    let dtype = dtypes[&src];
+                    dtypes.insert(op_id, dtype);
+                    let (lb, ub) = bounds[&index];
+                    let src = id_map[&src];
+                    let index = id_map[&index];
+                    if len > 1 {
+                        println!(
+                            "{indent}r{max_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}..r{index}+{len}]    // {lb}..={ub} {GREEN}load{RESET}"
+                        );
+                    } else {
+                        println!(
+                            "{indent}r{max_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}]    // {lb}..={ub} {GREEN}load{RESET}"
+                        );
+                    }
                 }
                 Op::Store { dst, x, index, vlen: len } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                    println!(
-                        "{op_id:>5}{indent}{RED}STORE{RESET} {} p{dst}[{index}] <- {x} len={len}    {}..={}",
-                        dtypes[&op_id], ids[&index].0, ids[&index].1
-                    );
-                }
-                Op::Cast { x, dtype, .. } => {
+                    let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
-                    if let Some((l, u)) = ids.get(&x) {
-                        ids.insert(op_id, (*l, *u));
-                    }
-                    if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>5}{indent}CAST {x} {dtype:?}    {l}..={u}");
+                    let (lb, ub) = bounds[&index];
+                    let dst = id_map[&dst];
+                    let index = id_map[&index];
+                    let x = id_map[&x];
+                    if len > 1 {
+                        println!(
+                            "{indent}{RED}r{dst}{RESET}[r{index}..r{index}+len] = r{x}    // {lb}..={ub} {RED}store{RESET}",
+                        );
                     } else {
-                        println!("{op_id:>5}{indent}CAST {x} {dtype:?}");
+                        println!("{indent}{RED}r{dst}{RESET}[r{index}] = r{x}    // {lb}..={ub} {RED}store{RESET}",);
+                    }
+                }
+                Op::Cast { x, dtype } => {
+                    id_map.insert(op_id, max_id);
+                    dtypes.insert(op_id, dtype);
+                    if let Some((l, u)) = bounds.get(&x) {
+                        bounds.insert(op_id, (*l, *u));
+                    }
+                    let x = id_map[&x];
+                    if let Some((lb, ub)) = bounds.get(&op_id) {
+                        println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {dtype}(r{x})    // {lb}..={ub}");
+                    } else {
+                        println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {dtype}(r{x})");
                     }
                 }
                 Op::Unary { x, uop, .. } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                    if let Some((l, u)) = ids.get(&x) {
-                        ids.insert(op_id, (*l, *u));
+                    id_map.insert(op_id, max_id);
+                    let dtype = dtypes[&x];
+                    dtypes.insert(op_id, dtype);
+                    if let Some((lb, ub)) = bounds.get(&x) {
+                        bounds.insert(op_id, (*lb, *ub));
                     }
-                    if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>5}{indent}UNARY {} {uop:?} {x}    {l}..={u}", dtypes[&op_id]);
+                    let (op1, op2) = match uop {
+                        UOp::Neg => ("-", ""),
+                        UOp::BitNot => ("~", ""),
+                        UOp::Exp2 => ("exp2(", ")"),
+                        UOp::Log2 => ("log2(", ")"),
+                        UOp::Reciprocal => ("1/", ""),
+                        UOp::Sqrt => ("sqrt(", ")"),
+                        UOp::Sin => ("sin(", ")"),
+                        UOp::Cos => ("cos(", ")"),
+                        UOp::Floor => ("floor(", ")"),
+                    };
+                    let x = id_map[&x];
+                    if let Some((lb, ub)) = bounds.get(&op_id) {
+                        println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {op1}r{x}{op2}    // {lb}..={ub}");
                     } else {
-                        println!("{op_id:>5}{indent}UNARY {} {uop:?} {x}", dtypes[&op_id]);
+                        println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {op1}r{x}{op2}");
                     }
                 }
                 Op::Binary { x, y, bop, .. } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                    if let Some(&(xl, xu)) = ids.get(&x)
-                        && let Some(&(yl, yu)) = ids.get(&y)
+                    id_map.insert(op_id, max_id);
+                    let dtype = dtypes[&x];
+                    dtypes.insert(op_id, dtype);
+                    if let Some(&(xl, xu)) = bounds.get(&x)
+                        && let Some(&(yl, yu)) = bounds.get(&y)
                     {
-                        ids.insert(
+                        bounds.insert(
                             op_id,
                             match bop {
                                 BOp::Add => (xl.wrapping_add(yl), xu.wrapping_add(yu)),
@@ -478,26 +533,52 @@ impl Kernel {
                                 BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
                                 BOp::BitShiftLeft => (xl << yl, xu << yu),
                                 BOp::BitShiftRight => (xl >> yl, xu >> yu),
-                                op => todo!("{:?}", op),
+                                BOp::Pow => (xl.pow(yl as u32), xu.pow(yu as u32)),
+                                BOp::Max => todo!(),
+                                BOp::Or => todo!(),
+                                BOp::BitXor => todo!(),
+                                BOp::BitOr => todo!(),
+                                BOp::BitAnd => todo!(),
                             },
                         );
                     }
-                    if let Some((l, u)) = ids.get(&op_id) {
-                        println!(
-                            "{op_id:>5}{indent}BINARY {} {bop:?} {x} {y}    {l}..={u}",
-                            dtypes[&op_id]
-                        );
+                    let (op1, op2, op3) = match bop {
+                        BOp::Add => ("", " + ", ""),
+                        BOp::Sub => ("", " - ", ""),
+                        BOp::Mul => ("", " * ", ""),
+                        BOp::Div => ("", " / ", ""),
+                        BOp::Pow => ("pow(", ", ", ")"),
+                        BOp::Mod => ("", " % ", ""),
+                        BOp::Cmplt => ("", " < ", ""),
+                        BOp::Cmpgt => ("", " > ", ""),
+                        BOp::Max => ("max(", ", ", ")"),
+                        BOp::Or => ("", " || ", ""),
+                        BOp::And => ("", " && ", ""),
+                        BOp::BitXor => ("", " ^ ", ""),
+                        BOp::BitOr => ("", " | ", ""),
+                        BOp::BitAnd => ("", " & ", ""),
+                        BOp::BitShiftLeft => ("", " << ", ""),
+                        BOp::BitShiftRight => ("", " >> ", ""),
+                        BOp::NotEq => ("", " != ", ""),
+                        BOp::Eq => ("", " == ", ""),
+                    };
+                    let x = id_map[&x];
+                    let y = id_map[&y];
+                    if let Some((lb, ub)) = bounds.get(&op_id) {
+                        println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {op1}r{x}{op2}r{y}{op3}    // {lb}..={ub}",);
                     } else {
-                        println!("{op_id:>5}{indent}BINARY {} {bop:?} {x} {y}", dtypes[&op_id]);
+                        println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {op1}r{x}{op2}r{y}{op3}",);
                     }
                 }
                 Op::Mad { x, y, z } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                    if let Some(&(xl, xu)) = ids.get(&x)
-                        && let Some(&(yl, yu)) = ids.get(&y)
-                        && let Some(&(zl, zu)) = ids.get(&z)
+                    id_map.insert(op_id, max_id);
+                    let dtype = dtypes[&x];
+                    dtypes.insert(op_id, dtype);
+                    if let Some(&(xl, xu)) = bounds.get(&x)
+                        && let Some(&(yl, yu)) = bounds.get(&y)
+                        && let Some(&(zl, zu)) = bounds.get(&z)
                     {
-                        ids.insert(
+                        bounds.insert(
                             op_id,
                             (
                                 xl.wrapping_mul(yl).wrapping_add(zl),
@@ -505,10 +586,13 @@ impl Kernel {
                             ),
                         );
                     }
-                    if let Some((l, u)) = ids.get(&op_id) {
-                        println!("{op_id:>5}{indent}MAD {} {x} {y} {z}    {l}..={u}", dtypes[&op_id]);
+                    let x = id_map[&x];
+                    let y = id_map[&y];
+                    let z = id_map[&z];
+                    if let Some((l, u)) = bounds.get(&op_id) {
+                        println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {x} * {y} + {z}  // {l}..={u}");
                     } else {
-                        println!("{op_id:>5}{indent}MAD {} {x} {y} {z}", dtypes[&op_id]);
+                        println!("{indent}r{max_id}{GREY}: {dtype}{RESET} = {x} * {y} + {z}");
                     }
                 }
                 Op::WMMA { dims, layout, dtype, c, a, b } => {
@@ -519,35 +603,38 @@ impl Kernel {
                     );
                 }
                 Op::Index { len, scope, axis } => {
+                    id_map.insert(op_id, max_id);
                     dtypes.insert(op_id, IDX_T);
-                    ids.insert(op_id, (0, len - 1));
-                    println!(
-                        "{op_id:>5}{indent}{BLUE}INDEX{RESET} {IDX_T} {scope}_{axis} len={len}    0..={}",
-                        len - 1
-                    );
+                    let ub = len - 1;
+                    bounds.insert(op_id, (0, ub));
+                    let scope = match scope {
+                        Scope::Global => "g",
+                        Scope::Local => "l",
+                        Scope::Register => unreachable!(),
+                    };
+                    println!("{indent}r{max_id}{GREY}: {IDX_T}{RESET} = {BLUE}{scope}idx{axis}{RESET}  0..={ub}",);
                 }
                 Op::Loop { len, axis } => {
+                    id_map.insert(op_id, max_id);
                     has_loops = true;
                     dtypes.insert(op_id, IDX_T);
-                    ids.insert(op_id, (0, len - 1));
-                    println!(
-                        "{op_id:>5}{indent}{BLUE}LOOP{RESET}_{axis} {IDX_T} len={len}    0..={}",
-                        len - 1
-                    );
+                    bounds.insert(op_id, (0, len - 1));
+                    println!("{indent}{BOLD}for{RESET} r{max_id} in 0..{len} {{ // {BLUE}ridx{axis}{RESET}");
                     indent += "  ";
                 }
-                Op::EndLoop { .. } => {
+                Op::EndLoop => {
                     if indent.len() > 1 {
                         indent.pop();
                         indent.pop();
                     }
-                    println!("{op_id:>5}{indent}{BLUE}END_LOOP{RESET}");
+                    println!("{indent}}}");
                 }
                 Op::Vectorize { ref ops } => {
+                    id_map.insert(op_id, max_id);
                     dtypes.insert(op_id, dtypes[&ops[0]]);
                     let mut r = None;
                     for x in ops {
-                        if let Some(&(xl, xu)) = ids.get(x) {
+                        if let Some(&(xl, xu)) = bounds.get(x) {
                             if let Some((l, u)) = r {
                                 r = Some((xl.min(l), xu.max(u)));
                             } else {
@@ -556,7 +643,7 @@ impl Kernel {
                         }
                     }
                     if let Some((xl, xu)) = r {
-                        ids.insert(op_id, (xl, xu));
+                        bounds.insert(op_id, (xl, xu));
                         println!(
                             "{op_id:>5}{indent}{ORANGE}VECTORIZE{RESET} {} {ops:?}    {xl}..={xu}",
                             dtypes[&op_id]
@@ -566,11 +653,12 @@ impl Kernel {
                     }
                 }
                 Op::Devectorize { vec, idx } => {
+                    id_map.insert(op_id, max_id);
                     dtypes.insert(op_id, dtypes[&vec]);
-                    if let Some((l, u)) = ids.get(&vec) {
-                        ids.insert(op_id, (*l, *u));
+                    if let Some((l, u)) = bounds.get(&vec) {
+                        bounds.insert(op_id, (*l, *u));
                     }
-                    if let Some((l, u)) = ids.get(&op_id) {
+                    if let Some((l, u)) = bounds.get(&op_id) {
                         println!(
                             "{op_id:>5}{indent}{ORANGE}DEVECTORIZE{RESET} {} {vec}[{idx}]    {l}..={u}",
                             dtypes[&op_id]
@@ -1051,7 +1139,7 @@ impl Kernel {
                             }
                         }
                     }
-                    println!("rdims={rdims:?}");
+                    //println!("rdims={rdims:?}");
 
                     running_dims.insert(op_id, rdims);
                 }
@@ -1092,9 +1180,15 @@ impl Kernel {
         self.verify();
 
         self.unfold_reduces();
+
         self.debug();
+        todo!();
+
         self.unfold_views();
-        self.debug();
+
+        self.common_subexpression_elimination();
+        self.constant_folding();
+        //self.dead_code_elimination();
 
         todo!();
     }
@@ -1162,36 +1256,16 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::ConstView(ref x) => {
-                    dtypes.insert(op_id, x.0.dtype());
-                }
-                Op::LoadView(ref x) => {
-                    dtypes.insert(op_id, x.0);
-                }
-                Op::Define { dtype, .. } => {
-                    dtypes.insert(op_id, dtype);
-                }
-                Op::Const(constant) => {
-                    dtypes.insert(op_id, constant.dtype());
-                }
-                Op::Load { src, .. } => {
-                    dtypes.insert(op_id, dtypes[&src]);
-                }
-                Op::Cast { dtype, .. } => {
-                    dtypes.insert(op_id, dtype);
-                }
-                Op::Unary { x, .. } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                }
-                Op::Binary { x, .. } => {
-                    dtypes.insert(op_id, dtypes[&x]);
-                }
-                Op::Loop { .. } => {
-                    loops.push(op_id);
-                }
-                Op::EndLoop => {
-                    loops.pop();
-                }
+                Op::ConstView(ref x) => _ = dtypes.insert(op_id, x.0.dtype()),
+                Op::LoadView(ref x) => _ = dtypes.insert(op_id, x.0),
+                Op::Define { dtype, .. } => _ = dtypes.insert(op_id, dtype),
+                Op::Const(constant) => _ = dtypes.insert(op_id, constant.dtype()),
+                Op::Load { src, .. } => _ = dtypes.insert(op_id, dtypes[&src]),
+                Op::Cast { dtype, .. } => _ = dtypes.insert(op_id, dtype),
+                Op::Unary { x, .. } => _ = dtypes.insert(op_id, dtypes[&x]),
+                Op::Binary { x, .. } => _ = dtypes.insert(op_id, dtypes[&x]),
+                Op::Loop { .. } => _ = loops.push(op_id),
+                Op::EndLoop => _ = loops.pop(),
                 Op::Reduce { x, rop, n_axes } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
@@ -1234,7 +1308,7 @@ impl Kernel {
     }
 
     pub fn unfold_views(&mut self) {
-        let mut axes = Vec::new();
+        let mut axes = BTreeMap::default();
         let start = self.head;
         let mut op_id = self.head;
         let mut reduce_loop = OpId::NULL;
@@ -1252,7 +1326,6 @@ impl Kernel {
 
                     let mut view_axes = axes.clone();
                     view.reverse();
-                    view_axes.reverse();
 
                     //println!("Unfolding view: {view}");
 
@@ -1291,7 +1364,11 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 self.new_op(opi, Op::Const(Constant::idx(0u64)))
                             } else {
-                                view_axes[i]
+                                if let Some(&id) = view_axes.get(&((inner.len() - i) as u32)) {
+                                    id
+                                } else {
+                                    constant_zero
+                                }
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
@@ -1345,9 +1422,8 @@ impl Kernel {
                     // x = pc * value[offset]
                     let mut view = x.1.clone();
 
-                    let mut view_axes = axes.clone();
+                    let view_axes = axes.clone();
                     view.reverse();
-                    view_axes.reverse();
 
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
@@ -1387,7 +1463,11 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 constant_zero
                             } else {
-                                view_axes[i]
+                                if let Some(&id) = view_axes.get(&((inner.len() - i) as u32)) {
+                                    id
+                                } else {
+                                    constant_zero
+                                }
                             };
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
@@ -1437,34 +1517,43 @@ impl Kernel {
                     self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                 }
                 Op::StoreView { dtype, src, .. } => {
-                    // TODO make this shorter and nicer to read
+                    let mut st = 1;
+                    let mut strides = Vec::new();
+                    for (_, &ax_id) in axes.iter().rev() {
+                        match self.ops[ax_id].op {
+                            Op::Index { len, scope, .. } => {
+                                debug_assert_eq!(scope, Scope::Global);
+                                strides.push((len, st, ax_id));
+                                st *= len;
+                            }
+                            Op::Loop { len, .. } => {
+                                strides.push((len, st, ax_id));
+                                st *= len;
+                            }
+                            _ => {}
+                        }
+                    }
+                    strides.reverse();
+
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
                     let mut index = self.new_op(opi, Op::Const(Constant::idx(0u64)));
-
-                    //println!("permuted_shape={permuted_shape:?}, permuted_strides={permuted_strides:?}");
-
-                    for (id, (d, st)) in permuted_shape.into_iter().zip(permuted_strides).enumerate() {
-                        let stride = Constant::idx(st as u64);
-                        let x = if d > 1 {
-                            axes[id]
-                        } else {
-                            self.new_op(opi, Op::Const(Constant::idx(0)))
-                        };
-                        let y = self.new_op(opi, Op::Const(stride));
-                        let x = self.new_op(opi, Op::Binary { x, y, bop: BOp::Mul });
+                    let mut len = 1;
+                    for (dim, st, ax_id) in strides {
+                        let y = self.new_op(opi, Op::Const(Constant::idx(st as u64)));
+                        let x = self.new_op(opi, Op::Binary { x: ax_id, y, bop: BOp::Mul });
                         index = self.new_op(opi, Op::Binary { x, y: index, bop: BOp::Add });
+                        len *= dim;
                     }
 
-                    let len = shape.iter().product();
                     let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
                     self.ops[op_id].op = Op::Store { dst, x: src, index, vlen: 1 };
                 }
-                Op::Index { .. } => {
-                    axes.push(op_id);
+                Op::Index { axis, .. } => {
+                    axes.insert(axis, op_id);
                 }
-                Op::Loop { .. } => {
-                    axes.push(op_id);
+                Op::Loop { axis, .. } => {
+                    axes.insert(axis, op_id);
                     if reduce_loop.is_null() {
                         if let Op::Store { dst, .. } = self.ops[self.prev_op(op_id)].op {
                             if let Op::Define { scope, .. } = self.ops[dst].op {
@@ -1476,7 +1565,7 @@ impl Kernel {
                     }
                 }
                 Op::EndLoop => {
-                    axes.pop();
+                    axes.pop_last();
                 }
                 _ => {}
             }
@@ -2101,11 +2190,12 @@ impl Kernel {
         stack.push(Set::default());
         let check = |op_id, x: OpId, stack: &[Set<OpId>]| {
             if !stack.iter().any(|set| set.contains(&x)) {
-                self.debug();
-                panic!(
+                println!(
                     "{op_id} {:?} uses {x} -> {:?} before declaration.",
                     self.ops[op_id].op, self.ops[x].op
                 );
+                self.debug();
+                panic!();
             }
         };
 
@@ -2149,8 +2239,9 @@ impl Kernel {
                     check(op_id, x, &stack);
                     check(op_id, y, &stack);
                     if dtypes[&x] != dtypes[&y] {
+                        println!("Binary dtype mismatch on op={op_id}.");
                         self.debug();
-                        panic!("Binary dtype mismatch on op={op_id}.");
+                        panic!();
                     }
                     if bop.returns_bool() {
                         dtypes.insert(op_id, DType::Bool);
@@ -2163,8 +2254,9 @@ impl Kernel {
                     for &x in ops {
                         check(op_id, x, &stack);
                         if dtypes[&x] != dtype {
+                            println!("Vectorize dtype mismatch on op={op_id}.");
                             self.debug();
-                            panic!("Vectorize dtype mismatch on op={op_id}.");
+                            panic!();
                         }
                     }
                     dtypes.insert(op_id, dtype);
@@ -2176,8 +2268,9 @@ impl Kernel {
                     check(op_id, a, &stack);
                     check(op_id, b, &stack);
                     if dtypes[&a] != dtypes[&b] {
+                        println!("MMA dtype mismatch on op={op_id}.");
                         self.debug();
-                        panic!("MMA dtype mismatch on op={op_id}.");
+                        panic!();
                     }
                     dtypes.insert(op_id, dtype);
                 }
@@ -2186,8 +2279,9 @@ impl Kernel {
                     check(op_id, y, &stack);
                     check(op_id, z, &stack);
                     if dtypes[&x] != dtypes[&y] || dtypes[&x] != dtypes[&z] {
+                        println!("Mad dtype mismatch on op={op_id}.");
                         self.debug();
-                        panic!("Mad dtype mismatch on op={op_id}.");
+                        panic!();
                     }
                     dtypes.insert(op_id, dtypes[&x]);
                 }
@@ -2211,8 +2305,9 @@ impl Kernel {
                 }
                 Op::EndLoop => {
                     if stack.is_empty() {
+                        println!("Endloop without matching loop.");
                         self.debug();
-                        panic!("Endloop without matching loop.");
+                        panic!();
                     }
                     stack.pop();
                 }
@@ -2225,13 +2320,15 @@ impl Kernel {
             prev = op_id;
             op_id = self.ops[op_id].next;
             if !op_id.is_null() && self.ops[op_id].prev != prev {
+                println!("Inconsistency in prev.");
                 self.debug();
-                panic!("Inconsistency in prev.");
+                panic!()
             }
         }
         if stack.len() != 1 {
+            println!("Wrong {} closing endloops.", stack.len());
             self.debug();
-            panic!("Wrong {} closing endloops.", stack.len());
+            panic!();
         }
         self.check_oob();
     }
@@ -2463,20 +2560,3 @@ impl SlabId for OpId {
         self.0 += 1;
     }
 }
-
-/*
-/// Kernel optimization ops that may or may not be applied, that is they are beneficial for some kernels,
-/// but hurt other kernels or backends.
-impl Kernel {
-    // Something like this to upcast local dimensions, that is to do double buffering along local dimensions
-    //pub fn upcast_local(&mut self, loop_id: OpId, dim: Dim) {}
-
-    // Split loop into multiple accumulation steps
-    //pub fn multi_step_reduce(&mut self) {}
-
-    /// Adds local memory buffer for large reduces
-    pub fn grouptop(&mut self, loop_id: OpId, dim: Dim) {}
-
-    // In tinygrad, thread splits workload across multiple CPU threads
-    //pub fn thread(&mut self, loop_id)
-}*/

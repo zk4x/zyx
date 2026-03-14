@@ -62,19 +62,19 @@ pub enum Constant {
 impl Display for DType {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
-            Self::BF16 => "BF16",
-            Self::F16 => "F16",
-            Self::F32 => "F32",
-            Self::F64 => "F64",
-            Self::U8 => "U8",
-            Self::U16 => "U16",
-            Self::U32 => "U32",
-            Self::U64 => "U64",
-            Self::I8 => "I8",
-            Self::I16 => "I16",
-            Self::I32 => "I32",
-            Self::I64 => "I64",
-            Self::Bool => "Bool",
+            Self::BF16 => "bf16",
+            Self::F16 => "f16",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+            Self::I8 => "i8",
+            Self::I16 => "i16",
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::Bool => "bool",
         })
     }
 }

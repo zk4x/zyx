@@ -72,6 +72,9 @@
   - [x] loop unrolling
     - [x] in optimizer
     - [x] in kernel
+  - [ ] improve unfold_pows
+    - [ ] specialized case for integers
+    - [ ] specialized case for constants
   - [x] loop invariant code motion
   - [x] comutative reorder (put before LICM)
   - [ ] div mod simplifications

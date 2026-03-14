@@ -134,6 +134,8 @@ impl DebugMask {
     }
 }
 
+const BOLD: &str = "\x1b[1m";
+const GREY: &str = "\x1b[38;5;252m";
 const RED: &str = "\x1b[31m";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
