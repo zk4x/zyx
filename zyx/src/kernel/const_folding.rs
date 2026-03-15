@@ -295,54 +295,41 @@ impl Kernel {
     }
 
     pub fn common_subexpression_elimination(&mut self) {
-        let mut unique: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
-        unique.push(Map::with_capacity_and_hasher(50, Default::default()));
-        let mut unique_loads: Vec<Map<(OpId, OpId), OpId>> = Vec::with_capacity(10);
-        unique_loads.push(Map::with_capacity_and_hasher(5, Default::default()));
+        let mut stack: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
+        stack.push(Map::with_capacity_and_hasher(50, Default::default()));
+
         let mut remaps = Map::with_capacity_and_hasher(10, Default::default());
         let mut op_id = self.head;
         while !op_id.is_null() {
-            for param in self.ops[op_id].op.parameters_mut() {
-                if let Some(&new_id) = remaps.get(param) {
-                    *param = new_id;
-                }
-            }
-            match self.at(op_id) {
-                Op::Define { .. } => {}
+            let temp = self.next_op(op_id);
+            match &mut self.ops[op_id].op {
+                Op::Define { .. } => {} // skip define ops, these can not be deduplicated
                 Op::Loop { .. } => {
-                    unique.push(Map::with_capacity_and_hasher(50, Default::default()));
-                    unique_loads.push(Map::with_capacity_and_hasher(5, Default::default()));
+                    stack.push(Map::with_capacity_and_hasher(50, Default::default()));
                 }
                 Op::EndLoop => {
-                    unique.pop();
-                    unique_loads.pop();
-                }
-                &Op::Load { src, index, .. } => {
-                    let local_unique = unique_loads.last_mut().unwrap();
-                    if let Some(&old_op_id) = local_unique.get(&(src, index)) {
-                        remaps.insert(op_id, old_op_id);
-                    } else {
-                        local_unique.insert((src, index), op_id);
-                    }
-                }
-                &Op::Store { dst, .. } => {
-                    let local_unique = unique_loads.last_mut().unwrap();
-                    local_unique.retain(|(src, _), _| *src != dst);
+                    stack.pop();
                 }
                 op => {
-                    //let local_unique = unique.last_mut().unwrap();
-                    for local_unique in unique.iter_mut() {
-                        if let Some(&old_op_id) = local_unique.get(op) {
+                    let mut remove_op = false;
+                    for loop_level in &stack {
+                        if let Some(&old_op_id) = loop_level.get(op) {
                             remaps.insert(op_id, old_op_id);
-                        } else {
-                            local_unique.insert(op.clone(), op_id);
+                            remove_op = true;
+                            break;
                         }
                     }
+                    if remove_op {
+                        self.remove_op(op_id);
+                    } else {
+                        for param in op.parameters_mut() {
+                            if let Some(&new_id) = remaps.get(param) {
+                                *param = new_id;
+                            }
+                        }
+                        stack.last_mut().unwrap().insert(op.clone(), op_id);
+                    }
                 }
-            }
-            let temp = self.next_op(op_id);
-            if remaps.contains_key(&op_id) {
-                self.remove_op(op_id);
             }
             op_id = temp;
         }

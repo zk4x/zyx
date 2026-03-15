@@ -184,17 +184,12 @@ impl Kernel {
         self.verify();
 
         self.unfold_reduces();
-
-        self.debug();
-        todo!();
-
         self.unfold_views();
 
+        // TODO remove this from here
         self.common_subexpression_elimination();
         self.constant_folding();
-        //self.dead_code_elimination();
-
-        todo!();
+        self.dead_code_elimination();
     }
 
     pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
@@ -268,7 +263,10 @@ impl Kernel {
                 Op::Cast { dtype, .. } => _ = dtypes.insert(op_id, dtype),
                 Op::Unary { x, .. } => _ = dtypes.insert(op_id, dtypes[&x]),
                 Op::Binary { x, .. } => _ = dtypes.insert(op_id, dtypes[&x]),
-                Op::Loop { .. } => _ = loops.push(op_id),
+                Op::Loop { .. } => {
+                    dtypes.insert(op_id, IDX_T);
+                    loops.push(op_id);
+                }
                 Op::EndLoop => _ = loops.pop(),
                 Op::Reduce { x, rop, n_axes } => {
                     let dtype = dtypes[&x];
@@ -289,9 +287,13 @@ impl Kernel {
                     }
                     self.ops[op_id].op = Op::Load { src: acc, index, vlen: 1 };
                 }
-                Op::StoreView { .. } | Op::Index { .. } | Op::Store { .. } => {}
+                Op::Index { .. } => {
+                    dtypes.insert(op_id, IDX_T);
+                }
+                Op::StoreView { .. } | Op::Store { .. } => {}
                 Op::Move { .. } => unreachable!("Can't unfold reduces before unfolding movement ops"),
-                _ => todo!(),
+                Op::Mad { x, .. } => _ = dtypes.insert(op_id, dtypes[&x]),
+                ref op => todo!("{op:?}"),
             }
             op_id = self.next_op(op_id);
         }
@@ -315,7 +317,6 @@ impl Kernel {
         let mut axes = BTreeMap::default();
         let start = self.head;
         let mut op_id = self.head;
-        let mut reduce_loop = OpId::NULL;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::ConstView(ref x) => {
@@ -326,10 +327,7 @@ impl Kernel {
                     // pc = a0 > lp0-1 && a0 < d0-rp0
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
-                    let mut view = x.1.clone();
-
-                    let view_axes = axes.clone();
-                    view.reverse();
+                    let view = x.1.clone();
 
                     //println!("Unfolding view: {view}");
 
@@ -349,7 +347,10 @@ impl Kernel {
                         // a = offset / ost % dim
                         let mut ost = 1;
                         offset = constant_zero;
-                        for (i, dim) in inner.iter().enumerate().rev() {
+                        let mut ax = inner.len() as u32;
+                        // TODO check if we can remove the rev and iterate forward
+                        for dim in inner.iter().rev() {
+                            ax -= 1;
                             let a = if let Some(old_offset) = old_offset {
                                 let t_ost = ost;
                                 ost *= dim.d as u64;
@@ -368,12 +369,13 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 self.new_op(opi, Op::Const(Constant::idx(0u64)))
                             } else {
-                                if let Some(&id) = view_axes.get(&((inner.len() - i) as u32)) {
+                                if let Some(&id) = axes.get(&ax) {
                                     id
                                 } else {
                                     constant_zero
                                 }
                             };
+                            ax += 1;
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
@@ -389,8 +391,9 @@ impl Kernel {
 
                             if dim.st != 0 {
                                 let stride = self.new_op(opi, Op::Const(Constant::idx(dim.st as u64)));
-                                let x = self.new_op(opi, Op::Binary { x: t, y: stride, bop: BOp::Mul });
-                                offset = self.new_op(opi, Op::Binary { x, y: offset, bop: BOp::Add });
+                                //let x = self.new_op(opi, Op::Binary { x: t, y: stride, bop: BOp::Mul });
+                                //offset = self.new_op(opi, Op::Binary { x, y: offset, bop: BOp::Add });
+                                offset = self.new_op(opi, Op::Mad { x: t, y: stride, z: offset });
                             }
 
                             // Padding condition
@@ -424,10 +427,7 @@ impl Kernel {
                     // pc = a0 > lp0-1 && a0 < d0-rp0
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
-                    let mut view = x.1.clone();
-
-                    let view_axes = axes.clone();
-                    view.reverse();
+                    let view = x.1.clone();
 
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
@@ -443,7 +443,10 @@ impl Kernel {
                         // a = offset / ost % dim
                         let mut ost = 1;
                         offset = constant_zero;
-                        for (i, dim) in inner.iter().enumerate().rev() {
+                        let mut ax = inner.len() as u32;
+                        // TODO check if we can remove the rev and iterate forward
+                        for dim in inner.iter().rev() {
+                            ax -= 1;
                             let loop_id = if let Some(old_offset) = old_offset {
                                 /*let ost_c = new_op(ops, Op::Const(Constant::U32(ost)));
                                 ost *= dim.d as u32;
@@ -467,7 +470,8 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 constant_zero
                             } else {
-                                if let Some(&id) = view_axes.get(&((inner.len() - i) as u32)) {
+                                //println!("ax={ax}, axes={axes:?}");
+                                if let Some(&id) = axes.get(&ax) {
                                     id
                                 } else {
                                     constant_zero
@@ -488,8 +492,9 @@ impl Kernel {
 
                             if dim.st != 0 {
                                 let stride = self.new_op(opi, Op::Const(Constant::idx(dim.st as u64)));
-                                let x = self.new_op(opi, Op::Binary { x: padded_loop_id, y: stride, bop: BOp::Mul });
-                                offset = self.new_op(opi, Op::Binary { x, y: offset, bop: BOp::Add });
+                                //let x = self.new_op(opi, Op::Binary { x: padded_loop_id, y: stride, bop: BOp::Mul });
+                                //offset = self.new_op(opi, Op::Binary { x, y: offset, bop: BOp::Add });
+                                offset = self.new_op(opi, Op::Mad { x: padded_loop_id, y: stride, z: offset });
                             }
 
                             // Padding condition
@@ -520,7 +525,7 @@ impl Kernel {
                     // Nullify z if padding condition is false (if there is padding at that index)
                     self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
                 }
-                Op::StoreView { dtype, src, .. } => {
+                Op::StoreView { dtype, src } => {
                     let mut st = 1;
                     let mut strides = Vec::new();
                     for (_, &ax_id) in axes.iter().rev() {
@@ -537,36 +542,23 @@ impl Kernel {
                             _ => {}
                         }
                     }
-                    strides.reverse();
 
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
                     let mut index = self.new_op(opi, Op::Const(Constant::idx(0u64)));
                     let mut len = 1;
-                    for (dim, st, ax_id) in strides {
+                    for (dim, st, ax_id) in strides.into_iter().rev() {
                         let y = self.new_op(opi, Op::Const(Constant::idx(st as u64)));
-                        let x = self.new_op(opi, Op::Binary { x: ax_id, y, bop: BOp::Mul });
-                        index = self.new_op(opi, Op::Binary { x, y: index, bop: BOp::Add });
+                        index = self.new_op(opi, Op::Mad { x: ax_id, y, z: index });
+                        //index = self.new_op(opi, Op::Binary { x, y: index, bop: BOp::Add });
                         len *= dim;
                     }
 
                     let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
                     self.ops[op_id].op = Op::Store { dst, x: src, index, vlen: 1 };
                 }
-                Op::Index { axis, .. } => {
+                Op::Index { axis, .. } | Op::Loop { axis, .. } => {
                     axes.insert(axis, op_id);
-                }
-                Op::Loop { axis, .. } => {
-                    axes.insert(axis, op_id);
-                    if reduce_loop.is_null() {
-                        if let Op::Store { dst, .. } = self.ops[self.prev_op(op_id)].op {
-                            if let Op::Define { scope, .. } = self.ops[dst].op {
-                                if scope == Scope::Register {
-                                    reduce_loop = op_id;
-                                }
-                            }
-                        }
-                    }
                 }
                 Op::EndLoop => {
                     axes.pop_last();

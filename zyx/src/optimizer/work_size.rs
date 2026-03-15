@@ -98,6 +98,9 @@ impl WorkSizeOpt {
             *g /= l * r;
         }
 
+        kernel.debug();
+        todo!();
+
         //gws = vec![64, 128];
         //lws = vec![8, 4];
         //rws = vec![2, 2];
