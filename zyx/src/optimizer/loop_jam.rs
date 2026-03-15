@@ -2,8 +2,7 @@ use crate::{
     Map, Set,
     backend::DeviceInfo,
     dtype::Constant,
-    graph::BOp,
-    kernel::{Kernel, Op, OpId, Scope},
+    kernel::{BOp, Kernel, Op, OpId, Scope},
     shape::Dim,
 };
 use nanoserde::{DeBin, SerBin};

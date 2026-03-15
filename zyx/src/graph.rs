@@ -1,7 +1,6 @@
 //! Graph of tensor operations.
 
-use nanoserde::{DeBin, SerBin};
-
+use crate::kernel::{BOp, UOp};
 use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::{
@@ -358,71 +357,24 @@ impl std::ops::IndexMut<TensorId> for Graph {
 
 use crate::dtype::Constant;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
-pub enum BOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Pow,
-    Mod,
-    Cmplt,
-    Cmpgt,
-    Max,
-    Or,
-    And,
-    BitXor,
-    BitOr,
-    BitAnd,
-    BitShiftLeft,
-    BitShiftRight,
-    NotEq,
-    Eq,
-}
-
 impl BOp {
     pub fn is_associative(&self) -> bool {
+        use BOp::*;
         matches!(
             self,
-            BOp::Add
-                | BOp::Mul
-                | BOp::And
-                | BOp::Or
-                | BOp::BitXor
-                | BOp::BitAnd
-                | BOp::BitOr
-                | BOp::BitShiftLeft
-                | BOp::BitShiftRight
-                | BOp::Max
+            Add | Mul | And | Or | BitXor | BitAnd | BitOr | BitShiftLeft | BitShiftRight | Max
         )
     }
 
     pub fn is_commutative(&self) -> bool {
-        matches!(
-            self,
-            BOp::Add | BOp::Mul | BOp::And | BOp::Or | BOp::BitXor | BOp::BitAnd | BOp::BitOr | BOp::Max
-        )
+        use BOp::*;
+        matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | Max)
     }
 
     pub fn returns_bool(&self) -> bool {
-        matches!(
-            self,
-            BOp::Cmpgt | BOp::Cmplt | BOp::NotEq | BOp::Eq | BOp::And | BOp::Or
-        )
+        use BOp::*;
+        matches!(self, Cmpgt | Cmplt | NotEq | Eq | And | Or)
     }
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
-pub enum UOp {
-    Neg,
-    BitNot,
-    Exp2,
-    Log2,
-    Reciprocal,
-    Sqrt,
-    Sin,
-    Cos,
-    Floor,
 }
 
 /// Graph node, each node is one operation. Nodes

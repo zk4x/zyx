@@ -22,8 +22,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{BOp, UOp},
-    kernel::{Kernel, MMADType, MMADims, Op, OpId, Scope},
+    kernel::{BOp, Kernel, MMADType, MMADims, Op, OpId, Scope, UOp},
     shape::Dim,
     slab::Slab,
 };

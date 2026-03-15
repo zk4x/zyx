@@ -134,7 +134,7 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
         }
-        self.remove(endloop_id);
+        self.remove_op(endloop_id);
 
         #[cfg(debug_assertions)]
         self.verify();

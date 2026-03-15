@@ -1,8 +1,5 @@
 use crate::{
-    DType, RT, Tensor, ZyxError,
-    graph::BOp,
-    shape::{Dim, UAxis, into_axes},
-    tensor::Axis,
+    DType, RT, Tensor, ZyxError, kernel::BOp, shape::{Dim, UAxis, into_axes}, tensor::Axis
 };
 use paste::paste;
 

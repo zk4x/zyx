@@ -13,8 +13,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    graph::{BOp, UOp},
-    kernel::{Kernel, Op, OpId, Scope},
+    kernel::{BOp, Kernel, Op, OpId, Scope, UOp},
     shape::Dim,
     slab::Slab,
 };

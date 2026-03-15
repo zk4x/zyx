@@ -1,7 +1,7 @@
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use super::Tensor;
 use half::{bf16, f16};
-use crate::{RT, graph::BOp};
+use crate::{RT, kernel::BOp};
 
 impl<IT: Into<Tensor>> Add<IT> for Tensor {
     type Output = Tensor;

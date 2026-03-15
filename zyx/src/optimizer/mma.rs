@@ -12,8 +12,7 @@ use crate::{
     DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
-    graph::BOp,
-    kernel::{Kernel, MMADType, MMADims, MMALayout, Op, OpId, Scope},
+    kernel::{Kernel, MMADType, MMADims, MMALayout, Op, OpId, Scope, BOp},
     shape::Dim,
 };
 
@@ -248,7 +247,7 @@ impl Kernel {
         self.insert_after(wmma_op, Op::Store { dst: stores[0].c, x: wmma_op, index, vlen: 4 });
 
         for store in stores {
-            self.remove(store.store_id);
+            self.remove_op(store.store_id);
         }
 
         //self.debug();

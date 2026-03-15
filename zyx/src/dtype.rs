@@ -2,8 +2,7 @@
 
 use crate::{
     Scalar, ZyxError,
-    graph::{BOp, UOp},
-    kernel::IDX_T,
+    kernel::{BOp, IDX_T, UOp},
     shape::Dim,
 };
 use half::{bf16, f16};

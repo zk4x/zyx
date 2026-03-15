@@ -1,10 +1,5 @@
 use crate::{
-    Map, RT, Set, Tensor,
-    dtype::Constant,
-    graph::{BOp, Node, UOp},
-    runtime::{Runtime, deallocate_tensors},
-    shape::{Dim, UAxis},
-    tensor::TensorId,
+    Map, RT, Set, Tensor, dtype::Constant, graph::Node, kernel::{BOp, UOp}, runtime::{Runtime, deallocate_tensors}, shape::{Dim, UAxis}, tensor::TensorId
 };
 use std::hash::BuildHasherDefault;
 

@@ -1,5 +1,5 @@
 use crate::{
-    dtype::Constant, graph::BOp, kernel::{Kernel, Op, OpId}, shape::Dim
+    dtype::Constant, kernel::{BOp, Kernel, Op, OpId}, shape::Dim
 };
 
 impl Kernel {

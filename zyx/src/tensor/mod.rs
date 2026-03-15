@@ -6,7 +6,7 @@
 
 use crate::dtype::DType;
 use crate::error::ZyxError;
-use crate::graph::{BOp, UOp};
+use crate::kernel::{BOp, UOp};
 use crate::runtime::{TempData, apply_padding};
 use crate::scalar::{Float, Scalar};
 use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
