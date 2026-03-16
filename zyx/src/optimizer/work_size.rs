@@ -146,8 +146,7 @@ impl Kernel {
         let mut op_id = loop_id;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Index { len, scope, axis } => {}
-                Op::Loop { len, axis } => {
+                Op::Loop { .. } => {
                     loop_depth += 1;
                 }
                 Op::EndLoop => {
