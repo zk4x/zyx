@@ -1,12 +1,18 @@
 use crate::{
-    DType, Map, Set, dtype::Constant, realize::KMKernelId, shape::{Dim, UAxis}, slab::{Slab, SlabId}, tensor::TensorId, view::View
+    DType, Map, Set,
+    dtype::Constant,
+    realize::KMKernelId,
+    shape::{Dim, UAxis},
+    slab::{Slab, SlabId},
+    tensor::TensorId,
+    view::View,
 };
 use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
 
 mod const_folding;
-mod licm;
 mod debug;
+mod licm;
 mod unfold;
 
 // TODO later make this dynamic u32 or u64 depending on max range
@@ -559,18 +565,24 @@ impl Kernel {
 
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.values().any(|x| matches!(x.op, Op::Index { .. })) {
-            return self
+            let mut indices: Vec<(Dim, u32)> = self
                 .ops
                 .values()
                 .filter_map(|x| {
                     // TODO include both global and local, order by axis
                     if let Op::Index { len: dim, scope, axis } = x.op {
-                        Some(dim)
+                        match scope {
+                            Scope::Global => Some((dim, axis * 3 + 0)),
+                            Scope::Local => Some((dim, axis * 3 + 1)),
+                            Scope::Register => Some((dim, axis * 3 + 2)),
+                        }
                     } else {
                         None
                     }
                 })
                 .collect();
+            indices.sort_by_key(|x| x.1);
+            return indices.into_iter().map(|x| x.0).collect();
         }
         let mut reduce_dims = 0;
         let mut op_id = self.tail;
