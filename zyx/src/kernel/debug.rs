@@ -10,7 +10,7 @@ use crate::{
 
 impl Kernel {
     pub fn debug(&self) {
-        let remap_ids = false;
+        let remap_ids = true;
         println!("\nloads={:?}", self.loads);
         println!("stores={:?}", self.stores);
         println!("outputs={:?}", self.outputs);
@@ -254,17 +254,13 @@ impl Kernel {
                         Scope::Local => "l",
                         Scope::Register => unreachable!(),
                     };
-                    println!(
-                        "{indent}r{out_id}{GREY}: {IDX_T}{RESET} = {BLUE}{scope}idx{axis}{RESET}    // 0..={ub}",
-                    );
+                    println!("{indent}r{out_id}{GREY}: {IDX_T}{RESET} = {BLUE}{scope}idx{axis}{RESET}    // 0..={ub}",);
                 }
                 Op::Loop { len, axis } => {
                     has_loops = true;
                     dtypes.insert(op_id, IDX_T);
                     bounds.insert(op_id, (0, len - 1));
-                    println!(
-                        "{indent}{BOLD}for{RESET} r{out_id} in 0..{len} {{    // {BLUE}ridx{axis}{RESET}"
-                    );
+                    println!("{indent}{BOLD}for{RESET} r{out_id} in 0..{len} {{    // {BLUE}ridx{axis}{RESET}");
                     indent += "  ";
                 }
                 Op::EndLoop => {

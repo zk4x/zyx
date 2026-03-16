@@ -1,6 +1,11 @@
 use std::collections::BTreeMap;
 
-use crate::{Map, Set, dtype::Constant, kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, Scope}, shape::{Dim, UAxis}};
+use crate::{
+    Map, Set,
+    dtype::Constant,
+    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, Scope},
+    shape::{Dim, UAxis},
+};
 
 impl Kernel {
     /// Apply  movement ops on views.
@@ -187,8 +192,13 @@ impl Kernel {
         self.unfold_views();
 
         // TODO remove this from here
-        self.common_subexpression_elimination();
+        self.swap_commutative();
         self.constant_folding();
+        self.common_subexpression_elimination();
+        self.dead_code_elimination();
+        self.swap_commutative();
+        self.constant_folding();
+        self.common_subexpression_elimination();
         self.dead_code_elimination();
     }
 

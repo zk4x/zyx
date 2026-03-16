@@ -1,6 +1,6 @@
 use crate::{
     backend::DeviceInfo,
-    kernel::{Kernel, Op, Scope},
+    kernel::{Kernel, Op, OpId, Scope},
     shape::Dim,
 };
 use nanoserde::{DeBin, SerBin};
@@ -99,6 +99,7 @@ impl WorkSizeOpt {
         }
 
         kernel.debug();
+
         todo!();
 
         //gws = vec![64, 128];
@@ -144,5 +145,12 @@ impl WorkSizeOpt {
         };
 
         true
+    }
+}
+
+impl Kernel {
+    /// Splits dim (index or loop) into multiple indices or loops
+    pub fn split_dim(&mut self, dim_id: OpId, splits: &[Op]) {
+        debug_assert!(splits.iter().all(|op| matches!(op, Op::Index { .. } | Op::Loop { .. })));
     }
 }

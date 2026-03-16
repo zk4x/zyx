@@ -12,7 +12,7 @@ use crate::{
     DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{Kernel, MMADType, MMADims, MMALayout, Op, OpId, Scope, BOp},
+    kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, Op, OpId, Scope},
     shape::Dim,
 };
 
@@ -173,7 +173,7 @@ impl Kernel {
         //println!("{:?}", self.get_indices(index));
 
         let mut offset = 0;
-        let indices = self.get_indices(index);
+        let indices = self.get_strides(index);
         let mut new_indices = Map::default();
         for (loop_id, (_d, st)) in indices {
             if loop_id.is_null() {

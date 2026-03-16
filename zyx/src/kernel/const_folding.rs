@@ -55,6 +55,7 @@ impl Kernel {
                         _ => {}
                     },
                     (_, Op::Const(cy)) => match bop {
+                        BOp::Add if cy.is_zero() => self.remap(op_id, x),
                         BOp::Sub if cy.is_zero() => self.remap(op_id, x),
                         BOp::Div if cy.is_zero() => panic!("Division by constant zero"),
                         BOp::Div if cy.is_one() => self.remap(op_id, x),
