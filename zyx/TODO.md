@@ -66,12 +66,13 @@
   - [x] common subexpression elimination
   - [x] dead store elimination
   - [x] kernel flops, memory reads, memory writes
-  - [ ] global to inner loop splitting
+  - [x] global to inner loop splitting
   - [ ] inner loop splitting
   - [x] unroll and jam
   - [x] loop unrolling
     - [x] in optimizer
     - [x] in kernel
+  - [ ] remove optimizer in favor of egraphs and heuristics
   - [ ] improve unfold_pows
     - [ ] specialized case for integers
     - [ ] specialized case for constants

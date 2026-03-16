@@ -311,6 +311,7 @@ impl Kernel {
                 Op::Move { x, ref mop } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
                             println!(

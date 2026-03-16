@@ -28,16 +28,6 @@ pub struct Kernel {
     pub tail: OpId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct OpNode {
-    pub prev: OpId,
-    pub next: OpId,
-    pub op: Op,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct OpId(pub u32);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Scope {
     Global,
@@ -110,6 +100,16 @@ pub enum MMALayout {
 pub enum MMADType {
     f16_f16_f16_f32,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub struct OpNode {
+    pub prev: OpId,
+    pub next: OpId, // Use Vec<OpId> instead for egraph
+    pub op: Op,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub struct OpId(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
@@ -570,12 +570,8 @@ impl Kernel {
                 .values()
                 .filter_map(|x| {
                     // TODO include both global and local, order by axis
-                    if let Op::Index { len: dim, scope, axis } = x.op {
-                        match scope {
-                            Scope::Global => Some((dim, axis * 3 + 0)),
-                            Scope::Local => Some((dim, axis * 3 + 1)),
-                            Scope::Register => Some((dim, axis * 3 + 2)),
-                        }
+                    if let Op::Index { len: dim, axis, .. } = x.op {
+                        Some((dim, axis))
                     } else {
                         None
                     }

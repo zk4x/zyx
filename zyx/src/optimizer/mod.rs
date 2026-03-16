@@ -57,17 +57,17 @@ impl Optimizer {
 
         let [
             local_work_size_opt_index,
-            loop_jam_opt_index,
-            loop_unrolling_opt_index,
-            loop_split_opt_index,
+            _loop_jam_opt_index,
+            _loop_unrolling_opt_index,
+            _loop_split_opt_index,
         ] = optimization.into_indices(self.max_indices);
 
         kernel.unfold_movement_ops();
 
         if !self.work_size_opt.apply_optimization(local_work_size_opt_index, kernel)
-            || !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel)
-            || !self.loop_jam_opt.apply_optimization(loop_jam_opt_index, kernel) // WARNING: LICM restriction
-            || !self.loop_unrolling_opt.apply_optimization(loop_unrolling_opt_index, kernel)
+            //|| !self.loop_split_opt.apply_optimization(loop_split_opt_index, kernel)
+            //|| !self.loop_jam_opt.apply_optimization(loop_jam_opt_index, kernel) // NOTE: cannot run after licm
+            //|| !self.loop_unrolling_opt.apply_optimization(loop_unrolling_opt_index, kernel)
         {
             return false;
         }
