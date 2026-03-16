@@ -11,6 +11,7 @@ impl Kernel {
     /// Apply  movement ops on views.
     /// Generates indices on views and unfolds reduce ops.
     pub fn unfold_movement_ops(&mut self) {
+        self.debug();
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Axis {
             Index,
@@ -21,6 +22,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             order += 1;
+            println!("{op_id} {:?}", self.ops[op_id].op);
             match self.ops[op_id].op {
                 Op::ConstView(ref x) => {
                     let view = &x.1;
@@ -214,9 +216,10 @@ impl Kernel {
         false
     }
 
-    /// TODO this function likely needs to be removed and the stuff needs to be applied more directly
+    /// TODO this function perhaps needs to be removed and the stuff needs to be applied more directly
     /// in unfold_movement_ops function
     pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
+        println!("Recursively move {op_id}");
         if !visited.insert(op_id) {
             return;
         }

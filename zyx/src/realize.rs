@@ -208,7 +208,10 @@ impl<'a> Kernelizer<'a> {
 
     fn add_expand_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add expand op that inserts loop in IR
-        let (kid, op_id) = self.visited[&x];
+        let (mut kid, op_id) = self.visited[&x];
+        if self.kernels[kid].outputs.len() > 1 {
+            kid = self.duplicate_kernel(x, kid);
+        }
         //let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
@@ -227,7 +230,10 @@ impl<'a> Kernelizer<'a> {
     fn add_reshape_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         debug_assert!(self.visited.contains_key(&x), "Missing tensor {x} in visited.");
         // TODO duplicate if it's non affine store on reduce kernel
-        let (kid, op_id) = self.visited[&x];
+        let (mut kid, op_id) = self.visited[&x];
+        if self.kernels[kid].outputs.len() > 1 {
+            kid = self.duplicate_kernel(x, kid);
+        }
         //let (kid, op_id) = self.duplicate_or_store(x, None)?;
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
@@ -244,7 +250,10 @@ impl<'a> Kernelizer<'a> {
 
     fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add permute op that swaps indices in IR
-        let (kid, op_id) = self.visited[&x];
+        let (mut kid, op_id) = self.visited[&x];
+        if self.kernels[kid].outputs.len() > 1 {
+            kid = self.duplicate_kernel(x, kid);
+        }
         //let (kid, op_id) = self.duplicate_or_store(x, None)?;
         let axes: Vec<_> = self.graph.axes(nid).into();
         let kernel = &mut self.kernels[kid];
@@ -262,7 +271,10 @@ impl<'a> Kernelizer<'a> {
 
     fn add_pad_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of duplication add pad op that adds if statement into ir (e.g. if idx < padding)
-        let (kid, op_id) = self.visited[&x];
+        let (mut kid, op_id) = self.visited[&x];
+        if self.kernels[kid].outputs.len() > 1 {
+            kid = self.duplicate_kernel(x, kid);
+        }
         //let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
         let padding = self.graph.padding(nid).into();
         let kernel = &mut self.kernels[kid];
