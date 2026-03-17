@@ -94,7 +94,7 @@ impl Kernel {
                     let index = id_map[&index];
                     if len > 1 {
                         println!(
-                            "{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}..r{index}+{len}]    // {lb}..={ub} {GREEN}load{RESET}"
+                            "{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}..+{len}]    // {lb}..={ub} {GREEN}load{RESET}"
                         );
                     } else {
                         println!(
@@ -111,7 +111,7 @@ impl Kernel {
                     let x = id_map[&x];
                     if len > 1 {
                         println!(
-                            "{indent}{RED}r{dst}{RESET}[r{index}..r{index}+len] = r{x}    // {lb}..={ub} {RED}store{RESET}",
+                            "{indent}{RED}r{dst}{RESET}[r{index}..+len] = r{x}    // {lb}..={ub} {RED}store{RESET}",
                         );
                     } else {
                         println!("{indent}{RED}r{dst}{RESET}[r{index}] = r{x}    // {lb}..={ub} {RED}store{RESET}",);

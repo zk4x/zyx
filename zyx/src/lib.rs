@@ -72,9 +72,9 @@ mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 mod autograd;
 mod chasher;
+mod kernelize;
 mod module;
 mod prog_bar;
-mod realize;
 mod view;
 
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;

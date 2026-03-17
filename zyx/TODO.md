@@ -38,81 +38,6 @@
   - [x] reshaped view to ir
   - [x] axis merging
   - [x] axes reshape
-- [ ] kernelizer
-  - [x] all dim reduce
-  - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
-  - [x] improve reshape node
-    - [x] merges, splits, reshapes of non reduce axes
-    - [x] inserting new loops to the end of the kernel
-  - [ ] improve expand node (should almost never store)
-  - [ ] improve permute node (should never store)
-  - [ ] improve pad node (should almost never store)
-  - [ ] pad could also work even with kernels that store stuff, just pad the store view
-  - [ ] binary op improved fusion (with dependent loads and stores)
-  - [x] expand reduce bug
-  - [x] fix is expandable conditions
-  - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
-    - [x] softmax fusion test (eventually should be single kernel)
-    - [ ] just asserts that various graphs fuse into single kernel
-  - [x] scheduling to multiple devices
-  - [x] fix bug when running phi3, panic on min_kernel function
-  - [ ] automatic sharding across devices
-  - [x] automatic dropping of unneeded tensors
-  - [ ] deduplicate tensor loads
-- [ ] kernel
-  - [x] default optimizations
-  - [x] indexing for padded views
-  - [x] indexing for multi reshape views
-  - [x] common subexpression elimination
-  - [x] dead store elimination
-  - [x] kernel flops, memory reads, memory writes
-  - [x] global to inner loop splitting
-  - [ ] inner loop splitting
-  - [x] unroll and jam
-  - [x] loop unrolling
-    - [x] in optimizer
-    - [x] in kernel
-  - [ ] remove optimizer in favor of egraphs and heuristics
-  - [ ] improve unfold_pows
-    - [ ] specialized case for integers
-    - [ ] specialized case for constants
-  - [x] loop invariant code motion
-  - [x] comutative reorder (put before LICM)
-  - [ ] div mod simplifications
-    - [x] consequtive modulos
-  - [x] dead accumulator elimination (after unroll)
-  - [ ] vectorization, vector dtypes
-    - [x] vector dtypes
-    - [ ] automatic vectorization
-  - [x] register tiling
-  - [ ] tensor cores
-  - [x] merge all mul + add into mad instructions
-  - [ ] local tiling of all variables
-    - [ ] local tiling for accumulators in large reduces
-    - [ ] local tiling for caching
-  - [ ] multi step reduce (with multiple accumulators)
-  - [ ] streaming dual reduce ops (e.g. streaming softmax)
-  - [x] optimizer with search
-- [ ] testing
-  - [ ] fuzzy tester
-    - [x] unary ops
-    - [ ] movemnt ops
-    - [ ] binary ops
-  - [x] pad_2
-  - [x] reshape_permute_1
-  - [x] rope_1
-  - [x] rope_2
-  - [x] softmax_1
-  - [x] padding on elementwise kernel
-  - [x] expand on elementwise kernel
-  - [x] reshape on elementwise kernel
-  - [x] permute on elementwise kernel
-  - [x] padding on reduce kernel
-  - [x] expand on reduce kernel
-  - [x] reshape on reduce kernel
-  - [x] permute on reduce kernel
-  - [x] lot of testing for kernelizer correctness
-  - [x] more autograd tests
 - [ ] tensor
   - [x] gather
   - [ ] scatter
@@ -143,6 +68,94 @@
   - [ ] spectral norm
   - [x] tril
   - [x] triu
+- [ ] kernelizer
+  - [x] all dim reduce
+  - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
+  - [x] improve reshape node
+    - [x] merges, splits, reshapes of non reduce axes
+    - [x] inserting new loops to the end of the kernel
+  - [x] improve expand node (should almost never store)
+  - [x] improve permute node (should never store)
+  - [x] improve pad node (should almost never store)
+  - [x] pad could also work even with kernels that store stuff, just pad the store view
+  - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion
+  - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately
+  - [ ] cost model needs to account for
+    - [ ] tensor reuse (known thanks to reference counts)
+    - [ ] shared memory pressure (loads + stores)
+    - [ ] register memory pressure (spill)
+    - [ ] global memory pressure (loads + stores)
+  - [x] expand reduce bug
+  - [x] fix is expandable conditions
+  - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
+    - [x] softmax fusion test (eventually should be single kernel)
+    - [ ] just asserts that various graphs fuse into single kernel
+  - [x] scheduling to multiple devices
+  - [x] fix bug when running phi3, panic on min_kernel function
+  - [x] automatic dropping of unneeded tensors
+  - [ ] deduplicate tensor loads
+  - [ ] automatic sharding across devices
+- [ ] scheduler
+  - [ ] creation of kernel graph
+  - [ ] global memory movement heuristics
+- [ ] kernel
+  - [x] default optimizations
+  - [x] indexing for padded views
+  - [x] indexing for multi reshape views
+  - [x] common subexpression elimination
+  - [x] dead store elimination
+  - [x] kernel flops, memory reads, memory writes
+  - [x] global to inner loop splitting
+  - [ ] inner loop splitting
+  - [x] unroll and jam
+  - [x] loop unrolling
+    - [x] in optimizer
+    - [x] in kernel
+  - [ ] remove optimizer in favor of egraphs and heuristics
+  - [ ] improve unfold_pows
+    - [ ] specialized case for integers
+    - [ ] specialized case for constants
+  - [x] loop invariant code motion
+  - [x] comutative reorder (put before LICM)
+  - [ ] div mod simplifications
+    - [x] consequtive modulos
+  - [x] dead accumulator elimination (after unroll)
+  - [ ] vectorization, vector dtypes
+    - [x] vector dtypes
+    - [ ] automatic vectorization
+      - [ ] of stores
+      - [ ] of loads
+  - [x] register tiling
+  - [ ] tensor cores
+    - [ ] tensor core ops
+  - [x] merge all mul + add into mad instructions
+  - [ ] local tiling of all variables
+    - [ ] local tiling for accumulators in large reduces
+    - [ ] local tiling for caching
+  - [ ] multi step reduce (with multiple accumulators)
+  - [ ] streaming dual reduce ops (e.g. streaming softmax)
+  - [x] optimizer with search
+
+- [ ] testing
+  - [ ] fuzzy tester
+    - [x] unary ops
+    - [ ] movemnt ops
+    - [ ] binary ops
+  - [x] pad_2
+  - [x] reshape_permute_1
+  - [x] rope_1
+  - [x] rope_2
+  - [x] softmax_1
+  - [x] padding on elementwise kernel
+  - [x] expand on elementwise kernel
+  - [x] reshape on elementwise kernel
+  - [x] permute on elementwise kernel
+  - [x] padding on reduce kernel
+  - [x] expand on reduce kernel
+  - [x] reshape on reduce kernel
+  - [x] permute on reduce kernel
+  - [x] lot of testing for kernelizer correctness
+  - [x] more autograd tests
 
 - [x] docs
   - [x] manual for adding new backends

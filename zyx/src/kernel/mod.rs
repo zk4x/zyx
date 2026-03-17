@@ -1,7 +1,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    realize::KMKernelId,
+    kernelize::KMKernelId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
