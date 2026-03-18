@@ -107,6 +107,7 @@
   - [x] kernel flops, memory reads, memory writes
   - [x] global to inner loop splitting
   - [ ] inner loop splitting
+  - [ ] merge loops
   - [x] unroll and jam
   - [x] loop unrolling
     - [x] in optimizer
