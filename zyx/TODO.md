@@ -111,7 +111,7 @@
   - [x] loop unrolling
     - [x] in optimizer
     - [x] in kernel
-  - [ ] remove optimizer in favor of egraphs and heuristics
+  - [ ] potentially integrate optimizer into kernel
   - [ ] improve unfold_pows
     - [ ] specialized case for integers
     - [ ] specialized case for constants

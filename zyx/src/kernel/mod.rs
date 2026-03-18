@@ -12,8 +12,13 @@ use std::{fmt::Display, hash::Hash};
 
 mod const_folding;
 mod debug;
+mod jam_loops;
 mod licm;
+mod mma;
+mod split_loops;
 mod unfold;
+mod unroll_loops;
+mod vectorize;
 
 // TODO later make this dynamic u32 or u64 depending on max range
 pub const IDX_T: DType = DType::U32;

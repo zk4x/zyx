@@ -3,24 +3,6 @@ use crate::{
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
 };
-use nanoserde::{DeBin, SerBin};
-
-/// loop unrolling
-#[derive(Debug, Clone, DeBin, SerBin)]
-pub struct LoopUnrollOpt {}
-
-impl LoopUnrollOpt {
-    pub fn new(_kernel: &Kernel) -> (Self, u32, Vec<u32>) {
-        (Self {}, 1, vec![0])
-    }
-
-    #[must_use]
-    pub fn apply_optimization(&self, index: u32, kernel: &mut Kernel) -> bool {
-        let unroll_dim = [1, 8][index as usize];
-        kernel.unroll_loops(unroll_dim);
-        true
-    }
-}
 
 impl Kernel {
     pub fn unroll_loops(&mut self, unroll_dim: usize) {

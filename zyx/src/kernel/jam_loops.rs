@@ -1,36 +1,23 @@
 use crate::{
     Map, Set,
-    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
-    shape::Dim,
 };
-use nanoserde::{DeBin, SerBin};
 
-/// loop unrolling plus loop invariant code motion
-#[derive(Debug, Clone, DeBin, SerBin)]
-pub struct LoopJamOpt {
-    max_register_bytes: Dim,
-}
-
-impl LoopJamOpt {
-    pub fn new(_kernel: &Kernel, dev_info: &DeviceInfo) -> (Self, u32, Vec<u32>) {
-        (Self { max_register_bytes: dev_info.max_register_bytes }, 1, vec![0]) // 1, 64 loop jam
-    }
-
+impl Kernel {
     // It's complex :P
     #[must_use]
-    pub fn apply_optimization(&self, _index: u32, kernel: &mut Kernel) -> bool {
+    pub fn jam_all_loops(&mut self) -> bool {
         let jam_dim = 64;
 
         let mut jam_found;
         loop {
             jam_found = false;
             let mut active_defines: Vec<(OpId, Set<OpId>)> = Vec::new();
-            let mut op_id = kernel.head;
+            let mut op_id = self.head;
             'a: while !op_id.is_null() {
-                let next = kernel.next_op(op_id);
-                match *kernel.at(op_id) {
+                let next = self.next_op(op_id);
+                match *self.at(op_id) {
                     Op::Loop { .. } => {
                         active_defines.push((op_id, Set::default()));
                     }
@@ -47,7 +34,7 @@ impl LoopJamOpt {
                     Op::Load { src, .. } => {
                         for (loop_id, define_ids) in &active_defines {
                             if define_ids.contains(&src) {
-                                let Op::Loop { len: dim, .. } = kernel.ops[*loop_id].op else { unreachable!() };
+                                let Op::Loop { len: dim, .. } = self.ops[*loop_id].op else { unreachable!() };
                                 if dim <= jam_dim {
                                     let inner_loop_id = active_defines.last().unwrap().0;
 
@@ -63,15 +50,15 @@ impl LoopJamOpt {
                                     if inner_loop_id == *loop_id {
                                         break;
                                     }
-                                    if !kernel.loop_jam(*loop_id, inner_loop_id) {
+                                    if !self.jam_loop(*loop_id, inner_loop_id) {
                                         break 'a;
                                     };
                                     //println!("Active defines: {active_defines:?}");
                                     jam_found = true;
-                                    kernel.constant_folding();
-                                    kernel.dead_code_elimination();
-                                    kernel.common_subexpression_elimination();
-                                    kernel.delete_empty_loops();
+                                    self.constant_folding();
+                                    self.dead_code_elimination();
+                                    self.common_subexpression_elimination();
+                                    self.delete_empty_loops();
                                     break 'a;
                                 }
                             }
@@ -89,11 +76,9 @@ impl LoopJamOpt {
 
         true
     }
-}
 
-impl Kernel {
     /// Jam into loop. Yes, it's complex :P
-    pub fn loop_jam(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) -> bool {
+    pub fn jam_loop(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) -> bool {
         // If any pre loop op is load, we can't apply loop jam
         let mut op_id = jam_loop_id;
         while op_id != inner_loop_id {
