@@ -108,6 +108,7 @@ impl WorkSizeOpt {
         //lws = vec![8, 4];
         //rws = vec![2, 2];
 
+        // Get existing global dims
         let mut dim_ids = Vec::new();
         let mut op_id = kernel.head;
         while !op_id.is_null() {
@@ -119,6 +120,9 @@ impl WorkSizeOpt {
         }
         dim_ids.sort_by_key(|x| x.1);
         let dim_ids: Vec<OpId> = dim_ids.into_iter().map(|x| x.0).collect();
+
+        println!("gws={gws:?} lws={lws:?} rws={rws:?}");
+        println!("dim_ids={dim_ids:?}");
 
         let mut axis = 0;
         for (((dim_id, g), l), r) in dim_ids.into_iter().zip(gws.into_iter()).zip(lws).zip(rws) {
@@ -164,6 +168,7 @@ impl Kernel {
 
     /// Splits dim (index or loop) into multiple indices or loops
     pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) {
+        println!("splitting dim_id={dim_id}, splits={splits:?}");
         #[cfg(debug_assertions)]
         {
             let mut dim = 1;

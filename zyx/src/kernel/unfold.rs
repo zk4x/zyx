@@ -11,7 +11,7 @@ impl Kernel {
     /// Apply  movement ops on views.
     /// Generates indices on views and unfolds reduce ops.
     pub fn unfold_movement_ops(&mut self) {
-        self.debug();
+        //self.debug();
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Axis {
             Index,
@@ -22,7 +22,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             order += 1;
-            println!("{op_id} {:?}", self.ops[op_id].op);
+            //println!("{op_id} {:?}", self.ops[op_id].op);
             match self.ops[op_id].op {
                 Op::ConstView(ref x) => {
                     let view = &x.1;
@@ -68,12 +68,14 @@ impl Kernel {
                                     debug_assert_eq!(rdim.2, 1);
                                     if preceded_by_reduce {
                                         match rdim.3 {
+                                            // If it was index, we put index in there
                                             Axis::Index => {
                                                 self.insert_before(
                                                     rdim.1,
                                                     Op::Index { len: 1, scope: Scope::Global, axis },
                                                 );
                                             }
+                                            // Otherwise we end the previous loop and create a new one
                                             Axis::Loop => {
                                                 self.insert_before(rdim.1, Op::Loop { len: 1, axis });
                                                 self.insert_before(op_id, Op::EndLoop);
@@ -219,14 +221,20 @@ impl Kernel {
     /// TODO this function perhaps needs to be removed and the stuff needs to be applied more directly
     /// in unfold_movement_ops function
     pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
-        println!("Recursively move {op_id}");
+        //println!("Recursively move {op_id}");
         if !visited.insert(op_id) {
             return;
         }
         match &mut self.ops[op_id].op {
             Op::LoadView(x) => match move_op {
                 MoveOp::Reshape { shape } => {
-                    x.1.reshape(0..x.1.rank() - n_reduce_axes, &shape);
+                    if n_reduce_axes > 0 {
+                        // only reshape non-singleton dimensions
+                        let shape: Vec<Dim> = shape.iter().copied().filter(|&dim| dim != 1).collect();
+                        x.1.reshape(0..x.1.rank() - n_reduce_axes, &shape);
+                    } else {
+                        x.1.reshape(0..x.1.rank() - n_reduce_axes, &shape);
+                    }
                 }
                 MoveOp::Expand { shape } => x.1.expand(&shape),
                 MoveOp::Permute { axes, .. } => x.1.permute(&axes),
@@ -239,12 +247,8 @@ impl Kernel {
                 MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, &padding),
             },
             &mut Op::Reduce { x, n_axes, .. } => match move_op {
-                MoveOp::Reshape { .. } => {}
                 MoveOp::Expand { .. } => {}
-                MoveOp::Permute { .. } => {
-                    self.recursively_move(x, move_op, visited, n_reduce_axes + n_axes);
-                }
-                MoveOp::Pad { .. } => {
+                MoveOp::Reshape { .. } | MoveOp::Permute { .. } | MoveOp::Pad { .. } => {
                     self.recursively_move(x, move_op, visited, n_reduce_axes + n_axes);
                 }
             },
