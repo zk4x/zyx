@@ -1,48 +1,9 @@
 use crate::{
-    Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId},
-    shape::Dim,
 };
-use nanoserde::{DeBin, SerBin};
 
 impl Kernel {
-    /// Reshapes, (splits or merges) reduce from original into new_dims
-    pub fn recursively_reshape(
-        &mut self,
-        op_id: OpId,
-        n_old_dims: usize,
-        new_dims: &[Dim],
-        visited: &mut Set<OpId>,
-        skip_last: usize,
-    ) {
-        if !visited.insert(op_id) {
-            return;
-        }
-        match &mut self.ops[op_id].op {
-            Op::LoadView(x) => {
-                let rank = x.1.rank();
-                x.1.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
-            }
-            Op::ConstView(x) => {
-                let rank = x.1.rank();
-                x.1.reshape(rank - skip_last - n_old_dims..rank - skip_last, new_dims);
-            }
-            &mut Op::Reduce { x, n_axes, .. } => {
-                let skip_last = skip_last + n_axes;
-                self.recursively_reshape(x, n_old_dims, new_dims, visited, skip_last);
-            }
-            &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
-                self.recursively_reshape(x, n_old_dims, new_dims, visited, skip_last);
-            }
-            &mut Op::Binary { x, y, .. } => {
-                self.recursively_reshape(x, n_old_dims, new_dims, visited, skip_last);
-                self.recursively_reshape(y, n_old_dims, new_dims, visited, skip_last);
-            }
-            _ => {}
-        }
-    }
-
     /// Get last op in the given loop scope
     pub fn get_last_dim_op(&self, loop_id: OpId) -> OpId {
         match self.ops[loop_id].op {

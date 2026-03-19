@@ -312,9 +312,9 @@ impl Kernel {
         self.ops[op_id].next
     }
 
-    pub fn ops_mut(&mut self) -> impl Iterator<Item = &mut Op> {
+    /*pub fn ops_mut(&mut self) -> impl Iterator<Item = &mut Op> {
         self.ops.values_mut().map(|op_node| &mut op_node.op)
-    }
+    }*/
 
     pub fn insert_before(&mut self, before_id: OpId, op: Op) -> OpId {
         debug_assert!(!before_id.is_null());
@@ -431,16 +431,6 @@ impl Kernel {
         self.ops.remove(op_id);
     }
 
-    pub fn apply_movement(&mut self, func: impl Fn(&mut View)) {
-        for op in self.ops_mut() {
-            match op {
-                Op::ConstView(x) => func(&mut x.1),
-                Op::LoadView(x) => func(&mut x.1),
-                _ => {}
-            }
-        }
-    }
-
     pub fn iter_unordered(&self) -> impl Iterator<Item = (OpId, &Op)> {
         self.ops.iter().map(|(id, node)| (id, &node.op))
     }
@@ -520,9 +510,9 @@ impl Kernel {
         })
     }
 
-    /*pub fn contains_stores(&self) -> bool {
+    pub fn contains_stores(&self) -> bool {
         self.ops.values().any(|x| matches!(x.op, Op::StoreView { .. }))
-    }*/
+    }
 
     pub fn is_reduce(&self) -> bool {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. }))

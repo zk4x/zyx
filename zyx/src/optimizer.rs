@@ -1,5 +1,4 @@
 use crate::{
-    Set,
     backend::DeviceInfo,
     kernel::{Kernel, Op, OpId, Scope},
     shape::Dim,
@@ -193,18 +192,16 @@ impl Optimizer {
         for &d0 in &self.default_indices[0] {
             for &d1 in &self.default_indices[1] {
                 for &d2 in &self.default_indices[2] {
-                    for &d3 in &self.default_indices[3] {
-                        let dims = [d0, d1, d2, d3];
-                        let mut index = 0;
-                        let mut stride = 1;
-                        for i in (0..dims.len()).rev() {
-                            index += dims[i] * stride;
-                            stride *= self.max_indices[i];
-                        }
-                        let opt = Optimization(index);
-                        if self.tried.insert(opt) {
-                            return Some(opt);
-                        }
+                    let dims = [d0, d1, d2];
+                    let mut index = 0;
+                    let mut stride = 1;
+                    for i in (0..dims.len()).rev() {
+                        index += dims[i] * stride;
+                        stride *= self.max_indices[i];
+                    }
+                    let opt = Optimization(index);
+                    if self.tried.insert(opt) {
+                        return Some(opt);
                     }
                 }
             }
@@ -477,8 +474,8 @@ impl LoopSplitOpt {
             let n = *n_axes;
             *n_axes = new_dims.len();
 
-            let mut visited = Set::default();
-            kernel.recursively_reshape(x, n, new_dims, &mut visited, 0);
+            //let mut visited = Set::default();
+            //kernel.recursively_reshape(x, n, new_dims, &mut visited, 0);
         }
         true
     }

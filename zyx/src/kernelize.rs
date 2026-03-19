@@ -111,11 +111,10 @@ impl<'a> Kernelizer<'a> {
         self.virt_realized_nodes.contains(&nid)
     }
 
-    /*fn duplicate_or_store(&mut self, x: TensorId, reduce_dims: Option<Dim>) -> Result<(KMKernelId, OpId), ZyxError> {
+    fn duplicate_or_store(&mut self, x: TensorId) -> Result<(KMKernelId, OpId), ZyxError> {
         let (mut kid, mut op_id) = self.visited[&x];
 
-        /*if self.kernels[kid].contains_stores() {
-            //println!("Adding store for duplicate");
+        if self.kernels[kid].contains_stores() {
             self.add_store(x)?;
             (kid, op_id) = self.create_load_kernel(x);
             if self.kernels[kid].outputs.len() > 1 {
@@ -123,27 +122,13 @@ impl<'a> Kernelizer<'a> {
             }
         }
 
-        // if it's reduce
-        if let Some(reduce_dims) = reduce_dims {
-            if self.kernels[kid].is_reduce() {
-                if reduce_dims * self.kernels[kid].reduce_dims(op_id).iter().product::<Dim>() > 32000 {
-                    //println!("Adding store for reduce");
-                    self.add_store(x)?;
-                    (kid, op_id) = self.create_load_kernel(x);
-                    if self.kernels[kid].outputs.len() > 1 {
-                        kid = self.duplicate_kernel(x, kid);
-                    }
-                }
-            }
-        }*/
-
         // If values inside reduction need to be used elsewhere, we have to duplicate
         if self.kernels[kid].outputs.len() > 1 {
             //println!("Duplicating kernel");
             //self.kernels[kid].debug();
-            //let split_reduce_dim = 1024; // Can be tuned later, or hardware based, likely needs to be MUCH higher for streaming softmax
-            //let reduce_dims_big = self.kernels[kid].reduce_dims(op_id).iter().product::<Dim>() > split_reduce_dim;
-            if self.kernels[kid].is_reduce() {
+            let split_reduce_dim = 32; // Can be tuned later, or hardware based, likely needs to be MUCH higher for streaming softmax
+            let reduce_dims_big = self.kernels[kid].reduce_dims(op_id).iter().product::<usize>() > split_reduce_dim;
+            if reduce_dims_big {
                 //println!("Adding store for reduce with outputs");
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
@@ -156,7 +141,7 @@ impl<'a> Kernelizer<'a> {
         }
 
         Ok((kid, op_id))
-    }*/
+    }
 
     fn duplicate_kernel(&mut self, x: TensorId, kid: KMKernelId) -> KMKernelId {
         //println!("op_id={op_id}");
@@ -208,11 +193,7 @@ impl<'a> Kernelizer<'a> {
 
     fn add_expand_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add expand op that inserts loop in IR
-        let (mut kid, op_id) = self.visited[&x];
-        if self.kernels[kid].outputs.len() > 1 {
-            kid = self.duplicate_kernel(x, kid);
-        }
-        //let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
+        let (kid, op_id) = self.duplicate_or_store(x)?;
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
@@ -229,12 +210,7 @@ impl<'a> Kernelizer<'a> {
 
     fn add_reshape_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         debug_assert!(self.visited.contains_key(&x), "Missing tensor {x} in visited.");
-        // TODO duplicate if it's non affine store on reduce kernel
-        let (mut kid, op_id) = self.visited[&x];
-        if self.kernels[kid].outputs.len() > 1 {
-            kid = self.duplicate_kernel(x, kid);
-        }
-        //let (kid, op_id) = self.duplicate_or_store(x, None)?;
+        let (kid, op_id) = self.duplicate_or_store(x)?;
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
@@ -249,12 +225,9 @@ impl<'a> Kernelizer<'a> {
     }
 
     fn add_permute_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
-        // TODO instead of store add permute op that swaps indices in IR
-        let (mut kid, op_id) = self.visited[&x];
-        if self.kernels[kid].outputs.len() > 1 {
-            kid = self.duplicate_kernel(x, kid);
-        }
-        //let (kid, op_id) = self.duplicate_or_store(x, None)?;
+        // TODO instead of store add permute op that swaps indices in IR in unfold_movement_ops
+        //let (kid, op_id) = self.visited[&x];
+        let (kid, op_id) = self.duplicate_or_store(x)?;
         let axes: Vec<_> = self.graph.axes(nid).into();
         let kernel = &mut self.kernels[kid];
 
@@ -270,12 +243,9 @@ impl<'a> Kernelizer<'a> {
     }
 
     fn add_pad_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
-        // TODO instead of duplication add pad op that adds if statement into ir (e.g. if idx < padding)
-        let (mut kid, op_id) = self.visited[&x];
-        if self.kernels[kid].outputs.len() > 1 {
-            kid = self.duplicate_kernel(x, kid);
-        }
-        //let (kid, op_id) = self.duplicate_or_store(x, Some(1))?;
+        // TODO instead of duplication add pad op that adds if statement into ir (e.g. if idx < padding) in unfold_movement_ops
+        //let (kid, op_id) = self.visited[&x];
+        let (kid, op_id) = self.duplicate_or_store(x)?;
         let padding = self.graph.padding(nid).into();
         let kernel = &mut self.kernels[kid];
 
@@ -293,24 +263,27 @@ impl<'a> Kernelizer<'a> {
     }
 
     fn add_reduce_op(&mut self, nid: TensorId, x: TensorId, rop: BOp) -> Result<(), ZyxError> {
-        // Don't apply reduce if the kernel already contains reduce
-        // and the resulting shape's dimension is less than 256
-
         let axes = self.graph.axes(nid);
         let shape = self.graph.shape(x);
 
         // If the kernel has more than one output, or rc of x is more than one,
         // we have to either copy it (if it is small), or store x (if kid is big)
-        //let reduce_dims_product: Dim = axes.iter().map(|&a| shape[a]).product();
-        //let (kid, mut op_id) = self.duplicate_or_store(x, Some(reduce_dims_product))?;
-        //self.debug();
+
         let (mut kid, mut op_id) = self.visited[&x];
+        if self.kernels[kid].contains_stores() {
+            self.add_store(x)?;
+            (kid, op_id) = self.create_load_kernel(x);
+            if self.kernels[kid].outputs.len() > 1 {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
+        let reduce_dims_product: usize = axes.iter().map(|&a| shape[a]).product();
         if self.kernels[kid].outputs.len() > 1 {
             // small reduces can be duplicated in the future
-            //let split_reduce_dim = 2048;
-            //let is_big_reduce = reduce_dims_product * self.kernels[kid].reduce_dims(op_id).iter().product::<Dim>() > split_reduce_dim;
-            let is_big_reduce = true;
-            if self.kernels[kid].is_reduce() && is_big_reduce {
+            let split_reduce_dim = 32000;
+            let prev_reduce_dims = self.kernels[kid].reduce_dims(op_id).iter().product::<usize>();
+            let is_big_reduce = reduce_dims_product * prev_reduce_dims > split_reduce_dim;
+            if prev_reduce_dims > 1 && is_big_reduce {
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
                 if self.kernels[kid].outputs.len() > 1 {
