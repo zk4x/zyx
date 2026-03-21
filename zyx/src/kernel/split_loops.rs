@@ -34,6 +34,10 @@ impl Kernel {
         op_id
     }
 
+    pub fn merge_dim(&mut self, dim_id: OpId) {
+        todo!()
+    }
+
     /// Splits dim (index or loop) into multiple indices or loops
     pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) {
         println!("splitting dim_id={dim_id}, splits={splits:?}");
