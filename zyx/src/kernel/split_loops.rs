@@ -1,9 +1,12 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use std::collections::BTreeMap;
+
 use crate::{
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId},
+    kernel::{BOp, Kernel, Op, OpId, Scope},
+    shape::UAxis,
 };
 
 impl Kernel {
@@ -34,8 +37,57 @@ impl Kernel {
         op_id
     }
 
-    pub fn merge_dim(&mut self, dim_id: OpId) {
-        todo!()
+    pub fn get_global_indices(&mut self) -> BTreeMap<u32, OpId> {
+        let mut indices = BTreeMap::new();
+        for (op_id, op_node) in self.ops.iter() {
+            if let Op::Index { scope, axis, .. } = op_node.op {
+                if scope == Scope::Global {
+                    indices.insert(axis, op_id);
+                }
+            }
+        }
+        indices
+    }
+
+    pub fn reindex_indices(&mut self) {
+        let mut indices = BTreeMap::new();
+        indices.insert(Scope::Global, BTreeMap::new());
+        indices.insert(Scope::Local, BTreeMap::new());
+        for (op_id, op_node) in self.ops.iter() {
+            if let Op::Index { scope, axis, .. } = op_node.op {
+                indices.get_mut(&scope).unwrap().insert(axis, op_id);
+            }
+        }
+        for (_, scoped_indices) in indices {
+            let mut ax = 0;
+            for (_, idx_id) in scoped_indices {
+                let Op::Index { axis, .. } = &mut self.ops[idx_id].op else { unreachable!() };
+                *axis = ax;
+                ax += 1;
+            }
+        }
+    }
+
+    pub fn merge_loops(&mut self, loops: &[OpId]) {
+        println!("Merging loops {loops:?}");
+        let mut acc = 1;
+        // BTreeMap is ordered
+        let mut axes = BTreeMap::default();
+        for &loop_id in loops {
+            let Op::Index { len, scope, axis } = self.ops[loop_id].op else { unreachable!() };
+            debug_assert_eq!(scope, Scope::Global);
+            acc *= len;
+            axes.insert(axis, (loop_id, len));
+        }
+        let Op::Index { scope, axis, .. } = self.ops[loops[0]].op else { unreachable!() };
+
+        let mut x = self.insert_before(loops[0], Op::Index { len: acc, scope, axis });
+
+        for (.., (loop_id, len)) in axes.into_iter().rev() {
+            let y = self.insert_before(loops[0], Op::Const(Constant::idx(len as u64)));
+            self.ops[loop_id].op = Op::Binary { x, y, bop: BOp::Mod };
+            x = self.insert_before(loops[0], Op::Binary { x, y, bop: BOp::Div });
+        }
     }
 
     /// Splits dim (index or loop) into multiple indices or loops

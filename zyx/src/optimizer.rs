@@ -370,10 +370,20 @@ impl WorkSizeOpt {
             *g /= l * r;
         }
 
-        kernel.debug();
-
         debug_assert_eq!(gws.len(), lws.len());
         debug_assert_eq!(lws.len(), rws.len());
+
+        // Fix if kernel has more than 3 dims
+        let global_indices = kernel.get_global_indices();
+        if global_indices.len() > 3 {
+            kernel.debug();
+            let n = global_indices.len() - 2;
+            let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
+            kernel.merge_loops(&loops);
+        }
+        kernel.reindex_indices();
+
+        kernel.debug();
 
         //gws = vec![64, 128];
         //lws = vec![8, 4];
