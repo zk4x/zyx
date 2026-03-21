@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use zyx::{DType, Tensor, ZyxError};
+use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn t01() -> Result<(), ZyxError> {
@@ -120,5 +120,61 @@ fn b_sftmx2() -> Result<(), ZyxError> {
     let y = x.sum([-1])?;
     let y = y.expand(1024)?;
     y.realize()?;
+    Ok(())
+}
+
+#[test]
+fn sftmx3() -> Result<(), ZyxError> {
+    use zyx::{DType, Tensor};
+
+    let shape = [2048, 320];
+
+    // Input
+    let x = Tensor::rand(shape, DType::F32)?;
+
+    // Compute using your implementation
+    let y = x.softmax([-1])?;
+    let y_host: Vec<f32> = y.try_into()?;
+
+    // Reference implementation (stable softmax)
+    let x_host: Vec<f32> = x.try_into()?;
+    let mut y_ref = vec![0.0f32; x_host.len()];
+
+    for row in 0..shape[0] {
+        let start = row * shape[1];
+        let end = start + shape[1];
+
+        let row_slice = &x_host[start..end];
+
+        // max for numerical stability
+        let max = row_slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+        // exp + sum
+        let mut sum = 0.0;
+        for i in 0..shape[1] {
+            let e = (row_slice[i] - max).exp();
+            y_ref[start + i] = e;
+            sum += e;
+        }
+
+        // normalize
+        for i in 0..shape[1] {
+            y_ref[start + i] /= sum;
+        }
+    }
+
+    // Compare
+    for i in 0..y_host.len() {
+        let a = y_host[i];
+        let b = y_ref[i];
+
+        let diff = (a - b).abs();
+
+        assert!(
+            a.is_equal(b),
+            "Mismatch at index {i}: got {a}, expected {b}, diff={diff}"
+        );
+    }
+
     Ok(())
 }

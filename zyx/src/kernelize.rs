@@ -129,8 +129,9 @@ impl<'a> Kernelizer<'a> {
         if self.kernels[kid].outputs.len() > 1 {
             //println!("Duplicating kernel");
             //self.kernels[kid].debug();
-            let split_reduce_dim = 32; // Can be tuned later, or hardware based, likely needs to be MUCH higher for streaming softmax
-            let reduce_dims_big = self.kernels[kid].reduce_dims(op_id).iter().product::<usize>() > split_reduce_dim;
+            //let split_reduce_dim = 32; // Can be tuned later, or hardware based, likely needs to be MUCH higher for streaming softmax
+            //let reduce_dims_big = self.kernels[kid].cumulative_reduce_dim(op_id, 1) > split_reduce_dim;
+            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
                 //println!("Adding store for reduce with outputs");
                 self.add_store(x)?;
@@ -149,6 +150,7 @@ impl<'a> Kernelizer<'a> {
     fn duplicate_kernel(&mut self, x: TensorId, kid: KMKernelId) -> KMKernelId {
         //println!("op_id={op_id}");
         //println!("Duplicating");
+        //self.kernels[kid].debug();
         // Instead of copy of the whole kernel, copy only relevant ops
         // and remove these ops from the original if not needed.
         let mut kernel = self.kernels[kid].clone();
@@ -280,13 +282,16 @@ impl<'a> Kernelizer<'a> {
                 kid = self.duplicate_kernel(x, kid);
             }
         }
-        let reduce_dims_product: usize = axes.iter().map(|&a| shape[a]).product();
+        //let reduce_dims_product: usize = axes.iter().map(|&a| shape[a]).product();
         if self.kernels[kid].outputs.len() > 1 {
+            // TODO
             // small reduces can be duplicated in the future
-            let split_reduce_dim = 32000;
-            let prev_reduce_dims = self.kernels[kid].reduce_dims(op_id).iter().product::<usize>();
-            let is_big_reduce = reduce_dims_product * prev_reduce_dims > split_reduce_dim;
-            if prev_reduce_dims > 1 && is_big_reduce {
+            //let split_reduce_dim = 32000;
+            //println!("prev_reduce_dims={prev_reduce_dims}");
+            //let is_duplicated_big_reduce = prev_reduce_dims > 32;
+            //let is_big_reduce = reduce_dims_product * prev_reduce_dims > split_reduce_dim;
+            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
+            if reduce_dims_big {
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
                 if self.kernels[kid].outputs.len() > 1 {

@@ -423,11 +423,12 @@ impl LoopSplitOpt {
         let mut reduction_splits = Vec::new();
 
         // Find all reduction ops
-        for (op_id, op) in kernel.iter_unordered() {
+        for (_, op) in kernel.iter_unordered() {
             if let Op::Reduce { n_axes, .. } = *op {
                 // Generate all valid splits for these dimensions
                 // Calculate the total product of all dimensions
-                let mut reduce_dims = kernel.reduce_dims(op_id);
+                //let mut reduce_dims = kernel.reduce_dims(op_id);
+                let mut reduce_dims = vec![1];
                 reduce_dims.truncate(n_axes);
                 let total_product: Dim = reduce_dims.iter().product();
 

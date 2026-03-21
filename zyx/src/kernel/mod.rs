@@ -521,45 +521,18 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. }))
     }
 
-    pub fn reduce_dims(&self, op_id: OpId) -> Vec<Dim> {
-        let mut params = vec![op_id];
-        let mut n_reduce_axes = 0;
-        let mut visited = Set::default();
-        while let Some(param) = params.pop() {
-            if visited.insert(param) {
-                match self.at(param) {
-                    Op::ConstView(x) => {
-                        let view = &x.1;
-                        let n = view.rank();
-                        return view.shape()[n - n_reduce_axes..].into();
-                    }
-                    Op::LoadView(x) => {
-                        let view = &x.1;
-                        let n = view.rank();
-                        return view.shape()[n - n_reduce_axes..].into();
-                    }
-                    Op::Reduce { n_axes, .. } => n_reduce_axes += n_axes,
-                    Op::Move { mop, .. } => match mop.as_ref() {
-                        MoveOp::Reshape { shape, .. } => {
-                            return shape[shape.len() - n_reduce_axes..].into();
-                        }
-                        MoveOp::Expand { shape } => {
-                            return shape[shape.len() - n_reduce_axes..].into();
-                        }
-                        MoveOp::Permute { shape, .. } => {
-                            return shape[shape.len() - n_reduce_axes..].into();
-                        }
-                        MoveOp::Pad { shape, .. } => {
-                            return shape[shape.len() - n_reduce_axes..].into();
-                        }
-                    },
-                    _ => {}
-                }
-                params.extend(self.at(param).parameters());
-            }
+    // TODO as of now this is just imprecise estimate, make it better,
+    // it does not correctly handle reshapes.
+    /*pub fn cumulative_reduce_dim(&self, op_id: OpId, acc: Dim) -> Dim {
+        match self.ops[op_id].op {
+            Op::Cast { x, .. } | Op::Unary { x, .. } => self.cumulative_reduce_dim(x, acc),
+            Op::Binary { x, y, .. } => self.cumulative_reduce_dim(x, acc) * self.cumulative_reduce_dim(y, acc),
+            Op::ConstView(_) | Op::LoadView(_) => acc,
+            Op::Move { x, .. } => self.cumulative_reduce_dim(op_id, acc),
+            Op::Reduce { x, .. } => self.cumulative_reduce_dim(op_id, acc) * shape[n_axes].product9),
+            ref op => todo!("{op:?}"),
         }
-        unreachable!();
-    }
+    }*/
 
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.values().any(|x| matches!(x.op, Op::Index { .. })) {
@@ -657,7 +630,7 @@ impl Kernel {
     /// if returned loop_id is OpId::NULL, the stride is constant and dimension is 0 (unknown)
     pub fn get_strides(&self, index: OpId) -> Map<OpId, (Dim, Dim)> {
         use Op::*;
-        println!("Get index {index}");
+        //println!("Get index {index}");
 
         let mut params = vec![index];
         let mut indices = Map::default();

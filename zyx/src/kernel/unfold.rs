@@ -7,14 +7,14 @@ use crate::{
     Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, Scope},
-    shape::{Dim, UAxis},
+    shape::{Dim, UAxis, permute},
 };
 
 impl Kernel {
     /// Apply  movement ops on views.
     /// Generates indices on views and unfolds reduce ops.
     pub fn unfold_movement_ops(&mut self) {
-        self.debug();
+        //self.debug();
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Axis {
             Index,
@@ -23,7 +23,7 @@ impl Kernel {
         let mut running_dims: Map<OpId, Vec<(u32, OpId, Dim, Axis)>> = Map::default();
         let mut order = 0;
         // Mask that shows which axes for each View are active as of the latest op
-        let mut active_axes: Map<OpId, Vec<bool>> = Map::default();
+        let mut active_axes: Map<OpId, (usize, Vec<bool>)> = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
             order += 1;
@@ -37,7 +37,7 @@ impl Kernel {
                         rdims.push((order, op_id, dim, Axis::Index));
                     }
                     running_dims.insert(op_id, rdims);
-                    active_axes.insert(op_id, vec![true; shape.len()]);
+                    active_axes.insert(op_id, (shape.len(), vec![true; shape.len()]));
                 }
                 Op::LoadView(ref x) => {
                     let view = &x.1;
@@ -47,12 +47,13 @@ impl Kernel {
                         rdims.push((order, op_id, dim, Axis::Index));
                     }
                     running_dims.insert(op_id, rdims);
-                    active_axes.insert(op_id, vec![true; shape.len()]);
+                    active_axes.insert(op_id, (shape.len(), vec![true; shape.len()]));
                 }
                 Op::Move { x, ref mop } => {
                     running_dims.insert(op_id, running_dims[&x].clone());
                     let rdims = running_dims.get_mut(&op_id).unwrap();
                     let mop = mop.clone();
+                    //let mut mask_update_func;
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
                             let preceded_by_reduce = self.is_preceded_by_reduce(x);
@@ -64,6 +65,15 @@ impl Kernel {
                                 } else {
                                     rdims.push((rorder, rid, d, Axis::Index));
                                 }
+                            }
+                            if preceded_by_reduce {
+                                self.recursively_update_mask(x, &mut active_axes, |(_, mask)| {
+                                    *mask = shape.iter().copied().map(|d| d != 1).collect();
+                                });
+                            } else {
+                                self.recursively_update_mask(x, &mut active_axes, |(_, mask)| {
+                                    *mask = vec![true; shape.len()];
+                                });
                             }
                         }
                         MoveOp::Expand { shape } => {
@@ -100,6 +110,9 @@ impl Kernel {
                         MoveOp::Permute { axes, .. } => {
                             debug_assert_eq!(rdims.len(), axes.len());
                             *rdims = crate::shape::permute(rdims, axes);
+                            self.recursively_update_mask(x, &mut active_axes, |(_, mask)| {
+                                *mask = permute(mask, axes);
+                            });
                         }
                         MoveOp::Pad { padding, .. } => {
                             debug_assert_eq!(rdims.len(), padding.len());
@@ -108,7 +121,8 @@ impl Kernel {
                             }
                         }
                     }
-                    self.recursively_move(x, &mop, &mut Set::default(), 0);
+                    //self.recursively_update_mask(op_id, &mut active_axes, mask_update_func);
+                    self.recursively_move(x, &mop, &mut Set::default(), &mut active_axes);
                 }
                 Op::Reduce { n_axes, x, .. } => {
                     running_dims.insert(op_id, running_dims[&x].clone());
@@ -120,7 +134,14 @@ impl Kernel {
                         //println!("reduce before_id={before_id}");
                         self.insert_before(before_id, Op::Loop { len, axis });
                     }
-                    self.recursively_remove_active_axes(x, &mut active_axes, n_axes);
+                    self.recursively_update_mask(x, &mut active_axes, |(n, mask)| {
+                        for _ in 0..n_axes {
+                            // If we are removing axis that is in use
+                            if mask.pop().unwrap() {
+                                *n -= 1;
+                            }
+                        }
+                    });
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } | Op::StoreView { src: x, .. } => {
                     running_dims.insert(op_id, running_dims[&x].clone());
@@ -226,42 +247,22 @@ impl Kernel {
         false
     }
 
-    fn recursively_insert_singleton_axes(
+    fn recursively_update_mask(
         &self,
         op_id: OpId,
-        active_axes: &mut Map<OpId, Vec<bool>>,
-        singleton_axes: &[bool],
+        active_axes: &mut Map<OpId, (UAxis, Vec<bool>)>,
+        mut func: impl FnMut(&mut (UAxis, Vec<bool>)) + Clone,
     ) {
         match self.ops[op_id].op {
             Op::Move { x, .. } | Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                self.recursively_insert_singleton_axes(x, active_axes, singleton_axes)
+                self.recursively_update_mask(x, active_axes, func)
             }
             Op::Binary { x, y, .. } => {
-                self.recursively_insert_singleton_axes(x, active_axes, singleton_axes);
-                self.recursively_insert_singleton_axes(y, active_axes, singleton_axes);
+                self.recursively_update_mask(x, active_axes, func.clone());
+                self.recursively_update_mask(y, active_axes, func);
             }
             Op::LoadView(_) | Op::ConstView(_) => {
-                /*for _ in 0..n_axes {
-                    active_axes.get_mut(&op_id).unwrap().pop();
-                }*/
-            }
-            _ => {}
-        }
-    }
-
-    fn recursively_remove_active_axes(&self, op_id: OpId, active_axes: &mut Map<OpId, Vec<bool>>, n_axes: usize) {
-        match self.ops[op_id].op {
-            Op::Move { x, .. } | Op::Reduce { x, .. } | Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                self.recursively_remove_active_axes(x, active_axes, n_axes)
-            }
-            Op::Binary { x, y, .. } => {
-                self.recursively_remove_active_axes(x, active_axes, n_axes);
-                self.recursively_remove_active_axes(y, active_axes, n_axes);
-            }
-            Op::LoadView(_) | Op::ConstView(_) => {
-                for _ in 0..n_axes {
-                    active_axes.get_mut(&op_id).unwrap().pop();
-                }
+                func(active_axes.get_mut(&op_id).unwrap());
             }
             _ => {}
         }
@@ -269,7 +270,13 @@ impl Kernel {
 
     /// TODO this function perhaps needs to be removed and the stuff needs to be applied more directly
     /// in unfold_movement_ops function
-    pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, rank: UAxis) {
+    pub fn recursively_move(
+        &mut self,
+        op_id: OpId,
+        move_op: &MoveOp,
+        visited: &mut Set<OpId>,
+        active_axes: &mut Map<OpId, (UAxis, Vec<bool>)>,
+    ) {
         //println!("Recursively move {op_id}");
         if !visited.insert(op_id) {
             return;
@@ -277,52 +284,59 @@ impl Kernel {
         match &mut self.ops[op_id].op {
             Op::LoadView(x) => match move_op {
                 MoveOp::Reshape { shape } => {
-                    if rank > 0 {
-                        // only reshape non-singleton dimensions
-                        let shape: Vec<Dim> = shape.iter().copied().filter(|&dim| dim != 1).collect();
-                        x.1.reshape(0..rank, &shape);
-                    } else {
-                        x.1.reshape(0..rank, &shape);
-                    }
+                    //println!("Reshape {} to {shape:?}, mask: {:?}", x.1, active_axes[&op_id]);
+                    let (n, mask) = &active_axes[&op_id];
+                    let shape: Vec<Dim> = shape
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .filter_map(|(i, dim)| if mask[i] { Some(dim) } else { None })
+                        .collect();
+                    x.1.reshape(0..*n, &shape);
+                    active_axes.get_mut(&op_id).unwrap().0 = shape.len();
                 }
                 MoveOp::Expand { shape } => x.1.expand(&shape),
                 MoveOp::Permute { axes, .. } => x.1.permute(&axes),
-                MoveOp::Pad { padding, .. } => x.1.pad(rank, &padding),
+                MoveOp::Pad { padding, .. } => {
+                    let (n, _) = &active_axes[&op_id];
+                    x.1.pad(*n, &padding);
+                }
             },
             Op::ConstView(x) => match move_op {
                 MoveOp::Reshape { shape } => {
-                    if rank > 0 {
-                        // only reshape non-singleton dimensions
-                        let shape: Vec<Dim> = shape.iter().copied().filter(|&dim| dim != 1).collect();
-                        x.1.reshape(0..rank, &shape);
-                    } else {
-                        x.1.reshape(0..rank, &shape);
-                    }
+                    //println!("Reshape {} to {shape:?}, mask: {:?}", x.1, active_axes[&op_id]);
+                    let (n, mask) = &active_axes[&op_id];
+                    let shape: Vec<Dim> = shape
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .filter_map(|(i, dim)| if mask[i] { Some(dim) } else { None })
+                        .collect();
+                    x.1.reshape(0..*n, &shape);
+                    active_axes.get_mut(&op_id).unwrap().0 = shape.len();
                 }
                 MoveOp::Expand { shape } => x.1.expand(&shape),
                 MoveOp::Permute { axes, .. } => x.1.permute(&axes),
-                MoveOp::Pad { padding, .. } => x.1.pad(rank, &padding),
+                MoveOp::Pad { padding, .. } => {
+                    let (n, _) = &active_axes[&op_id];
+                    x.1.pad(*n, &padding);
+                }
             },
-            &mut Op::Reduce { x, n_axes, .. } => match move_op {
+            &mut Op::Reduce { x, .. } => match move_op {
                 MoveOp::Expand { .. } => {}
                 MoveOp::Reshape { .. } | MoveOp::Permute { .. } | MoveOp::Pad { .. } => {
-                    self.recursively_move(x, move_op, visited, rank + n_axes);
+                    self.recursively_move(x, move_op, visited, active_axes);
                 }
             },
             &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
-                self.recursively_move(x, move_op, visited, rank);
+                self.recursively_move(x, move_op, visited, active_axes);
+            }
+            &mut Op::Move { x, .. } => {
+                self.recursively_move(x, move_op, visited, active_axes);
             }
             &mut Op::Binary { x, y, .. } => {
-                self.recursively_move(x, move_op, visited, rank);
-                self.recursively_move(y, move_op, visited, rank);
-            }
-            &mut Op::Move { x, ref mop } => {
-                if let MoveOp::Reshape { shape } = mop.as_ref() {
-                    let rank = shape.len();
-                    self.recursively_move(x, move_op, visited, rank);
-                } else {
-                    self.recursively_move(x, move_op, visited, rank);
-                }
+                self.recursively_move(x, move_op, visited, active_axes);
+                self.recursively_move(y, move_op, visited, active_axes);
             }
             _ => {}
         }
