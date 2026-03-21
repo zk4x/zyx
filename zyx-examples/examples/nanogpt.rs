@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // nanoGPT, credit goes to Andrej Karpathy and great minds who invented parts of this model
 // https://github.com/karpathy/nanoGPT
 

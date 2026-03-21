@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! View handles movement operations.
 
 use nanoserde::{DeBin, SerBin};

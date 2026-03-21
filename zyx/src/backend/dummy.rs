@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, ProgramId, opencl::OpenCLEvent};
 use crate::{
     error::{BackendError, ErrorStatus},

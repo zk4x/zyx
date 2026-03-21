@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Runtime handles tensor graph and connects tensors to device buffers.
 use crate::backend::{BufferId, Config, Device, Event, MemoryPool, SearchConfig};
 use crate::cache::Cache;

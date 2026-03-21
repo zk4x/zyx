@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Just a few basic random generaton things from rand-core adjusted for purposes of zyx.
 //! Copyright 2018 Developers of the Rand project.
 

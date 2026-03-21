@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
 use crate::{
     DType, Map,

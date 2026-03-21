@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! `OpenCL` backend
 
 #![allow(non_camel_case_types)]

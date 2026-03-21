@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! This file creates backend agnostic API to backends
 //! That is it contains enums that dispatch function calls to appropriate backends.
 //! Backend automatically keeps track of hardware queues.

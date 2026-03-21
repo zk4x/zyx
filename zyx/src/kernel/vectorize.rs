@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use crate::{
     dtype::Constant, kernel::{BOp, Kernel, Op, OpId}, shape::Dim
 };

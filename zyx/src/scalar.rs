@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Trait describing required operations on scalar values
 
 use crate::dtype::DType;

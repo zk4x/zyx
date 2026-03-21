@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::{io::Write, iter::repeat_n};
 
 pub struct ProgressBar {

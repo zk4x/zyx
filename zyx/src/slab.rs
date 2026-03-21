@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Index map using unsinged integer indices to index
 //! into vector of T. Pushing new values returns their
 //! index. Removing elements is O(1), does not reallocate

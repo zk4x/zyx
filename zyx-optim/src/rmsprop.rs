@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // In your code base or inside zyx_optim crate
 use zyx::Tensor;
 use zyx_derive::Module;

@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 

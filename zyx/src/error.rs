@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::fmt::Display;
 
 /// Enumeration representing the various errors that can occur within the Zyx library.

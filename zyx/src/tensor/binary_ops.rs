@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 use super::Tensor;
 use half::{bf16, f16};

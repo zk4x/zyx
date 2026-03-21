@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use crate::{Tensor, ZyxError, tensor::Axis};
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo};
 
