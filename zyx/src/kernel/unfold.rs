@@ -227,6 +227,7 @@ impl Kernel {
         self.verify();
 
         self.unfold_reduces();
+        //self.debug();
         self.unfold_views();
 
         // TODO remove this from here
@@ -238,6 +239,7 @@ impl Kernel {
         self.constant_folding();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
+        //self.debug();
     }
 
     pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
@@ -473,7 +475,6 @@ impl Kernel {
                                     constant_zero
                                 }
                             };
-                            ax += 1;
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {

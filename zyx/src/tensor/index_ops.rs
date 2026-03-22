@@ -97,43 +97,39 @@ impl Tensor {
         let padding = std::iter::repeat_n((0, 0), rank - padding_len);
 
         let padding = padding.chain(
-            index
-                .zip(shape.into_iter())
-                .enumerate()
-                .map(|(axis, (dim_index, dim_size))| match dim_index {
-                    DimIndex::Range { start, end } => {
-                        let s = if start < 0 { start + dim_size as i32 } else { start };
-                        let e = if end > dim_size as i32 {
-                            dim_size as i32
-                        } else if end < 0 {
-                            end + dim_size as i32
-                        } else {
-                            end
-                        };
-                        (-s, -(dim_size as i32 - e))
-                    }
-                    DimIndex::Index(i) => {
-                        squeeze_axes.push(axis as i32);
-                        let i = if i < 0 { i + dim_size as i32 } else { i };
-                        (-i, -(dim_size as i32 - i - 1))
-                    }
-                    DimIndex::RangeFull => (0, 0),
-                    DimIndex::RangeFrom { start } => {
-                        let s = if start < 0 { start + dim_size as i32 } else { start };
-                        (-s, 0)
-                    }
-                    DimIndex::RangeTo { end } => {
-                        let e = if end > dim_size as i32 {
-                            dim_size as i32
-                        } else if end < 0 {
-                            end + dim_size as i32
-                        } else {
-                            end
-                        };
-                        (0, -(dim_size as i32 - e))
-                    }
-                })
-                .rev(),
+            index.zip(shape.into_iter()).enumerate().map(|(axis, (dim_index, dim_size))| match dim_index {
+                DimIndex::Range { start, end } => {
+                    let s = if start < 0 { start + dim_size as i32 } else { start };
+                    let e = if end > dim_size as i32 {
+                        dim_size as i32
+                    } else if end < 0 {
+                        end + dim_size as i32
+                    } else {
+                        end
+                    };
+                    (-s, -(dim_size as i32 - e))
+                }
+                DimIndex::Index(i) => {
+                    squeeze_axes.push(axis as i32);
+                    let i = if i < 0 { i + dim_size as i32 } else { i };
+                    (-i, -(dim_size as i32 - i - 1))
+                }
+                DimIndex::RangeFull => (0, 0),
+                DimIndex::RangeFrom { start } => {
+                    let s = if start < 0 { start + dim_size as i32 } else { start };
+                    (-s, 0)
+                }
+                DimIndex::RangeTo { end } => {
+                    let e = if end > dim_size as i32 {
+                        dim_size as i32
+                    } else if end < 0 {
+                        end + dim_size as i32
+                    } else {
+                        end
+                    };
+                    (0, -(dim_size as i32 - e))
+                }
+            }),
         );
 
         let mut result = self.pad_zeros(padding)?;
@@ -189,7 +185,7 @@ impl Tensor {
 
         let padding = padding.chain(std::iter::repeat_n((0, 0), rank - padding_len));
 
-        let mut result = self.pad_zeros(padding)?;
+        let mut result = self.pad_zeros_rev(padding)?;
         result = result.squeeze(squeeze_axes);
 
         Ok(result)
@@ -219,7 +215,7 @@ impl Tensor {
         let n = *self.shape().last().expect("Shape in invalid state. Internal bug.");
         self.flatten(..)
             .unwrap()
-            .pad_zeros([(0, i32::try_from(n).unwrap())])
+            .pad_zeros_rev([(0, i32::try_from(n).unwrap())])
             .unwrap()
             .reshape([n, n + 1])
             .unwrap()

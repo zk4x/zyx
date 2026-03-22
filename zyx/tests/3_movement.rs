@@ -43,7 +43,7 @@ fn permute_2() -> Result<(), ZyxError> {
 #[test]
 fn pad_1() -> Result<(), ZyxError> {
     let a = Tensor::from([[1, 2], [3, 4]]);
-    let c = a.pad_zeros([(0, 0), (0, 2)])?;
+    let c = a.pad_zeros([(0, 2), (0, 0)])?;
     assert_eq!(c, [[1, 2], [3, 4], [0, 0], [0, 0]]);
     Ok(())
 }
@@ -52,7 +52,7 @@ fn pad_1() -> Result<(), ZyxError> {
 fn pad_2() -> Result<(), ZyxError> {
     let a = Tensor::from([[1i32, 2], [3, 4]]).reshape([1, 1, 2, 2])?;
     let b = Tensor::from([[5, 6], [7, 8]]).reshape([1, 1, 1, 4])?;
-    let c = a.pad_zeros([(0, 2), (0, 2)])? + b;
+    let c = a.pad_zeros([(0, 0), (0, 0), (0, 2), (0, 2)])? + b;
     assert_eq!(c, [[[[6i32, 8, 7, 8], [8, 10, 7, 8], [5, 6, 7, 8], [5, 6, 7, 8]]]]);
     Ok(())
 }
@@ -63,11 +63,11 @@ fn rope_1() -> Result<(), ZyxError> {
     let sin_freq = Tensor::from([[2, 3], [3, 1]]);
     let cos_freq = Tensor::from([[2, 3], [3, 1]]);
 
-    let a = x.pad_zeros([(-2, 0)])?;
-    let b = -x.pad_zeros([(0, -2)])?;
+    let a = x.pad_zeros_rev([(-2, 0)])?;
+    let b = -x.pad_zeros_rev([(0, -2)])?;
     let z = &a * &sin_freq - &b * &cos_freq;
     let z2 = a * sin_freq + b * cos_freq;
-    let z3 = z.pad_zeros([(0, 2)])? + z2.pad_zeros([(2, 0)])?;
+    let z3 = z.pad_zeros_rev([(0, 2)])? + z2.pad_zeros_rev([(2, 0)])?;
     drop(x);
     //drop(z);
     drop(z2);

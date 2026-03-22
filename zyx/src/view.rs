@@ -326,7 +326,7 @@ impl View {
 
     pub fn pad(&mut self, rank: UAxis, padding: &[(i32, i32)]) {
         //println!("view: {:?} padding: {padding:?}", self.shape());
-        for (axis, &(lp, rp)) in (0..rank).rev().zip(padding) {
+        for (axis, &(lp, rp)) in (0..rank).zip(padding) {
             if lp != 0 || rp != 0 {
                 self.pad_axis(axis, lp, rp);
             }
