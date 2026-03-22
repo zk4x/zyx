@@ -58,8 +58,9 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let x = id_map[&x];
                     if has_loops {
-                        indent.pop();
-                        indent.pop();
+                        for _ in 0..n_axes * 2 {
+                            indent.pop();
+                        }
                     }
                     println!(
                         "{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}reduce {}{RESET} r{x}, dims={n_axes:?} {}",

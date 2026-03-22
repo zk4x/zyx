@@ -44,11 +44,13 @@ impl Kernel {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtype);
                 }
-                Op::Reduce { x, .. } => {
+                Op::Reduce { x, n_axes, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                     if stack.len() > 1 {
-                        stack.pop();
+                        for _ in 0..n_axes {
+                            stack.pop();
+                        }
                     }
                 }
                 Op::Unary { x, .. } => {
