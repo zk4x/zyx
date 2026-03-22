@@ -57,13 +57,18 @@ impl Kernel {
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
                             let preceded_by_reduce = self.is_preceded_by_reduce(x);
-                            let &(rorder, rid, _, _) = rdims.iter().min_by_key(|x| x.0).unwrap();
-                            rdims.clear();
-                            for &d in shape {
-                                if d == 1 && preceded_by_reduce {
+                            if let Some(&(rorder, rid, _, _)) = rdims.iter().min_by_key(|x| x.0) {
+                                rdims.clear();
+                                for &d in shape {
+                                    if d == 1 && preceded_by_reduce {
+                                        rdims.push((order, op_id, d, Axis::Loop));
+                                    } else {
+                                        rdims.push((rorder, rid, d, Axis::Index));
+                                    }
+                                }
+                            } else {
+                                for &d in shape {
                                     rdims.push((order, op_id, d, Axis::Loop));
-                                } else {
-                                    rdims.push((rorder, rid, d, Axis::Index));
                                 }
                             }
                             if preceded_by_reduce {

@@ -133,8 +133,11 @@ impl Optimizer {
             loop_split_opt_defaults,
         ];
 
-        //println!( "Optimizing work_size_opt_max_idx={work_size_opt_max_idx},\nloop_jam_opt_max_idx={loop_jam_opt_max_idx},\nloop_unrolling_opt_max_idx={loop_unroll_opt_max_idx},\nloop_split_opt_max_idx={loop_split_opt_max_idx}" );
+        /*println!(
+            "Optimizing work_size_opt_max_idx={work_size_opt_max_idx},\nloop_unrolling_opt_max_idx={loop_unroll_opt_max_idx},\nloop_split_opt_max_idx={loop_split_opt_max_idx}"
+        );*/
         //println!("Max default opts: {:?}", default_indices);
+        //println!("max_indices={max_indices:?}");
 
         Self {
             max_indices,
@@ -202,6 +205,7 @@ impl Optimizer {
                         index += dims[i] * stride;
                         stride *= self.max_indices[i];
                     }
+                    //println!("dims={dims:?} index={index}");
                     let opt = Optimization(index);
                     if self.tried.insert(opt) {
                         return Some(opt);
@@ -220,6 +224,7 @@ impl Optimizer {
         let mut rng = crate::rng::Rng::seed_from_u64(642392);
         //let mut rng = crate::rng::Rng::seed_from_systime();
         for _ in 0..1_000_000 {
+            //println!("max_iter={}", self.max_iter);
             let index = rng.range(0..self.max_iter);
             if self.tried.insert(Optimization(index)) {
                 return Some(Optimization(index));
@@ -462,7 +467,7 @@ impl LoopSplitOpt {
         let max_index = reduction_splits.iter().map(|splits| splits.len() as u32).product::<u32>();
 
         //println!("reduction_splits={reduction_splits:?}");
-        (LoopSplitOpt { reduction_splits }, max_index, vec![1, 2])
+        (LoopSplitOpt { reduction_splits }, max_index, vec![0])
     }
 
     pub fn apply_optimization(&self, mut index: u32, kernel: &mut Kernel) -> bool {

@@ -1,8 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use crate::kernel::{Kernel, Op, OpId};
 use crate::{Map, Set};
-use crate::kernel::{Kernel, OpId, Op};
 
 impl Kernel {
     pub fn swap_commutative(&mut self) {

@@ -609,7 +609,7 @@ impl Kernel {
             }
             op_id = self.prev_op(op_id);
         }
-        unreachable!()
+        Vec::new()
     }
 
     #[allow(unused)]
