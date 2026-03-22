@@ -376,14 +376,14 @@ impl WorkSizeOpt {
         // Fix if kernel has more than 3 dims
         let global_indices = kernel.get_global_indices();
         if global_indices.len() > 3 {
-            kernel.debug();
+            //kernel.debug();
             let n = global_indices.len() - 2;
             let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
             kernel.merge_loops(&loops);
         }
         kernel.reindex_indices();
 
-        kernel.debug();
+        //kernel.debug();
 
         //gws = vec![64, 128];
         //lws = vec![8, 4];
@@ -402,8 +402,8 @@ impl WorkSizeOpt {
         dim_ids.sort_by_key(|x| x.1);
         let dim_ids: Vec<OpId> = dim_ids.into_iter().map(|x| x.0).collect();
 
-        println!("gws={gws:?} lws={lws:?} rws={rws:?}");
-        println!("dim_ids={dim_ids:?}");
+        //println!("gws={gws:?} lws={lws:?} rws={rws:?}");
+        //println!("dim_ids={dim_ids:?}");
 
         let mut axis = 0;
         for (((dim_id, g), l), r) in dim_ids.into_iter().zip(gws.into_iter()).zip(lws).zip(rws) {

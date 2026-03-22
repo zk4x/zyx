@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
-    shape::UAxis,
 };
 
 impl Kernel {
@@ -69,30 +68,39 @@ impl Kernel {
     }
 
     pub fn merge_loops(&mut self, loops: &[OpId]) {
-        println!("Merging loops {loops:?}");
+        //println!("Merging loops {loops:?}");
         let mut acc = 1;
         // BTreeMap is ordered
         let mut axes = BTreeMap::default();
-        for &loop_id in loops {
-            let Op::Index { len, scope, axis } = self.ops[loop_id].op else { unreachable!() };
-            debug_assert_eq!(scope, Scope::Global);
-            acc *= len;
-            axes.insert(axis, (loop_id, len));
+        let mut first_id = None;
+        let mut op_id = self.head;
+        while axes.len() != loops.len() {
+            if loops.contains(&op_id) {
+                let Op::Index { len, scope, axis } = self.ops[op_id].op else { unreachable!() };
+                debug_assert_eq!(scope, Scope::Global);
+                acc *= len;
+                axes.insert(axis, (op_id, len));
+                if first_id.is_none() {
+                    first_id = Some(op_id);
+                }
+            }
+            op_id = self.next_op(op_id);
         }
-        let Op::Index { scope, axis, .. } = self.ops[loops[0]].op else { unreachable!() };
 
-        let mut x = self.insert_before(loops[0], Op::Index { len: acc, scope, axis });
+        let Op::Index { scope, axis, .. } = self.ops[first_id.unwrap()].op else { unreachable!() };
+        let mut x = self.insert_before(first_id.unwrap(), Op::Index { len: acc, scope, axis });
 
         for (.., (loop_id, len)) in axes.into_iter().rev() {
-            let y = self.insert_before(loops[0], Op::Const(Constant::idx(len as u64)));
+            //println!("Adding {loop_id} len={len}");
+            let y = self.insert_before(loop_id, Op::Const(Constant::idx(len as u64)));
             self.ops[loop_id].op = Op::Binary { x, y, bop: BOp::Mod };
-            x = self.insert_before(loops[0], Op::Binary { x, y, bop: BOp::Div });
+            x = self.insert_after(loop_id, Op::Binary { x, y, bop: BOp::Div });
         }
     }
 
     /// Splits dim (index or loop) into multiple indices or loops
     pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) {
-        println!("splitting dim_id={dim_id}, splits={splits:?}");
+        //println!("splitting dim_id={dim_id}, splits={splits:?}");
         #[cfg(debug_assertions)]
         {
             let mut dim = 1;

@@ -13,7 +13,7 @@ use crate::{
 
 impl Kernel {
     pub fn debug(&self) {
-        let remap_ids = true;
+        let remap_ids = false;
         println!("\nloads={:?}", self.loads);
         println!("stores={:?}", self.stores);
         println!("outputs={:?}", self.outputs);
