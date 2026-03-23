@@ -14,7 +14,6 @@ impl Kernel {
     /// Apply  movement ops on views.
     /// Generates indices on views and unfolds reduce ops.
     pub fn unfold_movement_ops(&mut self) {
-        self.debug();
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Axis {
             Index,
@@ -57,6 +56,7 @@ impl Kernel {
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
                             let preceded_by_reduce = self.is_preceded_by_reduce(x);
+                            // if reshape removes dimensions, do this
                             if let Some(&(rorder, rid, _, _)) = rdims.iter().min_by_key(|x| x.0) {
                                 rdims.clear();
                                 for &d in shape {
@@ -96,12 +96,12 @@ impl Kernel {
                                                     rdim.1,
                                                     Op::Index { len: 1, scope: Scope::Global, axis },
                                                 );
+                                                rdim.0 = order;
+                                                rdim.1 = op_id;
                                             }
                                             // Otherwise just expand the existing loop
                                             Axis::Loop => {}
                                         }
-                                        rdim.0 = order;
-                                        rdim.1 = op_id;
                                         rdim.3 = Axis::Loop;
                                     }
                                     rdim.2 = len;
@@ -220,11 +220,24 @@ impl Kernel {
             op_id = next_op_id;
         }
 
+        /*let mut indices = BTreeMap::new();
+        for (op_id, op_node) in self.ops.iter() {
+            if let Op::Index { axis, .. } = op_node.op {
+                indices.insert(axis, op_id);
+            }
+        }
+        let mut ax = 0;
+        for (_, idx_id) in indices {
+            let Op::Index { scope, axis, .. } = &mut self.ops[idx_id].op else {unreachable!()};
+            debug_assert_eq!(*scope, Scope::Global);
+            *axis = ax;
+            ax += 1;
+        }*/
+
         #[cfg(debug_assertions)]
         self.verify();
 
         self.unfold_reduces();
-        self.debug();
         self.unfold_views();
 
         // TODO remove this from here
@@ -236,7 +249,8 @@ impl Kernel {
         self.constant_folding();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
-        self.debug();
+
+        //self.debug();
     }
 
     pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
@@ -411,7 +425,7 @@ impl Kernel {
     }
 
     pub fn unfold_views(&mut self) {
-        let mut axes = BTreeMap::default();
+        let mut axes: BTreeMap<u32, OpId> = BTreeMap::default();
         let start = self.head;
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -448,7 +462,8 @@ impl Kernel {
                         // TODO check if we can remove the rev and iterate forward
                         for dim in inner.iter().rev() {
                             ax -= 1;
-                            let a = if let Some(old_offset) = old_offset {
+                            //println!("ax={ax} axes={axes:?} dim={dim:?}");
+                            let loop_id = if let Some(old_offset) = old_offset {
                                 let t_ost = ost;
                                 ost *= dim.d as u64;
                                 let x = if t_ost == 1 {
@@ -466,23 +481,20 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 self.new_op(opi, Op::Const(Constant::idx(0u64)))
                             } else {
-                                if let Some(&id) = axes.get(&ax) {
-                                    id
-                                } else {
-                                    constant_zero
-                                }
+                                axes.get(&ax).copied().unwrap() //_or(constant_zero)
                             };
+                            //println!("loop_id={loop_id} ax={ax} axes={axes:?} dim={dim:?}");
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let t = if dim.lp != 0 {
                                 let lp = self.new_op(opi, Op::Const(Constant::idx(dim.lp.unsigned_abs() as u64)));
                                 if dim.lp > 0 {
-                                    self.new_op(opi, Op::Binary { x: a, y: lp, bop: BOp::Sub })
+                                    self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Sub })
                                 } else {
-                                    self.new_op(opi, Op::Binary { x: a, y: lp, bop: BOp::Add })
+                                    self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Add })
                                 }
                             } else {
-                                a
+                                loop_id
                             };
 
                             if dim.st != 0 {
@@ -495,12 +507,12 @@ impl Kernel {
                             // Padding condition
                             if dim.lp > 0 {
                                 let lp = self.new_op(opi, Op::Const(Constant::idx((dim.lp - 1) as u64)));
-                                let t = self.new_op(opi, Op::Binary { x: a, y: lp, bop: BOp::Cmpgt });
+                                let t = self.new_op(opi, Op::Binary { x: loop_id, y: lp, bop: BOp::Cmpgt });
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
                                 let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as i32 - dim.rp) as u64)));
-                                let t = self.new_op(opi, Op::Binary { x: a, y: rp, bop: BOp::Cmplt });
+                                let t = self.new_op(opi, Op::Binary { x: loop_id, y: rp, bop: BOp::Cmplt });
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                         }
@@ -531,7 +543,7 @@ impl Kernel {
                     let constant_zero = self.new_op(opi, Op::Const(Constant::idx(0)));
                     let mut offset = constant_zero;
                     let mut old_offset: Option<OpId> = None;
-                    //println!("View");
+                    //println!("axes={axes:?}");
                     //for inner in self.0.iter() { println!("{inner:?}") }
                     //println!();
                     for inner in view.0.iter().rev() {
@@ -566,13 +578,10 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 constant_zero
                             } else {
-                                //println!("ax={ax}, axes={axes:?}");
-                                if let Some(&id) = axes.get(&ax) {
-                                    id
-                                } else {
-                                    constant_zero
-                                }
+                                axes.get(&ax).copied().unwrap() //_or(constant_zero)
                             };
+                            //println!("loop_id={loop_id} ax={ax} axes={axes:?} dim={dim:?}");
+
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
                             // Offset
                             let padded_loop_id = if dim.lp != 0 {
@@ -653,8 +662,11 @@ impl Kernel {
                     let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
                     self.ops[op_id].op = Op::Store { dst, x: src, index, vlen: 1 };
                 }
-                Op::Index { axis, .. } | Op::Loop { axis, .. } => {
+                Op::Index { axis, .. } => {
                     axes.insert(axis, op_id);
+                }
+                Op::Loop { .. } => {
+                    axes.insert(axes.last_key_value().map_or(0, |x| x.0 + 1), op_id);
                 }
                 Op::EndLoop => {
                     axes.pop_last();

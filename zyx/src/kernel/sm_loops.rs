@@ -48,7 +48,7 @@ impl Kernel {
         indices
     }
 
-    pub fn reindex_indices(&mut self) {
+    pub fn reset_indices(&mut self) {
         let mut indices = BTreeMap::new();
         indices.insert(Scope::Global, BTreeMap::new());
         indices.insert(Scope::Local, BTreeMap::new());

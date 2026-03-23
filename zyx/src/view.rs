@@ -270,10 +270,9 @@ impl View {
     }*/
 
     // Permute by reversing the order of axes
-    /*
     pub(crate) fn reverse(&mut self) {
         self.0.last_mut().unwrap().reverse();
-    }*/
+    }
 
     /// If axes are shorter than inner, we just permute the first dimensions
     pub(crate) fn permute(&mut self, axes: &[usize]) {

@@ -8,7 +8,6 @@ use crate::{BLUE, BOLD, CYAN, GREEN, GREY, MAGENTA, ORANGE, RED, RESET, YELLOW};
 use crate::{
     DType, Map,
     kernel::{Kernel, Op, OpId},
-    shape::Dim,
 };
 
 impl Kernel {
@@ -19,7 +18,7 @@ impl Kernel {
         println!("outputs={:?}", self.outputs);
         //println!("Kernel shape {:?}", self.shape);
         let mut indent = String::from(" ");
-        let mut bounds: Map<OpId, (Dim, Dim)> = Map::default();
+        let mut bounds: Map<OpId, (u32, u32)> = Map::default();
         let mut dtypes: Map<OpId, DType> = Map::default();
         let mut op_id = self.head;
         let mut has_loops = false;
@@ -84,8 +83,7 @@ impl Kernel {
                     let dtype = value.dtype();
                     dtypes.insert(op_id, dtype);
                     if value.is_positive() {
-                        let Constant::U64(v) = value.cast(DType::U64) else { unreachable!() };
-                        let v = usize::from_le_bytes(v);
+                        let Constant::U32(v) = value.cast(DType::U32) else { unreachable!() };
                         bounds.insert(op_id, (v, v));
                     }
                     println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {MAGENTA}{value}{RESET}");
@@ -171,11 +169,11 @@ impl Kernel {
                                 BOp::Mul => (xl.wrapping_mul(yl), xu.wrapping_mul(yu)),
                                 BOp::Div => (xl / yl, xu / yu),
                                 BOp::Mod => (xl % yl, xu % yu),
-                                BOp::Eq => ((xl == yl) as usize, (xu == yu) as usize),
-                                BOp::NotEq => ((xl != yl) as usize, (xu != yu) as usize),
-                                BOp::Cmpgt => ((xl > yl) as usize, (xu > yu) as usize),
-                                BOp::Cmplt => ((xl < yl) as usize, (xu < yu) as usize),
-                                BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
+                                BOp::Eq => ((xl == yl) as u32, (xu == yu) as u32),
+                                BOp::NotEq => ((xl != yl) as u32, (xu != yu) as u32),
+                                BOp::Cmpgt => ((xl > yl) as u32, (xu > yu) as u32),
+                                BOp::Cmplt => ((xl < yl) as u32, (xu < yu) as u32),
+                                BOp::And => ((xl == 1 && yl == 1) as u32, (xu == 1 && yu == 1) as u32),
                                 BOp::BitShiftLeft => (xl << yl, xu << yu),
                                 BOp::BitShiftRight => (xl >> yl, xu >> yu),
                                 BOp::Pow => (xl.pow(yl as u32), xu.pow(yu as u32)),
@@ -252,7 +250,7 @@ impl Kernel {
                 Op::Index { len, scope, axis } => {
                     dtypes.insert(op_id, IDX_T);
                     let ub = len - 1;
-                    bounds.insert(op_id, (0, ub));
+                    bounds.insert(op_id, (0, ub as u32));
                     let scope = match scope {
                         Scope::Global => "g",
                         Scope::Local => "l",
@@ -263,7 +261,7 @@ impl Kernel {
                 Op::Loop { len, axis } => {
                     has_loops = true;
                     dtypes.insert(op_id, IDX_T);
-                    bounds.insert(op_id, (0, len - 1));
+                    bounds.insert(op_id, (0, len as u32 - 1));
                     println!("{indent}{BOLD}for{RESET} r{out_id} in 0..{len} {{    // {BLUE}ridx{axis}{RESET}");
                     indent += "  ";
                 }

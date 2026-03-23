@@ -23,6 +23,7 @@ mod unfold;
 mod unroll_loops;
 mod vectorize;
 mod verify;
+//mod emulate;
 
 // TODO later make this dynamic u32 or u64 depending on max range
 pub const IDX_T: DType = DType::U32;

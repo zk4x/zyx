@@ -76,7 +76,7 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
-            kernel.unroll_constant_loops();
+            //kernel.unroll_constant_loops();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
 
@@ -87,7 +87,7 @@ impl Optimizer {
         }
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
-        kernel.unfold_pows();
+        //kernel.unfold_pows();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..10 {
@@ -96,7 +96,7 @@ impl Optimizer {
             kernel.constant_folding();
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
-            kernel.unroll_constant_loops();
+            //kernel.unroll_constant_loops();
             kernel.common_subexpression_elimination();
             kernel.dead_code_elimination();
 
@@ -386,7 +386,7 @@ impl WorkSizeOpt {
             let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
             kernel.merge_loops(&loops);
         }
-        kernel.reindex_indices();
+        kernel.reset_indices();
 
         //kernel.debug();
 

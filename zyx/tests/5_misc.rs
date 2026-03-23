@@ -1,6 +1,39 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
+/*#[test]
+fn save() -> Result<(), ZyxError> {
+    //use zyx::TensorSave;
+    //let x = Tensor::from([2f32, 4., 3.]);
+    //[&x].save("../x.safetensors")?;
+    //let x: HashMap<String, Tensor> = Tensor::load("../x.safetensors")?;
+    //let x: Vec<i64> = x["x"].clone().try_into()?;
+    //println!("{:?}", x);
+    Ok(())
+}*/
+
+/*#[test]
+fn randn() {
+    use zyx::DType;
+    let x = Tensor::randn([10, 10], DType::F32).unwrap();
+    //Tensor::plot_graph([], "graph0");
+    //Tensor::realize([&x]).unwrap();
+    println!("{x}");
+    assert_eq!(x.isnan().sum(), 0);
+}*/
+
+/*#[test]
+fn uni_matmul() -> Result<(), ZyxError> {
+    //use zyx::DType;
+    //let x = Tensor::rand([5, 5], DType::F32) * 2f32 + 3f32;
+    //let y = Tensor::rand([5, 5], DType::F32) * 3f32 + 4f32;
+    //let x = Tensor::uniform([5, 5], -1f32..2f32)?;
+    //let y = Tensor::uniform([5, 5], -1f32..5f32)?;
+    //let z = x.dot(y)?;
+    //println!("{z}");
+    Ok(())
+}*/
+
 use half::f16;
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
@@ -365,16 +398,6 @@ fn arange_3() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[test]
-fn randn() {
-    use zyx::DType;
-    let x = Tensor::randn([10, 10], DType::F32).unwrap();
-    //Tensor::plot_graph([], "graph0");
-    //Tensor::realize([&x]).unwrap();
-    println!("{x}");
-    assert_eq!(x.isnan().sum(), 0);
-}*/
-
 #[test]
 fn const_() -> Result<(), ZyxError> {
     let x = Tensor::from([[3f32, 4., 2.], [4., 3., 2.]]);
@@ -398,18 +421,6 @@ fn graph_shapes() -> Result<(), ZyxError> {
     assert_eq!(y, [[2]]);
     Ok(())
 }
-
-/*#[test]
-fn uni_matmul() -> Result<(), ZyxError> {
-    //use zyx::DType;
-    //let x = Tensor::rand([5, 5], DType::F32) * 2f32 + 3f32;
-    //let y = Tensor::rand([5, 5], DType::F32) * 3f32 + 4f32;
-    //let x = Tensor::uniform([5, 5], -1f32..2f32)?;
-    //let y = Tensor::uniform([5, 5], -1f32..5f32)?;
-    //let z = x.dot(y)?;
-    //println!("{z}");
-    Ok(())
-}*/
 
 #[test]
 fn cat() -> Result<(), ZyxError> {
@@ -519,17 +530,6 @@ fn matmul_disk() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[test]
-fn save() -> Result<(), ZyxError> {
-    //use zyx::TensorSave;
-    //let x = Tensor::from([2f32, 4., 3.]);
-    //[&x].save("../x.safetensors")?;
-    //let x: HashMap<String, Tensor> = Tensor::load("../x.safetensors")?;
-    //let x: Vec<i64> = x["x"].clone().try_into()?;
-    //println!("{:?}", x);
-    Ok(())
-}*/
-
 #[test]
 fn softmax_1() -> Result<(), ZyxError> {
     let x = Tensor::from([2f32, 4., 3.]);
@@ -558,14 +558,6 @@ fn softmax_1() -> Result<(), ZyxError> {
     //Tensor::plot_graph([], "graph").unwrap();
     Ok(())
 }
-
-/*#[test]
-fn var1() -> Result<(), ZyxError> {
-    let x = Tensor::randn(1024, DType::F32)?;
-    let y = x.var([-1], 1)?;
-    Tensor::realize([&y])?;
-    Ok(())
-}*/
 
 #[test]
 fn dot_pad() -> Result<(), ZyxError> {
@@ -628,20 +620,6 @@ fn multiple_stores() -> Result<(), ZyxError> {
             [0.9230769277, 0.8823529482, 0.0000000000]
         ]
     );
-    Ok(())
-}
-
-#[test]
-fn dot2() -> Result<(), ZyxError> {
-    let n = 512;
-    let mut x = Tensor::randn([n, n], DType::F32)?;
-    let y = Tensor::randn([n, n], DType::F32)?;
-    for _ in 0..5 {
-        x = x.dot(&y)?;
-        Tensor::realize([&x])?;
-    }
-    Tensor::realize([&x])?;
-    //println!("{x}");
     Ok(())
 }
 
@@ -798,18 +776,6 @@ fn dot5() {
     assert_eq!(x, [[14, 10], [18, 14]]);
 }
 
-/*#[test]
-fn t1() {
-    use crate::DType;
-    let x = Tensor::from([0f32, 5., 1.]);
-    let y = Tensor::rand([3, 5], DType::F32);
-    let a = x.dot(y);
-    let x = Tensor::from([0f32, 5., 1.]);
-    let y = Tensor::rand([3, 5], DType::F32);
-    let b = x.dot(y);
-    println!("{a}, {b}");
-}*/
-
 #[test]
 fn conv1() -> Result<(), ZyxError> {
     let t = Tensor::arange(0f32, 9., 1.)?.reshape([1, 1, 3, 3])?;
@@ -821,7 +787,7 @@ fn conv1() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/*#[test]
+#[test]
 fn conv2() -> Result<(), ZyxError> {
     // Input: 0..24 → [1,1,5,5]
     let t = Tensor::arange(0f32, 25., 1.)?.reshape([1, 1, 5, 5])?;
@@ -840,7 +806,7 @@ fn conv2() -> Result<(), ZyxError> {
     assert_eq!(x, [[[[0., 4., 4.], [20., 48., 28.], [20., 44., 24.]]]]);
 
     Ok(())
-}*/
+}
 
 #[test]
 fn graph_tensor_ordering() -> Result<(), ZyxError> {
@@ -1100,13 +1066,22 @@ fn dot6() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn dot3() -> Result<(), ZyxError> {
+    let x = Tensor::from([2i32, 3, 1]);
+    let w = Tensor::from([[2i32, 3, 2], [2, 1, 1], [4, 1, 4]]);
+    let b = Tensor::from([2i32, 3, 5]);
+    let x = x.dot(&w)? + &b;
+    Tensor::realize([&x])?;
+    Ok(())
+}
+
+#[test]
 fn dot4() -> Result<(), ZyxError> {
     let mut x = Tensor::from([2i32, 3, 1]);
     let w = Tensor::from([[2i32, 3, 2], [2, 1, 1], [4, 1, 4]]);
     let b = Tensor::from([2i32, 3, 5]);
     for _ in 0..10 {
         x = x.dot(&w)? + &b;
-        //Tensor::realize([&x]).unwrap();
     }
     assert_eq!(x, [671627020i32, 441824135, 607929878]);
     Ok(())
