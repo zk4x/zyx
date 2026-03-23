@@ -31,7 +31,7 @@ mod reduce_ops;
 pub type Axis = i32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TensorId(u32);
+pub struct TensorId(pub u32);
 
 impl TensorId {
     pub fn null() -> Self {

@@ -14,7 +14,7 @@ impl Kernel {
     /// Apply  movement ops on views.
     /// Generates indices on views and unfolds reduce ops.
     pub fn unfold_movement_ops(&mut self) {
-        //self.debug();
+        self.debug();
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Axis {
             Index,
@@ -97,11 +97,8 @@ impl Kernel {
                                                     Op::Index { len: 1, scope: Scope::Global, axis },
                                                 );
                                             }
-                                            // Otherwise we end the previous loop and create a new one
-                                            Axis::Loop => {
-                                                self.insert_before(rdim.1, Op::Loop { len: 1, axis });
-                                                self.insert_before(op_id, Op::EndLoop);
-                                            }
+                                            // Otherwise just expand the existing loop
+                                            Axis::Loop => {}
                                         }
                                         rdim.0 = order;
                                         rdim.1 = op_id;
@@ -227,7 +224,7 @@ impl Kernel {
         self.verify();
 
         self.unfold_reduces();
-        //self.debug();
+        self.debug();
         self.unfold_views();
 
         // TODO remove this from here
@@ -239,7 +236,7 @@ impl Kernel {
         self.constant_folding();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
-        //self.debug();
+        self.debug();
     }
 
     pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
