@@ -962,7 +962,7 @@ fn softmax_2() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn complex_causal_self_attention() -> Result<(), ZyxError> {
+fn causal_self_attention() -> Result<(), ZyxError> {
     let y = {
         let dtype = DType::F32;
         let n_embd = 4;

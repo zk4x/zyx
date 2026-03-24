@@ -14,6 +14,7 @@ impl Kernel {
     /// Apply  movement ops on views.
     /// Generates indices on views and unfolds reduce ops.
     pub fn unfold_movement_ops(&mut self) {
+        self.debug();
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum Axis {
             Index,
@@ -56,17 +57,34 @@ impl Kernel {
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
                             let preceded_by_reduce = self.is_preceded_by_reduce(x);
-                            let n = if preceded_by_reduce {
+
+                            // Fix loop axis ids (TODO perhaps this is too ugly?)
+                            /*let n = if preceded_by_reduce {
                                 shape.iter().filter(|&&d| d != 1).count() as i64 - rdims.len() as i64
                             } else {
                                 shape.len() as i64 - rdims.len() as i64
                             };
-                            for node in self.ops.values_mut() {
-                                if let Op::Loop { axis, .. } = &mut node.op {
-                                    *axis = (*axis as i64 + n) as u32;
+                            //println!("axis delta = {n}");
+                            let mut params = vec![x];
+                            let mut visited = Set::default();
+                            while let Some(param) = params.pop() {
+                                if visited.insert(param) {
+                                    if let Op::Reduce { mut n_axes, .. } = self.ops[param].op {
+                                        let mut op_id = param;
+                                        while n_axes > 0 {
+                                            op_id = self.prev_op(op_id);
+                                            if let Op::Loop { axis, .. } = &mut self.ops[op_id].op {
+                                                //println!("Updating with {n}");
+                                                *axis = (*axis as i64 + n) as u32;
+                                                n_axes -= 1;
+                                            }
+                                        }
+                                    }
+                                    params.extend(self.at(op_id).parameters());
                                 }
-                            }
-                            // if reshape removes dimensions, do this
+                            }*/
+
+                            // Reshape rdims
                             if let Some(&(rorder, rid, _, _)) = rdims.iter().min_by_key(|x| x.0) {
                                 rdims.clear();
                                 for &d in shape {
@@ -81,6 +99,8 @@ impl Kernel {
                                     rdims.push((order, op_id, d, Axis::Loop));
                                 }
                             }
+
+                            // Update mask
                             if preceded_by_reduce {
                                 self.recursively_update_mask(x, &mut active_axes, |(_, mask)| {
                                     *mask = shape.iter().copied().map(|d| d != 1).collect();
@@ -229,20 +249,6 @@ impl Kernel {
             }
             op_id = next_op_id;
         }
-
-        /*let mut indices = BTreeMap::new();
-        for (op_id, op_node) in self.ops.iter() {
-            if let Op::Index { axis, .. } = op_node.op {
-                indices.insert(axis, op_id);
-            }
-        }
-        let mut ax = 0;
-        for (_, idx_id) in indices {
-            let Op::Index { scope, axis, .. } = &mut self.ops[idx_id].op else {unreachable!()};
-            debug_assert_eq!(*scope, Scope::Global);
-            *axis = ax;
-            ax += 1;
-        }*/
 
         #[cfg(debug_assertions)]
         self.verify();
@@ -450,6 +456,7 @@ impl Kernel {
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
                     let view = x.1.clone();
+                    let axes: Vec<OpId> = axes.values().copied().collect();
 
                     //println!("Unfolding view: {view}");
 
@@ -469,7 +476,7 @@ impl Kernel {
                         // a = offset / ost % dim
                         let mut ost = 1;
                         offset = constant_zero;
-                        let mut ax = inner.len() as u32;
+                        let mut ax = inner.len();
                         // TODO check if we can remove the rev and iterate forward
                         for dim in inner.iter().rev() {
                             ax -= 1;
@@ -492,7 +499,7 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 self.new_op(opi, Op::Const(Constant::idx(0u64)))
                             } else {
-                                axes.get(&ax).copied().unwrap() //_or(constant_zero)
+                                axes[ax]
                             };
                             //println!("loop_id={loop_id} ax={ax} axes={axes:?} dim={dim:?}");
                             //println!("ost: {ost}, a: {a:?}, {dim:?}");
@@ -547,6 +554,7 @@ impl Kernel {
                     // pc = pc.cast(dtype)
                     // x = pc * value[offset]
                     let view = x.1.clone();
+                    let axes: Vec<OpId> = axes.values().copied().collect();
 
                     let mut opi = self.prev_op(op_id);
                     let opi = &mut opi;
@@ -562,7 +570,7 @@ impl Kernel {
                         // a = offset / ost % dim
                         let mut ost = 1;
                         offset = constant_zero;
-                        let mut ax = inner.len() as u32;
+                        let mut ax = inner.len();
                         // TODO check if we can remove the rev and iterate forward
                         for dim in inner.iter().rev() {
                             ax -= 1;
@@ -589,7 +597,7 @@ impl Kernel {
                             } else if dim.d == 1 {
                                 constant_zero
                             } else {
-                                axes.get(&ax).copied().unwrap() //_or(constant_zero)
+                                axes[ax]
                             };
                             //println!("loop_id={loop_id} ax={ax} axes={axes:?} dim={dim:?}");
 
