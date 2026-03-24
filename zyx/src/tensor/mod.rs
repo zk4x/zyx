@@ -1455,7 +1455,7 @@ where {
         }
 
         let padding: Vec<(i32, i32)> =
-            std::iter::repeat((0, 0)).take(rank - padding.len()).chain(padding.into_iter().rev()).collect();
+            std::iter::repeat_n((0, 0), rank - padding.len()).chain(padding.into_iter().rev()).collect();
 
         for (i, &(l, r)) in padding.iter().enumerate() {
             let mut total = 0;
@@ -1467,12 +1467,12 @@ where {
             }
             if shape[i] as i32 + l + r < 0 {
                 return Err(ZyxError::shape_error(
-                    format!("Invalid padding left={l}, right={r} on dimension size {}", shape[i]).into(),
+                    format!("Invalid padding {padding:?} on shape {shape:?} on dimension {i}").into(),
                 ));
             }
             if Dim::try_from(total).unwrap() >= shape[i] {
                 return Err(ZyxError::shape_error(
-                    format!("Invalid padding {padding:?} on shape {shape:?}").into(),
+                    format!("Invalid padding {padding:?} on shape {shape:?} on dimension {i}").into(),
                 ));
             }
         }

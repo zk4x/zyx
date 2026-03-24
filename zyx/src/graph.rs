@@ -14,6 +14,25 @@ use crate::{
 use crate::{Map, Set};
 use std::hash::BuildHasherDefault;
 
+/// Graph node, each node is one operation. Nodes
+/// represent the opset that is available on tensors.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+pub enum Node {
+    // Constant tensor baked into kernels
+    Const { value: Constant },
+    // Tensor stored on device
+    Leaf { dtype: DType },
+    Expand { x: TensorId },
+    Permute { x: TensorId },
+    // Reshape can be sometimes axis split or axis join
+    Reshape { x: TensorId },
+    Pad { x: TensorId },
+    Reduce { x: TensorId, rop: BOp },
+    Cast { x: TensorId, dtype: DType },
+    Unary { x: TensorId, uop: UOp },
+    Binary { x: TensorId, y: TensorId, bop: BOp },
+}
+
 #[derive(Debug)]
 pub struct Graph {
     // First value is reference count, second is node
@@ -378,25 +397,6 @@ impl BOp {
         use BOp::*;
         matches!(self, Cmpgt | Cmplt | NotEq | Eq | And | Or)
     }
-}
-
-/// Graph node, each node is one operation. Nodes
-/// represent the opset that is available on tensors.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-pub enum Node {
-    // Constant tensor baked into kernels
-    Const { value: Constant },
-    // Tensor stored on device
-    Leaf { dtype: DType },
-    Expand { x: TensorId },
-    Permute { x: TensorId },
-    // Reshape can be sometimes axis split or axis join
-    Reshape { x: TensorId },
-    Pad { x: TensorId },
-    Reduce { x: TensorId, rop: BOp },
-    Cast { x: TensorId, dtype: DType },
-    Unary { x: TensorId, uop: UOp },
-    Binary { x: TensorId, y: TensorId, bop: BOp },
 }
 
 pub struct NodeParametersIterator {

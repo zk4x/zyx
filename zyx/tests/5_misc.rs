@@ -22,18 +22,6 @@ fn randn() {
     assert_eq!(x.isnan().sum(), 0);
 }*/
 
-/*#[test]
-fn uni_matmul() -> Result<(), ZyxError> {
-    //use zyx::DType;
-    //let x = Tensor::rand([5, 5], DType::F32) * 2f32 + 3f32;
-    //let y = Tensor::rand([5, 5], DType::F32) * 3f32 + 4f32;
-    //let x = Tensor::uniform([5, 5], -1f32..2f32)?;
-    //let y = Tensor::uniform([5, 5], -1f32..5f32)?;
-    //let z = x.dot(y)?;
-    //println!("{z}");
-    Ok(())
-}*/
-
 use half::f16;
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
@@ -301,7 +289,7 @@ fn mix_expand_reduce() -> Result<(), ZyxError> {
 fn mix_pad_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
-    x = x.pad_zeros([(0, 1)])?;
+    x = x.pad_zeros_rev([(0, 1)])?;
     assert_eq!(x, [9i32, 7, 0]);
     Ok(())
 }
@@ -309,7 +297,7 @@ fn mix_pad_reduce() -> Result<(), ZyxError> {
 #[test]
 fn mix_permute_pad() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
-    x = x.pad_zeros([(1, 0)])?.t();
+    x = x.pad_zeros_rev([(1, 0)])?.t();
     assert_eq!(x, [[0i32, 0], [2, 1], [4, 5], [3, 1]]);
     Ok(())
 }
@@ -331,7 +319,7 @@ fn mix_expand_reshape_reduce() -> Result<(), ZyxError> {
 #[test]
 fn mix_pad_reshape_expand() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 4, 3, 3, 4], [1, 2, 1, 5, 1]]);
-    x = x.pad_zeros([(1, 0), (2, 1)])?;
+    x = x.pad_zeros_rev([(1, 0), (2, 1)])?;
     x = x.reshape([2, 1, 3, 5])?;
     x = x.expand([2, 2, 3, 5])?;
     assert_eq!(
@@ -437,7 +425,7 @@ fn cat() -> Result<(), ZyxError> {
 fn pad_zeros() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 3], [4, 5]]);
     //let x = x.pad_zeros([(0, 1)]);
-    let x = x.pad_zeros([(4, 3), (1, 2)])?;
+    let x = x.pad_zeros_rev([(4, 3), (1, 2)])?;
     //Tensor::plot_dot_graph([], "graph0");
     assert_eq!(
         x,
@@ -563,7 +551,7 @@ fn softmax_1() -> Result<(), ZyxError> {
 fn dot_pad() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
     let y = Tensor::from([[2, 3], [1, 2], [4, 1]]);
-    x = x.dot(y)?.pad_zeros([(2, 1)])?;
+    x = x.dot(y)?.pad_zeros_rev([(2, 1)])?;
     assert_eq!(x, [[0, 0, 11, 13, 0], [0, 0, 12, 15, 0]]);
     Ok(())
 }

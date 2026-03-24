@@ -221,10 +221,10 @@ impl Kernel {
 
             // Replace old reduce op with the acc load op
             self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, vlen: 1 };
-
-            #[cfg(debug_assertions)]
-            self.verify();
         }
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     fn new_op(&mut self, op_iter: &mut OpId, op: Op) -> OpId {
@@ -234,7 +234,6 @@ impl Kernel {
     }
 
     pub fn unfold_views(&mut self) {
-        //self.debug();
         let mut axes: BTreeMap<u32, OpId> = BTreeMap::default();
         let start = self.head;
         let mut op_id = self.head;
