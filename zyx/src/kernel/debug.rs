@@ -258,11 +258,11 @@ impl Kernel {
                     };
                     println!("{indent}r{out_id}{GREY}: {IDX_T}{RESET} = {BLUE}{scope}idx{axis}{RESET}    // 0..={ub}",);
                 }
-                Op::Loop { len, axis } => {
+                Op::Loop { len } => {
                     has_loops = true;
                     dtypes.insert(op_id, IDX_T);
                     bounds.insert(op_id, (0, len as u32 - 1));
-                    println!("{indent}{BOLD}for{RESET} r{out_id} in 0..{len} {{    // {BLUE}ridx{axis}{RESET}");
+                    println!("{indent}{BOLD}for{RESET} r{out_id} in 0..{len} {{");
                     indent += "  ";
                 }
                 Op::EndLoop => {

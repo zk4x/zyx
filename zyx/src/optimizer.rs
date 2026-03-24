@@ -87,7 +87,7 @@ impl Optimizer {
         }
 
         // Convert exponentiation (BOp::Pow) to just exp2 and ln2
-        //kernel.unfold_pows();
+        kernel.unfold_pows();
 
         let mut temp_kernel = kernel.clone();
         for _ in 0..10 {
@@ -110,6 +110,7 @@ impl Optimizer {
         kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
 
+        #[cfg(debug_assertions)]
         kernel.verify();
 
         if debug_ir {
@@ -388,8 +389,6 @@ impl WorkSizeOpt {
         }
         kernel.reset_indices();
 
-        //kernel.debug();
-
         //gws = vec![64, 128];
         //lws = vec![8, 4];
         //rws = vec![2, 2];
@@ -415,10 +414,13 @@ impl WorkSizeOpt {
             let mut splits = Vec::new();
             splits.push(Op::Index { len: g, scope: Scope::Global, axis });
             splits.push(Op::Index { len: l, scope: Scope::Local, axis });
-            splits.push(Op::Loop { len: r, axis });
+            splits.push(Op::Loop { len: r });
             kernel.split_dim(dim_id, splits);
             axis += 1;
         }
+
+        #[cfg(debug_assertions)]
+        kernel.verify();
 
         true
     }

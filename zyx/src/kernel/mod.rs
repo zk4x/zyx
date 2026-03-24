@@ -135,7 +135,7 @@ pub enum Op {
     Store { dst: OpId, x: OpId, index: OpId, vlen: u8 },
     Load { src: OpId, index: OpId, vlen: u8 },
     Index { len: Dim, scope: Scope, axis: u32 },
-    Loop { len: Dim, axis: u32 },
+    Loop { len: Dim },
     EndLoop,
     // fused multiply add
     Mad { x: OpId, y: OpId, z: OpId },
@@ -814,6 +814,9 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
+
+        #[cfg(debug_assertions)]
+        self.verify();
     }
 
     pub fn unfold_pows(&mut self) {

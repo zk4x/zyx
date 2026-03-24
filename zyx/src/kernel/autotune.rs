@@ -5,7 +5,10 @@ use std::collections::{BinaryHeap, HashSet};
 pub struct Kernel {}
 
 impl Kernel {
-    // ---------------- Kernel API ----------------
+    pub fn autotune(&mut self, device: &mut Device, memory_pool: &mut MemoryPool) {
+        todo!()
+    }
+
     pub fn get_cost(&self) -> u64 {
         0
     }

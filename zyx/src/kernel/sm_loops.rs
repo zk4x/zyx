@@ -36,7 +36,7 @@ impl Kernel {
         op_id
     }
 
-    pub fn get_global_indices(&mut self) -> BTreeMap<u32, OpId> {
+    pub fn get_global_indices(&self) -> BTreeMap<u32, OpId> {
         let mut indices = BTreeMap::new();
         for (op_id, op_node) in self.ops.iter() {
             if let Op::Index { scope, axis, .. } = op_node.op {
@@ -65,10 +65,14 @@ impl Kernel {
                 ax += 1;
             }
         }
+
+        #[cfg(debug_assertions)]
+        self.debug();
     }
 
     pub fn merge_loops(&mut self, loops: &[OpId]) {
-        //println!("Merging loops {loops:?}");
+        self.debug();
+        println!("Merging loops {loops:?}");
         let mut acc = 1;
         // BTreeMap is ordered
         let mut axes = BTreeMap::default();
@@ -91,11 +95,14 @@ impl Kernel {
         let mut x = self.insert_before(first_id.unwrap(), Op::Index { len: acc, scope, axis });
 
         for (.., (loop_id, len)) in axes.into_iter().rev() {
-            //println!("Adding {loop_id} len={len}");
+            println!("Adding {loop_id} len={len}");
             let y = self.insert_before(loop_id, Op::Const(Constant::idx(len as u64)));
             self.ops[loop_id].op = Op::Binary { x, y, bop: BOp::Mod };
             x = self.insert_after(loop_id, Op::Binary { x, y, bop: BOp::Div });
         }
+
+        #[cfg(debug_assertions)]
+        self.debug();
     }
 
     /// Splits dim (index or loop) into multiple indices or loops
@@ -151,5 +158,8 @@ impl Kernel {
         // Replace previous op
         let y = self.insert_before(dim_id, last_op);
         self.ops[dim_id].op = Op::Binary { x: acc, y, bop: BOp::Add };
+
+        #[cfg(debug_assertions)]
+        self.debug();
     }
 }
