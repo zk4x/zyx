@@ -56,6 +56,16 @@ impl Kernel {
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
                             let preceded_by_reduce = self.is_preceded_by_reduce(x);
+                            let n = if preceded_by_reduce {
+                                shape.iter().filter(|&&d| d != 1).count() as i64 - rdims.len() as i64
+                            } else {
+                                shape.len() as i64 - rdims.len() as i64
+                            };
+                            for node in self.ops.values_mut() {
+                                if let Op::Loop { axis, .. } = &mut node.op {
+                                    *axis = (*axis as i64 + n) as u32;
+                                }
+                            }
                             // if reshape removes dimensions, do this
                             if let Some(&(rorder, rid, _, _)) = rdims.iter().min_by_key(|x| x.0) {
                                 rdims.clear();
@@ -425,6 +435,7 @@ impl Kernel {
     }
 
     pub fn unfold_views(&mut self) {
+        self.debug();
         let mut axes: BTreeMap<u32, OpId> = BTreeMap::default();
         let start = self.head;
         let mut op_id = self.head;
@@ -662,11 +673,8 @@ impl Kernel {
                     let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
                     self.ops[op_id].op = Op::Store { dst, x: src, index, vlen: 1 };
                 }
-                Op::Index { axis, .. } => {
+                Op::Loop { axis, .. } | Op::Index { axis, .. } => {
                     axes.insert(axis, op_id);
-                }
-                Op::Loop { .. } => {
-                    axes.insert(axes.last_key_value().map_or(0, |x| x.0 + 1), op_id);
                 }
                 Op::EndLoop => {
                     axes.pop_last();
