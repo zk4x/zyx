@@ -289,7 +289,7 @@ fn mix_expand_reduce() -> Result<(), ZyxError> {
 fn mix_pad_reduce() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
     x = x.sum([1])?;
-    x = x.pad_zeros_rev([(0, 1)])?;
+    x = x.rpad_zeros([(0, 1)])?;
     assert_eq!(x, [9i32, 7, 0]);
     Ok(())
 }
@@ -297,7 +297,7 @@ fn mix_pad_reduce() -> Result<(), ZyxError> {
 #[test]
 fn mix_permute_pad() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2i32, 4, 3], [1, 5, 1]]);
-    x = x.pad_zeros_rev([(1, 0)])?.t();
+    x = x.rpad_zeros([(1, 0)])?.t();
     assert_eq!(x, [[0i32, 0], [2, 1], [4, 5], [3, 1]]);
     Ok(())
 }
@@ -319,7 +319,7 @@ fn mix_expand_reshape_reduce() -> Result<(), ZyxError> {
 #[test]
 fn mix_pad_reshape_expand() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 4, 3, 3, 4], [1, 2, 1, 5, 1]]);
-    x = x.pad_zeros_rev([(1, 0), (2, 1)])?;
+    x = x.rpad_zeros([(1, 0), (2, 1)])?;
     x = x.reshape([2, 1, 3, 5])?;
     x = x.expand([2, 2, 3, 5])?;
     assert_eq!(
@@ -425,7 +425,7 @@ fn cat() -> Result<(), ZyxError> {
 fn pad_zeros() -> Result<(), ZyxError> {
     let x = Tensor::from([[2, 3], [4, 5]]);
     //let x = x.pad_zeros([(0, 1)]);
-    let x = x.pad_zeros_rev([(4, 3), (1, 2)])?;
+    let x = x.rpad_zeros([(4, 3), (1, 2)])?;
     //Tensor::plot_dot_graph([], "graph0");
     assert_eq!(
         x,
@@ -481,6 +481,97 @@ fn split1() {
     assert_eq!(tensors[0], [[2, 3], [2, 1]]);
     assert_eq!(tensors[1], [[1], [4]]);
     //for t in tensors { println!("{t}"); }
+}
+
+#[test]
+fn more_padding() -> Result<(), ZyxError> {
+    // 1D tensor
+    let t1 = Tensor::from([1, 2, 3, 4, 5]);
+
+    // Normal order: pad_zeros
+    let padded1 = t1.pad_zeros([(2, 3)])?;
+    assert_eq!(padded1, [0, 0, 1, 2, 3, 4, 5, 0, 0, 0]);
+
+    // Reverse order: rpad_zeros
+    let rpadded1 = t1.rpad_zeros([(2, 3)])?;
+    assert_eq!(rpadded1, [0, 0, 1, 2, 3, 4, 5, 0, 0, 0]);
+
+    // Negative padding (cropping)
+    let cropped1 = t1.pad_zeros([(-1, -2)])?;
+    assert_eq!(cropped1, [2, 3]);
+    let rcropped1 = t1.rpad_zeros([(-1, -2)])?;
+    assert_eq!(rcropped1, [2, 3]);
+
+    // 2D tensor
+    let t2 = Tensor::from([[1, 2, 3], [4, 5, 6]]); // shape [2,3]
+
+    // pad_zeros: normal order (first tuple → rows, second → cols)
+    let padded2 = t2.pad_zeros([(1, 1), (2, 1)])?;
+    assert_eq!(
+        padded2,
+        [
+            [0, 0, 0, 0, 0, 0],
+            [0, 0, 1, 2, 3, 0],
+            [0, 0, 4, 5, 6, 0],
+            [0, 0, 0, 0, 0, 0]
+        ]
+    );
+
+    // rpad_zeros: reverse order (first tuple → cols, second → rows)
+    let rpadded2 = t2.rpad_zeros([(2, 1), (1, 1)])?;
+    assert_eq!(
+        rpadded2,
+        [
+            [0, 0, 0, 0, 0, 0],
+            [0, 0, 1, 2, 3, 0],
+            [0, 0, 4, 5, 6, 0],
+            [0, 0, 0, 0, 0, 0]
+        ]
+    );
+
+    // Invalid padding
+    let err = t1.rpad_zeros([(-10, 0)]).unwrap_err();
+    assert!(matches!(err, ZyxError::ShapeError(_)));
+
+    Ok(())
+}
+
+#[test]
+fn partial_padding() -> Result<(), ZyxError> {
+    let t4 = Tensor::from([
+        [[[1i32, 2], [3, 4]], [[5, 6], [7, 8]]],
+        [[[9, 10], [11, 12]], [[13, 14], [15, 16]]],
+    ]);
+    // ---- pad_zeros: pad only first 2 dimensions ----
+    let padded = t4.pad_zeros([(1, 1), (1, 0)])?;
+    assert_eq!(padded.shape(), vec![4, 3, 2, 2]);
+    assert_eq!(
+        padded,
+        [
+            [[[0, 0], [0, 0]], [[0, 0], [0, 0]], [[0, 0], [0, 0]]],
+            [[[0, 0], [0, 0]], [[1, 2], [3, 4]], [[5, 6], [7, 8]]],
+            [[[0, 0], [0, 0]], [[9, 10], [11, 12]], [[13, 14], [15, 16]]],
+            [[[0, 0], [0, 0]], [[0, 0], [0, 0]], [[0, 0], [0, 0]]]
+        ]
+    );
+
+    // ---- rpad_zeros: reverse order, pad same logical dims ----
+    let rpadded = t4.rpad_zeros([(1, 0), (1, 1)])?;
+    assert_eq!(rpadded.shape(), vec![2, 2, 4, 3]);
+    assert_eq!(
+        rpadded,
+        [
+            [
+                [[0, 0, 0], [0, 1, 2], [0, 3, 4], [0, 0, 0]],
+                [[0, 0, 0], [0, 5, 6], [0, 7, 8], [0, 0, 0]]
+            ],
+            [
+                [[0, 0, 0], [0, 9, 10], [0, 11, 12], [0, 0, 0]],
+                [[0, 0, 0], [0, 13, 14], [0, 15, 16], [0, 0, 0]]
+            ]
+        ]
+    );
+    Ok(())
 }
 
 #[test]
@@ -551,7 +642,7 @@ fn softmax_1() -> Result<(), ZyxError> {
 fn dot_pad() -> Result<(), ZyxError> {
     let mut x = Tensor::from([[2, 3, 1], [2, 4, 1]]);
     let y = Tensor::from([[2, 3], [1, 2], [4, 1]]);
-    x = x.dot(y)?.pad_zeros_rev([(2, 1)])?;
+    x = x.dot(y)?.rpad_zeros([(2, 1)])?;
     assert_eq!(x, [[0, 0, 11, 13, 0], [0, 0, 12, 15, 0]]);
     Ok(())
 }
@@ -1131,7 +1222,7 @@ fn test_permute_on_elementwise_kernel() {
 #[test]
 fn test_padding_on_reduce_kernel() {
     let t = Tensor::from([[1.0, 2.0], [3.0, 4.0]]);
-    let padded = t.pad([(1, 1), (0, 0)], 0.0).unwrap();
+    let padded = t.pad([(0, 0), (1, 1)], 0.0).unwrap();
     let reduced = padded.sum([0]).unwrap();
     assert_eq!(reduced.shape(), &[4]);
     assert_eq!(reduced.slice(0).unwrap(), 0.0);

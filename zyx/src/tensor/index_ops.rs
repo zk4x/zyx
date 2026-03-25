@@ -77,10 +77,7 @@ impl Tensor {
     ///
     /// Returns a [`ZyxError::ShapeError`] if the indices are invalid, out of bounds,
     /// or don't match the tensor's dimensionality.
-    pub fn slice<I>(&self, index: I) -> Result<Tensor, ZyxError>
-    where
-        I: IntoIndex,
-    {
+    pub fn slice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
         let shape = self.shape(); // original tensor shape
         let rank = shape.len();
 
@@ -95,9 +92,12 @@ impl Tensor {
         }
 
         let padding = std::iter::repeat_n((0, 0), rank - padding_len);
+        //print!("shape={shape:?}");
 
-        let padding = padding.chain(
-            index.zip(shape.into_iter()).enumerate().map(|(axis, (dim_index, dim_size))| match dim_index {
+        let padding = index
+            .zip(shape.into_iter())
+            .enumerate()
+            .map(|(axis, (dim_index, dim_size))| match dim_index {
                 DimIndex::Range { start, end } => {
                     let s = if start < 0 { start + dim_size as i32 } else { start };
                     let e = if end > dim_size as i32 {
@@ -129,8 +129,11 @@ impl Tensor {
                     };
                     (0, -(dim_size as i32 - e))
                 }
-            }),
-        );
+            })
+            .chain(padding);
+
+        //let padding_vec: Vec<(i32, i32)> = padding.into_iter().collect();
+        //println!("padding={padding_vec:?}");
 
         let mut result = self.pad_zeros(padding)?;
         result = result.squeeze(squeeze_axes);
@@ -185,7 +188,7 @@ impl Tensor {
 
         let padding = padding.chain(std::iter::repeat_n((0, 0), rank - padding_len));
 
-        let mut result = self.pad_zeros_rev(padding)?;
+        let mut result = self.pad_zeros(padding)?;
         result = result.squeeze(squeeze_axes);
 
         Ok(result)
@@ -215,7 +218,7 @@ impl Tensor {
         let n = *self.shape().last().expect("Shape in invalid state. Internal bug.");
         self.flatten(..)
             .unwrap()
-            .pad_zeros_rev([(0, i32::try_from(n).unwrap())])
+            .rpad_zeros([(0, i32::try_from(n).unwrap())])
             .unwrap()
             .reshape([n, n + 1])
             .unwrap()

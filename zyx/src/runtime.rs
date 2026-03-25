@@ -501,8 +501,10 @@ impl Runtime {
     #[must_use]
     pub(super) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(i32, i32)>) -> TensorId {
         let mut shape: Vec<Dim> = self.shape(x).into();
-        //println!("Self shape: {shape:?}, padding: {padding:?}");
+        debug_assert_eq!(shape.len(), padding.len());
+        //println!("self shape: {shape:?}, padding: {padding:?}");
         apply_padding(&mut shape, &padding);
+        //println!("out={shape:?}");
         let id = self.graph.push_wshape(Node::Pad { x }, shape);
         self.graph.push_padding(id, padding);
         id

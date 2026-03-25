@@ -1381,7 +1381,7 @@ impl Tensor {
     #[allow(clippy::missing_panics_doc)]
     #[track_caller]
     pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (i32, i32)>) -> Result<Tensor, ZyxError> {
-        let padding: Vec<(i32, i32)> = padding.into_iter().collect();
+        let mut padding: Vec<(i32, i32)> = padding.into_iter().collect();
         let shape = self.shape();
         let rank = shape.len();
 
@@ -1394,6 +1394,9 @@ impl Tensor {
                 .into(),
             ));
         }
+
+        padding.extend(std::iter::repeat_n((0, 0), rank - padding.len()));
+
         for (i, &(l, r)) in padding.iter().enumerate() {
             let mut total = 0;
             if l < 0 {
@@ -1404,12 +1407,12 @@ impl Tensor {
             }
             if shape[i] as i32 + l + r < 0 {
                 return Err(ZyxError::shape_error(
-                    format!("Invalid padding left={l}, right={r} on dimension size {}", shape[i]).into(),
+                    format!("Invalid padding {padding:?} on shape {shape:?}, on dim {i}").into(),
                 ));
             }
             if Dim::try_from(total).unwrap() >= shape[i] {
                 return Err(ZyxError::shape_error(
-                    format!("Invalid padding {padding:?} on shape {shape:?}").into(),
+                    format!("Invalid padding {padding:?} on shape {shape:?}, on dim {i}").into(),
                 ));
             }
         }
@@ -1437,12 +1440,10 @@ impl Tensor {
     /// Returns error if self cannot be padded by padding.
     #[allow(clippy::missing_panics_doc)]
     #[track_caller]
-    pub fn pad_zeros_rev(&self, padding: impl IntoIterator<Item = (i32, i32)>) -> Result<Tensor, ZyxError>
-where {
+    pub fn rpad_zeros(&self, padding: impl IntoIterator<Item = (i32, i32)>) -> Result<Tensor, ZyxError> {
+        let mut padding: Vec<(i32, i32)> = padding.into_iter().collect();
         let shape = self.shape();
         let rank = shape.len();
-
-        let padding: Vec<(i32, i32)> = padding.into_iter().collect();
 
         if padding.len() > rank {
             return Err(ZyxError::shape_error(
@@ -1454,8 +1455,9 @@ where {
             ));
         }
 
-        let padding: Vec<(i32, i32)> =
-            std::iter::repeat_n((0, 0), rank - padding.len()).chain(padding.into_iter().rev()).collect();
+        padding.extend(std::iter::repeat_n((0, 0), rank - padding.len()));
+        padding.reverse();
+        //println!("padding={padding:?}");
 
         for (i, &(l, r)) in padding.iter().enumerate() {
             let mut total = 0;
@@ -1467,15 +1469,16 @@ where {
             }
             if shape[i] as i32 + l + r < 0 {
                 return Err(ZyxError::shape_error(
-                    format!("Invalid padding {padding:?} on shape {shape:?} on dimension {i}").into(),
+                    format!("Invalid padding left={l}, right={r} on dimension size {}", shape[i]).into(),
                 ));
             }
             if Dim::try_from(total).unwrap() >= shape[i] {
                 return Err(ZyxError::shape_error(
-                    format!("Invalid padding {padding:?} on shape {shape:?} on dimension {i}").into(),
+                    format!("Invalid padding {padding:?} on shape {shape:?}").into(),
                 ));
             }
         }
+
         Ok(Tensor { id: RT.lock().pad_zeros(self.id, padding) })
     }
 
@@ -1566,7 +1569,7 @@ where {
         .into_iter()
         .rev()
         .collect();
-        Ok(self.pad_zeros_rev(padding).unwrap())
+        Ok(self.rpad_zeros(padding).unwrap())
     }
 
     /// Applies a new shape to this tensor while preserving its total number of elements.
@@ -1759,7 +1762,7 @@ where {
         let uaxis = into_axis(axis, shape.len())?;
         let pl_sz = i32::try_from(shape[uaxis] - 1).unwrap();
         let mut x = self.transpose(axis, -1)?;
-        x = x.pad_zeros_rev([(pl_sz, 0)])?;
+        x = x.rpad_zeros([(pl_sz, 0)])?;
         x = x.pool(shape[uaxis], 1, 1)?;
         x = match rop {
             BOp::Add => x.sum([-1])?,
@@ -2099,7 +2102,7 @@ where {
             }
         }
 
-        let x = self.pad_zeros_rev(padding)?.unsqueeze(-1)?.transpose(-1, dim as i32)?;
+        let x = self.rpad_zeros(padding)?.unsqueeze(-1)?.transpose(-1, dim as i32)?;
         let result = one_hot.where_(&x, 0.0)?.sum_dtype([-1], self.dtype())?;
 
         Ok(result)
@@ -2111,7 +2114,7 @@ where {
         I: IntoIterator<Item = (Dim, Dim)>,
         I::IntoIter: DoubleEndedIterator,
     {
-        self.pad_zeros_rev(
+        self.rpad_zeros(
             self.shape()
                 .into_iter()
                 .rev()
@@ -2356,7 +2359,7 @@ where {
             let d = i32::try_from(tensor.shape()[dim]).unwrap();
             offset2 -= d;
             let padding: Vec<(i32, i32)> = repeat_n((0, 0), rank - dim - 1).chain([(offset, offset2)]).collect();
-            let t = tensor.pad_zeros_rev(padding)?;
+            let t = tensor.rpad_zeros(padding)?;
             if let Some(r) = res {
                 res = Some(r + t);
             } else {
@@ -2564,7 +2567,7 @@ where {
                 index.push(0..isize::try_from(d).unwrap());
             }
             index.push(acc_size..acc_size + size);
-            //println!("Index {index:?}");
+            println!("Index {index:?}");
             res.push(self.slice(index)?);
             acc_size += size;
         }
@@ -2591,11 +2594,11 @@ where {
             return Tensor::ones([r, c], dtype);
         }
         let s = r + c - 1;
-        let t = Tensor::ones([s, s], dtype).pad_zeros_rev([(0, s as i32)]).unwrap();
+        let t = Tensor::ones([s, s], dtype).rpad_zeros([(0, s as i32)]).unwrap();
         let t = t.reshape([2 * s * s]).unwrap();
-        let t = t.pad_zeros_rev([(0, -(s as i32))]).unwrap();
+        let t = t.rpad_zeros([(0, -(s as i32))]).unwrap();
         let t = t.reshape([s, 2 * s - 1]).unwrap();
-        let t = t.pad_zeros_rev([(0, -((2 * s - 1 - s) as i32))]).unwrap();
+        let t = t.rpad_zeros([(0, -((2 * s - 1 - s) as i32))]).unwrap();
         if diagonal <= 0 {
             t.slice((0..r, (-diagonal) as usize..(c as i32 - diagonal) as usize)).unwrap()
         } else {
@@ -2859,7 +2862,7 @@ where {
         }
 
         let x = self
-            .pad_zeros_rev(padding_.chunks(2).map(|x| (i32::try_from(x[0]).unwrap(), i32::try_from(x[1]).unwrap())))
+            .rpad_zeros(padding_.chunks(2).map(|x| (i32::try_from(x[0]).unwrap(), i32::try_from(x[1]).unwrap())))
             .unwrap()
             .pool(hw, stride, dilation)
             .unwrap();

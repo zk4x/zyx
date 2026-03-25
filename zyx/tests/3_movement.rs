@@ -63,11 +63,11 @@ fn rope_1() -> Result<(), ZyxError> {
     let sin_freq = Tensor::from([[2, 3], [3, 1]]);
     let cos_freq = Tensor::from([[2, 3], [3, 1]]);
 
-    let a = x.pad_zeros_rev([(-2, 0)])?;
-    let b = -x.pad_zeros_rev([(0, -2)])?;
+    let a = x.rpad_zeros([(-2, 0)])?;
+    let b = -x.rpad_zeros([(0, -2)])?;
     let z = &a * &sin_freq - &b * &cos_freq;
     let z2 = a * sin_freq + b * cos_freq;
-    let z3 = z.pad_zeros_rev([(0, 2)])? + z2.pad_zeros_rev([(2, 0)])?;
+    let z3 = z.rpad_zeros([(0, 2)])? + z2.rpad_zeros([(2, 0)])?;
     drop(x);
     //drop(z);
     drop(z2);
