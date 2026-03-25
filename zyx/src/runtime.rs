@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Runtime handles tensor graph and connects tensors to device buffers.
-use crate::backend::{BufferId, Config, Device, Event, MemoryPool, SearchConfig};
+use crate::backend::{BufferId, Config, Device, Event, MemoryPool, AutotuneConfig};
 use crate::cache::Cache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
@@ -41,7 +41,7 @@ pub struct Runtime {
     /// Are we in training mode?
     pub training: bool,
     /// Search configuration
-    pub search_config: SearchConfig,
+    pub search_config: AutotuneConfig,
     /// Debug mask
     pub debug: DebugMask,
     /// Temporary storage
@@ -101,7 +101,7 @@ impl Runtime {
             config_dir: None,
             cache: Cache::new(),
             training: false,
-            search_config: SearchConfig::new(),
+            search_config: AutotuneConfig::new(),
             debug: DebugMask(0),
             temp_data: Map::with_hasher(BuildHasherDefault::new()),
             constants: [Constant::I32(0); NUM_CONSTANTS],

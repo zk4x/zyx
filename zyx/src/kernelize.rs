@@ -5,7 +5,7 @@
 
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
-    backend::{BufferId, Device, ProgramId, SearchConfig},
+    backend::{BufferId, Device, ProgramId, AutotuneConfig},
     cache::{Cache, get_perf},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
@@ -62,7 +62,7 @@ struct Kernelizer<'a> {
     temp_data: &'a mut Map<BufferId, Box<[u8]>>,
     devices: &'a mut [Device],
     cache: &'a mut Cache,
-    search_config: &'a SearchConfig,
+    autotune_config: &'a AutotuneConfig,
     config_dir: Option<&'a PathBuf>,
     debug: &'a DebugMask,
 }
@@ -77,7 +77,7 @@ impl<'a> Kernelizer<'a> {
         temp_data: &'a mut Map<BufferId, Box<[u8]>>,
         devices: &'a mut [Device],
         cache: &'a mut Cache,
-        search_config: &'a SearchConfig,
+        search_config: &'a AutotuneConfig,
         config_dir: Option<&'a PathBuf>,
         debug: &'a DebugMask,
     ) -> Self {
@@ -96,7 +96,7 @@ impl<'a> Kernelizer<'a> {
             temp_data,
             devices,
             cache,
-            search_config,
+            autotune_config: search_config,
             config_dir,
             debug,
         }
@@ -543,6 +543,65 @@ impl<'a> Kernelizer<'a> {
     }
 
     fn launch_kernel(&mut self, mut kernel: Kernel) -> Result<(), ZyxError> {
+        if kernel.stores.is_empty() {
+            println!("Empty stores in this kernel:");
+            kernel.debug();
+        }
+        debug_assert!(!kernel.stores.is_empty());
+        debug_assert!(!kernel.ops.is_empty());
+
+        //let time_w = std::time::Instant::now();
+        let (dev_id, mpid, event_wait_list, output_buffers, args) =
+            schedule(&kernel.loads, &kernel.stores, self.graph, self.devices, self.pools)?;
+
+        /***** CACHE and OPTIMIZATION SEARCH *****/
+
+        let device = &mut self.devices[dev_id];
+        let dev_id = crate::cache::DeviceId(dev_id as u32);
+        let pool = &mut self.pools[mpid];
+
+        // Send the kernel to kernel cache.
+        let dev_info_id = self.cache.get_or_add_dev_info(device.info());
+
+        // Launch if it is in cache
+        let kernel_id;
+        if let Some(&kid) = self.cache.kernels.get(&kernel) {
+            // If it has been compiled for the device
+            if let Some(&program_id) = self.cache.programs.get(&(kid, dev_id)) {
+                if self.debug.kmd() {
+                    println!("Kernel launch from memory pool {mpid} with args: {args:?}");
+                }
+                let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
+                self.pools[mpid].events.insert(output_buffers, event);
+                //println!("Elapsed during kernel launch {:?}", time_w.elapsed());
+                return Ok(());
+            } else if let Some(opt) = self.cache.optimizations.get(&(kid, dev_info_id)) {
+                // Use optimizer cached on disk
+                todo!()
+            } else {
+                // It was optimized for different device
+                //optimizer = Optimizer::new(&kernel, device.info());
+                todo!()
+            }
+            //kernel_id = kid;
+        } else {
+            // If it is not in cache, we just get new empty kernel id where we insert the kernel
+            //optimizer = Optimizer::new(&kernel, device.info());
+            // a bit unnecessay kernel clone here, but it does not really matter
+            kernel_id = self.cache.insert_kernel(kernel.clone());
+        }
+
+        let program_id = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config);
+
+        self.cache.programs.insert((kernel_id, dev_id), program_id);
+
+        let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
+        self.pools[mpid].events.insert(output_buffers, event);
+
+        Ok(())
+    }
+
+    fn launch_kernel2(&mut self, mut kernel: Kernel) -> Result<(), ZyxError> {
         // Iterate over all memory pools ordered by device speed.
         // Then select first fastest device that has associated memory pool which fits all tensors used
         // as arguments for the kernel that are not yet allocated on that memory pool.
@@ -596,7 +655,7 @@ impl<'a> Kernelizer<'a> {
         }
 
         // Check if best optimization already found
-        if optimizer.fully_optimized() || (self.search_config.iterations == 0 && !optimizer.is_new()) {
+        if optimizer.fully_optimized() || (self.autotune_config.launch_iterations == 0 && !optimizer.is_new()) {
             // done optimizing, loaded best from disk
             let opt_res = optimizer.apply_optimization(
                 &mut kernel,
@@ -622,7 +681,7 @@ impl<'a> Kernelizer<'a> {
         }
 
         // If search_iters == 0, we use default optimizations
-        if self.search_config.iterations == 0 {
+        if self.autotune_config.launch_iterations == 0 {
             let mut okernel;
             let program_id;
             let nanos;
@@ -676,7 +735,7 @@ impl<'a> Kernelizer<'a> {
             let mut progress_bar = if self.debug.perf() {
                 let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
                 Some((
-                    ProgressBar::new(self.search_config.iterations.min(optimizer.max_iters() as usize) as u64),
+                    ProgressBar::new(self.autotune_config.launch_iterations.min(optimizer.max_iters() as usize) as u64),
                     flop,
                     mem_read,
                     mem_write,
@@ -693,7 +752,7 @@ impl<'a> Kernelizer<'a> {
 
             let mut i = 0;
             while let Some(optimization) = optimizer.next_optimization(last_time_nanos)
-                && i < self.search_config.iterations
+                && i < self.autotune_config.launch_iterations
             {
                 let mut kernel = kernel.clone();
                 if !optimizer.apply_optimization(&mut kernel, optimization, device.info(), self.debug.ir()) {
@@ -767,7 +826,7 @@ impl<'a> Kernelizer<'a> {
         }
 
         self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer);
-        if self.search_config.save_to_disk {
+        if self.autotune_config.save_to_disk {
             if let Some(mut path) = self.config_dir.cloned() {
                 path.push("cached_kernels");
                 let ser_cache: Vec<u8> = self.cache.serialize_bin();

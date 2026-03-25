@@ -23,6 +23,7 @@ mod unfold;
 mod unroll_loops;
 mod vectorize;
 mod verify;
+mod autotune;
 //mod emulate;
 
 // TODO later make this dynamic u32 or u64 depending on max range

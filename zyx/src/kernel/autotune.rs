@@ -1,143 +1,100 @@
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
-
-#[derive(Clone, Hash, PartialEq, Eq)]
-pub struct Kernel {}
+use crate::backend::{AutotuneConfig, BufferId, Device, MemoryPool, ProgramId};
+use crate::error::BackendError;
+use crate::kernel::Kernel;
+use std::collections::BinaryHeap;
+use std::u64;
 
 impl Kernel {
-    pub fn autotune(&mut self, device: &mut Device, memory_pool: &mut MemoryPool) {
-        todo!()
-    }
-
     pub fn get_cost(&self) -> u64 {
         0
     }
 
-    pub fn unroll_loops(&self, unroll_factor: u32) -> Self {
-        self.clone()
-    }
-
-    pub fn constant_folding(&self) -> Self {
-        self.clone()
-    }
-
-    pub fn licm(&self) -> Self {
-        self.clone()
-    }
-
-    pub fn split_loop(&self, loop_id: u32, split_dim: u32) -> Self {
-        self.clone()
-    }
-
-    pub fn unroll_loops_params(&self) -> Vec<Vec<u32>> {
-        vec![vec![2, 4, 8]]
-    }
-
-    pub fn split_loop_params(&self) -> Vec<Vec<u32>> {
-        vec![vec![0, 1], vec![2, 4]]
-    }
-
     pub fn hash_kernel(&self) -> u64 {
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hash;
         use std::hash::Hasher;
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher);
         hasher.finish()
     }
 
-    // ---------------- Cartesian product helper ----------------
-    fn cartesian_product(params: &[Vec<u32>]) -> Vec<Vec<u32>> {
-        params.iter().fold(vec![vec![]], |acc, p| {
-            let mut res = vec![];
-            for prefix in &acc {
-                for &v in p {
-                    let mut new_prefix = prefix.clone();
-                    new_prefix.push(v);
-                    res.push(new_prefix);
-                }
-            }
-            res
-        })
+    pub fn launch_with_timings(
+        &self,
+        buffers: &[BufferId],
+        device: &mut Device,
+        memory_pool: &mut MemoryPool,
+    ) -> Result<(ProgramId, u64), BackendError> {
+        let program_id = device.compile(self, false)?;
+        let begin = std::time::Instant::now();
+        let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
+        memory_pool.sync_events(vec![event])?;
+        let nanos = begin.elapsed().as_nanos() as u64;
+        Ok((program_id, nanos))
     }
 
-    // ---------------- Autotune with A* ----------------
-    pub fn autotune_astar(&self, mut cost_iters: u32) -> Self {
-        #[derive(Clone, Copy)]
-        enum PassKind {
-            UnrollLoops,
-            ConstantFolding,
-            Licm,
-            SplitLoop,
-        }
-        const PASSES: &[PassKind] = &[
-            PassKind::UnrollLoops,
-            PassKind::ConstantFolding,
-            PassKind::Licm,
-            PassKind::SplitLoop,
-        ];
+    pub fn autotune(
+        &mut self,
+        buffers: &[BufferId],
+        device: &mut Device,
+        memory_pool: &mut MemoryPool,
+        config: &AutotuneConfig,
+    ) -> ProgramId {
+        // These are all available optimization functions
+        // In each row, first function gives available number of configurations for the optimization at the current kernel state,
+        // while the other function applies the optimization on the kernel using given configuration
+        // e.g. (Kernel::unroll_loops_configs, Kernel::unroll_loops),
+        let optimizations: [(fn(&Kernel) -> u16, fn(&mut Kernel, u16)); 20] = todo!();
 
-        let mut best = self.clone();
-        let mut best_cost = best.get_cost();
-        cost_iters = cost_iters.saturating_sub(1);
+        let beam_width = 100; // how many kernels to keep
+        let n_optimization_passes = 10000; // how many optimization configs to try at each step
+        let n_steps = 7; // how many optimization steps
 
-        // min-heap by cost
-        let mut heap = BinaryHeap::new();
-        heap.push(Reverse((best_cost, best.clone())));
+        let mut beam = BinaryHeap::new();
+        beam.push(BeamEntry { kernel: self.clone(), cost: self.get_cost() });
 
-        // track seen kernels by hash
-        let mut visited: HashSet<u64> = HashSet::new();
-        visited.insert(best.hash_kernel());
+        let mut max_cost = 0;
 
-        // helper closure for inserting a child
-        let mut try_insert = |child: Kernel| {
-            if cost_iters == 0 {
-                return;
-            }
-            let h = child.hash_kernel();
-            if visited.contains(&h) {
-                return;
-            }
+        for iteration in 0..n_steps {
+            let total_configs: usize = optimizations.iter().map(|(config_fn, _)| config_fn(&self) as usize).sum();
 
-            let cost = child.get_cost();
-            cost_iters -= 1;
+            let mut new_beam = BinaryHeap::with_capacity(beam_width);
 
-            visited.insert(h);
-            if cost < best_cost {
-                best = child.clone();
-                best_cost = cost;
-            }
-
-            heap.push(Reverse((cost, child)));
-        };
-
-        while cost_iters > 0 && !heap.is_empty() {
-            let Reverse((_curr_cost, curr_kernel)) = heap.pop().unwrap();
-
-            for &pass in PASSES {
-                match pass {
-                    PassKind::UnrollLoops => {
-                        for p_comb in Self::cartesian_product(&curr_kernel.unroll_loops_params()) {
-                            try_insert(curr_kernel.unroll_loops(p_comb[0]));
-                        }
+            while let Some(beam_kernel) = beam.pop() {
+                for (config_fn, optimization_fn) in &optimizations {
+                    let num_configs = config_fn(&beam_kernel.kernel) as usize;
+                    if num_configs == 0 {
+                        continue;
                     }
-                    PassKind::ConstantFolding => {
-                        try_insert(curr_kernel.constant_folding());
-                    }
-                    PassKind::Licm => {
-                        try_insert(curr_kernel.licm());
-                    }
-                    PassKind::SplitLoop => {
-                        for p_comb in Self::cartesian_product(&curr_kernel.split_loop_params()) {
-                            try_insert(curr_kernel.split_loop(p_comb[0], p_comb[1]));
-                        }
+
+                    // Calculate how many configs to try for this optimization
+                    let n_configs_to_try =
+                        (num_configs as f32 * config.optimization_passes as f32 / total_configs as f32).ceil() as u16;
+
+                    let kernel = beam_kernel.kernel.clone();
+                    let mut config_id = 0;
+                    while config_id < n_configs_to_try {
+                        optimization_fn(&mut kernel, config_id);
+                        let cost = kernel.get_cost();
+
+                        if
+
+                        config_id += 1;
                     }
                 }
-                if cost_iters == 0 {
-                    break;
-                }
             }
+
+            // If we didn't get any new kernels, break early
+            if new_beam.is_empty() {
+                break;
+            }
+
+            beam = new_beam;
         }
 
-        best
+        // Compile and return the best kernel found
+        let BeamEntry { kernel, cost } = beam.pop().unwrap();
+        println!("Autotune complete. Best cost: {}, kernel:", cost);
+        kernel.debug();
+        device.compile(&kernel, false).unwrap()
     }
 }
