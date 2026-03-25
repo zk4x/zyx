@@ -71,7 +71,7 @@ impl Kernel {
     }
 
     pub fn merge_loops(&mut self, loops: &[OpId]) {
-        println!("Merging loops {loops:?}");
+        //println!("Merging loops {loops:?}");
         let mut acc = 1;
         // BTreeMap is ordered
         let mut axes = BTreeMap::default();
@@ -95,7 +95,7 @@ impl Kernel {
 
         for (.., (loop_id, len)) in axes.into_iter() {
             let y = self.insert_before(loop_id, Op::Const(Constant::idx(len as u64)));
-            println!("len={len}, x={x}, y={y}, loop_id={loop_id}");
+            //println!("len={len}, x={x}, y={y}, loop_id={loop_id}");
             self.ops[loop_id].op = Op::Binary { x, y, bop: BOp::Mod };
             x = self.insert_after(loop_id, Op::Binary { x, y, bop: BOp::Div });
         }

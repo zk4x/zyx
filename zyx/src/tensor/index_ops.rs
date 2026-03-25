@@ -78,7 +78,7 @@ impl Tensor {
     /// Returns a [`ZyxError::ShapeError`] if the indices are invalid, out of bounds,
     /// or don't match the tensor's dimensionality.
     pub fn slice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
-        let shape = self.shape(); // original tensor shape
+        let shape = self.shape();
         let rank = shape.len();
 
         let mut squeeze_axes: Vec<Axis> = Vec::new();
@@ -144,12 +144,17 @@ impl Tensor {
     /// Same as [Tensor::slice], but instead of indexing from first dimensions, it indexes from last dimensions.
     #[allow(clippy::missing_panics_doc)]
     pub fn rslice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
-        let shape = self.shape(); // original tensor shape
+        let shape = self.shape();
         let rank = shape.len();
+        //print!("shape={shape:?}");
 
         let mut squeeze_axes: Vec<Axis> = Vec::new();
         let index = index.into_index();
         let padding_len = index.len();
+
+        if padding_len > rank {
+            return Err(ZyxError::shape_error(format!("Index length {padding_len} > rank {rank}").into()));
+        }
 
         let padding =
             index.zip(shape.into_iter().rev()).enumerate().map(|(axis, (dim_index, dim_size))| match dim_index {
@@ -188,7 +193,11 @@ impl Tensor {
 
         let padding = padding.chain(std::iter::repeat_n((0, 0), rank - padding_len));
 
-        let mut result = self.pad_zeros(padding)?;
+        let mut padding_vec: Vec<(i32, i32)> = padding.into_iter().collect();
+        padding_vec.reverse();
+        //println!("padding={padding_vec:?}");
+
+        let mut result = self.pad_zeros(padding_vec)?;
         result = result.squeeze(squeeze_axes);
 
         Ok(result)

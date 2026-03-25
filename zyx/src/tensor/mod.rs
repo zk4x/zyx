@@ -1493,7 +1493,7 @@ impl Tensor {
     /// let x = Tensor::from([[2i32, 3],
     ///                       [4, 1]]);
     /// println!("{:?}\n{x}", x.shape());
-    /// let z = x.pad([(1, 2)], 0i32)?;
+    /// let z = x.pad([(0, 0), (1, 2)], 0i32)?;
     /// println!("{:?}\n{z}", z.shape());
     /// assert_eq!(z, [[0i32, 2, 3, 0, 0],
     ///                [0, 4, 1, 0, 0]]);
@@ -1504,7 +1504,7 @@ impl Tensor {
     /// # use zyx::Tensor;
     /// # let x = Tensor::from([[2i32, 3],
     /// #                       [4, 1]]);
-    /// let z = x.pad([(2, -1), (1, 1)], 0i32)?;
+    /// let z = x.pad([(1, 1), (2, -1)], 0i32)?;
     /// assert_eq!(z, [[0i32, 0, 0],
     ///                [0, 0, 2],
     ///                [0, 0, 4],
