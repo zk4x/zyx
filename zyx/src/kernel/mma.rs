@@ -49,7 +49,7 @@ impl Kernel {
         self.swap_commutative();
         //self.reassociate_commutative();
         self.loop_invariant_code_motion();
-        self.constant_folding();
+        self.constant_folding(0);
         self.common_subexpression_elimination();
         self.dead_code_elimination();
         self.move_constants_to_beginning();

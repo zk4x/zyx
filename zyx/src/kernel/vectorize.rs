@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::{
-    dtype::Constant, kernel::{BOp, Kernel, Op, OpId}, shape::Dim
+    dtype::Constant,
+    kernel::{BOp, Kernel, Op, OpId},
+    shape::Dim,
 };
 
 impl Kernel {
     #[allow(unused)]
     pub fn vectorize_loads(&mut self) {
-
         // TODO for now this function ignores aliasing of stores and loads.
         // So later we need to make sure there are no aliasing issues
 
@@ -17,7 +18,7 @@ impl Kernel {
         self.swap_commutative();
         self.reassociate_commutative();
         self.loop_invariant_code_motion();
-        self.constant_folding();
+        self.constant_folding(0);
         self.common_subexpression_elimination();
         self.dead_code_elimination();
         self.move_constants_to_beginning();
@@ -107,7 +108,10 @@ impl Kernel {
                             if base_index == OpId::NULL {
                                 base_index = self.insert_before(loads[0].0, Const(Constant::idx(0)));
                             }
-                            let vload = self.insert_before(loads[0].0, Load { src: loads[0].1, index: base_index, vlen: loads.len() as u8 });
+                            let vload = self.insert_before(
+                                loads[0].0,
+                                Load { src: loads[0].1, index: base_index, vlen: loads.len() as u8 },
+                            );
                             for (idx, load) in loads.iter().enumerate() {
                                 self.ops[load.0].op = Devectorize { vec: vload, idx };
                             }

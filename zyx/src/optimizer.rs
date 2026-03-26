@@ -73,7 +73,7 @@ impl Optimizer {
             kernel.move_constants_to_beginning();
             kernel.swap_commutative();
             kernel.reassociate_commutative(); // TODO This is changes the kernel on every iteration, fix it
-            kernel.constant_folding();
+            kernel.constant_folding(0);
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
             //kernel.unroll_constant_loops();
@@ -93,7 +93,7 @@ impl Optimizer {
         for _ in 0..10 {
             kernel.move_constants_to_beginning();
             kernel.swap_commutative();
-            kernel.constant_folding();
+            kernel.constant_folding(0);
             kernel.loop_invariant_code_motion();
             kernel.delete_empty_loops();
             //kernel.unroll_constant_loops();

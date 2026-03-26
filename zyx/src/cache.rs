@@ -5,7 +5,7 @@ use crate::{
     Map,
     backend::{Device, DeviceInfo, ProgramId},
     kernel::Kernel,
-    optimizer::{self, Optimizer},
+    //optimizer::{self, Optimizer},
 };
 use nanoserde::{DeBin, SerBin};
 use std::hash::BuildHasherDefault;
@@ -24,7 +24,7 @@ pub struct Cache {
     pub device_infos: Map<DeviceInfo, DeviceInfoId>,
     pub kernels: Map<Kernel, KernelId>,
     // Finished optimizations of kernels for given devices
-    pub optimizations: Map<(KernelId, DeviceInfoId), optimizer::Optimizer>,
+    //pub optimizations: Map<(KernelId, DeviceInfoId), optimizer::Optimizer>,
     // This last one is not stored to disk
     pub programs: Map<(KernelId, DeviceId), ProgramId>,
 }
@@ -41,11 +41,11 @@ impl SerBin for Cache {
             key.ser_bin(output);
             value.ser_bin(output);
         }
-        self.optimizations.len().ser_bin(output);
-        for (key, value) in &self.optimizations {
+        //self.optimizations.len().ser_bin(output);
+        /*for (key, value) in &self.optimizations {
             key.ser_bin(output);
             value.ser_bin(output);
-        }
+        }*/
     }
 }
 
@@ -77,17 +77,17 @@ impl DeBin for Cache {
         if len > bytes.len() - *offset {
             return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset));
         }
-        let mut optimizations = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
+        /*let mut optimizations = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let k1 = KernelId::de_bin(offset, bytes)?;
             let k2 = DeviceInfoId::de_bin(offset, bytes)?;
             let key = (k1, k2);
             let value = Optimizer::de_bin(offset, bytes)?;
             optimizations.insert(key, value);
-        }
+        }*/
 
         let programs = Map::with_hasher(BuildHasherDefault::new());
-        Ok(Cache { device_infos, kernels, optimizations, programs })
+        Ok(Cache { device_infos, kernels, programs })
     }
 }
 
@@ -96,7 +96,7 @@ impl Cache {
         Cache {
             device_infos: Map::with_hasher(BuildHasherDefault::new()),
             kernels: Map::with_hasher(BuildHasherDefault::new()),
-            optimizations: Map::with_hasher(BuildHasherDefault::new()),
+            //optimizations: Map::with_hasher(BuildHasherDefault::new()),
             programs: Map::with_hasher(BuildHasherDefault::new()),
         }
     }
@@ -108,7 +108,7 @@ impl Cache {
         }
         self.device_infos = Default::default();
         self.kernels = Default::default();
-        self.optimizations = Default::default();
+        //self.optimizations = Default::default();
         self.programs = Default::default();
     }
 

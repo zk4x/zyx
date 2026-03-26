@@ -9,7 +9,7 @@ use crate::{
 
 impl Kernel {
     // Constant folding and deletion of useless ops, etc.
-    pub fn constant_folding(&mut self) {
+    pub fn constant_folding(&mut self, _: u16) {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
@@ -142,7 +142,7 @@ impl Kernel {
     // Eliminates accs that are not stored into in loops
     pub fn fold_accs(&mut self) {
         // We have to do constant folding before folding accs to guarantee indices are constants
-        self.constant_folding();
+        self.constant_folding(0);
         // Check if a define exists without a loop that stores into that define
         let mut defines = Map::default();
         let mut loop_level = 0u32;

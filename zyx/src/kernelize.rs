@@ -5,21 +5,17 @@
 
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
-    backend::{BufferId, Device, ProgramId, AutotuneConfig},
-    cache::{Cache, get_perf},
+    backend::{AutotuneConfig, BufferId, Device},
+    cache::Cache,
     dtype::Constant,
-    error::{BackendError, ErrorStatus},
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, UOp},
-    optimizer::Optimizer,
-    prog_bar::ProgressBar,
     runtime::{Pool, Runtime, deallocate_tensors},
     schedule::schedule,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
 };
-use nanoserde::SerBin;
 use std::{hash::BuildHasherDefault, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -64,7 +60,7 @@ struct Kernelizer<'a> {
     cache: &'a mut Cache,
     autotune_config: &'a AutotuneConfig,
     config_dir: Option<&'a PathBuf>,
-    debug: &'a DebugMask,
+    debug: DebugMask,
 }
 
 impl<'a> Kernelizer<'a> {
@@ -79,7 +75,7 @@ impl<'a> Kernelizer<'a> {
         cache: &'a mut Cache,
         search_config: &'a AutotuneConfig,
         config_dir: Option<&'a PathBuf>,
-        debug: &'a DebugMask,
+        debug: DebugMask,
     ) -> Self {
         let mut must_keep_nodes = realized_nodes.clone();
         must_keep_nodes.extend(to_eval);
@@ -575,9 +571,9 @@ impl<'a> Kernelizer<'a> {
                 self.pools[mpid].events.insert(output_buffers, event);
                 //println!("Elapsed during kernel launch {:?}", time_w.elapsed());
                 return Ok(());
-            } else if let Some(opt) = self.cache.optimizations.get(&(kid, dev_info_id)) {
+                /*} else if let Some(opt) = self.cache.optimizations.get(&(kid, dev_info_id)) {
                 // Use optimizer cached on disk
-                todo!()
+                todo!()*/
             } else {
                 // It was optimized for different device
                 //optimizer = Optimizer::new(&kernel, device.info());
@@ -591,248 +587,11 @@ impl<'a> Kernelizer<'a> {
             kernel_id = self.cache.insert_kernel(kernel.clone());
         }
 
-        let program_id = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config);
-
+        kernel.unfold_movement_ops();
+        let program_id = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, self.debug);
         self.cache.programs.insert((kernel_id, dev_id), program_id);
-
         let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
         self.pools[mpid].events.insert(output_buffers, event);
-
-        Ok(())
-    }
-
-    fn launch_kernel2(&mut self, mut kernel: Kernel) -> Result<(), ZyxError> {
-        // Iterate over all memory pools ordered by device speed.
-        // Then select first fastest device that has associated memory pool which fits all tensors used
-        // as arguments for the kernel that are not yet allocated on that memory pool.
-
-        if kernel.stores.is_empty() {
-            println!("Empty stores in this kernel:");
-            kernel.debug();
-        }
-        debug_assert!(!kernel.stores.is_empty());
-        debug_assert!(!kernel.ops.is_empty());
-
-        //let time_w = std::time::Instant::now();
-        let (dev_id, mpid, event_wait_list, output_buffers, args) =
-            schedule(&kernel.loads, &kernel.stores, self.graph, self.devices, self.pools)?;
-
-        /***** CACHE and OPTIMIZATION SEARCH *****/
-
-        let device = &mut self.devices[dev_id];
-        let dev_id = crate::cache::DeviceId(dev_id as u32);
-        let pool = &mut self.pools[mpid];
-
-        // Send the kernel to kernel cache.
-        let dev_info_id = self.cache.get_or_add_dev_info(device.info());
-
-        // Launch if it is in cache
-        let kernel_id;
-        let mut optimizer;
-        if let Some(&kid) = self.cache.kernels.get(&kernel) {
-            // If it has been compiled for the device
-            if let Some(&program_id) = self.cache.programs.get(&(kid, dev_id)) {
-                if self.debug.kmd() {
-                    println!("Kernel launch from memory pool {mpid} with args: {args:?}");
-                }
-                let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-                self.pools[mpid].events.insert(output_buffers, event);
-                //println!("Elapsed during kernel launch {:?}", time_w.elapsed());
-                return Ok(());
-            } else if let Some(opt) = self.cache.optimizations.get(&(kid, dev_info_id)) {
-                // Continue optimizing using optimizations cached to disk
-                optimizer = opt.clone();
-            } else {
-                // It was optimized for different device
-                optimizer = Optimizer::new(&kernel, device.info());
-            }
-            kernel_id = kid;
-        } else {
-            // If it is not in cache, we just get new empty kernel id where we insert the kernel
-            optimizer = Optimizer::new(&kernel, device.info());
-            // a bit unnecessay kernel clone here, but it does not really matter
-            kernel_id = self.cache.insert_kernel(kernel.clone());
-        }
-
-        // Check if best optimization already found
-        if optimizer.fully_optimized() || (self.autotune_config.launch_iterations == 0 && !optimizer.is_new()) {
-            // done optimizing, loaded best from disk
-            let opt_res = optimizer.apply_optimization(
-                &mut kernel,
-                optimizer.best_optimization(),
-                device.info(),
-                self.debug.ir(),
-            );
-            debug_assert!(opt_res);
-            let program_id = device.compile(&kernel, self.debug.asm())?;
-            if self.debug.kmd() {
-                println!("Kernel launch from memory pool {mpid} with args: {args:?}");
-            }
-            self.cache.programs.insert((kernel_id, dev_id), program_id);
-            let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-            self.pools[mpid].events.insert(output_buffers, event);
-            return Ok(());
-        }
-
-        if self.debug.sched() {
-            println!();
-            print!("Optimizing kernel max iterations: {}", optimizer.max_iters());
-            kernel.debug();
-        }
-
-        // If search_iters == 0, we use default optimizations
-        if self.autotune_config.launch_iterations == 0 {
-            let mut okernel;
-            let program_id;
-            let nanos;
-
-            loop {
-                okernel = kernel.clone();
-
-                let Some(optimization) = optimizer.next_optimization(u64::MAX) else {
-                    return Err(ZyxError::KernelLaunchFailure);
-                };
-
-                if !optimizer.apply_optimization(&mut okernel, optimization, device.info(), self.debug.ir()) {
-                    continue;
-                }
-
-                match device.compile(&okernel, self.debug.asm()) {
-                    Ok(pid) => program_id = pid,
-                    Err(err) => {
-                        if cfg!(debug_assertions) {
-                            panic!("{err}");
-                        } else {
-                            continue;
-                        }
-                    }
-                }
-
-                if self.debug.kmd() {
-                    println!("Kernel launch from memory pool {mpid} with args: {args:?}");
-                }
-                let timer = std::time::Instant::now();
-                let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-                pool.pool.sync_events(vec![event])?;
-                nanos = timer.elapsed().as_nanos() as u64;
-
-                break;
-            }
-
-            if nanos < optimizer.best_time_nanos {
-                self.cache.programs.insert((kernel_id, dev_id), program_id);
-            }
-            if self.debug.perf() {
-                let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
-                println!("{}", get_perf(flop, mem_read, mem_write, nanos));
-            }
-            optimizer.best_time_nanos = nanos;
-        } else {
-            let mut last_time_nanos = u64::MAX;
-
-            pool.pool.sync_events(event_wait_list)?;
-
-            let mut progress_bar = if self.debug.perf() {
-                let (flop, mem_read, mem_write) = kernel.flop_mem_rw();
-                Some((
-                    ProgressBar::new(self.autotune_config.launch_iterations.min(optimizer.max_iters() as usize) as u64),
-                    flop,
-                    mem_read,
-                    mem_write,
-                ))
-            } else {
-                None
-            };
-
-            /*for &arg in &args {
-                let mut data = [0f32; 10];
-                Runtime::load_buffer(&mut data, pool, arg)?;
-                println!("{data:?}");
-            }*/
-
-            let mut i = 0;
-            while let Some(optimization) = optimizer.next_optimization(last_time_nanos)
-                && i < self.autotune_config.launch_iterations
-            {
-                let mut kernel = kernel.clone();
-                if !optimizer.apply_optimization(&mut kernel, optimization, device.info(), self.debug.ir()) {
-                    continue;
-                }
-
-                let compile_closure = (|| -> Result<(ProgramId, u64), BackendError> {
-                    let program_id = device.compile(&kernel, self.debug.asm())?;
-                    let begin = std::time::Instant::now();
-                    let event = device.launch(program_id, &mut pool.pool, &args, Vec::new())?;
-                    pool.pool.sync_events(vec![event])?;
-                    Ok((program_id, begin.elapsed().as_nanos() as u64))
-                })();
-
-                last_time_nanos = if let Ok((program_id, last_time_nanos)) = compile_closure {
-                    if last_time_nanos < optimizer.best_time_nanos {
-                        self.cache.programs.insert((kernel_id, dev_id), program_id);
-                    }
-                    last_time_nanos
-                } else {
-                    if let Err(err) = compile_closure {
-                        match err.status {
-                            ErrorStatus::KernelCompilation
-                            | ErrorStatus::IncorrectKernelArg
-                            | ErrorStatus::KernelLaunch
-                            | ErrorStatus::KernelSync => {}
-                            _ => {
-                                println!();
-                                return Err(ZyxError::BackendError(err));
-                            }
-                        }
-                    }
-                    u64::MAX
-                };
-
-                if let Some((prog_bar, flop, mem_read, mem_write)) = &mut progress_bar {
-                    prog_bar.inc(
-                        1,
-                        &format!(
-                            "{}, best={}μs",
-                            get_perf(*flop, *mem_read, *mem_write, last_time_nanos),
-                            if optimizer.best_time_nanos == u64::MAX {
-                                ("inf").into()
-                            } else {
-                                (optimizer.best_time_nanos / 1000).to_string()
-                            }
-                        ),
-                    );
-                }
-                i += 1;
-            }
-            if let Some((_, flop, mem_read, mem_write)) = &progress_bar {
-                println!(
-                    "Best: {}\n",
-                    get_perf(*flop, *mem_read, *mem_write, optimizer.best_time_nanos)
-                );
-                if self.debug.asm() {
-                    assert_eq!(
-                        optimizer.apply_optimization(
-                            &mut kernel,
-                            optimizer.best_optimization(),
-                            device.info(),
-                            self.debug.ir()
-                        ),
-                        true
-                    );
-                    let program_id = device.compile(&kernel, true)?;
-                    device.release(program_id);
-                }
-            }
-        }
-
-        self.cache.optimizations.insert((kernel_id, dev_info_id), optimizer);
-        if self.autotune_config.save_to_disk {
-            if let Some(mut path) = self.config_dir.cloned() {
-                path.push("cached_kernels");
-                let ser_cache: Vec<u8> = self.cache.serialize_bin();
-                std::fs::write(path, ser_cache)?;
-            }
-        }
 
         Ok(())
     }
@@ -891,7 +650,7 @@ impl Runtime {
             &mut self.cache,
             &self.search_config,
             self.config_dir.as_ref(),
-            &self.debug,
+            self.debug,
         );
 
         for &nid in order {
