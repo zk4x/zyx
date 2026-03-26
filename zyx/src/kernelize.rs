@@ -16,7 +16,7 @@ use crate::{
     tensor::TensorId,
     view::View,
 };
-use std::{hash::BuildHasherDefault, path::PathBuf};
+use std::hash::BuildHasherDefault;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KMKernelId(u32);
@@ -59,7 +59,6 @@ struct Kernelizer<'a> {
     devices: &'a mut [Device],
     cache: &'a mut Cache,
     autotune_config: &'a AutotuneConfig,
-    config_dir: Option<&'a PathBuf>,
     debug: DebugMask,
 }
 
@@ -74,7 +73,6 @@ impl<'a> Kernelizer<'a> {
         devices: &'a mut [Device],
         cache: &'a mut Cache,
         search_config: &'a AutotuneConfig,
-        config_dir: Option<&'a PathBuf>,
         debug: DebugMask,
     ) -> Self {
         let mut must_keep_nodes = realized_nodes.clone();
@@ -93,7 +91,6 @@ impl<'a> Kernelizer<'a> {
             devices,
             cache,
             autotune_config: search_config,
-            config_dir,
             debug,
         }
     }
@@ -556,11 +553,7 @@ impl<'a> Kernelizer<'a> {
         let dev_id = crate::cache::DeviceId(dev_id as u32);
         let pool = &mut self.pools[mpid];
 
-        // Send the kernel to kernel cache.
-        let dev_info_id = self.cache.get_or_add_dev_info(device.info());
-
         // Launch if it is in cache
-        let kernel_id;
         if let Some(&kid) = self.cache.kernels.get(&kernel) {
             // If it has been compiled for the device
             if let Some(&program_id) = self.cache.programs.get(&(kid, dev_id)) {
@@ -571,21 +564,11 @@ impl<'a> Kernelizer<'a> {
                 self.pools[mpid].events.insert(output_buffers, event);
                 //println!("Elapsed during kernel launch {:?}", time_w.elapsed());
                 return Ok(());
-                /*} else if let Some(opt) = self.cache.optimizations.get(&(kid, dev_info_id)) {
-                // Use optimizer cached on disk
-                todo!()*/
-            } else {
-                // It was optimized for different device
-                //optimizer = Optimizer::new(&kernel, device.info());
-                todo!()
             }
-            //kernel_id = kid;
-        } else {
-            // If it is not in cache, we just get new empty kernel id where we insert the kernel
-            //optimizer = Optimizer::new(&kernel, device.info());
-            // a bit unnecessay kernel clone here, but it does not really matter
-            kernel_id = self.cache.insert_kernel(kernel.clone());
         }
+
+        // If it is not in cache, we just get new empty kernel id where we insert the kernel
+        let kernel_id = self.cache.insert_kernel(kernel.clone());
 
         kernel.unfold_movement_ops();
         let program_id = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, self.debug);
@@ -649,7 +632,6 @@ impl Runtime {
             &mut self.devices,
             &mut self.cache,
             &self.search_config,
-            self.config_dir.as_ref(),
             self.debug,
         );
 

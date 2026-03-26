@@ -178,6 +178,9 @@ impl Rng {
                 if end < start {
                     (start, end) = (end, start);
                 }
+                if start == end {
+                    return start.cast();
+                }
                 let x = self.next_u64();
                 //(x * (end - start) + start).cast()
                 (x % (end - start) + start).cast()
