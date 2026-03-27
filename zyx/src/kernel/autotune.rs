@@ -14,7 +14,6 @@ impl Kernel {
     }
 
     pub fn get_hash(&self) -> u64 {
-        use std::hash::Hash;
         let mut hasher = crate::chasher::CHasher::default();
         self.hash(&mut hasher);
         hasher.finish()
