@@ -3,6 +3,7 @@ use crate::error::BackendError;
 use crate::kernel::{Kernel, Op, Scope};
 use crate::rng::Rng;
 use crate::shape::Dim;
+use crate::slab::SlabId;
 use crate::{DebugMask, Set};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
@@ -143,6 +144,7 @@ impl Kernel {
         let dev_info_ptr: *const DeviceInfo = device.info();
         let dev_info_ref = unsafe { &*dev_info_ptr };
 
+        let n_launches = 10;
         let n_seeds = 100;
         let n_added_per_step = 10;
         let n_removed_per_step = 5;
@@ -263,26 +265,36 @@ impl Kernel {
 
         pool.shutdown();
 
-        // TODO add hardware validation of top n kernels
+        let mut launched_kernels = Set::default();
+        let mut best_time = u64::MAX;
+        let mut best_program = ProgramId::NULL;
+        let mut i = n_launches;
+        while i > 0 {
+            let opt_seq = sample_best(&items, &mut rng);
+            let mut kernel = self.clone();
 
-        let mut kernel = self.clone();
-        if let Some(opt_seq) = items.iter().min_by_key(|x| x.cost) {
-            println!("Selected sequence: {opt_seq:?}");
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 available_opts[opt_id as usize].1(&mut kernel, opt_cfg);
             }
+
+            kernel.run_always_on_optimizations();
+            if launched_kernels.insert(kernel.get_hash()) {
+                let Ok((program_id, time)) = kernel.launch_with_timings(buffers, device, memory_pool) else { continue };
+
+                if time < best_time {
+                    best_program = program_id;
+                    best_time = time;
+                }
+            }
+
+            i -= 1;
         }
-
-        kernel.run_always_on_optimizations();
-
-        #[cfg(debug_assertions)]
-        kernel.verify();
 
         if debug.ir() {
             kernel.debug();
         }
 
-        device.compile(&kernel, debug.asm()).unwrap()
+        best_program
     }
 }
 
