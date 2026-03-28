@@ -123,7 +123,7 @@ impl Kernel {
     }
 
     pub fn run_always_on_optimizations(&mut self) {
-        self.constant_folding(0);
+        self.constant_folding();
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
         self.common_subexpression_elimination();
@@ -131,7 +131,7 @@ impl Kernel {
     }
 
     pub fn autotune(
-        &mut self,
+        &self,
         buffers: &[BufferId],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
@@ -139,7 +139,7 @@ impl Kernel {
         debug: DebugMask,
     ) -> ProgramId {
         let available_opts: [(fn(&Kernel) -> u16, fn(&mut Kernel, u16)); _] =
-            [(Self::opt_no_config, Self::constant_folding)];
+            [(Self::opt_no_config, Self::reassociate_commutative)];
 
         let dev_info_ptr: *const DeviceInfo = device.info();
         let dev_info_ref = unsafe { &*dev_info_ptr };
@@ -158,7 +158,8 @@ impl Kernel {
         let mut visited = Set::default();
 
         // Initial seed
-        let kernel = self.clone();
+        let mut kernel = self.clone();
+        kernel.run_always_on_optimizations();
 
         let avail_configs = available_opts.map(|(config_fn, _)| config_fn(&kernel) as usize);
         let total_configs = avail_configs.iter().sum::<usize>();

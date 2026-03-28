@@ -58,7 +58,7 @@ impl Kernel {
                                     };
                                     //println!("Active defines: {active_defines:?}");
                                     jam_found = true;
-                                    self.constant_folding(0);
+                                    self.constant_folding();
                                     self.dead_code_elimination();
                                     self.common_subexpression_elimination();
                                     self.delete_empty_loops();

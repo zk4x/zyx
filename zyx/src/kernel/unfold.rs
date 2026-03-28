@@ -44,16 +44,6 @@ impl Kernel {
 
         self.unfold_reduces();
         self.unfold_views();
-
-        // TODO remove this from here
-        self.swap_commutative();
-        self.constant_folding(0);
-        self.common_subexpression_elimination();
-        self.dead_code_elimination();
-        self.swap_commutative();
-        self.constant_folding(0);
-        self.common_subexpression_elimination();
-        self.dead_code_elimination();
     }
 
     pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
