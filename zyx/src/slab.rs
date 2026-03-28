@@ -157,7 +157,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
             .map(|(id, x)| (Id::try_from(id).unwrap(), unsafe { x.assume_init_mut() }))
     }*/
 
-    pub(crate) fn first_id(&self) -> Id {
+    /*pub(crate) fn first_id(&self) -> Id {
         if self.is_empty() {
             return Id::NULL;
         }
@@ -180,7 +180,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
                 return id;
             }
         }
-    }
+    }*/
 
     /*pub(crate) fn retain(&mut self, func: impl Fn(&Id) -> bool) {
         let mut i = Id::ZERO;

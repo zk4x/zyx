@@ -112,7 +112,7 @@ impl Cache {
         self.programs = Default::default();
     }
 
-    pub fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
+    /*pub fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
         if let Some(&dev_info_id) = self.device_infos.get(device_info) {
             dev_info_id
         } else {
@@ -125,7 +125,7 @@ impl Cache {
         let newly_inserted = self.device_infos.insert(device_info, dev_info_id).is_none();
         assert!(newly_inserted);
         dev_info_id
-    }
+    }*/
 
     pub fn insert_kernel(&mut self, kernel: Kernel) -> KernelId {
         let kernel_id = KernelId(self.kernels.values().copied().max().map_or(0, |id| id.0.checked_add(1).unwrap()));

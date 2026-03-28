@@ -821,7 +821,7 @@ impl Kernel {
     }
 
     pub fn unfold_pows(&mut self) {
-        let mut op_id = self.ops.first_id();
+        let mut op_id = self.head;
         while !op_id.is_null() {
             if let &Op::Binary { x, y, bop } = self.at(op_id) {
                 if bop == BOp::Pow {
@@ -830,7 +830,7 @@ impl Kernel {
                     self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
                 }
             }
-            op_id = self.ops.next_id(op_id);
+            op_id = self.next_op(op_id);
         }
 
         #[cfg(debug_assertions)]
