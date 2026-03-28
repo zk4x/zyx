@@ -148,7 +148,7 @@ impl Kernel {
         let n_removed_per_step = 5;
         let n_total_opts = 1000;
 
-        let n_threads = 4;
+        let n_threads = std::thread::available_parallelism().map_or(4, |p| p.get());
 
         let pool = ThreadPool::new(n_threads);
 
@@ -261,7 +261,7 @@ impl Kernel {
             remove_worst(&mut items, n_removed_per_step, &mut rng);
         }
 
-        //pool.shutdown();
+        pool.shutdown();
 
         // TODO add hardware validation of top n kernels
 
