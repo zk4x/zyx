@@ -2,18 +2,21 @@ use crate::backend::{AutotuneConfig, BufferId, Device, DeviceInfo, MemoryPool, P
 use crate::error::BackendError;
 use crate::kernel::{Kernel, Op, Scope};
 use crate::rng::Rng;
+use crate::shape::Dim;
 use crate::{DebugMask, Set};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
 impl Kernel {
-    pub fn get_cost(&self, dev_info: &DeviceInfo) -> u64 {
+    pub fn get_cost(&self, dev_info: &DeviceInfo) -> f64 {
         // TODO add measuring bank conflicts
         let mut n_instructions = 0;
         let mut n_scoped_loads = [0u64, 0, 0];
         let mut n_scoped_stores = [0u64, 0, 0];
 
+        let mut gws = vec![1; 3];
+        let mut lws = vec![1; 3];
         let mut loop_mult = 1;
         let mut latest_loop_lengths = Vec::new();
         let mut op_id = self.head;
@@ -48,7 +51,11 @@ impl Kernel {
                         Scope::Register => n_scoped_stores[2] += loop_mult * vlen as u64,
                     }
                 }
-                Op::Index { .. } => {}
+                Op::Index { len, scope, axis } => match scope {
+                    Scope::Global => gws[axis as usize] = len,
+                    Scope::Local => lws[axis as usize] = len,
+                    Scope::Register => todo!(),
+                },
                 Op::Loop { len } => {
                     n_instructions += loop_mult * 3;
                     loop_mult *= len as u64;
@@ -79,13 +86,15 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        n_instructions
-            + n_scoped_loads[0] * 3
-            + n_scoped_loads[1] * 2
-            + n_scoped_loads[2] * 1
-            + n_scoped_stores[0] * 3
-            + n_scoped_stores[1] * 2
-            + n_scoped_stores[2] * 1
+        gws.iter().product::<Dim>() as f64
+            * lws.iter().product::<Dim>() as f64
+            * (n_instructions as f64
+                + n_scoped_loads[0] as f64 * 10.
+                + n_scoped_loads[1] as f64 * 3.
+                + n_scoped_loads[2] as f64 * 1.1
+                + n_scoped_stores[0] as f64 * 10.
+                + n_scoped_stores[1] as f64 * 3.
+                + n_scoped_stores[2] as f64 * 1.1)
     }
 
     pub fn get_hash(&self) -> u64 {
@@ -110,6 +119,14 @@ impl Kernel {
 
     pub fn opt_no_config(&self) -> u16 {
         1
+    }
+
+    pub fn run_always_on_optimizations(&mut self) {
+        self.constant_folding(0);
+        self.move_constants_to_beginning();
+        self.loop_invariant_code_motion();
+        self.common_subexpression_elimination();
+        self.dead_code_elimination();
     }
 
     pub fn autotune(
@@ -153,12 +170,13 @@ impl Kernel {
                 let mut opt_seq = Optimization { opts: vec![(opt_id, config_id)], cost: 0 };
                 let mut new_kernel = kernel.clone();
                 optimization_fn(&mut new_kernel, config_id);
+                new_kernel.run_always_on_optimizations();
                 let hash = kernel.get_hash();
                 if visited.contains(&hash) {
                     config_id += 1;
                     continue;
                 }
-                opt_seq.cost = new_kernel.get_cost(dev_info_ref);
+                opt_seq.cost = new_kernel.get_cost(dev_info_ref) as u64;
                 visited.insert(hash);
                 items.push(opt_seq);
                 config_id += 1;
@@ -212,11 +230,12 @@ impl Kernel {
 
                                 let mut new_kernel = kernel.clone();
                                 optimization_fn(&mut new_kernel, config_id);
+                                new_kernel.run_always_on_optimizations();
                                 let hash = new_kernel.get_hash();
                                 if visited_ref.contains(&hash) || local_visited.contains(&hash) {
                                     continue;
                                 }
-                                new_seq.cost = new_kernel.get_cost(dev_info_ref);
+                                new_seq.cost = new_kernel.get_cost(dev_info_ref) as u64;
                                 local_visited.insert(hash);
                                 local_items.push(new_seq);
                             }
@@ -253,6 +272,11 @@ impl Kernel {
                 available_opts[opt_id as usize].1(&mut kernel, opt_cfg);
             }
         }
+
+        kernel.run_always_on_optimizations();
+
+        #[cfg(debug_assertions)]
+        kernel.verify();
 
         if debug.ir() {
             kernel.debug();
