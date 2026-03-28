@@ -168,9 +168,9 @@ impl Kernel {
         debug: DebugMask,
     ) -> ProgramId {
         let available_opts: [(fn(&Kernel) -> u16, fn(&mut Kernel, u16)); _] = [
-            (Self::opt_no_config, Self::reassociate_commutative),
-            (Self::opt_unroll_config, Self::opt_unroll),
-        ];
+            (Self::opt_no_config, Self::reassociate_commutative)]; //,
+            //(Self::opt_unroll_config, Self::opt_unroll),
+        //];
 
         let dev_info_ptr: *const DeviceInfo = device.info();
         let dev_info_ref = unsafe { &*dev_info_ptr };
