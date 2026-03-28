@@ -143,16 +143,21 @@ impl Kernel {
         debug: DebugMask,
     ) -> ProgramId {
         let mut kernel = self.clone();
+        println!("Before associate_commutative:");
         kernel.debug();
         //kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
         kernel.reassociate_commutative(0);
+        println!("After associate_commutative:");
         kernel.debug();
         //kernel.reassociate_commutative(0);
 
         kernel.run_always_on_optimizations();
+        println!("After final optimizations:");
         kernel.debug();
+
+        println!("CUDA kernel:");
         device.compile(&kernel, debug.asm()).unwrap()
     }
 
