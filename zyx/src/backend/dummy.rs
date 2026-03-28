@@ -55,7 +55,8 @@ pub(super) fn initialize_device(
             preferred_vector_size: 8,
             local_mem_size: 1024 * 1024 * 1024,
             max_register_bytes: 128,
-            tensor_cores: false,
+            tensor_cores: true,
+            warp_size: 32,
         },
         memory_pool_id: (memory_pools.len() - 1) as u32,
     }));

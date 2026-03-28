@@ -206,6 +206,8 @@ pub struct DeviceInfo {
     pub max_register_bytes: Dim,
     /// Does this hardware have tensor cores?
     pub tensor_cores: bool,
+    /// Warp size
+    pub warp_size: u16,
 }
 
 #[allow(clippy::upper_case_acronyms)]

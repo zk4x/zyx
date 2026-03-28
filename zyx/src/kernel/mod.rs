@@ -13,6 +13,7 @@ use crate::{
 use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
 
+mod autotune;
 mod const_folding;
 mod debug;
 mod jam_loops;
@@ -23,7 +24,6 @@ mod unfold;
 mod unroll_loops;
 mod vectorize;
 mod verify;
-mod autotune;
 //mod emulate;
 
 // TODO later make this dynamic u32 or u64 depending on max range
@@ -835,5 +835,15 @@ impl Kernel {
 
         #[cfg(debug_assertions)]
         self.verify();
+    }
+}
+
+impl MMADims {
+    pub fn decompose_mnk(&self) -> (u64, u64, u64) {
+        match self {
+            MMADims::m8n8k16 => (8, 8, 16),
+            MMADims::m16n8k8 => (16, 8, 8),
+            MMADims::m16n8k16 => (16, 8, 16),
+        }
     }
 }

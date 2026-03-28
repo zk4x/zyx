@@ -634,6 +634,7 @@ pub(super) fn initialize_device(
                 max_register_bytes: 96,
                 preferred_vector_size: 16,
                 tensor_cores: major > 7,
+                warp_size: 32,
             },
             memory_pool_id: u32::try_from(memory_pools.len()).expect("You've got more than u32::MAX memory pools?") - 1,
             compute_capability: [major, minor],
@@ -688,6 +689,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 96,
             preferred_vector_size: 16,
             tensor_cores: major > 7,
+            warp_size: 32,
         };
         devices.push(Device::CUDA(dev));
     }

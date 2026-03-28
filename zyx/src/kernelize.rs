@@ -570,7 +570,16 @@ impl<'a> Kernelizer<'a> {
         // If it is not in cache, we just get new empty kernel id where we insert the kernel
         let kernel_id = self.cache.insert_kernel(kernel.clone());
 
+        // Fix kernels for movement ops and if they have too many dims
         kernel.unfold_movement_ops();
+        let global_indices = kernel.get_global_indices();
+        if global_indices.len() > 3 {
+            let n = global_indices.len() - 2;
+            let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
+            kernel.merge_loops(&loops);
+        }
+        kernel.reset_indices();
+
         let program_id = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, self.debug);
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;

@@ -1,6 +1,6 @@
-use crate::backend::{AutotuneConfig, BufferId, Device, MemoryPool, ProgramId};
+use crate::backend::{AutotuneConfig, BufferId, Device, DeviceInfo, MemoryPool, ProgramId};
 use crate::error::BackendError;
-use crate::kernel::Kernel;
+use crate::kernel::{Kernel, Op, Scope};
 use crate::rng::Rng;
 use crate::{DebugMask, Set};
 use std::hash::{Hash, Hasher};
@@ -9,8 +9,84 @@ use std::thread;
 use std::u64;
 
 impl Kernel {
-    pub fn get_cost(&self) -> u64 {
-        0
+    pub fn get_cost(&self, dev_info: &DeviceInfo) -> u64 {
+        // TODO add measuring bank conflicts
+        let mut n_instructions = 0;
+        let mut n_scoped_loads = [0u64, 0, 0];
+        let mut n_scoped_stores = [0u64, 0, 0];
+
+        let mut loop_mult = 1;
+        let mut latest_loop_lengths = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::Cast { .. } => {
+                    n_instructions += loop_mult;
+                }
+                Op::Unary { .. } => {
+                    n_instructions += loop_mult;
+                }
+                Op::Binary { .. } => {
+                    n_instructions += loop_mult;
+                }
+                Op::Const(_) => {}
+                Op::Define { .. } => {}
+                Op::Load { src, vlen, .. } => {
+                    n_instructions += loop_mult * 3;
+                    let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
+                    match scope {
+                        Scope::Global => n_scoped_loads[0] += loop_mult * vlen as u64,
+                        Scope::Local => n_scoped_loads[1] += loop_mult * vlen as u64,
+                        Scope::Register => n_scoped_loads[2] += loop_mult * vlen as u64,
+                    }
+                }
+                Op::Store { dst, vlen, .. } => {
+                    n_instructions += loop_mult * 3;
+                    let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
+                    match scope {
+                        Scope::Global => n_scoped_stores[0] += loop_mult * vlen as u64,
+                        Scope::Local => n_scoped_stores[1] += loop_mult * vlen as u64,
+                        Scope::Register => n_scoped_stores[2] += loop_mult * vlen as u64,
+                    }
+                }
+                Op::Index { .. } => {}
+                Op::Loop { len } => {
+                    n_instructions += loop_mult * 3;
+                    loop_mult *= len as u64;
+                    latest_loop_lengths.push(len as u64);
+                }
+                Op::EndLoop => {
+                    loop_mult /= latest_loop_lengths.pop().unwrap();
+                }
+                Op::Mad { .. } => {
+                    n_instructions += loop_mult;
+                }
+                Op::WMMA { dims, .. } => {
+                    let (m, n, k) = dims.decompose_mnk();
+                    let warp = dev_info.warp_size as u64;
+                    let cost = (m * n * k) as u64 / warp;
+                    n_instructions += loop_mult * cost;
+                }
+                Op::Vectorize { .. } => {
+                    // TODO multiply all ops that are vectorized by the vectorization factor
+                }
+                Op::Devectorize { .. } => {}
+                Op::ConstView(_) => todo!(),
+                Op::LoadView(_) => todo!(),
+                Op::StoreView { .. } => todo!(),
+                Op::Move { .. } => todo!(),
+                Op::Reduce { .. } => todo!(),
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        n_instructions
+            + n_scoped_loads[0] * 3
+            + n_scoped_loads[1] * 2
+            + n_scoped_loads[2] * 1
+            + n_scoped_stores[0] * 3
+            + n_scoped_stores[1] * 2
+            + n_scoped_stores[2] * 1
     }
 
     pub fn get_hash(&self) -> u64 {
@@ -48,6 +124,9 @@ impl Kernel {
         let available_opts: [(fn(&Kernel) -> u16, fn(&mut Kernel, u16)); _] =
             [(Self::opt_no_config, Self::constant_folding)];
 
+        let dev_info_ptr: *const DeviceInfo = device.info();
+        let dev_info_ref = unsafe { &*dev_info_ptr };
+
         let n_seeds = 100;
         let n_added_per_step = 10;
         let n_removed_per_step = 5;
@@ -80,7 +159,7 @@ impl Kernel {
                     config_id += 1;
                     continue;
                 }
-                opt_seq.cost = new_kernel.get_cost();
+                opt_seq.cost = new_kernel.get_cost(dev_info_ref);
                 visited.insert(hash);
                 items.push(opt_seq);
                 config_id += 1;
@@ -138,7 +217,7 @@ impl Kernel {
                                 if visited_ref.contains(&hash) || local_visited.contains(&hash) {
                                     continue;
                                 }
-                                new_seq.cost = new_kernel.get_cost();
+                                new_seq.cost = new_kernel.get_cost(dev_info_ref);
                                 local_visited.insert(hash);
                                 local_items.push(new_seq);
                             }

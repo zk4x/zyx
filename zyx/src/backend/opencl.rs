@@ -1265,6 +1265,7 @@ impl OpenCLDevice {
             ))
             .expect("What a huge amount of registers"),*/
             tensor_cores: false,
+            warp_size: 0,
         };
         Ok(())
     }
