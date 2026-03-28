@@ -19,6 +19,8 @@ This document provides guidelines for agentic coding agents operating in the zyx
 
 ## Build, Lint, and Test Commands
 
+**Always run the full test suite after any changes.**
+
 ### Building
 
 ```bash

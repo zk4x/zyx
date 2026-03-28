@@ -10,6 +10,15 @@ use crate::{
 };
 
 impl Kernel {
+    pub fn opt_unroll_config(&self) -> u16 {
+        4
+    }
+
+    pub fn opt_unroll(&mut self, config: u16) {
+        let unroll_dim = [2, 4, 8, 16][config as usize];
+        self.unroll_loops(unroll_dim);
+    }
+
     pub fn unroll_loops(&mut self, unroll_dim: usize) {
         let mut endloop_ids = Vec::new();
         let mut op_id = self.tail;
