@@ -130,6 +130,28 @@ impl Kernel {
         self.dead_code_elimination();
     }
 
+    /// Autotune for debugging, applying only a selected series of optimizations
+    pub fn autotune1(
+        &self,
+        _buffers: &[BufferId],
+        device: &mut Device,
+        _memory_pool: &mut MemoryPool,
+        _config: &AutotuneConfig,
+        debug: DebugMask,
+    ) -> ProgramId {
+        let mut kernel = self.clone();
+        kernel.run_always_on_optimizations();
+
+        // Here come series of custom optimizations
+        kernel.reassociate_commutative(0);
+        kernel.reassociate_commutative(0);
+
+        kernel.run_always_on_optimizations();
+        kernel.debug();
+        device.compile(&kernel, debug.asm()).unwrap()
+    }
+
+    /// Release mode autotune with beam like search and multithreading
     pub fn autotune(
         &self,
         buffers: &[BufferId],
