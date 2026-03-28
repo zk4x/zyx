@@ -4,9 +4,8 @@ use crate::kernel::{Kernel, Op, Scope};
 use crate::rng::Rng;
 use crate::{DebugMask, Set};
 use std::hash::{Hash, Hasher};
-use std::sync::mpsc;
-use std::thread;
-use std::u64;
+use std::sync::{Arc, Mutex, mpsc};
+use std::{thread, u64};
 
 impl Kernel {
     pub fn get_cost(&self, dev_info: &DeviceInfo) -> u64 {
@@ -243,6 +242,8 @@ impl Kernel {
             remove_worst(&mut items, n_removed_per_step, &mut rng);
         }
 
+        //pool.shutdown();
+
         // TODO add hardware validation of top n kernels
 
         let mut kernel = self.clone();
@@ -316,18 +317,21 @@ pub struct ThreadPool {
 impl ThreadPool {
     pub fn new(n_threads: usize) -> Self {
         let (job_tx, job_rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
-        let job_rx = std::sync::Arc::new(std::sync::Mutex::new(job_rx));
+        let job_rx = Arc::new(Mutex::new(job_rx));
 
         let mut workers = Vec::with_capacity(n_threads);
 
         for _ in 0..n_threads {
-            let job_rx = job_rx.clone();
+            let job_rx = Arc::clone(&job_rx);
             let handle = thread::spawn(move || {
                 loop {
-                    let job = job_rx.lock().unwrap().recv();
+                    let job = {
+                        let lock = job_rx.lock().unwrap();
+                        lock.recv()
+                    };
                     match job {
                         Ok(job) => job(),
-                        Err(_) => break,
+                        Err(_) => break, // channel closed → exit thread
                     }
                 }
             });
@@ -339,7 +343,9 @@ impl ThreadPool {
 
     /// Execute a batch of jobs and wait for them to finish
     pub fn execute_batch<T: Send + 'static>(&self, jobs: Vec<impl FnOnce() -> T + Send + 'static>) -> Vec<T> {
-        let n = jobs.len();
+        let n_threads = self.workers.len();
+        assert_eq!(jobs.len(), n_threads, "jobs must equal n_threads");
+
         let (res_tx, res_rx) = mpsc::channel();
 
         for job in jobs {
@@ -352,18 +358,23 @@ impl ThreadPool {
                 .unwrap();
         }
 
-        let mut results = Vec::with_capacity(n);
-        for _ in 0..n {
+        let mut results = Vec::with_capacity(n_threads);
+        for _ in 0..n_threads {
             results.push(res_rx.recv().unwrap());
         }
 
         results
     }
-}
 
-impl Drop for ThreadPool {
-    fn drop(&mut self) {
-        for worker in self.workers.drain(..) {
+    /// Manually shutdown the pool by consuming it
+    pub fn shutdown(self) {
+        let ThreadPool { job_tx, workers } = self;
+
+        // Close the channel
+        drop(job_tx);
+
+        // Join all threads
+        for worker in workers {
             let _ = worker.join();
         }
     }
