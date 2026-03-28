@@ -134,7 +134,7 @@ impl Kernel {
     }
 
     /// Autotune for debugging, applying only a selected series of optimizations
-    pub fn autotune1(
+    pub fn autotune(
         &self,
         _buffers: &[BufferId],
         device: &mut Device,
@@ -143,11 +143,13 @@ impl Kernel {
         debug: DebugMask,
     ) -> ProgramId {
         let mut kernel = self.clone();
-        kernel.run_always_on_optimizations();
+        kernel.debug();
+        //kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
         kernel.reassociate_commutative(0);
-        kernel.reassociate_commutative(0);
+        kernel.debug();
+        //kernel.reassociate_commutative(0);
 
         kernel.run_always_on_optimizations();
         kernel.debug();
@@ -155,7 +157,7 @@ impl Kernel {
     }
 
     /// Release mode autotune with beam like search and multithreading
-    pub fn autotune(
+    pub fn autotune1(
         &self,
         buffers: &[BufferId],
         device: &mut Device,
@@ -297,7 +299,7 @@ impl Kernel {
         let mut i = n_launches;
         while i > 0 {
             let opt_seq = sample_best(&items, &mut rng);
-            let mut kernel = self.clone();
+            let mut kernel = kernel.clone();
 
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 available_opts[opt_id as usize].1(&mut kernel, opt_cfg);
