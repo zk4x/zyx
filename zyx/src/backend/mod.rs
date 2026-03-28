@@ -151,6 +151,7 @@ pub enum Event {
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(DeJson, Debug, Default)]
 pub struct AutotuneConfig {
+    #[allow(unused)]
     /// Should the searched kernel be stored to disk?
     pub save_to_disk: bool,
     /// Max number of kernel launches

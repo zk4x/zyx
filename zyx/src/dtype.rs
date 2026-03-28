@@ -3,6 +3,8 @@
 
 //! `DType` and constant
 
+#![allow(unused)]
+
 use crate::{
     Scalar, ZyxError,
     kernel::{BOp, IDX_T, UOp},

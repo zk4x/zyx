@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use crate::backend::{AutotuneConfig, BufferId, Device, DeviceInfo, MemoryPool, ProgramId};
 use crate::error::BackendError;
 use crate::kernel::{Kernel, Op, Scope};
@@ -109,8 +111,9 @@ impl Kernel {
         buffers: &[BufferId],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
+        debug: DebugMask,
     ) -> Result<(ProgramId, u64), BackendError> {
-        let program_id = device.compile(self, false)?;
+        let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
         let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
         memory_pool.sync_events(vec![event])?;
@@ -299,10 +302,16 @@ impl Kernel {
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 available_opts[opt_id as usize].1(&mut kernel, opt_cfg);
             }
-
             kernel.run_always_on_optimizations();
+
             if launched_kernels.insert(kernel.get_hash()) {
-                let Ok((program_id, time)) = kernel.launch_with_timings(buffers, device, memory_pool) else { continue };
+                if debug.ir() {
+                    kernel.debug();
+                }
+
+                let Ok((program_id, time)) = kernel.launch_with_timings(buffers, device, memory_pool, debug) else {
+                    continue;
+                };
 
                 if time < best_time {
                     best_program = program_id;
@@ -313,9 +322,9 @@ impl Kernel {
             i -= 1;
         }
 
-        if debug.ir() {
+        /*if debug.ir() {
             kernel.debug();
-        }
+        }*/
 
         best_program
     }

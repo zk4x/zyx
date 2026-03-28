@@ -1,6 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
+#![allow(unused)]
+
 // For WMMA
 // We need to have specific size of inner and local work sizes such
 //
