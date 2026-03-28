@@ -151,17 +151,30 @@ pub enum Event {
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(DeJson, Debug, Default)]
 pub struct AutotuneConfig {
-    /// Number of kernel iterations to search per kernel, 100 by default
-    pub launch_iterations: usize,
-    /// Number of optimizations evaluated using the cost function, 10000 by default
-    pub optimization_passes: usize,
     /// Should the searched kernel be stored to disk?
     pub save_to_disk: bool,
+    /// Max number of kernel launches
+    pub n_launches: usize,         // = 10;
+    /// Number of initial optimization seeds
+    pub n_seeds: usize,            // = 100;
+    /// How many optimizations to try each iteration
+    pub n_added_per_step: usize,   //: usize = 10;
+    /// How many iterations to remove each iteration
+    pub n_removed_per_step: usize, // = 5;
+    /// Max number of optimizations that can be tried
+    pub n_total_opts: usize,       // = 1000;
 }
 
 impl AutotuneConfig {
     pub const fn new() -> AutotuneConfig {
-        AutotuneConfig { launch_iterations: 100, optimization_passes: 10000, save_to_disk: true }
+        AutotuneConfig {
+            save_to_disk: true,
+            n_added_per_step: 10,
+            n_launches: 10,
+            n_removed_per_step: 5,
+            n_seeds: 100,
+            n_total_opts: 1000,
+        }
     }
 }
 
@@ -170,7 +183,7 @@ impl AutotuneConfig {
 #[derive(DeJson, Debug, Default)]
 pub struct Config {
     /// Kernel search configuration
-    pub search: AutotuneConfig,
+    pub autotune: AutotuneConfig,
     /// Configuration of dummy device for testing
     pub dummy: dummy::DummyConfig,
     /// CUDA configuration

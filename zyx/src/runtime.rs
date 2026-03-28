@@ -41,7 +41,7 @@ pub struct Runtime {
     /// Are we in training mode?
     pub training: bool,
     /// Search configuration
-    pub search_config: AutotuneConfig,
+    pub autotune_config: AutotuneConfig,
     /// Debug mask
     pub debug: DebugMask,
     /// Temporary storage
@@ -101,7 +101,7 @@ impl Runtime {
             config_dir: None,
             cache: Cache::new(),
             training: false,
-            search_config: AutotuneConfig::new(),
+            autotune_config: AutotuneConfig::new(),
             debug: DebugMask(0),
             temp_data: Map::with_hasher(BuildHasherDefault::new()),
             constants: [Constant::I32(0); NUM_CONSTANTS],
@@ -208,7 +208,7 @@ impl Runtime {
         self.pools.shrink_to_fit();
         self.devices.shrink_to_fit();
 
-        self.search_config = config.search;
+        self.autotune_config = config.autotune;
         //println!("INIT runtime");
         Ok(())
     }

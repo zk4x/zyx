@@ -640,7 +640,7 @@ impl Runtime {
             &mut self.temp_data,
             &mut self.devices,
             &mut self.cache,
-            &self.search_config,
+            &self.autotune_config,
             self.debug,
         );
 

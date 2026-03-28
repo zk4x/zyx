@@ -144,11 +144,11 @@ impl Kernel {
         let dev_info_ptr: *const DeviceInfo = device.info();
         let dev_info_ref = unsafe { &*dev_info_ptr };
 
-        let n_launches = 10;
-        let n_seeds = 100;
-        let n_added_per_step = 10;
-        let n_removed_per_step = 5;
-        let n_total_opts = 1000;
+        let n_launches = config.n_launches;
+        let n_seeds = config.n_seeds;
+        let n_added_per_step = config.n_added_per_step;
+        let n_removed_per_step = config.n_removed_per_step;
+        let n_total_opts = config.n_total_opts;
 
         let n_threads = std::thread::available_parallelism().map_or(4, |p| p.get());
 
