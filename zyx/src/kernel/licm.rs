@@ -127,12 +127,12 @@ impl Kernel {
                 let mut prev_acc = chain[0];
                 let mut j = 1;
                 while j < chain.len() - 1 {
-                    let op = Op::Binary { x: prev_acc, y: chain[j], bop };
+                    let op = Op::Binary { x: chain[j], y: prev_acc, bop };
                     let new_acc = self.insert_before(op_id, op);
                     prev_acc = new_acc;
                     j += 1;
                 }
-                self.ops[op_id].op = Op::Binary { x: prev_acc, y: chain[j], bop };
+                self.ops[op_id].op = Op::Binary { x: chain[j], y: prev_acc, bop };
             }
             op_id = next;
         }

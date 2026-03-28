@@ -134,7 +134,7 @@ impl Kernel {
     }
 
     /// Autotune for debugging, applying only a selected series of optimizations
-    pub fn autotune(
+    pub fn autotune1(
         &self,
         _buffers: &[BufferId],
         device: &mut Device,
@@ -143,24 +143,23 @@ impl Kernel {
         debug: DebugMask,
     ) -> ProgramId {
         let mut kernel = self.clone();
-        println!("Before associate_commutative:");
-        kernel.debug_colorless();
-        //kernel.run_always_on_optimizations();
+        //println!("Before associate_commutative:");
+        //kernel.debug_colorless();
+        kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
         kernel.reassociate_commutative(0);
-        println!("After associate_commutative:");
-        kernel.debug_colorless();
+        //println!("After associate_commutative:");
+        //kernel.debug_colorless();
         //kernel.reassociate_commutative(0);
 
         kernel.run_always_on_optimizations();
 
-        println!("CUDA kernel:");
         device.compile(&kernel, debug.asm()).unwrap()
     }
 
     /// Release mode autotune with beam like search and multithreading
-    pub fn autotune1(
+    pub fn autotune(
         &self,
         buffers: &[BufferId],
         device: &mut Device,
