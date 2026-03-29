@@ -164,7 +164,9 @@ impl Kernel {
             match *self.at(op_id) {
                 Op::Const(x) => {
                     if x.is_positive() {
-                        let Constant::U64(x) = x.cast(DType::U64) else { unreachable!() };
+                        let Constant::U64(x) = x.cast(DType::U64) else {
+                            unreachable!()
+                        };
                         let v = usize::from_le_bytes(x);
                         ids.insert(op_id, (v, v));
                     }

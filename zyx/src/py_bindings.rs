@@ -32,8 +32,10 @@ impl GradientTape {
     #[must_use]
     #[pyo3(name = "backward")]
     pub fn gradient_py(&self, x: &Tensor, sources: &Bound<'_, PyList>) -> Vec<Option<Tensor>> {
-        let sources: Vec<Tensor> =
-            sources.into_iter().map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)")).collect();
+        let sources: Vec<Tensor> = sources
+            .into_iter()
+            .map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)"))
+            .collect();
         // In python, we cannot drop the tape ...
         self.gradient_persistent(x, &sources)
     }
@@ -106,47 +108,69 @@ impl Tensor {
             DType::F16 => todo!(),
             DType::F32 => {
                 let data: Vec<f32> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "float32"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "float32"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::F64 => {
                 let data: Vec<f64> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "float64"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "float64"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::U8 => {
                 let data: Vec<u8> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "uint8"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "uint8"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::U16 => {
                 let data: Vec<u16> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "uint16"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "uint16"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::U32 => {
                 let data: Vec<u32> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "uint32"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "uint32"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::U64 => {
                 let data: Vec<u64> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "uint64"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "uint64"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::I8 => {
                 let data: Vec<i8> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "int8"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "int8"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::I16 => {
                 let data: Vec<i16> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "int16"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "int16"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::I32 => {
                 let data: Vec<i32> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "int32"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "int32"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::I64 => {
                 let data: Vec<i64> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "int64"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "int64"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
             DType::Bool => {
                 let data: Vec<bool> = self.clone().try_into()?;
-                np.getattr("array")?.call1((data, "bool"))?.call_method1("reshape", (PyTuple::new(py, shape)?,))?
+                np.getattr("array")?
+                    .call1((data, "bool"))?
+                    .call_method1("reshape", (PyTuple::new(py, shape)?,))?
             }
         })
     }
@@ -154,8 +178,10 @@ impl Tensor {
     #[staticmethod]
     #[pyo3(name = "plot_dot_graph")]
     pub fn plot_dot_graph_py(tensors: &Bound<'_, PyList>, name: &str) -> Result<(), std::io::Error> {
-        let tensors: Vec<Tensor> =
-            tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
+        let tensors: Vec<Tensor> = tensors
+            .into_iter()
+            .map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)"))
+            .collect();
         Tensor::plot_graph(&tensors, name)
     }
 
@@ -181,8 +207,10 @@ impl Tensor {
     #[staticmethod]
     #[pyo3(name = "realize")]
     pub fn realize_py(tensors: &Bound<'_, PyList>) -> Result<(), ZyxError> {
-        let tensors: Vec<Tensor> =
-            tensors.into_iter().map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)")).collect();
+        let tensors: Vec<Tensor> = tensors
+            .into_iter()
+            .map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)"))
+            .collect();
         Tensor::realize(&tensors)
     }
 
@@ -282,8 +310,10 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "ones", signature = (*shape, dtype=DType::F32))]
     pub fn ones_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Tensor {
-        let shape: Vec<usize> =
-            shape.into_iter().map(|d| d.extract::<usize>().expect("Shape must be positive integers")).collect();
+        let shape: Vec<usize> = shape
+            .into_iter()
+            .map(|d| d.extract::<usize>().expect("Shape must be positive integers"))
+            .collect();
         return Tensor::ones(shape, dtype);
     }
 
@@ -503,14 +533,20 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "softmax")]
     pub fn softmax_py(&self, axes: &Bound<'_, PyList>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = axes.into_iter().map(|d| d.extract::<Axis>().expect("axes must be integers")).collect();
+        let axes: Vec<Axis> = axes
+            .into_iter()
+            .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+            .collect();
         self.softmax(axes)
     }
 
     #[must_use]
     #[pyo3(name = "log_softmax")]
     pub fn log_softmax_py(&self, axes: &Bound<'_, PyList>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = axes.into_iter().map(|d| d.extract::<Axis>().expect("axes must be integers")).collect();
+        let axes: Vec<Axis> = axes
+            .into_iter()
+            .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+            .collect();
         self.ln_softmax(axes)
     }
 
@@ -576,8 +612,10 @@ impl Tensor {
     pub fn squeeze_py(&self, axes: Option<&Bound<'_, PyList>>) -> Tensor {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<Axis> =
-                    axes_list.into_iter().map(|d| d.extract::<Axis>().expect("axes must be integers")).collect();
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
                 self.squeeze(axes)
             }
             None => self.squeeze(vec![]), // Squeeze all dimensions of size 1
@@ -613,8 +651,10 @@ impl Tensor {
     pub fn max_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<Axis> =
-                    axes_list.into_iter().map(|d| d.extract::<Axis>().expect("axes must be integers")).collect();
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
                 self.max(axes)
             }
             None => self.max(vec![]), // Reduce all dimensions
@@ -631,8 +671,10 @@ impl Tensor {
     ) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<Axis> =
-                    axes_list.into_iter().map(|d| d.extract::<Axis>().expect("axes must be integers")).collect();
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
                 if keepdim {
                     self.reduce_impl::<true>(ReduceOp::Mean, axes, dtype, 0)
                 } else {
@@ -653,8 +695,10 @@ impl Tensor {
     ) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<Axis> =
-                    axes_list.into_iter().map(|d| d.extract::<Axis>().expect("axes must be integers")).collect();
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
                 if keepdim {
                     self.reduce_impl::<true>(ReduceOp::Sum, axes, dtype, 0)
                 } else {
@@ -676,8 +720,10 @@ impl Tensor {
     ) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<Axis> =
-                    axes_list.into_iter().map(|d| d.extract::<Axis>().expect("axes must be integers")).collect();
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
                 if keepdim {
                     self.reduce_impl::<true>(ReduceOp::Std, axes, dtype, correction)
                 } else {
@@ -699,8 +745,10 @@ impl Tensor {
     ) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<Axis> =
-                    axes_list.into_iter().map(|d| d.extract::<Axis>().expect("axes must be integers")).collect();
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
                 if keepdim {
                     self.reduce_impl::<true>(ReduceOp::Std, axes, dtype, correction)
                 } else {
@@ -965,7 +1013,10 @@ impl Tensor {
     pub fn pad_zeros_py(&self, padding: &Bound<'_, PyList>) -> Result<Tensor, ZyxError> {
         let padding: Vec<(isize, isize)> = padding
             .into_iter()
-            .map(|d| d.extract::<(isize, isize)>().expect("padding must be tuple of (isize, isize)"))
+            .map(|d| {
+                d.extract::<(isize, isize)>()
+                    .expect("padding must be tuple of (isize, isize)")
+            })
             .collect();
         self.pad_zeros(padding)
     }
@@ -1021,8 +1072,10 @@ impl Tensor {
     pub fn product_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
-                let axes: Vec<Axis> =
-                    axes_list.into_iter().map(|d| d.extract::<Axis>().expect("axes must be integers")).collect();
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
                 self.prod(axes)
             }
             None => Ok(self.prod_all()), // Reduce all dimensions
@@ -1082,7 +1135,8 @@ impl Tensor {
 
         let ranges = index_to_ranges(idx)?;
 
-        self.slice(ranges).map_err(|e| PyIndexError::new_err(format!("{:?}", e)))
+        self.slice(ranges)
+            .map_err(|e| PyIndexError::new_err(format!("{:?}", e)))
     }
 
     #[must_use]
@@ -1182,7 +1236,9 @@ fn to_sh(shape: &Bound<'_, PyTuple>) -> Result<Vec<usize>, ZyxError> {
 }
 
 fn to_ax(axes: &Bound<'_, PyTuple>) -> Vec<Axis> {
-    axes.into_iter().map(|d| d.extract::<Axis>().expect("Shape must be positive integers")).collect()
+    axes.into_iter()
+        .map(|d| d.extract::<Axis>().expect("Shape must be positive integers"))
+        .collect()
 }
 
 /// A Python module implemented in Rust.

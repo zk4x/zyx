@@ -72,7 +72,9 @@ impl Kernel {
                         dtypes[&op_id]
                     );
                 }
-                Op::Define { dtype, scope, ro, len, .. } => {
+                Op::Define {
+                    dtype, scope, ro, len, ..
+                } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };
                     println!(
@@ -83,7 +85,9 @@ impl Kernel {
                     let dtype = value.dtype();
                     dtypes.insert(op_id, dtype);
                     if value.is_positive() {
-                        let Constant::U32(v) = value.cast(DType::U32) else { unreachable!() };
+                        let Constant::U32(v) = value.cast(DType::U32) else {
+                            unreachable!()
+                        };
                         bounds.insert(op_id, (v, v));
                     }
                     println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {MAGENTA}{value}{RESET}");
@@ -104,7 +108,12 @@ impl Kernel {
                         );
                     }
                 }
-                Op::Store { dst, x, index, vlen: len } => {
+                Op::Store {
+                    dst,
+                    x,
+                    index,
+                    vlen: len,
+                } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds[&index];
@@ -237,7 +246,14 @@ impl Kernel {
                         println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = r{x} * r{y} + r{z}");
                     }
                 }
-                Op::WMMA { dims, layout, dtype, c, a, b } => {
+                Op::WMMA {
+                    dims,
+                    layout,
+                    dtype,
+                    c,
+                    a,
+                    b,
+                } => {
                     let cdtype = dtypes[&c];
                     dtypes.insert(op_id, cdtype);
                     let a = id_map.get(&a).copied().unwrap_or(OpId::NULL);
@@ -285,7 +301,10 @@ impl Kernel {
                             }
                         }
                     }
-                    let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
+                    let ops: Vec<OpId> = ops
+                        .iter()
+                        .map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL))
+                        .collect();
                     if let Some((lb, ub)) = r {
                         bounds.insert(op_id, (lb, ub));
                         println!(
@@ -398,7 +417,9 @@ impl Kernel {
                         dtypes[&op_id]
                     );
                 }
-                Op::Define { dtype, scope, ro, len, .. } => {
+                Op::Define {
+                    dtype, scope, ro, len, ..
+                } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };
                     println!("{indent}r{out_id}: {dtype} = def {ro}{scope}, len={len}");
@@ -407,7 +428,9 @@ impl Kernel {
                     let dtype = value.dtype();
                     dtypes.insert(op_id, dtype);
                     if value.is_positive() {
-                        let Constant::U32(v) = value.cast(DType::U32) else { unreachable!() };
+                        let Constant::U32(v) = value.cast(DType::U32) else {
+                            unreachable!()
+                        };
                         bounds.insert(op_id, (v, v));
                     }
                     println!("{indent}r{out_id}: {dtype} = {value}");
@@ -424,7 +447,12 @@ impl Kernel {
                         println!("{indent}r{out_id}: {dtype} = r{src}[r{index}]    // {lb}..={ub} load");
                     }
                 }
-                Op::Store { dst, x, index, vlen: len } => {
+                Op::Store {
+                    dst,
+                    x,
+                    index,
+                    vlen: len,
+                } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds[&index];
@@ -555,7 +583,14 @@ impl Kernel {
                         println!("{indent}r{out_id}: {dtype} = r{x} * r{y} + r{z}");
                     }
                 }
-                Op::WMMA { dims, layout, dtype, c, a, b } => {
+                Op::WMMA {
+                    dims,
+                    layout,
+                    dtype,
+                    c,
+                    a,
+                    b,
+                } => {
                     let cdtype = dtypes[&c];
                     dtypes.insert(op_id, cdtype);
                     let a = id_map.get(&a).copied().unwrap_or(OpId::NULL);
@@ -601,7 +636,10 @@ impl Kernel {
                             }
                         }
                     }
-                    let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
+                    let ops: Vec<OpId> = ops
+                        .iter()
+                        .map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL))
+                        .collect();
                     if let Some((lb, ub)) = r {
                         bounds.insert(op_id, (lb, ub));
                         println!("{indent}r{out_id}: {dtype} = vectorize{:?}    // {}..={}", ops, lb, ub,);

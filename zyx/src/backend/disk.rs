@@ -56,7 +56,11 @@ impl DiskMemoryPool {
 
     pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> BufferId {
         // TODO perhaps add verification that the file exists and it contains enough bytes at given offset
-        let id = self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes });
+        let id = self.buffers.push(DiskBuffer {
+            bytes,
+            path: path.into(),
+            offset_bytes,
+        });
         //println!("Create buffer={id:?} on disk from path={path:?}");
         id
     }
@@ -82,8 +86,10 @@ impl DiskMemoryPool {
         let _ = event_wait_list;
         let buffer = &self.buffers[src];
         let f = File::open(&buffer.path).unwrap();
-        f.read_exact_at(dst, buffer.offset_bytes)
-            .map_err(|err| BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("{err}").into() })
+        f.read_exact_at(dst, buffer.offset_bytes).map_err(|err| BackendError {
+            status: ErrorStatus::MemoryCopyP2H,
+            context: format!("{err}").into(),
+        })
     }
 
     #[allow(clippy::needless_pass_by_value)]

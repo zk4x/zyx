@@ -132,11 +132,17 @@ fn grad_pow_3() -> Result<(), ZyxError> {
     let y_val: Vec<f64> = y.clone().try_into().unwrap();
 
     // Expected gradients
-    let expected_x_vec: Vec<f64> =
-        x_val.iter().zip(y_val.iter()).map(|(&xv, &yv): (&f64, &f64)| yv * xv.powf(yv - 1.0)).collect();
+    let expected_x_vec: Vec<f64> = x_val
+        .iter()
+        .zip(y_val.iter())
+        .map(|(&xv, &yv): (&f64, &f64)| yv * xv.powf(yv - 1.0))
+        .collect();
 
-    let expected_y_vec: Vec<f64> =
-        x_val.iter().zip(y_val.iter()).map(|(&xv, &yv): (&f64, &f64)| xv.powf(yv) * xv.ln()).collect();
+    let expected_y_vec: Vec<f64> = x_val
+        .iter()
+        .zip(y_val.iter())
+        .map(|(&xv, &yv): (&f64, &f64)| xv.powf(yv) * xv.ln())
+        .collect();
 
     // Compare element-wise with tolerance
     let tol: f64 = 1e-12;

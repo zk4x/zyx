@@ -352,7 +352,9 @@ impl Runtime {
 
         //println!("len = {}", self.temp_data[&buffer_id].len());
 
-        let event = self.pools[mpid].pool.host_to_pool(&self.temp_data[&buffer_id], buffer_id, vec![event])?;
+        let event = self.pools[mpid]
+            .pool
+            .host_to_pool(&self.temp_data[&buffer_id], buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.pools[mpid].buffer_map.insert(id, buffer_id);
         self.pools[mpid].events.insert([buffer_id].into(), event);
@@ -361,7 +363,9 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn constant(&mut self, value: impl Scalar) -> TensorId {
-        self.graph.push(Node::Const { value: Constant::new(value) })
+        self.graph.push(Node::Const {
+            value: Constant::new(value),
+        })
     }
 
     // Initialization
@@ -374,7 +378,9 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn ones(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
-        let x = self.graph.push(Node::Const { value: dtype.one_constant() });
+        let x = self.graph.push(Node::Const {
+            value: dtype.one_constant(),
+        });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         expanded
@@ -382,7 +388,9 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn zeros(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
-        let x = self.graph.push(Node::Const { value: dtype.zero_constant() });
+        let x = self.graph.push(Node::Const {
+            value: dtype.zero_constant(),
+        });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         expanded
@@ -457,7 +465,9 @@ impl Runtime {
         let mut reshaped = false;
         let new_shape = if shape.len() > sh.len() {
             reshaped = true;
-            std::iter::repeat_n(1, shape.len() - sh.len()).chain(sh.iter().copied()).collect()
+            std::iter::repeat_n(1, shape.len() - sh.len())
+                .chain(sh.iter().copied())
+                .collect()
         } else {
             sh
         };
@@ -596,7 +606,9 @@ pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_da
             }
         }
         if let Some((pool_id, buffer_id)) = buffer
-            && !pools.iter().any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
+            && !pools
+                .iter()
+                .any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
         {
             let pool = &mut pools[pool_id];
             let mut events = Vec::new();

@@ -127,26 +127,72 @@ pub struct OpId(pub u32);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist in both
-    Cast { x: OpId, dtype: DType },
-    Unary { x: OpId, uop: UOp },
+    Cast {
+        x: OpId,
+        dtype: DType,
+    },
+    Unary {
+        x: OpId,
+        uop: UOp,
+    },
     // For binary ops, next of x is y, then next of y is the binary op
-    Binary { x: OpId, y: OpId, bop: BOp },
+    Binary {
+        x: OpId,
+        y: OpId,
+        bop: BOp,
+    },
 
     // ops that only exist after unfolding views and reduces
     Const(Constant),
-    Define { dtype: DType, scope: Scope, ro: bool, len: Dim }, // len is 0 for global stores
-    Store { dst: OpId, x: OpId, index: OpId, vlen: u8 },
-    Load { src: OpId, index: OpId, vlen: u8 },
-    Index { len: Dim, scope: Scope, axis: u32 },
-    Loop { len: Dim },
+    Define {
+        dtype: DType,
+        scope: Scope,
+        ro: bool,
+        len: Dim,
+    }, // len is 0 for global stores
+    Store {
+        dst: OpId,
+        x: OpId,
+        index: OpId,
+        vlen: u8,
+    },
+    Load {
+        src: OpId,
+        index: OpId,
+        vlen: u8,
+    },
+    Index {
+        len: Dim,
+        scope: Scope,
+        axis: u32,
+    },
+    Loop {
+        len: Dim,
+    },
     EndLoop,
     // fused multiply add
-    Mad { x: OpId, y: OpId, z: OpId },
+    Mad {
+        x: OpId,
+        y: OpId,
+        z: OpId,
+    },
     // fused matmul, a, b, c are fragments, each is a vector, c is accumulator, returns new accumulated vector d
-    WMMA { dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId },
+    WMMA {
+        dims: MMADims,
+        layout: MMALayout,
+        dtype: MMADType,
+        a: OpId,
+        b: OpId,
+        c: OpId,
+    },
     // Vectorization, YAY!
-    Vectorize { ops: Vec<OpId> },
-    Devectorize { vec: OpId, idx: usize }, // select a single value from a vector
+    Vectorize {
+        ops: Vec<OpId>,
+    },
+    Devectorize {
+        vec: OpId,
+        idx: usize,
+    }, // select a single value from a vector
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
     // TODO Get rid of the view, use whatever ops that are needed directly
@@ -155,9 +201,19 @@ pub enum Op {
     // TODO Use MovementOp instead for all the movement.
     ConstView(Box<(Constant, View)>),
     LoadView(Box<(DType, View)>),
-    StoreView { src: OpId, dtype: DType },
-    Move { x: OpId, mop: Box<MoveOp> },
-    Reduce { x: OpId, rop: BOp, n_axes: UAxis },
+    StoreView {
+        src: OpId,
+        dtype: DType,
+    },
+    Move {
+        x: OpId,
+        mop: Box<MoveOp>,
+    },
+    Reduce {
+        x: OpId,
+        rop: BOp,
+        n_axes: UAxis,
+    },
 }
 
 impl Op {
@@ -295,7 +351,14 @@ impl DeBin for Kernel {
         let ops = Slab::<OpId, OpNode>::de_bin(offset, bytes)?;
         let start = OpId::de_bin(offset, bytes)?;
         let end = OpId::de_bin(offset, bytes)?;
-        Ok(Self { head: start, tail: end, ops, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new() })
+        Ok(Self {
+            head: start,
+            tail: end,
+            ops,
+            outputs: Vec::new(),
+            loads: Vec::new(),
+            stores: Vec::new(),
+        })
     }
 }
 
@@ -329,7 +392,11 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let prev = self.ops[before_id].prev;
-        let op_node = OpNode { prev, next: before_id, op: op };
+        let op_node = OpNode {
+            prev,
+            next: before_id,
+            op: op,
+        };
         let op_id = self.ops.push(op_node);
         self.ops[before_id].prev = op_id;
         if prev.is_null() {
@@ -345,7 +412,11 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let next = self.ops[after_id].next;
-        let op_node = OpNode { prev: after_id, next, op: op };
+        let op_node = OpNode {
+            prev: after_id,
+            next,
+            op: op,
+        };
         let op_id = self.ops.push(op_node);
         self.ops[after_id].next = op_id;
         if next.is_null() {
@@ -459,24 +530,59 @@ impl Kernel {
             let info = match self.at(op_id) {
                 Op::ConstView(x) => {
                     let shape = x.1.shape();
-                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops: 0,
+                        mem_read: 0,
+                        mem_write: 0,
+                    }
                 }
                 Op::LoadView(x) => {
                     let (dtype, view) = x.as_ref();
                     let shape = view.shape();
                     let mem_read = view.original_numel() as u64 * dtype.byte_size() as u64;
-                    Info { shape, flops: 0, mem_read, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops: 0,
+                        mem_read,
+                        mem_write: 0,
+                    }
                 }
                 Op::StoreView { src, dtype } => {
                     let Info { shape, .. } = stack[src].clone();
                     let mem_write = shape.iter().product::<Dim>() as u64 * dtype.byte_size() as u64;
-                    Info { shape, flops: 0, mem_read: 0, mem_write }
+                    Info {
+                        shape,
+                        flops: 0,
+                        mem_read: 0,
+                        mem_write,
+                    }
                 }
                 Op::Move { mop, .. } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Expand { shape } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Permute { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Pad { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Reshape { shape, .. } => Info {
+                        shape: shape.clone(),
+                        flops: 0,
+                        mem_read: 0,
+                        mem_write: 0,
+                    },
+                    MoveOp::Expand { shape } => Info {
+                        shape: shape.clone(),
+                        flops: 0,
+                        mem_read: 0,
+                        mem_write: 0,
+                    },
+                    MoveOp::Permute { shape, .. } => Info {
+                        shape: shape.clone(),
+                        flops: 0,
+                        mem_read: 0,
+                        mem_write: 0,
+                    },
+                    MoveOp::Pad { shape, .. } => Info {
+                        shape: shape.clone(),
+                        flops: 0,
+                        mem_read: 0,
+                        mem_write: 0,
+                    },
                 },
                 Op::Reduce { x, n_axes, .. } => {
                     let Info { mut shape, .. } = stack[x].clone();
@@ -485,17 +591,32 @@ impl Kernel {
                     let n: Dim = shape.iter().product();
                     let flops = n * (rd - 1);
                     let flops = flops as u64;
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops,
+                        mem_read: 0,
+                        mem_write: 0,
+                    }
                 }
                 Op::Cast { x, .. } | Op::Unary { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
                     let flops = shape.iter().product::<Dim>() as u64;
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops,
+                        mem_read: 0,
+                        mem_write: 0,
+                    }
                 }
                 Op::Binary { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
                     let flops = shape.iter().product::<Dim>() as u64;
-                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                    Info {
+                        shape,
+                        flops,
+                        mem_read: 0,
+                        mem_write: 0,
+                    }
                 }
                 Op::WMMA { .. }
                 | Op::Vectorize { .. }
@@ -721,7 +842,11 @@ impl Kernel {
 
     pub fn push_back(&mut self, op: Op) -> OpId {
         debug_assert!(!self.ops.is_empty());
-        let op_node = OpNode { prev: self.tail, next: OpId::NULL, op };
+        let op_node = OpNode {
+            prev: self.tail,
+            next: OpId::NULL,
+            op,
+        };
         let op_id = self.ops.push(op_node);
         self.ops[self.tail].next = op_id;
         self.tail = op_id;
@@ -757,7 +882,13 @@ impl Kernel {
         }
         self.loads = loaded_tensors;
         #[cfg(debug_assertions)]
-        if self.loads.len() != self.ops.values().filter(|op| matches!(op.op, Op::LoadView { .. })).count() {
+        if self.loads.len()
+            != self
+                .ops
+                .values()
+                .filter(|op| matches!(op.op, Op::LoadView { .. }))
+                .count()
+        {
             self.debug();
             panic!();
         }

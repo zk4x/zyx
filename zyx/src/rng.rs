@@ -58,12 +58,18 @@ impl Rng {
 
     #[allow(unused)]
     pub fn seed_from_systime() -> Self {
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         Rng::seed_from_u64(seed as u64)
     }
 
     const fn next_u64(&mut self) -> u64 {
-        let res = self.s[0].wrapping_add(self.s[3]).rotate_left(23).wrapping_add(self.s[0]);
+        let res = self.s[0]
+            .wrapping_add(self.s[3])
+            .rotate_left(23)
+            .wrapping_add(self.s[0]);
 
         let t = self.s[1] << 17;
 

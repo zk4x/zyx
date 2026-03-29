@@ -38,7 +38,9 @@ impl Kernel {
                 Op::Define { .. } => {}
                 Op::Load { src, vlen, .. } => {
                     n_instructions += loop_mult * 3;
-                    let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
+                    let Op::Define { scope, .. } = self.ops[src].op else {
+                        unreachable!()
+                    };
                     match scope {
                         Scope::Global => n_scoped_loads[0] += loop_mult * vlen as u64,
                         Scope::Local => n_scoped_loads[1] += loop_mult * vlen as u64,
@@ -47,7 +49,9 @@ impl Kernel {
                 }
                 Op::Store { dst, vlen, .. } => {
                     n_instructions += loop_mult * 3;
-                    let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
+                    let Op::Define { scope, .. } = self.ops[dst].op else {
+                        unreachable!()
+                    };
                     match scope {
                         Scope::Global => n_scoped_stores[0] += loop_mult * vlen as u64,
                         Scope::Local => n_scoped_stores[1] += loop_mult * vlen as u64,
@@ -202,7 +206,10 @@ impl Kernel {
                 ((avail_configs[opt_id as usize] * mult) as f32 / total_configs as f32).ceil() as u16;
             let mut config_id = 0;
             while config_id < n_configs_to_try {
-                let mut opt_seq = Optimization { opts: vec![(opt_id, config_id)], cost: 0 };
+                let mut opt_seq = Optimization {
+                    opts: vec![(opt_id, config_id)],
+                    cost: 0,
+                };
                 let mut new_kernel = kernel.clone();
                 optimization_fn(&mut new_kernel, config_id);
                 new_kernel.run_always_on_optimizations();
@@ -239,8 +246,10 @@ impl Kernel {
                         let mut local_visited = Set::default();
 
                         let mut rng = Rng::seed_from_u64(
-                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-                                as u64
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_nanos() as u64
                                 + thread_id as u64,
                         );
 

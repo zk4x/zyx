@@ -195,9 +195,14 @@ pub(super) fn initialize_device(
         }
     }
 
-    let opencl = opencl_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
+    let opencl = opencl_paths
+        .into_iter()
+        .find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
-        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "OpenCL runtime not found.".into() });
+        return Err(BackendError {
+            status: ErrorStatus::DyLibNotFound,
+            context: "OpenCL runtime not found.".into(),
+        });
     };
     let clGetPlatformIDs: unsafe extern "C" fn(cl_uint, *mut *mut c_void, *mut cl_uint) -> OpenCLStatus =
         *unsafe { opencl.get(b"clGetPlatformIDs\0") }?;
@@ -355,7 +360,10 @@ pub(super) fn initialize_device(
             for _ in 0..2 {
                 let new_queue = unsafe { clCreateCommandQueue(context, dev, 0, &raw mut status) };
                 //println!("Initialized queue {new_queue:?}");
-                queues.push(OpenCLQueue { queue: new_queue, load: 0 });
+                queues.push(OpenCLQueue {
+                    queue: new_queue,
+                    load: 0,
+                });
                 let Ok(()) = status.check(ErrorStatus::Initialization) else {
                     continue;
                 };
@@ -428,7 +436,10 @@ impl OpenCLMemoryPool {
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure".into() });
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "Allocation failure".into(),
+            });
         }
         //println!("OpenCL allocating bytes {bytes}");
         let mut status = OpenCLStatus::CL_SUCCESS;
@@ -460,7 +471,9 @@ impl OpenCLMemoryPool {
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
+                    unreachable!()
+                };
                 event
             })
             .filter(|event| !event.is_null())
@@ -492,7 +505,9 @@ impl OpenCLMemoryPool {
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
+                    unreachable!()
+                };
                 event
             })
             .filter(|event| !event.is_null())
@@ -534,7 +549,9 @@ impl OpenCLMemoryPool {
         let mut event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
+                    unreachable!()
+                };
                 event
             })
             .filter(|event| !event.is_null())
@@ -600,7 +617,9 @@ impl OpenCLMemoryPool {
         let events: Vec<*mut c_void> = events
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
+                    unreachable!()
+                };
                 event
             })
             .filter(|event| !event.is_null())
@@ -765,7 +784,12 @@ impl OpenCLDevice {
                     dtypes.insert(op_id, (dtypes[&src].0, len as u8));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x: src, index, vlen } => {
+                &Op::Store {
+                    dst,
+                    x: src,
+                    index,
+                    vlen,
+                } => {
                     debug_assert_eq!(dtypes[&src].1, vlen);
                     dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(dst).or_insert(0) += 1;
@@ -869,7 +893,12 @@ impl OpenCLDevice {
                         }
                     }
                 }
-                &Op::Store { dst, x: src, index, vlen } => {
+                &Op::Store {
+                    dst,
+                    x: src,
+                    index,
+                    vlen,
+                } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     if vlen > 1 {
@@ -1003,9 +1032,11 @@ impl OpenCLDevice {
             }
             op_id = kernel.next_op(op_id);
         }
-        let _total_bytes =
-            registers.iter().map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize).sum::<usize>()
-                + acc_bytes;
+        let _total_bytes = registers
+            .iter()
+            .map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize)
+            .sum::<usize>()
+            + acc_bytes;
         /*if total_bytes > 4096 {
             println!("Invalid alloc of {total_bytes} bytes");
             return Err(BackendError {
@@ -1104,7 +1135,12 @@ impl OpenCLDevice {
         let program_name = &CString::new(name).unwrap();
         let kernel = unsafe { (self.clCreateKernel)(program, program_name.as_ptr().cast(), &raw mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
-        let program_id = self.programs.push(OpenCLProgram { program, kernel, gws, lws });
+        let program_id = self.programs.push(OpenCLProgram {
+            program,
+            kernel,
+            gws,
+            lws,
+        });
         /*println!(
             "Compiled program {:?} using context: {:?}",
             self.programs[program_id], self.context
@@ -1154,7 +1190,9 @@ impl OpenCLDevice {
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
+                    unreachable!()
+                };
                 event
             })
             .filter(|event| !event.is_null())
@@ -1215,7 +1253,10 @@ impl OpenCLStatus {
         if self == Self::CL_SUCCESS {
             Ok(())
         } else {
-            Err(BackendError { status, context: format!("{self:?}").into() })
+            Err(BackendError {
+                status,
+                context: format!("{self:?}").into(),
+            })
         }
     }
 }
@@ -1251,7 +1292,9 @@ impl OpenCLDevice {
             max_local_threads: mlt,
             max_local_work_dims,
             preferred_vector_size: u8::try_from(u32::from_ne_bytes(
-                self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap(),
+                self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?
+                    .try_into()
+                    .unwrap(),
             ))
             .expect("What a vector width...")
                 * 4,
@@ -1337,7 +1380,10 @@ impl OpenCLDevice {
     fn next_queue(&mut self) -> usize {
         let mut id = self.queues.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
         if self.queues[id].load > 20 {
-            if unsafe { (self.clFinish)(self.queues[id].queue) }.check(ErrorStatus::KernelSync).is_ok() {
+            if unsafe { (self.clFinish)(self.queues[id].queue) }
+                .check(ErrorStatus::KernelSync)
+                .is_ok()
+            {
                 self.queues[id].load = 0;
             }
             id = self.queues.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;

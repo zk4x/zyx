@@ -99,8 +99,12 @@ impl Runtime {
         if self.graph.gradient_tape_ref_count == 0 {
             if let Some(tape) = &self.graph.gradient_tape {
                 // Remove parts of graph that are realized and were needed only for gradient tracing
-                let realized_nodes: Set<TensorId> =
-                    self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+                let realized_nodes: Set<TensorId> = self
+                    .pools
+                    .iter()
+                    .flat_map(|pool| pool.buffer_map.keys())
+                    .copied()
+                    .collect();
                 let mut to_release = Vec::new();
                 for &nid in realized_nodes.intersection(tape) {
                     let shape = self.graph.shape(nid).into();
@@ -125,7 +129,14 @@ impl Runtime {
                 }
                 std::collections::hash_map::Entry::Occupied(e) => {
                     let (k, prev_grad) = e.remove_entry();
-                    grads.insert(k, r.graph.push(Node::Binary { x: prev_grad, y: grad, bop: BOp::Add }));
+                    grads.insert(
+                        k,
+                        r.graph.push(Node::Binary {
+                            x: prev_grad,
+                            y: grad,
+                            bop: BOp::Add,
+                        }),
+                    );
                     // These can never fail as it just decreses ref count,
                     // there is no deallocation.
                     r.release(prev_grad);
@@ -237,7 +248,9 @@ impl Runtime {
                             let sh = self.shape(y).into();
                             let dtype = self.dtype(y);
                             let c = 1f64 / std::f64::consts::E.log2();
-                            let one_elog2 = self.graph.push(Node::Const { value: Constant::new(c).cast(dtype) });
+                            let one_elog2 = self.graph.push(Node::Const {
+                                value: Constant::new(c).cast(dtype),
+                            });
                             let one_elog2_ex = self.expand(one_elog2, sh).unwrap();
                             self.release(one_elog2);
                             let log2 = self.unary(x, UOp::Log2);
@@ -262,7 +275,9 @@ impl Runtime {
 
                         let dtype = self.dtype(x);
                         let sh = self.shape(x).into();
-                        let c = self.graph.push(Node::Const { value: Constant::new(0.5).cast(dtype) });
+                        let c = self.graph.push(Node::Const {
+                            value: Constant::new(0.5).cast(dtype),
+                        });
                         let c_ex = self.expand(c, sh).unwrap();
                         self.release(c);
                         let mask_eq = self.binary(x, y, BOp::Eq);
@@ -322,7 +337,9 @@ impl Runtime {
                         // grad_x = grad * 2^x * ln(2)
                         let dtype = self.dtype(x);
                         let ln2 = std::f32::consts::LN_2;
-                        let c = self.graph.push(Node::Const { value: Constant::new(ln2).cast(dtype) });
+                        let c = self.graph.push(Node::Const {
+                            value: Constant::new(ln2).cast(dtype),
+                        });
                         let c_expanded = self.expand(c, self.shape(x).into()).unwrap();
                         self.release(c);
                         let x_mul = self.binary(nid, c_expanded, BOp::Mul);
@@ -334,7 +351,9 @@ impl Runtime {
                     UOp::Log2 => {
                         let dtype = self.dtype(x);
                         let c = std::f32::consts::LN_2;
-                        let temp = self.graph.push(Node::Const { value: Constant::new(c).cast(dtype) });
+                        let temp = self.graph.push(Node::Const {
+                            value: Constant::new(c).cast(dtype),
+                        });
                         let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
                         self.release(temp);
                         let temp2 = self.binary(x, temp1, BOp::Mul);
@@ -371,7 +390,9 @@ impl Runtime {
                     }
                     UOp::Floor => {
                         let dtype = self.dtype(x);
-                        let temp = self.graph.push(Node::Const { value: Constant::new(0).cast(dtype) });
+                        let temp = self.graph.push(Node::Const {
+                            value: Constant::new(0).cast(dtype),
+                        });
                         let grad = self.expand(temp, self.shape(x).into()).unwrap();
                         self.release(temp);
                         insert_or_add_grad(self, &mut grads, x, grad);

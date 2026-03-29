@@ -56,7 +56,15 @@ impl DeBin for RDim {
 
 fn to_contiguous_rdims(shape: &[Dim]) -> Vec<RDim> {
     let mut st = 1;
-    let mut res = vec![RDim { st: 0, d: 0, lp: 0, rp: 0 }; shape.len()];
+    let mut res = vec![
+        RDim {
+            st: 0,
+            d: 0,
+            lp: 0,
+            rp: 0
+        };
+        shape.len()
+    ];
     for (i, &d) in shape.iter().enumerate().rev() {
         res[i] = RDim { st, d, lp: 0, rp: 0 };
         st *= d;
@@ -94,12 +102,16 @@ impl View {
     }
 
     pub(crate) fn shape(&self) -> Vec<Dim> {
-        self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
+        self.0
+            .last()
+            .map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
     }
 
     #[cfg(test)]
     fn strides(&self) -> Vec<Dim> {
-        self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.st).collect())
+        self.0
+            .last()
+            .map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.st).collect())
     }
 
     pub(crate) fn original_numel(&self) -> usize {
@@ -164,7 +176,10 @@ impl View {
             self.0.last().map_or(1, Vec::len)
         );
         debug_assert_eq!(
-            self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(),
+            self.0.last().unwrap()[axes.start as usize..axes.end as usize]
+                .iter()
+                .map(|dim| dim.d)
+                .product::<Dim>(),
             new_shape.iter().product::<Dim>(),
             "Reshape failed, products are different: {:?} axes {axes:?} -> {:?}",
             self.shape(),
@@ -426,7 +441,15 @@ fn try_reshape(block: &[RDim], new_shape: &[usize]) -> Vec<RDim> {
         return block.into(); // Same shape, nothing to do
     }
 
-    let mut new_dims = vec![RDim { d: 0, st: 0, lp: 0, rp: 0 }; new_shape.len()];
+    let mut new_dims = vec![
+        RDim {
+            d: 0,
+            st: 0,
+            lp: 0,
+            rp: 0
+        };
+        new_shape.len()
+    ];
     let (mut orig_start, mut new_start) = (0, 0);
     let old_len = block.len();
     let new_len = new_shape.len();
@@ -484,7 +507,12 @@ fn try_reshape(block: &[RDim], new_shape: &[usize]) -> Vec<RDim> {
             let mut stride = orig_slice.last().map_or(1, |rd| rd.st);
             for k in (new_start..j).rev() {
                 let dim = new_shape[k];
-                new_dims[k] = RDim { d: dim, st: if dim == 1 { 0 } else { stride }, lp: 0, rp: 0 };
+                new_dims[k] = RDim {
+                    d: dim,
+                    st: if dim == 1 { 0 } else { stride },
+                    lp: 0,
+                    rp: 0,
+                };
                 stride *= dim;
             }
         }
@@ -606,16 +634,56 @@ fn view_pad2() {
         view,
         View(vec![
             vec![
-                RDim { d: 1, st: 12, lp: 0, rp: 0 },
-                RDim { d: 1, st: 12, lp: 0, rp: 0 },
-                RDim { d: 2, st: 6, lp: 0, rp: 0 },
-                RDim { d: 3, st: 1, lp: -3, rp: 0 }
+                RDim {
+                    d: 1,
+                    st: 12,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 1,
+                    st: 12,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 2,
+                    st: 6,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 3,
+                    st: 1,
+                    lp: -3,
+                    rp: 0
+                }
             ],
             vec![
-                RDim { d: 1, st: 6, lp: 0, rp: 0 },
-                RDim { d: 1, st: 6, lp: 0, rp: 0 },
-                RDim { d: 2, st: 3, lp: 0, rp: 0 },
-                RDim { d: 5, st: 1, lp: 2, rp: 0 }
+                RDim {
+                    d: 1,
+                    st: 6,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 1,
+                    st: 6,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 2,
+                    st: 3,
+                    lp: 0,
+                    rp: 0
+                },
+                RDim {
+                    d: 5,
+                    st: 1,
+                    lp: 2,
+                    rp: 0
+                }
             ]
         ])
     );

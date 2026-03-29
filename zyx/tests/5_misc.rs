@@ -215,12 +215,20 @@ fn batched_matmul() -> Result<(), ZyxError> {
                 for n in (8..128).step_by(59) {
                     // x: [B, M, K]
                     let x_data: Vec<Vec<Vec<i32>>> = (0..b)
-                        .map(|bb| (0..m).map(|i| (0..k).map(|j| bb as i32 + i as i32 + j as i32).collect()).collect())
+                        .map(|bb| {
+                            (0..m)
+                                .map(|i| (0..k).map(|j| bb as i32 + i as i32 + j as i32).collect())
+                                .collect()
+                        })
                         .collect();
 
                     // y: [B, K, N]
                     let y_data: Vec<Vec<Vec<i32>>> = (0..b)
-                        .map(|bb| (0..k).map(|i| (0..n).map(|j| bb as i32 + i as i32 - j as i32).collect()).collect())
+                        .map(|bb| {
+                            (0..k)
+                                .map(|i| (0..n).map(|j| bb as i32 + i as i32 - j as i32).collect())
+                                .collect()
+                        })
                         .collect();
 
                     let x = Tensor::from(x_data.clone());
@@ -713,7 +721,10 @@ fn dot_pad() -> Result<(), ZyxError> {
 #[test]
 #[should_panic]
 fn t3() {
-    let x = Tensor::randn([1024, 1024], DType::F32).unwrap().expand([1024, 1024, 1024, 1024, 1024, 1024]).unwrap();
+    let x = Tensor::randn([1024, 1024], DType::F32)
+        .unwrap()
+        .expand([1024, 1024, 1024, 1024, 1024, 1024])
+        .unwrap();
     Tensor::realize([&x]).unwrap();
 }
 
@@ -1004,8 +1015,14 @@ fn rope_4() -> Result<(), ZyxError> {
 
 #[test]
 fn complex_movement_reduce() -> Result<(), ZyxError> {
-    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]]).expand([2, 3, 2])?.exp().ln().reshape([2, 3, 2, 1])?;
-    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]]).reshape([2, 3, 1, 1])?.expand([2, 3, 2, 1])?;
+    let x = Tensor::from([[[2f32, 3.]], [[4., 5.]]])
+        .expand([2, 3, 2])?
+        .exp()
+        .ln()
+        .reshape([2, 3, 2, 1])?;
+    let y = Tensor::from([[2f32, 3., 1.], [4., 3., 2.]])
+        .reshape([2, 3, 1, 1])?
+        .expand([2, 3, 2, 1])?;
     let z = (&x + &y).expand([2, 3, 2, 2])?.sum([3, 0])?;
     let z = z.exp().ln().permute([1, 0])?.sum([0])?;
     assert_eq!(z, [52f32, 52., 40.]);
@@ -1338,7 +1355,9 @@ fn arange_2() {
 
 #[test]
 fn rope_2() -> Result<(), ZyxError> {
-    let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8]).reshape([1, 2, 4])?.cast(zyx::DType::F32);
+    let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8])
+        .reshape([1, 2, 4])?
+        .cast(zyx::DType::F32);
     let base = 10000f32;
 
     let [_batch_size, seq_len, embed_dim] = x.dims()?;

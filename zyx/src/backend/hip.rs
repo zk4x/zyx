@@ -130,9 +130,14 @@ pub(super) fn initialize_device(
         "/opt/rocm/hip/lib/libhip_hcc.so",
         "/opt/rocm/hip/lib/libhiprtc.so",
     ];
-    let hip = hip_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
+    let hip = hip_paths
+        .into_iter()
+        .find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(hip) = hip else {
-        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "HIP runtime not found.".into() });
+        return Err(BackendError {
+            status: ErrorStatus::DyLibNotFound,
+            context: "HIP runtime not found.".into(),
+        });
     };
 
     let hipInit: unsafe extern "C" fn(c_uint) -> HIPStatus = *unsafe { hip.get(b"hipInit\0") }.unwrap();
@@ -184,10 +189,14 @@ pub(super) fn initialize_device(
     let mut num_devices = 0;
     unsafe { hipDeviceGetCount(&mut num_devices) }.check(ErrorStatus::DeviceEnumeration)?;
     if num_devices == 0 {
-        return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "HIP no devices found.".into() });
+        return Err(BackendError {
+            status: ErrorStatus::DeviceEnumeration,
+            context: "HIP no devices found.".into(),
+        });
     }
-    let device_ids: Vec<_> =
-        (0..num_devices).filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id))).collect();
+    let device_ids: Vec<_> = (0..num_devices)
+        .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
+        .collect();
     if device_ids.is_empty() {
         return Err(BackendError {
             status: ErrorStatus::DeviceEnumeration,
@@ -308,7 +317,10 @@ impl HIPMemoryPool {
 
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure".into() });
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "Allocation failure".into(),
+            });
         }
         //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
         let mut ptr = u64::try_from(self.device).unwrap();
@@ -333,12 +345,16 @@ impl HIPMemoryPool {
                 unsafe { (self.hipStreamWaitEvent)(self.stream, event, 0) }
                     .check(ErrorStatus::MemoryDeallocation)
                     .unwrap();
-                unsafe { (self.hipEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
+                unsafe { (self.hipEventDestroy)(event) }
+                    .check(ErrorStatus::MemoryCopyP2H)
+                    .unwrap();
             }
         }
         let buffer = &mut self.buffers[buffer_id];
         //unsafe { (self.hipMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation).unwrap();
-        unsafe { (self.hipMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation).unwrap();
+        unsafe { (self.hipMemFree)(buffer.ptr) }
+            .check(ErrorStatus::MemoryDeallocation)
+            .unwrap();
         self.free_bytes += buffer.bytes;
         self.buffers.remove(buffer_id);
     }
@@ -409,8 +425,12 @@ impl HIPMemoryPool {
     #[allow(clippy::needless_pass_by_value)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         for event in events {
-            let Event::HIP(HIPEvent { event }) = event else { unreachable!() };
-            unsafe { (self.hipEventDestroy)(event) }.check(ErrorStatus::Deinitialization).unwrap();
+            let Event::HIP(HIPEvent { event }) = event else {
+                unreachable!()
+            };
+            unsafe { (self.hipEventDestroy)(event) }
+                .check(ErrorStatus::Deinitialization)
+                .unwrap();
         }
     }
 }
@@ -682,7 +702,10 @@ impl HIPStatus {
         if self == Self::hipSuccess {
             Ok(())
         } else {
-            Err(BackendError { status, context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into() })
+            Err(BackendError {
+                status,
+                context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into(),
+            })
         }
     }
 }
@@ -787,7 +810,10 @@ impl hiprtcResult {
         if self == Self::HIPRTC_SUCCESS {
             Ok(())
         } else {
-            Err(BackendError { status, context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into() })
+            Err(BackendError {
+                status,
+                context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into(),
+            })
         }
     }
 }

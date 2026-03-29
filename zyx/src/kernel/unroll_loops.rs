@@ -84,13 +84,17 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, .. } => {
-                    let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
+                    let Op::Define { scope, .. } = self.ops[dst].op else {
+                        unreachable!()
+                    };
                     if scope != Scope::Register {
                         *constant_loops.last_mut().unwrap() = false;
                     }
                 }
                 Op::Load { src, .. } => {
-                    let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
+                    let Op::Define { scope, .. } = self.ops[src].op else {
+                        unreachable!()
+                    };
                     if scope != Scope::Register {
                         *constant_loops.last_mut().unwrap() = false;
                     }

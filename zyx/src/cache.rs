@@ -87,7 +87,11 @@ impl DeBin for Cache {
         }*/
 
         let programs = Map::with_hasher(BuildHasherDefault::new());
-        Ok(Cache { device_infos, kernels, programs })
+        Ok(Cache {
+            device_infos,
+            kernels,
+            programs,
+        })
     }
 }
 
@@ -128,7 +132,13 @@ impl Cache {
     }*/
 
     pub fn insert_kernel(&mut self, kernel: Kernel) -> KernelId {
-        let kernel_id = KernelId(self.kernels.values().copied().max().map_or(0, |id| id.0.checked_add(1).unwrap()));
+        let kernel_id = KernelId(
+            self.kernels
+                .values()
+                .copied()
+                .max()
+                .map_or(0, |id| id.0.checked_add(1).unwrap()),
+        );
         let newly_inserted = self.kernels.insert(kernel, kernel_id).is_none();
         assert!(newly_inserted);
         kernel_id

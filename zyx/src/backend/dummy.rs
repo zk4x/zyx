@@ -44,7 +44,10 @@ pub(super) fn initialize_device(
     if debug_dev {
         println!("Using dummy backend");
     }
-    let pool = MemoryPool::Dummy(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
+    let pool = MemoryPool::Dummy(DummyMemoryPool {
+        free_bytes: 1024 * 1024 * 1024 * 1024,
+        buffers: Slab::new(),
+    });
     memory_pools.push(Pool::new(pool));
     devices.push(Device::Dummy(DummyDevice {
         device_info: DeviceInfo {
@@ -78,7 +81,10 @@ impl DummyMemoryPool {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
+            return Err(BackendError {
+                status: ErrorStatus::MemoryAllocation,
+                context: "OOM".into(),
+            });
         }
         let id = self.buffers.push(bytes);
         Ok((id, Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))

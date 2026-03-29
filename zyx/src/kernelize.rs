@@ -159,7 +159,11 @@ impl<'a> Kernelizer<'a> {
         let dtype = self.graph.dtype(nid);
         let mut ops = Slab::with_capacity(100);
         let op = Op::LoadView(Box::new((dtype, View::contiguous(shape))));
-        let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
+        let op_id = ops.push(OpNode {
+            prev: OpId::NULL,
+            next: OpId::NULL,
+            op,
+        });
         let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: vec![nid],
@@ -176,7 +180,11 @@ impl<'a> Kernelizer<'a> {
     fn create_const_kernel(&mut self, nid: TensorId, value: Constant) {
         let mut ops = Slab::with_capacity(100);
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
-        let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
+        let op_id = ops.push(OpNode {
+            prev: OpId::NULL,
+            next: OpId::NULL,
+            op,
+        });
         let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: Vec::new(),
@@ -196,7 +204,10 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         //kernel.apply_movement(|view| view.expand(shape));
-        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: shape.into() }) });
+        let op_id = kernel.push_back(Op::Move {
+            x: op_id,
+            mop: Box::new(MoveOp::Expand { shape: shape.into() }),
+        });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -212,7 +223,10 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
-        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape.into() }) });
+        let op_id = kernel.push_back(Op::Move {
+            x: op_id,
+            mop: Box::new(MoveOp::Reshape { shape: shape.into() }),
+        });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -230,7 +244,10 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape }) });
+        let op_id = kernel.push_back(Op::Move {
+            x: op_id,
+            mop: Box::new(MoveOp::Permute { axes, shape }),
+        });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -250,7 +267,10 @@ impl<'a> Kernelizer<'a> {
         //let rank = self.graph.shape(nid).len();
         //kernel.apply_movement(|view| view.pad(rank, padding));
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape }) });
+        let op_id = kernel.push_back(Op::Move {
+            x: op_id,
+            mop: Box::new(MoveOp::Pad { padding, shape }),
+        });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -329,13 +349,22 @@ impl<'a> Kernelizer<'a> {
             //self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
             if !permute_axes.iter().copied().eq(0..permute_axes.len()) {
                 let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
-                op_id = self.kernels[kid]
-                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
+                op_id = self.kernels[kid].push_back(Op::Move {
+                    x: op_id,
+                    mop: Box::new(MoveOp::Permute {
+                        axes: permute_axes,
+                        shape,
+                    }),
+                });
             }
         }
 
         let kernel = &mut self.kernels[kid];
-        op_id = kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
+        op_id = kernel.push_back(Op::Reduce {
+            x: op_id,
+            rop,
+            n_axes: axes.len(),
+        });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -343,8 +372,10 @@ impl<'a> Kernelizer<'a> {
         // If all dims are reduced
         if shape.len() == axes.len() {
             //self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
-            op_id =
-                self.kernels[kid].push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: vec![1] }) });
+            op_id = self.kernels[kid].push_back(Op::Move {
+                x: op_id,
+                mop: Box::new(MoveOp::Reshape { shape: vec![1] }),
+            });
         }
 
         debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
@@ -388,7 +419,11 @@ impl<'a> Kernelizer<'a> {
             kernel.remove_first_output(x);
             kernel.remove_first_output(y);
             kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
-            kernel.push_back(Op::Binary { x: op_id, y: op_idy, bop })
+            kernel.push_back(Op::Binary {
+                x: op_id,
+                y: op_idy,
+                bop,
+            })
         } else {
             //println!("Different kernels for binary");
             // TODO later use this, but this requires global memory sync inside of the kernel
@@ -444,7 +479,14 @@ impl<'a> Kernelizer<'a> {
             }
 
             self.kernels[kidy].remove_first_output(y);
-            let Kernel { outputs, loads, stores, ops, head, tail: _ } = unsafe { self.kernels.remove_and_return(kidy) };
+            let Kernel {
+                outputs,
+                loads,
+                stores,
+                ops,
+                head,
+                tail: _,
+            } = unsafe { self.kernels.remove_and_return(kidy) };
 
             // Extend x kernel with y ops
             let mut y_ops_map = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
@@ -478,9 +520,17 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].outputs.extend(vec![nid; self.rcs[&nid] as usize]);
 
             let op = if swapped_xy {
-                Op::Binary { x: y_ops_map[&op_idy], y: op_id, bop }
+                Op::Binary {
+                    x: y_ops_map[&op_idy],
+                    y: op_id,
+                    bop,
+                }
             } else {
-                Op::Binary { x: op_id, y: y_ops_map[&op_idy], bop }
+                Op::Binary {
+                    x: op_id,
+                    y: y_ops_map[&op_idy],
+                    bop,
+                }
             };
             self.kernels[kid].push_back(op)
         };
@@ -580,7 +630,7 @@ impl<'a> Kernelizer<'a> {
         }
         kernel.reset_indices();
 
-        let program_id = kernel.autotune1(&args, device, &mut pool.pool, self.autotune_config, self.debug);
+        let program_id = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, self.debug);
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
         self.pools[mpid].events.insert(output_buffers, event);
@@ -705,7 +755,12 @@ impl Runtime {
             let mut kids: Vec<KMKernelId> = kernelizer.kernels.ids().collect();
             while let Some(kid) = kids
                 .iter()
-                .find(|&&kid| kernelizer.kernels[kid].loads.iter().all(|x| kernelizer.realized_nodes.contains(x)))
+                .find(|&&kid| {
+                    kernelizer.kernels[kid]
+                        .loads
+                        .iter()
+                        .all(|x| kernelizer.realized_nodes.contains(x))
+                })
                 .copied()
             {
                 kids.retain(|x| *x != kid);
@@ -755,8 +810,12 @@ impl Runtime {
 
     pub fn realize_selected(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         //let time_w = std::time::Instant::now();
-        let realized_nodes: Set<TensorId> =
-            self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+        let realized_nodes: Set<TensorId> = self
+            .pools
+            .iter()
+            .flat_map(|pool| pool.buffer_map.keys())
+            .copied()
+            .collect();
 
         let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
 
@@ -838,8 +897,12 @@ impl Runtime {
 
         #[cfg(debug_assertions)]
         {
-            let realized_nodes: Set<TensorId> =
-                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            let realized_nodes: Set<TensorId> = self
+                .pools
+                .iter()
+                .flat_map(|pool| pool.buffer_map.keys())
+                .copied()
+                .collect();
             debug_assert!(realized_nodes.is_superset(&to_eval));
         }
 
@@ -847,8 +910,12 @@ impl Runtime {
     }
 
     pub fn realize_all(&mut self) -> Result<(), ZyxError> {
-        let realized_nodes: Set<TensorId> =
-            self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+        let realized_nodes: Set<TensorId> = self
+            .pools
+            .iter()
+            .flat_map(|pool| pool.buffer_map.keys())
+            .copied()
+            .collect();
 
         if self.devices.is_empty() {
             self.initialize_devices()?;
@@ -934,8 +1001,12 @@ impl Runtime {
 
         #[cfg(debug_assertions)]
         {
-            let realized_nodes: Set<TensorId> =
-                self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            let realized_nodes: Set<TensorId> = self
+                .pools
+                .iter()
+                .flat_map(|pool| pool.buffer_map.keys())
+                .copied()
+                .collect();
             debug_assert!(realized_nodes.is_superset(&to_eval));
         }
 

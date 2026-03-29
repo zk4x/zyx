@@ -85,7 +85,10 @@ impl SlabId for ProgramId {
 
 impl From<libloading::Error> for BackendError {
     fn from(value: libloading::Error) -> Self {
-        BackendError { status: ErrorStatus::Initialization, context: value.to_string().into() }
+        BackendError {
+            status: ErrorStatus::Initialization,
+            context: value.to_string().into(),
+        }
     }
 }
 
@@ -455,24 +458,34 @@ impl Device {
     ) -> Result<Event, BackendError> {
         match self {
             Device::Dummy(dev) => {
-                let MemoryPool::Dummy(pool) = memory_pool else { unreachable!() };
+                let MemoryPool::Dummy(pool) = memory_pool else {
+                    unreachable!()
+                };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::CUDA(dev) => {
-                let MemoryPool::CUDA(pool) = memory_pool else { unreachable!() };
+                let MemoryPool::CUDA(pool) = memory_pool else {
+                    unreachable!()
+                };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::OpenCL(dev) => {
-                let MemoryPool::OpenCL(pool) = memory_pool else { unreachable!() };
+                let MemoryPool::OpenCL(pool) = memory_pool else {
+                    unreachable!()
+                };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::HIP(dev) => {
-                let MemoryPool::HIP(pool) = memory_pool else { unreachable!() };
+                let MemoryPool::HIP(pool) = memory_pool else {
+                    unreachable!()
+                };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => {
-                let MemoryPool::WGPU(pool) = memory_pool else { unreachable!() };
+                let MemoryPool::WGPU(pool) = memory_pool else {
+                    unreachable!()
+                };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
         }

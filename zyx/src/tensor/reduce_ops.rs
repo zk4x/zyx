@@ -66,7 +66,9 @@ impl Tensor {
                 } else {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
-                Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Add) }
+                Tensor {
+                    id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Add),
+                }
             }
             ReduceOp::Max => {
                 let x = if let Some(dtype) = dtype {
@@ -74,7 +76,9 @@ impl Tensor {
                 } else {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
-                Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Max) }
+                Tensor {
+                    id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Max),
+                }
             }
             ReduceOp::Prod => {
                 let x = if let Some(dtype) = dtype {
@@ -82,7 +86,9 @@ impl Tensor {
                 } else {
                     self.cast(reduce_acc_dtype(x_dtype))
                 };
-                Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Mul) }
+                Tensor {
+                    id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Mul),
+                }
             }
             ReduceOp::Min => {
                 if let Some(dtype) = dtype {

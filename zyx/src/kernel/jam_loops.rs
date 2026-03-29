@@ -39,7 +39,9 @@ impl Kernel {
                     Op::Load { src, .. } => {
                         for (loop_id, define_ids) in &active_defines {
                             if define_ids.contains(&src) {
-                                let Op::Loop { len: dim, .. } = self.ops[*loop_id].op else { unreachable!() };
+                                let Op::Loop { len: dim, .. } = self.ops[*loop_id].op else {
+                                    unreachable!()
+                                };
                                 if dim <= jam_dim {
                                     let inner_loop_id = active_defines.last().unwrap().0;
 
@@ -152,7 +154,9 @@ impl Kernel {
         //println!("Loop jam, jam_loop={jam_loop_id}, middle_loop={middle_loop_id}, inner_loop={inner_loop_id}");
         //println!("end_middle_loop={end_middle_loop_id}, pre_loop_ops={pre_loop_ops:?}");
 
-        let Op::Loop { len: jam_dim, .. } = self.ops[jam_loop_id].op else { unreachable!() };
+        let Op::Loop { len: jam_dim, .. } = self.ops[jam_loop_id].op else {
+            unreachable!()
+        };
 
         // Add constnat for dimension, will be used for indexing
         let const_jam_dim = self.insert_before(jam_loop_id, Op::Const(Constant::idx(jam_dim as u64)));
@@ -164,7 +168,12 @@ impl Kernel {
         while op_id != middle_loop_id {
             op_id = self.next_op(op_id);
             if let Op::Define { dtype, scope, ro, len } = self.ops[op_id].op {
-                self.ops[op_id].op = Op::Define { dtype, scope, ro, len: len * jam_dim };
+                self.ops[op_id].op = Op::Define {
+                    dtype,
+                    scope,
+                    ro,
+                    len: len * jam_dim,
+                };
                 defines.insert(op_id);
                 self.move_op_before(op_id, jam_loop_id);
             }
@@ -178,9 +187,25 @@ impl Kernel {
                 Op::Load { .. } | Op::Define { .. } => unreachable!(),
                 Op::Store { dst, index, .. } => {
                     if defines.contains(&dst) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index = self.insert_before(op_id, Op::Binary { x, y: jam_loop_id, bop: BOp::Add });
-                        let Op::Store { index, .. } = &mut self.ops[op_id].op else { unreachable!() };
+                        let x = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: index,
+                                y: const_jam_dim,
+                                bop: BOp::Mul,
+                            },
+                        );
+                        let new_index = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x,
+                                y: jam_loop_id,
+                                bop: BOp::Add,
+                            },
+                        );
+                        let Op::Store { index, .. } = &mut self.ops[op_id].op else {
+                            unreachable!()
+                        };
                         *index = new_index;
                     }
                 }
@@ -218,19 +243,49 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::Load { src, index, .. } => {
                     if defines.contains(&src) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index =
-                            self.insert_before(op_id, Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
-                        let Op::Load { index, .. } = &mut self.ops[op_id].op else { unreachable!() };
+                        let x = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: index,
+                                y: const_jam_dim,
+                                bop: BOp::Mul,
+                            },
+                        );
+                        let new_index = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x,
+                                y: remapping[&jam_loop_id],
+                                bop: BOp::Add,
+                            },
+                        );
+                        let Op::Load { index, .. } = &mut self.ops[op_id].op else {
+                            unreachable!()
+                        };
                         *index = new_index;
                     }
                 }
                 Op::Store { dst, index, .. } => {
                     if defines.contains(&dst) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index =
-                            self.insert_before(op_id, Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
-                        let Op::Store { index, .. } = &mut self.ops[op_id].op else { unreachable!() };
+                        let x = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: index,
+                                y: const_jam_dim,
+                                bop: BOp::Mul,
+                            },
+                        );
+                        let new_index = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x,
+                                y: remapping[&jam_loop_id],
+                                bop: BOp::Add,
+                            },
+                        );
+                        let Op::Store { index, .. } = &mut self.ops[op_id].op else {
+                            unreachable!()
+                        };
                         *index = new_index;
                     }
                 }
@@ -275,19 +330,49 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::Load { src, index, .. } => {
                     if defines.contains(&src) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index =
-                            self.insert_before(op_id, Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
-                        let Op::Load { index, .. } = &mut self.ops[op_id].op else { unreachable!() };
+                        let x = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: index,
+                                y: const_jam_dim,
+                                bop: BOp::Mul,
+                            },
+                        );
+                        let new_index = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x,
+                                y: remapping[&jam_loop_id],
+                                bop: BOp::Add,
+                            },
+                        );
+                        let Op::Load { index, .. } = &mut self.ops[op_id].op else {
+                            unreachable!()
+                        };
                         *index = new_index;
                     }
                 }
                 Op::Store { dst, index, .. } => {
                     if defines.contains(&dst) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index =
-                            self.insert_before(op_id, Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
-                        let Op::Store { index, .. } = &mut self.ops[op_id].op else { unreachable!() };
+                        let x = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: index,
+                                y: const_jam_dim,
+                                bop: BOp::Mul,
+                            },
+                        );
+                        let new_index = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x,
+                                y: remapping[&jam_loop_id],
+                                bop: BOp::Add,
+                            },
+                        );
+                        let Op::Store { index, .. } = &mut self.ops[op_id].op else {
+                            unreachable!()
+                        };
                         *index = new_index;
                     }
                 }

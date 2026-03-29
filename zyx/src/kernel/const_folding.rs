@@ -180,7 +180,9 @@ impl Kernel {
 
     pub fn fold_acc(&mut self, define_id: OpId) {
         //println!("Folding acc {define_id}");
-        let Op::Define { len, .. } = self.ops[define_id].op else { unreachable!() };
+        let Op::Define { len, .. } = self.ops[define_id].op else {
+            unreachable!()
+        };
         self.remove_op(define_id);
         let mut latest_stores = vec![OpId::NULL; len];
 
@@ -197,7 +199,9 @@ impl Kernel {
                         self.remove_op(op_id);
                         // x may have been removed as a previous load. If that was the case, the load was redundant
                         if self.ops.contains_key(x) {
-                            let Op::Const(index) = self.ops[index].op else { unreachable!() };
+                            let Op::Const(index) = self.ops[index].op else {
+                                unreachable!()
+                            };
                             let Constant::U32(index) = index else { unreachable!() };
                             latest_stores[index as usize] = x;
                             //println!("Latest stores = {latest_stores:?}");
@@ -209,7 +213,9 @@ impl Kernel {
                 Op::Load { src, index, .. } => {
                     if src == define_id {
                         self.remove_op(op_id);
-                        let Op::Const(index) = self.ops[index].op else { unreachable!() };
+                        let Op::Const(index) = self.ops[index].op else {
+                            unreachable!()
+                        };
                         let Constant::U32(index) = index else { unreachable!() };
                         remaps.insert(op_id, latest_stores[index as usize]);
                         op_id = next;
