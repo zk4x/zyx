@@ -1,8 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-#![allow(unused)]
-
+#[allow(unused)]
 use crate::{
     Map,
     dtype::Constant,
@@ -72,7 +71,6 @@ impl Kernel {
                 }
                 Op::Loop { len, .. } => {
                     let endloop_id = endloop_ids.pop().unwrap();
-                    //println!("Loop {op_id} constant={constant_loops:?}");
                     let is_const = constant_loops.pop().unwrap();
                     if !is_const {
                         if let Some(inner_loop) = constant_loops.last_mut() {
@@ -104,30 +102,40 @@ impl Kernel {
     }
 
     pub fn unroll_loop(&mut self, loop_id: OpId, endloop_id: OpId, dim: usize) {
-        //println!("Unrolling loop={loop_id}, end={endloop_id}, dim={dim}");
+        let original_body_ops: Vec<OpId> = {
+            let mut ops = Vec::new();
+            let mut op_id = self.next_op(loop_id);
+            while op_id != endloop_id {
+                ops.push(op_id);
+                op_id = self.next_op(op_id);
+            }
+            ops
+        };
+
         self.ops[loop_id].op = Op::Const(Constant::idx(0));
-        let last_loop_op = self.prev_op(endloop_id);
 
         for idx in 1..dim {
-            let mut new_ops_map = Map::default();
             let idx_op = self.insert_before(endloop_id, Op::Const(Constant::idx(idx as u64)));
-            new_ops_map.insert(loop_id, idx_op);
+            let mut cloned: Map<OpId, OpId> = Map::default();
+            cloned.insert(loop_id, idx_op);
 
-            let mut op_id = self.next_op(loop_id);
-            loop {
+            let mut new_ops: Vec<(OpId, Op)> = Vec::new();
+            for &op_id in &original_body_ops {
                 let mut op = self.ops[op_id].op.clone();
+                let new_op_id = self.insert_before(endloop_id, op);
+                cloned.insert(op_id, new_op_id);
+                new_ops.push((new_op_id, self.ops[new_op_id].op.clone()));
+            }
+
+            for (new_op_id, op) in &mut new_ops {
                 for param in op.parameters_mut() {
-                    if let Some(&new_param) = new_ops_map.get(param) {
-                        *param = new_param;
+                    if let Some(&new_id) = cloned.get(param) {
+                        *param = new_id;
+                    } else if *param == loop_id {
+                        *param = idx_op;
                     }
                 }
-                let new_op_id = self.insert_before(endloop_id, op);
-                new_ops_map.insert(op_id, new_op_id);
-
-                if op_id == last_loop_op {
-                    break;
-                }
-                op_id = self.next_op(op_id);
+                self.ops[*new_op_id].op = op.clone();
             }
         }
         self.remove_op(endloop_id);

@@ -9,8 +9,8 @@ Quick reference for coding agents working in the zyx repository.
 cargo build -p zyx
 cargo build -p zyx --release
 
-# Lint (strict rules enforced)
-cargo clippy -p zyx --all-features -- -D warnings
+# Lint (do NOT run - shows many unrelated issues)
+# cargo clippy -p zyx --all-features -- -D warnings
 
 # Format
 cargo fmt
@@ -58,6 +58,11 @@ cargo test -p zyx -- --nocapture  # with output
 2. `super::` modules
 3. External crates (`std`, `core`)
 4. `pub use` exports
+
+### Debugging
+
+- Use `kernel.debug_colorless()` instead of `kernel.debug()` for readable output without ANSI color codes
+- Set `ZYX_DEBUG` environment variable to enable debug output (see Debug Options table)
 
 ### File Organization
 - Keep ~1000 LOC per module

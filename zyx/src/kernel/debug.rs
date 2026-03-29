@@ -401,9 +401,7 @@ impl Kernel {
                 Op::Define { dtype, scope, ro, len, .. } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };
-                    println!(
-                        "{indent}r{out_id}: {dtype} = def {ro}{scope}, len={len}"
-                    );
+                    println!("{indent}r{out_id}: {dtype} = def {ro}{scope}, len={len}");
                 }
                 Op::Const(value) => {
                     let dtype = value.dtype();
@@ -421,13 +419,9 @@ impl Kernel {
                     let src = id_map[&src];
                     let index = id_map[&index];
                     if len > 1 {
-                        println!(
-                            "{indent}r{out_id}: {dtype} = r{src}[r{index}..+{len}]    // {lb}..={ub} load"
-                        );
+                        println!("{indent}r{out_id}: {dtype} = r{src}[r{index}..+{len}]    // {lb}..={ub} load");
                     } else {
-                        println!(
-                            "{indent}r{out_id}: {dtype} = r{src}[r{index}]    // {lb}..={ub} load"
-                        );
+                        println!("{indent}r{out_id}: {dtype} = r{src}[r{index}]    // {lb}..={ub} load");
                     }
                 }
                 Op::Store { dst, x, index, vlen: len } => {
@@ -438,9 +432,7 @@ impl Kernel {
                     let index = id_map[&index];
                     let x = id_map[&x];
                     if len > 1 {
-                        println!(
-                            "{indent}r{dst}[r{index}..+len] = r{x}    // {lb}..={ub} store",
-                        );
+                        println!("{indent}r{dst}[r{index}..+len] = r{x}    // {lb}..={ub} store",);
                     } else {
                         println!("{indent}r{dst}[r{index}] = r{x}    // {lb}..={ub} store",);
                     }
@@ -569,9 +561,7 @@ impl Kernel {
                     let a = id_map.get(&a).copied().unwrap_or(OpId::NULL);
                     let b = id_map.get(&b).copied().unwrap_or(OpId::NULL);
                     let c = id_map.get(&c).copied().unwrap_or(OpId::NULL);
-                    println!(
-                        "{indent}r{out_id}: {cdtype} = wmma.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",
-                    );
+                    println!("{indent}r{out_id}: {cdtype} = wmma.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",);
                 }
                 Op::Index { len, scope, axis } => {
                     dtypes.insert(op_id, IDX_T);
@@ -614,10 +604,7 @@ impl Kernel {
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = r {
                         bounds.insert(op_id, (lb, ub));
-                        println!(
-                            "{indent}r{out_id}: {dtype} = vectorize{:?}    // {}..={}",
-                            ops, lb, ub,
-                        );
+                        println!("{indent}r{out_id}: {dtype} = vectorize{:?}    // {}..={}", ops, lb, ub,);
                     } else {
                         println!("{indent}r{out_id}: {dtype} = vectorize{:?}", ops);
                     }
@@ -644,22 +631,16 @@ impl Kernel {
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
-                            println!(
-                                "{indent}r{out_id}: {dtype} = reshape r{x} -> {shape:?}",
-                            );
+                            println!("{indent}r{out_id}: {dtype} = reshape r{x} -> {shape:?}",);
                         }
                         MoveOp::Expand { shape } => {
                             println!("{indent}r{out_id}: {dtype} = expand r{x} -> {shape:?}");
                         }
                         MoveOp::Permute { axes, shape } => {
-                            println!(
-                                "{indent}r{out_id}: {dtype} = permute r{x} axes={axes:?} -> {shape:?}",
-                            );
+                            println!("{indent}r{out_id}: {dtype} = permute r{x} axes={axes:?} -> {shape:?}",);
                         }
                         MoveOp::Pad { padding, shape } => {
-                            println!(
-                                "{indent}r{out_id}: {dtype} = pad r{x} padding={padding:?} -> {shape:?}",
-                            );
+                            println!("{indent}r{out_id}: {dtype} = pad r{x} padding={padding:?} -> {shape:?}",);
                         }
                     };
                 }

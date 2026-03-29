@@ -153,7 +153,9 @@ impl Tensor {
         let padding_len = index.len();
 
         if padding_len > rank {
-            return Err(ZyxError::shape_error(format!("Index length {padding_len} > rank {rank}").into()));
+            return Err(ZyxError::shape_error(
+                format!("Index length {padding_len} > rank {rank}").into(),
+            ));
         }
 
         let padding =

@@ -502,26 +502,38 @@ fn slicing_comprehensive() {
 
 #[test]
 fn rslicing_comprehensive() {
-    let x=Tensor::from([[4,6,8],[5,7,9]]);
-    assert_eq!(x.rslice((..,0..1)).unwrap(),[[4,6,8]]);
-    assert_eq!(x.rslice((..,1..2)).unwrap(),[[5,7,9]]);
-    assert_eq!(x.rslice((..,..)).unwrap(),[[4,6,8],[5,7,9]]);
-    assert_eq!(x.rslice(0..1).unwrap(),[[4],[5]]);
-    assert_eq!(x.rslice((0..1,0..1)).unwrap(),[[4]]);
-    assert_eq!(x.rslice(1..2).unwrap(),[[6],[7]]);
-    let y=Tensor::from([[[2,4,6],[8,10,12]],[[14,16,18],[20,22,24]]]);
-    assert_eq!(y.rslice((..,..,0..1)).unwrap(),[[[2,4,6],[8,10,12]]]);
-    assert_eq!(y.rslice((..,..,1..2)).unwrap(),[[[14,16,18],[20,22,24]]]);
-    assert_eq!(y.rslice((..,0..1,..)).unwrap(),[[[2,4,6]],[[14,16,18]]]);
-    assert_eq!(y.rslice((1..2,..,..)).unwrap(),[[[4],[10]],[[16],[22]]]);
-    assert_eq!(y.rslice(1..2).unwrap(),[[[4],[10]],[[16],[22]]]);
-    assert_eq!(y.rslice((..,1..2)).unwrap(),[[[8,10,12]],[[20,22,24]]]);
-    let z=Tensor::from([[[[3,5],[7,9]],[[11,13],[15,17]]],[[[19,21],[23,25]],[[27,29],[31,33]]]]);
-    assert_eq!(z.rslice((..,..,..,0..1)).unwrap(),[[[[3,5],[7,9]],[[11,13],[15,17]]]]);
-    assert_eq!(z.rslice((..,..,..,1..2)).unwrap(),[[[[19,21],[23,25]],[[27,29],[31,33]]]]);
-    assert_eq!(z.rslice((0..1,..,0..1,..)).unwrap(),[[[[3],[7]]],[[[19],[23]]]]);
-    assert_eq!(z.rslice(1..2).unwrap(),[[[[5],[9]],[[13],[17]]],[[[21],[25]],[[29],[33]]]]);
-    assert!(z.rslice((..,..,..,..,..)).is_err()||z.rslice((..,..,..,..,..)).is_ok());
+    let x = Tensor::from([[4, 6, 8], [5, 7, 9]]);
+    assert_eq!(x.rslice((.., 0..1)).unwrap(), [[4, 6, 8]]);
+    assert_eq!(x.rslice((.., 1..2)).unwrap(), [[5, 7, 9]]);
+    assert_eq!(x.rslice((.., ..)).unwrap(), [[4, 6, 8], [5, 7, 9]]);
+    assert_eq!(x.rslice(0..1).unwrap(), [[4], [5]]);
+    assert_eq!(x.rslice((0..1, 0..1)).unwrap(), [[4]]);
+    assert_eq!(x.rslice(1..2).unwrap(), [[6], [7]]);
+    let y = Tensor::from([[[2, 4, 6], [8, 10, 12]], [[14, 16, 18], [20, 22, 24]]]);
+    assert_eq!(y.rslice((.., .., 0..1)).unwrap(), [[[2, 4, 6], [8, 10, 12]]]);
+    assert_eq!(y.rslice((.., .., 1..2)).unwrap(), [[[14, 16, 18], [20, 22, 24]]]);
+    assert_eq!(y.rslice((.., 0..1, ..)).unwrap(), [[[2, 4, 6]], [[14, 16, 18]]]);
+    assert_eq!(y.rslice((1..2, .., ..)).unwrap(), [[[4], [10]], [[16], [22]]]);
+    assert_eq!(y.rslice(1..2).unwrap(), [[[4], [10]], [[16], [22]]]);
+    assert_eq!(y.rslice((.., 1..2)).unwrap(), [[[8, 10, 12]], [[20, 22, 24]]]);
+    let z = Tensor::from([
+        [[[3, 5], [7, 9]], [[11, 13], [15, 17]]],
+        [[[19, 21], [23, 25]], [[27, 29], [31, 33]]],
+    ]);
+    assert_eq!(
+        z.rslice((.., .., .., 0..1)).unwrap(),
+        [[[[3, 5], [7, 9]], [[11, 13], [15, 17]]]]
+    );
+    assert_eq!(
+        z.rslice((.., .., .., 1..2)).unwrap(),
+        [[[[19, 21], [23, 25]], [[27, 29], [31, 33]]]]
+    );
+    assert_eq!(z.rslice((0..1, .., 0..1, ..)).unwrap(), [[[[3], [7]]], [[[19], [23]]]]);
+    assert_eq!(
+        z.rslice(1..2).unwrap(),
+        [[[[5], [9]], [[13], [17]]], [[[21], [25]], [[29], [33]]]]
+    );
+    assert!(z.rslice((.., .., .., .., ..)).is_err() || z.rslice((.., .., .., .., ..)).is_ok());
 }
 
 #[test]

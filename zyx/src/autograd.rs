@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::{
-    Map, RT, Set, Tensor, dtype::Constant, graph::Node, kernel::{BOp, UOp}, runtime::{Runtime, deallocate_tensors}, shape::{Dim, UAxis}, tensor::TensorId
+    Map, RT, Set, Tensor,
+    dtype::Constant,
+    graph::Node,
+    kernel::{BOp, UOp},
+    runtime::{Runtime, deallocate_tensors},
+    shape::{Dim, UAxis},
+    tensor::TensorId,
 };
 use std::hash::BuildHasherDefault;
 

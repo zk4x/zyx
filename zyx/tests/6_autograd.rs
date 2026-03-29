@@ -88,7 +88,6 @@ fn grad_pow_2() -> Result<(), ZyxError> {
     let x_grad = grads.remove(0).unwrap();
     let y_grad = grads.remove(0).unwrap();
 
-
     // Expected gradients
     // dz/dx = y * x^(y-1)
     let expected_x = [

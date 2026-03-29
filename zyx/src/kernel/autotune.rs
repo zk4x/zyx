@@ -129,7 +129,7 @@ impl Kernel {
         self.constant_folding();
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
-        self.common_subexpression_elimination();
+        //self.common_subexpression_elimination();
         self.dead_code_elimination();
     }
 
@@ -149,9 +149,7 @@ impl Kernel {
 
         // Here come series of custom optimizations
         kernel.reassociate_commutative(0);
-        //println!("After associate_commutative:");
-        //kernel.debug_colorless();
-        //kernel.reassociate_commutative(0);
+        kernel.opt_unroll(0); // unroll with dim=2
 
         kernel.run_always_on_optimizations();
 
@@ -167,9 +165,10 @@ impl Kernel {
         config: &AutotuneConfig,
         debug: DebugMask,
     ) -> ProgramId {
-        let available_opts: [(fn(&Kernel) -> u16, fn(&mut Kernel, u16)); _] = [
-            (Self::opt_no_config, Self::reassociate_commutative)]; //,
-            //(Self::opt_unroll_config, Self::opt_unroll),
+        let available_opts: [(fn(&Kernel) -> u16, fn(&mut Kernel, u16)); _] =
+            [(Self::opt_no_config, Self::reassociate_commutative)]; //,
+
+        //(Self::opt_unroll_config, Self::opt_unroll),
         //];
 
         let dev_info_ptr: *const DeviceInfo = device.info();

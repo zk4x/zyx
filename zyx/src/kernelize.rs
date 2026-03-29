@@ -580,7 +580,7 @@ impl<'a> Kernelizer<'a> {
         }
         kernel.reset_indices();
 
-        let program_id = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, self.debug);
+        let program_id = kernel.autotune1(&args, device, &mut pool.pool, self.autotune_config, self.debug);
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
         self.pools[mpid].events.insert(output_buffers, event);
