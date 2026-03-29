@@ -1,11 +1,2 @@
 max_width = 120
-chain_width = 120
-comment_width = 120
-condense_wildcard_suffixes = true
-edition = "2024"
-fn_single_line = true
-overflow_delimited_expr = true
-struct_lit_width = 120
-struct_variant_width = 120
-single_line_let_else_max_width = 120
-single_line_if_else = true
+edition = "2021"
