@@ -129,7 +129,7 @@ impl Kernel {
         self.constant_folding();
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
-        //self.common_subexpression_elimination();
+        self.common_subexpression_elimination();
         self.dead_code_elimination();
     }
 

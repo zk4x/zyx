@@ -304,6 +304,9 @@ impl Kernel {
         let mut stack: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
         stack.push(Map::with_capacity_and_hasher(50, Default::default()));
 
+        let mut stored_locs: Vec<Map<OpId, bool>> = Vec::with_capacity(10);
+        stored_locs.push(Map::with_capacity_and_hasher(10, Default::default()));
+
         let mut remaps = Map::with_capacity_and_hasher(10, Default::default());
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -312,20 +315,55 @@ impl Kernel {
                 Op::Define { .. } => {} // skip define ops, these can not be deduplicated
                 Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(50, Default::default()));
+                    stored_locs.push(Map::with_capacity_and_hasher(10, Default::default()));
                 }
                 Op::EndLoop => {
                     stack.pop();
+                    stored_locs.pop();
+                }
+                Op::Store { dst, .. } => {
+                    stored_locs.last_mut().unwrap().insert(*dst, true);
                 }
                 op => {
                     let mut remove_op = false;
-                    for loop_level in &stack {
-                        if let Some(&old_op_id) = loop_level.get(op) {
-                            remaps.insert(op_id, old_op_id);
-                            remove_op = true;
-                            break;
+                    let op_key = op.clone();
+
+                    // For Load ops, check if there's a store to the same src
+                    let can_cse = if let Op::Load { src, .. } = op {
+                        let mut has_store = false;
+                        for stored in &stored_locs {
+                            if stored.get(src).is_some() {
+                                has_store = true;
+                                break;
+                            }
+                        }
+                        !has_store
+                    } else {
+                        true
+                    };
+
+                    if can_cse {
+                        for loop_level in &stack {
+                            if let Some(&old_op_id) = loop_level.get(&op_key) {
+                                remaps.insert(op_id, old_op_id);
+                                remove_op = true;
+                                break;
+                            }
                         }
                     }
+
                     if remove_op {
+                        if let Some(&old_op_id) = remaps.get(&op_id) {
+                            let mut update_id = self.head;
+                            while !update_id.is_null() {
+                                for param in self.ops[update_id].op.parameters_mut() {
+                                    if *param == op_id {
+                                        *param = old_op_id;
+                                    }
+                                }
+                                update_id = self.next_op(update_id);
+                            }
+                        }
                         self.remove_op(op_id);
                     } else {
                         for param in op.parameters_mut() {
@@ -333,7 +371,7 @@ impl Kernel {
                                 *param = new_id;
                             }
                         }
-                        stack.last_mut().unwrap().insert(op.clone(), op_id);
+                        stack.last_mut().unwrap().insert(op_key, op_id);
                     }
                 }
             }
