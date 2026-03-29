@@ -3,9 +3,9 @@
 
 #[allow(unused)]
 use crate::{
-    Map,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
+    Map,
 };
 
 impl Kernel {

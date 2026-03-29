@@ -8,7 +8,7 @@ use crate::shape::Dim;
 use crate::slab::SlabId;
 use crate::{DebugMask, Set};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 impl Kernel {
