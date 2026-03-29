@@ -149,21 +149,27 @@ pub enum Event {
 }
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
-#[derive(DeJson, Debug, Default)]
+#[derive(DeJson, Debug)]
 pub struct AutotuneConfig {
     #[allow(unused)]
     /// Should the searched kernel be stored to disk?
     pub save_to_disk: bool,
     /// Max number of kernel launches
-    pub n_launches: usize,         // = 10;
+    pub n_launches: usize, // = 10;
     /// Number of initial optimization seeds
-    pub n_seeds: usize,            // = 100;
+    pub n_seeds: usize, // = 100;
     /// How many optimizations to try each iteration
-    pub n_added_per_step: usize,   //: usize = 10;
+    pub n_added_per_step: usize, //: usize = 10;
     /// How many iterations to remove each iteration
     pub n_removed_per_step: usize, // = 5;
     /// Max number of optimizations that can be tried
-    pub n_total_opts: usize,       // = 1000;
+    pub n_total_opts: usize, // = 1000;
+}
+
+impl Default for AutotuneConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AutotuneConfig {

@@ -84,34 +84,42 @@ pub(super) fn initialize_device(
         println!("WGPU Requesting device with {power_preference:#?} power preference");
     }
 
-    let (adapter, device, queue) = async {
+    let (wgpu_adapter, wgpu_device, wgpu_queue, info) = async {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions { power_preference, ..Default::default() })
             .await
             .expect("Failed at adapter creation.");
+        let info = adapter.get_info();
+        let mut features = wgpu::Features::empty();
+        if adapter.features().contains(wgpu::Features::SHADER_F64) {
+            features |= wgpu::Features::SHADER_F64;
+        }
+        if adapter.features().contains(wgpu::Features::SHADER_INT64) {
+            features |= wgpu::Features::SHADER_INT64;
+        }
+        if adapter.features().contains(wgpu::Features::SHADER_F16) {
+            features |= wgpu::Features::SHADER_F16;
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::SHADER_INT64
-                    | wgpu::Features::SHADER_F64
-                    | wgpu::Features::SHADER_F16,
-                required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 32, ..Default::default() },
+                required_features: features,
+                required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 8, ..Default::default() },
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::Off,
             })
             .await
             .expect("Failed at device creation");
-        (adapter, device, queue)
+        (adapter, device, queue, info)
     }
     .block_on();
 
-    let info = adapter.get_info();
     if debug_dev {
         println!("Using {} ({}) - {:#?}.", info.name, info.device, info.backend);
     }
-    let device = Arc::new(device);
-    let queue = Arc::new(queue);
+    let device = Arc::new(wgpu_device);
+    let queue = Arc::new(wgpu_queue);
     let pool = MemoryPool::WGPU(WGPUMemoryPool {
         free_bytes: 1_000_000_000,
         device: device.clone(),
@@ -122,7 +130,7 @@ pub(super) fn initialize_device(
     let limits = device.limits();
     devices.push(Device::WGPU(WGPUDevice {
         device: device.clone(),
-        adapter,
+        adapter: wgpu_adapter,
         dev_info: DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![100_000; 3],
@@ -559,11 +567,16 @@ impl WGPUDevice {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
-        let source = format!(
-            "{pragma}{global_args}@compute @workgroup_size({}) fn {name}(
-  @builtin(workgroup_id) gidx: vec3<u32>,
-  @builtin(local_invocation_id) lidx: vec3<u32>\n) {{\n{source}}}\n",
+        let workgroup_size = if lws.is_empty() {
+            "1".to_string()
+        } else {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+        };
+        let source = format!(
+            "{pragma}{global_args}@compute @workgroup_size({workgroup_size}) fn {name}(
+  @builtin(workgroup_id) gidx: vec3<u32>,
+  @builtin(local_invocation_id) lidx: vec3<u32>
+) {{\n{source}}}\n",
         );
         if debug_asm {
             println!();
@@ -572,7 +585,7 @@ impl WGPUDevice {
 
         let shader_module = self.device.create_shader_module(ShaderModuleDescriptor {
             label: None,
-            source: ShaderSource::Wgsl(std::borrow::Cow::Owned(source)),
+            source: ShaderSource::Wgsl(std::borrow::Cow::Owned(source.clone())),
         });
         let id = self.programs.push(WGPUProgram {
             name,
