@@ -155,7 +155,7 @@ pub enum Event {
 #[derive(DeJson, Debug)]
 pub struct AutotuneConfig {
     #[allow(unused)]
-    /// Should the searched kernel be stored to disk?
+    /// Should the autotuned kernel be stored to disk?
     pub save_to_disk: bool,
     /// Max number of kernel launches
     pub n_launches: usize, // = 10;
@@ -192,7 +192,7 @@ impl AutotuneConfig {
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(DeJson, Debug, Default)]
 pub struct Config {
-    /// Kernel search configuration
+    /// Kernel autotune configuration
     pub autotune: AutotuneConfig,
     /// Configuration of dummy device for testing
     pub dummy: dummy::DummyConfig,

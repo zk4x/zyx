@@ -40,7 +40,7 @@ pub struct Runtime {
     pub rng: Rng,
     /// Are we in training mode?
     pub training: bool,
-    /// Search configuration
+    /// Autotune configuration
     pub autotune_config: AutotuneConfig,
     /// Debug mask
     pub debug: DebugMask,

@@ -21,21 +21,20 @@ Copy this into your config.json:
     "n_total_opts": 1000
   },
   "cuda": {
-    "device_ids": [0]
+    "device_ids": []
   },
   "hip": {
     "device_ids": []
   },
   "opencl": {
-    "platform_ids": []
+    "platform_ids": [0]
   },
   "wgpu": {
-    "enabled": true
-  },
-  "vulkan": {}
+    "enabled": false
+  }
 }
 ```
-Then put numbers starting at zero into hip, cuda and or opencl configuration ids. In the above example, zyx will utilize cuda device with id 0.
+Then put numbers starting from zero into hip and cuda device_ids, or opencl platform_ids. In the above example, zyx will utilize OpenCL platform 0 (the first OpenCL platform found).
 
 WGPU (via wgpu crate) can be disabled or enabled. Set "enabled" to false to disable, or disable the wgpu cargo feature to do the same.
 
