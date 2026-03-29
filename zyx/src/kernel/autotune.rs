@@ -130,6 +130,8 @@ impl Kernel {
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
         self.common_subexpression_elimination();
+        self.fold_accs();
+        self.delete_empty_loops();
         self.dead_code_elimination();
     }
 

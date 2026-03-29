@@ -139,6 +139,24 @@ let available_opts: [(fn(&Kernel) -> u16, fn(&mut Kernel, u16)); _] = [
 ];
 ```
 
+#### Always-On Optimizations
+
+The `run_always_on_optimizations` method applies optimizations that should always run before kernel compilation. These are defined in `src/kernel/autotune.rs`:
+
+```rust
+pub fn run_always_on_optimizations(&mut self) {
+    self.constant_folding();
+    self.move_constants_to_beginning();
+    self.loop_invariant_code_motion();
+    self.common_subexpression_elimination();
+    self.fold_accs();
+    self.delete_empty_loops();
+    self.dead_code_elimination();
+}
+```
+
+**Important**: Always run `dead_code_elimination` as the last step. This ensures backends never receive ops that are no longer used, which could cause compilation failures (e.g., missing entries in reference count maps).
+
 #### Kernel IR Operations
 
 The kernel uses an IR defined in `kernel/mod.rs` with variants like:
