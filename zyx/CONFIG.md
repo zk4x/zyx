@@ -4,17 +4,21 @@ First create folder zyx in some of your $XDG_CONFIG folders.
 Usually just create folder $HOME/.config/zyx
 Zyx will also save optimized kernels into this folder if you enable disk_cache feature.
 
-The create file device_config.json in that folder. $HOME/.config/zyx/device_config.json
+Then create file config.json in that folder: $HOME/.config/zyx/config.json
 
-Copy this into your device_config.json:
+Copy this into your config.json:
 ```json
 {
   "dummy": {
     "enabled": false
   },
-  "search": {
-    "iterations": 100,
-    "save_to_disk": true
+  "autotune": {
+    "save_to_disk": true,
+    "n_launches": 10,
+    "n_seeds": 100,
+    "n_added_per_step": 10,
+    "n_removed_per_step": 5,
+    "n_total_opts": 1000
   },
   "cuda": {
     "device_ids": [0]
@@ -25,16 +29,15 @@ Copy this into your device_config.json:
   "opencl": {
     "platform_ids": []
   },
-  "wgsl": {
+  "wgpu": {
     "enabled": true
   },
-  "vulkan": {
-  }
+  "vulkan": {}
 }
 ```
 Then put numbers starting at zero into hip, cuda and or opencl configuration ids. In the above example, zyx will utilize cuda device with id 0.
 
-WGSL currently can only be disabled or enabled and it runs only on one device. You can change use_wgsl to false in order to disable wgsl backend, or you can disable feature wgsl to do the same.
+WGPU (via wgpu crate) can be disabled or enabled. Set "enabled" to false to disable, or disable the wgpu cargo feature to do the same.
 
 Vulkan backend is not yet written, so this is only placeholder in the config. Please ignore it.
 
