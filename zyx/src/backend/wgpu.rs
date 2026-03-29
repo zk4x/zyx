@@ -129,7 +129,7 @@ pub(super) fn initialize_device(
     memory_pools.push(Pool::new(pool));
     let limits = device.limits();
     devices.push(Device::WGPU(WGPUDevice {
-        device: device.clone(),
+        device: device,
         adapter: wgpu_adapter,
         dev_info: DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
