@@ -130,7 +130,7 @@
   - [ ] tensor cores
     - [ ] tensor core ops
   - [x] merge all mul + add into mad instructions
-  - [ ] local tiling of all variables
+  - [ ] local memory tiling
     - [ ] local tiling for accumulators in large reduces
     - [ ] local tiling for caching
   - [ ] multi step reduce (with multiple accumulators)

@@ -8,7 +8,7 @@ use crate::shape::Dim;
 use crate::slab::SlabId;
 use crate::{DebugMask, Set};
 use std::hash::{Hash, Hasher};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
 impl Kernel {
@@ -141,7 +141,7 @@ impl Kernel {
     }
 
     /// Autotune for debugging, applying only a selected series of optimizations
-    pub fn autotune1(
+    pub fn autotune(
         &self,
         _buffers: &[BufferId],
         device: &mut Device,
@@ -164,7 +164,7 @@ impl Kernel {
     }
 
     /// Release mode autotune with beam like search and multithreading
-    pub fn autotune(
+    pub fn autotune1(
         &self,
         buffers: &[BufferId],
         device: &mut Device,
