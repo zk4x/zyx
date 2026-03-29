@@ -90,3 +90,17 @@ Follow the same conventions as the root AGENTS.md:
 - Backends in `src/backend/`
 - Loaded at runtime via `.so` files
 - FFI limited to one file per backend
+
+## Debug Options
+
+Set `ZYX_DEBUG` environment variable (bitmask):
+
+| Value | Flag | Description |
+|-------|------|-------------|
+| 1     | dev  | Print hardware devices and configuration |
+| 2     | perf | Print graph execution characteristics |
+| 4     | sched| Print kernels created by scheduler |
+| 8     | ir   | Print kernels in intermediate representation |
+| 16    | asm  | Print native assembly/code (OpenCL, WGSL, etc.) |
+
+Example: `ZYX_DEBUG=16 cargo test -p zyx --features wgpu relu_1`

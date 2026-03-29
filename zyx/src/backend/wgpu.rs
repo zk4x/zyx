@@ -6,8 +6,7 @@ use crate::{
     DType, Map,
     backend::{BufferId, ProgramId},
     dtype::Constant,
-    graph::{BOp, UOp},
-    kernel::{IDX_T, Kernel, Op, OpId, Scope},
+    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope, UOp},
     runtime::Pool,
     shape::Dim,
     slab::Slab,
@@ -126,7 +125,7 @@ pub(super) fn initialize_device(
         adapter,
         dev_info: DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: vec![100000; 3],
+            max_global_work_dims: vec![100_000; 3],
             max_local_threads: limits.max_compute_invocations_per_workgroup as Dim,
             max_local_work_dims: vec![
                 limits.max_compute_workgroup_size_x as Dim,
@@ -137,6 +136,7 @@ pub(super) fn initialize_device(
             local_mem_size: 64 * 1024,
             max_register_bytes: 1024,
             tensor_cores: false,
+            warp_size: 32,
         },
         memory_pool_id: (memory_pools.len() - 1).try_into().unwrap(),
         programs: Slab::new(),
@@ -360,13 +360,13 @@ impl WGPUDevice {
         let mut lws = Vec::new();
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let &Op::Index { dim, scope } = kernel.at(op_id) {
+            if let &Op::Index { len, scope, axis: _ } = kernel.at(op_id) {
                 match scope {
                     Scope::Global => {
-                        gws.push(dim);
+                        gws.push(len);
                     }
                     Scope::Local => {
-                        lws.push(dim);
+                        lws.push(len);
                     }
                     Scope::Register => {}
                 }
@@ -432,7 +432,7 @@ impl WGPUDevice {
                     dtypes.insert(op_id, dtypes[&src]);
                     writeln!(source, "{indent}let r{op_id} = p{src}[r{index}];").unwrap();
                 }
-                &Op::Store { dst, x: src, index, vlen } => {
+                &Op::Store { dst, x: src, index, vlen: _ } => {
                     writeln!(source, "{indent}p{dst}[r{}] = r{};", index, src,).unwrap();
                 }
                 &Op::Cast { x, dtype } => {
@@ -480,7 +480,7 @@ impl WGPUDevice {
                         BOp::Mod => writeln!(source, "{indent}let r{op_id} = r{x} % r{y};").unwrap(),
                         BOp::Cmplt => writeln!(source, "{indent}let r{op_id} = r{x} < r{y};").unwrap(),
                         BOp::Cmpgt => writeln!(source, "{indent}let r{op_id} = r{x} > r{y};").unwrap(),
-                        BOp::Maximum => writeln!(source, "{indent}let r{op_id} = max(r{x}, r{y});").unwrap(),
+                        BOp::Max => writeln!(source, "{indent}let r{op_id} = max(r{x}, r{y});").unwrap(),
                         BOp::Or => writeln!(source, "{indent}let r{op_id} = r{x} || r{y};").unwrap(),
                         BOp::And => writeln!(source, "{indent}let r{op_id} = r{x} && r{y};").unwrap(),
                         BOp::BitXor => writeln!(source, "{indent}let r{op_id} = r{x} ^ r{y};").unwrap(),
@@ -498,7 +498,7 @@ impl WGPUDevice {
                 }
                 Op::Vectorize { .. } => todo!(),
                 Op::Devectorize { .. } => todo!(),
-                &Op::Index { dim, scope } => {
+                &Op::Index { len, scope, axis: _ } => {
                     dtypes.insert(op_id, IDX_T);
                     match scope {
                         Scope::Global => {
@@ -506,7 +506,7 @@ impl WGPUDevice {
                                 source,
                                 "{indent}let r{op_id} = {}(gidx[{loop_id}]); // 0..={}",
                                 IDX_T.wgsl(),
-                                dim - 1
+                                len - 1
                             )
                             .unwrap();
                             n_global_ids += 1;
@@ -517,7 +517,7 @@ impl WGPUDevice {
                                 "{indent}let r{op_id} = {}(lidx[{}]); // 0..={}",
                                 IDX_T.wgsl(),
                                 loop_id - n_global_ids,
-                                dim - 1
+                                len - 1
                             )
                             .unwrap();
                         }
@@ -525,11 +525,11 @@ impl WGPUDevice {
                     }
                     loop_id += 1;
                 }
-                &Op::Loop { dim } => {
+                &Op::Loop { len } => {
                     dtypes.insert(op_id, IDX_T);
                     writeln!(
                         source,
-                        "{indent}for (var r{op_id}: {} = 0; r{op_id} < {dim}; r{op_id} += 1) {{",
+                        "{indent}for (var r{op_id}: {} = 0; r{op_id} < {len}; r{op_id} += 1) {{",
                         IDX_T.wgsl()
                     )
                     .unwrap();
