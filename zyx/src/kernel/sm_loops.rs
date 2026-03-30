@@ -173,35 +173,4 @@ impl Kernel {
         #[cfg(debug_assertions)]
         self.verify();
     }
-
-    pub fn split_global_to_local(&mut self, factor: usize) {
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Index { len, scope, axis } = self.ops[op_id].op {
-                if scope == Scope::Global && len.is_multiple_of(factor) {
-                    let local_len = factor;
-                    let global_len = len / factor;
-                    self.split_dim(
-                        op_id,
-                        vec![
-                            Op::Index {
-                                len: global_len,
-                                scope: Scope::Global,
-                                axis,
-                            },
-                            Op::Index {
-                                len: local_len,
-                                scope: Scope::Local,
-                                axis,
-                            },
-                        ],
-                    );
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        #[cfg(debug_assertions)]
-        self.verify();
-    }
 }

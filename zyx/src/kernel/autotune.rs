@@ -1,21 +1,19 @@
-#![allow(unused)]
-
 use crate::backend::{AutotuneConfig, BufferId, Device, DeviceInfo, MemoryPool, ProgramId};
 use crate::error::BackendError;
 use crate::kernel::{Kernel, Op, OpId, Scope};
 use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
-use crate::{DebugMask, Set};
+use crate::{DebugMask, Map, Set};
 use std::hash::{Hash, Hasher};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
 pub enum Optimization {
     Null,
     ReassociateCommutative,
-    UnrollLoops { factors: Vec<u16> },
-    SplitGlobalToLocal { factors: Vec<u16> },
+    UnrollLoops { factors: Vec<usize> },
+    SplitGlobalToLocal { factors: Vec<(OpId, usize)> },
 }
 
 impl Optimization {
@@ -34,17 +32,20 @@ impl Optimization {
 
     pub fn split_global_to_local(kernel: &Kernel) -> (Self, u16) {
         let mut op_id = kernel.head;
-        let mut factors: Vec<usize> = vec![32, 64, 16, 8, 4, 2];
+        let mut factors = Vec::new();
         while !op_id.is_null() {
             if let Op::Index { len, scope, .. } = kernel.ops[op_id].op {
+                let mut l_factors: Vec<usize> = vec![32, 64, 16, 8, 4, 2];
                 if scope == Scope::Global {
-                    factors.retain(|&f| len.is_multiple_of(f));
+                    l_factors.retain(|&f| len.is_multiple_of(f));
+                    for &f in &l_factors {
+                        factors.push((op_id, f));
+                    }
                 }
             }
             op_id = kernel.next_op(op_id);
         }
         let n_configs = factors.len() as u16;
-        let factors: Vec<u16> = factors.iter().map(|&f| f as u16).collect();
         (Optimization::SplitGlobalToLocal { factors }, n_configs)
     }
 
@@ -59,134 +60,34 @@ impl Optimization {
             }
             Optimization::UnrollLoops { factors } => {
                 let factor = factors[config as usize];
-                kernel.unroll_loops(factor as usize);
+                kernel.unroll_loops(factor);
             }
             Optimization::SplitGlobalToLocal { factors } => {
-                let factor = factors[config as usize];
-                kernel.split_global_to_local(factor as usize);
+                let (op_id, factor) = factors[config as usize];
+                let Op::Index { len, scope, axis } = kernel.ops[op_id].op else {
+                    unreachable!()
+                };
+                kernel.split_dim(
+                    op_id,
+                    vec![
+                        Op::Index {
+                            len: len / factor,
+                            scope: Scope::Global,
+                            axis,
+                        },
+                        Op::Index {
+                            len: factor,
+                            scope: Scope::Local,
+                            axis,
+                        },
+                    ],
+                );
             }
         }
     }
 }
 
 impl Kernel {
-    pub fn get_cost(&self, dev_info: &DeviceInfo) -> f64 {
-        // TODO add measuring bank conflicts
-        let mut n_instructions = 0;
-        let mut n_scoped_loads = [0u64, 0, 0];
-        let mut n_scoped_stores = [0u64, 0, 0];
-
-        let mut gws = vec![1; 3];
-        let mut lws = vec![1; 3];
-        let mut loop_mult = 1;
-        let mut latest_loop_lengths = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            match self.ops[op_id].op {
-                Op::Cast { .. } => {
-                    n_instructions += loop_mult;
-                }
-                Op::Unary { .. } => {
-                    n_instructions += loop_mult;
-                }
-                Op::Binary { .. } => {
-                    n_instructions += loop_mult;
-                }
-                Op::Const(_) => {}
-                Op::Define { .. } => {}
-                Op::Load { src, vlen, .. } => {
-                    n_instructions += loop_mult * 3;
-                    let Op::Define { scope, .. } = self.ops[src].op else {
-                        unreachable!()
-                    };
-                    match scope {
-                        Scope::Global => n_scoped_loads[0] += loop_mult * vlen as u64,
-                        Scope::Local => n_scoped_loads[1] += loop_mult * vlen as u64,
-                        Scope::Register => n_scoped_loads[2] += loop_mult * vlen as u64,
-                    }
-                }
-                Op::Store { dst, vlen, .. } => {
-                    n_instructions += loop_mult * 3;
-                    let Op::Define { scope, .. } = self.ops[dst].op else {
-                        unreachable!()
-                    };
-                    match scope {
-                        Scope::Global => n_scoped_stores[0] += loop_mult * vlen as u64,
-                        Scope::Local => n_scoped_stores[1] += loop_mult * vlen as u64,
-                        Scope::Register => n_scoped_stores[2] += loop_mult * vlen as u64,
-                    }
-                }
-                Op::Index { len, scope, axis } => match scope {
-                    Scope::Global => gws[axis as usize] = len,
-                    Scope::Local => lws[axis as usize] = len,
-                    Scope::Register => todo!(),
-                },
-                Op::Loop { len } => {
-                    n_instructions += loop_mult * 3;
-                    loop_mult *= len as u64;
-                    latest_loop_lengths.push(len as u64);
-                }
-                Op::EndLoop => {
-                    loop_mult /= latest_loop_lengths.pop().unwrap();
-                }
-                Op::Mad { .. } => {
-                    n_instructions += loop_mult;
-                }
-                Op::WMMA { dims, .. } => {
-                    let (m, n, k) = dims.decompose_mnk();
-                    let warp = dev_info.warp_size as u64;
-                    let cost = (m * n * k) as u64 / warp;
-                    n_instructions += loop_mult * cost;
-                }
-                Op::Vectorize { .. } => {
-                    // TODO multiply all ops that are vectorized by the vectorization factor
-                }
-                Op::Devectorize { .. } => {}
-                Op::ConstView(_) => todo!(),
-                Op::LoadView(_) => todo!(),
-                Op::StoreView { .. } => todo!(),
-                Op::Move { .. } => todo!(),
-                Op::Reduce { .. } => todo!(),
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        gws.iter().product::<Dim>() as f64
-            * lws.iter().product::<Dim>() as f64
-            * (n_instructions as f64
-                + n_scoped_loads[0] as f64 * 10.
-                + n_scoped_loads[1] as f64 * 3.
-                + n_scoped_loads[2] as f64 * 1.1
-                + n_scoped_stores[0] as f64 * 10.
-                + n_scoped_stores[1] as f64 * 3.
-                + n_scoped_stores[2] as f64 * 1.1)
-    }
-
-    pub fn get_hash(&self) -> u64 {
-        let mut hasher = crate::chasher::CHasher::default();
-        self.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    pub fn launch_with_timings(
-        &self,
-        buffers: &[BufferId],
-        device: &mut Device,
-        memory_pool: &mut MemoryPool,
-        debug: DebugMask,
-    ) -> Result<(ProgramId, u64), BackendError> {
-        let program_id = device.compile(self, debug.asm())?;
-        let begin = std::time::Instant::now();
-        let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
-        memory_pool.sync_events(vec![event])?;
-        let nanos = begin.elapsed().as_nanos() as u64;
-        Ok((program_id, nanos))
-    }
-
-    pub fn opt_no_config(&self) -> u16 {
-        1
-    }
-
     pub fn run_always_on_optimizations(&mut self) {
         self.constant_folding();
         self.move_constants_to_beginning();
@@ -233,7 +134,7 @@ impl Kernel {
         let available_opts: [fn(&Kernel) -> (Optimization, u16); _] = [
             Optimization::reassociate_commutative,
             Optimization::unroll,
-            Optimization::split_global_to_local,
+            //Optimization::split_global_to_local,
         ];
 
         let dev_info_ptr: *const DeviceInfo = device.info();
@@ -401,6 +302,119 @@ impl Kernel {
         }*/
 
         best_program
+    }
+
+    pub fn get_cost(&self, dev_info: &DeviceInfo) -> f64 {
+        // TODO add measuring bank conflicts
+        let mut n_instructions = 0;
+        let mut n_scoped_loads = [0u64, 0, 0];
+        let mut n_scoped_stores = [0u64, 0, 0];
+
+        let mut gws = vec![1; 3];
+        let mut lws = vec![1; 3];
+        let mut loop_mult = 1;
+        let mut latest_loop_lengths = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::Cast { .. } => {
+                    n_instructions += loop_mult;
+                }
+                Op::Unary { .. } => {
+                    n_instructions += loop_mult;
+                }
+                Op::Binary { .. } => {
+                    n_instructions += loop_mult;
+                }
+                Op::Const(_) => {}
+                Op::Define { .. } => {}
+                Op::Load { src, vlen, .. } => {
+                    n_instructions += loop_mult * 3;
+                    let Op::Define { scope, .. } = self.ops[src].op else {
+                        unreachable!()
+                    };
+                    match scope {
+                        Scope::Global => n_scoped_loads[0] += loop_mult * vlen as u64,
+                        Scope::Local => n_scoped_loads[1] += loop_mult * vlen as u64,
+                        Scope::Register => n_scoped_loads[2] += loop_mult * vlen as u64,
+                    }
+                }
+                Op::Store { dst, vlen, .. } => {
+                    n_instructions += loop_mult * 3;
+                    let Op::Define { scope, .. } = self.ops[dst].op else {
+                        unreachable!()
+                    };
+                    match scope {
+                        Scope::Global => n_scoped_stores[0] += loop_mult * vlen as u64,
+                        Scope::Local => n_scoped_stores[1] += loop_mult * vlen as u64,
+                        Scope::Register => n_scoped_stores[2] += loop_mult * vlen as u64,
+                    }
+                }
+                Op::Index { len, scope, axis } => match scope {
+                    Scope::Global => gws[axis as usize] = len,
+                    Scope::Local => lws[axis as usize] = len,
+                    Scope::Register => todo!(),
+                },
+                Op::Loop { len } => {
+                    n_instructions += loop_mult * 3;
+                    loop_mult *= len as u64;
+                    latest_loop_lengths.push(len as u64);
+                }
+                Op::EndLoop => {
+                    loop_mult /= latest_loop_lengths.pop().unwrap();
+                }
+                Op::Mad { .. } => {
+                    n_instructions += loop_mult;
+                }
+                Op::WMMA { dims, .. } => {
+                    let (m, n, k) = dims.decompose_mnk();
+                    let warp = dev_info.warp_size as u64;
+                    let cost = (m * n * k) as u64 / warp;
+                    n_instructions += loop_mult * cost;
+                }
+                Op::Vectorize { .. } => {
+                    // TODO multiply all ops that are vectorized by the vectorization factor
+                }
+                Op::Devectorize { .. } => {}
+                Op::ConstView(_) => todo!(),
+                Op::LoadView(_) => todo!(),
+                Op::StoreView { .. } => todo!(),
+                Op::Move { .. } => todo!(),
+                Op::Reduce { .. } => todo!(),
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        gws.iter().product::<Dim>() as f64
+            * lws.iter().product::<Dim>() as f64
+            * (n_instructions as f64
+                + n_scoped_loads[0] as f64 * 10.
+                + n_scoped_loads[1] as f64 * 3.
+                + n_scoped_loads[2] as f64 * 1.1
+                + n_scoped_stores[0] as f64 * 10.
+                + n_scoped_stores[1] as f64 * 3.
+                + n_scoped_stores[2] as f64 * 1.1)
+    }
+
+    pub fn get_hash(&self) -> u64 {
+        let mut hasher = crate::chasher::CHasher::default();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub fn launch_with_timings(
+        &self,
+        buffers: &[BufferId],
+        device: &mut Device,
+        memory_pool: &mut MemoryPool,
+        debug: DebugMask,
+    ) -> Result<(ProgramId, u64), BackendError> {
+        let program_id = device.compile(self, debug.asm())?;
+        let begin = std::time::Instant::now();
+        let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
+        memory_pool.sync_events(vec![event])?;
+        let nanos = begin.elapsed().as_nanos() as u64;
+        Ok((program_id, nanos))
     }
 }
 
