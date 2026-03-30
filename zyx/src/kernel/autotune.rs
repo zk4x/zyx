@@ -21,7 +21,7 @@ impl Optimization {
         (Optimization::Null, 0)
     }
 
-    fn unroll_config(kernel: &Kernel) -> (Self, u16) {
+    fn apply(kernel: &Kernel) -> (Self, u16) {
         todo!()
     }
 }
@@ -156,7 +156,7 @@ impl Kernel {
     }
 
     /// Autotune for debugging, applying only a selected series of optimizations
-    pub fn autotune(
+    pub fn autotune1(
         &self,
         _buffers: &[BufferId],
         device: &mut Device,
@@ -179,7 +179,7 @@ impl Kernel {
     }
 
     /// Release mode autotune with beam like search and multithreading
-    pub fn autotune1(
+    pub fn autotune(
         &self,
         buffers: &[BufferId],
         device: &mut Device,
@@ -187,9 +187,9 @@ impl Kernel {
         config: &AutotuneConfig,
         debug: DebugMask,
     ) -> ProgramId {
-        let available_opts: [(fn(&Kernel) -> (Optimization, u16), fn(&Optimization, u16, &mut Kernel)); _] = [
-            (Optimization::no_config, Optimization::reassociate_commutative),
-            (Optimization::unroll_config, Optimization::unroll),
+        let available_opts: [fn(&Kernel) -> (Optimization, u16); _] = [
+            Optimization::reassociate_commutative,
+            Optimization::unroll,
         ];
 
         let dev_info_ptr: *const DeviceInfo = device.info();
@@ -212,13 +212,12 @@ impl Kernel {
         let mut kernel = self.clone();
         kernel.run_always_on_optimizations();
 
-        let avail_configs = available_opts.map(|(config_fn, _)| config_fn(&kernel));
+        let avail_configs = available_opts.map(|config_fn| config_fn(&kernel));
         let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
         let mult = n_seeds.min(total_configs);
-        let mut opt_id = 0;
-        for (_, optimization_fn) in &available_opts {
+        for opt_id in 0..available_opts.len() {
             let n_configs_to_try =
-                ((avail_configs[opt_id as usize].1 as usize * mult) as f32 / total_configs as f32).ceil() as u16;
+                ((avail_configs[opt_id].1 as usize * mult) as f32 / total_configs as f32).ceil() as u16;
             let mut config_id = 0;
             while config_id < n_configs_to_try {
                 let mut opt_seq = OptSeq {
@@ -250,8 +249,6 @@ impl Kernel {
                 .map(|thread_id| {
                     let base_kernel = self.clone();
 
-                    // SAFETY: we promise items/visited are read-only while threads run
-                    // rust is showing it's amazingness again
                     let items_ref: &Vec<OptSeq> = unsafe { &*items_ptr };
                     let visited_ref: &Set<_> = unsafe { &*visited_ptr };
 
