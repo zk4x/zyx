@@ -1,5 +1,4 @@
 import time
-from turtle import window_height
 
 import torch
 from safetensors.torch import load_file

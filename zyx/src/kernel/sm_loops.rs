@@ -1,13 +1,12 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-#![allow(unused)]
-
 use std::collections::BTreeMap;
 
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
+    slab::SlabId,
 };
 
 impl Kernel {
@@ -74,7 +73,8 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn merge_loops(&mut self, loops: &[OpId]) {
+    /// Merges two or more indices together
+    pub fn merge_indices(&mut self, loops: &[OpId]) {
         //println!("Merging loops {loops:?}");
         let mut acc = 1;
         // BTreeMap is ordered
@@ -110,6 +110,33 @@ impl Kernel {
 
         #[cfg(debug_assertions)]
         self.verify();
+    }
+
+    pub fn opt_split_global_to_local_config(&self) -> OptConfig {
+        let mut op_id = OpId::NULL;
+        let mut nth_gidx = 0;
+        let mut n_configs = 1;
+        while !op_id.is_null() {
+            if let Op::Index { len, scope, axis } = self.ops[op_id].op {
+                if scope == Scope::Global {
+                    nth_gidx += 1;
+                    let mut n = 1;
+                    for i in 0..len {
+                        if len.is_multiple_of(i) {
+                            n += 1;
+                        }
+                    }
+                    n_configs *= n;
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        n_configs
+    }
+
+    pub fn opt_split_global_to_local(&mut self, config: OptConfig) {
+        let unroll_dim = [2, 4, 8, 16][config as usize];
+        self.unroll_loops(unroll_dim);
     }
 
     /// Splits dim (index or loop) into multiple indices or loops

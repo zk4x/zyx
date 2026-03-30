@@ -199,7 +199,29 @@ impl<'a> Kernelizer<'a> {
 
     fn add_expand_op(&mut self, nid: TensorId, x: TensorId) -> Result<(), ZyxError> {
         // TODO instead of store add expand op that inserts loop in IR
-        let (kid, op_id) = self.duplicate_or_store(x)?;
+        let (mut kid, mut op_id) = self.visited[&x];
+
+        if self.kernels[kid].contains_stores() | self.kernels[kid].is_reduce() {
+            self.add_store(x)?;
+            (kid, op_id) = self.create_load_kernel(x);
+            if self.kernels[kid].outputs.len() > 1 {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
+
+        if self.kernels[kid].outputs.len() > 1 {
+            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
+            if reduce_dims_big {
+                self.add_store(x)?;
+                (kid, op_id) = self.create_load_kernel(x);
+                if self.kernels[kid].outputs.len() > 1 {
+                    kid = self.duplicate_kernel(x, kid);
+                }
+            } else {
+                kid = self.duplicate_kernel(x, kid);
+            }
+        }
+
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
@@ -626,7 +648,7 @@ impl<'a> Kernelizer<'a> {
         if global_indices.len() > 3 {
             let n = global_indices.len() - 2;
             let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
-            kernel.merge_loops(&loops);
+            kernel.merge_indices(&loops);
         }
         kernel.reset_indices();
 

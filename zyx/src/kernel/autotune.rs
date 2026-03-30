@@ -11,6 +11,21 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
+pub enum Optimization {
+    Null,
+    UnrollLoops {},
+}
+
+impl Optimization {
+    fn no_config(kernel: &Kernel) -> (Self, u16) {
+        (Optimization::Null, 0)
+    }
+
+    fn unroll_config(kernel: &Kernel) -> (Self, u16) {
+        todo!()
+    }
+}
+
 impl Kernel {
     pub fn get_cost(&self, dev_info: &DeviceInfo) -> f64 {
         // TODO add measuring bank conflicts
@@ -155,7 +170,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
-        kernel.reassociate_commutative(0);
+        kernel.opt_reassociate_commutative(0);
         kernel.opt_unroll(0); // unroll with dim=2
 
         kernel.run_always_on_optimizations();
@@ -172,9 +187,9 @@ impl Kernel {
         config: &AutotuneConfig,
         debug: DebugMask,
     ) -> ProgramId {
-        let available_opts: [(fn(&Kernel) -> u16, fn(&mut Kernel, u16)); _] = [
-            (Self::opt_no_config, Self::reassociate_commutative),
-            (Self::opt_unroll_config, Self::opt_unroll),
+        let available_opts: [(fn(&Kernel) -> (Optimization, u16), fn(&Optimization, u16, &mut Kernel)); _] = [
+            (Optimization::no_config, Optimization::reassociate_commutative),
+            (Optimization::unroll_config, Optimization::unroll),
         ];
 
         let dev_info_ptr: *const DeviceInfo = device.info();
@@ -197,21 +212,21 @@ impl Kernel {
         let mut kernel = self.clone();
         kernel.run_always_on_optimizations();
 
-        let avail_configs = available_opts.map(|(config_fn, _)| config_fn(&kernel) as usize);
-        let total_configs = avail_configs.iter().sum::<usize>();
+        let avail_configs = available_opts.map(|(config_fn, _)| config_fn(&kernel));
+        let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
         let mult = n_seeds.min(total_configs);
         let mut opt_id = 0;
         for (_, optimization_fn) in &available_opts {
             let n_configs_to_try =
-                ((avail_configs[opt_id as usize] * mult) as f32 / total_configs as f32).ceil() as u16;
+                ((avail_configs[opt_id as usize].1 as usize * mult) as f32 / total_configs as f32).ceil() as u16;
             let mut config_id = 0;
             while config_id < n_configs_to_try {
-                let mut opt_seq = Optimization {
+                let mut opt_seq = OptSeq {
                     opts: vec![(opt_id, config_id)],
                     cost: 0,
                 };
                 let mut new_kernel = kernel.clone();
-                optimization_fn(&mut new_kernel, config_id);
+                optimization_fn(&avail_configs[opt_id as usize].0, config_id, &mut new_kernel);
                 new_kernel.run_always_on_optimizations();
                 let hash = kernel.get_hash();
                 if visited.contains(&hash) {
@@ -228,7 +243,7 @@ impl Kernel {
 
         let mut rng = Rng::seed_from_systime();
         while items.len() < n_total_opts && items.len() > 0 {
-            let items_ptr: *const Vec<Optimization> = &items;
+            let items_ptr: *const Vec<OptSeq> = &items;
             let visited_ptr: *const Set<u64> = &visited;
 
             let jobs: Vec<_> = (0..n_threads)
@@ -237,7 +252,7 @@ impl Kernel {
 
                     // SAFETY: we promise items/visited are read-only while threads run
                     // rust is showing it's amazingness again
-                    let items_ref: &Vec<Optimization> = unsafe { &*items_ptr };
+                    let items_ref: &Vec<OptSeq> = unsafe { &*items_ptr };
                     let visited_ref: &Set<_> = unsafe { &*visited_ptr };
 
                     move || {
@@ -256,11 +271,13 @@ impl Kernel {
                         let opt_seq = sample_best(items_ref, &mut rng);
 
                         for &(opt_id, opt_cfg) in &opt_seq.opts {
-                            available_opts[opt_id as usize].1(&mut kernel, opt_cfg);
+                            let (config_fn_1, opt_fn) = available_opts[opt_id as usize];
+                            let opt = config_fn_1(&kernel);
+                            opt_fn(&opt.0, opt.1, &mut kernel);
                         }
 
-                        let avail_configs = available_opts.map(|(config_fn, _)| config_fn(&kernel) as usize);
-                        let total_configs = avail_configs.iter().sum::<usize>();
+                        let avail_configs = available_opts.map(|(config_fn, _)| config_fn(&kernel));
+                        let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
                         let mult = n_added_per_step.min(total_configs);
 
                         for (opt_id, (_, optimization_fn)) in available_opts.iter().enumerate() {
@@ -270,7 +287,7 @@ impl Kernel {
                             for config_id in 0..n_configs_to_try {
                                 let mut opts = opt_seq.opts.clone();
                                 opts.push((opt_id as u16, config_id));
-                                let mut new_seq = Optimization { opts, cost: 0 };
+                                let mut new_seq = OptSeq { opts, cost: 0 };
 
                                 let mut new_kernel = kernel.clone();
                                 optimization_fn(&mut new_kernel, config_id);
@@ -347,12 +364,12 @@ impl Kernel {
 }
 
 #[derive(Debug)]
-struct Optimization {
+struct OptSeq {
     opts: Vec<(u16, u16)>,
     cost: u64,
 }
 
-fn remove_worst(items: &mut Vec<Optimization>, mut n: usize, rng: &mut Rng) {
+fn remove_worst(items: &mut Vec<OptSeq>, mut n: usize, rng: &mut Rng) {
     if items.len() < 10 * n {
         return;
     }
@@ -376,7 +393,7 @@ fn remove_worst(items: &mut Vec<Optimization>, mut n: usize, rng: &mut Rng) {
     }
 }
 
-fn sample_best<'a>(items: &'a [Optimization], rng: &mut Rng) -> &'a Optimization {
+fn sample_best<'a>(items: &'a [OptSeq], rng: &mut Rng) -> &'a OptSeq {
     const K: usize = 16;
     let len = items.len();
     let mut best_idx = rng.range::<u64>(0..len as u64) as usize;
