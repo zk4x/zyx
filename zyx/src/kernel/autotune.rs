@@ -8,7 +8,7 @@ use crate::shape::Dim;
 use crate::slab::SlabId;
 use crate::{DebugMask, Set};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 pub enum Optimization {
@@ -26,33 +26,31 @@ impl Optimization {
     pub fn unroll(_kernel: &Kernel) -> (Self, u16) {
         (
             Optimization::UnrollLoops {
-                factors: vec![2, 4, 8, 16],
+                factors: vec![8, 4, 16, 2],
             },
             4,
         )
     }
 
     pub fn split_global_to_local(kernel: &Kernel) -> (Self, u16) {
-        let mut op_id = OpId::NULL;
-        let mut n_configs: u16 = 1;
+        let mut op_id = kernel.head;
+        let mut factors: Vec<usize> = vec![32, 64, 16, 8, 4, 2];
         while !op_id.is_null() {
             if let Op::Index { len, scope, .. } = kernel.ops[op_id].op {
                 if scope == Scope::Global {
-                    let mut n: u16 = 1;
-                    for i in 0..len {
-                        if len.is_multiple_of(i) {
-                            n += 1;
-                        }
-                    }
-                    n_configs *= n;
+                    factors.retain(|&f| len.is_multiple_of(f));
                 }
             }
             op_id = kernel.next_op(op_id);
         }
-        let factors: Vec<u16> = (0..n_configs).map(|i| [2, 4, 8, 16][i as usize]).collect();
+        let n_configs = factors.len() as u16;
+        let factors: Vec<u16> = factors.iter().map(|&f| f as u16).collect();
         (Optimization::SplitGlobalToLocal { factors }, n_configs)
     }
 
+    /// Applies the optimization with the given config ID.
+    /// Config IDs are ordered such that lower IDs use hardware-aligned factors
+    /// (e.g., warp size 32 for CUDA, wavefront size 64 for AMD) which are likely to perform better.
     pub fn apply(&self, kernel: &mut Kernel, config: u16) {
         match self {
             Optimization::Null => {}
@@ -65,7 +63,7 @@ impl Optimization {
             }
             Optimization::SplitGlobalToLocal { factors } => {
                 let factor = factors[config as usize];
-                kernel.unroll_loops(factor as usize);
+                kernel.split_global_to_local(factor as usize);
             }
         }
     }
@@ -235,7 +233,7 @@ impl Kernel {
         let available_opts: [fn(&Kernel) -> (Optimization, u16); _] = [
             Optimization::reassociate_commutative,
             Optimization::unroll,
-            //Optimization::split_global_to_local,
+            Optimization::split_global_to_local,
         ];
 
         let dev_info_ptr: *const DeviceInfo = device.info();
