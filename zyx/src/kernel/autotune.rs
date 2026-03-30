@@ -2,7 +2,7 @@
 
 use crate::backend::{AutotuneConfig, BufferId, Device, DeviceInfo, MemoryPool, ProgramId};
 use crate::error::BackendError;
-use crate::kernel::{Kernel, Op, Scope};
+use crate::kernel::{Kernel, Op, OpId, Scope};
 use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
@@ -13,16 +13,61 @@ use std::{thread, u64};
 
 pub enum Optimization {
     Null,
-    UnrollLoops {},
+    ReassociateCommutative,
+    UnrollLoops { factors: Vec<u16> },
+    SplitGlobalToLocal { factors: Vec<u16> },
 }
 
 impl Optimization {
-    fn no_config(kernel: &Kernel) -> (Self, u16) {
-        (Optimization::Null, 0)
+    pub fn reassociate_commutative(_kernel: &Kernel) -> (Self, u16) {
+        (Optimization::ReassociateCommutative, 1)
     }
 
-    fn apply(kernel: &Kernel) -> (Self, u16) {
-        todo!()
+    pub fn unroll(_kernel: &Kernel) -> (Self, u16) {
+        (
+            Optimization::UnrollLoops {
+                factors: vec![2, 4, 8, 16],
+            },
+            4,
+        )
+    }
+
+    pub fn split_global_to_local(kernel: &Kernel) -> (Self, u16) {
+        let mut op_id = OpId::NULL;
+        let mut n_configs: u16 = 1;
+        while !op_id.is_null() {
+            if let Op::Index { len, scope, .. } = kernel.ops[op_id].op {
+                if scope == Scope::Global {
+                    let mut n: u16 = 1;
+                    for i in 0..len {
+                        if len.is_multiple_of(i) {
+                            n += 1;
+                        }
+                    }
+                    n_configs *= n;
+                }
+            }
+            op_id = kernel.next_op(op_id);
+        }
+        let factors: Vec<u16> = (0..n_configs).map(|i| [2, 4, 8, 16][i as usize]).collect();
+        (Optimization::SplitGlobalToLocal { factors }, n_configs)
+    }
+
+    pub fn apply(&self, kernel: &mut Kernel, config: u16) {
+        match self {
+            Optimization::Null => {}
+            Optimization::ReassociateCommutative => {
+                kernel.reassociate_commutative(config);
+            }
+            Optimization::UnrollLoops { factors } => {
+                let factor = factors[config as usize];
+                kernel.unroll_loops(factor as usize);
+            }
+            Optimization::SplitGlobalToLocal { factors } => {
+                let factor = factors[config as usize];
+                kernel.unroll_loops(factor as usize);
+            }
+        }
     }
 }
 
@@ -170,8 +215,8 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
-        kernel.opt_reassociate_commutative(0);
-        kernel.opt_unroll(0); // unroll with dim=2
+        kernel.reassociate_commutative(0);
+        kernel.unroll_loops(2); // unroll with dim=2
 
         kernel.run_always_on_optimizations();
 
@@ -190,6 +235,7 @@ impl Kernel {
         let available_opts: [fn(&Kernel) -> (Optimization, u16); _] = [
             Optimization::reassociate_commutative,
             Optimization::unroll,
+            //Optimization::split_global_to_local,
         ];
 
         let dev_info_ptr: *const DeviceInfo = device.info();
@@ -221,11 +267,11 @@ impl Kernel {
             let mut config_id = 0;
             while config_id < n_configs_to_try {
                 let mut opt_seq = OptSeq {
-                    opts: vec![(opt_id, config_id)],
+                    opts: vec![(opt_id as u16, config_id)],
                     cost: 0,
                 };
                 let mut new_kernel = kernel.clone();
-                optimization_fn(&avail_configs[opt_id as usize].0, config_id, &mut new_kernel);
+                avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
                 new_kernel.run_always_on_optimizations();
                 let hash = kernel.get_hash();
                 if visited.contains(&hash) {
@@ -237,7 +283,6 @@ impl Kernel {
                 items.push(opt_seq);
                 config_id += 1;
             }
-            opt_id += 1;
         }
 
         let mut rng = Rng::seed_from_systime();
@@ -268,18 +313,18 @@ impl Kernel {
                         let opt_seq = sample_best(items_ref, &mut rng);
 
                         for &(opt_id, opt_cfg) in &opt_seq.opts {
-                            let (config_fn_1, opt_fn) = available_opts[opt_id as usize];
-                            let opt = config_fn_1(&kernel);
-                            opt_fn(&opt.0, opt.1, &mut kernel);
+                            let (opt, _) = available_opts[opt_id as usize](&kernel);
+                            opt.apply(&mut kernel, opt_cfg);
                         }
 
-                        let avail_configs = available_opts.map(|(config_fn, _)| config_fn(&kernel));
+                        let avail_configs = available_opts.map(|config_fn| config_fn(&kernel));
                         let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
                         let mult = n_added_per_step.min(total_configs);
 
-                        for (opt_id, (_, optimization_fn)) in available_opts.iter().enumerate() {
-                            let av_configs = avail_configs[opt_id];
-                            let n_configs_to_try = ((av_configs * mult) as f32 / total_configs as f32).ceil() as u16;
+                        for (opt_id, _config_fn) in available_opts.iter().enumerate() {
+                            let av_configs = &avail_configs[opt_id];
+                            let n_configs_to_try =
+                                ((av_configs.1 as usize * mult) as f32 / total_configs as f32).ceil() as u16;
 
                             for config_id in 0..n_configs_to_try {
                                 let mut opts = opt_seq.opts.clone();
@@ -287,7 +332,7 @@ impl Kernel {
                                 let mut new_seq = OptSeq { opts, cost: 0 };
 
                                 let mut new_kernel = kernel.clone();
-                                optimization_fn(&mut new_kernel, config_id);
+                                avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
                                 new_kernel.run_always_on_optimizations();
                                 let hash = new_kernel.get_hash();
                                 if visited_ref.contains(&hash) || local_visited.contains(&hash) {
@@ -330,7 +375,8 @@ impl Kernel {
             let mut kernel = kernel.clone();
 
             for &(opt_id, opt_cfg) in &opt_seq.opts {
-                available_opts[opt_id as usize].1(&mut kernel, opt_cfg);
+                let (opt, _) = available_opts[opt_id as usize](&kernel);
+                opt.apply(&mut kernel, opt_cfg);
             }
             kernel.run_always_on_optimizations();
 
