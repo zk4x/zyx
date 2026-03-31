@@ -49,30 +49,6 @@ impl Kernel {
         indices
     }
 
-    pub fn reset_indices(&mut self) {
-        let mut indices = BTreeMap::new();
-        indices.insert(Scope::Global, BTreeMap::new());
-        indices.insert(Scope::Local, BTreeMap::new());
-        for (op_id, op_node) in self.ops.iter() {
-            if let Op::Index { scope, axis, .. } = op_node.op {
-                indices.get_mut(&scope).unwrap().insert(axis, op_id);
-            }
-        }
-        for (_, scoped_indices) in indices {
-            let mut ax = 0;
-            for (_, idx_id) in scoped_indices {
-                let Op::Index { axis, .. } = &mut self.ops[idx_id].op else {
-                    unreachable!()
-                };
-                *axis = ax;
-                ax += 1;
-            }
-        }
-
-        #[cfg(debug_assertions)]
-        self.verify();
-    }
-
     /// Merges two or more indices together
     pub fn merge_indices(&mut self, loops: &[OpId]) {
         //println!("Merging loops {loops:?}");

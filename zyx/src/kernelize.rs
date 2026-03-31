@@ -4,19 +4,19 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Device},
     cache::Cache,
     dtype::Constant,
     graph::{Graph, Node},
-    kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, UOp},
-    runtime::{Pool, Runtime, deallocate_tensors},
+    kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
+    runtime::{deallocate_tensors, Pool, Runtime},
     schedule::schedule,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
+    DType, DebugMask, Map, Set, ZyxError,
 };
-use std::hash::BuildHasherDefault;
+use std::{collections::BTreeMap, hash::BuildHasherDefault};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KMKernelId(u32);
@@ -650,7 +650,29 @@ impl<'a> Kernelizer<'a> {
             let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
             kernel.merge_indices(&loops);
         }
-        kernel.reset_indices();
+        {
+            let mut indices = BTreeMap::new();
+            indices.insert(Scope::Global, BTreeMap::new());
+            indices.insert(Scope::Local, BTreeMap::new());
+            for (op_id, op_node) in kernel.ops.iter() {
+                if let Op::Index { scope, axis, .. } = op_node.op {
+                    indices.get_mut(&scope).unwrap().insert(axis, op_id);
+                }
+            }
+            for (_, scoped_indices) in indices {
+                let mut ax = 0;
+                for (_, idx_id) in scoped_indices {
+                    let Op::Index { axis, .. } = &mut kernel.ops[idx_id].op else {
+                        unreachable!()
+                    };
+                    *axis = ax;
+                    ax += 1;
+                }
+            }
+
+            #[cfg(debug_assertions)]
+            kernel.verify();
+        }
 
         let program_id = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, self.debug);
         self.cache.programs.insert((kernel_id, dev_id), program_id);
