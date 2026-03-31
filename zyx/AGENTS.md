@@ -22,6 +22,8 @@ cargo test -p zyx --test 1_unary  # test file
 cargo test -p zyx -- --nocapture  # with output
 ```
 
+**Note**: This is a workspace with multiple crates. Always run commands from inside this crate subdirectory or use `-p zyx` flag from the workspace root.
+
 ## Module Structure
 
 ```

@@ -359,6 +359,7 @@ impl Kernel {
         }
     }
 
+    #[allow(unused)]
     pub fn debug_colorless(&self) {
         let remap_ids = false;
         //println!("Kernel shape {:?}", self.shape);

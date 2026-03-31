@@ -13,6 +13,8 @@ pub enum Optimization {
     ReassociateCommutative,
     UnrollLoops { factors: Vec<usize> },
     SplitGlobalToLocal { factors: Vec<(OpId, usize)> },
+    FuseMad,
+    UnrollConstantLoops,
 }
 
 impl Optimization {
@@ -55,6 +57,14 @@ impl Optimization {
         (Optimization::SplitGlobalToLocal { factors }, n_configs)
     }
 
+    pub fn fuse_mad(_kernel: &Kernel) -> (Self, u16) {
+        (Optimization::FuseMad, 1)
+    }
+
+    pub fn unroll_constant_loops(_kernel: &Kernel) -> (Self, u16) {
+        (Optimization::UnrollConstantLoops, 1)
+    }
+
     /// Applies the optimization with the given config ID.
     /// Config IDs are ordered such that lower IDs use hardware-aligned factors
     /// (e.g., warp size 32 for CUDA, wavefront size 64 for AMD) which are likely to perform better.
@@ -88,6 +98,12 @@ impl Optimization {
                         },
                     ],
                 );
+            }
+            Optimization::FuseMad => {
+                kernel.fuse_mad();
+            }
+            Optimization::UnrollConstantLoops => {
+                kernel.unroll_constant_loops();
             }
         }
     }
@@ -141,6 +157,8 @@ impl Kernel {
             Optimization::reassociate_commutative,
             Optimization::unroll,
             Optimization::split_global_to_local,
+            Optimization::fuse_mad,
+            Optimization::unroll_constant_loops,
         ];
 
         let dev_info_ptr: *const DeviceInfo = device.info();
