@@ -106,10 +106,42 @@ fn iter1() -> Result<(), ZyxError> {
 
 #[test]
 fn b_sftmx1() -> Result<(), ZyxError> {
+    use zyx::DType;
     use zyx::Module;
-    let x = Tensor::rand([2048, 320], DType::F32)?;
+    use zyx::Tensor;
+
+    let shape = [2048, 320];
+
+    let x = Tensor::rand(shape, DType::F32)?;
     let y = x.softmax([-1])?;
-    y.realize()?;
+    let y_host: Vec<f32> = y.try_into()?;
+
+    let x_host: Vec<f32> = x.try_into()?;
+    let mut y_ref = vec![0.0f32; x_host.len()];
+
+    for row in 0..shape[0] {
+        let start = row * shape[1];
+        let end = start + shape[1];
+        let row_slice = &x_host[start..end];
+
+        let max = row_slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+        let mut sum = 0.0;
+        for i in 0..shape[1] {
+            let e = (row_slice[i] - max).exp();
+            y_ref[start + i] = e;
+            sum += e;
+        }
+
+        for i in 0..shape[1] {
+            y_ref[start + i] /= sum;
+        }
+    }
+
+    for (a, b) in y_host.iter().zip(y_ref.iter()) {
+        assert!(a.is_equal(*b), "mismatch: {a} vs {b}");
+    }
+
     Ok(())
 }
 
