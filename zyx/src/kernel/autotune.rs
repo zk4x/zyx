@@ -5,6 +5,7 @@ use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
@@ -33,13 +34,20 @@ impl Optimization {
     pub fn split_global_to_local(kernel: &Kernel) -> (Self, u16) {
         let mut op_id = kernel.head;
         let mut factors = Vec::new();
+        let mut seen_axes = Map::default();
         while !op_id.is_null() {
-            if let Op::Index { len, scope, .. } = kernel.ops[op_id].op {
+            if let Op::Index { len, scope, axis } = kernel.ops[op_id].op {
                 let mut l_factors: Vec<usize> = vec![32, 64, 16, 8, 4, 2];
                 if scope == Scope::Global {
                     l_factors.retain(|&f| len.is_multiple_of(f));
                     for &f in &l_factors {
                         factors.push((op_id, f));
+                    }
+                    seen_axes.insert(axis, op_id);
+                }
+                if scope == Scope::Local {
+                    if let Some(global_id) = seen_axes.get(&axis) {
+                        factors.retain(|(op_id, _)| global_id != op_id);
                     }
                 }
             }
@@ -134,7 +142,7 @@ impl Kernel {
         let available_opts: [fn(&Kernel) -> (Optimization, u16); _] = [
             Optimization::reassociate_commutative,
             Optimization::unroll,
-            //Optimization::split_global_to_local,
+            Optimization::split_global_to_local,
         ];
 
         let dev_info_ptr: *const DeviceInfo = device.info();
@@ -172,7 +180,7 @@ impl Kernel {
                 let mut new_kernel = kernel.clone();
                 avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
                 new_kernel.run_always_on_optimizations();
-                let hash = kernel.get_hash();
+                let hash = new_kernel.get_hash();
                 if visited.contains(&hash) {
                     config_id += 1;
                     continue;
@@ -184,7 +192,8 @@ impl Kernel {
             }
         }
 
-        let mut rng = Rng::seed_from_systime();
+        //let mut rng = Rng::seed_from_systime();
+        let mut rng = Rng::seed_from_u64(3498203498);
         while items.len() < n_total_opts && items.len() > 0 {
             let items_ptr: *const Vec<OptSeq> = &items;
             let visited_ptr: *const Set<u64> = &visited;
@@ -297,9 +306,7 @@ impl Kernel {
             i -= 1;
         }
 
-        /*if debug.ir() {
-            kernel.debug();
-        }*/
+        // println!("DEBUG: Returning best_program={:?}, best_time={}", best_program, best_time);
 
         best_program
     }
