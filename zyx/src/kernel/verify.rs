@@ -19,6 +19,8 @@ impl Kernel {
             }
         };
 
+        let mut defines = Map::default();
+
         let mut op_id = self.head;
         let mut prev: OpId;
         let mut dtypes: Map<OpId, DType> = Map::default();
@@ -35,6 +37,11 @@ impl Kernel {
                     dtypes.insert(op_id, dtypes[&src]);
                 }
                 Op::Store { dst, x, index, vlen: _ } => {
+                    if !defines.contains_key(&dst) {
+                        println!("store={op_id} is trying to store to undefined variable");
+                        self.debug();
+                        panic!();
+                    }
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
                     check(op_id, index, &stack);
@@ -110,10 +117,16 @@ impl Kernel {
                 Op::Const(v) => {
                     dtypes.insert(op_id, v.dtype());
                 }
-                Op::Define { dtype, .. } => {
+                Op::Define { dtype, scope, ro, len } => {
+                    defines.insert(op_id, (scope, ro, len));
                     dtypes.insert(op_id, dtype);
                 }
                 Op::Load { src, index, .. } => {
+                    if !defines.contains_key(&src) {
+                        println!("load={op_id} is trying to load from undefined variable");
+                        self.debug();
+                        panic!();
+                    }
                     check(op_id, src, &stack);
                     check(op_id, index, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
