@@ -148,7 +148,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
-        // kernel.optimize_warp_reduce(); // Disabled: requires proper warp-level sync
+        kernel.optimize_warp_reduce();
 
         println!();
         kernel.debug_colorless();

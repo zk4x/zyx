@@ -107,7 +107,6 @@ fn iter1() -> Result<(), ZyxError> {
 #[test]
 fn b_sftmx1() -> Result<(), ZyxError> {
     use zyx::DType;
-    use zyx::Module;
     use zyx::Tensor;
 
     let shape = [2048, 320];
