@@ -1454,7 +1454,10 @@ impl CUDADevice {
                 Op::Loop { .. } => {
                     dtypes.insert(op_id, (DType::U32, 1));
                 }
-                Op::EndLoop => {}
+                &Op::If { condition } => {
+                    *rcs.entry(condition).or_insert(0) += 1;
+                }
+                Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {}
             }
             op_id = kernel.next_op(op_id);
         }
@@ -1695,6 +1698,21 @@ impl CUDADevice {
                     _ = writeln!(source, "{indent}}}");
                     loop_id -= 1;
                 }
+                &Op::If { condition } => {
+                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    _ = writeln!(source, "{indent}if ({condition}) {{");
+                    indent += "  ";
+                }
+                Op::EndIf => {
+                    indent.pop();
+                    indent.pop();
+                    _ = writeln!(source, "{indent}}}");
+                }
+                Op::Barrier { scope } => match scope {
+                    Scope::Global => _ = writeln!(source, "{indent}__threadfence();"),
+                    Scope::Local => _ = writeln!(source, "{indent}__syncthreads();;"),
+                    Scope::Register => unreachable!(),
+                },
             }
             op_id = kernel.next_op(op_id);
         }

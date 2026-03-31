@@ -835,7 +835,10 @@ impl OpenCLDevice {
                 Op::Loop { .. } => {
                     dtypes.insert(op_id, (DType::U32, 1));
                 }
-                Op::EndLoop => {}
+                &Op::If { condition } => {
+                    *rcs.entry(condition).or_insert(0) += 1;
+                }
+                Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {}
             }
             op_id = kernel.next_op(op_id);
         }
@@ -1036,6 +1039,21 @@ impl OpenCLDevice {
                     _ = writeln!(source, "{indent}}}");
                     loop_id -= 1;
                 }
+                &Op::If { condition } => {
+                    let condition = get_var(condition, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    _ = writeln!(source, "{indent}if ({condition}) {{");
+                    indent += "  ";
+                }
+                Op::EndIf => {
+                    indent.pop();
+                    indent.pop();
+                    _ = writeln!(source, "{indent}}}");
+                }
+                Op::Barrier { scope } => match scope {
+                    Scope::Global => _ = writeln!(source, "{indent}barrier(CLK_GLOBAL_MEM_FENCE);"),
+                    Scope::Local => _ = writeln!(source, "{indent}barrier(CLK_LOCAL_MEM_FENCE);"),
+                    Scope::Register => unreachable!(),
+                },
             }
             op_id = kernel.next_op(op_id);
         }

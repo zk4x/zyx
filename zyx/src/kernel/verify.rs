@@ -148,10 +148,22 @@ impl Kernel {
                     }
                     stack.pop();
                 }
+                Op::If { condition } => {
+                    if dtypes[&condition] != DType::Bool {
+                        println!("If condition={condition} must be a boolean");
+                        self.debug();
+                        panic!();
+                    }
+                    stack.push(Set::default());
+                }
+                Op::EndIf => {
+                    stack.pop();
+                }
                 Op::Move { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
+                Op::Barrier { .. } => {}
             }
             stack.last_mut().unwrap().insert(op_id);
             prev = op_id;

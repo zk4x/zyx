@@ -24,6 +24,7 @@ mod unfold;
 mod unroll_loops;
 mod vectorize;
 mod verify;
+mod warp_reduce;
 //mod emulate;
 
 // TODO later make this dynamic u32 or u64 depending on max range
@@ -191,6 +192,13 @@ pub enum Op {
         vec: OpId,
         idx: usize,
     }, // select a single value from a vector
+    Barrier {
+        scope: Scope,
+    },
+    If {
+        condition: OpId, // must be boolean variable
+    },
+    EndIf,
 
     // ops that exist only in kernelizer, basically they can be eventually removed.
     // TODO Get rid of the view, use whatever ops that are needed directly
@@ -237,6 +245,9 @@ impl Op {
             Op::Vectorize { ops } => ops.clone(),
             &Op::Devectorize { vec, .. } => vec![vec],
             &Op::WMMA { a, b, c, .. } => vec![a, b, c],
+            Op::Barrier { .. } => vec![],
+            Op::If { condition } => vec![*condition],
+            Op::EndIf => vec![],
         }
         .into_iter()
     }
@@ -262,6 +273,9 @@ impl Op {
             Op::Vectorize { ops } => ops.iter_mut().collect(),
             Op::Devectorize { vec, .. } => vec![vec],
             Op::WMMA { a, b, c, .. } => vec![a, b, c],
+            Op::If { condition } => vec![condition],
+            Op::EndIf => vec![],
+            Op::Barrier { .. } => vec![],
         }
         .into_iter()
     }
@@ -847,12 +861,15 @@ impl Kernel {
                     Op::Vectorize { .. }
                     | Op::Devectorize { .. }
                     | Op::WMMA { .. }
+                    | Op::Barrier { .. }
                     | Op::Define { .. }
                     | Op::Mad { .. }
                     | Op::StoreView { .. }
                     | Op::Load { .. }
                     | Op::Store { .. }
                     | Op::Index { .. }
+                    | Op::If { .. }
+                    | Op::EndIf
                     | Op::Loop { .. }
                     | Op::EndLoop { .. } => unreachable!(),
                 }

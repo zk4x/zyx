@@ -13,7 +13,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
+                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => todo!(),
                 Op::WMMA { .. }
                 | Op::Vectorize { .. } // TODO
                 | Op::Devectorize { .. } // TODO

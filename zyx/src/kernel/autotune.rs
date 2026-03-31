@@ -148,6 +148,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
+        // kernel.optimize_warp_reduce(); // Disabled: requires proper warp-level sync
 
         println!();
         kernel.debug_colorless();
@@ -411,6 +412,13 @@ impl Kernel {
                 Op::Vectorize { .. } => {
                     // TODO multiply all ops that are vectorized by the vectorization factor
                 }
+                Op::Barrier { .. } => {
+                    n_instructions += loop_mult * 5;
+                }
+                Op::If { .. } => {
+                    n_instructions += loop_mult * 3;
+                }
+                Op::EndIf => {}
                 Op::Devectorize { .. } => {}
                 Op::ConstView(_) => todo!(),
                 Op::LoadView(_) => todo!(),

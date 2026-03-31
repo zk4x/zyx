@@ -281,7 +281,12 @@ impl Kernel {
                     println!("{indent}{BOLD}for{RESET} r{out_id} in 0..{len} {{");
                     indent += "  ";
                 }
-                Op::EndLoop => {
+                Op::If { condition } => {
+                    let condition = id_map.get(&condition).copied().unwrap_or(OpId::NULL);
+                    println!("{indent}{BOLD}if{RESET} r{condition} {{");
+                    indent += "  ";
+                }
+                Op::EndIf | Op::EndLoop => {
                     if indent.len() > 1 {
                         indent.pop();
                         indent.pop();
@@ -353,6 +358,9 @@ impl Kernel {
                             );
                         }
                     };
+                }
+                Op::Barrier { scope } => {
+                    println!("{indent}barrier {scope}");
                 }
             }
             op_id = self.ops[op_id].next;
@@ -465,6 +473,9 @@ impl Kernel {
                     } else {
                         println!("{indent}r{dst}[r{index}] = r{x}    // {lb}..={ub} store",);
                     }
+                }
+                Op::Barrier { scope } => {
+                    println!("{indent}barrier {scope}");
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
@@ -618,6 +629,18 @@ impl Kernel {
                     indent += "  ";
                 }
                 Op::EndLoop => {
+                    if indent.len() > 1 {
+                        indent.pop();
+                        indent.pop();
+                    }
+                    println!("{indent}}}");
+                }
+                Op::If { condition } => {
+                    let condition = id_map.get(&condition).copied().unwrap_or(OpId::NULL);
+                    println!("{indent}if r{condition} {{");
+                    indent += "  ";
+                }
+                Op::EndIf | Op::EndLoop => {
                     if indent.len() > 1 {
                         indent.pop();
                         indent.pop();
