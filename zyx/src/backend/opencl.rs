@@ -876,6 +876,13 @@ impl OpenCLDevice {
                             dtype.ocl(),
                         );
                         acc_bytes += dtype.byte_size() as usize * len;
+                    } else if scope == Scope::Local {
+                        _ = writeln!(
+                            source,
+                            "{indent}__local {}{} p{op_id}[{len}] __attribute__ ((aligned));",
+                            if ro { "const " } else { "" },
+                            dtype.ocl(),
+                        );
                     }
                 }
                 &Op::Load { src, index, vlen } => {

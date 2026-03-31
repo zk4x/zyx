@@ -42,6 +42,7 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
+                    debug_assert_eq!(dtypes[&index], IDX_T);
                     check(op_id, dst, &stack);
                     check(op_id, x, &stack);
                     check(op_id, index, &stack);
@@ -127,6 +128,7 @@ impl Kernel {
                         self.debug();
                         panic!();
                     }
+                    debug_assert_eq!(dtypes[&index], IDX_T);
                     check(op_id, src, &stack);
                     check(op_id, index, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
