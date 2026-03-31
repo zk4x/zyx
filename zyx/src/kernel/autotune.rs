@@ -5,13 +5,11 @@ use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
-use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
 pub enum Optimization {
-    Null,
     ReassociateCommutative,
     UnrollLoops { factors: Vec<usize> },
     SplitGlobalToLocal { factors: Vec<(OpId, usize)> },
@@ -62,7 +60,6 @@ impl Optimization {
     /// (e.g., warp size 32 for CUDA, wavefront size 64 for AMD) which are likely to perform better.
     pub fn apply(&self, kernel: &mut Kernel, config: u16) {
         match self {
-            Optimization::Null => {}
             Optimization::ReassociateCommutative => {
                 kernel.reassociate_commutative(config);
             }
@@ -75,6 +72,7 @@ impl Optimization {
                 let Op::Index { len, scope, axis } = kernel.ops[op_id].op else {
                     unreachable!()
                 };
+                debug_assert_eq!(scope, Scope::Global);
                 kernel.split_dim(
                     op_id,
                     vec![
@@ -421,6 +419,11 @@ impl Kernel {
         let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
         memory_pool.sync_events(vec![event])?;
         let nanos = begin.elapsed().as_nanos() as u64;
+        let (flops, bytes_read, bytes_written) = self.flop_mem_rw();
+        let perf = crate::cache::get_perf(flops, bytes_read, bytes_written, nanos);
+        if debug.perf() {
+            println!("{perf}");
+        }
         Ok((program_id, nanos))
     }
 }

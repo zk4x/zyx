@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
-    slab::SlabId,
 };
 
 impl Kernel {

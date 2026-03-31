@@ -1,8 +1,6 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-#![allow(unused)]
-
 use crate::{
     DType, Map, Set,
     dtype::Constant,
@@ -618,17 +616,7 @@ impl Kernel {
                         mem_write: 0,
                     }
                 }
-                Op::WMMA { .. }
-                | Op::Vectorize { .. }
-                | Op::Devectorize { .. }
-                | Op::Store { .. }
-                | Op::Mad { .. }
-                | Op::Const(_)
-                | Op::Define { .. }
-                | Op::Load { .. }
-                | Op::Index { .. }
-                | Op::Loop { .. }
-                | Op::EndLoop => todo!(),
+                op => todo!("{op:?}"),
             };
             stack.insert(op_id, info);
             op_id = self.next_op(op_id);
