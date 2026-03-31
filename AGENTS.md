@@ -64,6 +64,33 @@ cargo test -p zyx -- --nocapture  # with output
 - Use `kernel.debug_colorless()` instead of `kernel.debug()` for readable output without ANSI color codes
 - Set `ZYX_DEBUG` environment variable to enable debug output (see Debug Options table)
 
+### IR Debugging
+
+When debugging kernel transformations (especially in autotune passes), always use `kernel.debug_colorless()` to inspect the IR:
+
+```rust
+// Add temporarily in your code to see the kernel state
+kernel.debug_colorless();
+```
+
+This prints the kernel operations in a human-readable format showing:
+- Operation IDs (e.g., `OpId(3)`)
+- Each operation with its arguments and type
+- Loop scopes and indices
+
+Example output:
+```
+r18: i32 = def global, len=4
+r31: i32 = def global, len=4
+r43: i32 = def mut global, len=16
+r44: u32 = gidx0    // 0..=0
+r3: u32 = gidx1    // 0..=3
+r1: u32 = gidx2    // 0..=3
+r19: i32 = r18[r1]    // 0..=3 load
+```
+
+**Always use `debug_colorless()` (not `debug()`)** - the latter includes ANSI color codes that make logs hard to read.
+
 ### File Organization
 - Keep ~1000 LOC per module
 - Add new files only when necessary
