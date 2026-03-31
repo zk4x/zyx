@@ -4,7 +4,7 @@
 use crate::{
     Map,
     backend::{Device, DeviceInfo, ProgramId},
-    kernel::Kernel,
+    kernel::{Kernel, autotune::OptSeq},
     //optimizer::{self, Optimizer},
 };
 use nanoserde::{DeBin, SerBin};
@@ -24,7 +24,7 @@ pub struct Cache {
     pub device_infos: Map<DeviceInfo, DeviceInfoId>,
     pub kernels: Map<Kernel, KernelId>,
     // Finished optimizations of kernels for given devices
-    //pub optimizations: Map<(KernelId, DeviceInfoId), optimizer::Optimizer>,
+    pub optimizations: Map<(KernelId, DeviceInfoId), OptSeq>,
     // This last one is not stored to disk
     pub programs: Map<(KernelId, DeviceId), ProgramId>,
 }
@@ -77,20 +77,21 @@ impl DeBin for Cache {
         if len > bytes.len() - *offset {
             return Err(nanoserde::DeBinErr::new(*offset, len, bytes.len() - *offset));
         }
-        /*let mut optimizations = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
+        let mut optimizations = Map::with_capacity_and_hasher(len, BuildHasherDefault::new());
         for _ in 0..len {
             let k1 = KernelId::de_bin(offset, bytes)?;
             let k2 = DeviceInfoId::de_bin(offset, bytes)?;
             let key = (k1, k2);
-            let value = Optimizer::de_bin(offset, bytes)?;
+            let value = OptSeq::de_bin(offset, bytes)?;
             optimizations.insert(key, value);
-        }*/
+        }
 
         let programs = Map::with_hasher(BuildHasherDefault::new());
         Ok(Cache {
             device_infos,
             kernels,
             programs,
+            optimizations,
         })
     }
 }
@@ -100,7 +101,7 @@ impl Cache {
         Cache {
             device_infos: Map::with_hasher(BuildHasherDefault::new()),
             kernels: Map::with_hasher(BuildHasherDefault::new()),
-            //optimizations: Map::with_hasher(BuildHasherDefault::new()),
+            optimizations: Map::with_hasher(BuildHasherDefault::new()),
             programs: Map::with_hasher(BuildHasherDefault::new()),
         }
     }
@@ -116,7 +117,7 @@ impl Cache {
         self.programs = Default::default();
     }
 
-    /*pub fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
+    pub fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
         if let Some(&dev_info_id) = self.device_infos.get(device_info) {
             dev_info_id
         } else {
@@ -125,11 +126,16 @@ impl Cache {
     }
 
     pub fn insert_device_info(&mut self, device_info: DeviceInfo) -> DeviceInfoId {
-        let dev_info_id = DeviceInfoId(self.device_infos.values().max().map_or(0, |id| id.0.checked_add(1).unwrap()));
+        let dev_info_id = DeviceInfoId(
+            self.device_infos
+                .values()
+                .max()
+                .map_or(0, |id| id.0.checked_add(1).unwrap()),
+        );
         let newly_inserted = self.device_infos.insert(device_info, dev_info_id).is_none();
         assert!(newly_inserted);
         dev_info_id
-    }*/
+    }
 
     pub fn insert_kernel(&mut self, kernel: Kernel) -> KernelId {
         let kernel_id = KernelId(

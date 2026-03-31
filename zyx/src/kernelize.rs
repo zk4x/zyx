@@ -4,17 +4,17 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
+    DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Device},
     cache::Cache,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
-    runtime::{deallocate_tensors, Pool, Runtime},
+    runtime::{Pool, Runtime, deallocate_tensors},
     schedule::schedule,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
-    DType, DebugMask, Map, Set, ZyxError,
 };
 use std::{collections::BTreeMap, hash::BuildHasherDefault};
 
@@ -625,6 +625,8 @@ impl<'a> Kernelizer<'a> {
         let dev_id = crate::cache::DeviceId(dev_id as u32);
         let pool = &mut self.pools[mpid];
 
+        let dev_info_id = self.cache.get_or_add_dev_info(device.info());
+
         // Launch if it is in cache
         if let Some(&kid) = self.cache.kernels.get(&kernel) {
             // If it has been compiled for the device
@@ -635,6 +637,15 @@ impl<'a> Kernelizer<'a> {
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 self.pools[mpid].events.insert(output_buffers, event);
                 //println!("Elapsed during kernel launch {:?}", time_w.elapsed());
+                return Ok(());
+            }
+
+            // The kernel was optimized and is cached in disk, but was not compiled as of this run
+            if let Some(opt_seq) = self.cache.optimizations.get(&(kid, dev_info_id)) {
+                opt_seq.apply(&mut kernel);
+                let program_id = device.compile(&kernel, self.debug.asm())?;
+                let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
+                self.pools[mpid].events.insert(output_buffers, event);
                 return Ok(());
             }
         }
@@ -650,6 +661,7 @@ impl<'a> Kernelizer<'a> {
             let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
             kernel.merge_indices(&loops);
         }
+        // Reset indices after merges
         {
             let mut indices = BTreeMap::new();
             indices.insert(Scope::Global, BTreeMap::new());
@@ -674,8 +686,9 @@ impl<'a> Kernelizer<'a> {
             kernel.verify();
         }
 
-        let program_id = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, self.debug);
+        let (program_id, opts) = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, self.debug);
         self.cache.programs.insert((kernel_id, dev_id), program_id);
+        self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
         let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
         self.pools[mpid].events.insert(output_buffers, event);
 

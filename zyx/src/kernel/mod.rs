@@ -13,7 +13,7 @@ use crate::{
 use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
 
-mod autotune;
+pub mod autotune;
 mod const_folding;
 mod debug;
 mod jam_loops;

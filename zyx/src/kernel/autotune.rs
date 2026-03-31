@@ -5,9 +5,20 @@ use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
+use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
+
+#[allow(unused)]
+
+static AVAILABLE_OPTIMIZATIONS: [for<'a> fn(&'a Kernel) -> (Optimization, u16); 5] = [
+    Optimization::reassociate_commutative,
+    Optimization::unroll,
+    Optimization::split_global_to_local,
+    Optimization::fuse_mad,
+    Optimization::unroll_constant_loops,
+];
 
 pub enum Optimization {
     ReassociateCommutative,
@@ -122,29 +133,7 @@ impl Kernel {
     }
 
     /// Autotune for debugging, applying only a selected series of optimizations
-    pub fn autotune1(
-        &self,
-        _buffers: &[BufferId],
-        device: &mut Device,
-        _memory_pool: &mut MemoryPool,
-        _config: &AutotuneConfig,
-        debug: DebugMask,
-    ) -> ProgramId {
-        let mut kernel = self.clone();
-        //println!("Before associate_commutative:");
-        //kernel.debug_colorless();
-        kernel.run_always_on_optimizations();
-
-        // Here come series of custom optimizations
-        kernel.reassociate_commutative(0);
-        kernel.unroll_loops(2); // unroll with dim=2
-
-        kernel.run_always_on_optimizations();
-
-        device.compile(&kernel, debug.asm()).unwrap()
-    }
-
-    /// Release mode autotune with beam like search and multithreading
+    #[allow(unused)]
     pub fn autotune(
         &self,
         buffers: &[BufferId],
@@ -152,15 +141,38 @@ impl Kernel {
         memory_pool: &mut MemoryPool,
         config: &AutotuneConfig,
         debug: DebugMask,
-    ) -> ProgramId {
-        let available_opts: [fn(&Kernel) -> (Optimization, u16); _] = [
-            Optimization::reassociate_commutative,
-            Optimization::unroll,
-            Optimization::split_global_to_local,
-            Optimization::fuse_mad,
-            Optimization::unroll_constant_loops,
-        ];
+    ) -> (ProgramId, OptSeq) {
+        let mut kernel = self.clone();
+        //println!("Before associate_commutative:");
+        //kernel.debug_colorless();
+        kernel.run_always_on_optimizations();
 
+        // Here come series of custom optimizations
+
+        println!();
+        kernel.debug_colorless();
+        kernel.run_always_on_optimizations();
+
+        kernel.launch_with_timings(buffers, device, memory_pool, debug);
+
+        (
+            device.compile(&kernel, debug.asm()).unwrap(),
+            OptSeq {
+                opts: Vec::new(),
+                cost: 0,
+            },
+        )
+    }
+
+    /// Release mode autotune with beam like search and multithreading
+    pub fn autotune1(
+        &self,
+        buffers: &[BufferId],
+        device: &mut Device,
+        memory_pool: &mut MemoryPool,
+        config: &AutotuneConfig,
+        debug: DebugMask,
+    ) -> (ProgramId, OptSeq) {
         let dev_info_ptr: *const DeviceInfo = device.info();
         let dev_info_ref = unsafe { &*dev_info_ptr };
 
@@ -181,10 +193,10 @@ impl Kernel {
         let mut kernel = self.clone();
         kernel.run_always_on_optimizations();
 
-        let avail_configs = available_opts.map(|config_fn| config_fn(&kernel));
+        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
         let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
         let mult = n_seeds.min(total_configs);
-        for opt_id in 0..available_opts.len() {
+        for opt_id in 0..AVAILABLE_OPTIMIZATIONS.len() {
             let n_configs_to_try =
                 ((avail_configs[opt_id].1 as usize * mult) as f32 / total_configs as f32).ceil() as u16;
             let mut config_id = 0;
@@ -235,17 +247,13 @@ impl Kernel {
                         );
 
                         let opt_seq = sample_best(items_ref, &mut rng);
+                        opt_seq.apply(&mut kernel);
 
-                        for &(opt_id, opt_cfg) in &opt_seq.opts {
-                            let (opt, _) = available_opts[opt_id as usize](&kernel);
-                            opt.apply(&mut kernel, opt_cfg);
-                        }
-
-                        let avail_configs = available_opts.map(|config_fn| config_fn(&kernel));
+                        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
                         let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
                         let mult = n_added_per_step.min(total_configs);
 
-                        for (opt_id, _config_fn) in available_opts.iter().enumerate() {
+                        for (opt_id, _config_fn) in AVAILABLE_OPTIMIZATIONS.iter().enumerate() {
                             let av_configs = &avail_configs[opt_id];
                             let n_configs_to_try =
                                 ((av_configs.1 as usize * mult) as f32 / total_configs as f32).ceil() as u16;
@@ -293,13 +301,17 @@ impl Kernel {
         let mut launched_kernels = Set::default();
         let mut best_time = u64::MAX;
         let mut best_program = ProgramId::NULL;
+        let mut best_opt_seq = OptSeq {
+            opts: Vec::new(),
+            cost: 0,
+        };
         let mut i = n_launches;
         while i > 0 {
             let opt_seq = sample_best(&items, &mut rng);
             let mut kernel = kernel.clone();
 
             for &(opt_id, opt_cfg) in &opt_seq.opts {
-                let (opt, _) = available_opts[opt_id as usize](&kernel);
+                let (opt, _): (Optimization, u16) = AVAILABLE_OPTIMIZATIONS[opt_id as usize](&kernel);
                 opt.apply(&mut kernel, opt_cfg);
             }
             kernel.run_always_on_optimizations();
@@ -316,6 +328,7 @@ impl Kernel {
                 if time < best_time {
                     best_program = program_id;
                     best_time = time;
+                    best_opt_seq = opt_seq.clone();
                 }
             }
 
@@ -324,7 +337,7 @@ impl Kernel {
 
         // println!("DEBUG: Returning best_program={:?}, best_time={}", best_program, best_time);
 
-        best_program
+        (best_program, best_opt_seq)
     }
 
     pub fn get_cost(&self, dev_info: &DeviceInfo) -> f64 {
@@ -446,10 +459,19 @@ impl Kernel {
     }
 }
 
-#[derive(Debug)]
-struct OptSeq {
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
+pub struct OptSeq {
     opts: Vec<(u16, u16)>,
     cost: u64,
+}
+
+impl OptSeq {
+    pub fn apply(&self, kernel: &mut Kernel) {
+        for &(opt_id, opt_cfg) in &self.opts {
+            let (opt, _): (Optimization, u16) = AVAILABLE_OPTIMIZATIONS[opt_id as usize](kernel);
+            opt.apply(kernel, opt_cfg);
+        }
+    }
 }
 
 fn remove_worst(items: &mut Vec<OptSeq>, mut n: usize, rng: &mut Rng) {
