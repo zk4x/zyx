@@ -513,118 +513,71 @@ impl Kernel {
     }
 
     pub fn flop_mem_rw(&self) -> (u64, u64, u64) {
-        #[derive(Clone)]
-        struct Info {
-            shape: Vec<Dim>,
-            flops: u64,
-            mem_read: u64,
-            mem_write: u64,
-        }
+        let mut n_instructions = 0u64;
+        let mut bytes_read = 0u64;
+        let mut bytes_written = 0u64;
 
-        let mut stack: Map<OpId, Info> = Map::default();
-
+        let mut gws = [1u64, 1, 1];
+        let mut lws = [1u64, 1, 1];
+        let mut loop_mult = 1u64;
+        let mut latest_loop_lengths = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
-            let info = match self.at(op_id) {
-                Op::ConstView(x) => {
-                    let shape = x.1.shape();
-                    Info {
-                        shape,
-                        flops: 0,
-                        mem_read: 0,
-                        mem_write: 0,
+            match self.at(op_id) {
+                Op::Cast { .. } => n_instructions += loop_mult,
+                Op::Unary { .. } => n_instructions += loop_mult,
+                Op::Binary { .. } => n_instructions += loop_mult,
+                Op::Const(_) | Op::Define { .. } => {}
+                Op::Load { src, vlen, .. } => {
+                    n_instructions += loop_mult * 3;
+                    let Op::Define { scope, dtype, len, .. } = self.at(*src) else {
+                        unreachable!()
+                    };
+                    let bytes = *len as u64 * dtype.byte_size() as u64 * *vlen as u64;
+                    match scope {
+                        Scope::Global => bytes_read += bytes,
+                        Scope::Local => bytes_read += bytes,
+                        Scope::Register => bytes_read += bytes,
                     }
                 }
-                Op::LoadView(x) => {
-                    let (dtype, view) = x.as_ref();
-                    let shape = view.shape();
-                    let mem_read = view.original_numel() as u64 * dtype.byte_size() as u64;
-                    Info {
-                        shape,
-                        flops: 0,
-                        mem_read,
-                        mem_write: 0,
+                Op::Store { dst, vlen, .. } => {
+                    n_instructions += loop_mult * 3;
+                    let Op::Define { scope, dtype, len, .. } = self.at(*dst) else {
+                        unreachable!()
+                    };
+                    let bytes = *len as u64 * dtype.byte_size() as u64 * *vlen as u64;
+                    match scope {
+                        Scope::Global => bytes_written += bytes,
+                        Scope::Local => bytes_written += bytes,
+                        Scope::Register => bytes_written += bytes,
                     }
                 }
-                Op::StoreView { src, dtype } => {
-                    let Info { shape, .. } = stack[src].clone();
-                    let mem_write = shape.iter().product::<Dim>() as u64 * dtype.byte_size() as u64;
-                    Info {
-                        shape,
-                        flops: 0,
-                        mem_read: 0,
-                        mem_write,
-                    }
-                }
-                Op::Move { mop, .. } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } => Info {
-                        shape: shape.clone(),
-                        flops: 0,
-                        mem_read: 0,
-                        mem_write: 0,
-                    },
-                    MoveOp::Expand { shape } => Info {
-                        shape: shape.clone(),
-                        flops: 0,
-                        mem_read: 0,
-                        mem_write: 0,
-                    },
-                    MoveOp::Permute { shape, .. } => Info {
-                        shape: shape.clone(),
-                        flops: 0,
-                        mem_read: 0,
-                        mem_write: 0,
-                    },
-                    MoveOp::Pad { shape, .. } => Info {
-                        shape: shape.clone(),
-                        flops: 0,
-                        mem_read: 0,
-                        mem_write: 0,
-                    },
+                Op::Index { len, scope, axis } => match scope {
+                    Scope::Global => gws[*axis as usize] = *len as u64,
+                    Scope::Local => lws[*axis as usize] = *len as u64,
+                    Scope::Register => {}
                 },
-                Op::Reduce { x, n_axes, .. } => {
-                    let Info { mut shape, .. } = stack[x].clone();
-                    let rd: Dim = shape[shape.len() - n_axes..].iter().product();
-                    shape.truncate(shape.len() - n_axes);
-                    let n: Dim = shape.iter().product();
-                    let flops = n * (rd - 1);
-                    let flops = flops as u64;
-                    Info {
-                        shape,
-                        flops,
-                        mem_read: 0,
-                        mem_write: 0,
-                    }
+                Op::Loop { len } => {
+                    n_instructions += loop_mult * 3;
+                    loop_mult *= *len as u64;
+                    latest_loop_lengths.push(*len as u64);
                 }
-                Op::Cast { x, .. } | Op::Unary { x, .. } => {
-                    let Info { shape, .. } = stack[x].clone();
-                    let flops = shape.iter().product::<Dim>() as u64;
-                    Info {
-                        shape,
-                        flops,
-                        mem_read: 0,
-                        mem_write: 0,
-                    }
+                Op::EndLoop => {
+                    loop_mult /= latest_loop_lengths.pop().unwrap();
                 }
-                Op::Binary { x, .. } => {
-                    let Info { shape, .. } = stack[x].clone();
-                    let flops = shape.iter().product::<Dim>() as u64;
-                    Info {
-                        shape,
-                        flops,
-                        mem_read: 0,
-                        mem_write: 0,
-                    }
+                Op::Mad { .. } => n_instructions += loop_mult,
+                Op::WMMA { dims, .. } => {
+                    let (m, n, k) = dims.decompose_mnk();
+                    n_instructions += loop_mult * m * n * k;
                 }
-                op => todo!("{op:?}"),
-            };
-            stack.insert(op_id, info);
+                Op::Vectorize { .. } | Op::Devectorize { .. } => {}
+                _ => {}
+            }
             op_id = self.next_op(op_id);
         }
 
-        stack.into_values().fold((0, 0, 0), |acc, info| {
-            (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write)
-        })
+        let total_threads = gws[0] * gws[1] * gws[2] * lws[0] * lws[1] * lws[2];
+        (n_instructions * total_threads, bytes_read, bytes_written)
     }
 
     pub fn contains_stores(&self) -> bool {
@@ -732,11 +685,6 @@ impl Kernel {
             Op::LoadView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
             _ => true,
         })
-    }
-
-    /// Fuses multiple reduce ops together if possible
-    pub fn fuse_reduces(&mut self) {
-        // TODO
     }
 
     /// Get index loop ids, dimensions and strides
