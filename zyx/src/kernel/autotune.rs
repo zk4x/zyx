@@ -196,7 +196,7 @@ impl Kernel {
 
     /// Autotune for debugging, applying only a selected series of optimizations
     #[allow(unused)]
-    pub fn autotune1(
+    pub fn autotune(
         &self,
         buffers: &[BufferId],
         device: &mut Device,
@@ -210,6 +210,10 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
+        kernel.debug_colorless();
+
+        let (opt, _) = kernel.opt_upcast();
+        opt.apply(&mut kernel, 0);
 
         println!();
         kernel.debug_colorless();
@@ -227,7 +231,7 @@ impl Kernel {
     }
 
     /// Release mode autotune with beam like search and multithreading
-    pub fn autotune(
+    pub fn autotune1(
         &self,
         buffers: &[BufferId],
         device: &mut Device,
