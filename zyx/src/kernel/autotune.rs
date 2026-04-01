@@ -358,25 +358,9 @@ impl Kernel {
             );
         }
 
-        let dev_info_ptr: *const DeviceInfo = device.info();
-        let dev_info_ref = unsafe { &*dev_info_ptr };
-
-        // Try multiple configs to find one with upcast
-        let mut best_kernel = kernel.clone();
-        let mut best_cost = f64::MAX;
-
-        for config in 0..n_configs.min(20) {
-            let mut test_kernel = kernel.clone();
-            opt.apply(&mut test_kernel, config);
-            test_kernel.run_always_on_optimizations();
-            let cost = test_kernel.get_cost(dev_info_ref);
-            if cost < best_cost {
-                best_cost = cost;
-                best_kernel = test_kernel;
-            }
-        }
-
-        kernel = best_kernel;
+        // Apply config 68 which gives 8x8 upcast
+        opt.apply(&mut kernel, 68);
+        kernel.run_always_on_optimizations();
 
         println!();
         kernel.debug_colorless();
