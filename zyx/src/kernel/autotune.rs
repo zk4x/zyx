@@ -7,7 +7,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
@@ -362,7 +362,7 @@ impl Kernel {
 
         println!();
         kernel.debug_colorless();
-        kernel.launch_with_timings(buffers, device, memory_pool, debug);
+        kernel.launch_with_timings(buffers, device, memory_pool, debug, 0, 0, 0);
 
         (
             device.compile(&kernel, debug.asm()).unwrap(),
@@ -401,6 +401,8 @@ impl Kernel {
         // Initial seed
         let mut kernel = self.clone();
         kernel.run_always_on_optimizations();
+
+        let (flops, read_bytes, write_bytes) = kernel.flop_mem_rw();
 
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
         let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
@@ -523,7 +525,9 @@ impl Kernel {
                     kernel.debug();
                 }
 
-                let Ok((program_id, time)) = kernel.launch_with_timings(buffers, device, memory_pool, debug) else {
+                let Ok((program_id, time)) =
+                    kernel.launch_with_timings(buffers, device, memory_pool, debug, flops, read_bytes, write_bytes)
+                else {
                     continue;
                 };
 
@@ -653,13 +657,15 @@ impl Kernel {
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         debug: DebugMask,
+        flops: u64,
+        bytes_read: u64,
+        bytes_written: u64,
     ) -> Result<(ProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
         let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
         memory_pool.sync_events(vec![event])?;
         let nanos = begin.elapsed().as_nanos() as u64;
-        let (flops, bytes_read, bytes_written) = self.flop_mem_rw();
         let perf = crate::cache::get_perf(flops, bytes_read, bytes_written, nanos);
         if debug.perf() {
             println!("{perf}");

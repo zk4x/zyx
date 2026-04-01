@@ -528,6 +528,7 @@ impl Kernel {
     }
 
     pub fn flop_mem_rw(&self) -> (u64, u64, u64) {
+        self.debug_colorless();
         let mut n_instructions = 0u64;
         let mut bytes_read = 0u64;
         let mut bytes_written = 0u64;
