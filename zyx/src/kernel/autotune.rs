@@ -12,11 +12,12 @@ use std::{thread, u64};
 
 #[allow(unused)]
 
-static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 8] = [
+static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 9] = [
     Kernel::opt_reassociate_commutative,
     Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
+    Kernel::opt_matmul_register_tiling,
     Kernel::opt_fuse_mad,
     Kernel::opt_unroll_constant_loops,
     Kernel::opt_warp_reduce,
@@ -25,12 +26,24 @@ static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 8] = [
 
 pub enum Optimization {
     ReassociateCommutative,
-    UnrollLoops { factors: Vec<usize> },
-    SplitGlobalToLocal { factors: Vec<(OpId, usize)> },
-    Upcast { factors: Vec<(OpId, usize)> },
+    UnrollLoops {
+        factors: Vec<usize>,
+    },
+    SplitGlobalToLocal {
+        factors: Vec<(OpId, usize)>,
+    },
+    Upcast {
+        factors: Vec<(OpId, usize)>,
+    },
+    MatmulRegisterTiling {
+        reduce_factors: Map<OpId, Vec<usize>>,
+        global_upcasts: Map<OpId, Vec<usize>>,
+    },
     FuseMad,
     UnrollConstantLoops,
-    WarpReduce { factors: Vec<(OpId, usize)> },
+    WarpReduce {
+        factors: Vec<(OpId, usize)>,
+    },
     Licm,
 }
 
@@ -76,6 +89,68 @@ impl Optimization {
                 let (op_id, factor) = factors[config as usize];
                 kernel.upcast(op_id, factor);
             }
+            Optimization::MatmulRegisterTiling {
+                reduce_factors,
+                global_upcasts,
+            } => {
+                let n_global = global_upcasts.len();
+                let n_reduce = reduce_factors.len();
+                if n_global == 0 || n_reduce == 0 {
+                    return;
+                }
+
+                let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
+                let n_reduce_options: usize = reduce_factors.values().map(|v| v.len()).product();
+                let total_configs = n_global_options * n_reduce_options;
+
+                let global_config = config % n_global_options as u16;
+                let reduce_config = config / n_global_options as u16;
+
+                let mut remaining_reduce = reduce_config as usize;
+                for (reduce_id, factors) in reduce_factors.iter() {
+                    let n_options = factors.len();
+                    let factor_idx = remaining_reduce % n_options;
+                    remaining_reduce /= n_options;
+                    let reduce_factor = factors[factor_idx];
+
+                    let original_len = if let Op::Loop { len, .. } = kernel.ops[*reduce_id].op {
+                        len
+                    } else {
+                        continue;
+                    };
+
+                    kernel.split_dim(
+                        *reduce_id,
+                        vec![
+                            Op::Loop { len: reduce_factor },
+                            Op::Loop {
+                                len: original_len / reduce_factor,
+                            },
+                        ],
+                    );
+                }
+
+                let mut remaining_global = global_config as usize;
+                let mut new_global_upcasts = Vec::new();
+                for (_, factors) in global_upcasts.iter() {
+                    let n_options = factors.len() + 1;
+                    let factor_idx = remaining_global % n_options;
+                    remaining_global /= n_options;
+
+                    let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
+                    new_global_upcasts.push(factor);
+                }
+
+                let mut idx = 0;
+                for (op_id, _) in global_upcasts.iter() {
+                    let factor = new_global_upcasts[idx];
+                    if factor > 1 {
+                        kernel.upcast(*op_id, factor);
+                    }
+                    idx += 1;
+                }
+            }
+
             Optimization::FuseMad => {
                 kernel.fuse_mad();
             }
@@ -150,6 +225,64 @@ impl Kernel {
         }
         let n_configs = factors.len() as u16;
         (Optimization::Upcast { factors }, n_configs)
+    }
+
+    pub fn opt_matmul_register_tiling(&self) -> (Optimization, u16) {
+        let mut global_upcasts = Map::default();
+        let mut reduce_factors = Map::default();
+        let mut reduce_ids = Set::default();
+
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Loop { len } = self.ops[op_id].op {
+                if len >= 16 {
+                    let candidates: Vec<usize> = vec![2, 4, 8, 16];
+                    let applicable: Vec<usize> = candidates
+                        .into_iter()
+                        .filter(|&f| len.is_multiple_of(f) && len / f >= 4)
+                        .collect();
+                    if !applicable.is_empty() {
+                        reduce_factors.insert(op_id, applicable);
+                        reduce_ids.insert(op_id);
+                    }
+                }
+            }
+            if let Op::Index { len, scope, .. } = self.ops[op_id].op {
+                if scope == Scope::Global && len >= 8 {
+                    let candidates: Vec<usize> = vec![2, 4, 8, 16];
+                    let applicable: Vec<usize> = candidates
+                        .into_iter()
+                        .filter(|&f| len.is_multiple_of(f) && len / f >= 4)
+                        .collect();
+                    if !applicable.is_empty() {
+                        global_upcasts.insert(op_id, applicable);
+                    }
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        if global_upcasts.is_empty() || reduce_factors.is_empty() {
+            return (
+                Optimization::MatmulRegisterTiling {
+                    reduce_factors,
+                    global_upcasts,
+                },
+                0,
+            );
+        }
+
+        let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
+        let n_reduce_options: usize = reduce_factors.values().map(|v| v.len()).product();
+
+        let n_configs = (n_global_options * n_reduce_options) as u16;
+        (
+            Optimization::MatmulRegisterTiling {
+                reduce_factors,
+                global_upcasts,
+            },
+            n_configs,
+        )
     }
 
     pub fn opt_fuse_mad(&self) -> (Optimization, u16) {
