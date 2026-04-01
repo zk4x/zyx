@@ -7,18 +7,19 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 #[allow(unused)]
 
-static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 6] = [
+static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 7] = [
     Kernel::opt_reassociate_commutative,
     Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
     Kernel::opt_fuse_mad,
     Kernel::opt_unroll_constant_loops,
     Kernel::opt_warp_reduce,
+    Kernel::opt_licm,
 ];
 
 pub enum Optimization {
@@ -28,6 +29,7 @@ pub enum Optimization {
     FuseMad,
     UnrollConstantLoops,
     WarpReduce { factors: Vec<(OpId, usize)> },
+    Licm,
 }
 
 impl Optimization {
@@ -74,6 +76,9 @@ impl Optimization {
             Optimization::WarpReduce { factors } => {
                 let (op_id, factor) = factors[config as usize];
                 kernel.optimize_warp_reduce_with(op_id, factor);
+            }
+            Optimization::Licm => {
+                kernel.loop_invariant_code_motion();
             }
         }
     }
@@ -147,6 +152,10 @@ impl Kernel {
         }
         let n_configs = factors.len() as u16;
         (Optimization::WarpReduce { factors }, n_configs)
+    }
+
+    pub fn opt_licm(&self) -> (Optimization, u16) {
+        (Optimization::Licm, 1)
     }
 
     pub fn run_always_on_optimizations(&mut self) {
