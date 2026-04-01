@@ -7,17 +7,17 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 #[allow(unused)]
 
-static AVAILABLE_OPTIMIZATIONS: [for<'a> fn(&'a Kernel) -> (Optimization, u16); 5] = [
-    Optimization::reassociate_commutative,
-    Optimization::unroll,
-    Optimization::split_global_to_local,
-    Optimization::fuse_mad,
-    Optimization::unroll_constant_loops,
+static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 5] = [
+    Kernel::opt_reassociate_commutative,
+    Kernel::opt_unroll,
+    Kernel::opt_split_global_to_local,
+    Kernel::opt_fuse_mad,
+    Kernel::opt_unroll_constant_loops,
 ];
 
 pub enum Optimization {
@@ -29,53 +29,6 @@ pub enum Optimization {
 }
 
 impl Optimization {
-    pub fn reassociate_commutative(_kernel: &Kernel) -> (Self, u16) {
-        (Optimization::ReassociateCommutative, 1)
-    }
-
-    pub fn unroll(_kernel: &Kernel) -> (Self, u16) {
-        (
-            Optimization::UnrollLoops {
-                factors: vec![8, 4, 16, 2],
-            },
-            4,
-        )
-    }
-
-    pub fn split_global_to_local(kernel: &Kernel) -> (Self, u16) {
-        let mut op_id = kernel.head;
-        let mut factors = Vec::new();
-        let mut seen_axes = Map::default();
-        while !op_id.is_null() {
-            if let Op::Index { len, scope, axis } = kernel.ops[op_id].op {
-                let mut l_factors: Vec<usize> = vec![32, 64, 16, 8, 4, 2];
-                if scope == Scope::Global {
-                    l_factors.retain(|&f| len.is_multiple_of(f));
-                    for &f in &l_factors {
-                        factors.push((op_id, f));
-                    }
-                    seen_axes.insert(axis, op_id);
-                }
-                if scope == Scope::Local {
-                    if let Some(global_id) = seen_axes.get(&axis) {
-                        factors.retain(|(op_id, _)| global_id != op_id);
-                    }
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
-        let n_configs = factors.len() as u16;
-        (Optimization::SplitGlobalToLocal { factors }, n_configs)
-    }
-
-    pub fn fuse_mad(_kernel: &Kernel) -> (Self, u16) {
-        (Optimization::FuseMad, 1)
-    }
-
-    pub fn unroll_constant_loops(_kernel: &Kernel) -> (Self, u16) {
-        (Optimization::UnrollConstantLoops, 1)
-    }
-
     /// Applies the optimization with the given config ID.
     /// Config IDs are ordered such that lower IDs use hardware-aligned factors
     /// (e.g., warp size 32 for CUDA, wavefront size 64 for AMD) which are likely to perform better.
@@ -121,6 +74,53 @@ impl Optimization {
 }
 
 impl Kernel {
+    pub fn opt_reassociate_commutative(&self) -> (Optimization, u16) {
+        (Optimization::ReassociateCommutative, 1)
+    }
+
+    pub fn opt_unroll(&self) -> (Optimization, u16) {
+        (
+            Optimization::UnrollLoops {
+                factors: vec![8, 4, 16, 2],
+            },
+            4,
+        )
+    }
+
+    pub fn opt_split_global_to_local(&self) -> (Optimization, u16) {
+        let mut op_id = self.head;
+        let mut factors = Vec::new();
+        let mut seen_axes = Map::default();
+        while !op_id.is_null() {
+            if let Op::Index { len, scope, axis } = self.ops[op_id].op {
+                let mut l_factors: Vec<usize> = vec![32, 64, 16, 8, 4, 2];
+                if scope == Scope::Global {
+                    l_factors.retain(|&f| len.is_multiple_of(f));
+                    for &f in &l_factors {
+                        factors.push((op_id, f));
+                    }
+                    seen_axes.insert(axis, op_id);
+                }
+                if scope == Scope::Local {
+                    if let Some(global_id) = seen_axes.get(&axis) {
+                        factors.retain(|(op_id, _)| global_id != op_id);
+                    }
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        let n_configs = factors.len() as u16;
+        (Optimization::SplitGlobalToLocal { factors }, n_configs)
+    }
+
+    pub fn opt_fuse_mad(&self) -> (Optimization, u16) {
+        (Optimization::FuseMad, 1)
+    }
+
+    pub fn opt_unroll_constant_loops(&self) -> (Optimization, u16) {
+        (Optimization::UnrollConstantLoops, 1)
+    }
+
     pub fn run_always_on_optimizations(&mut self) {
         self.constant_folding();
         self.move_constants_to_beginning();
