@@ -16,7 +16,7 @@ static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 8] = [
     Kernel::opt_reassociate_commutative,
     Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
-    Kernel::opt_split_global_to_register,
+    Kernel::opt_upcast,
     Kernel::opt_fuse_mad,
     Kernel::opt_unroll_constant_loops,
     Kernel::opt_warp_reduce,
@@ -27,7 +27,7 @@ pub enum Optimization {
     ReassociateCommutative,
     UnrollLoops { factors: Vec<usize> },
     SplitGlobalToLocal { factors: Vec<(OpId, usize)> },
-    SplitGlobalToRegister { factors: Vec<(OpId, usize)> },
+    Upcast { factors: Vec<(OpId, usize)> },
     FuseMad,
     UnrollConstantLoops,
     WarpReduce { factors: Vec<(OpId, usize)> },
@@ -69,24 +69,9 @@ impl Optimization {
                     ],
                 );
             }
-            Optimization::SplitGlobalToRegister { factors } => {
+            Optimization::Upcast { factors } => {
                 let (op_id, factor) = factors[config as usize];
-                let (len, axis) = if let Op::Index { len, axis, .. } = kernel.ops[op_id].op {
-                    (len, axis)
-                } else {
-                    unreachable!()
-                };
-                kernel.split_dim(
-                    op_id,
-                    vec![
-                        Op::Index {
-                            len: len / factor,
-                            scope: Scope::Global,
-                            axis,
-                        },
-                        Op::Loop { len: factor },
-                    ],
-                );
+                kernel.upcast(op_id, factor);
             }
             Optimization::FuseMad => {
                 kernel.fuse_mad();
@@ -142,10 +127,10 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         let n_configs = factors.len() as u16;
-        (Optimization::SplitGlobalToLocal { factors }, n_configs)
+        (Optimization::Upcast { factors }, n_configs)
     }
 
-    pub fn opt_split_global_to_register(&self) -> (Optimization, u16) {
+    pub fn opt_upcast(&self) -> (Optimization, u16) {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -161,7 +146,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         let n_configs = factors.len() as u16;
-        (Optimization::SplitGlobalToRegister { factors }, n_configs)
+        (Optimization::Upcast { factors }, n_configs)
     }
 
     pub fn opt_fuse_mad(&self) -> (Optimization, u16) {
