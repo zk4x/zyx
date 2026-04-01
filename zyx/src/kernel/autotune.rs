@@ -12,10 +12,11 @@ use std::{thread, u64};
 
 #[allow(unused)]
 
-static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 7] = [
+static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 8] = [
     Kernel::opt_reassociate_commutative,
     Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
+    Kernel::opt_split_global_to_register,
     Kernel::opt_fuse_mad,
     Kernel::opt_unroll_constant_loops,
     Kernel::opt_warp_reduce,
@@ -26,6 +27,7 @@ pub enum Optimization {
     ReassociateCommutative,
     UnrollLoops { factors: Vec<usize> },
     SplitGlobalToLocal { factors: Vec<(OpId, usize)> },
+    SplitGlobalToRegister { factors: Vec<(OpId, usize)> },
     FuseMad,
     UnrollConstantLoops,
     WarpReduce { factors: Vec<(OpId, usize)> },
@@ -64,6 +66,25 @@ impl Optimization {
                             scope: Scope::Local,
                             axis,
                         },
+                    ],
+                );
+            }
+            Optimization::SplitGlobalToRegister { factors } => {
+                let (op_id, factor) = factors[config as usize];
+                let (len, axis) = if let Op::Index { len, axis, .. } = kernel.ops[op_id].op {
+                    (len, axis)
+                } else {
+                    unreachable!()
+                };
+                kernel.split_dim(
+                    op_id,
+                    vec![
+                        Op::Index {
+                            len: len / factor,
+                            scope: Scope::Global,
+                            axis,
+                        },
+                        Op::Loop { len: factor },
                     ],
                 );
             }
@@ -122,6 +143,25 @@ impl Kernel {
         }
         let n_configs = factors.len() as u16;
         (Optimization::SplitGlobalToLocal { factors }, n_configs)
+    }
+
+    pub fn opt_split_global_to_register(&self) -> (Optimization, u16) {
+        let mut factors = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Index { len, scope, axis, .. } = self.ops[op_id].op {
+                let mut r_factors: Vec<usize> = vec![4, 8, 2, 16];
+                if scope == Scope::Global {
+                    r_factors.retain(|&f| len.is_multiple_of(f) && len / f >= 4);
+                    for &f in &r_factors {
+                        factors.push((op_id, f));
+                    }
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        let n_configs = factors.len() as u16;
+        (Optimization::SplitGlobalToRegister { factors }, n_configs)
     }
 
     pub fn opt_fuse_mad(&self) -> (Optimization, u16) {
