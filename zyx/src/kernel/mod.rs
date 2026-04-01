@@ -572,7 +572,12 @@ impl Kernel {
                     let flops = flops as u64;
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
-                Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                Op::Cast { x, .. } => {
+                    let Info { shape, .. } = stack[x].clone();
+                    let flops = 0; // Cast is not computation
+                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                }
+                Op::Unary { x, .. } => {
                     let Info { shape, .. } = stack[x].clone();
                     let flops = shape.iter().product::<Dim>() as u64;
                     Info { shape, flops, mem_read: 0, mem_write: 0 }

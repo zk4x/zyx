@@ -4,17 +4,17 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Device},
     cache::Cache,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
-    runtime::{Pool, Runtime, deallocate_tensors},
+    runtime::{deallocate_tensors, Pool, Runtime},
     schedule::schedule,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
+    DType, DebugMask, Map, Set, ZyxError,
 };
 use std::{collections::BTreeMap, hash::BuildHasherDefault};
 
@@ -688,7 +688,16 @@ impl<'a> Kernelizer<'a> {
             kernel.verify();
         }
 
-        let (program_id, opts) = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, flop, read, write, self.debug);
+        let (program_id, opts) = kernel.autotune(
+            &args,
+            device,
+            &mut pool.pool,
+            self.autotune_config,
+            flop,
+            read,
+            write,
+            self.debug,
+        );
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
         let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
