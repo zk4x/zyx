@@ -121,10 +121,10 @@ impl Optimization {
                     kernel.split_dim(
                         *reduce_id,
                         vec![
-                            Op::Loop { len: reduce_factor },
                             Op::Loop {
                                 len: original_len / reduce_factor,
                             },
+                            Op::Loop { len: reduce_factor },
                         ],
                     );
                 }
@@ -348,7 +348,6 @@ impl Kernel {
         kernel.debug_colorless();
 
         let (opt, n_configs) = kernel.opt_matmul_register_tiling();
-        eprintln!("DEBUG: trying {} configs", n_configs);
         if n_configs == 0 {
             return (
                 device.compile(&kernel, debug.asm()).unwrap(),
@@ -358,15 +357,29 @@ impl Kernel {
                 },
             );
         }
-        let mut test_kernel = kernel.clone();
-        eprintln!("DEBUG: trying config 0");
-        opt.apply(&mut test_kernel, 0);
-        test_kernel.run_always_on_optimizations();
+
+        let dev_info_ptr: *const DeviceInfo = device.info();
+        let dev_info_ref = unsafe { &*dev_info_ptr };
+
+        // Try multiple configs to find one with upcast
+        let mut best_kernel = kernel.clone();
+        let mut best_cost = f64::MAX;
+
+        for config in 0..n_configs.min(20) {
+            let mut test_kernel = kernel.clone();
+            opt.apply(&mut test_kernel, config);
+            test_kernel.run_always_on_optimizations();
+            let cost = test_kernel.get_cost(dev_info_ref);
+            if cost < best_cost {
+                best_cost = cost;
+                best_kernel = test_kernel;
+            }
+        }
+
+        kernel = best_kernel;
 
         println!();
         kernel.debug_colorless();
-        kernel.run_always_on_optimizations();
-
         kernel.launch_with_timings(buffers, device, memory_pool, debug);
 
         (
