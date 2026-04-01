@@ -527,7 +527,86 @@ impl Kernel {
         self.ops.iter().map(|(id, node)| (id, &node.op))
     }
 
+
     pub fn flop_mem_rw(&self) -> (u64, u64, u64) {
+        #[derive(Clone)]
+        struct Info {
+            shape: Vec<Dim>,
+            flops: u64,
+            mem_read: u64,
+            mem_write: u64,
+        }
+
+        let mut stack: Map<OpId, Info> = Map::default();
+
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let info = match self.at(op_id) {
+                Op::ConstView(x) => {
+                    let shape = x.1.shape();
+                    Info { shape, flops: 0, mem_read: 0, mem_write: 0 }
+                }
+                Op::LoadView(x) => {
+                    let (dtype, view) = x.as_ref();
+                    let shape = view.shape();
+                    let mem_read = view.original_numel() as u64 * dtype.byte_size() as u64;
+                    Info { shape, flops: 0, mem_read, mem_write: 0 }
+                }
+                Op::StoreView { src, dtype } => {
+                    let Info { shape, .. } = stack[src].clone();
+                    let mem_write = shape.iter().product::<Dim>() as u64 * dtype.byte_size() as u64;
+                    Info { shape, flops: 0, mem_read: 0, mem_write }
+                }
+                Op::Move { mop, .. } => match mop.as_ref() {
+                    MoveOp::Reshape { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Expand { shape } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Permute { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Pad { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                },
+                Op::Reduce { x, n_axes, .. } => {
+                    let Info { mut shape, .. } = stack[x].clone();
+                    let rd: Dim = shape[shape.len() - n_axes..].iter().product();
+                    shape.truncate(shape.len() - n_axes);
+                    let n: Dim = shape.iter().product();
+                    let flops = n * (rd - 1);
+                    let flops = flops as u64;
+                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                }
+                Op::Cast { x, .. } | Op::Unary { x, .. } => {
+                    let Info { shape, .. } = stack[x].clone();
+                    let flops = shape.iter().product::<Dim>() as u64;
+                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                }
+                Op::Binary { x, .. } => {
+                    let Info { shape, .. } = stack[x].clone();
+                    let flops = shape.iter().product::<Dim>() as u64;
+                    Info { shape, flops, mem_read: 0, mem_write: 0 }
+                }
+                Op::WMMA { .. }
+                | Op::Vectorize { .. }
+                | Op::Devectorize { .. }
+                | Op::Store { .. }
+                | Op::If { .. }
+                | Op::EndIf
+                | Op::Barrier { .. }
+                | Op::Mad { .. }
+                | Op::Const(_)
+                | Op::Define { .. }
+                | Op::Load { .. }
+                | Op::Index { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop => todo!(),
+            };
+            stack.insert(op_id, info);
+            op_id = self.next_op(op_id);
+        }
+
+        stack.into_values().fold((0, 0, 0), |acc, info| {
+            (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write)
+        })
+    }
+
+    /*pub fn flop_mem_rw1(&self) -> (u64, u64, u64) {
         self.debug_colorless();
         let mut n_instructions = 0u64;
         let mut bytes_read = 0u64;
@@ -594,7 +673,7 @@ impl Kernel {
 
         let total_threads = gws[0] * gws[1] * gws[2] * lws[0] * lws[1] * lws[2];
         (n_instructions * total_threads, bytes_read, bytes_written)
-    }
+    }*/
 
     pub fn contains_stores(&self) -> bool {
         self.ops.values().any(|x| matches!(x.op, Op::StoreView { .. }))

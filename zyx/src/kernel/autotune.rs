@@ -380,6 +380,9 @@ impl Kernel {
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         config: &AutotuneConfig,
+        flop: u64,
+        read_bytes: u64,
+        write_bytes: u64,
         debug: DebugMask,
     ) -> (ProgramId, OptSeq) {
         let dev_info_ptr: *const DeviceInfo = device.info();
@@ -401,8 +404,6 @@ impl Kernel {
         // Initial seed
         let mut kernel = self.clone();
         kernel.run_always_on_optimizations();
-
-        let (flops, read_bytes, write_bytes) = kernel.flop_mem_rw();
 
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
         let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
@@ -526,7 +527,7 @@ impl Kernel {
                 }
 
                 let Ok((program_id, time)) =
-                    kernel.launch_with_timings(buffers, device, memory_pool, debug, flops, read_bytes, write_bytes)
+                    kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
                 else {
                     continue;
                 };
