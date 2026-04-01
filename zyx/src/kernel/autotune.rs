@@ -7,10 +7,10 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
-static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
+static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 9] = [
     Kernel::opt_reassociate_commutative,
     Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
@@ -19,6 +19,7 @@ static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
     Kernel::opt_fuse_mad,
     Kernel::opt_unroll_constant_loops,
     Kernel::opt_warp_reduce,
+    Kernel::opt_split_loop,
     Kernel::opt_licm,
 ];
 
@@ -40,6 +41,9 @@ pub enum Optimization {
     FuseMad,
     UnrollConstantLoops,
     WarpReduce {
+        factors: Vec<(OpId, usize)>,
+    },
+    SplitLoop {
         factors: Vec<(OpId, usize)>,
     },
     Licm,
@@ -155,8 +159,15 @@ impl Optimization {
                 kernel.unroll_constant_loops();
             }
             Optimization::WarpReduce { factors } => {
-                let (op_id, factor) = factors[config as usize];
+                let (op_id, factor) = factors[config];
                 kernel.optimize_warp_reduce_with(op_id, factor);
+            }
+            Optimization::SplitLoop { factors } => {
+                let (op_id, factor) = factors[config];
+                let Op::Loop { len } = kernel.ops[op_id].op else {
+                    unreachable!()
+                };
+                kernel.split_dim(op_id, vec![Op::Loop { len: len / factor }, Op::Loop { len: factor }]);
             }
             Optimization::Licm => {
                 kernel.loop_invariant_code_motion();
@@ -225,6 +236,7 @@ impl Kernel {
     }
 
     pub fn opt_register_tiling(&self) -> (Optimization, usize) {
+        let candidates: Vec<usize> = vec![2, 4, 8, 16];
         let mut global_upcasts = Map::default();
         let mut reduce_factors = Map::default();
         let mut reduce_ids = Set::default();
@@ -233,9 +245,9 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Loop { len } = self.ops[op_id].op {
                 if len >= 16 {
-                    let candidates: Vec<usize> = vec![2, 4, 8, 16];
                     let applicable: Vec<usize> = candidates
-                        .into_iter()
+                        .iter()
+                        .copied()
                         .filter(|&f| len.is_multiple_of(f) && len / f >= 4)
                         .collect();
                     if !applicable.is_empty() {
@@ -246,9 +258,9 @@ impl Kernel {
             }
             if let Op::Index { len, scope, .. } = self.ops[op_id].op {
                 if scope == Scope::Global && len >= 8 {
-                    let candidates: Vec<usize> = vec![2, 4, 8, 16];
                     let applicable: Vec<usize> = candidates
-                        .into_iter()
+                        .iter()
+                        .copied()
                         .filter(|&f| len.is_multiple_of(f) && len / f >= 4)
                         .collect();
                     if !applicable.is_empty() {
@@ -291,13 +303,13 @@ impl Kernel {
     }
 
     pub fn opt_warp_reduce(&self) -> (Optimization, usize) {
+        let candidates = vec![32, 16, 8, 64];
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Loop { len } = self.ops[op_id].op {
                 // No point in doing this with small loops
                 if len >= 256 {
-                    let candidates = vec![32, 16, 8, 64];
                     for &factor in &candidates {
                         // no point in this if second loop is too large
                         if len.is_multiple_of(factor) && len / factor >= factor {
@@ -314,6 +326,26 @@ impl Kernel {
 
     pub fn opt_licm(&self) -> (Optimization, usize) {
         (Optimization::Licm, 1)
+    }
+
+    pub fn opt_split_loop(&self) -> (Optimization, usize) {
+        let candidates = vec![8, 16, 4, 2];
+        let mut factors = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Loop { len } = self.ops[op_id].op {
+                if len >= 16 {
+                    for &factor in &candidates {
+                        if len.is_multiple_of(factor) {
+                            factors.push((op_id, factor));
+                        }
+                    }
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        let n_configs = factors.len();
+        (Optimization::SplitLoop { factors }, n_configs)
     }
 
     pub fn run_always_on_optimizations(&mut self) {
@@ -406,11 +438,10 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
-        let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
+        let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
         let mult = n_seeds.min(total_configs);
         for opt_id in 0..AVAILABLE_OPTIMIZATIONS.len() {
-            let n_configs_to_try =
-                ((avail_configs[opt_id].1 as usize * mult) as f32 / total_configs as f32).ceil() as usize;
+            let n_configs_to_try = ((avail_configs[opt_id].1 * mult) as f32 / total_configs as f32).ceil() as usize;
             let mut config_id = 0;
             while config_id < n_configs_to_try {
                 let mut opt_seq = OptSeq {
@@ -455,13 +486,11 @@ impl Kernel {
                         opt_seq.apply(&mut kernel);
 
                         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
-                        let total_configs = avail_configs.iter().map(|(_, x)| *x as usize).sum::<usize>();
+                        let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
                         let mult = n_added_per_step.min(total_configs);
 
                         for (opt_id, _config_fn) in AVAILABLE_OPTIMIZATIONS.iter().enumerate() {
-                            let av_configs = &avail_configs[opt_id];
-                            let n_configs_to_try =
-                                ((av_configs.1 as usize * mult) as f32 / total_configs as f32).ceil() as usize;
+                            let n_configs_to_try = (((&avail_configs[opt_id]).1 * mult) as f32 / total_configs as f32).ceil() as usize;
 
                             for config_id in 0..n_configs_to_try {
                                 let mut opts = opt_seq.opts.clone();
