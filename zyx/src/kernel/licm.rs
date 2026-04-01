@@ -1,10 +1,15 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use super::autotune::Optimization;
 use crate::kernel::{Kernel, Op, OpId};
 use crate::{Map, Set};
 
 impl Kernel {
+    pub fn opt_licm(&self) -> (Optimization, usize) {
+        (Optimization::Licm, 1)
+    }
+
     pub fn swap_commutative(&mut self) {
         // Tracks whether a value depends on a loop index
         let mut loop_dep: Map<OpId, usize> = Map::default();

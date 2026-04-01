@@ -1,14 +1,28 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use super::autotune::Optimization;
 #[allow(unused)]
 use crate::{
-    Map,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
+    Map,
 };
 
 impl Kernel {
+    pub fn opt_unroll(&self) -> (Optimization, usize) {
+        (
+            Optimization::UnrollLoops {
+                factors: vec![8, 4, 16, 2],
+            },
+            4,
+        )
+    }
+
+    pub fn opt_unroll_constant_loops(&self) -> (Optimization, usize) {
+        (Optimization::UnrollConstantLoops, 1)
+    }
+
     pub fn unroll_loops(&mut self, unroll_dim: usize) {
         let mut endloop_ids = Vec::new();
         let mut op_id = self.tail;

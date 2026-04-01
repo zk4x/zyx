@@ -1,11 +1,34 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
+use super::autotune::Optimization;
 use crate::dtype::Constant;
 use crate::kernel::{BOp, Kernel, Op, OpId, Scope};
 use crate::DType;
 
 impl Kernel {
+    pub fn opt_warp_reduce(&self) -> (Optimization, usize) {
+        let candidates = vec![32, 16, 8, 64];
+        let mut factors = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Loop { len } = self.ops[op_id].op {
+                // No point in doing this with small loops
+                if len >= 256 {
+                    for &factor in &candidates {
+                        // no point in this if second loop is too large
+                        if len.is_multiple_of(factor) && len / factor >= factor {
+                            factors.push((op_id, factor));
+                        }
+                    }
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        let n_configs = factors.len();
+        (Optimization::WarpReduce { factors }, n_configs)
+    }
+
     pub fn optimize_warp_reduce_with(&mut self, loop_start: OpId, factor: usize) {
         let Some(loop_end) = find_reduce_loop_end(self, loop_start) else {
             return;

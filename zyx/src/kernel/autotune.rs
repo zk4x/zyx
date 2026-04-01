@@ -7,7 +7,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 9] = [
@@ -177,177 +177,6 @@ impl Optimization {
 }
 
 impl Kernel {
-    pub fn opt_reassociate_commutative(&self) -> (Optimization, usize) {
-        (Optimization::ReassociateCommutative, 1)
-    }
-
-    pub fn opt_unroll(&self) -> (Optimization, usize) {
-        (
-            Optimization::UnrollLoops {
-                factors: vec![8, 4, 16, 2],
-            },
-            4,
-        )
-    }
-
-    pub fn opt_split_global_to_local(&self) -> (Optimization, usize) {
-        let mut op_id = self.head;
-        let mut factors = Vec::new();
-        let mut seen_axes = Map::default();
-        while !op_id.is_null() {
-            if let Op::Index { len, scope, axis } = self.ops[op_id].op {
-                let mut l_factors: Vec<usize> = vec![32, 64, 16, 8, 4, 2];
-                if scope == Scope::Global {
-                    l_factors.retain(|&f| len.is_multiple_of(f));
-                    for &f in &l_factors {
-                        factors.push((op_id, f));
-                    }
-                    seen_axes.insert(axis, op_id);
-                }
-                if scope == Scope::Local {
-                    if let Some(global_id) = seen_axes.get(&axis) {
-                        factors.retain(|(op_id, _)| global_id != op_id);
-                    }
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-        let n_configs = factors.len();
-        (Optimization::SplitGlobalToLocal { factors }, n_configs)
-    }
-
-    pub fn opt_upcast(&self) -> (Optimization, usize) {
-        let mut factors = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Index { len, scope, .. } = self.ops[op_id].op {
-                let mut r_factors: Vec<usize> = vec![4, 8, 2, 16];
-                if scope == Scope::Global {
-                    r_factors.retain(|&f| len.is_multiple_of(f) && len / f >= 4);
-                    for &f in &r_factors {
-                        factors.push((op_id, f));
-                    }
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-        let n_configs = factors.len() as usize;
-        (Optimization::Upcast { factors }, n_configs)
-    }
-
-    pub fn opt_register_tiling(&self) -> (Optimization, usize) {
-        let candidates: Vec<usize> = vec![2, 4, 8, 16];
-        let mut global_upcasts = Map::default();
-        let mut reduce_factors = Map::default();
-        let mut reduce_ids = Set::default();
-
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Loop { len } = self.ops[op_id].op {
-                if len >= 16 {
-                    let applicable: Vec<usize> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|&f| len.is_multiple_of(f) && len / f >= 4)
-                        .collect();
-                    if !applicable.is_empty() {
-                        reduce_factors.insert(op_id, applicable);
-                        reduce_ids.insert(op_id);
-                    }
-                }
-            }
-            if let Op::Index { len, scope, .. } = self.ops[op_id].op {
-                if scope == Scope::Global && len >= 8 {
-                    let applicable: Vec<usize> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|&f| len.is_multiple_of(f) && len / f >= 4)
-                        .collect();
-                    if !applicable.is_empty() {
-                        global_upcasts.insert(op_id, applicable);
-                    }
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        if global_upcasts.is_empty() || reduce_factors.is_empty() {
-            return (
-                Optimization::RegisterTiling {
-                    reduce_splits: reduce_factors,
-                    global_upcasts,
-                },
-                0,
-            );
-        }
-
-        let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
-        let n_reduce_options: usize = reduce_factors.values().map(|v| v.len()).product();
-
-        let n_configs = n_global_options * n_reduce_options;
-        (
-            Optimization::RegisterTiling {
-                reduce_splits: reduce_factors,
-                global_upcasts,
-            },
-            n_configs,
-        )
-    }
-
-    pub fn opt_fuse_mad(&self) -> (Optimization, usize) {
-        (Optimization::FuseMad, 1)
-    }
-
-    pub fn opt_unroll_constant_loops(&self) -> (Optimization, usize) {
-        (Optimization::UnrollConstantLoops, 1)
-    }
-
-    pub fn opt_warp_reduce(&self) -> (Optimization, usize) {
-        let candidates = vec![32, 16, 8, 64];
-        let mut factors = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Loop { len } = self.ops[op_id].op {
-                // No point in doing this with small loops
-                if len >= 256 {
-                    for &factor in &candidates {
-                        // no point in this if second loop is too large
-                        if len.is_multiple_of(factor) && len / factor >= factor {
-                            factors.push((op_id, factor));
-                        }
-                    }
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-        let n_configs = factors.len();
-        (Optimization::WarpReduce { factors }, n_configs)
-    }
-
-    pub fn opt_licm(&self) -> (Optimization, usize) {
-        (Optimization::Licm, 1)
-    }
-
-    pub fn opt_split_loop(&self) -> (Optimization, usize) {
-        let candidates = vec![8, 16, 4, 2];
-        let mut factors = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Loop { len } = self.ops[op_id].op {
-                if len >= 16 {
-                    for &factor in &candidates {
-                        if len.is_multiple_of(factor) {
-                            factors.push((op_id, factor));
-                        }
-                    }
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-        let n_configs = factors.len();
-        (Optimization::SplitLoop { factors }, n_configs)
-    }
-
     pub fn run_always_on_optimizations(&mut self) {
         self.constant_folding();
         self.move_constants_to_beginning();
@@ -490,7 +319,8 @@ impl Kernel {
                         let mult = n_added_per_step.min(total_configs);
 
                         for (opt_id, _config_fn) in AVAILABLE_OPTIMIZATIONS.iter().enumerate() {
-                            let n_configs_to_try = (((&avail_configs[opt_id]).1 * mult) as f32 / total_configs as f32).ceil() as usize;
+                            let n_configs_to_try =
+                                (((&avail_configs[opt_id]).1 * mult) as f32 / total_configs as f32).ceil() as usize;
 
                             for config_id in 0..n_configs_to_try {
                                 let mut opts = opt_seq.opts.clone();
