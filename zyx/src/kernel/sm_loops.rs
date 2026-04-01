@@ -90,6 +90,8 @@ impl Kernel {
     /// Splits dim (index or loop) into multiple indices or loops
     pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) {
         //println!("splitting dim_id={dim_id}, splits={splits:?}");
+        let is_loop = matches!(self.ops[dim_id].op, Op::Loop { .. });
+
         #[cfg(debug_assertions)]
         {
             let mut dim = 1;
@@ -106,9 +108,15 @@ impl Kernel {
         }
 
         let last_dim_op = self.get_last_dim_op(dim_id);
-        for op in &splits {
+        let n_loops = splits.iter().filter(|op| matches!(op, Op::Loop { .. })).count();
+        for (i, op) in splits.iter().enumerate() {
             if matches!(op, Op::Loop { .. }) {
-                self.insert_after(last_dim_op, Op::EndLoop);
+                // If splitting a loop, add one fewer EndLoop (original loop has its own)
+                if is_loop && i == n_loops - 1 {
+                    // Don't add EndLoop for the last loop when splitting an existing loop
+                } else {
+                    self.insert_after(last_dim_op, Op::EndLoop);
+                }
             }
         }
 
@@ -145,7 +153,6 @@ impl Kernel {
             bop: BOp::Add,
         };
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 }

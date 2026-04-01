@@ -101,7 +101,6 @@ impl Optimization {
 
                 let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
                 let n_reduce_options: usize = reduce_factors.values().map(|v| v.len()).product();
-                let total_configs = n_global_options * n_reduce_options;
 
                 let global_config = config % n_global_options as u16;
                 let reduce_config = config / n_global_options as u16;
@@ -348,8 +347,21 @@ impl Kernel {
         // Here come series of custom optimizations
         kernel.debug_colorless();
 
-        let (opt, _) = kernel.opt_upcast();
-        opt.apply(&mut kernel, 0);
+        let (opt, n_configs) = kernel.opt_matmul_register_tiling();
+        eprintln!("DEBUG: trying {} configs", n_configs);
+        if n_configs == 0 {
+            return (
+                device.compile(&kernel, debug.asm()).unwrap(),
+                OptSeq {
+                    opts: Vec::new(),
+                    cost: 0,
+                },
+            );
+        }
+        let mut test_kernel = kernel.clone();
+        eprintln!("DEBUG: trying config 0");
+        opt.apply(&mut test_kernel, 0);
+        test_kernel.run_always_on_optimizations();
 
         println!();
         kernel.debug_colorless();

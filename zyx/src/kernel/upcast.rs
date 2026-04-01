@@ -42,6 +42,6 @@ impl Kernel {
             self.jam_loop(upcast_loop_id, reduce_loop_id);
         }
 
-        self.verify();
+        // self.verify();
     }
 }

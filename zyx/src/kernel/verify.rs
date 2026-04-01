@@ -6,6 +6,9 @@ use crate::{
 
 impl Kernel {
     pub fn verify(&self) {
+        if !cfg!(debug_assertions) {
+            return
+        }
         let mut stack = Vec::new();
         stack.push(Set::default());
         let check = |op_id, x: OpId, stack: &[Set<OpId>]| {
