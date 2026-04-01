@@ -7,17 +7,18 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
 #[allow(unused)]
 
-static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 5] = [
+static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, u16); 6] = [
     Kernel::opt_reassociate_commutative,
     Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
     Kernel::opt_fuse_mad,
     Kernel::opt_unroll_constant_loops,
+    Kernel::opt_warp_reduce,
 ];
 
 pub enum Optimization {
@@ -26,6 +27,7 @@ pub enum Optimization {
     SplitGlobalToLocal { factors: Vec<(OpId, usize)> },
     FuseMad,
     UnrollConstantLoops,
+    WarpReduce { factors: Vec<(OpId, usize)> },
 }
 
 impl Optimization {
@@ -68,6 +70,10 @@ impl Optimization {
             }
             Optimization::UnrollConstantLoops => {
                 kernel.unroll_constant_loops();
+            }
+            Optimization::WarpReduce { factors } => {
+                let (op_id, factor) = factors[config as usize];
+                kernel.optimize_warp_reduce_with(op_id, factor);
             }
         }
     }
@@ -121,6 +127,28 @@ impl Kernel {
         (Optimization::UnrollConstantLoops, 1)
     }
 
+    pub fn opt_warp_reduce(&self) -> (Optimization, u16) {
+        let mut factors = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Loop { len } = self.ops[op_id].op {
+                // No point in doing this with small loops
+                if len >= 256 {
+                    let candidates = vec![32, 16, 8, 64];
+                    for &factor in &candidates {
+                        // no point in this if second loop is too large
+                        if len.is_multiple_of(factor) && len / factor >= factor {
+                            factors.push((op_id, factor));
+                        }
+                    }
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        let n_configs = factors.len() as u16;
+        (Optimization::WarpReduce { factors }, n_configs)
+    }
+
     pub fn run_always_on_optimizations(&mut self) {
         self.constant_folding();
         self.move_constants_to_beginning();
@@ -134,7 +162,7 @@ impl Kernel {
 
     /// Autotune for debugging, applying only a selected series of optimizations
     #[allow(unused)]
-    pub fn autotune(
+    pub fn autotune1(
         &self,
         buffers: &[BufferId],
         device: &mut Device,
@@ -148,7 +176,6 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
-        kernel.optimize_warp_reduce();
 
         println!();
         kernel.debug_colorless();
@@ -166,7 +193,7 @@ impl Kernel {
     }
 
     /// Release mode autotune with beam like search and multithreading
-    pub fn autotune1(
+    pub fn autotune(
         &self,
         buffers: &[BufferId],
         device: &mut Device,

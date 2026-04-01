@@ -3,15 +3,10 @@
 
 use crate::dtype::Constant;
 use crate::kernel::{BOp, Kernel, Op, OpId, Scope};
-use crate::shape::Dim;
 use crate::DType;
 
 impl Kernel {
-    pub fn optimize_warp_reduce(&mut self) {
-        let Some(loop_start) = find_reduce_loop_start(self) else {
-            return;
-        };
-
+    pub fn optimize_warp_reduce_with(&mut self, loop_start: OpId, factor: usize) {
         let Some(loop_end) = find_reduce_loop_end(self, loop_start) else {
             return;
         };
@@ -22,19 +17,11 @@ impl Kernel {
             return;
         };
 
-        if !should_optimize(loop_len) {
-            return;
-        };
-
         let Some((acc_define, acc_store, bop)) = find_reduce_pattern(self, loop_start, loop_end) else {
             return;
         };
 
-        let factor = 32;
         let outer_len = loop_len / factor;
-        if outer_len < 2 {
-            return;
-        }
 
         // Create local buffer of size factor
         let local_buf = self.insert_before(
@@ -88,13 +75,13 @@ impl Kernel {
         // Find the index computation inside the loop and modify it to stride by factor
         let mut op_id = self.next_op(loop_start);
         while op_id != loop_end {
-            if let Op::Binary { x, y, bop: BOp::Add } = self.at(op_id).clone() {
+            if let Op::Binary { x: _, y, bop: BOp::Add } = self.at(op_id).clone() {
                 // Check if this is an index computation
                 if let Op::Binary {
                     x: x2,
                     y: y2,
                     bop: BOp::Mul,
-                } = self.at(x).clone()
+                } = self.at(y).clone()
                 {
                     // This looks like: base + offset, where offset might be the loop index
                     // We need to multiply the offset by factor
@@ -108,8 +95,8 @@ impl Kernel {
                         },
                     );
                     self.ops[op_id].op = Op::Binary {
-                        x: new_offset,
-                        y: y2,
+                        x: y2,
+                        y: new_offset,
                         bop: BOp::Add,
                     };
                     break;
@@ -197,19 +184,6 @@ impl Kernel {
     }
 }
 
-fn find_reduce_loop_start(kernel: &Kernel) -> Option<OpId> {
-    let mut op_id = kernel.head;
-    while !op_id.is_null() {
-        if let Op::Loop { len, .. } = kernel.at(op_id) {
-            if *len >= 32 {
-                return Some(op_id);
-            }
-        }
-        op_id = kernel.next_op(op_id);
-    }
-    None
-}
-
 fn find_reduce_loop_end(kernel: &Kernel, loop_start: OpId) -> Option<OpId> {
     let mut depth = 0;
     let mut op_id = loop_start;
@@ -279,8 +253,4 @@ fn find_reduce_pattern(kernel: &Kernel, loop_start: OpId, loop_end: OpId) -> Opt
     } else {
         None
     }
-}
-
-fn should_optimize(loop_len: Dim) -> bool {
-    loop_len >= 32
 }
