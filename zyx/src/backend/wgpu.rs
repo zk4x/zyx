@@ -580,6 +580,20 @@ impl WGPUDevice {
                         loop_id -= 1;
                     }
                 }
+                &Op::If { condition } => {
+                    _ = writeln!(source, "{indent}if ({condition}) {{");
+                    indent += "  ";
+                }
+                Op::EndIf => {
+                    indent.pop();
+                    indent.pop();
+                    _ = writeln!(source, "{indent}}}");
+                }
+                Op::Barrier { scope } => match scope {
+                    Scope::Global => unreachable!(),
+                    Scope::Local => _ = writeln!(source, "{indent}workgroupBarrier();"),
+                    Scope::Register => unreachable!(),
+                },
             }
             op_id = kernel.next_op(op_id);
         }

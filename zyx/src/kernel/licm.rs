@@ -54,7 +54,7 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn reassociate_commutative(&mut self, _: u16) {
+    pub fn reassociate_commutative(&mut self) {
         let mut loop_dep: Map<OpId, usize> = Map::default();
         let mut loop_depth = 0;
         let mut op_id = self.head;
