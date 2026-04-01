@@ -20,6 +20,7 @@ mod jam_loops;
 mod licm;
 mod mma;
 mod sm_loops;
+mod upcast;
 mod unfold;
 mod unroll_loops;
 mod vectorize;

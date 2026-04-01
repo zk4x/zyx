@@ -148,8 +148,4 @@ impl Kernel {
         #[cfg(debug_assertions)]
         self.verify();
     }
-
-    pub fn upcast(&mut self, op_id: OpId, _factor: usize) {
-        todo!()
-    }
 }

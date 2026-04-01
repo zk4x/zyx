@@ -70,6 +70,9 @@ impl Optimization {
                 );
             }
             Optimization::Upcast { factors } => {
+                if factors.is_empty() {
+                    return;
+                }
                 let (op_id, factor) = factors[config as usize];
                 kernel.upcast(op_id, factor);
             }
