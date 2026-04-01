@@ -218,6 +218,7 @@ pub fn run_always_on_optimizations(&mut self) {
 
 ## What to Avoid
 
+- **Never commit changes unless the user explicitly asks for it** - Always ask before committing
 - Inheritance (use composition/enums)
 - `Rc<RefCell<T>>` unless absolutely necessary
 - Too many small files
