@@ -252,18 +252,22 @@ fn find_reduce_pattern(kernel: &Kernel, loop_start: OpId, loop_end: OpId) -> Opt
         op_id = kernel.next_op(op_id);
     }
 
+    let Some(acc_def) = acc_define else {
+        return None;
+    };
+
     op_id = kernel.next_op(loop_start);
     while op_id != loop_end {
         match kernel.at(op_id) {
             Op::Store { dst, .. } => {
-                if let Op::Define { scope, len, .. } = kernel.at(*dst) {
-                    if *scope == Scope::Register && *len == 1 {
-                        acc_store = Some(op_id);
-                    }
+                if *dst == acc_def {
+                    acc_store = Some(op_id);
                 }
             }
-            Op::Binary { bop: BOp::Max, .. } => {
-                bop = Some(BOp::Max);
+            Op::Binary { x, y, bop: op_bop } => {
+                if *x == acc_def || *y == acc_def {
+                    bop = Some(*op_bop);
+                }
             }
             _ => {}
         }
