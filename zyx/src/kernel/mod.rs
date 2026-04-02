@@ -25,11 +25,11 @@ mod mma;
 mod reassociate;
 mod register_tiling;
 mod sm_loops;
+mod tiled_reduce;
 mod unfold;
 mod unroll_loops;
 mod vectorize;
 mod verify;
-mod warp_reduce;
 //mod emulate;
 
 // TODO later make this dynamic u32 or u64 depending on max range

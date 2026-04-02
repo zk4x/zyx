@@ -7,7 +7,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
 static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
@@ -177,15 +177,18 @@ impl Kernel {
 
     /// Autotune for debugging, applying only a selected series of optimizations
     #[allow(unused)]
-    pub fn autotune_debug(
+    pub fn apply_selected_optimizations(
         &self,
         buffers: &[BufferId],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         config: &AutotuneConfig,
+        flop: u64,
+        read_bytes: u64,
+        write_bytes: u64,
         debug: DebugMask,
     ) -> (ProgramId, OptSeq) {
-        eprintln!("=== autotune_debug called ===");
+        //eprintln!("=== autotune_debug called ===");
         let mut kernel = self.clone();
         //println!("Before associate_commutative:");
         //kernel.debug_colorless();
@@ -197,20 +200,19 @@ impl Kernel {
         let (local_reduce_opt, n_local_reduce_configs) = kernel.opt_local_reduce();
         if n_local_reduce_configs > 0 {
             local_reduce_opt.apply(&mut kernel, 0);
-            eprintln!("=== After local reduce ===");
-            kernel.debug_colorless();
+            //eprintln!("=== After local reduce ===");
+            //kernel.debug_colorless();
         }
 
         //kernel.run_always_on_optimizations();
 
         //kernel.debug_colorless();
 
-        kernel.launch_with_timings(buffers, device, memory_pool, debug, 0, 0, 0);
+        let (program_id, _) = kernel
+            .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
+            .unwrap();
 
-        (
-            device.compile(&kernel, debug.asm()).unwrap(),
-            OptSeq { opts: Vec::new(), cost: Cost::default() },
-        )
+        (program_id, OptSeq { opts: Vec::new(), cost: Cost::default() })
     }
 
     /// Release mode autotune with beam like search and multithreading
@@ -225,8 +227,8 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> (ProgramId, OptSeq) {
-        if false {
-            return self.autotune_debug(buffers, device, memory_pool, config, debug);
+        if true {
+            return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
         let dev_info_ptr: *const DeviceInfo = device.info();

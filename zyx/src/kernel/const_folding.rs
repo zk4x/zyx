@@ -235,6 +235,7 @@ impl Kernel {
 
     // Loops that don't contain stores can be deleted
     pub fn delete_empty_loops(&mut self) {
+        // TODO delete empty ifs too
         let mut stack: Vec<(bool, Vec<OpId>)> = Vec::new();
         let mut dead = Set::default();
 
@@ -279,10 +280,12 @@ impl Kernel {
             if matches!(
                 op,
                 Op::Store { .. }
-                    | Op::WMMA { .. }
-                    | Op::Loop { .. }
                     | Op::Define { .. }
-                    | Op::EndLoop { .. }
+                    | Op::WMMA { .. }
+                    | Op::If { .. }
+                    | Op::EndIf
+                    | Op::Loop { .. }
+                    | Op::EndLoop
                     | Op::StoreView { .. }
             ) {
                 params.push(op_id);
