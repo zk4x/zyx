@@ -7,7 +7,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
@@ -526,6 +526,38 @@ struct Cost {
     local_loads_per_thread: u32,
     global_stores_per_thread: u32,
     local_stores_per_thread: u32,
+}
+
+impl PartialEq for Cost {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == core::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Cost {}
+
+impl Ord for Cost {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        // Global memory accesses are most expensive, prioritize minimizing them
+        // Global stores are most critical (write bandwidth)
+        self.global_stores_per_thread
+            .cmp(&other.global_stores_per_thread)
+            // Then global loads
+            .then(self.global_loads_per_thread.cmp(&other.global_loads_per_thread))
+            // Then total instructions (local access counts as ~1 instruction)
+            .then(
+                (self.instructions_per_thread + self.local_loads_per_thread + self.local_stores_per_thread)
+                    .cmp(&(other.instructions_per_thread + other.local_loads_per_thread + other.local_stores_per_thread)),
+            )
+            // Fewer threads with more work per thread is slightly preferred (less overhead)
+            .then(other.n_threads.cmp(&self.n_threads))
+    }
+}
+
+impl PartialOrd for Cost {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
