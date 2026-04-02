@@ -14,18 +14,97 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, scope, .. } = self.ops[op_id].op {
-                let mut r_factors: Vec<usize> = vec![4, 8, 2, 16];
                 if scope == Scope::Global {
-                    r_factors.retain(|&f| len.is_multiple_of(f) && len / f >= 4);
-                    for &f in &r_factors {
-                        factors.push((op_id, f));
+                    for &f in &[4, 8, 2, 16] {
+                        if len.is_multiple_of(f) && len / f >= 4 {
+                            factors.push((op_id, f));
+                        }
                     }
                 }
             }
             op_id = self.next_op(op_id);
         }
-        let n_configs = factors.len() as usize;
+        let n_configs = factors.len();
         (Optimization::Upcast { factors }, n_configs)
+    }
+
+    /// Helper function for remapping ops in a range and adjusting indices for defines.
+    /// Returns the op_id where the remapping loop ended (the EndLoop that closed the range).
+    fn remap_range_and_adjust_indices(
+        &mut self,
+        start_op_id: OpId,
+        end_op_id: OpId,
+        target_op_id: OpId,
+        remapping: &mut Map<OpId, OpId>,
+        defines: &Set<OpId>,
+        const_jam_dim: OpId,
+        jam_loop_id: OpId,
+        insert_end_loop: bool,
+    ) -> OpId {
+        // Clone ops from start_op_id to end_op_id
+        let mut op_id = start_op_id;
+        let mut t_op_id = target_op_id;
+        while op_id != end_op_id {
+            let mut op = self.ops[op_id].op.clone();
+            match self.at(op_id) {
+                Op::Load { .. } | Op::Define { .. } => unreachable!(),
+                Op::Store { .. } => {}
+                _ => {
+                    op.remap_params(remapping);
+                    t_op_id = self.insert_after(t_op_id, op);
+                    remapping.insert(op_id, t_op_id);
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        // Remap loop
+        let mut op_id = t_op_id;
+        let mut loop_level = 1;
+        loop {
+            op_id = self.next_op(op_id);
+            self.ops[op_id].op.remap_params(remapping);
+            match self.ops[op_id].op {
+                Op::Load { src, index, .. } | Op::Store { dst: src, index, .. } => {
+                    if defines.contains(&src) {
+                        let x = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x: index,
+                                y: const_jam_dim,
+                                bop: BOp::Mul,
+                            },
+                        );
+                        let new_index = self.insert_before(
+                            op_id,
+                            Op::Binary {
+                                x,
+                                y: remapping[&jam_loop_id],
+                                bop: BOp::Add,
+                            },
+                        );
+                        match &mut self.ops[op_id].op {
+                            Op::Load { index: idx, .. } | Op::Store { index: idx, .. } => {
+                                *idx = new_index;
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                Op::Loop { .. } => loop_level += 1,
+                Op::EndLoop => {
+                    loop_level -= 1;
+                    if loop_level == 0 {
+                        if insert_end_loop {
+                            self.insert_before(op_id, Op::EndLoop);
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        op_id
     }
 
     pub fn upcast(&mut self, op_id: OpId, factor: usize) {
@@ -76,24 +155,8 @@ impl Kernel {
         }
 
         if reduce_loop_id != OpId::NULL {
-            // Inline jam_loop implementation
             let jam_loop_id = upcast_loop_id;
             let inner_loop_id = reduce_loop_id;
-            #[cfg(debug_assertions)]
-            {
-                eprintln!("upcast: jamming loops {:?} {:?}", jam_loop_id, inner_loop_id);
-                //self.debug_colorless();
-            }
-            // If any pre loop op is load, we can't apply loop jam
-            // Disabled for upcast compatibility
-            // while op_id != inner_loop_id {
-            //     op_id = self.next_op(op_id);
-            //     if self.at(op_id).is_load() {
-            //         #[cfg(debug_assertions)]
-            //         eprintln!("  early return: load found between loops");
-            //         return;
-            //     }
-            // }
 
             let mut op_id = jam_loop_id;
             let mut loop_level = 0;
@@ -133,10 +196,6 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
 
-            debug_assert_ne!(end_inner_loop_id, OpId::NULL);
-            debug_assert_ne!(end_middle_loop_id, OpId::NULL);
-
-            // TODO checks that between the middle and the inner loop there are no ops that depend on ops inside the pre loop
             let mut op_id = middle_loop_id;
             while op_id != inner_loop_id {
                 if self.ops[op_id].op.parameters().any(|p| pre_loop_ops.contains(&p)) {
@@ -156,10 +215,8 @@ impl Kernel {
                 unreachable!()
             };
 
-            // Add constnat for dimension, will be used for indexing
             let const_jam_dim = self.insert_before(jam_loop_id, Op::Const(Constant::idx(jam_dim as u64)));
 
-            // ***** Pre loop *****
             // Move all defines before the loop
             let mut defines = Set::default();
             let mut op_id = jam_loop_id;
@@ -212,180 +269,29 @@ impl Kernel {
             }
             let end_pre_loop = self.insert_before(middle_loop_id, Op::EndLoop);
 
-            // ***** Inner loop *****
-            // Insert pre loop into inner loop and remap
             let mut remapping = Map::default();
-            let mut op_id = jam_loop_id;
-            let mut t_op_id = inner_loop_id;
-            while op_id != end_pre_loop {
-                let mut op = self.ops[op_id].op.clone();
-                match self.at(op_id) {
-                    Op::Load { .. } | Op::Define { .. } => unreachable!(),
-                    Op::Store { .. } => {}
-                    _ => {
-                        op.remap_params(&remapping);
-                        t_op_id = self.insert_after(t_op_id, op);
-                        remapping.insert(op_id, t_op_id);
-                    }
-                }
-                op_id = self.next_op(op_id);
-            }
+            self.remap_range_and_adjust_indices(
+                jam_loop_id,
+                end_pre_loop,
+                inner_loop_id,
+                &mut remapping,
+                &defines,
+                const_jam_dim,
+                jam_loop_id,
+                true,
+            );
 
-            // Remap inner loop
-            let mut op_id = t_op_id;
-            let mut loop_level = 1;
-            loop {
-                op_id = self.next_op(op_id);
-                self.ops[op_id].op.remap_params(&remapping);
-                match self.ops[op_id].op {
-                    Op::Load { src, index, .. } => {
-                        if defines.contains(&src) {
-                            let x = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x: index,
-                                    y: const_jam_dim,
-                                    bop: BOp::Mul,
-                                },
-                            );
-                            let new_index = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x,
-                                    y: remapping[&jam_loop_id],
-                                    bop: BOp::Add,
-                                },
-                            );
-                            let Op::Load { index, .. } = &mut self.ops[op_id].op else {
-                                unreachable!()
-                            };
-                            *index = new_index;
-                        }
-                    }
-                    Op::Store { dst, index, .. } => {
-                        if defines.contains(&dst) {
-                            let x = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x: index,
-                                    y: const_jam_dim,
-                                    bop: BOp::Mul,
-                                },
-                            );
-                            let new_index = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x,
-                                    y: remapping[&jam_loop_id],
-                                    bop: BOp::Add,
-                                },
-                            );
-                            let Op::Store { index, .. } = &mut self.ops[op_id].op else {
-                                unreachable!()
-                            };
-                            *index = new_index;
-                        }
-                    }
-                    Op::Loop { .. } => loop_level += 1,
-                    Op::EndLoop => {
-                        loop_level -= 1;
-                        if loop_level == 0 {
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            self.insert_before(op_id, Op::EndLoop);
-
-            // ***** Post inner loop *****
-            // Pre loop ops
             remapping.clear();
-            let mut t_op_id = end_middle_loop_id;
-            let mut op_id = jam_loop_id;
-            while op_id != end_pre_loop {
-                let mut op = self.ops[op_id].op.clone();
-                match self.at(op_id) {
-                    Op::Load { .. } | Op::Define { .. } => unreachable!(),
-                    Op::Store { .. } => {}
-                    _ => {
-                        op.remap_params(&remapping);
-                        t_op_id = self.insert_after(t_op_id, op);
-                        remapping.insert(op_id, t_op_id);
-                    }
-                }
-                op_id = self.next_op(op_id);
-            }
-
-            // Remap post loop ops
-            let mut op_id = t_op_id;
-            let mut loop_level = 1;
-            loop {
-                op_id = self.next_op(op_id);
-                self.ops[op_id].op.remap_params(&remapping);
-                match self.ops[op_id].op {
-                    Op::Load { src, index, .. } => {
-                        if defines.contains(&src) {
-                            let x = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x: index,
-                                    y: const_jam_dim,
-                                    bop: BOp::Mul,
-                                },
-                            );
-                            let new_index = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x,
-                                    y: remapping[&jam_loop_id],
-                                    bop: BOp::Add,
-                                },
-                            );
-                            let Op::Load { index, .. } = &mut self.ops[op_id].op else {
-                                unreachable!()
-                            };
-                            *index = new_index;
-                        }
-                    }
-                    Op::Store { dst, index, .. } => {
-                        if defines.contains(&dst) {
-                            let x = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x: index,
-                                    y: const_jam_dim,
-                                    bop: BOp::Mul,
-                                },
-                            );
-                            let new_index = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x,
-                                    y: remapping[&jam_loop_id],
-                                    bop: BOp::Add,
-                                },
-                            );
-                            let Op::Store { index, .. } = &mut self.ops[op_id].op else {
-                                unreachable!()
-                            };
-                            *index = new_index;
-                        }
-                    }
-                    Op::Loop { .. } => loop_level += 1,
-                    Op::EndLoop => {
-                        loop_level -= 1;
-                        if loop_level == 0 {
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            self.verify();
+            self.remap_range_and_adjust_indices(
+                jam_loop_id,
+                end_pre_loop,
+                end_middle_loop_id,
+                &mut remapping,
+                &defines,
+                const_jam_dim,
+                jam_loop_id,
+                false,
+            );
         }
-
-        // self.verify();
     }
 }
