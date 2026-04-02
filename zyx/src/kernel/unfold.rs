@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, Scope},
+    kernel::{BOp, Kernel, MoveOp, Op, OpId, Scope, IDX_T},
     shape::{Dim, UAxis},
+    Set,
 };
 
 impl Kernel {
@@ -46,7 +46,6 @@ impl Kernel {
             );
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
 
         self.unfold_reduces();
@@ -255,7 +254,6 @@ impl Kernel {
             };
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 
@@ -704,7 +702,6 @@ impl Kernel {
             op_id = self.prev_op(op_id);
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 

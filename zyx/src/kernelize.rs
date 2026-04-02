@@ -611,6 +611,7 @@ impl<'a> Kernelizer<'a> {
         if kernel.stores.is_empty() {
             println!("Empty stores in this kernel:");
             kernel.debug();
+            panic!("Empty stores in this kernel:");
         }
         debug_assert!(!kernel.stores.is_empty());
         debug_assert!(!kernel.ops.is_empty());
@@ -684,7 +685,6 @@ impl<'a> Kernelizer<'a> {
                 }
             }
 
-            #[cfg(debug_assertions)]
             kernel.verify();
         }
 
@@ -729,16 +729,6 @@ impl Runtime {
                 rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
             }
             if rcs2 != rcs {
-                println!("Realized nodes: {realized_nodes:?}");
-                for &nid in order {
-                    println!(
-                        "ID({nid:?}): {:?}, sh: {:?}, rcs: {}, rcs actual: {}",
-                        self.graph[nid],
-                        self.graph.shape(nid),
-                        rcs.get(&nid).copied().unwrap_or(0),
-                        rcs2.get(&nid).copied().unwrap_or(0),
-                    );
-                }
                 panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
             }
         }
@@ -857,12 +847,6 @@ impl Runtime {
         #[cfg(debug_assertions)]
         {
             if kernelizer.kernels.len() > KMKernelId(0) {
-                println!("realized_nodes={:?}", kernelizer.realized_nodes);
-                println!("Unrealized kernels:");
-                for kernel in kernelizer.kernels.values() {
-                    kernel.debug();
-                    println!();
-                }
                 panic!();
             }
             debug_assert!(to_eval.is_subset(&kernelizer.realized_nodes));

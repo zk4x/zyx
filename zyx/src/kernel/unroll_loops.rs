@@ -138,7 +138,6 @@ impl Kernel {
         }
         self.remove_op(endloop_id);
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 }

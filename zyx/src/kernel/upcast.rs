@@ -49,12 +49,6 @@ impl Kernel {
         );
         let upcast_loop_id = split_ids[1]; // The Loop created by split_dim
 
-        #[cfg(debug_assertions)]
-        {
-            eprintln!("upcast: splitting dim {} factor {}", len, factor);
-            self.debug_colorless();
-        }
-
         // Find the first loop nested inside the upcast loop with different length
         let mut reduce_loop_id = OpId::NULL;
         let mut loop_depth = 0;
@@ -79,14 +73,6 @@ impl Kernel {
                 _ => {}
             }
             op_id_iter = self.next_op(op_id_iter);
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            eprintln!(
-                "upcast: upcast_loop_id={:?} reduce_loop_id={:?}",
-                upcast_loop_id, reduce_loop_id
-            );
         }
 
         if reduce_loop_id != OpId::NULL {
@@ -146,14 +132,7 @@ impl Kernel {
                 }
                 op_id = self.next_op(op_id);
             }
-            #[cfg(debug_assertions)]
-            {
-                eprintln!(
-                    "  middle_loop_id={:?} end_middle_loop_id={:?} inner_loop_id={:?} end_inner_loop_id={:?}",
-                    middle_loop_id, end_middle_loop_id, inner_loop_id, end_inner_loop_id
-                );
-                eprintln!("  pre_loop_ops count={}", pre_loop_ops.len());
-            }
+
             debug_assert_ne!(end_inner_loop_id, OpId::NULL);
             debug_assert_ne!(end_middle_loop_id, OpId::NULL);
 
@@ -161,8 +140,6 @@ impl Kernel {
             let mut op_id = middle_loop_id;
             while op_id != inner_loop_id {
                 if self.ops[op_id].op.parameters().any(|p| pre_loop_ops.contains(&p)) {
-                    #[cfg(debug_assertions)]
-                    eprintln!("  early return: dependency between middle and inner loop");
                     return;
                 }
                 op_id = self.next_op(op_id);
@@ -170,8 +147,6 @@ impl Kernel {
             let mut op_id = end_inner_loop_id;
             while op_id != end_middle_loop_id {
                 if self.ops[op_id].op.parameters().any(|p| pre_loop_ops.contains(&p)) {
-                    #[cfg(debug_assertions)]
-                    eprintln!("  early return: dependency between end inner and end middle loop");
                     return;
                 }
                 op_id = self.next_op(op_id);
@@ -183,10 +158,6 @@ impl Kernel {
 
             // Add constnat for dimension, will be used for indexing
             let const_jam_dim = self.insert_before(jam_loop_id, Op::Const(Constant::idx(jam_dim as u64)));
-            #[cfg(debug_assertions)]
-            {
-                eprintln!("  jam_dim={}", jam_dim);
-            }
 
             // ***** Pre loop *****
             // Move all defines before the loop
@@ -204,10 +175,6 @@ impl Kernel {
                     defines.insert(op_id);
                     self.move_op_before(op_id, jam_loop_id);
                 }
-            }
-            #[cfg(debug_assertions)]
-            {
-                eprintln!("  defines count={}", defines.len());
             }
 
             // Reindex stores
@@ -416,14 +383,7 @@ impl Kernel {
                 }
             }
 
-            #[cfg(debug_assertions)]
             self.verify();
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            eprintln!("upcast: after jamming");
-            self.debug_colorless();
         }
 
         // self.verify();

@@ -138,7 +138,6 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 
@@ -231,7 +230,6 @@ impl Kernel {
             op_id = next;
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 
@@ -270,7 +268,6 @@ impl Kernel {
             self.remove_op(op_id);
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 
@@ -303,7 +300,6 @@ impl Kernel {
             }
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 
@@ -385,7 +381,6 @@ impl Kernel {
             op_id = temp;
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 

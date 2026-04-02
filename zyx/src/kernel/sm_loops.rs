@@ -83,7 +83,6 @@ impl Kernel {
             x = self.insert_after(loop_id, Op::Binary { x, y, bop: BOp::Div });
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 

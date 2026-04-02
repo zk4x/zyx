@@ -204,7 +204,6 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         // Here come series of custom optimizations
-        kernel.debug_colorless();
 
         let (opt, n_configs) = kernel.opt_register_tiling();
         if n_configs == 0 {
@@ -221,8 +220,6 @@ impl Kernel {
         opt.apply(&mut kernel, 68);
         kernel.run_always_on_optimizations();
 
-        println!();
-        kernel.debug_colorless();
         kernel.launch_with_timings(buffers, device, memory_pool, debug, 0, 0, 0);
 
         (

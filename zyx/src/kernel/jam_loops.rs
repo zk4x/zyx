@@ -4,9 +4,9 @@
 #![allow(unused)]
 
 use crate::{
-    Map, Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
+    Map, Set,
 };
 
 impl Kernel {
@@ -387,7 +387,6 @@ impl Kernel {
             }
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
 
         true

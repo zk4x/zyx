@@ -15,8 +15,6 @@ impl Kernel {
 
         use Op::*;
 
-        self.debug();
-
         let mut op_id = self.head;
         let mut loads: Vec<Vec<(OpId, OpId, Dim, OpId)>> = Vec::new();
         loads.push(Vec::new());
@@ -25,32 +23,28 @@ impl Kernel {
                 Loop { .. } => {
                     loads.push(Vec::new());
                 }
-                Load { src, index, .. } => {
-                    println!("load index: {:?}", self.at(index));
-                    match self.ops[index].op {
-                        Mad { x, y, z } => {
-                            if let Const(c) = self.ops[z].op {
-                                loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
-                            }
-                        }
-                        Binary { x, y, bop } if bop == BOp::Add => {
-                            if let Const(c) = self.ops[x].op {
-                                loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
-                            }
-                            if let Const(c) = self.ops[y].op {
-                                loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
-                            }
-                        }
-                        Const(c) => {
+                Load { src, index, .. } => match self.ops[index].op {
+                    Mad { x, y, z } => {
+                        if let Const(c) = self.ops[z].op {
                             loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
                         }
-                        _ => {}
                     }
-                }
+                    Binary { x, y, bop } if bop == BOp::Add => {
+                        if let Const(c) = self.ops[x].op {
+                            loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
+                        }
+                        if let Const(c) = self.ops[y].op {
+                            loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
+                        }
+                    }
+                    Const(c) => {
+                        loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
+                    }
+                    _ => {}
+                },
                 EndLoop => {
                     if let Some(mut loads) = loads.pop() {
                         if !loads.is_empty() {
-                            println!("{loads:?}");
                             // Check if constant offsets are continuous numbers
                             loads.sort_by_key(|(_, _, idx, _)| *idx);
                             let mut i = 0;

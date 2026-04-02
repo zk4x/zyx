@@ -861,9 +861,7 @@ impl Kernel {
                 Const(c) => {
                     indices.insert(OpId::NULL, (0, c.as_dim()));
                 }
-                ref op => {
-                    println!("op={op:?}");
-                }
+                _ => {}
             }
         }
 
@@ -992,7 +990,6 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 
@@ -1009,7 +1006,6 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        #[cfg(debug_assertions)]
         self.verify();
     }
 }

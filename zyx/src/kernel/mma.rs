@@ -14,11 +14,11 @@
 //
 
 use crate::{
-    DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, Op, OpId, Scope},
     shape::Dim,
+    DType, Map,
 };
 
 #[derive(Debug)]
@@ -224,11 +224,6 @@ impl Kernel {
     }
 
     fn write_mma_op(&mut self, stores: &[MMAStore], k_loop_id: OpId) {
-        self.debug();
-        for store in stores {
-            println!("{store:?}");
-        }
-
         // A load
         // TODO we need to put the warp row with stride 1, while offset needs to be adjusted
         let mut idx = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
