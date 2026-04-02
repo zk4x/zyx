@@ -88,7 +88,8 @@ impl Kernel {
     }
 
     /// Splits dim (index or loop) into multiple indices or loops
-    pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) {
+    /// Returns the OpIds of the created split operations in the order they were provided
+    pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) -> Vec<OpId> {
         //println!("splitting dim_id={dim_id}, splits={splits:?}");
         let is_loop = matches!(self.ops[dim_id].op, Op::Loop { .. });
 
@@ -137,22 +138,31 @@ impl Kernel {
         strides.pop(); // skip stride 1
         let last_op = splits.pop().unwrap();
 
-        // Insert splits
+        // Insert splits and collect their OpIds
+        // Splits are inserted in reverse order (last to first) because insert_before
+        // always inserts before dim_id, so later insertions end up earlier in the sequence
+        let mut split_ids: Vec<OpId> = Vec::new();
         let mut acc = self.insert_before(dim_id, Op::Const(Constant::idx(0)));
         for (&st, op) in strides.iter().zip(splits) {
             let x = self.insert_before(dim_id, Op::Const(Constant::idx(st as u64)));
             let y = self.insert_before(dim_id, op);
             acc = self.insert_before(dim_id, Op::Mad { x, y, z: acc });
+            split_ids.push(y);
         }
 
         // Replace previous op
         let y = self.insert_before(dim_id, last_op);
+        split_ids.push(y);
         self.ops[dim_id].op = Op::Binary {
             x: acc,
             y,
             bop: BOp::Add,
         };
 
+        // Reverse to get the original order (first split first)
+        split_ids.reverse();
+
         self.verify();
+        split_ids
     }
 }

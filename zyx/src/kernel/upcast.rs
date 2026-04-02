@@ -35,7 +35,8 @@ impl Kernel {
         debug_assert_eq!(scope, Scope::Global);
         debug_assert!(len.is_multiple_of(factor));
 
-        self.split_dim(
+        // split_dim returns [Index_id, Loop_id]
+        let split_ids = self.split_dim(
             op_id,
             vec![
                 Op::Index {
@@ -46,34 +47,67 @@ impl Kernel {
                 Op::Loop { len: factor },
             ],
         );
+        let upcast_loop_id = split_ids[1]; // The Loop created by split_dim
 
-        let mut upcast_loop_id = OpId::NULL;
+        #[cfg(debug_assertions)]
+        {
+            eprintln!("upcast: splitting dim {} factor {}", len, factor);
+            self.debug_colorless();
+        }
+
+        // Find the first loop nested inside the upcast loop with different length
         let mut reduce_loop_id = OpId::NULL;
-
-        let mut op_id_iter = self.head;
+        let mut loop_depth = 0;
+        let mut op_id_iter = self.next_op(upcast_loop_id);
         while !op_id_iter.is_null() {
-            if let Op::Loop { len, .. } = self.ops[op_id_iter].op {
-                if len == factor && upcast_loop_id == OpId::NULL {
-                    upcast_loop_id = op_id_iter;
-                } else if len != factor {
-                    reduce_loop_id = op_id_iter;
+            match self.ops[op_id_iter].op {
+                Op::Loop { len, .. } => {
+                    loop_depth += 1;
+                    // First loop nested inside upcast loop with different length
+                    if len != factor && loop_depth == 1 {
+                        reduce_loop_id = op_id_iter;
+                        break;
+                    }
                 }
+                Op::EndLoop => {
+                    if loop_depth == 0 {
+                        // Exited the upcast loop
+                        break;
+                    }
+                    loop_depth -= 1;
+                }
+                _ => {}
             }
             op_id_iter = self.next_op(op_id_iter);
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            eprintln!(
+                "upcast: upcast_loop_id={:?} reduce_loop_id={:?}",
+                upcast_loop_id, reduce_loop_id
+            );
         }
 
         if reduce_loop_id != OpId::NULL {
             // Inline jam_loop implementation
             let jam_loop_id = upcast_loop_id;
             let inner_loop_id = reduce_loop_id;
-            // If any pre loop op is load, we can't apply loop jam
-            let mut op_id = jam_loop_id;
-            while op_id != inner_loop_id {
-                op_id = self.next_op(op_id);
-                if self.at(op_id).is_load() {
-                    return;
-                }
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("upcast: jamming loops {:?} {:?}", jam_loop_id, inner_loop_id);
+                //self.debug_colorless();
             }
+            // If any pre loop op is load, we can't apply loop jam
+            // Disabled for upcast compatibility
+            // while op_id != inner_loop_id {
+            //     op_id = self.next_op(op_id);
+            //     if self.at(op_id).is_load() {
+            //         #[cfg(debug_assertions)]
+            //         eprintln!("  early return: load found between loops");
+            //         return;
+            //     }
+            // }
 
             let mut op_id = jam_loop_id;
             let mut loop_level = 0;
@@ -112,6 +146,14 @@ impl Kernel {
                 }
                 op_id = self.next_op(op_id);
             }
+            #[cfg(debug_assertions)]
+            {
+                eprintln!(
+                    "  middle_loop_id={:?} end_middle_loop_id={:?} inner_loop_id={:?} end_inner_loop_id={:?}",
+                    middle_loop_id, end_middle_loop_id, inner_loop_id, end_inner_loop_id
+                );
+                eprintln!("  pre_loop_ops count={}", pre_loop_ops.len());
+            }
             debug_assert_ne!(end_inner_loop_id, OpId::NULL);
             debug_assert_ne!(end_middle_loop_id, OpId::NULL);
 
@@ -119,6 +161,8 @@ impl Kernel {
             let mut op_id = middle_loop_id;
             while op_id != inner_loop_id {
                 if self.ops[op_id].op.parameters().any(|p| pre_loop_ops.contains(&p)) {
+                    #[cfg(debug_assertions)]
+                    eprintln!("  early return: dependency between middle and inner loop");
                     return;
                 }
                 op_id = self.next_op(op_id);
@@ -126,6 +170,8 @@ impl Kernel {
             let mut op_id = end_inner_loop_id;
             while op_id != end_middle_loop_id {
                 if self.ops[op_id].op.parameters().any(|p| pre_loop_ops.contains(&p)) {
+                    #[cfg(debug_assertions)]
+                    eprintln!("  early return: dependency between end inner and end middle loop");
                     return;
                 }
                 op_id = self.next_op(op_id);
@@ -137,6 +183,10 @@ impl Kernel {
 
             // Add constnat for dimension, will be used for indexing
             let const_jam_dim = self.insert_before(jam_loop_id, Op::Const(Constant::idx(jam_dim as u64)));
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("  jam_dim={}", jam_dim);
+            }
 
             // ***** Pre loop *****
             // Move all defines before the loop
@@ -154,6 +204,10 @@ impl Kernel {
                     defines.insert(op_id);
                     self.move_op_before(op_id, jam_loop_id);
                 }
+            }
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("  defines count={}", defines.len());
             }
 
             // Reindex stores
@@ -364,6 +418,12 @@ impl Kernel {
 
             #[cfg(debug_assertions)]
             self.verify();
+        }
+
+        #[cfg(debug_assertions)]
+        {
+            eprintln!("upcast: after jamming");
+            self.debug_colorless();
         }
 
         // self.verify();

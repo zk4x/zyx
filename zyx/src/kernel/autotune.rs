@@ -10,9 +10,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
-static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 9] = [
+static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
     Kernel::opt_reassociate_commutative,
-    Kernel::opt_unroll,
+    //Kernel::opt_unroll, // disabled - interacts badly with upcast
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
     //Kernel::opt_register_tiling,
@@ -574,6 +574,7 @@ fn remove_worst(items: &mut Vec<OptSeq>, mut n: usize, rng: &mut Rng) {
 }
 
 fn sample_best<'a>(items: &'a [OptSeq], rng: &mut Rng) -> &'a OptSeq {
+    debug_assert!(!items.is_empty(), "sample_best called with empty items");
     const K: usize = 16;
     let len = items.len();
     let mut best_idx = rng.range::<u64>(0..len as u64) as usize;
