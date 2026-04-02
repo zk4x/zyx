@@ -15,8 +15,8 @@ use nanoserde::DeJson;
 use pollster::FutureExt;
 use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc, time::Duration};
 use wgpu::{
-    BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource,
-    SubmissionIndex, wgt::PollType,
+    BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource, SubmissionIndex,
+    wgt::PollType,
 };
 
 #[derive(DeJson, Debug)]
@@ -70,17 +70,11 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError {
-            status: super::ErrorStatus::Initialization,
-            context: "WGPU configured out.".into(),
-        });
+        return Err(BackendError { status: super::ErrorStatus::Initialization, context: "WGPU configured out.".into() });
     }
 
     let power_preference = PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::all(),
-        ..Default::default()
-    });
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: wgpu::Backends::all(), ..Default::default() });
 
     if debug_dev {
         println!("WGPU Requesting device with {power_preference:#?} power preference");
@@ -88,10 +82,7 @@ pub(super) fn initialize_device(
 
     let (wgpu_adapter, wgpu_device, wgpu_queue, info) = async {
         let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference,
-                ..Default::default()
-            })
+            .request_adapter(&wgpu::RequestAdapterOptions { power_preference, ..Default::default() })
             .await
             .expect("Failed at adapter creation.");
         let info = adapter.get_info();
@@ -109,10 +100,7 @@ pub(super) fn initialize_device(
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: features,
-                required_limits: wgpu::Limits {
-                    max_storage_buffers_per_shader_stage: 8,
-                    ..Default::default()
-                },
+                required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 8, ..Default::default() },
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::Off,
@@ -173,10 +161,7 @@ impl WGPUMemoryPool {
         const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
         let bytes = (bytes + ALIGN - 1) / ALIGN * ALIGN;
         if bytes > self.free_bytes {
-            return Err(BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: "".into(),
-            });
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
         let buffer = self.device.create_buffer(&BufferDescriptor {
             label: None,
@@ -211,12 +196,7 @@ impl WGPUMemoryPool {
         self.queue.submit(Some(encoder.finish()));
         Ok(Event::WGPU(WGPUEvent { submission_index: None }))
     }*/
-    pub fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: BufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<super::Event, BackendError> {
+    pub fn host_to_pool(&mut self, src: &[u8], dst: BufferId, event_wait_list: Vec<Event>) -> Result<super::Event, BackendError> {
         let _ = event_wait_list;
         let dst = &self.buffers[dst];
 
@@ -249,9 +229,9 @@ impl WGPUMemoryPool {
             self.queue.write_buffer(dst, 0, src);
         }
 
-        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("GpuBuffer::write"),
-        });
+        let encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("GpuBuffer::write") });
         self.queue.submit(Some(encoder.finish()));
 
         Ok(Event::WGPU(WGPUEvent { submission_index: None }))
@@ -278,12 +258,7 @@ impl WGPUMemoryPool {
         Ok(())
     }*/
 
-    pub fn pool_to_host(
-        &mut self,
-        src: BufferId,
-        dst: &mut [u8],
-        event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: BufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let _ = event_wait_list; // You can eventually use events if needed
 
         // Get the source buffer
@@ -298,9 +273,9 @@ impl WGPUMemoryPool {
         });
 
         // Record a command to copy the data from the GPU buffer to the download buffer
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("CopyBufferEncoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("CopyBufferEncoder") });
 
         // Copy data from the source buffer to the download buffer
         encoder.copy_buffer_to_buffer(
@@ -326,10 +301,7 @@ impl WGPUMemoryPool {
 
         // Poll the device to wait for the buffer mapping to complete
         self.device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
+            .poll(wgpu::PollType::Wait { submission_index: None, timeout: None })
             .unwrap(); // Make sure polling completes
 
         // Wait for the map operation to complete
@@ -352,10 +324,9 @@ impl WGPUMemoryPool {
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         for event in events {
             if let Event::WGPU(event) = event {
-                _ = self.device.poll(PollType::Wait {
-                    submission_index: event.submission_index,
-                    timeout: Some(Duration::from_mins(5)),
-                });
+                _ = self
+                    .device
+                    .poll(PollType::Wait { submission_index: event.submission_index, timeout: Some(Duration::from_mins(5)) });
             }
         }
         Ok(())
@@ -401,10 +372,7 @@ impl WGPUDevice {
         }
 
         if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "Invalid local work size.".into(),
-            });
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
         let mut arg_ro_flags = Vec::new();
@@ -448,12 +416,7 @@ impl WGPUDevice {
                     dtypes.insert(op_id, x.dtype());
                     writeln!(source, "{indent}const r{op_id}: {} = {};", x.dtype().wgsl(), x.wgsl()).unwrap();
                 }
-                &Op::Define {
-                    dtype,
-                    scope,
-                    ro: _,
-                    len,
-                } => {
+                &Op::Define { dtype, scope, ro: _, len } => {
                     dtypes.insert(op_id, dtype);
                     if scope == Scope::Register {
                         writeln!(source, "{indent}var p{op_id}: array<{}, {len}>;", dtype.wgsl(),).unwrap();
@@ -463,12 +426,7 @@ impl WGPUDevice {
                     dtypes.insert(op_id, dtypes[&src]);
                     writeln!(source, "{indent}let r{op_id} = p{src}[r{index}];").unwrap();
                 }
-                &Op::Store {
-                    dst,
-                    x: src,
-                    index,
-                    vlen: _,
-                } => {
+                &Op::Store { dst, x: src, index, vlen: _ } => {
                     writeln!(source, "{indent}p{dst}[r{}] = r{};", index, src,).unwrap();
                 }
                 &Op::Cast { x, dtype } => {
@@ -662,17 +620,12 @@ impl WGPUDevice {
                 ty: wgpu::BindingType::Buffer {
                     has_dynamic_offset: false,
                     min_binding_size: None,
-                    ty: wgpu::BufferBindingType::Storage {
-                        read_only: program.arg_ro_flags[bind_id],
-                    },
+                    ty: wgpu::BufferBindingType::Storage { read_only: program.arg_ro_flags[bind_id] },
                 },
                 count: None,
             };
             let buffer = &memory_pool.buffers[arg];
-            let bind = wgpu::BindGroupEntry {
-                binding: u32::try_from(bind_id).unwrap(),
-                resource: buffer.as_entire_binding(),
-            };
+            let bind = wgpu::BindGroupEntry { binding: u32::try_from(bind_id).unwrap(), resource: buffer.as_entire_binding() };
             set_layout.push(bind_entry);
             binds.push(bind);
         }
@@ -683,15 +636,12 @@ impl WGPUDevice {
         let mut layouts = Vec::new();
         let mut sets = Vec::new();
         // Unwraping of descriptors from program
-        let set_layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &set_layout,
-        });
-        let set = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &set_layout,
-            entries: &binds,
-        });
+        let set_layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &set_layout });
+        let set = self
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &set_layout, entries: &binds });
         layouts.push(set_layout);
         sets.push(set);
         // Compute pipeline bindings
@@ -709,14 +659,12 @@ impl WGPUDevice {
             cache: None,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Kernel::enqueue"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Kernel::enqueue") });
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Kernel::enqueue"),
-                timestamp_writes: None,
-            });
+            let mut cpass = encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("Kernel::enqueue"), timestamp_writes: None });
             cpass.set_pipeline(&pipeline);
             for (id_set, set) in sets.iter().enumerate() {
                 cpass.set_bind_group(u32::try_from(id_set).unwrap(), set, &[]);

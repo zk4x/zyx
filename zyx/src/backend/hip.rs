@@ -130,23 +130,16 @@ pub(super) fn initialize_device(
         "/opt/rocm/hip/lib/libhip_hcc.so",
         "/opt/rocm/hip/lib/libhiprtc.so",
     ];
-    let hip = hip_paths
-        .into_iter()
-        .find_map(|path| unsafe { Library::new(path) }.ok());
+    let hip = hip_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(hip) = hip else {
-        return Err(BackendError {
-            status: ErrorStatus::DyLibNotFound,
-            context: "HIP runtime not found.".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "HIP runtime not found.".into() });
     };
 
     let hipInit: unsafe extern "C" fn(c_uint) -> HIPStatus = *unsafe { hip.get(b"hipInit\0") }.unwrap();
     let hipDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> HIPStatus =
         *unsafe { hip.get(b"hipDriverGetVersion\0") }.unwrap();
-    let hipDeviceGetCount: unsafe extern "C" fn(*mut c_int) -> HIPStatus =
-        *unsafe { hip.get(b"hipGetDeviceCount\0") }.unwrap();
-    let hipDeviceGet: unsafe extern "C" fn(*mut HIPdevice, c_int) -> HIPStatus =
-        *unsafe { hip.get(b"hipDeviceGet\0") }.unwrap();
+    let hipDeviceGetCount: unsafe extern "C" fn(*mut c_int) -> HIPStatus = *unsafe { hip.get(b"hipGetDeviceCount\0") }.unwrap();
+    let hipDeviceGet: unsafe extern "C" fn(*mut HIPdevice, c_int) -> HIPStatus = *unsafe { hip.get(b"hipDeviceGet\0") }.unwrap();
     let hipDeviceGetName: unsafe extern "C" fn(*mut c_char, c_int, HIPdevice) -> HIPStatus =
         *unsafe { hip.get(b"hipDeviceGetName\0") }.unwrap();
     let hipDeviceComputeCapability: unsafe extern "C" fn(*mut c_int, *mut c_int, HIPdevice) -> HIPStatus =
@@ -189,10 +182,7 @@ pub(super) fn initialize_device(
     let mut num_devices = 0;
     unsafe { hipDeviceGetCount(&mut num_devices) }.check(ErrorStatus::DeviceEnumeration)?;
     if num_devices == 0 {
-        return Err(BackendError {
-            status: ErrorStatus::DeviceEnumeration,
-            context: "HIP no devices found.".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "HIP no devices found.".into() });
     }
     let device_ids: Vec<_> = (0..num_devices)
         .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
@@ -216,15 +206,12 @@ pub(super) fn initialize_device(
         let mut device = 0;
         unsafe { hipDeviceGet(&mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration)?;
         let mut device_name = [0; 100];
-        let Ok(()) = unsafe { hipDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check(ErrorStatus::DeviceQuery)
-        else {
+        let Ok(()) = unsafe { hipDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         let mut major = 0;
         let mut minor = 0;
-        let Ok(()) =
-            unsafe { hipDeviceComputeCapability(&mut major, &mut minor, device) }.check(ErrorStatus::DeviceQuery)
-        else {
+        let Ok(()) = unsafe { hipDeviceComputeCapability(&mut major, &mut minor, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         if debug_dev {
@@ -317,10 +304,7 @@ impl HIPMemoryPool {
 
     pub(super) fn allocate(&mut self, bytes: usize) -> Result<(BufferId, Event), BackendError> {
         if bytes > self.free_bytes {
-            return Err(BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: "Allocation failure".into(),
-            });
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure".into() });
         }
         //println!("Allocating to context {:?}, device {:?}", self.context, self.device);
         let mut ptr = u64::try_from(self.device).unwrap();
@@ -332,10 +316,7 @@ impl HIPMemoryPool {
         unsafe { (self.hipMemAlloc)(&raw mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation)?;
         unsafe { (self.hipEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
-        Ok((
-            self.buffers.push(HIPBuffer { ptr, bytes }),
-            Event::HIP(HIPEvent { event }),
-        ))
+        Ok((self.buffers.push(HIPBuffer { ptr, bytes }), Event::HIP(HIPEvent { event })))
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -576,11 +557,7 @@ impl HIPDevice {
 
     #[allow(unused)]
     #[allow(clippy::type_complexity)]
-    fn compile_hip(
-        &self,
-        kernel: &Kernel,
-        debug_asm: bool,
-    ) -> Result<([Dim; 3], [Dim; 3], String, Vec<u8>), BackendError> {
+    fn compile_hip(&self, kernel: &Kernel, debug_asm: bool) -> Result<([Dim; 3], [Dim; 3], String, Vec<u8>), BackendError> {
         todo!()
     }
 
@@ -687,8 +664,7 @@ impl HIPDevice {
     }
 
     pub fn release(&mut self, program_id: ProgramId) {
-        let _ =
-            unsafe { (self.hipModuleUnload)(self.programs[program_id].module) }.check(ErrorStatus::Deinitialization);
+        let _ = unsafe { (self.hipModuleUnload)(self.programs[program_id].module) }.check(ErrorStatus::Deinitialization);
         self.programs.remove(program_id);
     }
 
@@ -702,10 +678,7 @@ impl HIPStatus {
         if self == Self::hipSuccess {
             Ok(())
         } else {
-            Err(BackendError {
-                status,
-                context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into(),
-            })
+            Err(BackendError { status, context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into() })
         }
     }
 }
@@ -810,10 +783,7 @@ impl hiprtcResult {
         if self == Self::HIPRTC_SUCCESS {
             Ok(())
         } else {
-            Err(BackendError {
-                status,
-                context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into(),
-            })
+            Err(BackendError { status, context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into() })
         }
     }
 }

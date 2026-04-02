@@ -7,7 +7,7 @@ use crate::{
 impl Kernel {
     pub fn verify(&self) {
         if !cfg!(debug_assertions) {
-            return
+            return;
         }
         let mut stack = Vec::new();
         stack.push(Set::default());
@@ -241,10 +241,7 @@ impl Kernel {
                     {
                         ids.insert(
                             op_id,
-                            (
-                                xl.wrapping_mul(yl).wrapping_add(zl),
-                                xu.wrapping_mul(yu).wrapping_add(zu),
-                            ),
+                            (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)),
                         );
                     }
                 }

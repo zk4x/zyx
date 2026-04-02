@@ -44,10 +44,7 @@ impl Kernel {
 
         if global_upcasts.is_empty() || reduce_factors.is_empty() {
             return (
-                Optimization::RegisterTiling {
-                    reduce_splits: reduce_factors,
-                    global_upcasts,
-                },
+                Optimization::RegisterTiling { reduce_splits: reduce_factors, global_upcasts },
                 0,
             );
         }
@@ -57,10 +54,7 @@ impl Kernel {
 
         let n_configs = n_global_options * n_reduce_options;
         (
-            Optimization::RegisterTiling {
-                reduce_splits: reduce_factors,
-                global_upcasts,
-            },
+            Optimization::RegisterTiling { reduce_splits: reduce_factors, global_upcasts },
             n_configs,
         )
     }

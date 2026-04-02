@@ -5,9 +5,7 @@ use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[test]
 fn relu_1() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let x = Tensor::from(data);
     let z = x.relu();
     assert_eq!(z, [0.0f32, 0.001, 1.780, 5.675, 0.0, 0.0, 1.215, 0.0, 0.0, 0.0]);
@@ -16,9 +14,7 @@ fn relu_1() -> Result<(), ZyxError> {
 
 #[test]
 fn neg() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = (-Tensor::from(data)).try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!((-x).is_equal(y));
@@ -28,9 +24,7 @@ fn neg() -> Result<(), ZyxError> {
 
 #[test]
 fn exp2() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).exp2().try_into()?;
     //println!("{zdata:?}");
     for (x, y) in data.iter().zip(zdata) {
@@ -42,9 +36,7 @@ fn exp2() -> Result<(), ZyxError> {
 
 #[test]
 fn log2() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).log2().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.log2().is_equal(y));
@@ -54,9 +46,7 @@ fn log2() -> Result<(), ZyxError> {
 
 #[test]
 fn reciprocal() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).reciprocal().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         //println!("{}, {y}", 1. / x);
@@ -67,9 +57,7 @@ fn reciprocal() -> Result<(), ZyxError> {
 
 #[test]
 fn sqrt() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).sqrt().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.sqrt().is_equal(y));
@@ -79,9 +67,7 @@ fn sqrt() -> Result<(), ZyxError> {
 
 #[test]
 fn sin() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).sin().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.sin().is_equal(y), "{} != {y}", x.sin());
@@ -91,9 +77,7 @@ fn sin() -> Result<(), ZyxError> {
 
 #[test]
 fn cos() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).cos().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         //assert_eq!(x.cos(), y);
@@ -104,9 +88,7 @@ fn cos() -> Result<(), ZyxError> {
 
 #[test]
 fn not() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let y = !Tensor::from(data);
     let x = y.cast(DType::F32);
     drop(y); // We have to drop manually, because rust is very unreliable in calling destructors
@@ -128,9 +110,7 @@ fn nonzero() -> Result<(), ZyxError> {
 
 #[test]
 fn tanh_1() -> Result<(), ZyxError> {
-    let data: [f32; 10] = [
-        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657,
-    ];
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).tanh().try_into()?;
     for (x, y) in data.iter().zip(zdata) {
         assert!(x.tanh().is_equal(y));

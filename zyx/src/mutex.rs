@@ -69,10 +69,7 @@ unsafe impl<T: Send> Send for MutexGuard<'_, T> {}
 
 impl<T> Mutex<T> {
     pub(super) const fn new(data: T) -> Self {
-        Self {
-            data: UnsafeCell::new(data),
-            lock: AtomicBool::new(false),
-        }
+        Self { data: UnsafeCell::new(data), lock: AtomicBool::new(false) }
     }
 
     pub(super) fn lock(&self) -> MutexGuard<'_, T> {

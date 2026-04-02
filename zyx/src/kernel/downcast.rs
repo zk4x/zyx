@@ -3,13 +3,13 @@
 
 use super::autotune::Optimization;
 use crate::{
+    Map, Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
-    Map, Set,
 };
 
 impl Kernel {
-    pub fn opt_upcast(&self) -> (Optimization, usize) {
+    pub fn opt_downcast(&self) -> (Optimization, usize) {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -67,22 +67,8 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::Load { src, index, .. } | Op::Store { dst: src, index, .. } => {
                     if defines.contains(&src) {
-                        let x = self.insert_before(
-                            op_id,
-                            Op::Binary {
-                                x: index,
-                                y: const_jam_dim,
-                                bop: BOp::Mul,
-                            },
-                        );
-                        let new_index = self.insert_before(
-                            op_id,
-                            Op::Binary {
-                                x,
-                                y: remapping[&jam_loop_id],
-                                bop: BOp::Add,
-                            },
-                        );
+                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
+                        let new_index = self.insert_before(op_id, Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
                         match &mut self.ops[op_id].op {
                             Op::Load { index: idx, .. } | Op::Store { index: idx, .. } => {
                                 *idx = new_index;
@@ -118,11 +104,7 @@ impl Kernel {
         let split_ids = self.split_dim(
             op_id,
             vec![
-                Op::Index {
-                    len: len / factor,
-                    scope: Scope::Global,
-                    axis,
-                },
+                Op::Index { len: len / factor, scope: Scope::Global, axis },
                 Op::Loop { len: factor },
             ],
         );
@@ -223,12 +205,7 @@ impl Kernel {
             while op_id != middle_loop_id {
                 op_id = self.next_op(op_id);
                 if let Op::Define { dtype, scope, ro, len } = self.ops[op_id].op {
-                    self.ops[op_id].op = Op::Define {
-                        dtype,
-                        scope,
-                        ro,
-                        len: len * jam_dim,
-                    };
+                    self.ops[op_id].op = Op::Define { dtype, scope, ro, len: len * jam_dim };
                     defines.insert(op_id);
                     self.move_op_before(op_id, jam_loop_id);
                 }
@@ -242,22 +219,8 @@ impl Kernel {
                     Op::Load { .. } | Op::Define { .. } => unreachable!(),
                     Op::Store { dst, index, .. } => {
                         if defines.contains(&dst) {
-                            let x = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x: index,
-                                    y: const_jam_dim,
-                                    bop: BOp::Mul,
-                                },
-                            );
-                            let new_index = self.insert_before(
-                                op_id,
-                                Op::Binary {
-                                    x,
-                                    y: jam_loop_id,
-                                    bop: BOp::Add,
-                                },
-                            );
+                            let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
+                            let new_index = self.insert_before(op_id, Op::Binary { x, y: jam_loop_id, bop: BOp::Add });
                             let Op::Store { index, .. } = &mut self.ops[op_id].op else {
                                 unreachable!()
                             };

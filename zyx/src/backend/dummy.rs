@@ -36,18 +36,12 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: "Dummy backend configured out.".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "Dummy backend configured out.".into() });
     }
     if debug_dev {
         println!("Using dummy backend");
     }
-    let pool = MemoryPool::Dummy(DummyMemoryPool {
-        free_bytes: 1024 * 1024 * 1024 * 1024,
-        buffers: Slab::new(),
-    });
+    let pool = MemoryPool::Dummy(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
     memory_pools.push(Pool::new(pool));
     devices.push(Device::Dummy(DummyDevice {
         device_info: DeviceInfo {
@@ -81,10 +75,7 @@ impl DummyMemoryPool {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
-            return Err(BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: "OOM".into(),
-            });
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
         }
         let id = self.buffers.push(bytes);
         Ok((id, Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))
@@ -101,12 +92,7 @@ impl DummyMemoryPool {
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: BufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    pub fn host_to_pool(&mut self, src: &[u8], dst: BufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let _ = self;
         let _ = src;
         let _ = dst;

@@ -72,14 +72,10 @@ impl Kernel {
                         dtypes[&op_id]
                     );
                 }
-                Op::Define {
-                    dtype, scope, ro, len, ..
-                } => {
+                Op::Define { dtype, scope, ro, len, .. } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };
-                    println!(
-                        "{indent}{RED}r{out_id}{RESET}{GREY}: {dtype}{RESET} = {YELLOW}def {ro}{RESET}{scope}, len={len}"
-                    );
+                    println!("{indent}{RED}r{out_id}{RESET}{GREY}: {dtype}{RESET} = {YELLOW}def {ro}{RESET}{scope}, len={len}");
                 }
                 Op::Const(value) => {
                     let dtype = value.dtype();
@@ -108,12 +104,7 @@ impl Kernel {
                         );
                     }
                 }
-                Op::Store {
-                    dst,
-                    x,
-                    index,
-                    vlen: len,
-                } => {
+                Op::Store { dst, x, index, vlen: len } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds[&index];
@@ -121,9 +112,7 @@ impl Kernel {
                     let index = id_map[&index];
                     let x = id_map[&x];
                     if len > 1 {
-                        println!(
-                            "{indent}{RED}r{dst}{RESET}[r{index}..+len] = r{x}    // {lb}..={ub} {RED}store{RESET}",
-                        );
+                        println!("{indent}{RED}r{dst}{RESET}[r{index}..+len] = r{x}    // {lb}..={ub} {RED}store{RESET}",);
                     } else {
                         println!("{indent}{RED}r{dst}{RESET}[r{index}] = r{x}    // {lb}..={ub} {RED}store{RESET}",);
                     }
@@ -231,10 +220,7 @@ impl Kernel {
                     {
                         bounds.insert(
                             op_id,
-                            (
-                                xl.wrapping_mul(yl).wrapping_add(zl),
-                                xu.wrapping_mul(yu).wrapping_add(zu),
-                            ),
+                            (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)),
                         );
                     }
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
@@ -246,14 +232,7 @@ impl Kernel {
                         println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = r{x} * r{y} + r{z}");
                     }
                 }
-                Op::WMMA {
-                    dims,
-                    layout,
-                    dtype,
-                    c,
-                    a,
-                    b,
-                } => {
+                Op::WMMA { dims, layout, dtype, c, a, b } => {
                     let cdtype = dtypes[&c];
                     dtypes.insert(op_id, cdtype);
                     let a = id_map.get(&a).copied().unwrap_or(OpId::NULL);
@@ -306,15 +285,10 @@ impl Kernel {
                             }
                         }
                     }
-                    let ops: Vec<OpId> = ops
-                        .iter()
-                        .map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL))
-                        .collect();
+                    let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = r {
                         bounds.insert(op_id, (lb, ub));
-                        println!(
-                            "{indent}r{out_id}{GREY}: {dtype}{RESET} = {ORANGE}vectorize{RESET}{ops:?}    // {lb}..={ub}",
-                        );
+                        println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {ORANGE}vectorize{RESET}{ops:?}    // {lb}..={ub}",);
                     } else {
                         println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {ORANGE}vectorize{RESET}{ops:?}");
                     }
@@ -340,9 +314,7 @@ impl Kernel {
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     match mop.as_ref() {
                         MoveOp::Reshape { shape } => {
-                            println!(
-                                "{indent}r{out_id}{GREY}: {dtype}{RESET} = {CYAN}reshape{RESET} r{x} -> {shape:?}",
-                            );
+                            println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {CYAN}reshape{RESET} r{x} -> {shape:?}",);
                         }
                         MoveOp::Expand { shape } => {
                             println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {CYAN}expand{RESET} r{x} -> {shape:?}");
@@ -426,9 +398,7 @@ impl Kernel {
                         dtypes[&op_id]
                     );
                 }
-                Op::Define {
-                    dtype, scope, ro, len, ..
-                } => {
+                Op::Define { dtype, scope, ro, len, .. } => {
                     dtypes.insert(op_id, dtype);
                     let ro = if ro { "" } else { "mut " };
                     println!("{indent}r{out_id}: {dtype} = def {ro}{scope}, len={len}");
@@ -456,12 +426,7 @@ impl Kernel {
                         println!("{indent}r{out_id}: {dtype} = r{src}[r{index}]    // {lb}..={ub} load");
                     }
                 }
-                Op::Store {
-                    dst,
-                    x,
-                    index,
-                    vlen: len,
-                } => {
+                Op::Store { dst, x, index, vlen: len } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds[&index];
@@ -580,10 +545,7 @@ impl Kernel {
                     {
                         bounds.insert(
                             op_id,
-                            (
-                                xl.wrapping_mul(yl).wrapping_add(zl),
-                                xu.wrapping_mul(yu).wrapping_add(zu),
-                            ),
+                            (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)),
                         );
                     }
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
@@ -595,14 +557,7 @@ impl Kernel {
                         println!("{indent}r{out_id}: {dtype} = r{x} * r{y} + r{z}");
                     }
                 }
-                Op::WMMA {
-                    dims,
-                    layout,
-                    dtype,
-                    c,
-                    a,
-                    b,
-                } => {
+                Op::WMMA { dims, layout, dtype, c, a, b } => {
                     let cdtype = dtypes[&c];
                     dtypes.insert(op_id, cdtype);
                     let a = id_map.get(&a).copied().unwrap_or(OpId::NULL);
@@ -660,10 +615,7 @@ impl Kernel {
                             }
                         }
                     }
-                    let ops: Vec<OpId> = ops
-                        .iter()
-                        .map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL))
-                        .collect();
+                    let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = r {
                         bounds.insert(op_id, (lb, ub));
                         println!("{indent}r{out_id}: {dtype} = vectorize{:?}    // {}..={}", ops, lb, ub,);
@@ -679,10 +631,7 @@ impl Kernel {
                     }
                     let vec = id_map.get(&vec).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
-                        println!(
-                            "{indent}r{out_id}: {dtype} = devectorize r{vec}[{idx}]    // {}..={}",
-                            l, u,
-                        );
+                        println!("{indent}r{out_id}: {dtype} = devectorize r{vec}[{idx}]    // {}..={}", l, u,);
                     } else {
                         println!("{indent}r{out_id}: {dtype} = DEVECTORIZE r{vec}[{idx}]",);
                     }

@@ -663,12 +663,7 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "mean", signature = (axes=None, keepdim=false, dtype=None))]
-    pub fn mean_py(
-        &self,
-        axes: Option<&Bound<'_, PyList>>,
-        keepdim: bool,
-        dtype: Option<DType>,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn mean_py(&self, axes: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
                 let axes: Vec<Axis> = axes_list
@@ -687,12 +682,7 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "sum", signature = (axes=None, keepdim=false, dtype=None))]
-    pub fn sum_py(
-        &self,
-        axes: Option<&Bound<'_, PyList>>,
-        keepdim: bool,
-        dtype: Option<DType>,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn sum_py(&self, axes: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
         match axes {
             Some(axes_list) => {
                 let axes: Vec<Axis> = axes_list
@@ -1135,8 +1125,7 @@ impl Tensor {
 
         let ranges = index_to_ranges(idx)?;
 
-        self.slice(ranges)
-            .map_err(|e| PyIndexError::new_err(format!("{:?}", e)))
+        self.slice(ranges).map_err(|e| PyIndexError::new_err(format!("{:?}", e)))
     }
 
     #[must_use]

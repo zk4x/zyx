@@ -957,9 +957,7 @@ impl Scalar for f64 {
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        f64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
+        f64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]])
     }
 
     fn to_ne_bytes(&self) -> &[u8] {
@@ -1786,9 +1784,7 @@ impl Scalar for i64 {
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        i64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
+        i64::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]])
     }
 
     fn to_ne_bytes(&self) -> &[u8] {
@@ -2613,9 +2609,7 @@ impl Scalar for u64 {
     }
 
     fn from_le_bytes(bytes: &[u8]) -> Self {
-        Self::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ])
+        Self::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]])
     }
 
     fn to_ne_bytes(&self) -> &[u8] {

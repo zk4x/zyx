@@ -87,12 +87,7 @@ impl DeBin for Cache {
         }
 
         let programs = Map::with_hasher(BuildHasherDefault::new());
-        Ok(Cache {
-            device_infos,
-            kernels,
-            programs,
-            optimizations,
-        })
+        Ok(Cache { device_infos, kernels, programs, optimizations })
     }
 }
 
@@ -126,12 +121,7 @@ impl Cache {
     }
 
     pub fn insert_device_info(&mut self, device_info: DeviceInfo) -> DeviceInfoId {
-        let dev_info_id = DeviceInfoId(
-            self.device_infos
-                .values()
-                .max()
-                .map_or(0, |id| id.0.checked_add(1).unwrap()),
-        );
+        let dev_info_id = DeviceInfoId(self.device_infos.values().max().map_or(0, |id| id.0.checked_add(1).unwrap()));
         let newly_inserted = self.device_infos.insert(device_info, dev_info_id).is_none();
         assert!(newly_inserted);
         dev_info_id

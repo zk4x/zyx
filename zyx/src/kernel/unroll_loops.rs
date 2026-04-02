@@ -4,19 +4,14 @@
 use super::autotune::Optimization;
 #[allow(unused)]
 use crate::{
+    Map,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
-    Map,
 };
 
 impl Kernel {
     pub fn opt_unroll(&self) -> (Optimization, usize) {
-        (
-            Optimization::UnrollLoops {
-                factors: vec![8, 4, 16, 2],
-            },
-            4,
-        )
+        (Optimization::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
     }
 
     pub fn opt_unroll_constant_loops(&self) -> (Optimization, usize) {
@@ -82,9 +77,7 @@ impl Kernel {
                             *inner_loop = false;
                         }
                     }
-                    if len == 1
-                        || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len - 1)) < 5_000)
-                    {
+                    if len == 1 || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len - 1)) < 5_000) {
                         self.unroll_loop(op_id, endloop_id, len);
                     }
                 }

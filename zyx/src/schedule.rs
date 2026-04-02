@@ -95,9 +95,7 @@ pub fn schedule(
                         break;
                     }
                 }
-                pools[old_mpid]
-                    .pool
-                    .pool_to_host(src, &mut byte_slice, event_wait_list)?;
+                pools[old_mpid].pool.pool_to_host(src, &mut byte_slice, event_wait_list)?;
 
                 // Delete the tensor from the old pool
                 pools[old_mpid].buffer_map.remove(&tid);

@@ -89,15 +89,7 @@ impl DType {
     pub const fn is_float(self) -> bool {
         match self {
             Self::BF16 | Self::F16 | Self::F32 | Self::F64 => true,
-            Self::U8
-            | Self::U16
-            | Self::U32
-            | Self::U64
-            | Self::I8
-            | Self::I16
-            | Self::I32
-            | Self::I64
-            | Self::Bool => false,
+            Self::U8 | Self::U16 | Self::U32 | Self::U64 | Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::Bool => false,
         }
     }
 
@@ -114,15 +106,7 @@ impl DType {
     #[must_use]
     pub const fn is_uint(self) -> bool {
         match self {
-            Self::BF16
-            | Self::F16
-            | Self::F32
-            | Self::F64
-            | Self::Bool
-            | Self::I8
-            | Self::I16
-            | Self::I32
-            | Self::I64 => false,
+            Self::BF16 | Self::F16 | Self::F32 | Self::F64 | Self::Bool | Self::I8 | Self::I16 | Self::I32 | Self::I64 => false,
             Self::U8 | Self::U16 | Self::U32 | Self::U64 => true,
         }
     }
@@ -359,21 +343,15 @@ impl Constant {
             DType::BF16 => Self::BF16([bytes[0], bytes[1]]),
             DType::F16 => Self::F16([bytes[0], bytes[1]]),
             DType::F32 => Self::F32([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            DType::F64 => Self::F64([
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            ]),
+            DType::F64 => Self::F64([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]),
             DType::U8 => Self::U8(u8::from_le_bytes([bytes[0]])),
             DType::U16 => Self::U16(u16::from_le_bytes([bytes[0], bytes[1]])),
             DType::U32 => Self::U32(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
-            DType::U64 => Self::U64([
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            ]),
+            DType::U64 => Self::U64([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]),
             DType::I8 => Self::I8(i8::from_le_bytes([bytes[0]])),
             DType::I16 => Self::I16(i16::from_le_bytes([bytes[0], bytes[1]])),
             DType::I32 => Self::I32(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
-            DType::I64 => Self::I64([
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            ]),
+            DType::I64 => Self::I64([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]),
             DType::Bool => Self::Bool(bytes[0] != 0),
         }
     }

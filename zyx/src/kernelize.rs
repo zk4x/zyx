@@ -4,17 +4,17 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
+    DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Device},
     cache::Cache,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
-    runtime::{deallocate_tensors, Pool, Runtime},
+    runtime::{Pool, Runtime, deallocate_tensors},
     schedule::schedule,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
-    DType, DebugMask, Map, Set, ZyxError,
 };
 use std::{collections::BTreeMap, hash::BuildHasherDefault};
 
@@ -45,9 +45,9 @@ impl From<KMKernelId> for usize {
 struct Kernelizer<'a> {
     // TODO merge as many of these as possible. Perhaps start by mergins rcs and visited
     // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
-    must_keep_nodes: Set<TensorId>, // Nodes that were realized before kernelizer was created
+    must_keep_nodes: Set<TensorId>,     // Nodes that were realized before kernelizer was created
     virt_realized_nodes: Set<TensorId>, // Nodes that appear in kernel stores, but are not realized yet
-    realized_nodes: Set<TensorId>,  // Nodes that are realized
+    realized_nodes: Set<TensorId>,      // Nodes that are realized
     // TODO later delete this and just directly use the runtime kernel cache
     kernels: Slab<KMKernelId, Kernel>,
     // We should remove either visited, or rcs
@@ -159,11 +159,7 @@ impl<'a> Kernelizer<'a> {
         let dtype = self.graph.dtype(nid);
         let mut ops = Slab::with_capacity(100);
         let op = Op::LoadView(Box::new((dtype, View::contiguous(shape))));
-        let op_id = ops.push(OpNode {
-            prev: OpId::NULL,
-            next: OpId::NULL,
-            op,
-        });
+        let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
         let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: vec![nid],
@@ -180,11 +176,7 @@ impl<'a> Kernelizer<'a> {
     fn create_const_kernel(&mut self, nid: TensorId, value: Constant) {
         let mut ops = Slab::with_capacity(100);
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
-        let op_id = ops.push(OpNode {
-            prev: OpId::NULL,
-            next: OpId::NULL,
-            op,
-        });
+        let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
         let kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: Vec::new(),
@@ -226,10 +218,7 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         //kernel.apply_movement(|view| view.expand(shape));
-        let op_id = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(MoveOp::Expand { shape: shape.into() }),
-        });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: shape.into() }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -245,10 +234,7 @@ impl<'a> Kernelizer<'a> {
         let shape = self.graph.shape(nid);
         let kernel = &mut self.kernels[kid];
 
-        let op_id = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(MoveOp::Reshape { shape: shape.into() }),
-        });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape.into() }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -266,10 +252,7 @@ impl<'a> Kernelizer<'a> {
         let kernel = &mut self.kernels[kid];
 
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(MoveOp::Permute { axes, shape }),
-        });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes, shape }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -289,10 +272,7 @@ impl<'a> Kernelizer<'a> {
         //let rank = self.graph.shape(nid).len();
         //kernel.apply_movement(|view| view.pad(rank, padding));
         let shape = self.graph.shape(nid).into();
-        let op_id = kernel.push_back(Op::Move {
-            x: op_id,
-            mop: Box::new(MoveOp::Pad { padding, shape }),
-        });
+        let op_id = kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding, shape }) });
 
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
@@ -371,22 +351,13 @@ impl<'a> Kernelizer<'a> {
             //self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
             if !permute_axes.iter().copied().eq(0..permute_axes.len()) {
                 let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
-                op_id = self.kernels[kid].push_back(Op::Move {
-                    x: op_id,
-                    mop: Box::new(MoveOp::Permute {
-                        axes: permute_axes,
-                        shape,
-                    }),
-                });
+                op_id = self.kernels[kid]
+                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
             }
         }
 
         let kernel = &mut self.kernels[kid];
-        op_id = kernel.push_back(Op::Reduce {
-            x: op_id,
-            rop,
-            n_axes: axes.len(),
-        });
+        op_id = kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -394,10 +365,7 @@ impl<'a> Kernelizer<'a> {
         // If all dims are reduced
         if shape.len() == axes.len() {
             //self.kernels[kid].apply_movement(|v| v.reshape(0..1, &[1, shape[0]]));
-            op_id = self.kernels[kid].push_back(Op::Move {
-                x: op_id,
-                mop: Box::new(MoveOp::Reshape { shape: vec![1] }),
-            });
+            op_id = self.kernels[kid].push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: vec![1] }) });
         }
 
         debug_assert_eq!(self.graph.shape(nid), self.kernels[kid].shape());
@@ -441,11 +409,7 @@ impl<'a> Kernelizer<'a> {
             kernel.remove_first_output(x);
             kernel.remove_first_output(y);
             kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
-            kernel.push_back(Op::Binary {
-                x: op_id,
-                y: op_idy,
-                bop,
-            })
+            kernel.push_back(Op::Binary { x: op_id, y: op_idy, bop })
         } else {
             //println!("Different kernels for binary");
             // TODO later use this, but this requires global memory sync inside of the kernel
@@ -501,14 +465,7 @@ impl<'a> Kernelizer<'a> {
             }
 
             self.kernels[kidy].remove_first_output(y);
-            let Kernel {
-                outputs,
-                loads,
-                stores,
-                ops,
-                head,
-                tail: _,
-            } = unsafe { self.kernels.remove_and_return(kidy) };
+            let Kernel { outputs, loads, stores, ops, head, tail: _ } = unsafe { self.kernels.remove_and_return(kidy) };
 
             // Extend x kernel with y ops
             let mut y_ops_map = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
@@ -542,17 +499,9 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].outputs.extend(vec![nid; self.rcs[&nid] as usize]);
 
             let op = if swapped_xy {
-                Op::Binary {
-                    x: y_ops_map[&op_idy],
-                    y: op_id,
-                    bop,
-                }
+                Op::Binary { x: y_ops_map[&op_idy], y: op_id, bop }
             } else {
-                Op::Binary {
-                    x: op_id,
-                    y: y_ops_map[&op_idy],
-                    bop,
-                }
+                Op::Binary { x: op_id, y: y_ops_map[&op_idy], bop }
             };
             self.kernels[kid].push_back(op)
         };
@@ -584,9 +533,7 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].outputs.retain(|&elem| elem != x);
         }
 
-        if self.kernels[kid].outputs.is_empty()
-            && self.kernels[kid].loads.iter().all(|x| self.realized_nodes.contains(x))
-        {
+        if self.kernels[kid].outputs.is_empty() && self.kernels[kid].loads.iter().all(|x| self.realized_nodes.contains(x)) {
             let kernel = unsafe { self.kernels.remove_and_return(kid) };
             let loads = kernel.loads.clone();
             let stores = kernel.stores.clone();
@@ -595,9 +542,7 @@ impl<'a> Kernelizer<'a> {
             // Delete unneeded intermediate tensors from memory pools
             let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
             for tid in loads {
-                if !self.kernels.values().any(|kernel| kernel.loads.contains(&tid))
-                    && !self.must_keep_nodes.contains(&tid)
-                {
+                if !self.kernels.values().any(|kernel| kernel.loads.contains(&tid)) && !self.must_keep_nodes.contains(&tid) {
                     to_remove.insert(tid);
                 }
             }
@@ -862,12 +807,7 @@ impl Runtime {
 
     pub fn realize_selected(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         //let time_w = std::time::Instant::now();
-        let realized_nodes: Set<TensorId> = self
-            .pools
-            .iter()
-            .flat_map(|pool| pool.buffer_map.keys())
-            .copied()
-            .collect();
+        let realized_nodes: Set<TensorId> = self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
 
         let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
 
@@ -949,12 +889,7 @@ impl Runtime {
 
         #[cfg(debug_assertions)]
         {
-            let realized_nodes: Set<TensorId> = self
-                .pools
-                .iter()
-                .flat_map(|pool| pool.buffer_map.keys())
-                .copied()
-                .collect();
+            let realized_nodes: Set<TensorId> = self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
             debug_assert!(realized_nodes.is_superset(&to_eval));
         }
 
@@ -962,12 +897,7 @@ impl Runtime {
     }
 
     pub fn realize_all(&mut self) -> Result<(), ZyxError> {
-        let realized_nodes: Set<TensorId> = self
-            .pools
-            .iter()
-            .flat_map(|pool| pool.buffer_map.keys())
-            .copied()
-            .collect();
+        let realized_nodes: Set<TensorId> = self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
 
         if self.devices.is_empty() {
             self.initialize_devices()?;
@@ -1053,12 +983,7 @@ impl Runtime {
 
         #[cfg(debug_assertions)]
         {
-            let realized_nodes: Set<TensorId> = self
-                .pools
-                .iter()
-                .flat_map(|pool| pool.buffer_map.keys())
-                .copied()
-                .collect();
+            let realized_nodes: Set<TensorId> = self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
             debug_assert!(realized_nodes.is_superset(&to_eval));
         }
 

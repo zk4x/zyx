@@ -166,16 +166,16 @@ impl Tensor {
     /// read failure
     #[allow(clippy::missing_panics_doc)]
     #[allow(clippy::type_complexity)]
-    pub fn load_gguf(
-        path: impl AsRef<Path>,
-    ) -> Result<(HashMap<String, GGUFMetadataValue>, HashMap<String, Tensor>), ZyxError> {
+    pub fn load_gguf(path: impl AsRef<Path>) -> Result<(HashMap<String, GGUFMetadataValue>, HashMap<String, Tensor>), ZyxError> {
         use std::io::Read;
         let mut f = std::fs::File::open(&path)?;
         let mut magic = [0; 4];
         f.read_exact(&mut magic)?;
         if magic != [b'G', b'G', b'U', b'F'] {
             if magic == [b'F', b'U', b'G', b'G'] {
-                return Err(ZyxError::parse_error("GGUF data seems to be stored in big endian order. Only little endian is supported for GGUF in zyx.".into()));
+                return Err(ZyxError::parse_error(
+                    "GGUF data seems to be stored in big endian order. Only little endian is supported for GGUF in zyx.".into(),
+                ));
             }
             return Err(ZyxError::parse_error(
                 format!("Unknown GGUF magic: {magic:?}. Please check your file.").into(),
@@ -300,13 +300,11 @@ impl Tensor {
         //println!("File size is {} bytes", f.metadata()?.len());
         let mut header_len = [0u8; 8];
         f.read_exact(&mut header_len)?;
-        let n = usize::try_from(u64::from_le_bytes(header_len)).map_err(|e| {
-            ZyxError::parse_error(format!("Failed to parse header len in safetensors file. {e}").into())
-        })?;
+        let n = usize::try_from(u64::from_le_bytes(header_len))
+            .map_err(|e| ZyxError::parse_error(format!("Failed to parse header len in safetensors file. {e}").into()))?;
         let mut header = vec![0u8; n];
         f.read_exact(&mut header)?;
-        let header =
-            core::str::from_utf8(&header).map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        let header = core::str::from_utf8(&header).map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
         let mut text = String::with_capacity(10);
         let mut begin_str = false;
         let mut i = 0;
@@ -317,9 +315,7 @@ impl Tensor {
         let mut metadata = true;
         let mut progress_bar = if RT.lock().debug.dev() {
             println!("Loading tensors from safetensors file");
-            let bar = crate::prog_bar::ProgressBar::new(
-                u64::try_from(header.chars().filter(|&c| c == '[').count()).unwrap() / 2,
-            );
+            let bar = crate::prog_bar::ProgressBar::new(u64::try_from(header.chars().filter(|&c| c == '[').count()).unwrap() / 2);
             Some(bar)
         } else {
             None
@@ -352,9 +348,8 @@ impl Tensor {
                         shape = text
                             .split(',')
                             .map(|d| {
-                                d.parse::<usize>().map_err(|err| {
-                                    ZyxError::parse_error(format!("Cannot parse safetensors shape: {err}").into())
-                                })
+                                d.parse::<usize>()
+                                    .map_err(|err| ZyxError::parse_error(format!("Cannot parse safetensors shape: {err}").into()))
                             })
                             .collect::<Result<_, ZyxError>>()?;
                     } else if i % 7 == 6 {
@@ -371,9 +366,7 @@ impl Tensor {
                         //println!("Offsets: {offsets:?}");
                         let bytes = shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
                         if offsets[1] - offsets[0] != bytes {
-                            return Err(ZyxError::parse_error(
-                                "Safetensors shapes and offsets are incorrect.".into(),
-                            ));
+                            return Err(ZyxError::parse_error("Safetensors shapes and offsets are incorrect.".into()));
                         }
                         if let Some(bar) = &mut progress_bar {
                             bar.inc(1, &format!("{label}, {shape:?}, {dtype:?}"));

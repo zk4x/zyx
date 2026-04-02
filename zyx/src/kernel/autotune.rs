@@ -14,11 +14,11 @@ static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
     Kernel::opt_reassociate_commutative,
     //Kernel::opt_unroll, // disabled - interacts badly with upcast
     Kernel::opt_split_global_to_local,
-    Kernel::opt_upcast,
+    Kernel::opt_downcast,
     //Kernel::opt_register_tiling,
     Kernel::opt_fuse_mad,
     Kernel::opt_unroll_constant_loops,
-    Kernel::opt_warp_reduce,
+    Kernel::opt_local_reduce,
     Kernel::opt_split_loop,
     Kernel::opt_licm,
 ];
@@ -40,7 +40,7 @@ pub enum Optimization {
     },
     FuseMad,
     UnrollConstantLoops,
-    WarpReduce {
+    LocalReduce {
         factors: Vec<(OpId, usize)>,
     },
     SplitLoop {
@@ -73,16 +73,8 @@ impl Optimization {
                 kernel.split_dim(
                     op_id,
                     vec![
-                        Op::Index {
-                            len: len / factor,
-                            scope: Scope::Global,
-                            axis,
-                        },
-                        Op::Index {
-                            len: factor,
-                            scope: Scope::Local,
-                            axis,
-                        },
+                        Op::Index { len: len / factor, scope: Scope::Global, axis },
+                        Op::Index { len: factor, scope: Scope::Local, axis },
                     ],
                 );
             }
@@ -93,10 +85,7 @@ impl Optimization {
                 let (op_id, factor) = factors[config];
                 kernel.upcast(op_id, factor);
             }
-            Optimization::RegisterTiling {
-                reduce_splits,
-                global_upcasts,
-            } => {
+            Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
                 let n_global = global_upcasts.len();
                 let n_reduce = reduce_splits.len();
                 if n_global == 0 || n_reduce == 0 {
@@ -124,9 +113,7 @@ impl Optimization {
                     kernel.split_dim(
                         *reduce_id,
                         vec![
-                            Op::Loop {
-                                len: original_len / reduce_factor,
-                            },
+                            Op::Loop { len: original_len / reduce_factor },
                             Op::Loop { len: reduce_factor },
                         ],
                     );
@@ -158,9 +145,9 @@ impl Optimization {
             Optimization::UnrollConstantLoops => {
                 kernel.unroll_constant_loops();
             }
-            Optimization::WarpReduce { factors } => {
+            Optimization::LocalReduce { factors } => {
                 let (op_id, factor) = factors[config];
-                kernel.optimize_warp_reduce_with(op_id, factor);
+                kernel.tile_reduce_to_local(op_id, factor);
             }
             Optimization::SplitLoop { factors } => {
                 let (op_id, factor) = factors[config];
@@ -198,6 +185,7 @@ impl Kernel {
         config: &AutotuneConfig,
         debug: DebugMask,
     ) -> (ProgramId, OptSeq) {
+        eprintln!("=== autotune_debug called ===");
         let mut kernel = self.clone();
         //println!("Before associate_commutative:");
         //kernel.debug_colorless();
@@ -205,29 +193,23 @@ impl Kernel {
 
         // Here come series of custom optimizations
 
-        let (opt, n_configs) = kernel.opt_register_tiling();
-        if n_configs == 0 {
-            return (
-                device.compile(&kernel, debug.asm()).unwrap(),
-                OptSeq {
-                    opts: Vec::new(),
-                    cost: 0,
-                },
-            );
+        // Apply local reduce optimization BEFORE register tiling
+        let (local_reduce_opt, n_local_reduce_configs) = kernel.opt_local_reduce();
+        if n_local_reduce_configs > 0 {
+            local_reduce_opt.apply(&mut kernel, 0);
+            eprintln!("=== After local reduce ===");
+            kernel.debug_colorless();
         }
 
-        // Apply config 68 which gives 8x8 upcast
-        opt.apply(&mut kernel, 68);
-        kernel.run_always_on_optimizations();
+        //kernel.run_always_on_optimizations();
+
+        //kernel.debug_colorless();
 
         kernel.launch_with_timings(buffers, device, memory_pool, debug, 0, 0, 0);
 
         (
             device.compile(&kernel, debug.asm()).unwrap(),
-            OptSeq {
-                opts: Vec::new(),
-                cost: 0,
-            },
+            OptSeq { opts: Vec::new(), cost: Cost::default() },
         )
     }
 
@@ -243,7 +225,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> (ProgramId, OptSeq) {
-        if true {
+        if false {
             return self.autotune_debug(buffers, device, memory_pool, config, debug);
         }
 
@@ -274,10 +256,6 @@ impl Kernel {
             let n_configs_to_try = ((avail_configs[opt_id].1 * mult) as f32 / total_configs as f32).ceil() as usize;
             let mut config_id = 0;
             while config_id < n_configs_to_try {
-                let mut opt_seq = OptSeq {
-                    opts: vec![(opt_id, config_id)],
-                    cost: 0,
-                };
                 let mut new_kernel = kernel.clone();
                 avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
                 new_kernel.run_always_on_optimizations();
@@ -286,9 +264,9 @@ impl Kernel {
                     config_id += 1;
                     continue;
                 }
-                opt_seq.cost = new_kernel.get_cost(dev_info_ref) as u64;
+                let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost: new_kernel.get_cost(dev_info_ref) };
                 visited.insert(hash);
-                items.push(opt_seq);
+                items.push(new_seq);
                 config_id += 1;
             }
         }
@@ -326,7 +304,6 @@ impl Kernel {
                             for config_id in 0..n_configs_to_try {
                                 let mut opts = opt_seq.opts.clone();
                                 opts.push((opt_id, config_id));
-                                let mut new_seq = OptSeq { opts, cost: 0 };
 
                                 let mut new_kernel = kernel.clone();
                                 avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
@@ -335,7 +312,7 @@ impl Kernel {
                                 if visited_ref.contains(&hash) || local_visited.contains(&hash) {
                                     continue;
                                 }
-                                new_seq.cost = new_kernel.get_cost(dev_info_ref) as u64;
+                                let new_seq = OptSeq { opts, cost: new_kernel.get_cost(dev_info_ref) };
                                 local_visited.insert(hash);
                                 local_items.push(new_seq);
                             }
@@ -366,10 +343,7 @@ impl Kernel {
         let mut launched_kernels = Set::default();
         let mut best_time = u64::MAX;
         let mut best_program = ProgramId::NULL;
-        let mut best_opt_seq = OptSeq {
-            opts: Vec::new(),
-            cost: 0,
-        };
+        let mut best_opt_seq = OptSeq { opts: Vec::new(), cost: Cost::default() };
         let mut i = n_launches;
         while i > 0 {
             let opt_seq = sample_best(&items, &mut rng);
@@ -407,7 +381,7 @@ impl Kernel {
         (best_program, best_opt_seq)
     }
 
-    pub fn get_cost(&self, dev_info: &DeviceInfo) -> f64 {
+    pub fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {
         // TODO add measuring bank conflicts
         let mut n_instructions = 0;
         let mut n_scoped_loads = [0u64, 0, 0];
@@ -432,7 +406,7 @@ impl Kernel {
                 Op::Const(_) => {}
                 Op::Define { .. } => {}
                 Op::Load { src, vlen, .. } => {
-                    n_instructions += loop_mult * 3;
+                    n_instructions += loop_mult;
                     let Op::Define { scope, .. } = self.ops[src].op else {
                         unreachable!()
                     };
@@ -495,15 +469,23 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        gws.iter().product::<Dim>() as f64
-            * lws.iter().product::<Dim>() as f64
-            * (n_instructions as f64
-                + n_scoped_loads[0] as f64 * 50.
-                + n_scoped_loads[1] as f64 * 10.
-                + n_scoped_loads[2] as f64 * 1.1
-                + n_scoped_stores[0] as f64 * 50.
-                + n_scoped_stores[1] as f64 * 10.
-                + n_scoped_stores[2] as f64 * 1.1)
+        let global_ws = gws.iter().product::<Dim>() as u64;
+        let n_threads = lws.iter().product::<Dim>() as u32;
+        let instructions_per_thread = n_instructions as u32;
+        let global_loads_per_thread = n_scoped_loads[0] as u32;
+        let local_loads_per_thread = n_scoped_loads[1] as u32;
+        let global_stores_per_thread = n_scoped_stores[0] as u32;
+        let local_stores_per_thread = n_scoped_stores[1] as u32;
+
+        Cost {
+            global_ws,
+            n_threads,
+            instructions_per_thread,
+            global_loads_per_thread,
+            local_loads_per_thread,
+            global_stores_per_thread,
+            local_stores_per_thread,
+        }
     }
 
     pub fn get_hash(&self) -> u64 {
@@ -535,10 +517,21 @@ impl Kernel {
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, Hash, DeBin, SerBin)]
+struct Cost {
+    global_ws: u64,
+    n_threads: u32,
+    instructions_per_thread: u32,
+    global_loads_per_thread: u32,
+    local_loads_per_thread: u32,
+    global_stores_per_thread: u32,
+    local_stores_per_thread: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
 pub struct OptSeq {
     opts: Vec<(usize, usize)>,
-    cost: u64,
+    cost: Cost,
 }
 
 impl OptSeq {

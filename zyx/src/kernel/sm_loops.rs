@@ -152,11 +152,7 @@ impl Kernel {
         // Replace previous op
         let y = self.insert_before(dim_id, last_op);
         split_ids.push(y);
-        self.ops[dim_id].op = Op::Binary {
-            x: acc,
-            y,
-            bop: BOp::Add,
-        };
+        self.ops[dim_id].op = Op::Binary { x: acc, y, bop: BOp::Add };
 
         // Reverse to get the original order (first split first)
         split_ids.reverse();

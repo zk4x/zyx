@@ -258,12 +258,7 @@ fn batched_matmul() -> Result<(), ZyxError> {
                     );
 
                     // ---- Dtype check ----
-                    assert_eq!(
-                        z.dtype(),
-                        DType::I32,
-                        "Dtype mismatch: expected I32, got {:?}",
-                        z.dtype()
-                    );
+                    assert_eq!(z.dtype(), DType::I32, "Dtype mismatch: expected I32, got {:?}", z.dtype());
 
                     if z != expected {
                         //println!("{z}");
@@ -369,10 +364,7 @@ fn pool() -> Result<(), ZyxError> {
     x = x.pool([2, 2], 1, 1)?;
     assert_eq!(
         x,
-        [
-            [[[0, 1], [3, 4]], [[1, 2], [4, 5]]],
-            [[[3, 4], [6, 7]], [[4, 5], [7, 8]]]
-        ]
+        [[[[0, 1], [3, 4]], [[1, 2], [4, 5]]], [[[3, 4], [6, 7]], [[4, 5], [7, 8]]]]
     );
     //println!("{x}");
     Ok(())
@@ -580,24 +572,14 @@ fn more_padding() -> Result<(), ZyxError> {
     let padded2 = t2.pad_zeros([(1, 1), (2, 1)])?;
     assert_eq!(
         padded2,
-        [
-            [0, 0, 0, 0, 0, 0],
-            [0, 0, 1, 2, 3, 0],
-            [0, 0, 4, 5, 6, 0],
-            [0, 0, 0, 0, 0, 0]
-        ]
+        [[0, 0, 0, 0, 0, 0], [0, 0, 1, 2, 3, 0], [0, 0, 4, 5, 6, 0], [0, 0, 0, 0, 0, 0]]
     );
 
     // rpad_zeros: reverse order (first tuple → cols, second → rows)
     let rpadded2 = t2.rpad_zeros([(2, 1), (1, 1)])?;
     assert_eq!(
         rpadded2,
-        [
-            [0, 0, 0, 0, 0, 0],
-            [0, 0, 1, 2, 3, 0],
-            [0, 0, 4, 5, 6, 0],
-            [0, 0, 0, 0, 0, 0]
-        ]
+        [[0, 0, 0, 0, 0, 0], [0, 0, 1, 2, 3, 0], [0, 0, 4, 5, 6, 0], [0, 0, 0, 0, 0, 0]]
     );
 
     // Invalid padding
@@ -699,11 +681,7 @@ fn softmax_1() -> Result<(), ZyxError> {
     //println!("{y}");
     assert_eq!(
         y,
-        [
-            0.09003056585788726807f32,
-            0.66524088382720947266,
-            0.24472846090793609619,
-        ]
+        [0.09003056585788726807f32, 0.66524088382720947266, 0.24472846090793609619,]
     );
     //Tensor::plot_graph([], "graph").unwrap();
     Ok(())
@@ -996,10 +974,7 @@ fn rope_3() -> Result<(), ZyxError> {
         //assert_eq!(co, [[[[-3f32, 0., -2.], [0., -4., 0.]]]]);
         Tensor::cat([&co, &ro], -1).unwrap()
     };
-    assert_eq!(
-        z.cast(DType::I32),
-        [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]
-    );
+    assert_eq!(z.cast(DType::I32), [[[[-3i32, 0, -2, 5, 32, 10], [0, -4, 0, 32, 20, 24]]]]);
     Ok(())
 }
 
@@ -1105,10 +1080,7 @@ fn softmax_2() -> Result<(), ZyxError> {
         ]
     );
     let y = x.softmax([0])?;
-    assert_eq!(
-        y,
-        [[0.1192029193f32, 0.8807970285, 0.5], [0.8807970285, 0.1192029193, 0.5]]
-    );
+    assert_eq!(y, [[0.1192029193f32, 0.8807970285, 0.5], [0.8807970285, 0.1192029193, 0.5]]);
     let y = x.softmax([1])?;
     assert_eq!(
         y,
@@ -1394,10 +1366,7 @@ fn rope_2() -> Result<(), ZyxError> {
 
     assert_eq!(
         x.squeeze(0..),
-        [
-            [-3.0f32, -4.0, 1.0, 2.0],
-            [0.42523819, -9.93675995, 8.591808319, 1.12284958]
-        ]
+        [[-3.0f32, -4.0, 1.0, 2.0], [0.42523819, -9.93675995, 8.591808319, 1.12284958]]
     );
 
     Ok(())

@@ -363,9 +363,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn constant(&mut self, value: impl Scalar) -> TensorId {
-        self.graph.push(Node::Const {
-            value: Constant::new(value),
-        })
+        self.graph.push(Node::Const { value: Constant::new(value) })
     }
 
     // Initialization
@@ -378,9 +376,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn ones(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
-        let x = self.graph.push(Node::Const {
-            value: dtype.one_constant(),
-        });
+        let x = self.graph.push(Node::Const { value: dtype.one_constant() });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         expanded
@@ -388,9 +384,7 @@ impl Runtime {
 
     #[must_use]
     pub(super) fn zeros(&mut self, shape: Vec<Dim>, dtype: DType) -> TensorId {
-        let x = self.graph.push(Node::Const {
-            value: dtype.zero_constant(),
-        });
+        let x = self.graph.push(Node::Const { value: dtype.zero_constant() });
         let expanded = self.expand(x, shape).unwrap();
         self.release(x);
         expanded
@@ -458,9 +452,7 @@ impl Runtime {
         }
         //println!("Expanding {x} from {sh:?} to {shape:?}");
         if shape.len() < sh.len() {
-            return Err(ZyxError::ShapeError(
-                format!("Cannot expand {sh:?} into {shape:?}").into(),
-            ));
+            return Err(ZyxError::ShapeError(format!("Cannot expand {sh:?} into {shape:?}").into()));
         }
         let mut reshaped = false;
         let new_shape = if shape.len() > sh.len() {
@@ -606,9 +598,7 @@ pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_da
             }
         }
         if let Some((pool_id, buffer_id)) = buffer
-            && !pools
-                .iter()
-                .any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
+            && !pools.iter().any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
         {
             let pool = &mut pools[pool_id];
             let mut events = Vec::new();

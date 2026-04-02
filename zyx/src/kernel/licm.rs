@@ -17,11 +17,9 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::Move { .. }
-                | Op::ConstView { .. }
-                | Op::LoadView { .. }
-                | Op::StoreView { .. }
-                | Op::Reduce { .. } => unreachable!(),
+                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                    unreachable!()
+                }
                 Op::Devectorize { .. } | Op::WMMA { .. } | Op::Vectorize { .. } => loop_depth,
                 Op::If { .. } | Op::Loop { .. } => {
                     loop_depth += 1;
@@ -44,12 +42,9 @@ impl Kernel {
                     loop_dep[&x].max(loop_dep[&y])
                 }
                 Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
-                Op::Barrier { .. }
-                | Op::Index { .. }
-                | Op::Load { .. }
-                | Op::Store { .. }
-                | Op::Const(_)
-                | Op::Define { .. } => loop_depth,
+                Op::Barrier { .. } | Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => {
+                    loop_depth
+                }
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -64,11 +59,9 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let depth = match self.at(op_id) {
-                Op::Move { .. }
-                | Op::ConstView { .. }
-                | Op::LoadView { .. }
-                | Op::StoreView { .. }
-                | Op::Reduce { .. } => unreachable!(),
+                Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
+                    unreachable!()
+                }
                 Op::Vectorize { ops } => {
                     let mut max = 0;
                     for op in ops {
@@ -145,20 +138,12 @@ impl Kernel {
                 let mut prev_acc = chain[0];
                 let mut j = 1;
                 while j < chain.len() - 1 {
-                    let op = Op::Binary {
-                        x: chain[j],
-                        y: prev_acc,
-                        bop,
-                    };
+                    let op = Op::Binary { x: chain[j], y: prev_acc, bop };
                     let new_acc = self.insert_before(op_id, op);
                     prev_acc = new_acc;
                     j += 1;
                 }
-                self.ops[op_id].op = Op::Binary {
-                    x: chain[j],
-                    y: prev_acc,
-                    bop,
-                };
+                self.ops[op_id].op = Op::Binary { x: chain[j], y: prev_acc, bop };
             }
             op_id = next;
         }

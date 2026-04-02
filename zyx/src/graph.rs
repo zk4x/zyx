@@ -423,27 +423,17 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> NodeParametersIterator {
         match self {
-            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator {
-                parameters: [TensorId::ZERO, TensorId::ZERO],
-                idx: 0,
-                len: 0,
-            },
+            Node::Const { .. } | Node::Leaf { .. } => {
+                NodeParametersIterator { parameters: [TensorId::ZERO, TensorId::ZERO], idx: 0, len: 0 }
+            }
             Node::Unary { x, .. }
             | Node::Cast { x, .. }
             | Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Permute { x, .. }
             | Node::Pad { x, .. }
-            | Node::Reduce { x, .. } => NodeParametersIterator {
-                parameters: [*x, TensorId::ZERO],
-                idx: 0,
-                len: 1,
-            },
-            Node::Binary { x, y, .. } => NodeParametersIterator {
-                parameters: [*x, *y],
-                idx: 0,
-                len: 2,
-            },
+            | Node::Reduce { x, .. } => NodeParametersIterator { parameters: [*x, TensorId::ZERO], idx: 0, len: 1 },
+            Node::Binary { x, y, .. } => NodeParametersIterator { parameters: [*x, *y], idx: 0, len: 2 },
         }
     }
 

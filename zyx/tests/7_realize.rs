@@ -201,10 +201,7 @@ fn sftmx3() -> Result<(), ZyxError> {
 
         let diff = (a - b).abs();
 
-        assert!(
-            a.is_equal(b),
-            "Mismatch at index {i}: got {a}, expected {b}, diff={diff}"
-        );
+        assert!(a.is_equal(b), "Mismatch at index {i}: got {a}, expected {b}, diff={diff}");
     }
 
     Ok(())

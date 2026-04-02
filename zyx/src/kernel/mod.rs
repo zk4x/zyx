@@ -18,13 +18,13 @@ mod const_folding;
 mod debug;
 mod fuse;
 
+mod downcast;
 mod licm;
 mod loop_splitting;
 mod mma;
-mod register_tiling;
 mod reassociate;
+mod register_tiling;
 mod sm_loops;
-mod upcast;
 mod unfold;
 mod unroll_loops;
 mod vectorize;
@@ -368,14 +368,7 @@ impl DeBin for Kernel {
         let ops = Slab::<OpId, OpNode>::de_bin(offset, bytes)?;
         let start = OpId::de_bin(offset, bytes)?;
         let end = OpId::de_bin(offset, bytes)?;
-        Ok(Self {
-            head: start,
-            tail: end,
-            ops,
-            outputs: Vec::new(),
-            loads: Vec::new(),
-            stores: Vec::new(),
-        })
+        Ok(Self { head: start, tail: end, ops, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new() })
     }
 }
 
@@ -409,11 +402,7 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let prev = self.ops[before_id].prev;
-        let op_node = OpNode {
-            prev,
-            next: before_id,
-            op: op,
-        };
+        let op_node = OpNode { prev, next: before_id, op: op };
         let op_id = self.ops.push(op_node);
         self.ops[before_id].prev = op_id;
         if prev.is_null() {
@@ -429,11 +418,7 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let next = self.ops[after_id].next;
-        let op_node = OpNode {
-            prev: after_id,
-            next,
-            op: op,
-        };
+        let op_node = OpNode { prev: after_id, next, op: op };
         let op_id = self.ops.push(op_node);
         self.ops[after_id].next = op_id;
         if next.is_null() {
@@ -530,7 +515,6 @@ impl Kernel {
     pub fn iter_unordered(&self) -> impl Iterator<Item = (OpId, &Op)> {
         self.ops.iter().map(|(id, node)| (id, &node.op))
     }
-
 
     pub fn flop_mem_rw(&self) -> (u64, u64, u64) {
         #[derive(Clone)]
@@ -880,11 +864,7 @@ impl Kernel {
 
     pub fn push_back(&mut self, op: Op) -> OpId {
         debug_assert!(!self.ops.is_empty());
-        let op_node = OpNode {
-            prev: self.tail,
-            next: OpId::NULL,
-            op,
-        };
+        let op_node = OpNode { prev: self.tail, next: OpId::NULL, op };
         let op_id = self.ops.push(op_node);
         self.ops[self.tail].next = op_id;
         self.tail = op_id;
@@ -920,13 +900,7 @@ impl Kernel {
         }
         self.loads = loaded_tensors;
         #[cfg(debug_assertions)]
-        if self.loads.len()
-            != self
-                .ops
-                .values()
-                .filter(|op| matches!(op.op, Op::LoadView { .. }))
-                .count()
-        {
+        if self.loads.len() != self.ops.values().filter(|op| matches!(op.op, Op::LoadView { .. })).count() {
             self.debug();
             panic!();
         }

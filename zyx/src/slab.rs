@@ -17,9 +17,7 @@ use nanoserde::{DeBin, SerBin};
 
 use crate::Set;
 
-pub trait SlabId:
-    std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize> + Hash
-{
+pub trait SlabId: std::fmt::Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + From<usize> + Into<usize> + Hash {
     const ZERO: Self;
     const NULL: Self;
     fn inc(&mut self);
@@ -46,11 +44,7 @@ struct IdIter<'a, Id> {
 
 impl<'a, Id: SlabId> IdIter<'a, Id> {
     const fn new(empty: &'a Set<Id>, max_exclusive: Id) -> Self {
-        Self {
-            id: Id::ZERO,
-            max_exclusive,
-            empty,
-        }
+        Self { id: Id::ZERO, max_exclusive, empty }
     }
 }
 
@@ -81,19 +75,11 @@ impl<Id: SlabId, T> Drop for Slab<Id, T> {
 
 impl<Id: SlabId, T> Slab<Id, T> {
     pub(crate) const fn new() -> Self {
-        Self {
-            values: Vec::new(),
-            empty: Set::with_hasher(BuildHasherDefault::new()),
-            _index: PhantomData,
-        }
+        Self { values: Vec::new(), empty: Set::with_hasher(BuildHasherDefault::new()), _index: PhantomData }
     }
 
     pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            values: Vec::with_capacity(capacity),
-            empty: Set::default(),
-            _index: PhantomData,
-        }
+        Self { values: Vec::with_capacity(capacity), empty: Set::default(), _index: PhantomData }
     }
 
     pub(crate) fn push(&mut self, value: T) -> Id {
@@ -137,8 +123,7 @@ impl<Id: SlabId, T> Slab<Id, T> {
     }
 
     pub(crate) fn values(&self) -> impl Iterator<Item = &T> {
-        IdIter::new(&self.empty, Id::from(self.values.len()))
-            .map(|id| unsafe { self.values[id.into()].assume_init_ref() })
+        IdIter::new(&self.empty, Id::from(self.values.len())).map(|id| unsafe { self.values[id.into()].assume_init_ref() })
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
@@ -263,11 +248,7 @@ impl<Id: SlabId, T> FromIterator<(Id, T)> for Slab<Id, T> {
             values.push(MaybeUninit::new(v));
             i.inc();
         }
-        Self {
-            values,
-            empty,
-            _index: PhantomData,
-        }
+        Self { values, empty, _index: PhantomData }
     }
 }
 
@@ -360,10 +341,6 @@ impl<T: DeBin, Id: SlabId + DeBin> DeBin for Slab<Id, T> {
                 values.push(MaybeUninit::new(value));
             }
         }
-        Ok(Self {
-            values,
-            empty,
-            _index: Default::default(),
-        })
+        Ok(Self { values, empty, _index: Default::default() })
     }
 }
