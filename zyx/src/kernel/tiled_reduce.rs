@@ -145,6 +145,8 @@ impl Kernel {
         let bop_id = self.insert_before(acc_load_id, Op::Binary { x: reg_load, y: local_load, bop });
         self.insert_before(acc_load_id, Op::Store { dst: reg_acc, x: bop_id, index: const_zero, vlen: 1 });
         self.insert_before(acc_load_id, Op::EndLoop);
+
+        // Has to end after the whole kernel!
         self.insert_after(self.tail, Op::EndIf);
     }
 }

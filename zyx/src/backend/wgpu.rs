@@ -377,20 +377,24 @@ impl WGPUDevice {
 
         let mut arg_ro_flags = Vec::new();
         let mut global_args = String::new();
+        let mut workgroup_args = String::new();
         let mut max_p = 0;
         for (op_id, op) in kernel.iter_unordered() {
-            if let &Op::Define { dtype, scope, ro, .. } = op
-                && scope == Scope::Global
-            {
-                writeln!(
-                    global_args,
-                    "@group(0) @binding({max_p}) var<storage, {}> p{op_id}: array<{}>;",
-                    if ro { "read" } else { "read_write" },
-                    dtype.wgsl()
-                )
-                .unwrap();
-                max_p += 1;
-                arg_ro_flags.push(ro);
+            if let &Op::Define { dtype, scope, ro, len } = op {
+                if scope == Scope::Global {
+                    writeln!(
+                        global_args,
+                        "@group(0) @binding({max_p}) var<storage, {}> p{op_id}: array<{}>;",
+                        if ro { "read" } else { "read_write" },
+                        dtype.wgsl()
+                    )
+                    .unwrap();
+                    max_p += 1;
+                    arg_ro_flags.push(ro);
+                }
+                if scope == Scope::Local {
+                    writeln!(workgroup_args, "var<workgroup> p{op_id}: array<{}, {len}>;", dtype.wgsl()).unwrap();
+                }
             }
         }
 
@@ -416,10 +420,13 @@ impl WGPUDevice {
                     dtypes.insert(op_id, x.dtype());
                     writeln!(source, "{indent}const r{op_id}: {} = {};", x.dtype().wgsl(), x.wgsl()).unwrap();
                 }
-                &Op::Define { dtype, scope, ro: _, len } => {
+                &Op::Define { dtype, scope, ro: _, len: _ } => {
                     dtypes.insert(op_id, dtype);
-                    if scope == Scope::Register {
-                        writeln!(source, "{indent}var p{op_id}: array<{}, {len}>;", dtype.wgsl(),).unwrap();
+                    match scope {
+                        Scope::Register => {
+                            writeln!(source, "{indent}var p{op_id}: array<{}, 1>;", dtype.wgsl(),).unwrap();
+                        }
+                        Scope::Local | Scope::Global => {}
                     }
                 }
                 &Op::Load { src, index, .. } => {
@@ -539,7 +546,7 @@ impl WGPUDevice {
                     }
                 }
                 &Op::If { condition } => {
-                    _ = writeln!(source, "{indent}if ({condition}) {{");
+                    _ = writeln!(source, "{indent}if (r{condition}) {{");
                     indent += "  ";
                 }
                 Op::EndIf => {
@@ -573,7 +580,7 @@ impl WGPUDevice {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
         };
         let source = format!(
-            "{pragma}{global_args}@compute @workgroup_size({workgroup_size}) fn {name}(
+            "{pragma}{global_args}{workgroup_args}@compute @workgroup_size({workgroup_size}) fn {name}(
   @builtin(workgroup_id) gidx: vec3<u32>,
   @builtin(local_invocation_id) lidx: vec3<u32>
 ) {{\n{source}}}\n",
