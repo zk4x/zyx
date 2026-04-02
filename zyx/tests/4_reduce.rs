@@ -97,3 +97,48 @@ fn max_large_3d() -> Result<(), ZyxError> {
     assert_eq!(x0, [[3, 6, 9], [12, 15, 18], [21, 24, 27]]);
     Ok(())
 }
+
+#[test]
+fn sum_warp_reduce() -> Result<(), ZyxError> {
+    // Large tensor to trigger warp reduce (needs >= 256 elements in reduce dim)
+    let x = Tensor::from(vec![1i32; 512]);
+    let x = x.reshape([8, 64])?;
+    let x0 = x.sum([-1])?;
+    assert_eq!(x0, vec![64i32; 8]);
+    Ok(())
+}
+
+#[test]
+fn sum_warp_reduce_large() -> Result<(), ZyxError> {
+    // Very large tensor to trigger warp reduce (reduce dim >= 256)
+    let x = Tensor::from(vec![1i32; 2048]);
+    let x = x.reshape([8, 256])?;
+    let x0 = x.sum([-1])?;
+    assert_eq!(x0, vec![256i32; 8]);
+    Ok(())
+}
+
+#[test]
+fn sum_reduce_last_dim_3d() -> Result<(), ZyxError> {
+    // 3D tensor with large reduction over last dimension
+    // Shape: [4, 8, 512] -> reduce last dim -> [4, 8]
+    let data: Vec<i32> = (0..(4 * 8 * 512)).map(|i| (i % 10) as i32).collect();
+    let x = Tensor::from(data);
+    let x = x.reshape([4, 8, 512])?;
+    let x0 = x.sum([-1])?;
+
+    // Calculate expected values per row
+    let expected: [[i32; 8]; 4] = {
+        let mut arr = [[0i32; 8]; 4];
+        for i in 0..4 {
+            for j in 0..8 {
+                let row = i * 8 + j;
+                let start = row * 512;
+                arr[i][j] = (start..start + 512).map(|k| (k % 10) as i32).sum();
+            }
+        }
+        arr
+    };
+    assert_eq!(x0, expected);
+    Ok(())
+}

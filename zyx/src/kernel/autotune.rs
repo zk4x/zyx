@@ -7,7 +7,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
 static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
@@ -243,6 +243,10 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> (ProgramId, OptSeq) {
+        if true {
+            return self.autotune_debug(buffers, device, memory_pool, config, debug);
+        }
+
         let dev_info_ptr: *const DeviceInfo = device.info();
         let dev_info_ref = unsafe { &*dev_info_ptr };
 

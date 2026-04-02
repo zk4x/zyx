@@ -4,7 +4,6 @@
 use super::autotune::Optimization;
 use crate::dtype::Constant;
 use crate::kernel::{BOp, Kernel, Op, OpId, Scope};
-use crate::DType;
 
 impl Kernel {
     pub fn opt_warp_reduce(&self) -> (Optimization, usize) {
@@ -46,18 +45,20 @@ impl Kernel {
 
         let outer_len = loop_len / factor;
 
-        // Create local buffer of size factor
-        let local_buf = self.insert_before(
-            loop_start,
-            Op::Define {
-                dtype: DType::F32,
-                scope: Scope::Local,
-                ro: false,
-                len: factor,
+        // Replace register accumulator with local memory accumulator
+        // This is the key change: just modify the existing Define op
+        self.ops[acc_define].op = Op::Define {
+            dtype: if let Op::Define { dtype, .. } = self.at(acc_define) {
+                *dtype
+            } else {
+                return;
             },
-        );
+            scope: Scope::Local,
+            ro: false,
+            len: factor,
+        };
 
-        // Create local index for the factor
+        // Create local index for accessing the accumulator
         let lidx = self.insert_before(
             loop_start,
             Op::Index {
@@ -67,47 +68,44 @@ impl Kernel {
             },
         );
 
-        // Create idx_zero constant
-        let idx_zero = self.insert_before(loop_start, Op::Const(Constant::idx(0)));
-
-        // Load initial accumulator value
-        let load_acc = self.insert_before(
-            loop_start,
-            Op::Load {
-                src: acc_define,
-                index: idx_zero,
-                vlen: 1,
-            },
-        );
-
-        // Store initial value to local buffer at lidx
-        self.insert_before(
-            loop_start,
-            Op::Store {
-                dst: local_buf,
-                x: load_acc,
+        // Change the store inside the loop to use local index
+        if let Op::Store { x, vlen, .. } = self.at(acc_store).clone() {
+            self.ops[acc_store].op = Op::Store {
+                dst: acc_define,
+                x,
                 index: lidx,
-                vlen: 1,
-            },
-        );
+                vlen,
+            };
+        }
+
+        // Find and update the load from acc_define inside the loop to use lidx
+        let mut op_id = self.next_op(loop_start);
+        while op_id != loop_end {
+            if let Op::Load { src, index: _, vlen } = self.at(op_id).clone() {
+                if src == acc_define {
+                    self.ops[op_id].op = Op::Load {
+                        src: acc_define,
+                        index: lidx,
+                        vlen,
+                    };
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
 
         // Modify the original loop to iterate by factor
-        // Change loop len from loop_len to outer_len
         self.ops[loop_start].op = Op::Loop { len: outer_len };
 
         // Find the index computation inside the loop and modify it to stride by factor
         let mut op_id = self.next_op(loop_start);
         while op_id != loop_end {
             if let Op::Binary { x: _, y, bop: BOp::Add } = self.at(op_id).clone() {
-                // Check if this is an index computation
                 if let Op::Binary {
                     x: x2,
                     y: y2,
                     bop: BOp::Mul,
                 } = self.at(y).clone()
                 {
-                    // This looks like: base + offset, where offset might be the loop index
-                    // We need to multiply the offset by factor
                     let factor_const = self.insert_before(op_id, Op::Const(Constant::idx(factor as i32)));
                     let new_offset = self.insert_before(
                         op_id,
@@ -128,21 +126,14 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        // Change the store inside the loop to store to local buffer at lidx
-        if let Op::Store { x, vlen, .. } = self.at(acc_store).clone() {
-            self.ops[acc_store].op = Op::Store {
-                dst: local_buf,
-                x,
-                index: lidx,
-                vlen,
-            };
-        }
-
         // After the original loop, add barrier
         let after_loop_end = self.next_op(loop_end);
         self.insert_before(after_loop_end, Op::Barrier { scope: Scope::Local });
 
-        // Second loop: reduce across local buffer, only thread 0 does it
+        // idx_zero for the second loop
+        let idx_zero = self.insert_before(after_loop_end, Op::Const(Constant::idx(0)));
+
+        // Second loop: thread 0 reduces across all slots in local memory
         let is_thread_0 = self.insert_before(
             after_loop_end,
             Op::Binary {
@@ -153,9 +144,9 @@ impl Kernel {
         );
 
         self.insert_before(after_loop_end, Op::If { condition: is_thread_0 });
-
         self.insert_before(after_loop_end, Op::Loop { len: factor });
 
+        // Inner loop index
         let inner_idx = self.insert_before(
             after_loop_end,
             Op::Index {
@@ -165,16 +156,8 @@ impl Kernel {
             },
         );
 
-        let load_partial = self.insert_before(
-            after_loop_end,
-            Op::Load {
-                src: local_buf,
-                index: inner_idx,
-                vlen: 1,
-            },
-        );
-
-        let load_acc2 = self.insert_before(
+        // Load current accumulator value (slot 0)
+        let load_acc = self.insert_before(
             after_loop_end,
             Op::Load {
                 src: acc_define,
@@ -183,11 +166,22 @@ impl Kernel {
             },
         );
 
+        // Load next partial result
+        let load_partial = self.insert_before(
+            after_loop_end,
+            Op::Load {
+                src: acc_define,
+                index: inner_idx,
+                vlen: 1,
+            },
+        );
+
+        // Combine and store back to slot 0
         let bin_result = self.insert_before(
             after_loop_end,
             Op::Binary {
-                x: load_partial,
-                y: load_acc2,
+                x: load_acc,
+                y: load_partial,
                 bop,
             },
         );
