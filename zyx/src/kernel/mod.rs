@@ -17,7 +17,7 @@ pub mod autotune;
 mod const_folding;
 mod debug;
 mod fuse;
-mod jam_loops;
+
 mod licm;
 mod loop_splitting;
 mod mma;
