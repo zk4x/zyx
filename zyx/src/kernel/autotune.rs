@@ -204,7 +204,7 @@ impl Kernel {
             //kernel.debug_colorless();
         }
 
-        //kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
 
         //kernel.debug_colorless();
 
@@ -520,7 +520,7 @@ impl Kernel {
 }
 
 #[derive(Debug, Default, Clone, Copy, Hash, DeBin, SerBin)]
-struct Cost {
+pub struct Cost {
     global_ws: u64,
     n_threads: u32,
     instructions_per_thread: u32,
