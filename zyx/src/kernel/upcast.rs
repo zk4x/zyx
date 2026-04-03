@@ -3,9 +3,9 @@
 
 use super::autotune::Optimization;
 use crate::{
+    Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
-    Map, Set,
 };
 
 impl Kernel {
@@ -28,319 +28,118 @@ impl Kernel {
         (Optimization::Upcast { factors }, n_configs)
     }
 
-    /// Upcast optimization: increase work per thread to reduce global work size.
-    ///
-    /// When we have a global index `gidx` that iterates over a large range, we can process
-    /// multiple elements per thread to reduce the number of thread blocks needed.
-    ///
-    /// **Example: factor=4**
-    ///
-    /// Before:
-    /// ```c
-    /// for (int i = 0; i < N; i++) {           // reduce loop
-    ///     acc += data[gidx * N + i];
-    /// }
-    /// ```
-    ///
-    /// After (upcast with factor=4):
-    /// ```c
-    /// // BEFORE: Initialize accumulator array
-    /// for (int j = 0; j < 4; j++) {
-    ///     acc[j] = 0;
-    /// }
-    ///
-    /// // REDUCE: Inner loop inside reduce, each thread processes 4 elements
-    /// for (int i = 0; i < N; i++) {           // reduce loop
-    ///     for (int j = 0; j < 4; j++) {       // inner loop (fused into reduce)
-    ///         acc[j] += data[gidx * 4 * N + j * N + i];
-    ///     }
-    /// }
-    ///
-    /// // AFTER: Read accumulated results
-    /// for (int j = 0; j < 4; j++) {
-    ///     output[gidx + j * N] = acc[j];
-    /// }
-    /// ```
-    ///
-    /// **Effect on global work size:**
-    /// - Before: `grid.x = ceil(N / block.x)` thread blocks
-    /// - After: `grid.x = ceil(N / (block.x * factor))` thread blocks (reduced by factor)
-    ///
-    /// The inner loop processes `factor` elements per reduce iteration, so the global
-    /// work size is reduced by factor. This also increases register usage (accumulator
-    /// is now an array of size `factor`).
-    ///
-    /// **Why three loops?**
-    /// - **Before**: Must initialize `acc[j]` to 0 before reduce starts
-    /// - **Reduce + Inner**: Processes `factor` elements per reduce iteration,
-    ///   accumulating into `acc[j]` where j is the inner loop index
-    /// - **After**: Must READ the accumulated results after reduce completes
     pub fn upcast(&mut self, op_id: OpId, factor: usize) {
-        let Op::Index { len, scope, axis } = self.ops[op_id].op else {
-            unreachable!("upcast only works on Index ops");
-        };
-        debug_assert_eq!(scope, Scope::Global);
-        debug_assert!(len.is_multiple_of(factor));
+        // Verify op_id is a global index
+        debug_assert!(matches!(self.ops[op_id].op, Op::Index { scope: Scope::Global, .. }));
 
-        // split_dim returns [Index_id, Loop_id]
-        let split_ids = self.split_dim(
-            op_id,
-            vec![
-                Op::Index { len: len / factor, scope: Scope::Global, axis },
-                Op::Loop { len: factor },
-            ],
-        );
-        let upcast_loop_id = split_ids[1]; // The Loop created by split_dim
+        // Step 1: Find reduce loop
+        let reduce_loop = self.next_loop_after(op_id);
 
-        // Find the first loop nested inside the upcast loop with different length
-        let mut reduce_loop_id = OpId::NULL;
-        let mut loop_depth = 0;
-        let mut op_id_iter = self.next_op(upcast_loop_id);
-        while !op_id_iter.is_null() {
-            match self.ops[op_id_iter].op {
-                Op::Loop { len, .. } => {
-                    let current_depth = loop_depth;
-                    loop_depth += 1;
-                    if current_depth >= 1 && len != factor {
-                        reduce_loop_id = op_id_iter;
-                        break;
-                    }
-                }
-                Op::EndLoop => {
-                    if loop_depth == 0 {
-                        break;
-                    }
-                    loop_depth -= 1;
-                }
-                _ => {}
-            }
-            op_id_iter = self.next_op(op_id_iter);
+        eprintln!("DEBUG: op_id={:?}, reduce_loop={:?}", op_id, reduce_loop);
+
+        if reduce_loop == OpId::NULL {
+            // No reduce loop - just split the dimension
+            let Op::Index { len, scope, axis } = self.ops[op_id].op else {
+                return;
+            };
+            self.split_dim(
+                op_id,
+                vec![
+                    Op::Index { len: len / factor, scope, axis },
+                    Op::Index { len: factor, scope: Scope::Local, axis },
+                ],
+            );
+            return;
         }
 
-        // Jam the reduce loop into the upcast loop to increase work per thread
-        if reduce_loop_id != OpId::NULL {
-            self.jam_loop(reduce_loop_id, upcast_loop_id);
+        // Step 2: Find accumulator define
+        let acc_def = self.find_accumulator_before(op_id, reduce_loop);
+        eprintln!("DEBUG: acc_def={:?}", acc_def);
+        if acc_def == OpId::NULL {
+            return;
         }
+
+        // Step 3: Find reduce loop end
+        let reduce_end = self.find_matching_end(self.next_op(reduce_loop));
+        eprintln!("DEBUG: reduce_end={:?}", reduce_end);
+        if reduce_end == OpId::NULL {
+            return;
+        }
+
+        // Found: acc_def, reduce_loop, reduce_end - just verify they exist
+        let pre_loop_deps = self.pre_loop_deps(reduce_loop, reduce_end);
+        eprintln!("DEBUG: pre_loop_deps={:?}", pre_loop_deps);
+
+        println!(" ==== After upcast: ==== ");
+        self.debug_colorless();
 
         self.verify();
     }
 
-    /// Jam loop moves a loop (jam_loop_id) inside another loop (inner_loop_id).
-    ///
-    /// This is used in upcast to fuse the upcast loop with the reduce loop:
-    /// - The upcast loop iterates over the global index in chunks
-    /// - The reduce loop processes those chunks
-    /// - After jamming, the reduce loop accumulates all chunks before returning
-    ///
-    /// The accumulator size is increased by the jam_dim factor to hold all partial results.
-    pub fn jam_loop(&mut self, jam_loop_id: OpId, inner_loop_id: OpId) {
-        let mut op_id = jam_loop_id;
-        while op_id != inner_loop_id {
-            op_id = self.next_op(op_id);
-            if self.at(op_id).is_load() {
-                return;
+    fn pre_loop_deps(&self, reduce_loop: OpId, reduce_end: OpId) -> Set<OpId> {
+        let mut inside = Set::default();
+        let mut result = Set::default();
+        let mut visited = Set::default();
+
+        let mut id = self.next_op(reduce_loop);
+        while id != reduce_end {
+            inside.insert(id);
+            let mut stack: Vec<OpId> = self.ops[id].op.parameters().collect();
+            while let Some(param) = stack.pop() {
+                if visited.contains(&param) || inside.contains(&param) {
+                    continue;
+                }
+                visited.insert(param);
+                if matches!(self.ops[param].op, Op::Const(_) | Op::Define { .. } | Op::Index { .. }) {
+                    continue;
+                }
+                result.insert(param);
+                stack.extend(self.ops[param].op.parameters());
             }
+            id = self.next_op(id);
         }
 
-        let mut op_id = jam_loop_id;
-        let mut loop_level = 0;
-        let mut middle_loop_id = OpId::NULL;
-        let mut end_middle_loop_id = OpId::NULL;
-        let mut end_inner_loop_id = OpId::NULL;
-        let mut inner_loop_level = None;
-        let mut pre_loop_ops = Set::default();
-        while !op_id.is_null() {
-            match self.ops[op_id].op {
-                Op::Loop { .. } => {
-                    if loop_level == 1 {
-                        middle_loop_id = op_id;
-                    }
-                    if op_id == inner_loop_id {
-                        inner_loop_level = Some(loop_level);
-                    }
-                    loop_level += 1;
-                }
+        result
+    }
+
+    fn next_loop_after(&self, after: OpId) -> OpId {
+        let mut id = self.next_op(after);
+        while !id.is_null() {
+            if matches!(self.ops[id].op, Op::Loop { .. }) {
+                return id;
+            }
+            id = self.next_op(id);
+        }
+        OpId::NULL
+    }
+
+    fn find_accumulator_before(&self, after: OpId, before: OpId) -> OpId {
+        let mut id = self.next_op(after);
+        while id != before {
+            if let Op::Define { .. } = self.ops[id].op {
+                return id;
+            }
+            id = self.next_op(id);
+        }
+        OpId::NULL
+    }
+
+    fn find_matching_end(&self, start: OpId) -> OpId {
+        let mut depth = 1;
+        let mut id = start;
+        while !id.is_null() {
+            match self.ops[id].op {
+                Op::Loop { .. } => depth += 1,
                 Op::EndLoop => {
-                    loop_level -= 1;
-                    if let Some(inner_loop_level) = inner_loop_level {
-                        if loop_level == inner_loop_level {
-                            end_inner_loop_id = op_id;
-                        }
-                        if loop_level == 1 {
-                            end_middle_loop_id = op_id;
-                            break;
-                        }
+                    depth -= 1;
+                    if depth == 0 {
+                        return id;
                     }
                 }
                 _ => {}
             }
-            if loop_level == 1 {
-                pre_loop_ops.insert(op_id);
-            }
-            op_id = self.next_op(op_id);
+            id = self.next_op(id);
         }
-
-        let mut op_id = middle_loop_id;
-        while op_id != inner_loop_id {
-            if self.ops[op_id].op.parameters().any(|p| pre_loop_ops.contains(&p)) {
-                return;
-            }
-            op_id = self.next_op(op_id);
-        }
-        let mut op_id = end_inner_loop_id;
-        while op_id != end_middle_loop_id {
-            if self.ops[op_id].op.parameters().any(|p| pre_loop_ops.contains(&p)) {
-                return;
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        let jam_dim = if let Op::Loop { len, .. } = self.ops[jam_loop_id].op {
-            len
-        } else {
-            return;
-        };
-
-        let const_jam_dim = self.insert_before(jam_loop_id, Op::Const(Constant::idx(jam_dim as u64)));
-
-        let mut defines = Set::default();
-        let mut op_id = jam_loop_id;
-        while op_id != middle_loop_id {
-            op_id = self.next_op(op_id);
-            if let Op::Define { dtype, scope, ro, len } = self.ops[op_id].op {
-                self.ops[op_id].op = Op::Define { dtype, scope, ro, len: len * jam_dim };
-                defines.insert(op_id);
-                self.move_op_before(op_id, jam_loop_id);
-            }
-        }
-
-        let mut op_id = jam_loop_id;
-        while op_id != middle_loop_id {
-            op_id = self.next_op(op_id);
-            match *self.at(op_id) {
-                Op::Load { .. } | Op::Define { .. } => unreachable!(),
-                Op::Store { dst, index, .. } => {
-                    if defines.contains(&dst) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index = self.insert_before(op_id, Op::Binary { x, y: jam_loop_id, bop: BOp::Add });
-                        let Op::Store { index, .. } = &mut self.ops[op_id].op else {
-                            unreachable!()
-                        };
-                        *index = new_index;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let end_pre_loop = self.insert_before(middle_loop_id, Op::EndLoop);
-
-        let mut remapping = Map::default();
-        let mut op_id = jam_loop_id;
-        let mut t_op_id = inner_loop_id;
-        while op_id != end_pre_loop {
-            let mut op = self.ops[op_id].op.clone();
-            match self.at(op_id) {
-                Op::Load { .. } | Op::Define { .. } => unreachable!(),
-                Op::Store { .. } => {}
-                _ => {
-                    op.remap_params(&remapping);
-                    t_op_id = self.insert_after(t_op_id, op);
-                    remapping.insert(op_id, t_op_id);
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        let mut op_id = t_op_id;
-        let mut loop_level = 1;
-        loop {
-            op_id = self.next_op(op_id);
-            self.ops[op_id].op.remap_params(&remapping);
-            match self.ops[op_id].op {
-                Op::Load { src, index, .. } => {
-                    if defines.contains(&src) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index = self.insert_before(op_id, Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
-                        let Op::Load { index, .. } = &mut self.ops[op_id].op else {
-                            unreachable!()
-                        };
-                        *index = new_index;
-                    }
-                }
-                Op::Store { dst, index, .. } => {
-                    if defines.contains(&dst) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index = self.insert_before(op_id, Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
-                        let Op::Store { index, .. } = &mut self.ops[op_id].op else {
-                            unreachable!()
-                        };
-                        *index = new_index;
-                    }
-                }
-                Op::Loop { .. } => loop_level += 1,
-                Op::EndLoop => {
-                    loop_level -= 1;
-                    if loop_level == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        self.insert_before(op_id, Op::EndLoop);
-
-        remapping.clear();
-        let mut t_op_id = end_middle_loop_id;
-        let mut op_id = jam_loop_id;
-        while op_id != end_pre_loop {
-            let mut op = self.ops[op_id].op.clone();
-            match self.at(op_id) {
-                Op::Load { .. } | Op::Define { .. } => unreachable!(),
-                Op::Store { .. } => {}
-                _ => {
-                    op.remap_params(&remapping);
-                    t_op_id = self.insert_after(t_op_id, op);
-                    remapping.insert(op_id, t_op_id);
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        let mut op_id = t_op_id;
-        let mut loop_level = 1;
-        loop {
-            op_id = self.next_op(op_id);
-            self.ops[op_id].op.remap_params(&remapping);
-            match self.ops[op_id].op {
-                Op::Load { src, index, .. } => {
-                    if defines.contains(&src) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index = self.insert_before(op_id, Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
-                        let Op::Load { index, .. } = &mut self.ops[op_id].op else {
-                            unreachable!()
-                        };
-                        *index = new_index;
-                    }
-                }
-                Op::Store { dst, index, .. } => {
-                    if defines.contains(&dst) {
-                        let x = self.insert_before(op_id, Op::Binary { x: index, y: const_jam_dim, bop: BOp::Mul });
-                        let new_index = self.insert_before(op_id, Op::Binary { x, y: remapping[&jam_loop_id], bop: BOp::Add });
-                        let Op::Store { index, .. } = &mut self.ops[op_id].op else {
-                            unreachable!()
-                        };
-                        *index = new_index;
-                    }
-                }
-                Op::Loop { .. } => loop_level += 1,
-                Op::EndLoop => {
-                    loop_level -= 1;
-                    if loop_level == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
+        OpId::NULL
     }
 }
