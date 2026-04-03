@@ -319,11 +319,11 @@ impl Kernel {
             let temp = self.next_op(op_id);
             match &mut self.ops[op_id].op {
                 Op::Define { .. } => {} // skip define ops, these can not be deduplicated
-                Op::Loop { .. } => {
+                Op::If { .. } | Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(50, Default::default()));
                     stored_locs.push(Map::with_capacity_and_hasher(10, Default::default()));
                 }
-                Op::EndLoop => {
+                Op::EndIf | Op::EndLoop => {
                     stack.pop();
                     stored_locs.pop();
                 }

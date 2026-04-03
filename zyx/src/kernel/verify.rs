@@ -17,7 +17,7 @@ impl Kernel {
                     "{op_id} {:?} uses {x} -> {:?} before declaration.",
                     self.ops[op_id].op, self.ops[x].op
                 );
-                self.debug();
+                self.debug_colorless();
                 panic!();
             }
         };
@@ -42,7 +42,7 @@ impl Kernel {
                 Op::Store { dst, x, index, vlen: _ } => {
                     if !defines.contains_key(&dst) {
                         println!("store={op_id} is trying to store to undefined variable");
-                        self.debug();
+                        self.debug_colorless();
                         panic!();
                     }
                     debug_assert_eq!(dtypes[&index], IDX_T);
@@ -73,7 +73,7 @@ impl Kernel {
                     check(op_id, y, &stack);
                     if dtypes[&x] != dtypes[&y] {
                         println!("Binary dtype mismatch on op={op_id}.");
-                        self.debug();
+                        self.debug_colorless();
                         panic!();
                     }
                     if bop.returns_bool() {
@@ -88,7 +88,7 @@ impl Kernel {
                         check(op_id, x, &stack);
                         if dtypes[&x] != dtype {
                             println!("Vectorize dtype mismatch on op={op_id}.");
-                            self.debug();
+                            self.debug_colorless();
                             panic!();
                         }
                     }
@@ -102,7 +102,7 @@ impl Kernel {
                     check(op_id, b, &stack);
                     if dtypes[&a] != dtypes[&b] {
                         println!("MMA dtype mismatch on op={op_id}.");
-                        self.debug();
+                        self.debug_colorless();
                         panic!();
                     }
                     dtypes.insert(op_id, dtype);
@@ -113,7 +113,7 @@ impl Kernel {
                     check(op_id, z, &stack);
                     if dtypes[&x] != dtypes[&y] || dtypes[&x] != dtypes[&z] {
                         println!("Mad dtype mismatch on op={op_id}.");
-                        self.debug();
+                        self.debug_colorless();
                         panic!();
                     }
                     dtypes.insert(op_id, dtypes[&x]);
@@ -128,7 +128,7 @@ impl Kernel {
                 Op::Load { src, index, .. } => {
                     if !defines.contains_key(&src) {
                         println!("load={op_id} is trying to load from undefined variable");
-                        self.debug();
+                        self.debug_colorless();
                         panic!();
                     }
                     debug_assert_eq!(dtypes[&index], IDX_T);
@@ -146,7 +146,7 @@ impl Kernel {
                 Op::EndLoop => {
                     if stack.is_empty() {
                         println!("Endloop without matching loop.");
-                        self.debug();
+                        self.debug_colorless();
                         panic!();
                     }
                     stack.pop();
@@ -154,7 +154,7 @@ impl Kernel {
                 Op::If { condition } => {
                     if dtypes[&condition] != DType::Bool {
                         println!("If condition={condition} must be a boolean");
-                        self.debug();
+                        self.debug_colorless();
                         panic!();
                     }
                     stack.push(Set::default());
@@ -173,13 +173,13 @@ impl Kernel {
             op_id = self.ops[op_id].next;
             if !op_id.is_null() && self.ops[op_id].prev != prev {
                 println!("Inconsistency in prev.");
-                self.debug();
+                self.debug_colorless();
                 panic!()
             }
         }
         if stack.len() != 1 {
             println!("Wrong {} closing endloops.", stack.len());
-            self.debug();
+            self.debug_colorless();
             panic!();
         }
         self.check_oob();
@@ -336,7 +336,7 @@ impl Kernel {
                     }
                     let idx_range = bounds[&index];
                     if idx_range.1 > defines[&dst] - 1 {
-                        self.debug();
+                        self.debug_colorless();
                         panic!(
                             "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
                             op_id, idx_range, defines[&dst]
