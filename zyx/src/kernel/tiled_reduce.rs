@@ -133,20 +133,32 @@ impl Kernel {
         // Sync memory
         self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
 
-        // Add the branch
-        let const_last = self.insert_before(acc_load_id, Op::Const(Constant::idx(factor as u64 - 1)));
-        let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_last, bop: BOp::Eq });
-        self.insert_before(acc_load_id, Op::If { condition });
+        // Tree reduce: each step threads with lidx < stride load from lidx+stride and add to lidx
+        // For factor=16: stride 8 -> 4 -> 2 -> 1
+        let mut stride = factor / 2;
+        while stride > 0 {
+            let stride_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(stride as u64)));
+            let limit_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(stride as u64)));
+            let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: limit_const, bop: BOp::Cmplt });
+            self.insert_before(acc_load_id, Op::If { condition });
 
-        // Add the loop that accumulates over local memory
-        let ridx = self.insert_before(acc_load_id, Op::Loop { len: factor - 1 });
-        let reg_load = self.insert_before(acc_load_id, Op::Load { src: reg_acc, index: const_zero, vlen: 1 });
-        let local_load = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: ridx, vlen: 1 });
-        let bop_id = self.insert_before(acc_load_id, Op::Binary { x: reg_load, y: local_load, bop });
-        self.insert_before(acc_load_id, Op::Store { dst: reg_acc, x: bop_id, index: const_zero, vlen: 1 });
-        self.insert_before(acc_load_id, Op::EndLoop);
+            let offset_idx = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: stride_const, bop: BOp::Add });
+            let local_load = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: offset_idx, vlen: 1 });
+            let current_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: lidx, vlen: 1 });
+            let bop_id = self.insert_before(acc_load_id, Op::Binary { x: current_val, y: local_load, bop });
+            self.insert_before(acc_load_id, Op::Store { dst: loc_acc, x: bop_id, index: lidx, vlen: 1 });
 
-        // Has to end after the whole kernel!
-        self.insert_after(self.tail, Op::EndIf);
+            self.insert_before(acc_load_id, Op::EndIf);
+            self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
+
+            stride /= 2;
+        }
+
+        // Load final result from local[0] to register
+        let final_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: const_zero, vlen: 1 });
+        self.insert_before(
+            acc_load_id,
+            Op::Store { dst: reg_acc, x: final_val, index: const_zero, vlen: 1 },
+        );
     }
 }
