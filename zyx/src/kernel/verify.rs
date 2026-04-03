@@ -271,20 +271,27 @@ impl Kernel {
                     while let Some(param) = params.pop() {
                         if visited.insert(param) {
                             match self.at(param) {
-                                Op::Binary { x, y, bop } => {
-                                    match bop {
-                                        BOp::Eq => {
-                                            if let Some((yl, yu)) = prev.get(y) {
-                                                if yl == yu {
-                                                    if let Some((_xl, _xu)) = prev.get(x) {
-                                                        prev.insert(*x, (*yl, *yu));
-                                                    }
+                                Op::Binary { x, y, bop } => match bop {
+                                    BOp::Eq => {
+                                        if let Some((yl, yu)) = prev.get(y) {
+                                            if yl == yu {
+                                                if let Some((_xl, _xu)) = prev.get(x) {
+                                                    prev.insert(*x, (*yl, *yu));
                                                 }
                                             }
                                         }
-                                        _ => todo!("{bop:?}"),
                                     }
-                                }
+                                    BOp::Cmplt => {
+                                        if let Some((yl, yu)) = prev.get(y) {
+                                            if yl == yu {
+                                                if let Some((xl, _xu)) = prev.get(x) {
+                                                    prev.insert(*x, (*xl, yl.saturating_sub(1)));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => todo!("{bop:?}"),
+                                },
                                 Op::Const(_) => {}
                                 Op::Index { .. } => {}
                                 op => todo!("{op:?}"),
@@ -295,7 +302,9 @@ impl Kernel {
                     bounds_stack.push(prev);
                 }
                 Op::EndIf => {
-                    bounds_stack.pop();
+                    if bounds_stack.pop().is_none() {
+                        panic!("More endifs than ifs");
+                    }
                 }
                 Op::Index { len: dim, .. } => {
                     let bounds = bounds_stack.last_mut().unwrap();
