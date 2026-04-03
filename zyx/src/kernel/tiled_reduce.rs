@@ -10,6 +10,7 @@ use crate::{
 impl Kernel {
     pub fn opt_local_reduce(&self) -> (Optimization, usize) {
         let candidates = vec![32, 16, 8, 64, 128];
+        let tree_branch_candidates = vec![2, 4];
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -17,7 +18,9 @@ impl Kernel {
                 if len >= 256 {
                     for &factor in &candidates {
                         if len.is_multiple_of(factor) && len / factor >= 4 {
-                            factors.push((op_id, factor));
+                            for &tree_branch in &tree_branch_candidates {
+                                factors.push((op_id, factor, tree_branch));
+                            }
                         }
                     }
                 }
@@ -28,7 +31,7 @@ impl Kernel {
         (Optimization::LocalReduce { factors }, n)
     }
 
-    pub fn tile_reduce_to_local(&mut self, loop_start: OpId, factor: usize) {
+    pub fn tile_reduce_to_local(&mut self, loop_start: OpId, factor: usize, divisor: usize) {
         //println!("Local reduce of loop={loop_start} with factor={factor}");
         let loop_len = if let Op::Loop { len } = self.at(loop_start) {
             *len
@@ -151,7 +154,7 @@ impl Kernel {
             self.insert_before(acc_load_id, Op::EndIf);
             self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
 
-            stride /= 2;
+            stride /= divisor;
         }
 
         // Load final result from local[0] to register (only thread 0)

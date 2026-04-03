@@ -7,7 +7,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
@@ -41,7 +41,7 @@ pub enum Optimization {
     FuseMad,
     UnrollConstantLoops,
     LocalReduce {
-        factors: Vec<(OpId, usize)>,
+        factors: Vec<(OpId, usize, usize)>,
     },
     SplitLoop {
         factors: Vec<(OpId, usize)>,
@@ -146,8 +146,8 @@ impl Optimization {
                 kernel.unroll_constant_loops();
             }
             Optimization::LocalReduce { factors } => {
-                let (op_id, factor) = factors[config];
-                kernel.tile_reduce_to_local(op_id, factor);
+                let (op_id, factor, tree_branch) = factors[config];
+                kernel.tile_reduce_to_local(op_id, factor, tree_branch);
             }
             Optimization::SplitLoop { factors } => {
                 let (op_id, factor) = factors[config];
@@ -199,9 +199,9 @@ impl Kernel {
         // Apply local reduce optimization BEFORE register tiling
         let (local_reduce_opt, n_local_reduce_configs) = kernel.opt_local_reduce();
         if n_local_reduce_configs > 0 {
-            local_reduce_opt.apply(&mut kernel, 0);
-            //eprintln!("=== After local reduce ===");
-            //kernel.debug_colorless();
+            local_reduce_opt.apply(&mut kernel, 0); // tree_branch=2
+                                                    //eprintln!("=== After local reduce ===");
+                                                    //kernel.debug_colorless();
         }
 
         kernel.run_always_on_optimizations();
