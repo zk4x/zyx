@@ -9,7 +9,7 @@ use crate::{
 };
 
 impl Kernel {
-    pub fn opt_downcast(&self) -> (Optimization, usize) {
+    pub fn opt_upcast(&self) -> (Optimization, usize) {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {

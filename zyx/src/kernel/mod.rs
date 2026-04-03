@@ -18,7 +18,6 @@ mod const_folding;
 mod debug;
 mod fuse;
 
-mod downcast;
 mod licm;
 mod loop_splitting;
 mod mma;
@@ -28,6 +27,7 @@ mod sm_loops;
 mod tiled_reduce;
 mod unfold;
 mod unroll_loops;
+mod upcast;
 mod vectorize;
 mod verify;
 //mod emulate;
