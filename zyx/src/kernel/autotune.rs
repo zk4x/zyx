@@ -18,7 +18,7 @@ static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
     //Kernel::opt_register_tiling,
     Kernel::opt_fuse_mad,
     Kernel::opt_unroll_constant_loops,
-    Kernel::opt_local_reduce,
+    Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
     Kernel::opt_licm,
 ];
@@ -40,7 +40,7 @@ pub enum Optimization {
     },
     FuseMad,
     UnrollConstantLoops,
-    LocalReduce {
+    TiledReduce {
         factors: Vec<(OpId, usize, usize)>,
     },
     SplitLoop {
@@ -145,9 +145,9 @@ impl Optimization {
             Optimization::UnrollConstantLoops => {
                 kernel.unroll_constant_loops();
             }
-            Optimization::LocalReduce { factors } => {
+            Optimization::TiledReduce { factors } => {
                 let (op_id, factor, tree_branch) = factors[config];
-                kernel.tile_reduce_to_local(op_id, factor, tree_branch);
+                kernel.tiled_reduce(op_id, factor, tree_branch);
             }
             Optimization::SplitLoop { factors } => {
                 let (op_id, factor) = factors[config];
@@ -196,17 +196,29 @@ impl Kernel {
 
         // Here come series of custom optimizations
 
-        // Apply local reduce optimization BEFORE register tiling
-        let (local_reduce_opt, n_local_reduce_configs) = kernel.opt_local_reduce();
-        if n_local_reduce_configs > 0 {
-            local_reduce_opt.apply(&mut kernel, 0); // tree_branch=2
-            //eprintln!("=== After local reduce ===");
-            //kernel.debug_colorless();
-        }
+        // Apply upcast (vectorization) with factor 2
+        // let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
+        // if n_upcast_configs > 0 {
+        //     upcast_opt.apply(&mut kernel, 0);
+        // }
 
         kernel.run_always_on_optimizations();
 
+        // Apply upcast (vectorization) with factor 2
+        let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
+        if n_upcast_configs > 0 {
+            upcast_opt.apply(&mut kernel, 0);
+        }
+
         kernel.debug_colorless();
+
+        // Apply tiled reduce optimization
+        /*let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_tiled_reduce();
+        if n_tiled_reduce_configs > 0 {
+            tiled_reduce_opt.apply(&mut kernel, 0); // tree_branch=2
+        }*/
+
+        kernel.run_always_on_optimizations();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)

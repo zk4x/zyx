@@ -223,6 +223,7 @@ Every optimization must produce correct IR that calculates the same result as th
 ## What to Avoid
 
 - **Never commit changes unless the user explicitly asks for it** - Always ask before committing
+- **Ask for help when unsure, uncertain, or struggling** - Don't spend more than 15-30 minutes stuck before asking
 - Inheritance (use composition/enums)
 - `Rc<RefCell<T>>` unless absolutely necessary
 - Too many small files

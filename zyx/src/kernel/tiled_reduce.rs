@@ -8,7 +8,7 @@ use crate::{
 };
 
 impl Kernel {
-    pub fn opt_local_reduce(&self) -> (Optimization, usize) {
+    pub fn opt_tiled_reduce(&self) -> (Optimization, usize) {
         let candidates = vec![32, 16, 8, 64, 128];
         let tree_branch_candidates = vec![2, 4];
         let mut factors = Vec::new();
@@ -28,11 +28,10 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         let n = factors.len();
-        (Optimization::LocalReduce { factors }, n)
+        (Optimization::TiledReduce { factors }, n)
     }
 
-    pub fn tile_reduce_to_local(&mut self, loop_start: OpId, factor: usize, divisor: usize) {
-        //println!("Local reduce of loop={loop_start} with factor={factor}");
+    pub fn tiled_reduce(&mut self, loop_start: OpId, factor: usize, tree_branch: usize) {
         let loop_len = if let Op::Loop { len } = self.at(loop_start) {
             *len
         } else {
@@ -154,7 +153,7 @@ impl Kernel {
             self.insert_before(acc_load_id, Op::EndIf);
             self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
 
-            stride /= divisor;
+            stride /= tree_branch;
         }
 
         // Load final result from local[0] to register (only thread 0)
