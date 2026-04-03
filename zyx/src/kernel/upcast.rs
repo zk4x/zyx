@@ -32,12 +32,9 @@ impl Kernel {
         // Verify op_id is a global index
         debug_assert!(matches!(self.ops[op_id].op, Op::Index { scope: Scope::Global, .. }));
 
-        // Step 1: Find reduce loop
-        let reduce_loop = self.next_loop_after(op_id);
+        println!("Upcast {op_id} by factor={factor}");
 
-        eprintln!("DEBUG: op_id={:?}, reduce_loop={:?}", op_id, reduce_loop);
-
-        if reduce_loop == OpId::NULL {
+        if !self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
             // No reduce loop - just split the dimension
             let Op::Index { len, scope, axis } = self.ops[op_id].op else {
                 return;
@@ -52,23 +49,53 @@ impl Kernel {
             return;
         }
 
-        // Step 2: Find accumulator define
-        let acc_def = self.find_accumulator_before(op_id, reduce_loop);
-        eprintln!("DEBUG: acc_def={:?}", acc_def);
-        if acc_def == OpId::NULL {
-            return;
+        // === UPCAST WITH REDUCE LOOPS === //
+
+        let Op::Index { len, .. } = &mut self.ops[op_id].op else {
+            unreachable!()
+        };
+        debug_assert!(len.is_multiple_of(factor));
+        *len /= factor;
+
+        // Single pass over all kernel ops
+
+        // Find first non-trivial op
+        let factor_const;
+        let mut upcast_loop;
+        let mut id = self.head;
+        loop {
+            let next = self.next_op(id);
+            if !matches!(
+                self.ops[id].op,
+                Op::Const(_) | Op::Index { .. } | Op::Define { scope: Scope::Global | Scope::Local, .. }
+            ) {
+                factor_const = self.insert_before(id, Op::Const(Constant::idx(factor as u64)));
+                upcast_loop = self.insert_before(id, Op::Loop { len: factor });
+                break;
+            }
+            id = next;
         }
 
-        // Step 3: Find reduce loop end
-        let reduce_end = self.find_matching_end(self.next_op(reduce_loop));
-        eprintln!("DEBUG: reduce_end={:?}", reduce_end);
-        if reduce_end == OpId::NULL {
-            return;
+        // Fix reduce loops and their dependencies
+        // Resize accumulators
+        // Fix indexing
+        // THIS IS THE LOOP THAT DOES EVERYTHING
+        while !id.is_null() {
+            let next = self.next_op(id);
+            match self.ops[id].op {
+                Op::Loop { .. } => {
+                    self.insert_before(id, Op::EndLoop);
+                }
+                Op::EndLoop => {
+                    upcast_loop = self.insert_after(id, Op::Loop { len: factor });
+                }
+                _ => {}
+            }
+            id = next;
         }
 
-        // Found: acc_def, reduce_loop, reduce_end - just verify they exist
-        let pre_loop_deps = self.pre_loop_deps(reduce_loop, reduce_end);
-        eprintln!("DEBUG: pre_loop_deps={:?}", pre_loop_deps);
+        // Ensure kernel ends with EndLoop
+        self.insert_after(self.tail, Op::EndLoop);
 
         println!(" ==== After upcast: ==== ");
         self.debug_colorless();
@@ -76,14 +103,25 @@ impl Kernel {
         self.verify();
     }
 
-    fn pre_loop_deps(&self, reduce_loop: OpId, reduce_end: OpId) -> Set<OpId> {
+    fn pre_loop_deps(&self, reduce_loop: OpId) -> Set<OpId> {
         let mut inside = Set::default();
         let mut result = Set::default();
         let mut visited = Set::default();
 
-        let mut id = self.next_op(reduce_loop);
-        while id != reduce_end {
+        let mut id = reduce_loop;
+        let mut loop_depth = 0;
+        while !id.is_null() {
             inside.insert(id);
+            match self.ops[id].op {
+                Op::Loop { .. } => loop_depth += 1,
+                Op::EndLoop => {
+                    loop_depth -= 1;
+                    if loop_depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
             let mut stack: Vec<OpId> = self.ops[id].op.parameters().collect();
             while let Some(param) = stack.pop() {
                 if visited.contains(&param) || inside.contains(&param) {
@@ -100,46 +138,5 @@ impl Kernel {
         }
 
         result
-    }
-
-    fn next_loop_after(&self, after: OpId) -> OpId {
-        let mut id = self.next_op(after);
-        while !id.is_null() {
-            if matches!(self.ops[id].op, Op::Loop { .. }) {
-                return id;
-            }
-            id = self.next_op(id);
-        }
-        OpId::NULL
-    }
-
-    fn find_accumulator_before(&self, after: OpId, before: OpId) -> OpId {
-        let mut id = self.next_op(after);
-        while id != before {
-            if let Op::Define { .. } = self.ops[id].op {
-                return id;
-            }
-            id = self.next_op(id);
-        }
-        OpId::NULL
-    }
-
-    fn find_matching_end(&self, start: OpId) -> OpId {
-        let mut depth = 1;
-        let mut id = start;
-        while !id.is_null() {
-            match self.ops[id].op {
-                Op::Loop { .. } => depth += 1,
-                Op::EndLoop => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return id;
-                    }
-                }
-                _ => {}
-            }
-            id = self.next_op(id);
-        }
-        OpId::NULL
     }
 }
