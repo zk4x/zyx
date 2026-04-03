@@ -185,169 +185,129 @@ impl Kernel {
         self.check_oob();
     }
 
-    pub fn check_oob(&self) {
-        use std::collections::HashMap;
-        let mut bounds_stack: Vec<Map<OpId, (usize, usize)>> = vec![HashMap::default()];
-        let mut defines = Map::default();
+    pub fn compute_bounds(&self) -> Map<OpId, (u32, u32)> {
+        let mut bounds: Map<OpId, (u32, u32)> = Map::default();
+        let mut bounds_stack: Vec<Map<OpId, (u32, u32)>> = vec![Map::default()];
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::Const(x) => {
-                    let bounds = bounds_stack.last_mut().unwrap();
+                    let b = bounds_stack.last_mut().unwrap();
                     if x.is_positive() {
                         let Constant::U64(x) = x.cast(DType::U64) else {
                             unreachable!()
                         };
-                        let v = usize::from_le_bytes(x);
-                        bounds.insert(op_id, (v, v));
+                        let v = u32::from_le_bytes(x[0..4].try_into().unwrap());
+                        b.insert(op_id, (v, v));
                     }
                 }
-                Op::Define { len, .. } => {
-                    defines.insert(op_id, len);
-                }
+                Op::Define { .. } => {}
                 Op::Cast { x, .. } => {
-                    let bounds = bounds_stack.last_mut().unwrap();
-                    if let Some((l, u)) = bounds.get(&x) {
-                        bounds.insert(op_id, (*l, *u));
+                    let b = bounds_stack.last_mut().unwrap();
+                    if let Some((l, u)) = b.get(&x) {
+                        b.insert(op_id, (*l, *u));
                     }
                 }
                 Op::Binary { x, y, bop } => {
-                    let bounds = bounds_stack.last_mut().unwrap();
-                    if let Some(&(xl, xu)) = bounds.get(&x)
-                        && let Some(&(yl, yu)) = bounds.get(&y)
+                    let b = bounds_stack.last_mut().unwrap();
+                    if let Some(&(xl, xu)) = b.get(&x)
+                        && let Some(&(yl, yu)) = b.get(&y)
                     {
                         let range = match bop {
                             BOp::Add => (xl.wrapping_add(yl), xu.wrapping_add(yu)),
                             BOp::Sub => (xl.wrapping_sub(yl), xu.wrapping_sub(yu)),
                             BOp::Mul => (xl.wrapping_mul(yl), xu.wrapping_mul(yu)),
-                            BOp::Div => (xl / yl.saturating_add(1), xu / yu.saturating_add(1)),
-                            BOp::Mod => (xl % yl.saturating_add(1), xu % yu.saturating_add(1)),
+                            BOp::Div => (xl / yl, xu / yu),
+                            BOp::Mod => (xl % yl, xu % yu),
                             BOp::Eq => {
                                 let overlaps = !(xu < yl || yu < xl);
                                 let always = (xl == xu) && (yl == yu) && (xl == yl);
-                                (always as usize, overlaps as usize)
+                                (always as u32, overlaps as u32)
                             }
                             BOp::NotEq => {
                                 let overlaps = !(xu < yl || yu < xl);
                                 let always_eq = (xl == xu) && (yl == yu) && (xl == yl);
-                                ((!always_eq) as usize, (!overlaps) as usize)
+                                ((!always_eq) as u32, (!overlaps) as u32)
                             }
                             BOp::Cmpgt => {
                                 let maybe = xu > yl;
                                 let always = xl > yu;
-                                (always as usize, maybe as usize)
+                                (always as u32, maybe as u32)
                             }
                             BOp::Cmplt => {
                                 let maybe = xl < yu;
                                 let always = xu < yl;
-                                (always as usize, maybe as usize)
+                                (always as u32, maybe as u32)
                             }
-                            BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
+                            BOp::And => ((xl == 1 && yl == 1) as u32, (xu == 1 && yu == 1) as u32),
                             BOp::BitShiftLeft => (xl << yl, xu << yu),
                             BOp::BitShiftRight => (xl >> yl, xu >> yu),
                             BOp::Pow => (xl.pow(yl as u32), xu.pow(yu as u32)),
-                            op => todo!("{:?}", op),
+                            _ => (0, 0),
                         };
-                        bounds.insert(op_id, range);
+                        b.insert(op_id, range);
                     }
                 }
                 Op::Mad { x, y, z } => {
-                    let bounds = bounds_stack.last_mut().unwrap();
-                    if let Some(&(xl, xu)) = bounds.get(&x)
-                        && let Some(&(yl, yu)) = bounds.get(&y)
-                        && let Some(&(zl, zu)) = bounds.get(&z)
+                    let b = bounds_stack.last_mut().unwrap();
+                    if let Some(&(xl, xu)) = b.get(&x)
+                        && let Some(&(yl, yu)) = b.get(&y)
+                        && let Some(&(zl, zu)) = b.get(&z)
                     {
-                        bounds.insert(
+                        b.insert(
                             op_id,
                             (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)),
                         );
                     }
                 }
                 Op::If { condition } => {
-                    let mut visited: Set<OpId> = Set::default();
                     let mut prev = bounds_stack.last().unwrap().clone();
                     let mut params = Vec::new();
                     params.push(condition);
                     while let Some(param) = params.pop() {
-                        if visited.insert(param) {
-                            match self.at(param) {
-                                Op::Binary { x, y, bop } => match bop {
-                                    BOp::Eq => {
-                                        if let Some((yl, yu)) = prev.get(y) {
-                                            if yl == yu {
-                                                if let Some((_xl, _xu)) = prev.get(x) {
-                                                    prev.insert(*x, (*yl, *yu));
-                                                }
+                        if let Op::Binary { x, y, bop } = self.at(param) {
+                            match bop {
+                                BOp::Eq => {
+                                    if let Some((yl, yu)) = prev.get(y) {
+                                        if yl == yu {
+                                            if let Some((_xl, _xu)) = prev.get(x) {
+                                                prev.insert(*x, (*yl, *yu));
                                             }
                                         }
                                     }
-                                    BOp::Cmplt => {
-                                        if let Some((yl, yu)) = prev.get(y) {
-                                            if yl == yu {
-                                                if let Some((xl, _xu)) = prev.get(x) {
-                                                    prev.insert(*x, (*xl, yl.saturating_sub(1)));
-                                                }
+                                }
+                                BOp::Cmplt => {
+                                    if let Some((yl, yu)) = prev.get(y) {
+                                        if yl == yu {
+                                            if let Some((xl, _xu)) = prev.get(x) {
+                                                prev.insert(*x, (*xl, yl.saturating_sub(1)));
                                             }
                                         }
                                     }
-                                    _ => todo!("{bop:?}"),
-                                },
-                                Op::Const(_) => {}
-                                Op::Index { .. } => {}
-                                op => todo!("{op:?}"),
+                                }
+                                _ => {}
                             }
-                            params.extend(self.ops[param].op.parameters());
                         }
+                        params.extend(self.ops[param].op.parameters());
                     }
                     bounds_stack.push(prev);
                 }
                 Op::EndIf => {
-                    if bounds_stack.pop().is_none() {
-                        panic!("More endifs than ifs");
-                    }
+                    bounds_stack.pop();
                 }
-                Op::Index { len: dim, .. } => {
-                    let bounds = bounds_stack.last_mut().unwrap();
-                    bounds.insert(op_id, (0, dim - 1));
+                Op::Index { len, .. } => {
+                    let b = bounds_stack.last_mut().unwrap();
+                    b.insert(op_id, (0, len as u32 - 1));
                 }
-                Op::Loop { len: dim, .. } => {
-                    let bounds = bounds_stack.last_mut().unwrap();
-                    bounds.insert(op_id, (0, dim - 1));
-                }
-                Op::Load { src, index, .. } => {
-                    let bounds = bounds_stack.last_mut().unwrap();
-                    if !bounds.contains_key(&index) {
-                        self.debug_colorless();
-                        panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
-                    }
-                    let idx_range = bounds[&index];
-                    if idx_range.1 > defines[&src] - 1 {
-                        self.debug_colorless();
-                        panic!(
-                            "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                            op_id, idx_range, defines[&src]
-                        );
-                    }
-                }
-                Op::Store { dst, index, .. } => {
-                    let bounds = bounds_stack.last_mut().unwrap();
-                    if !bounds.contains_key(&index) {
-                        panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
-                    }
-                    let idx_range = bounds[&index];
-                    if idx_range.1 > defines[&dst] - 1 {
-                        self.debug_colorless();
-                        panic!(
-                            "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                            op_id, idx_range, defines[&dst]
-                        );
-                    }
+                Op::Loop { len } => {
+                    let b = bounds_stack.last_mut().unwrap();
+                    b.insert(op_id, (0, len as u32 - 1));
                 }
                 Op::Vectorize { ref ops } => {
-                    let bounds = bounds_stack.last_mut().unwrap();
+                    let b = bounds_stack.last_mut().unwrap();
                     let mut r = None;
                     for x in ops {
-                        if let Some(&(xl, xu)) = bounds.get(x) {
+                        if let Some(&(xl, xu)) = b.get(x) {
                             if let Some((l, u)) = r {
                                 r = Some((xl.min(l), xu.max(u)));
                             } else {
@@ -356,7 +316,86 @@ impl Kernel {
                         }
                     }
                     if let Some((xl, xu)) = r {
-                        bounds.insert(op_id, (xl, xu));
+                        b.insert(op_id, (xl, xu));
+                    }
+                }
+                _ => {}
+            }
+            // Merge current scope bounds into the global bounds map
+            if let Some(scope_bounds) = bounds_stack.last() {
+                for (&k, &v) in scope_bounds {
+                    bounds.insert(k, v);
+                }
+            }
+            op_id = self.ops[op_id].next;
+        }
+        bounds
+    }
+
+    pub fn is_masked_index(&self, index: OpId, bounds: &Map<OpId, (u32, u32)>) -> bool {
+        let mut stack = vec![index];
+        let mut visited = Set::default();
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            if let Some(&(l, u)) = bounds.get(&id) {
+                if l == 0 && u == 1 {
+                    return true;
+                }
+            }
+            match self.ops[id].op {
+                Op::Binary { x, y, .. } => {
+                    stack.push(x);
+                    stack.push(y);
+                }
+                Op::Mad { x, y, z } => {
+                    stack.push(x);
+                    stack.push(y);
+                    stack.push(z);
+                }
+                Op::Cast { x, .. } => {
+                    stack.push(x);
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    pub fn check_oob(&self) {
+        let bounds = self.compute_bounds();
+        let mut defines = Map::default();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match *self.at(op_id) {
+                Op::Define { len, .. } => {
+                    defines.insert(op_id, len);
+                }
+                Op::Load { src, index, .. } => {
+                    if let Some(&idx_range) = bounds.get(&index) {
+                        if idx_range.1 > defines[&src] as u32 - 1 {
+                            if !self.is_masked_index(index, &bounds) {
+                                self.debug_colorless();
+                                panic!(
+                                    "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
+                                    op_id, idx_range, defines[&src]
+                                );
+                            }
+                        }
+                    }
+                }
+                Op::Store { dst, index, .. } => {
+                    if let Some(&idx_range) = bounds.get(&index) {
+                        if idx_range.1 > defines[&dst] as u32 - 1 {
+                            if !self.is_masked_index(index, &bounds) {
+                                self.debug_colorless();
+                                panic!(
+                                    "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
+                                    op_id, idx_range, defines[&dst]
+                                );
+                            }
+                        }
                     }
                 }
                 _ => {}
