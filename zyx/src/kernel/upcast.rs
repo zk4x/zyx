@@ -117,8 +117,9 @@ impl Kernel {
             op_id_iter = self.next_op(op_id_iter);
         }
 
+        // Jam the reduce loop into the upcast loop to increase work per thread
         if reduce_loop_id != OpId::NULL {
-            self.jam_loop(upcast_loop_id, reduce_loop_id);
+            self.jam_loop(reduce_loop_id, upcast_loop_id);
         }
 
         self.verify();
@@ -194,8 +195,10 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        let Op::Loop { len: jam_dim, .. } = self.ops[jam_loop_id].op else {
-            unreachable!()
+        let jam_dim = if let Op::Loop { len, .. } = self.ops[jam_loop_id].op {
+            len
+        } else {
+            return;
         };
 
         let const_jam_dim = self.insert_before(jam_loop_id, Op::Const(Constant::idx(jam_dim as u64)));
