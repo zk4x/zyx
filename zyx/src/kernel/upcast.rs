@@ -3,7 +3,7 @@
 
 use super::autotune::Optimization;
 use crate::{
-    Set,
+    Map, Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
 };
@@ -80,16 +80,40 @@ impl Kernel {
         // Resize accumulators
         // Fix indexing
         // THIS IS THE LOOP THAT DOES EVERYTHING
+
+        let mut loop_depth = 0;
+        let mut remap: Map<OpId, OpId> = Map::default();
+
         while !id.is_null() {
             let next = self.next_op(id);
             match self.ops[id].op {
                 Op::Loop { .. } => {
-                    self.insert_before(id, Op::EndLoop);
+                    if loop_depth == 0 {
+                        self.insert_before(id, Op::EndLoop);
+                        upcast_loop = self.insert_after(id, Op::Loop { len: factor });
+                        let mul = self.insert_after(upcast_loop, Op::Binary { x: op_id, y: factor_const, bop: BOp::Mul });
+                        let mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
+                        remap.insert(op_id, mad);
+                    }
+                    loop_depth += 1;
                 }
                 Op::EndLoop => {
-                    upcast_loop = self.insert_after(id, Op::Loop { len: factor });
+                    loop_depth -= 1;
+                    if loop_depth == 0 {
+                        self.insert_before(id, Op::EndLoop);
+                        upcast_loop = self.insert_after(id, Op::Loop { len: factor });
+                        let mul = self.insert_after(upcast_loop, Op::Binary { x: op_id, y: factor_const, bop: BOp::Mul });
+                        let mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
+                        remap.insert(op_id, mad);
+                    }
                 }
-                _ => {}
+                _ => {
+                    for param in self.ops[id].op.parameters_mut() {
+                        if let Some(&replacement) = remap.get(param) {
+                            *param = replacement;
+                        }
+                    }
+                }
             }
             id = next;
         }
