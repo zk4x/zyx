@@ -63,6 +63,8 @@ impl Kernel {
         let factor_const;
         let mut upcast_loop;
         let mut id = self.head;
+        let mut remap: Map<OpId, OpId> = Map::default();
+        let mut latest_mad;
         loop {
             let next = self.next_op(id);
             if !matches!(
@@ -71,6 +73,9 @@ impl Kernel {
             ) {
                 factor_const = self.insert_before(id, Op::Const(Constant::idx(factor as u64)));
                 upcast_loop = self.insert_before(id, Op::Loop { len: factor });
+                let mul = self.insert_after(upcast_loop, Op::Binary { x: op_id, y: factor_const, bop: BOp::Mul });
+                latest_mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
+                remap.insert(op_id, latest_mad);
                 break;
             }
             id = next;
@@ -82,7 +87,8 @@ impl Kernel {
         // THIS IS THE LOOP THAT DOES EVERYTHING
 
         let mut loop_depth = 0;
-        let mut remap: Map<OpId, OpId> = Map::default();
+        let mut seen_in_scope: Set<OpId> = Set::default();
+        let mut last_upcast_loop = upcast_loop;
 
         while !id.is_null() {
             let next = self.next_op(id);
@@ -91,9 +97,11 @@ impl Kernel {
                     if loop_depth == 0 {
                         self.insert_before(id, Op::EndLoop);
                         upcast_loop = self.insert_after(id, Op::Loop { len: factor });
+                        last_upcast_loop = upcast_loop;
                         let mul = self.insert_after(upcast_loop, Op::Binary { x: op_id, y: factor_const, bop: BOp::Mul });
-                        let mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
-                        remap.insert(op_id, mad);
+                        latest_mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
+                        remap.insert(op_id, latest_mad);
+                        seen_in_scope.clear();
                     }
                     loop_depth += 1;
                 }
@@ -102,15 +110,40 @@ impl Kernel {
                     if loop_depth == 0 {
                         self.insert_before(id, Op::EndLoop);
                         upcast_loop = self.insert_after(id, Op::Loop { len: factor });
+                        last_upcast_loop = upcast_loop;
                         let mul = self.insert_after(upcast_loop, Op::Binary { x: op_id, y: factor_const, bop: BOp::Mul });
-                        let mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
-                        remap.insert(op_id, mad);
+                        latest_mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
+                        remap.insert(op_id, latest_mad);
+                        seen_in_scope.clear();
+                    }
+                }
+                Op::Define { len, .. } => {
+                    seen_in_scope.insert(id);
+                    // Move define before last upcast loop and increase size by factor
+                    self.move_op_before(id, last_upcast_loop);
+                    if let Op::Define { dtype, scope, ro, len } = &mut self.ops[id].op {
+                        *len = *len * factor;
                     }
                 }
                 _ => {
+                    seen_in_scope.insert(id);
+                    let params: Vec<OpId> = self.ops[id].op.parameters().collect();
+                    let mut new_params = Vec::new();
+                    for param in params {
+                        if let Some(&replacement) = remap.get(&param) {
+                            new_params.push(replacement);
+                        } else if !seen_in_scope.contains(&param) {
+                            let cloned = self.clone_dep(param, latest_mad, &mut remap, &mut seen_in_scope, factor_const);
+                            new_params.push(cloned);
+                        } else {
+                            new_params.push(param);
+                        }
+                    }
+                    // Now remap using the collected new params
+                    let mut param_iter = new_params.into_iter();
                     for param in self.ops[id].op.parameters_mut() {
-                        if let Some(&replacement) = remap.get(param) {
-                            *param = replacement;
+                        if let Some(new_param) = param_iter.next() {
+                            *param = new_param;
                         }
                     }
                 }
@@ -127,40 +160,43 @@ impl Kernel {
         self.verify();
     }
 
-    fn pre_loop_deps(&self, reduce_loop: OpId) -> Set<OpId> {
-        let mut inside = Set::default();
-        let mut result = Set::default();
-        let mut visited = Set::default();
-
-        let mut id = reduce_loop;
-        let mut loop_depth = 0;
-        while !id.is_null() {
-            inside.insert(id);
-            match self.ops[id].op {
-                Op::Loop { .. } => loop_depth += 1,
-                Op::EndLoop => {
-                    loop_depth -= 1;
-                    if loop_depth == 0 {
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            let mut stack: Vec<OpId> = self.ops[id].op.parameters().collect();
-            while let Some(param) = stack.pop() {
-                if visited.contains(&param) || inside.contains(&param) {
-                    continue;
-                }
-                visited.insert(param);
-                if matches!(self.ops[param].op, Op::Const(_) | Op::Define { .. } | Op::Index { .. }) {
-                    continue;
-                }
-                result.insert(param);
-                stack.extend(self.ops[param].op.parameters());
-            }
-            id = self.next_op(id);
+    fn clone_dep(
+        &mut self,
+        dep_id: OpId,
+        after: OpId,
+        remap: &mut Map<OpId, OpId>,
+        seen: &mut Set<OpId>,
+        factor_const: OpId,
+    ) -> OpId {
+        if let Some(&replacement) = remap.get(&dep_id) {
+            return replacement;
+        }
+        if seen.contains(&dep_id) {
+            return dep_id;
         }
 
-        result
+        // Don't clone Index, Const, Define, Loop, EndLoop - they're always accessible
+        if matches!(
+            self.ops[dep_id].op,
+            Op::Index { .. } | Op::Const(_) | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop
+        ) {
+            return dep_id;
+        }
+
+        // Recursively clone dependencies first
+        let op = self.ops[dep_id].op.clone();
+        let mut cloned = op;
+        for param in cloned.parameters_mut() {
+            if let Some(&replacement) = remap.get(param) {
+                *param = replacement;
+            } else if !seen.contains(param) {
+                *param = self.clone_dep(*param, after, remap, seen, factor_const);
+            }
+        }
+
+        let new_id = self.insert_after(after, cloned);
+        remap.insert(dep_id, new_id);
+        seen.insert(new_id);
+        new_id
     }
 }
