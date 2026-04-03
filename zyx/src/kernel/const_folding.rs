@@ -282,6 +282,7 @@ impl Kernel {
                 Op::Store { .. }
                     | Op::Define { .. }
                     | Op::WMMA { .. }
+                    | Op::Barrier { .. }
                     | Op::If { .. }
                     | Op::EndIf
                     | Op::Loop { .. }
@@ -318,7 +319,7 @@ impl Kernel {
         while !op_id.is_null() {
             let temp = self.next_op(op_id);
             match &mut self.ops[op_id].op {
-                Op::Define { .. } => {} // skip define ops, these can not be deduplicated
+                Op::Barrier { .. } | Op::Define { .. } => {} // skip define and barrier ops, these can not be deduplicated
                 Op::If { .. } | Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(50, Default::default()));
                     stored_locs.push(Map::with_capacity_and_hasher(10, Default::default()));
