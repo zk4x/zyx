@@ -3,9 +3,9 @@
 
 use super::autotune::Optimization;
 use crate::{
-    Map, Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
+    Map, Set,
 };
 
 impl Kernel {
@@ -33,6 +33,7 @@ impl Kernel {
         debug_assert!(matches!(self.ops[op_id].op, Op::Index { scope: Scope::Global, .. }));
 
         println!("Upcast {op_id} by factor={factor}");
+        self.debug_colorless();
 
         if !self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
             // No reduce loop - just split the dimension
@@ -73,8 +74,7 @@ impl Kernel {
             ) {
                 factor_const = self.insert_before(id, Op::Const(Constant::idx(factor as u64)));
                 upcast_loop = self.insert_before(id, Op::Loop { len: factor });
-                let mul = self.insert_after(upcast_loop, Op::Binary { x: op_id, y: factor_const, bop: BOp::Mul });
-                latest_mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
+                latest_mad = self.insert_after(upcast_loop, Op::Mad { x: op_id, y: factor_const, z: upcast_loop });
                 remap.insert(op_id, latest_mad);
                 break;
             }
@@ -88,7 +88,8 @@ impl Kernel {
 
         let mut loop_depth = 0;
         let mut seen_in_scope: Set<OpId> = Set::default();
-        let mut last_upcast_loop = upcast_loop;
+        let mut latest_mad = OpId::NULL;
+        let mut acc_defines: Set<OpId> = Set::default();
 
         while !id.is_null() {
             let next = self.next_op(id);
@@ -97,9 +98,7 @@ impl Kernel {
                     if loop_depth == 0 {
                         self.insert_before(id, Op::EndLoop);
                         upcast_loop = self.insert_after(id, Op::Loop { len: factor });
-                        last_upcast_loop = upcast_loop;
-                        let mul = self.insert_after(upcast_loop, Op::Binary { x: op_id, y: factor_const, bop: BOp::Mul });
-                        latest_mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
+                        latest_mad = self.insert_after(upcast_loop, Op::Mad { x: op_id, y: factor_const, z: upcast_loop });
                         remap.insert(op_id, latest_mad);
                         seen_in_scope.clear();
                     }
@@ -110,20 +109,18 @@ impl Kernel {
                     if loop_depth == 0 {
                         self.insert_before(id, Op::EndLoop);
                         upcast_loop = self.insert_after(id, Op::Loop { len: factor });
-                        last_upcast_loop = upcast_loop;
-                        let mul = self.insert_after(upcast_loop, Op::Binary { x: op_id, y: factor_const, bop: BOp::Mul });
-                        latest_mad = self.insert_after(mul, Op::Binary { x: mul, y: upcast_loop, bop: BOp::Add });
+                        latest_mad = self.insert_after(upcast_loop, Op::Mad { x: op_id, y: factor_const, z: upcast_loop });
                         remap.insert(op_id, latest_mad);
                         seen_in_scope.clear();
                     }
                 }
-                Op::Define { len, .. } => {
+                Op::Define { .. } if loop_depth == 0 => {
                     seen_in_scope.insert(id);
-                    // Move define before last upcast loop and increase size by factor
-                    self.move_op_before(id, last_upcast_loop);
-                    if let Op::Define { dtype, scope, ro, len } = &mut self.ops[id].op {
+                    self.move_op_before(id, upcast_loop);
+                    if let Op::Define { len, scope, .. } = &mut self.ops[id].op {
                         *len = *len * factor;
                     }
+                    acc_defines.insert(id);
                 }
                 _ => {
                     seen_in_scope.insert(id);
@@ -144,6 +141,23 @@ impl Kernel {
                     for param in self.ops[id].op.parameters_mut() {
                         if let Some(new_param) = param_iter.next() {
                             *param = new_param;
+                        }
+                    }
+                    // Fix accumulator indexing for Load/Store
+                    if let Op::Load { src, index, vlen } = &self.ops[id].op {
+                        if acc_defines.contains(src) {
+                            let mad = self.insert_before(id, Op::Mad { x: *index, y: factor_const, z: upcast_loop });
+                            if let Op::Load { index: load_index, .. } = &mut self.ops[id].op {
+                                *load_index = mad;
+                            }
+                        }
+                    }
+                    if let Op::Store { dst, index, vlen, .. } = &self.ops[id].op {
+                        if acc_defines.contains(dst) {
+                            let mad = self.insert_before(id, Op::Mad { x: *index, y: factor_const, z: upcast_loop });
+                            if let Op::Store { index: store_index, .. } = &mut self.ops[id].op {
+                                *store_index = mad;
+                            }
                         }
                     }
                 }
