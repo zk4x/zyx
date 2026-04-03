@@ -9,14 +9,14 @@ use crate::{
 
 impl Kernel {
     pub fn opt_local_reduce(&self) -> (Optimization, usize) {
-        let candidates = vec![32, 16, 8, 64];
+        let candidates = vec![32, 16, 8, 64, 128];
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Loop { len } = self.ops[op_id].op {
                 if len >= 256 {
                     for &factor in &candidates {
-                        if len.is_multiple_of(factor) && len / factor >= factor {
+                        if len.is_multiple_of(factor) && len / factor >= 4 {
                             factors.push((op_id, factor));
                         }
                     }
@@ -154,11 +154,14 @@ impl Kernel {
             stride /= 2;
         }
 
-        // Load final result from local[0] to register
+        // Load final result from local[0] to register (only thread 0)
+        let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_zero, bop: BOp::Eq });
+        self.insert_before(acc_load_id, Op::If { condition });
         let final_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: const_zero, vlen: 1 });
         self.insert_before(
             acc_load_id,
             Op::Store { dst: reg_acc, x: final_val, index: const_zero, vlen: 1 },
         );
+        self.insert_after(self.tail, Op::EndIf);
     }
 }
