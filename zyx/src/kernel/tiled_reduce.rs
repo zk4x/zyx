@@ -166,5 +166,7 @@ impl Kernel {
             Op::Store { dst: reg_acc, x: final_val, index: const_zero, vlen: 1 },
         );
         self.insert_after(self.tail, Op::EndIf);
+
+        self.verify();
     }
 }
