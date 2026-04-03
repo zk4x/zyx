@@ -187,12 +187,13 @@ impl Kernel {
 
     pub fn check_oob(&self) {
         use std::collections::HashMap;
-        let mut bounds: Map<OpId, (usize, usize)> = HashMap::default();
+        let mut bounds_stack: Vec<Map<OpId, (usize, usize)>> = vec![HashMap::default()];
         let mut defines = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::Const(x) => {
+                    let bounds = bounds_stack.last_mut().unwrap();
                     if x.is_positive() {
                         let Constant::U64(x) = x.cast(DType::U64) else {
                             unreachable!()
@@ -205,11 +206,13 @@ impl Kernel {
                     defines.insert(op_id, len);
                 }
                 Op::Cast { x, .. } => {
+                    let bounds = bounds_stack.last_mut().unwrap();
                     if let Some((l, u)) = bounds.get(&x) {
                         bounds.insert(op_id, (*l, *u));
                     }
                 }
                 Op::Binary { x, y, bop } => {
+                    let bounds = bounds_stack.last_mut().unwrap();
                     if let Some(&(xl, xu)) = bounds.get(&x)
                         && let Some(&(yl, yu)) = bounds.get(&y)
                     {
@@ -249,6 +252,7 @@ impl Kernel {
                     }
                 }
                 Op::Mad { x, y, z } => {
+                    let bounds = bounds_stack.last_mut().unwrap();
                     if let Some(&(xl, xu)) = bounds.get(&x)
                         && let Some(&(yl, yu)) = bounds.get(&y)
                         && let Some(&(zl, zu)) = bounds.get(&z)
@@ -259,15 +263,37 @@ impl Kernel {
                         );
                     }
                 }
-                Op::If { condition } => {}
-                Op::EndIf => {}
+                Op::If { condition } => {
+                    let mut visited: Set<OpId> = Set::default();
+                    let mut prev = bounds_stack.last().unwrap().clone();
+                    let mut params = Vec::new();
+                    params.push(condition);
+                    while let Some(param) = params.pop() {
+                        if visited.insert(param) {
+                            match self.at(param) {
+                                Op::Binary { x, y, bop } => {}
+                                Op::Const(_) => {}
+                                Op::Index { len, scope, axis } => {}
+                                op => todo!("{op:?}"),
+                            }
+                            params.extend(self.ops[param].op.parameters());
+                        }
+                    }
+                    bounds_stack.push(prev);
+                }
+                Op::EndIf => {
+                    bounds_stack.pop();
+                }
                 Op::Index { len: dim, .. } => {
+                    let bounds = bounds_stack.last_mut().unwrap();
                     bounds.insert(op_id, (0, dim - 1));
                 }
                 Op::Loop { len: dim, .. } => {
+                    let bounds = bounds_stack.last_mut().unwrap();
                     bounds.insert(op_id, (0, dim - 1));
                 }
                 Op::Load { src, index, .. } => {
+                    let bounds = bounds_stack.last_mut().unwrap();
                     if !bounds.contains_key(&index) {
                         self.debug_colorless();
                         panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
@@ -282,6 +308,7 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, index, .. } => {
+                    let bounds = bounds_stack.last_mut().unwrap();
                     if !bounds.contains_key(&index) {
                         panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
                     }
@@ -295,6 +322,7 @@ impl Kernel {
                     }
                 }
                 Op::Vectorize { ref ops } => {
+                    let bounds = bounds_stack.last_mut().unwrap();
                     let mut r = None;
                     for x in ops {
                         if let Some(&(xl, xu)) = bounds.get(x) {
