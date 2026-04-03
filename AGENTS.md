@@ -216,6 +216,10 @@ pub fn run_always_on_optimizations(&mut self) {
 - Cost model uses heuristic initially, then actual execution time
 - Use kernel hashing to avoid duplicate exploration
 
+### Optimization Correctness
+
+Every optimization must produce correct IR that calculates the same result as the input. If one optimization breaks another, that's a bug in the optimization that produced invalid IR from valid code - not a problem with the ordering. When combining optimizations (e.g., upcast + tiled_reduce), each must work correctly on the other's output.
+
 ## What to Avoid
 
 - **Never commit changes unless the user explicitly asks for it** - Always ask before committing
