@@ -219,12 +219,30 @@ impl Kernel {
                                 BOp::Add => (xl.wrapping_add(yl), xu.wrapping_add(yu)),
                                 BOp::Sub => (xl.wrapping_sub(yl), xu.wrapping_sub(yu)),
                                 BOp::Mul => (xl.wrapping_mul(yl), xu.wrapping_mul(yu)),
-                                BOp::Div => (xl / yl, xu / yu),
-                                BOp::Mod => (xl % yl, xu % yu),
-                                BOp::Eq => ((xl == yl) as usize, (xu == yu) as usize),
-                                BOp::NotEq => ((xl != yl) as usize, (xu != yu) as usize),
-                                BOp::Cmpgt => ((xl > yl) as usize, (xu > yu) as usize),
-                                BOp::Cmplt => ((xl < yl) as usize, (xu < yu) as usize),
+                                BOp::Div => (xl / yl.saturating_add(1), xu / yu.saturating_add(1)),
+                                BOp::Mod => (xl % yl.saturating_add(1), xu % yu.saturating_add(1)),
+                                BOp::Eq => {
+                                    let overlaps = !(xu < yl || yu < xl);
+                                    let always = (xl == xu) && (yl == yu) && (xl == yl);
+                                    (always as usize, overlaps as usize)
+                                }
+                                BOp::NotEq => {
+                                    let overlaps = !(xu < yl || yu < xl);
+                                    let always_eq = (xl == xu) && (yl == yu) && (xl == yl);
+                                    ((!always_eq) as usize, (!overlaps) as usize)
+                                }
+                                BOp::Cmpgt => {
+                                    // a > b
+                                    let maybe = xu > yl;
+                                    let always = xl > yu;
+                                    (always as usize, maybe as usize)
+                                }
+                                BOp::Cmplt => {
+                                    // a < b
+                                    let maybe = xl < yu;
+                                    let always = xu < yl;
+                                    (always as usize, maybe as usize)
+                                }
                                 BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
                                 BOp::BitShiftLeft => (xl << yl, xu << yu),
                                 BOp::BitShiftRight => (xl >> yl, xu >> yu),
@@ -253,13 +271,13 @@ impl Kernel {
                 }
                 Op::Load { src, index, .. } => {
                     if !ids.contains_key(&index) {
-                        self.debug();
+                        self.debug_colorless();
                         panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
                     }
                     let idx_range = ids[&index];
                     //println!("Max idx range: {}, define {}", idx_range.1, defines[src]);
                     if idx_range.1 > defines[&src] - 1 {
-                        self.debug();
+                        self.debug_colorless();
                         panic!(
                             "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
                             op_id, idx_range, defines[&src]

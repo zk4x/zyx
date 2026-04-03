@@ -492,10 +492,28 @@ impl Kernel {
                                 BOp::Mul => (xl.wrapping_mul(yl), xu.wrapping_mul(yu)),
                                 BOp::Div => (xl / yl, xu / yu),
                                 BOp::Mod => (xl % yl, xu % yu),
-                                BOp::Eq => ((xl == yl) as u32, (xu == yu) as u32),
-                                BOp::NotEq => ((xl != yl) as u32, (xu != yu) as u32),
-                                BOp::Cmpgt => ((xl > yl) as u32, (xu > yu) as u32),
-                                BOp::Cmplt => ((xl < yl) as u32, (xu < yu) as u32),
+                                BOp::Eq => {
+                                    let overlaps = !(xu < yl || yu < xl);
+                                    let always = (xl == xu) && (yl == yu) && (xl == yl);
+                                    (always as u32, overlaps as u32)
+                                }
+                                BOp::NotEq => {
+                                    let overlaps = !(xu < yl || yu < xl);
+                                    let always_eq = (xl == xu) && (yl == yu) && (xl == yl);
+                                    ((!always_eq) as u32, (!overlaps) as u32)
+                                }
+                                BOp::Cmpgt => {
+                                    // a > b
+                                    let maybe = xu > yl;
+                                    let always = xl > yu;
+                                    (always as u32, maybe as u32)
+                                }
+                                BOp::Cmplt => {
+                                    // a < b
+                                    let maybe = xl < yu;
+                                    let always = xu < yl;
+                                    (always as u32, maybe as u32)
+                                }
                                 BOp::And => ((xl == 1 && yl == 1) as u32, (xu == 1 && yu == 1) as u32),
                                 BOp::BitShiftLeft => (xl << yl, xu << yu),
                                 BOp::BitShiftRight => (xl >> yl, xu >> yu),

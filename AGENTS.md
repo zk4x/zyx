@@ -15,14 +15,14 @@ cargo build -p zyx --release
 # Format
 cargo fmt
 
-# Test
-cargo test -p zyx
-cargo test -p zyx relu_1          # single test
-cargo test -p zyx --test 1_unary  # test file
-cargo test -p zyx -- --nocapture  # with output
+# Test (always run from zyx/zyx subdirectory!)
+cd zyx && cargo test
+cd zyx && cargo test relu_1          # single test
+cd zyx && cargo test --test 1_unary  # test file
+cd zyx && cargo test -- --nocapture  # with output
 ```
 
-**Note**: This is a workspace with multiple crates (zyx, zyx-nn, zyx-optim, etc.). Always run commands from the crate subdirectory (e.g., `cd zyx && cargo test`) or use `-p zyx` flag from the workspace root.
+**Note**: This is a workspace with multiple crates (zyx, zyx-nn, zyx-optim, etc.). **Always run commands from the `zyx/zyx` subdirectory** (not the workspace root).
 
 ## Project Structure
 
