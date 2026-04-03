@@ -187,7 +187,7 @@ impl Kernel {
 
     pub fn check_oob(&self) {
         use std::collections::HashMap;
-        let mut ids: Map<OpId, (usize, usize)> = HashMap::default();
+        let mut bounds: Map<OpId, (usize, usize)> = HashMap::default();
         let mut defines = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -198,84 +198,81 @@ impl Kernel {
                             unreachable!()
                         };
                         let v = usize::from_le_bytes(x);
-                        ids.insert(op_id, (v, v));
+                        bounds.insert(op_id, (v, v));
                     }
                 }
                 Op::Define { len, .. } => {
                     defines.insert(op_id, len);
                 }
                 Op::Cast { x, .. } => {
-                    if let Some((l, u)) = ids.get(&x) {
-                        ids.insert(op_id, (*l, *u));
+                    if let Some((l, u)) = bounds.get(&x) {
+                        bounds.insert(op_id, (*l, *u));
                     }
                 }
                 Op::Binary { x, y, bop } => {
-                    if let Some(&(xl, xu)) = ids.get(&x)
-                        && let Some(&(yl, yu)) = ids.get(&y)
+                    if let Some(&(xl, xu)) = bounds.get(&x)
+                        && let Some(&(yl, yu)) = bounds.get(&y)
                     {
-                        ids.insert(
-                            op_id,
-                            match bop {
-                                BOp::Add => (xl.wrapping_add(yl), xu.wrapping_add(yu)),
-                                BOp::Sub => (xl.wrapping_sub(yl), xu.wrapping_sub(yu)),
-                                BOp::Mul => (xl.wrapping_mul(yl), xu.wrapping_mul(yu)),
-                                BOp::Div => (xl / yl.saturating_add(1), xu / yu.saturating_add(1)),
-                                BOp::Mod => (xl % yl.saturating_add(1), xu % yu.saturating_add(1)),
-                                BOp::Eq => {
-                                    let overlaps = !(xu < yl || yu < xl);
-                                    let always = (xl == xu) && (yl == yu) && (xl == yl);
-                                    (always as usize, overlaps as usize)
-                                }
-                                BOp::NotEq => {
-                                    let overlaps = !(xu < yl || yu < xl);
-                                    let always_eq = (xl == xu) && (yl == yu) && (xl == yl);
-                                    ((!always_eq) as usize, (!overlaps) as usize)
-                                }
-                                BOp::Cmpgt => {
-                                    // a > b
-                                    let maybe = xu > yl;
-                                    let always = xl > yu;
-                                    (always as usize, maybe as usize)
-                                }
-                                BOp::Cmplt => {
-                                    // a < b
-                                    let maybe = xl < yu;
-                                    let always = xu < yl;
-                                    (always as usize, maybe as usize)
-                                }
-                                BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
-                                BOp::BitShiftLeft => (xl << yl, xu << yu),
-                                BOp::BitShiftRight => (xl >> yl, xu >> yu),
-                                BOp::Pow => (xl.pow(yl as u32), xu.pow(yu as u32)),
-                                op => todo!("{:?}", op),
-                            },
-                        );
+                        let range = match bop {
+                            BOp::Add => (xl.wrapping_add(yl), xu.wrapping_add(yu)),
+                            BOp::Sub => (xl.wrapping_sub(yl), xu.wrapping_sub(yu)),
+                            BOp::Mul => (xl.wrapping_mul(yl), xu.wrapping_mul(yu)),
+                            BOp::Div => (xl / yl.saturating_add(1), xu / yu.saturating_add(1)),
+                            BOp::Mod => (xl % yl.saturating_add(1), xu % yu.saturating_add(1)),
+                            BOp::Eq => {
+                                let overlaps = !(xu < yl || yu < xl);
+                                let always = (xl == xu) && (yl == yu) && (xl == yl);
+                                (always as usize, overlaps as usize)
+                            }
+                            BOp::NotEq => {
+                                let overlaps = !(xu < yl || yu < xl);
+                                let always_eq = (xl == xu) && (yl == yu) && (xl == yl);
+                                ((!always_eq) as usize, (!overlaps) as usize)
+                            }
+                            BOp::Cmpgt => {
+                                let maybe = xu > yl;
+                                let always = xl > yu;
+                                (always as usize, maybe as usize)
+                            }
+                            BOp::Cmplt => {
+                                let maybe = xl < yu;
+                                let always = xu < yl;
+                                (always as usize, maybe as usize)
+                            }
+                            BOp::And => ((xl == 1 && yl == 1) as usize, (xu == 1 && yu == 1) as usize),
+                            BOp::BitShiftLeft => (xl << yl, xu << yu),
+                            BOp::BitShiftRight => (xl >> yl, xu >> yu),
+                            BOp::Pow => (xl.pow(yl as u32), xu.pow(yu as u32)),
+                            op => todo!("{:?}", op),
+                        };
+                        bounds.insert(op_id, range);
                     }
                 }
                 Op::Mad { x, y, z } => {
-                    if let Some(&(xl, xu)) = ids.get(&x)
-                        && let Some(&(yl, yu)) = ids.get(&y)
-                        && let Some(&(zl, zu)) = ids.get(&z)
+                    if let Some(&(xl, xu)) = bounds.get(&x)
+                        && let Some(&(yl, yu)) = bounds.get(&y)
+                        && let Some(&(zl, zu)) = bounds.get(&z)
                     {
-                        ids.insert(
+                        bounds.insert(
                             op_id,
                             (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)),
                         );
                     }
                 }
+                Op::If { condition } => {}
+                Op::EndIf => {}
                 Op::Index { len: dim, .. } => {
-                    ids.insert(op_id, (0, dim - 1));
+                    bounds.insert(op_id, (0, dim - 1));
                 }
                 Op::Loop { len: dim, .. } => {
-                    ids.insert(op_id, (0, dim - 1));
+                    bounds.insert(op_id, (0, dim - 1));
                 }
                 Op::Load { src, index, .. } => {
-                    if !ids.contains_key(&index) {
+                    if !bounds.contains_key(&index) {
                         self.debug_colorless();
                         panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
                     }
-                    let idx_range = ids[&index];
-                    //println!("Max idx range: {}, define {}", idx_range.1, defines[src]);
+                    let idx_range = bounds[&index];
                     if idx_range.1 > defines[&src] - 1 {
                         self.debug_colorless();
                         panic!(
@@ -285,11 +282,10 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, index, .. } => {
-                    if !ids.contains_key(&index) {
+                    if !bounds.contains_key(&index) {
                         panic!("Missing index={index} for op_id={op_id} -> {:?}", self.ops[op_id]);
                     }
-                    let idx_range = ids[&index];
-                    //println!("Max idx range: {}, define {}", idx_range.1, defines[src]);
+                    let idx_range = bounds[&index];
                     if idx_range.1 > defines[&dst] - 1 {
                         self.debug();
                         panic!(
@@ -301,7 +297,7 @@ impl Kernel {
                 Op::Vectorize { ref ops } => {
                     let mut r = None;
                     for x in ops {
-                        if let Some(&(xl, xu)) = ids.get(x) {
+                        if let Some(&(xl, xu)) = bounds.get(x) {
                             if let Some((l, u)) = r {
                                 r = Some((xl.min(l), xu.max(u)));
                             } else {
@@ -310,7 +306,7 @@ impl Kernel {
                         }
                     }
                     if let Some((xl, xu)) = r {
-                        ids.insert(op_id, (xl, xu));
+                        bounds.insert(op_id, (xl, xu));
                     }
                 }
                 _ => {}
