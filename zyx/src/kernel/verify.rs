@@ -271,9 +271,22 @@ impl Kernel {
                     while let Some(param) = params.pop() {
                         if visited.insert(param) {
                             match self.at(param) {
-                                Op::Binary { x, y, bop } => {}
+                                Op::Binary { x, y, bop } => {
+                                    match bop {
+                                        BOp::Eq => {
+                                            if let Some((yl, yu)) = prev.get(y) {
+                                                if yl == yu {
+                                                    if let Some((_xl, _xu)) = prev.get(x) {
+                                                        prev.insert(*x, (*yl, *yu));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => todo!("{bop:?}"),
+                                    }
+                                }
                                 Op::Const(_) => {}
-                                Op::Index { len, scope, axis } => {}
+                                Op::Index { .. } => {}
                                 op => todo!("{op:?}"),
                             }
                             params.extend(self.ops[param].op.parameters());
