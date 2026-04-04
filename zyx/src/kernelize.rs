@@ -653,7 +653,7 @@ impl<'a> Kernelizer<'a> {
 }
 
 impl Runtime {
-    fn realize_with_order(
+    pub(crate) fn realize_with_order(
         &mut self,
         rcs: Map<TensorId, u32>,
         realized_nodes: Set<TensorId>,

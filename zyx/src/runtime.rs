@@ -39,8 +39,6 @@ pub struct Runtime {
     pub config_dir: Option<PathBuf>,
     /// Random number generator
     pub rng: Rng,
-    /// Are we in training mode?
-    pub training: bool,
     /// Autotune configuration
     pub autotune_config: AutotuneConfig,
     /// Debug mask
@@ -56,6 +54,8 @@ pub struct Runtime {
     /// This tries to copy the default behaviour of pytorch, but since rust does not
     /// have implicit casting, we do not recommend using this feature.
     pub implicit_casts: bool,
+    /// Are we in training mode?
+    pub training: bool,
     /// Cache for compiled graphs, maps compacted graph to compiled result.
     pub(crate) graph_cache: Map<CompactedGraph, CompiledGraph>,
 }
