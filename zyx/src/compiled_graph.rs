@@ -4,6 +4,8 @@
 //! Compiled graph caching layer.
 
 use crate::{
+    backend::{BufferId, ProgramId},
+    cache::DeviceId,
     graph::Node,
     runtime::Runtime,
     shape::{Dim, UAxis},
@@ -15,7 +17,39 @@ use std::hash::BuildHasherDefault;
 
 /// Cached result of compiling a graph, ready for replay.
 #[allow(dead_code)]
-pub struct CompiledGraph {}
+pub struct CompiledGraph {
+    pub nodes: Vec<CompiledNode>,
+    pub buffer_slots: Vec<BufferId>,
+}
+
+/// Index into CompiledGraph::buffer_slots, used instead of raw BufferId
+/// so the compiled graph is stable across runs with different buffer IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BufferSlot(pub u32);
+
+/// A single step in a compiled graph execution.
+#[derive(Debug, Clone)]
+pub enum CompiledNode {
+    Allocate {
+        pool: usize,
+        size: usize,
+        slot: BufferSlot,
+    },
+    Deallocate {
+        pool: usize,
+        slot: BufferSlot,
+    },
+    CopyMemory {
+        src_pool: usize,
+        src_buffer: BufferSlot,
+        dst_pool: usize,
+        dst_buffer: BufferSlot,
+    },
+    LaunchProgram {
+        program: ProgramId,
+        device: DeviceId,
+    },
+}
 
 /// Compact representation of a graph, used as cache key.
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -30,7 +64,9 @@ impl Runtime {
     pub(crate) fn launch_or_store_graph_with_order(
         &mut self,
         _rcs: Map<TensorId, u32>,
+        realized_nodes: Set<TensorId>,
         order: &[TensorId],
+        to_eval: &Set<TensorId>,
     ) -> Result<(), ZyxError> {
         let mut compacted = CompactedGraph {
             nodes: Vec::with_capacity(order.len()),
@@ -77,10 +113,11 @@ impl Runtime {
             }
         }
 
-        if let Some(cached_graph) = self.graph_cache.get(&compacted) {
-            let _ = cached_graph;
+        if let Some(_cached_graph) = self.graph_cache.get(&compacted) {
+            // TODO: replay cached graph
         } else {
-            todo!()
+            let compiled = self.kernelize(&compacted, realized_nodes, to_eval)?;
+            self.graph_cache.insert(compacted, compiled);
         }
 
         Ok(())
