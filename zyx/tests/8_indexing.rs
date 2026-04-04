@@ -211,3 +211,106 @@ fn gather_error_wrong_axis() -> Result<(), ZyxError> {
     assert!(result.is_err());
     Ok(())
 }
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_negative_indices() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1, 2, 3], [4, 5, 6]]);
+    let indices = Tensor::from([[-1, 0], [1, -2]]);
+    let gathered = x.gather(1, &indices)?;
+    assert_eq!(gathered, [[0, 1], [5, 0]]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_duplicate_indices() -> Result<(), ZyxError> {
+    let x = Tensor::from([10, 20, 30]);
+    let indices = Tensor::from([0u16, 0, 1, 1, 2, 0]);
+    let gathered = x.gather(0, &indices)?;
+    assert_eq!(gathered, [10, 10, 20, 20, 30, 10]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_3d_tensor() -> Result<(), ZyxError> {
+    let x = Tensor::from([[[1, 2], [3, 4]], [[5, 6], [7, 8]]]);
+    let indices = Tensor::from([[[0], [1]], [[1], [0]]]);
+    let gathered = x.gather(2, &indices)?;
+    assert_eq!(gathered, [[[1], [4]], [[6], [7]]]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_axis_minus1() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1, 2, 3], [4, 5, 6]]);
+    let indices = Tensor::from([[0, 2], [1, 0]]);
+    let gathered = x.gather(-1, &indices)?;
+    assert_eq!(gathered, [[1, 3], [5, 4]]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_axis_minus2() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1, 2], [3, 4], [5, 6]]);
+    let indices = Tensor::from([[0], [0], [2]]);
+    let gathered = x.gather(-2, &indices)?;
+    assert_eq!(gathered.shape(), [3, 1]);
+    let result: Vec<i32> = gathered.flatten(..)?.try_into()?;
+    assert_eq!(result, [1, 1, 5]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_f32_dtype() -> Result<(), ZyxError> {
+    let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
+    let indices = Tensor::from([0u16, 2, 3, 1]);
+    let gathered = x.gather(0, &indices)?;
+    let result: Vec<f32> = gathered.try_into()?;
+    assert_eq!(result, [1.0, 3.0, 4.0, 2.0]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_single_element() -> Result<(), ZyxError> {
+    let x = Tensor::from([42]);
+    let indices = Tensor::from([0u16]);
+    let gathered = x.gather(0, &indices)?;
+    assert_eq!(gathered, [42]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_all_indices() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3, 4, 5]);
+    let indices = Tensor::from([0u16, 1, 2, 3, 4]);
+    let gathered = x.gather(0, &indices)?;
+    assert_eq!(gathered, [1, 2, 3, 4, 5]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_indices_larger_than_axis() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1, 2], [3, 4]]);
+    let indices = Tensor::from([[0, 0, 1], [1, 1, 0]]);
+    let gathered = x.gather(1, &indices)?;
+    assert_eq!(gathered, [[1, 1, 2], [4, 4, 3]]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_4d_tensor() -> Result<(), ZyxError> {
+    let x = Tensor::from([[[[1, 2], [3, 4]], [[5, 6], [7, 8]]]]);
+    let indices = Tensor::from([[[[0], [1]]]]);
+    let gathered = x.gather(3, &indices)?;
+    assert_eq!(gathered, [[[[1], [4]]]]);
+    Ok(())
+}
