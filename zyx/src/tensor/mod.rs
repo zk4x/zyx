@@ -2100,8 +2100,14 @@ impl Tensor {
             }
         }
 
+        let dim_size = shape[dim] as i32;
+        let idx_dtype = indices.dtype();
+        let is_negative = indices.clone().cmplt(0)?;
+        let wrapped = indices.clone() + dim_size;
+        let indices: Tensor = is_negative.where_(&wrapped, &indices)?.cast(idx_dtype);
+
         // Prepare one-hot along dim
-        let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(shape[dim], -1)?;
+        let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size as usize, -1)?;
 
         // Prepare negative padding for shrink
         let mut padding = Vec::new();

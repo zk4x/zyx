@@ -218,7 +218,7 @@ fn gather_negative_indices() -> Result<(), ZyxError> {
     let x = Tensor::from([[1, 2, 3], [4, 5, 6]]);
     let indices = Tensor::from([[-1, 0], [1, -2]]);
     let gathered = x.gather(1, &indices)?;
-    assert_eq!(gathered, [[0, 1], [5, 0]]);
+    assert_eq!(gathered, [[3, 1], [5, 5]]);
     Ok(())
 }
 
