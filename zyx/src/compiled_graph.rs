@@ -59,7 +59,7 @@ pub enum CompiledNode {
 pub struct CompactedGraph {
     pub nodes: Vec<Node>,
     pub shapes: BTreeMap<TensorId, Box<[Dim]>>,
-    pub paddings: BTreeMap<TensorId, Box<[(i32, i32)]>>,
+    pub paddings: BTreeMap<TensorId, Box<[(i64, i64)]>>,
     pub axes: BTreeMap<TensorId, Box<[UAxis]>>,
 }
 

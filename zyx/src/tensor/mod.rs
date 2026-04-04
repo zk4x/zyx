@@ -10,9 +10,9 @@
 use crate::dtype::DType;
 use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
-use crate::runtime::{TempData, apply_padding};
+use crate::runtime::{apply_padding, TempData};
 use crate::scalar::{Float, Scalar};
-use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
+use crate::shape::{into_axes, into_axis, Dim, IntoShape, UAxis};
 use crate::slab::SlabId;
 use crate::{DebugMask, RT};
 use core::cmp::Ordering;
@@ -728,7 +728,7 @@ impl Tensor {
     #[must_use]
     pub fn eye(n: Dim, dtype: DType) -> Tensor {
         Tensor::ones(vec![n, 1], dtype)
-            .pad_zeros([(0, 0), (0, i32::try_from(n).unwrap())])
+            .pad_zeros([(0i64, 0i64), (0i64, i64::try_from(n).unwrap())])
             .unwrap()
             .reshape([n + 1, n])
             .unwrap()
@@ -1392,8 +1392,8 @@ impl Tensor {
     /// Returns error if self cannot be padded by padding.
     #[allow(clippy::missing_panics_doc)]
     #[track_caller]
-    pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (i32, i32)>) -> Result<Tensor, ZyxError> {
-        let mut padding: Vec<(i32, i32)> = padding.into_iter().collect();
+    pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
+        let mut padding: Vec<(i64, i64)> = padding.into_iter().collect();
         let shape = self.shape();
         let rank = shape.len();
 
@@ -1403,17 +1403,17 @@ impl Tensor {
             ));
         }
 
-        padding.extend(std::iter::repeat_n((0, 0), rank - padding.len()));
+        padding.extend(std::iter::repeat_n((0i64, 0i64), rank - padding.len()));
 
         for (i, &(l, r)) in padding.iter().enumerate() {
-            let mut total = 0;
+            let mut total: i64 = 0;
             if l < 0 {
                 total -= l;
             }
             if r < 0 {
                 total -= r;
             }
-            if shape[i] as i32 + l + r < 0 {
+            if shape[i] as i64 + l + r < 0 {
                 return Err(ZyxError::shape_error(
                     format!("Invalid padding {padding:?} on shape {shape:?}, on dim {i}").into(),
                 ));
@@ -1448,8 +1448,8 @@ impl Tensor {
     /// Returns error if self cannot be padded by padding.
     #[allow(clippy::missing_panics_doc)]
     #[track_caller]
-    pub fn rpad_zeros(&self, padding: impl IntoIterator<Item = (i32, i32)>) -> Result<Tensor, ZyxError> {
-        let mut padding: Vec<(i32, i32)> = padding.into_iter().collect();
+    pub fn rpad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
+        let mut padding: Vec<(i64, i64)> = padding.into_iter().collect();
         let shape = self.shape();
         let rank = shape.len();
 
@@ -1459,19 +1459,19 @@ impl Tensor {
             ));
         }
 
-        padding.extend(std::iter::repeat_n((0, 0), rank - padding.len()));
+        padding.extend(std::iter::repeat_n((0i64, 0i64), rank - padding.len()));
         padding.reverse();
         //println!("padding={padding:?}");
 
         for (i, &(l, r)) in padding.iter().enumerate() {
-            let mut total = 0;
+            let mut total: i64 = 0;
             if l < 0 {
                 total -= l;
             }
             if r < 0 {
                 total -= r;
             }
-            if shape[i] as i32 + l + r < 0 {
+            if shape[i] as i64 + l + r < 0 {
                 return Err(ZyxError::shape_error(
                     format!("Invalid padding left={l}, right={r} on dimension size {}", shape[i]).into(),
                 ));
@@ -1519,10 +1519,10 @@ impl Tensor {
     /// # Errors
     /// Returns error if self cannot be padded by padding.
     #[allow(clippy::missing_panics_doc)]
-    pub fn pad(&self, padding: impl IntoIterator<Item = (i32, i32)>, value: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    pub fn pad(&self, padding: impl IntoIterator<Item = (i64, i64)>, value: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
         let value: Tensor = value.into();
-        let padding: Vec<(i32, i32)> = padding.into_iter().collect();
+        let padding: Vec<(i64, i64)> = padding.into_iter().collect();
         let mut sh = self.shape();
         if value.dtype() != dtype {
             return Err(ZyxError::dtype_error(
@@ -1554,13 +1554,13 @@ impl Tensor {
         let shape = self.shape();
         let rank = shape.len() as UAxis;
         let axis = into_axis(axis, rank)?;
-        let dim = i32::try_from(shape[axis as usize]).unwrap();
-        let padding: Vec<(i32, i32)> = once((
-            -i32::try_from(start).unwrap(),
-            -dim + i32::try_from(length).unwrap() + i32::try_from(start).unwrap(),
+        let dim = i64::try_from(shape[axis as usize]).unwrap();
+        let padding: Vec<(i64, i64)> = once((
+            -i64::try_from(start).unwrap(),
+            -dim + i64::try_from(length).unwrap() + i64::try_from(start).unwrap(),
         ))
-        .chain(repeat_n((0, 0), (rank - axis - 1) as usize))
-        .collect::<Vec<(i32, i32)>>()
+        .chain(repeat_n((0i64, 0i64), (rank - axis - 1) as usize))
+        .collect::<Vec<(i64, i64)>>()
         .into_iter()
         .rev()
         .collect();
@@ -1755,9 +1755,9 @@ impl Tensor {
     fn cum_reduce(&self, axis: Axis, rop: BOp) -> Result<Tensor, ZyxError> {
         let shape = self.shape();
         let uaxis = into_axis(axis, shape.len())?;
-        let pl_sz = i32::try_from(shape[uaxis] - 1).unwrap();
+        let pl_sz = i64::try_from(shape[uaxis] - 1).unwrap();
         let mut x = self.transpose(axis, -1)?;
-        x = x.rpad_zeros([(pl_sz, 0)])?;
+        x = x.rpad_zeros([(pl_sz, 0i64)])?;
         x = x.pool(shape[uaxis], 1, 1)?;
         x = match rop {
             BOp::Add => x.sum([-1])?,
@@ -2107,9 +2107,9 @@ impl Tensor {
         let mut padding = Vec::new();
         for d in (0..index_shape.len()).rev() {
             if d == dim {
-                padding.push((0, 0));
+                padding.push((0i64, 0i64));
             } else {
-                padding.push((0, -(shape[d] as i32 - index_shape[d] as i32)));
+                padding.push((0i64, -(shape[d] as i64 - index_shape[d] as i64)));
             }
         }
 
@@ -2130,7 +2130,7 @@ impl Tensor {
                 .into_iter()
                 .rev()
                 .zip(dims.into_iter().rev())
-                .map(|(d, (s, e))| (-(s as i32), -((d - e) as i32))),
+                .map(|(d, (s, e))| (-(s as i64), -((d - e) as i64))),
         )
     }
 
@@ -2142,11 +2142,13 @@ impl Tensor {
         if num_classes == 0 {
             num_classes = (self.max_all() + 1).item::<i64>() as usize;
         }
+
+        let dtype = self.dtype();
         self.unsqueeze(-1)
             .unwrap()
             .one_hot_along_dim(num_classes, -1)
             .unwrap()
-            .where_(1, 0)
+            .where_(Tensor::ones([1], dtype), Tensor::zeros([1], dtype))
             .unwrap()
     }
 
@@ -2366,15 +2368,17 @@ impl Tensor {
                 }
             }
         }
-        let mut offset = 0i32;
-        let mut offset2 = tensors.iter().fold(0, |acc, t| acc + i32::try_from(t.shape()[dim]).unwrap());
+        let mut offset = 0i64;
+        let mut offset2 = tensors
+            .iter()
+            .fold(0i64, |acc, t| acc + i64::try_from(t.shape()[dim]).unwrap());
         let mut shape = tensors[0].shape();
         shape[dim] = Dim::try_from(offset2).unwrap();
         let mut res = None;
         for tensor in tensors {
-            let d = i32::try_from(tensor.shape()[dim]).unwrap();
+            let d = i64::try_from(tensor.shape()[dim]).unwrap();
             offset2 -= d;
-            let padding: Vec<(i32, i32)> = repeat_n((0, 0), rank - dim - 1).chain([(offset, offset2)]).collect();
+            let padding: Vec<(i64, i64)> = repeat_n((0i64, 0i64), rank - dim - 1).chain([(offset, offset2)]).collect();
             let t = tensor.rpad_zeros(padding)?;
             if let Some(r) = res {
                 res = Some(r + t);
@@ -2615,11 +2619,11 @@ impl Tensor {
             return Tensor::ones([r, c], dtype);
         }
         let s = r + c - 1;
-        let t = Tensor::ones([s, s], dtype).rpad_zeros([(0, s as i32)]).unwrap();
+        let t = Tensor::ones([s, s], dtype).rpad_zeros([(0i64, s as i64)]).unwrap();
         let t = t.reshape([2 * s * s]).unwrap();
-        let t = t.rpad_zeros([(0, -(s as i32))]).unwrap();
+        let t = t.rpad_zeros([(0i64, -(s as i64))]).unwrap();
         let t = t.reshape([s, 2 * s - 1]).unwrap();
-        let t = t.rpad_zeros([(0, -((2 * s - 1 - s) as i32))]).unwrap();
+        let t = t.rpad_zeros([(0i64, -((2 * s - 1 - s) as i64))]).unwrap();
         if diagonal <= 0 {
             t.slice((0..r, (-diagonal) as usize..(c as i32 - diagonal) as usize)).unwrap()
         } else {
@@ -2900,7 +2904,7 @@ impl Tensor {
             .rpad_zeros(
                 padding_
                     .chunks(2)
-                    .map(|x| (i32::try_from(x[0]).unwrap(), i32::try_from(x[1]).unwrap())),
+                    .map(|x| (i64::try_from(x[0]).unwrap(), i64::try_from(x[1]).unwrap())),
             )
             .unwrap()
             .pool(hw, stride, dilation)
@@ -2974,14 +2978,14 @@ impl Tensor {
         kernel_size: impl IntoShape,
         stride: impl IntoShape,
         dilation: impl IntoShape,
-        padding: impl IntoIterator<Item = (i32, i32)>,
+        padding: impl IntoIterator<Item = (i64, i64)>,
         ceil_mode: bool,
         return_indices: bool,
     ) -> Result<Tensor, ZyxError> {
         let kernel_size: Vec<usize> = kernel_size.into_shape().collect();
         let axis: Vec<Axis> = (-(kernel_size.len() as Axis)..0).collect();
 
-        let padding: Vec<(i32, i32)> = padding.into_iter().collect();
+        let padding: Vec<(i64, i64)> = padding.into_iter().collect();
 
         if ceil_mode {
             todo!("ceil mode is not implemented yet")

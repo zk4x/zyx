@@ -16,8 +16,8 @@ pub struct View(pub Vec<Vec<RDim>>);
 pub struct RDim {
     pub d: Dim,  // dim
     pub st: Dim, // stride
-    pub lp: i32, // left pad
-    pub rp: i32, // right pad
+    pub lp: i64, // left pad
+    pub rp: i64, // right pad
 }
 
 impl SerBin for RDim {
@@ -33,23 +33,23 @@ impl DeBin for RDim {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
         let d = Dim::de_bin(offset, bytes)?;
         let st = Dim::de_bin(offset, bytes)?;
-        let i32_bytes = std::mem::size_of::<i32>();
+        let i64_bytes = std::mem::size_of::<i64>();
 
         // Read lp: isize (convert from bytes)
-        if *offset + i32_bytes > bytes.len() {
-            return Err(nanoserde::DeBinErr::new(*offset, i32_bytes, bytes.len()));
+        if *offset + i64_bytes > bytes.len() {
+            return Err(nanoserde::DeBinErr::new(*offset, i64_bytes, bytes.len()));
         }
-        let lp_bytes = &bytes[*offset..*offset + i32_bytes];
-        let lp = i32::from_le_bytes(lp_bytes.try_into().unwrap());
-        *offset += i32_bytes;
+        let lp_bytes = &bytes[*offset..*offset + i64_bytes];
+        let lp = i64::from_le_bytes(lp_bytes.try_into().unwrap());
+        *offset += i64_bytes;
 
         // Read rp: isize
-        if *offset + i32_bytes > bytes.len() {
-            return Err(nanoserde::DeBinErr::new(*offset, i32_bytes, bytes.len()));
+        if *offset + i64_bytes > bytes.len() {
+            return Err(nanoserde::DeBinErr::new(*offset, i64_bytes, bytes.len()));
         }
-        let rp_bytes = &bytes[*offset..*offset + i32_bytes];
-        let rp = i32::from_le_bytes(rp_bytes.try_into().unwrap());
-        *offset += i32_bytes;
+        let rp_bytes = &bytes[*offset..*offset + i64_bytes];
+        let rp = i64::from_le_bytes(rp_bytes.try_into().unwrap());
+        *offset += i64_bytes;
         Ok(Self { d, st, lp, rp })
     }
 }
@@ -110,7 +110,7 @@ impl View {
         let mut res = 1;
         for dim in &self.0[0] {
             if dim.st != 0 {
-                res *= usize::try_from(i32::try_from(dim.d).unwrap() - dim.lp - dim.rp).unwrap();
+                res *= usize::try_from(i64::try_from(dim.d).unwrap() - dim.lp - dim.rp).unwrap();
             }
         }
         res
@@ -325,7 +325,7 @@ impl View {
         dim.st = 0;
     }*/
 
-    pub fn pad(&mut self, rank: UAxis, padding: &[(i32, i32)]) {
+    pub fn pad(&mut self, rank: UAxis, padding: &[(i64, i64)]) {
         //println!("view: {:?} padding: {padding:?}", self.shape());
         for (axis, &(lp, rp)) in (0..rank).zip(padding) {
             if lp != 0 || rp != 0 {
@@ -335,13 +335,13 @@ impl View {
         //println!("Shape after padding: {:?}", self.shape());
     }
 
-    pub fn pad_axis(&mut self, axis: UAxis, left_pad: i32, right_pad: i32) {
+    pub fn pad_axis(&mut self, axis: UAxis, left_pad: i64, right_pad: i64) {
         let mut old_shape = self.shape();
         let inner = self.0.last_mut().unwrap();
         let mut dim = &mut inner[axis];
-        dim.d = Dim::try_from(i32::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
+        dim.d = Dim::try_from(i64::try_from(dim.d).unwrap() + left_pad + right_pad).unwrap();
         if dim.lp < 0 && left_pad > 0 {
-            dim.d = Dim::try_from(i32::try_from(dim.d).unwrap() - left_pad).unwrap();
+            dim.d = Dim::try_from(i64::try_from(dim.d).unwrap() - left_pad).unwrap();
             let mut stride = 1;
             let mut res: Vec<RDim> = old_shape
                 .iter()
@@ -353,7 +353,7 @@ impl View {
                     RDim {
                         st,
                         d: if a == axis {
-                            Dim::try_from(i32::try_from(d).unwrap() + left_pad).unwrap()
+                            Dim::try_from(i64::try_from(d).unwrap() + left_pad).unwrap()
                         } else {
                             d
                         },
@@ -369,7 +369,7 @@ impl View {
             dim.lp += left_pad;
         }
         if dim.rp < 0 && right_pad > 0 {
-            dim.d = Dim::try_from(i32::try_from(dim.d).unwrap() - right_pad).unwrap();
+            dim.d = Dim::try_from(i64::try_from(dim.d).unwrap() - right_pad).unwrap();
             let old_shape = self.shape();
             let mut stride = 1;
             let mut res: Vec<RDim> = old_shape
@@ -382,7 +382,7 @@ impl View {
                     RDim {
                         st,
                         d: if a == axis {
-                            Dim::try_from(i32::try_from(d).unwrap() + right_pad).unwrap()
+                            Dim::try_from(i64::try_from(d).unwrap() + right_pad).unwrap()
                         } else {
                             d
                         },
@@ -396,7 +396,7 @@ impl View {
         } else {
             dim.rp += right_pad;
         }
-        old_shape[axis] = Dim::try_from(i32::try_from(old_shape[axis]).unwrap() + left_pad + right_pad).unwrap();
+        old_shape[axis] = Dim::try_from(i64::try_from(old_shape[axis]).unwrap() + left_pad + right_pad).unwrap();
         debug_assert_eq!(self.shape(), old_shape);
     }
 }
@@ -517,7 +517,7 @@ impl Display for View {
                 "V(sh{:?} st{:?} pd{:?})",
                 inner.iter().map(|d| d.d).collect::<Vec<Dim>>(),
                 inner.iter().map(|d| d.st).collect::<Vec<Dim>>(),
-                inner.iter().map(|d| (d.lp, d.rp)).collect::<Vec<(i32, i32)>>()
+                inner.iter().map(|d| (d.lp, d.rp)).collect::<Vec<(i64, i64)>>()
             ))?;
         }
         Ok(())

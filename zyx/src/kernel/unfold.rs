@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, Scope},
+    kernel::{BOp, Kernel, MoveOp, Op, OpId, Scope, IDX_T},
     shape::{Dim, UAxis},
+    Set,
 };
 
 impl Kernel {
@@ -299,7 +299,7 @@ impl Kernel {
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as i32 - dim.rp) as u64)));
+                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as i64 - dim.rp) as u64)));
                                 let t = self.new_op(opi, Op::Binary { x: loop_id, y: rp, bop: BOp::Cmplt });
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
@@ -313,7 +313,8 @@ impl Kernel {
                     let pcd = self.new_op(opi, Op::Cast { x: pc, dtype });
 
                     // Nullify z if padding condition is false (if there is padding at that index)
-                    self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul }; // this is now the new op_id
+                    self.ops[op_id].op = Op::Binary { x: pcd, y: z, bop: BOp::Mul };
+                    // this is now the new op_id
                 }
                 Op::LoadView(ref x) => {
                     let dtype = x.0;
@@ -398,7 +399,7 @@ impl Kernel {
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }
                             if dim.rp > 0 {
-                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as i32 - dim.rp) as u64)));
+                                let rp = self.new_op(opi, Op::Const(Constant::idx((dim.d as i64 - dim.rp) as u64)));
                                 let t = self.new_op(opi, Op::Binary { x: loop_id, y: rp, bop: BOp::Cmplt });
                                 pc = self.new_op(opi, Op::Binary { x: t, y: pc, bop: BOp::And });
                             }

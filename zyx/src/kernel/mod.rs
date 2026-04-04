@@ -91,7 +91,7 @@ pub enum MoveOp {
     Reshape { shape: Vec<Dim> },
     Expand { shape: Vec<Dim> },
     Permute { axes: Vec<UAxis>, shape: Vec<Dim> },
-    Pad { padding: Vec<(i32, i32)>, shape: Vec<Dim> },
+    Pad { padding: Vec<(i64, i64)>, shape: Vec<Dim> },
 }
 
 #[allow(non_camel_case_types)]

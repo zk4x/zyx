@@ -494,7 +494,7 @@ impl Runtime {
 
     /// Expects padding in the same order as the shape, that is padding[0] pads shape[0]
     #[must_use]
-    pub(super) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(i32, i32)>) -> TensorId {
+    pub(super) fn pad_zeros(&mut self, x: TensorId, padding: Vec<(i64, i64)>) -> TensorId {
         let mut shape: Vec<Dim> = self.shape(x).into();
         debug_assert_eq!(shape.len(), padding.len());
         //println!("self shape: {shape:?}, padding: {padding:?}");
@@ -782,10 +782,10 @@ pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut Slab<PoolId, Po
     }
 }
 
-pub fn apply_padding(shape: &mut [Dim], padding: &[(i32, i32)]) {
+pub fn apply_padding(shape: &mut [Dim], padding: &[(i64, i64)]) {
     let mut i = 0;
     for d in shape.iter_mut() {
-        *d = Dim::try_from(i32::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
+        *d = Dim::try_from(i64::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
         i += 1;
         if i >= padding.len() {
             break;

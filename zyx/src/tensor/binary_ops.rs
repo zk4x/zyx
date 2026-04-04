@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::Tensor;
-use crate::{RT, kernel::BOp};
+use crate::{kernel::BOp, RT};
 use half::{bf16, f16};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Sub};
 

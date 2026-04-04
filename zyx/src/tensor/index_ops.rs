@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::{Tensor, ZyxError, tensor::Axis};
+use crate::{tensor::Axis, Tensor, ZyxError};
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo};
 
 /// Panics on indexing, with a helpful message directing to `.slice(...)`.
@@ -91,7 +91,7 @@ impl Tensor {
             ));
         }
 
-        let padding = std::iter::repeat_n((0, 0), rank - padding_len);
+        //let padding = std::iter::repeat_n((0, 0), rank - padding_len);
         //print!("shape={shape:?}");
 
         let padding = index
@@ -107,17 +107,17 @@ impl Tensor {
                     } else {
                         end
                     };
-                    (-s, -(dim_size as i32 - e))
+                    (-(s as i64), -((dim_size as i64) - e as i64))
                 }
                 DimIndex::Index(i) => {
                     squeeze_axes.push(axis as i32);
                     let i = if i < 0 { i + dim_size as i32 } else { i };
-                    (-i, -(dim_size as i32 - i - 1))
+                    (-(i as i64), -((dim_size as i64) - i as i64 - 1))
                 }
-                DimIndex::RangeFull => (0, 0),
+                DimIndex::RangeFull => (0i64, 0i64),
                 DimIndex::RangeFrom { start } => {
                     let s = if start < 0 { start + dim_size as i32 } else { start };
-                    (-s, 0)
+                    (-(s as i64), 0i64)
                 }
                 DimIndex::RangeTo { end } => {
                     let e = if end > dim_size as i32 {
@@ -127,10 +127,9 @@ impl Tensor {
                     } else {
                         end
                     };
-                    (0, -(dim_size as i32 - e))
+                    (0i64, -((dim_size as i64) - e as i64))
                 }
-            })
-            .chain(padding);
+            });
 
         //let padding_vec: Vec<(i32, i32)> = padding.into_iter().collect();
         //println!("padding={padding_vec:?}");
@@ -171,17 +170,17 @@ impl Tensor {
                     } else {
                         end
                     };
-                    (-s, -(dim_size as i32 - e))
+                    (-(s as i64), -((dim_size as i64) - e as i64))
                 }
                 DimIndex::Index(i) => {
                     squeeze_axes.push(axis as i32);
                     let i = if i < 0 { i + dim_size as i32 } else { i };
-                    (-i, -(dim_size as i32 - i - 1))
+                    (-(i as i64), -((dim_size as i64) - i as i64 - 1))
                 }
-                DimIndex::RangeFull => (0, 0),
+                DimIndex::RangeFull => (0i64, 0i64),
                 DimIndex::RangeFrom { start } => {
                     let s = if start < 0 { start + dim_size as i32 } else { start };
-                    (-s, 0)
+                    (-(s as i64), 0i64)
                 }
                 DimIndex::RangeTo { end } => {
                     let e = if end > dim_size as i32 {
@@ -191,13 +190,13 @@ impl Tensor {
                     } else {
                         end
                     };
-                    (0, -(dim_size as i32 - e))
+                    (0i64, -((dim_size as i64) - e as i64))
                 }
             });
 
-        let padding = padding.chain(std::iter::repeat_n((0, 0), rank - padding_len));
+        let padding = padding.chain(std::iter::repeat_n((0i64, 0i64), rank - padding_len));
 
-        let mut padding_vec: Vec<(i32, i32)> = padding.into_iter().collect();
+        let mut padding_vec: Vec<(i64, i64)> = padding.into_iter().collect();
         padding_vec.reverse();
         //println!("padding={padding_vec:?}");
 
@@ -231,7 +230,7 @@ impl Tensor {
         let n = *self.shape().last().expect("Shape in invalid state. Internal bug.");
         self.flatten(..)
             .unwrap()
-            .rpad_zeros([(0, i32::try_from(n).unwrap())])
+            .rpad_zeros([(0i64, i64::try_from(n).unwrap())])
             .unwrap()
             .reshape([n, n + 1])
             .unwrap()
@@ -425,14 +424,14 @@ impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimInd
 }
 
 impl<
-    I0: Into<DimIndex>,
-    I1: Into<DimIndex>,
-    I2: Into<DimIndex>,
-    I3: Into<DimIndex>,
-    I4: Into<DimIndex>,
-    I5: Into<DimIndex>,
-    I6: Into<DimIndex>,
-> IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
+        I0: Into<DimIndex>,
+        I1: Into<DimIndex>,
+        I2: Into<DimIndex>,
+        I3: Into<DimIndex>,
+        I4: Into<DimIndex>,
+        I5: Into<DimIndex>,
+        I6: Into<DimIndex>,
+    > IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
 {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
         [
@@ -449,15 +448,15 @@ impl<
 }
 
 impl<
-    I0: Into<DimIndex>,
-    I1: Into<DimIndex>,
-    I2: Into<DimIndex>,
-    I3: Into<DimIndex>,
-    I4: Into<DimIndex>,
-    I5: Into<DimIndex>,
-    I6: Into<DimIndex>,
-    I7: Into<DimIndex>,
-> IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
+        I0: Into<DimIndex>,
+        I1: Into<DimIndex>,
+        I2: Into<DimIndex>,
+        I3: Into<DimIndex>,
+        I4: Into<DimIndex>,
+        I5: Into<DimIndex>,
+        I6: Into<DimIndex>,
+        I7: Into<DimIndex>,
+    > IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
 {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
         [
