@@ -56,7 +56,7 @@ impl MnistNet {
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
     let train_dataset: HashMap<String, Tensor> = Tensor::load("data/mnist_dataset.safetensors")?;
-    let train_x = train_dataset["train_x"].cast(DType::F32) / 255;
+    let train_x = (train_dataset["train_x"].cast(DType::F32) / 255).reshape([60000, 1, 28 * 28])?;
     let train_y = train_dataset["train_y"].clone();
     let test_x = train_dataset["test_x"].cast(DType::F32) / 255;
     let test_y = train_dataset["test_y"].clone();
@@ -77,7 +77,11 @@ fn main() -> Result<(), ZyxError> {
         ..Default::default()
     };
 
-    println!("train_x {:?}, train_y {:?}", train_x.shape(), train_y.shape());
+    println!(
+        "train_x {:?}, train_y {:?}",
+        train_x.shape(),
+        train_y.shape()
+    );
 
     Tensor::realize_all()?;
 
@@ -86,8 +90,16 @@ fn main() -> Result<(), ZyxError> {
         Tensor::set_training(true);
         let tape = GradientTape::new();
         let samples = Tensor::uniform(batch_size, 0..n_train)?;
-        let x = train_x.gather(0, samples.reshape([batch_size, 1, 1])?.expand([batch_size, 28, 28])?)?;
-        let y = train_y.gather(0, samples)?;
+        /*let x = train_x
+        .gather(
+            0,
+            samples
+                .reshape([batch_size, 1, 1])?
+                .expand([batch_size, 28, 28])?,
+        )
+        .unwrap();*/
+        let x = train_x.gather(0, &samples.reshape([batch_size, 1, 1])?)?;
+        let y = train_y.gather(0, samples).unwrap();
 
         let logits = net.forward(&x);
         let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
@@ -97,8 +109,17 @@ fn main() -> Result<(), ZyxError> {
 
         if step.is_multiple_of(10) {
             Tensor::set_training(false);
-            let acc = net.forward(&test_x).argmax_axis(1)?.equal(&test_y)?.mean_all().item::<f32>();
-            println!("step {step}, loss {}, acc {:.2}%", loss.item::<f32>(), acc*100.)
+            let acc = net
+                .forward(&test_x)
+                .argmax_axis(1)?
+                .equal(&test_y)?
+                .mean_all()
+                .item::<f32>();
+            println!(
+                "step {step}, loss {}, acc {:.2}%",
+                loss.item::<f32>(),
+                acc * 100.
+            )
         }
     }
 
