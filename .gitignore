@@ -11,5 +11,6 @@ zyx-examples/phi1_5-model.safetensors
 zyx-examples/phi1_5-tokenizer.json
 zyx-examples/data
 zyx-examples/models
+zyx-examples/venv
 docs/*
 zyx/Cargo.lock
