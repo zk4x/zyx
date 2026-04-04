@@ -10,6 +10,7 @@ use crate::{
     tensor::TensorId,
     Map, Set, ZyxError,
 };
+use std::collections::BTreeMap;
 use std::hash::BuildHasherDefault;
 
 /// Cached result of compiling a graph, ready for replay.
@@ -17,26 +18,25 @@ use std::hash::BuildHasherDefault;
 pub struct CompiledGraph {}
 
 /// Compact representation of a graph, used as cache key.
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct CompactedGraph {
     pub nodes: Vec<Node>,
-    pub shapes: Map<TensorId, Box<[Dim]>>,
-    pub paddings: Map<TensorId, Box<[(i32, i32)]>>,
-    pub axes: Map<TensorId, Box<[UAxis]>>,
+    pub shapes: BTreeMap<TensorId, Box<[Dim]>>,
+    pub paddings: BTreeMap<TensorId, Box<[(i32, i32)]>>,
+    pub axes: BTreeMap<TensorId, Box<[UAxis]>>,
 }
 
 impl Runtime {
     pub(crate) fn launch_or_store_graph_with_order(
         &mut self,
         _rcs: Map<TensorId, u32>,
-        _realized_nodes: Set<TensorId>,
         order: &[TensorId],
-        _to_eval: &Set<TensorId>,
     ) -> Result<(), ZyxError> {
         let mut compacted = CompactedGraph {
             nodes: Vec::with_capacity(order.len()),
-            shapes: Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new()),
-            paddings: Map::with_capacity_and_hasher(10, BuildHasherDefault::new()),
-            axes: Map::with_capacity_and_hasher(10, BuildHasherDefault::new()),
+            shapes: BTreeMap::new(),
+            paddings: BTreeMap::new(),
+            axes: BTreeMap::new(),
         };
         let mut id_map: Map<TensorId, TensorId> = Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
 
@@ -77,6 +77,12 @@ impl Runtime {
             }
         }
 
-        todo!()
+        if let Some(cached_graph) = self.graph_cache.get(&compacted) {
+            let _ = cached_graph;
+        } else {
+            todo!()
+        }
+
+        Ok(())
     }
 }

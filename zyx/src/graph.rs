@@ -7,16 +7,16 @@ use crate::kernel::{BOp, UOp};
 use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::{
-    DType,
     shape::{Dim, UAxis},
     slab::Slab,
+    DType,
 };
 use crate::{Map, Set};
 use std::hash::BuildHasherDefault;
 
 /// Graph node, each node is one operation. Nodes
 /// represent the opset that is available on tensors.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Node {
     // Constant tensor baked into kernels
     Const { value: Constant },

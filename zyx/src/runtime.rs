@@ -4,6 +4,7 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
 use crate::backend::{AutotuneConfig, BufferId, Config, Device, Event, MemoryPool};
 use crate::cache::Cache;
+use crate::compiled_graph::{CompiledGraph, CompactedGraph};
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{Graph, Node};
@@ -55,6 +56,8 @@ pub struct Runtime {
     /// This tries to copy the default behaviour of pytorch, but since rust does not
     /// have implicit casting, we do not recommend using this feature.
     pub implicit_casts: bool,
+    /// Cache for compiled graphs, maps compacted graph to compiled result.
+    pub(crate) graph_cache: Map<CompactedGraph, CompiledGraph>,
 }
 
 pub trait TempData: Send {
@@ -107,6 +110,7 @@ impl Runtime {
             constants: [Constant::I32(0); NUM_CONSTANTS],
             constants_len: 0,
             implicit_casts: true,
+            graph_cache: Map::with_hasher(BuildHasherDefault::new()),
         }
     }
 

@@ -6,6 +6,7 @@
 use crate::{
     backend::{AutotuneConfig, BufferId, Device},
     cache::Cache,
+    compiled_graph::CompiledGraph,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
@@ -653,6 +654,15 @@ impl<'a> Kernelizer<'a> {
 }
 
 impl Runtime {
+    pub(crate) fn kernelize(
+        &mut self,
+        _compacted: &crate::compiled_graph::CompactedGraph,
+        _realized_nodes: Set<TensorId>,
+        _to_eval: &Set<TensorId>,
+    ) -> Result<CompiledGraph, ZyxError> {
+        todo!()
+    }
+
     fn realize_with_order(
         &mut self,
         rcs: Map<TensorId, u32>,
@@ -860,7 +870,7 @@ impl Runtime {
             );
         }
 
-        self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        self.launch_or_store_graph_with_order(rcs, &order)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
@@ -954,7 +964,7 @@ impl Runtime {
             );
         }
 
-        self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        self.launch_or_store_graph_with_order(rcs, &order)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
