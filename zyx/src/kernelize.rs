@@ -56,6 +56,7 @@ struct Kernelizer<'a> {
     graph: &'a Graph,
     pools: &'a mut [Pool],
     temp_data: &'a mut Map<BufferId, Box<[u8]>>,
+    buffer_map: &'a mut Map<TensorId, (u32, BufferId)>,
     devices: &'a mut [Device],
     cache: &'a mut Cache,
     autotune_config: &'a AutotuneConfig,
@@ -70,6 +71,7 @@ impl<'a> Kernelizer<'a> {
         graph: &'a Graph,
         pools: &'a mut [Pool],
         temp_data: &'a mut Map<BufferId, Box<[u8]>>,
+        buffer_map: &'a mut Map<TensorId, (u32, BufferId)>,
         devices: &'a mut [Device],
         cache: &'a mut Cache,
         search_config: &'a AutotuneConfig,
@@ -88,6 +90,7 @@ impl<'a> Kernelizer<'a> {
             graph,
             pools,
             temp_data,
+            buffer_map,
             devices,
             cache,
             autotune_config: search_config,
@@ -546,7 +549,7 @@ impl<'a> Kernelizer<'a> {
                     to_remove.insert(tid);
                 }
             }
-            deallocate_tensors(&to_remove, self.pools, self.temp_data);
+            deallocate_tensors(&to_remove, self.pools, self.temp_data, self.buffer_map);
         }
         //println!("ADDED STORE for {x} x {xrc_rem}");
         Ok(())
@@ -562,8 +565,14 @@ impl<'a> Kernelizer<'a> {
         debug_assert!(!kernel.ops.is_empty());
 
         //let time_w = std::time::Instant::now();
-        let (dev_id, mpid, event_wait_list, output_buffers, args) =
-            schedule(&kernel.loads, &kernel.stores, self.graph, self.devices, self.pools)?;
+        let (dev_id, mpid, event_wait_list, output_buffers, args) = schedule(
+            &kernel.loads,
+            &kernel.stores,
+            self.graph,
+            self.devices,
+            self.pools,
+            self.buffer_map,
+        )?;
 
         /***** CACHE and OPTIMIZATION SEARCH *****/
 
@@ -691,6 +700,7 @@ impl Runtime {
             &self.graph,
             &mut self.pools,
             &mut self.temp_data,
+            &mut self.buffer_map,
             &mut self.devices,
             &mut self.cache,
             &self.autotune_config,
@@ -785,7 +795,7 @@ impl Runtime {
                         to_remove.insert(tid);
                     }
                 }
-                deallocate_tensors(&to_remove, kernelizer.pools, kernelizer.temp_data);
+                deallocate_tensors(&to_remove, kernelizer.pools, kernelizer.temp_data, kernelizer.buffer_map);
             }
         }
 

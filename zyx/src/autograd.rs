@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::{
-    Map, RT, Set, Tensor,
     dtype::Constant,
     graph::Node,
     kernel::{BOp, UOp},
-    runtime::{Runtime, deallocate_tensors},
+    runtime::{deallocate_tensors, Runtime},
     shape::{Dim, UAxis},
     tensor::TensorId,
+    Map, Set, Tensor, RT,
 };
 use std::hash::BuildHasherDefault;
 
@@ -95,7 +95,7 @@ impl Runtime {
         if self.graph.gradient_tape_ref_count == 0 {
             if let Some(tape) = &self.graph.gradient_tape {
                 // Remove parts of graph that are realized and were needed only for gradient tracing
-                let realized_nodes: Set<TensorId> = self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+                let realized_nodes: Set<TensorId> = self.buffer_map.keys().copied().collect();
                 let mut to_release = Vec::new();
                 for &nid in realized_nodes.intersection(tape) {
                     let shape = self.graph.shape(nid).into();
@@ -105,7 +105,7 @@ impl Runtime {
                     self.graph.nodes[nid].1 = Node::Leaf { dtype };
                 }
                 let to_remove = self.graph.release(&to_release);
-                deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
+                deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
                 self.graph.gradient_tape = None;
             }
         }

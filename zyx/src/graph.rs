@@ -266,7 +266,11 @@ impl Graph {
 
     /// Plot dot graph in dot format between given nodes
     #[must_use]
-    pub fn plot_dot_graph(&self, ids: &Set<TensorId>, pools: &[crate::runtime::Pool]) -> String {
+    pub fn plot_dot_graph(
+        &self,
+        ids: &Set<TensorId>,
+        buffer_map: &crate::Map<crate::tensor::TensorId, (u32, crate::backend::BufferId)>,
+    ) -> String {
         use core::fmt::Write;
         use std::format as f;
         let ids: Set<TensorId> = if ids.is_empty() {
@@ -313,7 +317,7 @@ impl Graph {
             }
         }
         //std::println!("User {:?}", user_rc);
-        let realized_nodes: Set<TensorId> = pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+        let realized_nodes: Set<TensorId> = buffer_map.keys().copied().collect();
         let mut res_dot_graph = String::from("strict digraph {\n  ordering=in\n  rank=source\n  rankdir=LR\n");
         let mut add_node = |i: TensorId, text: &str, shape: &str| {
             let fillcolor = if user_rc[&i] > 0 { "coral" } else { "aqua" };

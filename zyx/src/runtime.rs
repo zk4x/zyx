@@ -4,7 +4,6 @@
 //! Runtime handles tensor graph and connects tensors to device buffers.
 use crate::backend::{AutotuneConfig, BufferId, Config, Device, Event, MemoryPool};
 use crate::cache::Cache;
-use crate::compiled_graph::{CompactedGraph, CompiledGraph};
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{Graph, Node};
@@ -29,10 +28,12 @@ const NUM_CONSTANTS: usize = 32;
 pub struct Runtime {
     /// Current graph of tensor operations as nodes
     pub graph: Graph,
-    /// Physical memory pools
-    pub pools: Vec<Pool>,
     /// Physical compute devices, each has their own program cache
     pub devices: Vec<Device>,
+    /// Physical memory pools
+    pub pools: Vec<Pool>,
+    /// Global mapping from tensor ID to (pool_index, buffer_id).
+    pub buffer_map: Map<TensorId, (u32, BufferId)>,
     /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
     pub cache: Cache,
     /// Zyx configuration directory path
@@ -56,8 +57,8 @@ pub struct Runtime {
     pub implicit_casts: bool,
     /// Are we in training mode?
     pub training: bool,
-    /// Cache for compiled graphs, maps compacted graph to compiled result.
-    pub(crate) graph_cache: Map<CompactedGraph, CompiledGraph>,
+    // Cache for compiled graphs, maps compacted graph to compiled result.
+    //pub(crate) graph_cache: Map<CompactedGraph, CompiledGraph>,
 }
 
 pub trait TempData: Send {
@@ -71,7 +72,6 @@ pub struct Pool {
     #[allow(clippy::struct_field_names)]
     pub pool: MemoryPool,
     pub events: Map<BTreeSet<BufferId>, Event>,
-    pub buffer_map: Map<TensorId, BufferId>,
 }
 
 impl Pool {
@@ -79,18 +79,12 @@ impl Pool {
         Self {
             pool,
             events: Map::with_capacity_and_hasher(100, BuildHasherDefault::default()),
-            buffer_map: Map::with_capacity_and_hasher(100, BuildHasherDefault::default()),
         }
     }
 }
 
-fn get_mut_buffer(pools: &mut [Pool], tensor_id: TensorId) -> Option<(&mut Pool, BufferId)> {
-    for pool in pools {
-        if let Some(&id) = pool.buffer_map.get(&tensor_id) {
-            return Some((pool, id));
-        }
-    }
-    None
+fn get_mut_buffer(buffer_map: &Map<TensorId, (u32, BufferId)>, tensor_id: TensorId) -> Option<(u32, BufferId)> {
+    buffer_map.get(&tensor_id).copied()
 }
 
 impl Runtime {
@@ -100,6 +94,7 @@ impl Runtime {
             graph: Graph::new(),
             devices: Vec::new(),
             pools: Vec::new(),
+            buffer_map: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
             config_dir: None,
             cache: Cache::new(),
@@ -110,12 +105,12 @@ impl Runtime {
             constants: [Constant::I32(0); NUM_CONSTANTS],
             constants_len: 0,
             implicit_casts: true,
-            graph_cache: Map::with_hasher(BuildHasherDefault::new()),
+            //graph_cache: Map::with_hasher(BuildHasherDefault::new()),
         }
     }
 
     pub fn is_realized(&self, x: TensorId) -> bool {
-        self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x))
+        self.buffer_map.contains_key(&x)
     }
 
     pub fn debug_graph(&self) {
@@ -130,8 +125,8 @@ impl Runtime {
 
     pub(super) fn release(&mut self, x: TensorId) {
         let to_remove = self.graph.release(&[x]);
-        deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
-        if self.graph.is_empty() && self.pools.iter().all(|mp| mp.buffer_map.is_empty()) {
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
+        if self.graph.is_empty() && self.buffer_map.is_empty() {
             self.deinitialize();
         }
     }
@@ -265,7 +260,7 @@ impl Runtime {
     #[must_use]
     pub(super) fn plot_dot_graph(&self, tensors: &Set<TensorId>) -> String {
         //println!("Tensor storage {:?}", self.tensor_buffer_map);
-        self.graph.plot_dot_graph(tensors, &self.pools)
+        self.graph.plot_dot_graph(tensors, &self.buffer_map)
     }
 
     #[must_use]
@@ -290,7 +285,7 @@ impl Runtime {
         if let Some(disk) = self.pools[0].pool.disk_pool() {
             let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
             let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
-            self.pools[0].buffer_map.insert(id, buffer_id);
+            self.buffer_map.insert(id, (0, buffer_id));
             Ok(id)
         } else {
             Err(ZyxError::NoBackendAvailable)
@@ -360,7 +355,7 @@ impl Runtime {
             .pool
             .host_to_pool(&self.temp_data[&buffer_id], buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
-        self.pools[mpid].buffer_map.insert(id, buffer_id);
+        self.buffer_map.insert(id, (mpid as u32, buffer_id));
         self.pools[mpid].events.insert([buffer_id].into(), event);
         Ok(id)
     }
@@ -420,10 +415,9 @@ impl Runtime {
         }
         //let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape.clone());
-        if let Some(pool) = self.pools.iter_mut().find(|pool| pool.buffer_map.contains_key(&x)) {
-            //println!("Bitcast {x}, res {id}, new shape {shape:?} buffer id {bid:?}");
-            let x = *pool.buffer_map.get(&x).unwrap();
-            pool.buffer_map.insert(id, x);
+        if let Some((mpid, bid)) = get_mut_buffer(&self.buffer_map, x) {
+            let mpid = mpid as usize;
+            self.buffer_map.insert(id, (mpid as u32, bid));
         }
         //println!("TBM:\n{:?}", self.tensor_buffer_map);
         Ok(id)
@@ -440,8 +434,8 @@ impl Runtime {
         }
         let id = self.graph.push_wshape(Node::Reshape { x }, shape);
         // Reshape on realized variable is NOOP, buffer_maps trace ownership
-        if let Some((pool, bid)) = get_mut_buffer(&mut self.pools, x) {
-            pool.buffer_map.insert(id, bid);
+        if let Some((mpid, bid)) = get_mut_buffer(&self.buffer_map, x) {
+            self.buffer_map.insert(id, (mpid, bid));
         }
         id
     }
@@ -562,13 +556,14 @@ impl Runtime {
         }
         debug_assert!(data.len() as Dim <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
-        if !self.pools.iter().any(|pool| pool.buffer_map.contains_key(&x)) {
+        if !self.buffer_map.contains_key(&x) {
             let mut to_eval = Set::with_capacity_and_hasher(1, BuildHasherDefault::default());
             to_eval.insert(x);
             self.realize_selected(&to_eval)?;
         }
 
-        let (pool, buffer_id) = get_mut_buffer(&mut self.pools, x).unwrap();
+        let (mpid, buffer_id) = get_mut_buffer(&self.buffer_map, x).unwrap();
+        let pool = &mut self.pools[mpid as usize];
 
         Self::load_buffer(data, pool, buffer_id)
     }
@@ -590,7 +585,7 @@ impl Runtime {
 
     pub fn realize_selected(&mut self, to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
         //let time_w = std::time::Instant::now();
-        let realized_nodes: Set<TensorId> = self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+        let realized_nodes: Set<TensorId> = self.buffer_map.keys().copied().collect();
 
         let to_eval: Set<TensorId> = to_eval.difference(&realized_nodes).copied().collect();
 
@@ -658,7 +653,7 @@ impl Runtime {
                 }
             }
             let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
+            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
         } else {
             for &nid in &to_eval {
                 self.graph.add_shape(nid);
@@ -667,12 +662,12 @@ impl Runtime {
                 self.graph[nid] = Node::Leaf { dtype };
             }
             let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
+            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
         }
 
         #[cfg(debug_assertions)]
         {
-            let realized_nodes: Set<TensorId> = self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            let realized_nodes: Set<TensorId> = self.buffer_map.keys().copied().collect();
             debug_assert!(realized_nodes.is_superset(&to_eval));
         }
 
@@ -680,7 +675,7 @@ impl Runtime {
     }
 
     pub fn realize_all(&mut self) -> Result<(), ZyxError> {
-        let realized_nodes: Set<TensorId> = self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+        let realized_nodes: Set<TensorId> = self.buffer_map.keys().copied().collect();
 
         if self.devices.is_empty() {
             self.initialize_devices()?;
@@ -752,7 +747,7 @@ impl Runtime {
                 }
             }
             let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
+            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
         } else {
             for &nid in &to_eval {
                 self.graph.add_shape(nid);
@@ -761,12 +756,12 @@ impl Runtime {
                 self.graph[nid] = Node::Leaf { dtype };
             }
             let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data);
+            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
         }
 
         #[cfg(debug_assertions)]
         {
-            let realized_nodes: Set<TensorId> = self.pools.iter().flat_map(|pool| pool.buffer_map.keys()).copied().collect();
+            let realized_nodes: Set<TensorId> = self.buffer_map.keys().copied().collect();
             debug_assert!(realized_nodes.is_superset(&to_eval));
         }
 
@@ -774,29 +769,20 @@ impl Runtime {
     }
 }
 
-pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_data: &mut Map<BufferId, Box<[u8]>>) {
-    // This is basically tracing GC, seems faster than reference counting
-    // remove all buffers that are not used by any tensors
-    // Check which buffers will possibly need to be dropped
+pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_data: &mut Map<BufferId, Box<[u8]>>, buffer_map: &mut Map<TensorId, (u32, BufferId)>) {
     for tensor_id in to_remove {
-        let mut buffer = None;
-        for (pool_id, pool) in pools.iter_mut().enumerate() {
-            if let Some(buffer_id) = pool.buffer_map.remove(tensor_id) {
-                buffer = Some((pool_id, buffer_id));
-                break;
+        if let Some((pool_id, buffer_id)) = buffer_map.remove(tensor_id) {
+            let pool_id = pool_id as usize;
+            if !buffer_map.values().any(|(_, bid)| *bid == buffer_id) {
+                let pool = &mut pools[pool_id];
+                let mut events = Vec::new();
+                if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
+                    let event = pool.events.remove(&key.clone()).unwrap();
+                    events.push(event);
+                }
+                pool.pool.deallocate(buffer_id, events);
+                temp_data.remove(&buffer_id);
             }
-        }
-        if let Some((pool_id, buffer_id)) = buffer
-            && !pools.iter().any(|pool| pool.buffer_map.values().any(|bid| *bid == buffer_id))
-        {
-            let pool = &mut pools[pool_id];
-            let mut events = Vec::new();
-            if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
-                let event = pool.events.remove(&key.clone()).unwrap();
-                events.push(event);
-            }
-            pool.pool.deallocate(buffer_id, events);
-            temp_data.remove(&buffer_id);
         }
     }
 }
