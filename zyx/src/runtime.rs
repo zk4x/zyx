@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Runtime handles tensor graph and connects tensors to device buffers.
-use crate::backend::{AutotuneConfig, PoolBufferId, Config, Device, Event, MemoryPool};
+use crate::backend::{AutotuneConfig, BufferId, Config, Device, Event, MemoryPool, PoolBufferId, PoolId};
 use crate::cache::Cache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
@@ -11,6 +11,7 @@ use crate::kernel::{BOp, UOp};
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{Dim, UAxis, permute, reduce};
+use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::DeJson;
@@ -33,7 +34,7 @@ pub struct Runtime {
     /// Physical memory pools
     pub pools: Vec<Pool>,
     /// Global mapping from tensor ID to (pool_index, buffer_id).
-    pub buffer_map: Map<TensorId, (u32, PoolBufferId)>,
+    pub buffer_map: Map<TensorId, BufferId>,
     /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
     pub cache: Cache,
     /// Zyx configuration directory path
@@ -45,7 +46,7 @@ pub struct Runtime {
     /// Debug mask
     pub debug: DebugMask,
     /// Temporary storage
-    pub temp_data: Map<PoolBufferId, Box<[u8]>>,
+    pub temp_data: Map<BufferId, Box<[u8]>>,
     /// Cache for constants
     constants: [Constant; NUM_CONSTANTS],
     /// Current number of constants
@@ -83,7 +84,7 @@ impl Pool {
     }
 }
 
-fn get_mut_buffer(buffer_map: &Map<TensorId, (u32, PoolBufferId)>, tensor_id: TensorId) -> Option<(u32, PoolBufferId)> {
+fn get_mut_buffer(buffer_map: &Map<TensorId, BufferId>, tensor_id: TensorId) -> Option<BufferId> {
     buffer_map.get(&tensor_id).copied()
 }
 
@@ -285,7 +286,7 @@ impl Runtime {
         if let Some(disk) = self.pools[0].pool.disk_pool() {
             let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
             let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
-            self.buffer_map.insert(id, (0, buffer_id));
+            self.buffer_map.insert(id, BufferId { pool: PoolId::ZERO, buffer: buffer_id });
             Ok(id)
         } else {
             Err(ZyxError::NoBackendAvailable)
@@ -347,15 +348,16 @@ impl Runtime {
         }
         let mpid = memory_pool_id as usize;
         let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
-        self.temp_data.insert(buffer_id, data.read());
+        let global_id = BufferId { pool: PoolId::from(mpid), buffer: buffer_id };
+        self.temp_data.insert(global_id, data.read());
 
-        //println!("len = {}", self.temp_data[&buffer_id].len());
+        //println!("len = {}", self.temp_data[&global_id].len());
 
         let event = self.pools[mpid]
             .pool
-            .host_to_pool(&self.temp_data[&buffer_id], buffer_id, vec![event])?;
+            .host_to_pool(&self.temp_data[&global_id], buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
-        self.buffer_map.insert(id, (mpid as u32, buffer_id));
+        self.buffer_map.insert(id, global_id);
         self.pools[mpid].events.insert([buffer_id].into(), event);
         Ok(id)
     }
@@ -415,9 +417,8 @@ impl Runtime {
         }
         //let id = self.graph.push_wshape_and_dtype(Node::Leaf, shape.clone(), dtype);
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape.clone());
-        if let Some((mpid, bid)) = get_mut_buffer(&self.buffer_map, x) {
-            let mpid = mpid as usize;
-            self.buffer_map.insert(id, (mpid as u32, bid));
+        if let Some(buf_id) = get_mut_buffer(&self.buffer_map, x) {
+            self.buffer_map.insert(id, buf_id);
         }
         //println!("TBM:\n{:?}", self.tensor_buffer_map);
         Ok(id)
@@ -434,8 +435,8 @@ impl Runtime {
         }
         let id = self.graph.push_wshape(Node::Reshape { x }, shape);
         // Reshape on realized variable is NOOP, buffer_maps trace ownership
-        if let Some((mpid, bid)) = get_mut_buffer(&self.buffer_map, x) {
-            self.buffer_map.insert(id, (mpid, bid));
+        if let Some(buf_id) = get_mut_buffer(&self.buffer_map, x) {
+            self.buffer_map.insert(id, buf_id);
         }
         id
     }
@@ -562,10 +563,10 @@ impl Runtime {
             self.realize_selected(&to_eval)?;
         }
 
-        let (mpid, buffer_id) = get_mut_buffer(&self.buffer_map, x).unwrap();
-        let pool = &mut self.pools[mpid as usize];
+        let buffer_id = get_mut_buffer(&self.buffer_map, x).unwrap();
+        let pool = &mut self.pools[usize::from(buffer_id.pool)];
 
-        Self::load_buffer(data, pool, buffer_id)
+        Self::load_buffer(data, pool, buffer_id.buffer)
     }
 
     pub fn load_buffer<T: Scalar>(data: &mut [T], pool: &mut Pool, buffer_id: PoolBufferId) -> Result<(), ZyxError> {
@@ -769,18 +770,18 @@ impl Runtime {
     }
 }
 
-pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_data: &mut Map<PoolBufferId, Box<[u8]>>, buffer_map: &mut Map<TensorId, (u32, PoolBufferId)>) {
+pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_data: &mut Map<BufferId, Box<[u8]>>, buffer_map: &mut Map<TensorId, BufferId>) {
     for tensor_id in to_remove {
-        if let Some((pool_id, buffer_id)) = buffer_map.remove(tensor_id) {
-            let pool_id = pool_id as usize;
-            if !buffer_map.values().any(|(_, bid)| *bid == buffer_id) {
+        if let Some(buffer_id) = buffer_map.remove(tensor_id) {
+            if !buffer_map.values().any(|&bid| bid == buffer_id) {
+                let pool_id = usize::from(buffer_id.pool);
                 let pool = &mut pools[pool_id];
                 let mut events = Vec::new();
-                if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id)) {
+                if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id.buffer)) {
                     let event = pool.events.remove(&key.clone()).unwrap();
                     events.push(event);
                 }
-                pool.pool.deallocate(buffer_id, events);
+                pool.pool.deallocate(buffer_id.buffer, events);
                 temp_data.remove(&buffer_id);
             }
         }

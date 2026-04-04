@@ -4,7 +4,7 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::{AutotuneConfig, PoolBufferId, Device},
+    backend::{AutotuneConfig, BufferId, Device},
     cache::Cache,
     dtype::Constant,
     graph::{Graph, Node},
@@ -55,8 +55,8 @@ struct Kernelizer<'a> {
     rcs: Map<TensorId, u32>,
     graph: &'a Graph,
     pools: &'a mut [Pool],
-    temp_data: &'a mut Map<PoolBufferId, Box<[u8]>>,
-    buffer_map: &'a mut Map<TensorId, (u32, PoolBufferId)>,
+    temp_data: &'a mut Map<BufferId, Box<[u8]>>,
+    buffer_map: &'a mut Map<TensorId, BufferId>,
     devices: &'a mut [Device],
     cache: &'a mut Cache,
     autotune_config: &'a AutotuneConfig,
@@ -70,8 +70,8 @@ impl<'a> Kernelizer<'a> {
         rcs: Map<TensorId, u32>,
         graph: &'a Graph,
         pools: &'a mut [Pool],
-        temp_data: &'a mut Map<PoolBufferId, Box<[u8]>>,
-        buffer_map: &'a mut Map<TensorId, (u32, PoolBufferId)>,
+        temp_data: &'a mut Map<BufferId, Box<[u8]>>,
+        buffer_map: &'a mut Map<TensorId, BufferId>,
         devices: &'a mut [Device],
         cache: &'a mut Cache,
         search_config: &'a AutotuneConfig,
