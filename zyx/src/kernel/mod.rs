@@ -14,15 +14,15 @@ use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
 
 pub mod autotune;
-mod const_folding;
 mod debug;
+mod fold_constants;
 mod fuse;
 
 mod licm;
-mod loop_splitting;
 mod mma;
 mod merge_loops;
-mod register_tiling;
+mod split_loops;
+mod tile_registers;
 mod tiled_reduce;
 mod unfold;
 mod unroll_loops;

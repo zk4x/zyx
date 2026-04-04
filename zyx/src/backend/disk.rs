@@ -12,7 +12,7 @@ use crate::{
     error::{BackendError, ErrorStatus},
     runtime::Pool,
     shape::Dim,
-    slab::{Slab, SlabId},
+    slab::Slab,
 };
 
 #[derive(Debug)]
