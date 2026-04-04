@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{BufferId, Event, MemoryPool};
+use super::{PoolBufferId, Event, MemoryPool};
 use crate::{
     error::{BackendError, ErrorStatus},
     runtime::Pool,
@@ -18,7 +18,7 @@ use crate::{
 #[derive(Debug)]
 pub struct DiskMemoryPool {
     free_bytes: Dim,
-    buffers: Slab<BufferId, DiskBuffer>,
+    buffers: Slab<PoolBufferId, DiskBuffer>,
 }
 
 #[derive(Debug)]
@@ -54,7 +54,7 @@ impl DiskMemoryPool {
         self.free_bytes
     }
 
-    pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> BufferId {
+    pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> PoolBufferId {
         // TODO perhaps add verification that the file exists and it contains enough bytes at given offset
         let id = self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes });
         //println!("Create buffer={id:?} on disk from path={path:?}");
@@ -62,7 +62,7 @@ impl DiskMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         //println!("Deallocate buffer={buffer_id:?} from the disk");
         let _ = event_wait_list;
         if self.buffers.contains_key(buffer_id) {
@@ -73,7 +73,7 @@ impl DiskMemoryPool {
 
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_host(&mut self, src: BufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let _ = event_wait_list;
         let buffer = &self.buffers[src];
         let f = File::open(&buffer.path).unwrap();

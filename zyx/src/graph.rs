@@ -269,7 +269,7 @@ impl Graph {
     pub fn plot_dot_graph(
         &self,
         ids: &Set<TensorId>,
-        buffer_map: &crate::Map<crate::tensor::TensorId, (u32, crate::backend::BufferId)>,
+        buffer_map: &crate::Map<crate::tensor::TensorId, (u32, crate::backend::PoolBufferId)>,
     ) -> String {
         use core::fmt::Write;
         use std::format as f;

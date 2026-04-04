@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Runtime handles tensor graph and connects tensors to device buffers.
-use crate::backend::{AutotuneConfig, BufferId, Config, Device, Event, MemoryPool};
+use crate::backend::{AutotuneConfig, PoolBufferId, Config, Device, Event, MemoryPool};
 use crate::cache::Cache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
@@ -33,7 +33,7 @@ pub struct Runtime {
     /// Physical memory pools
     pub pools: Vec<Pool>,
     /// Global mapping from tensor ID to (pool_index, buffer_id).
-    pub buffer_map: Map<TensorId, (u32, BufferId)>,
+    pub buffer_map: Map<TensorId, (u32, PoolBufferId)>,
     /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
     pub cache: Cache,
     /// Zyx configuration directory path
@@ -45,7 +45,7 @@ pub struct Runtime {
     /// Debug mask
     pub debug: DebugMask,
     /// Temporary storage
-    pub temp_data: Map<BufferId, Box<[u8]>>,
+    pub temp_data: Map<PoolBufferId, Box<[u8]>>,
     /// Cache for constants
     constants: [Constant; NUM_CONSTANTS],
     /// Current number of constants
@@ -71,7 +71,7 @@ pub trait TempData: Send {
 pub struct Pool {
     #[allow(clippy::struct_field_names)]
     pub pool: MemoryPool,
-    pub events: Map<BTreeSet<BufferId>, Event>,
+    pub events: Map<BTreeSet<PoolBufferId>, Event>,
 }
 
 impl Pool {
@@ -83,7 +83,7 @@ impl Pool {
     }
 }
 
-fn get_mut_buffer(buffer_map: &Map<TensorId, (u32, BufferId)>, tensor_id: TensorId) -> Option<(u32, BufferId)> {
+fn get_mut_buffer(buffer_map: &Map<TensorId, (u32, PoolBufferId)>, tensor_id: TensorId) -> Option<(u32, PoolBufferId)> {
     buffer_map.get(&tensor_id).copied()
 }
 
@@ -568,7 +568,7 @@ impl Runtime {
         Self::load_buffer(data, pool, buffer_id)
     }
 
-    pub fn load_buffer<T: Scalar>(data: &mut [T], pool: &mut Pool, buffer_id: BufferId) -> Result<(), ZyxError> {
+    pub fn load_buffer<T: Scalar>(data: &mut [T], pool: &mut Pool, buffer_id: PoolBufferId) -> Result<(), ZyxError> {
         let byte_slice: &mut [u8] =
             unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size()) };
         for buffers in pool.events.keys() {
@@ -769,7 +769,7 @@ impl Runtime {
     }
 }
 
-pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_data: &mut Map<BufferId, Box<[u8]>>, buffer_map: &mut Map<TensorId, (u32, BufferId)>) {
+pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_data: &mut Map<PoolBufferId, Box<[u8]>>, buffer_map: &mut Map<TensorId, (u32, PoolBufferId)>) {
     for tensor_id in to_remove {
         if let Some((pool_id, buffer_id)) = buffer_map.remove(tensor_id) {
             let pool_id = pool_id as usize;

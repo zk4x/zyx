@@ -11,7 +11,7 @@ const VEC_COMPONENTS: [&str; 16] = [
     "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
 ];
 
-use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
+use super::{PoolBufferId, Device, DeviceInfo, Event, MemoryPool, Pool, DeviceProgramId};
 use crate::{
     DType, Map,
     dtype::Constant,
@@ -50,7 +50,7 @@ pub struct OpenCLMemoryPool {
     free_bytes: Dim,
     context: *mut c_void,
     queue: *mut c_void,
-    buffers: Slab<BufferId, OpenCLBuffer>,
+    buffers: Slab<PoolBufferId, OpenCLBuffer>,
     // Functions
     clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
     clReleaseCommandQueue: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
@@ -94,7 +94,7 @@ pub struct OpenCLDevice {
     context: *mut c_void,
     dev_info: DeviceInfo,
     memory_pool_id: u32,
-    programs: Slab<ProgramId, OpenCLProgram>,
+    programs: Slab<DeviceProgramId, OpenCLProgram>,
     queues: Vec<OpenCLQueue>,
     // Functions
     clGetProgramBuildInfo:
@@ -407,7 +407,7 @@ impl OpenCLMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure".into() });
         }
@@ -431,7 +431,7 @@ impl OpenCLMemoryPool {
         ))
     }
 
-    pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         /*println!(
             "Deallocate {:?} with events {event_wait_list:?}",
             self.buffers[buffer_id]
@@ -463,7 +463,7 @@ impl OpenCLMemoryPool {
         self.buffers.remove(buffer_id);
     }
 
-    pub fn host_to_pool(&mut self, src: &[u8], dst: BufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let dst = &self.buffers[dst];
         debug_assert_eq!(src.len(), dst.bytes);
         //println!("Storing {src:?} with len={} to {dst:?} with capacity={} bytes", src.len(), dst.bytes);
@@ -502,7 +502,7 @@ impl OpenCLMemoryPool {
         Ok(event)
     }
 
-    pub fn pool_to_host(&mut self, src: BufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let src = &self.buffers[src];
         //println!("OpenCL to host src: {src:?}, bytes {}", dst.len());
         debug_assert!(!src.buffer.is_null(), "Trying to read null memory. Internal bug.");
@@ -618,7 +618,7 @@ impl OpenCLDevice {
         self.memory_pool_id
     }
 
-    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
@@ -1095,9 +1095,9 @@ impl OpenCLDevice {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn launch(
         &mut self,
-        program_id: ProgramId,
+        program_id: DeviceProgramId,
         memory_pool: &mut OpenCLMemoryPool,
-        args: &[BufferId],
+        args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         memory_pool.sync_events(event_wait_list.clone())?;
@@ -1180,7 +1180,7 @@ impl OpenCLDevice {
         Ok(Event::OpenCL(OpenCLEvent { event }))
     }
 
-    pub fn release(&mut self, program_id: ProgramId) {
+    pub fn release(&mut self, program_id: DeviceProgramId) {
         //println!("Releasing {:?}", program_id);
         let _ = unsafe { (self.clReleaseProgram)(self.programs[program_id].program) }.check(ErrorStatus::Deinitialization);
         self.programs.remove(program_id);

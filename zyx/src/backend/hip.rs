@@ -8,14 +8,14 @@
 #![allow(unused)]
 
 use super::{Device, DeviceInfo, MemoryPool};
-use crate::DType;
-use crate::backend::{BufferId, Event, ProgramId};
+use crate::backend::{DeviceProgramId, Event, PoolBufferId};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Kernel;
 use crate::runtime::Pool;
 use crate::shape::Dim;
 use crate::slab::Slab;
+use crate::DType;
 use libloading::Library;
 use nanoserde::DeJson;
 use std::ffi::{c_char, c_int, c_uint, c_void};
@@ -34,7 +34,7 @@ pub struct HIPMemoryPool {
     context: HIPcontext,
     device: HIPdevice,
     free_bytes: usize,
-    buffers: Slab<BufferId, HIPBuffer>,
+    buffers: Slab<PoolBufferId, HIPBuffer>,
     stream: HIPstream,
     hipMemAlloc: unsafe extern "C" fn(*mut HIPdeviceptr, usize) -> HIPStatus,
     hipMemcpyHtoDAsync: unsafe extern "C" fn(HIPdeviceptr, *const c_void, usize, HIPstream) -> HIPStatus,
@@ -62,7 +62,7 @@ pub struct HIPDevice {
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
     streams: Vec<HIPStream>,
-    programs: Slab<ProgramId, HIPProgram>,
+    programs: Slab<DeviceProgramId, HIPProgram>,
     hipModuleLoadData: unsafe extern "C" fn(*mut HIPmodule, *const u8) -> HIPStatus,
     hipModuleGetFunction: unsafe extern "C" fn(*mut HIPfunction, HIPmodule, *const c_char) -> HIPStatus,
     hipModuleUnload: unsafe extern "C" fn(HIPmodule) -> HIPStatus,
@@ -302,7 +302,7 @@ impl HIPMemoryPool {
         self.free_bytes
     }
 
-    pub(super) fn allocate(&mut self, bytes: usize) -> Result<(BufferId, Event), BackendError> {
+    pub(super) fn allocate(&mut self, bytes: usize) -> Result<(PoolBufferId, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure".into() });
         }
@@ -320,7 +320,7 @@ impl HIPMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    pub(super) fn deallocate(&mut self, buffer_id: BufferId, mut event_wait_list: Vec<Event>) {
+    pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, mut event_wait_list: Vec<Event>) {
         while let Some(Event::HIP(HIPEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
                 unsafe { (self.hipStreamWaitEvent)(self.stream, event, 0) }
@@ -343,7 +343,7 @@ impl HIPMemoryPool {
     pub(super) fn host_to_pool(
         &mut self,
         src: &[u8],
-        dst: BufferId,
+        dst: PoolBufferId,
         mut event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         //unsafe { (self.hipMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check("Failed to copy memory from host to pool.")
@@ -366,7 +366,7 @@ impl HIPMemoryPool {
 
     pub(super) fn pool_to_host(
         &mut self,
-        src: BufferId,
+        src: PoolBufferId,
         dst: &mut [u8],
         mut event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
@@ -459,7 +459,7 @@ impl HIPDevice {
         unsafe { (self.hipStreamDestroy)(queue.stream) }.check("Failed to release HIP stream.")
     }*/
 
-    /*pub(super) fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+    /*pub(super) fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         #[repr(C)]
         #[derive(Debug)]
         struct _hiprtcProgram {
@@ -563,7 +563,7 @@ impl HIPDevice {
 
     #[allow(unused)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         /*let (gws, lws, name, ptx) = self.compile_hip(kernel, debug_asm)?;
         //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
 
@@ -609,9 +609,9 @@ impl HIPDevice {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn launch(
         &mut self,
-        program_id: ProgramId,
+        program_id: DeviceProgramId,
         memory_pool: &mut HIPMemoryPool,
-        args: &[BufferId],
+        args: &[PoolBufferId],
         mut event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let stream_id = self.next_stream()?;
@@ -663,7 +663,7 @@ impl HIPDevice {
         Ok(Event::HIP(HIPEvent { event }))
     }
 
-    pub fn release(&mut self, program_id: ProgramId) {
+    pub fn release(&mut self, program_id: DeviceProgramId) {
         let _ = unsafe { (self.hipModuleUnload)(self.programs[program_id].module) }.check(ErrorStatus::Deinitialization);
         self.programs.remove(program_id);
     }

@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, ProgramId, opencl::OpenCLEvent};
+use super::{opencl::OpenCLEvent, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId};
 use crate::{
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
@@ -20,7 +20,7 @@ pub struct DummyConfig {
 #[derive(Debug)]
 pub struct DummyMemoryPool {
     free_bytes: Dim,
-    buffers: Slab<BufferId, Dim>,
+    buffers: Slab<PoolBufferId, Dim>,
 }
 
 #[derive(Debug)]
@@ -71,7 +71,7 @@ impl DummyMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         if self.free_bytes > bytes {
             self.free_bytes -= bytes;
         } else {
@@ -82,7 +82,7 @@ impl DummyMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
         let bytes = self.buffers[buffer_id];
         self.buffers.remove(buffer_id);
@@ -92,7 +92,7 @@ impl DummyMemoryPool {
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn host_to_pool(&mut self, src: &[u8], dst: BufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let _ = self;
         let _ = src;
         let _ = dst;
@@ -105,7 +105,7 @@ impl DummyMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn pool_to_host(
         &mut self,
-        src: BufferId,
+        src: PoolBufferId,
         dst: &mut [u8],
         event_wait_list: Vec<super::Event>,
     ) -> Result<(), BackendError> {
@@ -155,15 +155,15 @@ impl DummyDevice {
 
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub const fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+    pub const fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let _ = self;
         let _ = kernel;
         let _ = debug_asm;
-        Ok(ProgramId::ZERO)
+        Ok(DeviceProgramId::ZERO)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub const fn release(&mut self, program_id: ProgramId) {
+    pub const fn release(&mut self, program_id: DeviceProgramId) {
         let _ = self;
         let _ = program_id;
     }
@@ -173,9 +173,9 @@ impl DummyDevice {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn launch(
         &mut self,
-        program_id: ProgramId,
+        program_id: DeviceProgramId,
         memory_pool: &mut DummyMemoryPool,
-        args: &[BufferId],
+        args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = self;

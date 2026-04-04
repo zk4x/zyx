@@ -36,21 +36,21 @@ mod vulkan;*/
 mod wgpu;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BufferId(u32);
+pub struct PoolBufferId(u32);
 
-impl From<usize> for BufferId {
+impl From<usize> for PoolBufferId {
     fn from(value: usize) -> Self {
-        BufferId(u32::try_from(value).unwrap())
+        PoolBufferId(u32::try_from(value).unwrap())
     }
 }
 
-impl From<BufferId> for usize {
-    fn from(value: BufferId) -> Self {
+impl From<PoolBufferId> for usize {
+    fn from(value: PoolBufferId) -> Self {
         value.0 as usize
     }
 }
 
-impl SlabId for BufferId {
+impl SlabId for PoolBufferId {
     const ZERO: Self = Self(0);
     const NULL: Self = Self(u32::MAX);
 
@@ -60,26 +60,122 @@ impl SlabId for BufferId {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, DeBin, SerBin)]
-pub struct ProgramId(u32);
+pub struct DeviceProgramId(u32);
 
-impl From<usize> for ProgramId {
+impl From<usize> for DeviceProgramId {
     fn from(value: usize) -> Self {
-        ProgramId(u32::try_from(value).unwrap())
+        DeviceProgramId(u32::try_from(value).unwrap())
     }
 }
 
-impl From<ProgramId> for usize {
-    fn from(value: ProgramId) -> Self {
+impl From<DeviceProgramId> for usize {
+    fn from(value: DeviceProgramId) -> Self {
         value.0 as usize
     }
 }
 
-impl SlabId for ProgramId {
+impl SlabId for DeviceProgramId {
     const ZERO: Self = Self(0);
     const NULL: Self = Self(u32::MAX);
 
     fn inc(&mut self) {
         self.0 += 1;
+    }
+}
+
+/// Pool identifier for use with Slab<PoolId, Pool>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PoolId(u32);
+
+impl From<usize> for PoolId {
+    fn from(value: usize) -> Self {
+        PoolId(u32::try_from(value).unwrap())
+    }
+}
+
+impl From<PoolId> for usize {
+    fn from(value: PoolId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl SlabId for PoolId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+/// Device identifier for use with Slab<DeviceId, Device>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceId(u32);
+
+impl From<usize> for DeviceId {
+    fn from(value: usize) -> Self {
+        DeviceId(u32::try_from(value).unwrap())
+    }
+}
+
+impl From<DeviceId> for usize {
+    fn from(value: DeviceId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl SlabId for DeviceId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+/// Globally unique buffer identifier
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BufferId {
+    pub pool: PoolId,
+    pub buffer: PoolBufferId,
+}
+
+impl BufferId {
+    pub const NULL: Self = Self { pool: PoolId::NULL, buffer: PoolBufferId(u32::MAX) };
+}
+
+impl From<usize> for BufferId {
+    fn from(value: usize) -> Self {
+        BufferId { pool: PoolId::ZERO, buffer: PoolBufferId(u32::try_from(value).unwrap()) }
+    }
+}
+
+impl From<BufferId> for usize {
+    fn from(value: BufferId) -> Self {
+        value.buffer.0 as usize
+    }
+}
+
+/// Globally unique program identifier
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProgramId {
+    pub device: DeviceId,
+    pub program: DeviceProgramId,
+}
+
+impl ProgramId {
+    pub const NULL: Self = Self { device: DeviceId::NULL, program: DeviceProgramId(u32::MAX) };
+}
+
+impl From<usize> for ProgramId {
+    fn from(value: usize) -> Self {
+        ProgramId { device: DeviceId::ZERO, program: DeviceProgramId(u32::try_from(value).unwrap()) }
+    }
+}
+
+impl From<ProgramId> for usize {
+    fn from(value: ProgramId) -> Self {
+        value.program.0 as usize
     }
 }
 
@@ -275,7 +371,7 @@ impl MemoryPool {
         }
     }
 
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         match self {
             MemoryPool::Dummy(pool) => pool.allocate(bytes),
             MemoryPool::Disk(_) => todo!(),
@@ -288,7 +384,7 @@ impl MemoryPool {
     }
 
     // Deallocate drops events without synchronization
-    pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         match self {
             MemoryPool::Dummy(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::Disk(pool) => pool.deallocate(buffer_id, event_wait_list),
@@ -305,7 +401,7 @@ impl MemoryPool {
     pub fn host_to_pool(
         &mut self,
         src: &[u8], // TODO this will likely have to be Vec<u8> for better lifetimes handling and less synchronization
-        dst: BufferId,
+        dst: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {
@@ -320,7 +416,7 @@ impl MemoryPool {
     }
 
     /// Pool to host is blocking operation, synchronizes events and drops them
-    pub fn pool_to_host(&mut self, src: BufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         match self {
             MemoryPool::Dummy(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::Disk(pool) => pool.pool_to_host(src, dst, event_wait_list),
@@ -419,7 +515,7 @@ impl Device {
         }
     }
 
-    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         match self {
             Device::Dummy(dev) => dev.compile(kernel, debug_asm),
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
@@ -430,7 +526,7 @@ impl Device {
         }
     }
 
-    pub fn release(&mut self, program_id: ProgramId) {
+    pub fn release(&mut self, program_id: DeviceProgramId) {
         match self {
             Device::Dummy(dev) => dev.release(program_id),
             Device::CUDA(dev) => dev.release(program_id),
@@ -443,9 +539,9 @@ impl Device {
 
     pub fn launch(
         &mut self,
-        program_id: ProgramId,
+        program_id: DeviceProgramId,
         memory_pool: &mut MemoryPool,
-        args: &[BufferId],
+        args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {

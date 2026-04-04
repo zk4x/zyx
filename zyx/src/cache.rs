@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::{
-    Map,
-    backend::{Device, DeviceInfo, ProgramId},
-    kernel::{Kernel, autotune::OptSeq},
+    backend::{Device, DeviceInfo, DeviceProgramId},
+    kernel::{autotune::OptSeq, Kernel},
     //optimizer::{self, Optimizer},
+    Map,
 };
 use nanoserde::{DeBin, SerBin};
 use std::hash::BuildHasherDefault;
@@ -26,7 +26,7 @@ pub struct Cache {
     // Finished optimizations of kernels for given devices
     pub optimizations: Map<(KernelId, DeviceInfoId), OptSeq>,
     // This last one is not stored to disk
-    pub programs: Map<(KernelId, DeviceId), ProgramId>,
+    pub programs: Map<(KernelId, DeviceId), DeviceProgramId>,
 }
 
 impl SerBin for Cache {

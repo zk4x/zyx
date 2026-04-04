@@ -38,7 +38,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{BufferId, Device, DeviceInfo, Event, MemoryPool, Pool, ProgramId};
+use super::{PoolPoolBufferId, Device, DeviceInfo, Event, MemoryPool, Pool, DeviceDeviceProgramId};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -94,21 +94,21 @@ unsafe impl Send for CUDAEvent {}
 enum CUDACommand {
     Allocate {
         bytes: usize,
-        reply: Sender<Result<(BufferId, Event), BackendError>>,
+        reply: Sender<Result<(PoolBufferId, Event), BackendError>>,
     },
     Deallocate {
-        buffer_id: BufferId,
+        buffer_id: PoolBufferId,
         events: Vec<Event>,
     },
     HostToPool {
         src: *const u8,
         bytes: usize,
-        dst: BufferId,
+        dst: PoolBufferId,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<Event, BackendError>>,
     },
     PoolToHost {
-        src: BufferId,
+        src: PoolBufferId,
         dst: *mut u8,
         bytes: usize,
         event_wait_list: Vec<Event>,
@@ -119,11 +119,11 @@ enum CUDACommand {
         lws: Vec<Dim>,
         name: Box<str>,
         ptx: Vec<u8>,
-        reply: Sender<Result<ProgramId, BackendError>>,
+        reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
     Launch {
-        program_id: ProgramId,
-        args: Vec<BufferId>,
+        program_id: DeviceProgramId,
+        args: Vec<PoolBufferId>,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<Event, BackendError>>,
     },
@@ -132,7 +132,7 @@ enum CUDACommand {
         reply: Sender<Result<(), BackendError>>,
     },
     ReleaseProgram {
-        program_id: ProgramId,
+        program_id: DeviceProgramId,
     },
     ReleaseEvents {
         events: Vec<Event>,
@@ -324,8 +324,8 @@ pub(super) fn initialize_device(
                 streams.push(CUDAStream { stream, load: 0 });
             }
 
-            let mut buffers: Slab<BufferId, CUDABuffer> = Slab::new();
-            let mut programs: Slab<ProgramId, CUDAProgram> = Slab::new();
+            let mut buffers: Slab<PoolBufferId, CUDABuffer> = Slab::new();
+            let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
 
             // Worker loop
             'work_thread_loop: while let Ok(cmd) = rx.recv() {
@@ -656,7 +656,7 @@ impl CUDAMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn allocate(&mut self, bytes: Dim) -> Result<(BufferId, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure.".into() });
         }
@@ -666,7 +666,7 @@ impl CUDAMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn deallocate(&mut self, buffer_id: BufferId, events: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: PoolBufferId, events: Vec<Event>) {
         self.tx.send(CUDACommand::Deallocate { buffer_id, events }).unwrap();
     }
 
@@ -674,7 +674,7 @@ impl CUDAMemoryPool {
     pub fn host_to_pool(
         &mut self,
         src: &[u8],
-        dst: BufferId,
+        dst: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
@@ -687,7 +687,7 @@ impl CUDAMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn pool_to_host(
         &mut self,
-        src: BufferId,
+        src: PoolBufferId,
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
@@ -730,7 +730,7 @@ impl CUDADevice {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
         let (ptx, name, gws, lws) =
@@ -744,9 +744,9 @@ impl CUDADevice {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn launch(
         &mut self,
-        program_id: ProgramId,
+        program_id: DeviceProgramId,
         _memory_pool: &mut CUDAMemoryPool,
-        args: &[BufferId],
+        args: &[PoolBufferId],
         // If sync is empty, kernel will be immediatelly synchronized
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
@@ -756,7 +756,7 @@ impl CUDADevice {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn release(&mut self, program_id: ProgramId) {
+    pub fn release(&mut self, program_id: DeviceProgramId) {
         self.tx.send(CUDACommand::ReleaseProgram { program_id }).unwrap();
     }
 }

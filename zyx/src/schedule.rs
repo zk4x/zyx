@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::{
-    backend::{BufferId, Device},
+    backend::{PoolBufferId, Device},
     graph::Graph,
     runtime::Pool,
     shape::Dim,
@@ -17,8 +17,8 @@ pub fn schedule(
     graph: &Graph,
     devices: &[Device],
     pools: &mut [Pool],
-    buffer_map: &mut Map<TensorId, (u32, BufferId)>,
-) -> Result<(usize, usize, Vec<crate::backend::Event>, BTreeSet<BufferId>, Vec<BufferId>), ZyxError> {
+    buffer_map: &mut Map<TensorId, (u32, PoolBufferId)>,
+) -> Result<(usize, usize, Vec<crate::backend::Event>, BTreeSet<PoolBufferId>, Vec<PoolBufferId>), ZyxError> {
     let required_stores_memory: Dim = stores
         .iter()
         .map(|&tid| graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim)

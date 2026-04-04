@@ -3,20 +3,20 @@
 
 use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
 use crate::{
-    DType, Map,
-    backend::{BufferId, ProgramId},
+    backend::{DeviceDeviceProgramId, PoolPoolBufferId},
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope, UOp},
+    kernel::{BOp, Kernel, Op, OpId, Scope, UOp, IDX_T},
     runtime::Pool,
     shape::Dim,
     slab::Slab,
+    DType, Map,
 };
 use nanoserde::DeJson;
 use pollster::FutureExt;
 use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc, time::Duration};
 use wgpu::{
-    BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource, SubmissionIndex,
-    wgt::PollType,
+    wgt::PollType, BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource,
+    SubmissionIndex,
 };
 
 #[derive(DeJson, Debug)]
@@ -35,7 +35,7 @@ pub struct WGPUMemoryPool {
     free_bytes: usize,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    buffers: Slab<BufferId, wgpu::Buffer>,
+    buffers: Slab<PoolBufferId, wgpu::Buffer>,
 }
 
 #[derive(Debug)]
@@ -45,7 +45,7 @@ pub struct WGPUDevice {
     device: Arc<wgpu::Device>,
     #[allow(unused)]
     adapter: wgpu::Adapter,
-    programs: Slab<ProgramId, WGPUProgram>,
+    programs: Slab<DeviceProgramId, WGPUProgram>,
     queue: Arc<wgpu::Queue>,
 }
 
@@ -157,7 +157,7 @@ impl WGPUMemoryPool {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: usize) -> Result<(BufferId, Event), BackendError> {
+    pub fn allocate(&mut self, bytes: usize) -> Result<(PoolBufferId, Event), BackendError> {
         const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
         let bytes = (bytes + ALIGN - 1) / ALIGN * ALIGN;
         if bytes > self.free_bytes {
@@ -176,7 +176,7 @@ impl WGPUMemoryPool {
         Ok((id, event))
     }
 
-    pub fn deallocate(&mut self, buffer_id: BufferId, event_wait_list: Vec<Event>) {
+    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let _ = event_wait_list;
         let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
         buffer.destroy();
@@ -185,7 +185,7 @@ impl WGPUMemoryPool {
     /*pub fn host_to_pool(
         &mut self,
         src: &[u8],
-        dst: BufferId,
+        dst: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<super::Event, BackendError> {
         let _ = event_wait_list;
@@ -196,7 +196,12 @@ impl WGPUMemoryPool {
         self.queue.submit(Some(encoder.finish()));
         Ok(Event::WGPU(WGPUEvent { submission_index: None }))
     }*/
-    pub fn host_to_pool(&mut self, src: &[u8], dst: BufferId, event_wait_list: Vec<Event>) -> Result<super::Event, BackendError> {
+    pub fn host_to_pool(
+        &mut self,
+        src: &[u8],
+        dst: PoolBufferId,
+        event_wait_list: Vec<Event>,
+    ) -> Result<super::Event, BackendError> {
         let _ = event_wait_list;
         let dst = &self.buffers[dst];
 
@@ -239,7 +244,7 @@ impl WGPUMemoryPool {
 
     /*pub fn pool_to_host(
         &mut self,
-        src: BufferId,
+        src: PoolBufferId,
         dst: &mut [u8],
         event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
@@ -258,7 +263,7 @@ impl WGPUMemoryPool {
         Ok(())
     }*/
 
-    pub fn pool_to_host(&mut self, src: BufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let _ = event_wait_list; // You can eventually use events if needed
 
         // Get the source buffer
@@ -352,7 +357,7 @@ impl WGPUDevice {
         self.dev_info.compute
     }
 
-    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<ProgramId, BackendError> {
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let mut gws = Vec::new();
         let mut lws = Vec::new();
         let mut op_id = kernel.head;
@@ -605,15 +610,15 @@ impl WGPUDevice {
         Ok(id)
     }
 
-    pub fn release(&mut self, program_id: ProgramId) {
+    pub fn release(&mut self, program_id: DeviceProgramId) {
         self.programs.remove(program_id);
     }
 
     pub fn launch(
         &mut self,
-        program_id: ProgramId,
+        program_id: DeviceProgramId,
         memory_pool: &mut WGPUMemoryPool,
-        args: &[BufferId],
+        args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let _ = event_wait_list;

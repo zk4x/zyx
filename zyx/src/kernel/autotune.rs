@@ -1,4 +1,4 @@
-use crate::backend::{AutotuneConfig, BufferId, Device, DeviceInfo, MemoryPool, ProgramId};
+use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
 use crate::error::BackendError;
 use crate::kernel::{Kernel, Op, OpId, Scope};
 use crate::rng::Rng;
@@ -7,7 +7,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
@@ -179,7 +179,7 @@ impl Kernel {
     #[allow(unused)]
     pub fn apply_selected_optimizations(
         &self,
-        buffers: &[BufferId],
+        buffers: &[PoolBufferId],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         config: &AutotuneConfig,
@@ -187,7 +187,7 @@ impl Kernel {
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
-    ) -> (ProgramId, OptSeq) {
+    ) -> (DeviceProgramId, OptSeq) {
         //eprintln!("=== autotune_debug called ===");
         let mut kernel = self.clone();
         //println!("Before associate_commutative:");
@@ -223,7 +223,7 @@ impl Kernel {
     /// Release mode autotune with beam like search and multithreading
     pub fn autotune(
         &self,
-        buffers: &[BufferId],
+        buffers: &[PoolBufferId],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         config: &AutotuneConfig,
@@ -231,7 +231,7 @@ impl Kernel {
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
-    ) -> (ProgramId, OptSeq) {
+    ) -> (DeviceProgramId, OptSeq) {
         if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
@@ -349,7 +349,7 @@ impl Kernel {
 
         let mut launched_kernels = Set::default();
         let mut best_time = u64::MAX;
-        let mut best_program = ProgramId::NULL;
+        let mut best_program = DeviceProgramId::NULL;
         let mut best_opt_seq = OptSeq { opts: Vec::new(), cost: Cost::default() };
         let mut i = n_launches;
         while i > 0 {
@@ -503,14 +503,14 @@ impl Kernel {
 
     pub fn launch_with_timings(
         &self,
-        buffers: &[BufferId],
+        buffers: &[PoolBufferId],
         device: &mut Device,
         memory_pool: &mut MemoryPool,
         debug: DebugMask,
         flops: u64,
         bytes_read: u64,
         bytes_written: u64,
-    ) -> Result<(ProgramId, u64), BackendError> {
+    ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
         let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
