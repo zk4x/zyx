@@ -108,6 +108,12 @@ impl SlabId for PoolId {
     }
 }
 
+impl std::ops::AddAssign<u32> for PoolId {
+    fn add_assign(&mut self, rhs: u32) {
+        self.0 += rhs;
+    }
+}
+
 /// Device identifier for use with Slab<DeviceId, Device>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, DeBin, SerBin)]
 pub struct DeviceId(pub u32);
@@ -490,7 +496,7 @@ impl Device {
         }
     }
 
-    pub const fn memory_pool_id(&self) -> u32 {
+    pub const fn memory_pool_id(&self) -> PoolId {
         match self {
             Device::Dummy(dev) => dev.memory_pool_id(),
             Device::CUDA(dev) => dev.memory_pool_id(),

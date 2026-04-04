@@ -58,7 +58,7 @@ pub(super) struct HIPBuffer {
 #[derive(Debug)]
 pub struct HIPDevice {
     device: HIPdevice,
-    memory_pool_id: u32,
+    memory_pool_id: PoolId,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
     streams: Vec<HIPStream>,
@@ -273,7 +273,7 @@ pub(super) fn initialize_device(
             },
             streams,
             programs: Slab::new(),
-            memory_pool_id: usize::from(memory_pools.len()) as u32 - 1,
+            memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             hipModuleLoadData,
             hipModuleGetFunction,
             hipModuleUnload,
@@ -445,7 +445,7 @@ impl HIPDevice {
     }
 
     // Memory pool id out of OpenCLMemoryPools
-    pub(super) const fn memory_pool_id(&self) -> u32 {
+    pub(super) const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
 

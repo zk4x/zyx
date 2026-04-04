@@ -10,6 +10,10 @@ impl Kernel {
         (Optimization::Licm, 1)
     }
 
+    pub fn opt_reassociate_commutative(&self) -> (Optimization, usize) {
+        (Optimization::ReassociateCommutative, 1)
+    }
+
     pub fn swap_commutative(&mut self) {
         // Tracks whether a value depends on a loop index
         let mut loop_dep: Map<OpId, usize> = Map::default();

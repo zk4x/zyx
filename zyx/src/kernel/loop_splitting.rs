@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use super::autotune::Optimization;
-use crate::kernel::{Kernel, Op, Scope};
+use crate::{
+    dtype::Constant,
+    kernel::{BOp, Kernel, Op, OpId, Scope},
+};
 
 impl Kernel {
     pub fn opt_split_global_to_local(&self) -> (Optimization, usize) {
@@ -49,5 +52,68 @@ impl Kernel {
         }
         let n_configs = factors.len();
         (Optimization::SplitLoop { factors }, n_configs)
+    }
+
+    /// Splits dim (index or loop) into multiple indices or loops
+    /// Returns the OpIds of the created split operations in the order they were provided
+    pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) -> Vec<OpId> {
+        let is_loop = matches!(self.ops[dim_id].op, Op::Loop { .. });
+
+        #[cfg(debug_assertions)]
+        {
+            let mut dim = 1;
+            for op in splits.iter() {
+                match op {
+                    Op::Loop { len, .. } | Op::Index { len, .. } => dim *= len,
+                    _ => unreachable!("split can be only index or loop"),
+                }
+            }
+            match self.ops[dim_id].op {
+                Op::Index { len, .. } | Op::Loop { len, .. } => debug_assert_eq!(len, dim),
+                _ => {}
+            }
+        }
+
+        let last_dim_op = self.get_last_dim_op(dim_id);
+        let n_loops = splits.iter().filter(|op| matches!(op, Op::Loop { .. })).count();
+        for (i, op) in splits.iter().enumerate() {
+            if matches!(op, Op::Loop { .. }) {
+                if is_loop && i == n_loops - 1 {
+                } else {
+                    self.insert_after(last_dim_op, Op::EndLoop);
+                }
+            }
+        }
+
+        let mut strides = Vec::new();
+        let mut st = 1;
+        for op in splits.iter().rev() {
+            strides.push(st);
+            match op {
+                Op::Loop { len, .. } | Op::Index { len, .. } => st *= len,
+                _ => unreachable!(),
+            }
+        }
+        strides.reverse();
+        strides.pop();
+        let last_op = splits.pop().unwrap();
+
+        let mut split_ids: Vec<OpId> = Vec::new();
+        let mut acc = self.insert_before(dim_id, Op::Const(Constant::idx(0)));
+        for (&st, op) in strides.iter().zip(splits) {
+            let x = self.insert_before(dim_id, Op::Const(Constant::idx(st as u64)));
+            let y = self.insert_before(dim_id, op);
+            acc = self.insert_before(dim_id, Op::Mad { x, y, z: acc });
+            split_ids.push(y);
+        }
+
+        let y = self.insert_before(dim_id, last_op);
+        split_ids.push(y);
+        self.ops[dim_id].op = Op::Binary { x: acc, y, bop: BOp::Add };
+
+        split_ids.reverse();
+
+        self.verify();
+        split_ids
     }
 }

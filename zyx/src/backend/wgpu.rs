@@ -41,7 +41,7 @@ pub struct WGPUMemoryPool {
 #[derive(Debug)]
 pub struct WGPUDevice {
     dev_info: DeviceInfo,
-    memory_pool_id: u32,
+    memory_pool_id: PoolId,
     device: Arc<wgpu::Device>,
     #[allow(unused)]
     adapter: wgpu::Adapter,
@@ -142,7 +142,7 @@ pub(super) fn initialize_device(
             tensor_cores: false,
             warp_size: 32,
         },
-        memory_pool_id: (usize::from(memory_pools.len()) - 1) as u32,
+        memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         programs: Slab::new(),
         queue: queue.clone(),
     }));
@@ -349,7 +349,7 @@ impl WGPUDevice {
         &self.dev_info
     }
 
-    pub const fn memory_pool_id(&self) -> u32 {
+    pub const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
 

@@ -93,7 +93,7 @@ pub struct OpenCLDevice {
     ptr: *mut c_void,
     context: *mut c_void,
     dev_info: DeviceInfo,
-    memory_pool_id: u32,
+    memory_pool_id: PoolId,
     programs: Slab<DeviceProgramId, OpenCLProgram>,
     queues: Vec<OpenCLQueue>,
     // Functions
@@ -249,7 +249,7 @@ pub(super) fn initialize_device(
             Vec::new()
         }
     };
-    let mut memory_pool_id = usize::from(memory_pools.len()) as u32;
+    let mut memory_pool_id = PoolId::from(usize::from(memory_pools.len()));
     for (platform_id, platform) in platform_ids
         .iter()
         .enumerate()
@@ -614,7 +614,7 @@ impl OpenCLDevice {
         &self.dev_info
     }
 
-    pub const fn memory_pool_id(&self) -> u32 {
+    pub const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
 

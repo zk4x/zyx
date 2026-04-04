@@ -26,7 +26,7 @@ pub struct DummyMemoryPool {
 #[derive(Debug)]
 pub struct DummyDevice {
     device_info: DeviceInfo,
-    memory_pool_id: u32,
+    memory_pool_id: PoolId,
 }
 
 pub(super) fn initialize_device(
@@ -55,7 +55,7 @@ pub(super) fn initialize_device(
             tensor_cores: true,
             warp_size: 32,
         },
-        memory_pool_id: (usize::from(memory_pools.len()) - 1) as u32,
+        memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
     }));
     Ok(())
 }
@@ -145,7 +145,7 @@ impl DummyDevice {
         &self.device_info
     }
 
-    pub const fn memory_pool_id(&self) -> u32 {
+    pub const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
 

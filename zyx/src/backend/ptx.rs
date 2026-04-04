@@ -64,7 +64,7 @@ pub(super) struct CUDABuffer {
 pub struct CUDADevice {
     tx: Sender<CUDACommand>,
     device: CUdevice,
-    memory_pool_id: u32,
+    memory_pool_id: PoolId,
     dev_info: DeviceInfo,
     compute_capability: [c_int; 2],
 }
@@ -587,7 +587,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major > 7,
             },
-            memory_pool_id: usize::from(memory_pools.len()) as u32 - 1,
+            memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
         };
         dev.dev_info = DeviceInfo {
@@ -721,7 +721,7 @@ impl CUDADevice {
         &self.dev_info
     }
 
-    pub const fn memory_pool_id(&self) -> u32 {
+    pub const fn memory_pool_id(&self) -> PoolId {
         self.memory_pool_id
     }
 

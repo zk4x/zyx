@@ -21,9 +21,8 @@ mod fuse;
 mod licm;
 mod loop_splitting;
 mod mma;
-mod reassociate;
+mod merge_loops;
 mod register_tiling;
-mod sm_loops;
 mod tiled_reduce;
 mod unfold;
 mod unroll_loops;
@@ -981,6 +980,18 @@ impl Kernel {
         }
 
         self.verify();
+    }
+
+    pub fn get_global_indices(&self) -> std::collections::BTreeMap<u32, OpId> {
+        let mut indices = std::collections::BTreeMap::new();
+        for (op_id, op_node) in self.ops.iter() {
+            if let Op::Index { scope, axis, .. } = op_node.op {
+                if scope == Scope::Global {
+                    indices.insert(axis, op_id);
+                }
+            }
+        }
+        indices
     }
 }
 

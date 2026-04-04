@@ -38,7 +38,7 @@ pub fn schedule(
     dev_ids.reverse();
     let mut device_id = None;
     for dev_id in dev_ids {
-        let pool_id = PoolId::from(devices[dev_id].memory_pool_id() as usize);
+        let pool_id = devices[dev_id].memory_pool_id();
         let free_memory = pools[pool_id].pool.free_bytes();
         let missing_loads_memory = loads
             .iter()
@@ -61,7 +61,7 @@ pub fn schedule(
             format!("no device has enough memory to store {required_stores_memory} B for intermedite tensors.").into(),
         ));
     };
-    let pool_id = PoolId::from(devices[dev_id].memory_pool_id() as usize);
+    let pool_id = devices[dev_id].memory_pool_id();
 
     let mut event_wait_list = Vec::new();
     for &tid in loads {

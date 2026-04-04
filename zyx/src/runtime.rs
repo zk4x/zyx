@@ -335,7 +335,7 @@ impl Runtime {
         let mut memory_pool_id = mem_pools[0];
         let mut max_compute = 0;
         for (_id, dev) in self.devices.iter() {
-            let mpid = PoolId::from(dev.memory_pool_id() as usize);
+            let mpid = dev.memory_pool_id();
             if dev.free_compute() > max_compute && mem_pools.contains(&mpid) {
                 max_compute = dev.free_compute();
                 memory_pool_id = mpid;
