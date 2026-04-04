@@ -4,17 +4,17 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Device},
     cache::Cache,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
-    runtime::{Pool, Runtime, deallocate_tensors},
+    runtime::{deallocate_tensors, Pool, Runtime},
     schedule::schedule,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
+    DType, DebugMask, Map, Set, ZyxError,
 };
 use std::{collections::BTreeMap, hash::BuildHasherDefault};
 
@@ -860,7 +860,7 @@ impl Runtime {
             );
         }
 
-        self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
@@ -954,7 +954,7 @@ impl Runtime {
             );
         }
 
-        self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
