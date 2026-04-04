@@ -1,9 +1,9 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use super::{BackendError, Device, DeviceInfo, ErrorStatus, Event, MemoryPool};
+use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, PoolId};
 use crate::{
-    backend::{DeviceDeviceProgramId, PoolPoolBufferId},
+    backend::{DeviceProgramId, PoolBufferId},
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope, UOp, IDX_T},
     runtime::Pool,
@@ -65,8 +65,8 @@ pub(super) struct WGPUProgram {
 
 pub(super) fn initialize_device(
     config: &WGPUConfig,
-    memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Device>,
+    memory_pools: &mut Slab<PoolId, Pool>,
+    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
@@ -142,7 +142,7 @@ pub(super) fn initialize_device(
             tensor_cores: false,
             warp_size: 32,
         },
-        memory_pool_id: (memory_pools.len() - 1).try_into().unwrap(),
+        memory_pool_id: (usize::from(memory_pools.len()) - 1) as u32,
         programs: Slab::new(),
         queue: queue.clone(),
     }));

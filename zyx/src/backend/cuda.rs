@@ -28,7 +28,7 @@ use crate::{
     error::{BackendError, ErrorStatus},
     kernel::{BOp, Kernel, MMADType, MMADims, Op, OpId, Scope, UOp},
     shape::Dim,
-    slab::Slab,
+    slab::{Slab, SlabId},
 };
 
 macro_rules! send_or_continue {
@@ -43,7 +43,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{PoolBufferId, Device, DeviceInfo, Event, MemoryPool, Pool, DeviceProgramId};
+use super::{PoolBufferId, Device, DeviceId, DeviceInfo, Event, MemoryPool, Pool, DeviceProgramId, PoolId};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -149,8 +149,8 @@ unsafe impl Send for CUDACommand {}
 
 pub(super) fn initialize_device(
     config: &CUDAConfig,
-    memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Device>,
+    memory_pools: &mut Slab<PoolId, Pool>,
+    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if let Some(device_ids) = &config.device_ids
@@ -611,7 +611,7 @@ pub(super) fn initialize_device(
                 tensor_cores: major > 7,
                 warp_size: 32,
             },
-            memory_pool_id: u32::try_from(memory_pools.len()).expect("You've got more than u32::MAX memory pools?") - 1,
+            memory_pool_id: usize::from(memory_pools.len()) as u32 - 1,
             compute_capability: [major, minor],
             include_path: include_path.clone(),
         };

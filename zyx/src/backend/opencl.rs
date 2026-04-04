@@ -11,7 +11,7 @@ const VEC_COMPONENTS: [&str; 16] = [
     "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
 ];
 
-use super::{PoolBufferId, Device, DeviceInfo, Event, MemoryPool, Pool, DeviceProgramId};
+use super::{PoolBufferId, Device, DeviceId, DeviceInfo, Event, MemoryPool, Pool, DeviceProgramId, PoolId};
 use crate::{
     DType, Map,
     dtype::Constant,
@@ -165,8 +165,8 @@ unsafe impl Send for OpenCLEvent {}
 
 pub(super) fn initialize_device(
     config: &OpenCLConfig,
-    memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Device>,
+    memory_pools: &mut Slab<PoolId, Pool>,
+    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if let Some(device_ids) = &config.platform_ids
@@ -249,7 +249,7 @@ pub(super) fn initialize_device(
             Vec::new()
         }
     };
-    let mut memory_pool_id = u32::try_from(memory_pools.len()).expect("So many memory pools...");
+    let mut memory_pool_id = usize::from(memory_pools.len()) as u32;
     for (platform_id, platform) in platform_ids
         .iter()
         .enumerate()

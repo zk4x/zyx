@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::{
-    backend::{Device, DeviceInfo, DeviceProgramId},
+    backend::{Device, DeviceId, DeviceInfo, DeviceProgramId},
     kernel::{autotune::OptSeq, Kernel},
     //optimizer::{self, Optimizer},
     Map,
@@ -12,9 +12,6 @@ use std::hash::BuildHasherDefault;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
 pub struct DeviceInfoId(u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
-pub struct DeviceId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
 pub struct KernelId(u32);

@@ -15,7 +15,7 @@ use crate::{
     kernel::Kernel,
     runtime::Pool,
     shape::Dim,
-    slab::SlabId,
+    slab::{Slab, SlabId},
 };
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
@@ -109,8 +109,8 @@ impl SlabId for PoolId {
 }
 
 /// Device identifier for use with Slab<DeviceId, Device>
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DeviceId(u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, DeBin, SerBin)]
+pub struct DeviceId(pub u32);
 
 impl From<usize> for DeviceId {
     fn from(value: usize) -> Self {
@@ -187,8 +187,8 @@ impl From<libloading::Error> for BackendError {
 
 pub fn initialize_backends(
     device_config: &Config,
-    memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Device>,
+    memory_pools: &mut Slab<PoolId, Pool>,
+    devices: &mut Slab<DeviceId, Device>,
     debug_backends: bool,
 ) -> Result<(), BackendError> {
     if let Err(err) = disk::initialize_pool(memory_pools, debug_backends) {

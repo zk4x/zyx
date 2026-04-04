@@ -7,12 +7,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{PoolBufferId, Event, MemoryPool};
+use super::{Event, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     error::{BackendError, ErrorStatus},
     runtime::Pool,
     shape::Dim,
-    slab::Slab,
+    slab::{Slab, SlabId},
 };
 
 #[derive(Debug)]
@@ -32,7 +32,7 @@ struct DiskBuffer {
 pub struct DiskEvent {}
 
 #[allow(clippy::unnecessary_wraps)]
-pub(super) fn initialize_pool(memory_pools: &mut Vec<Pool>, debug_dev: bool) -> Result<(), BackendError> {
+pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, Pool>, debug_dev: bool) -> Result<(), BackendError> {
     if debug_dev {
         println!("Using disk backend");
     }

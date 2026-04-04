@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use super::{opencl::OpenCLEvent, Device, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId};
+use super::{opencl::OpenCLEvent, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
@@ -31,8 +31,8 @@ pub struct DummyDevice {
 
 pub(super) fn initialize_device(
     config: &DummyConfig,
-    memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Device>,
+    memory_pools: &mut Slab<PoolId, Pool>,
+    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
@@ -55,7 +55,7 @@ pub(super) fn initialize_device(
             tensor_cores: true,
             warp_size: 32,
         },
-        memory_pool_id: (memory_pools.len() - 1) as u32,
+        memory_pool_id: (usize::from(memory_pools.len()) - 1) as u32,
     }));
     Ok(())
 }

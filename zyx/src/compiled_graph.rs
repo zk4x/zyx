@@ -4,8 +4,7 @@
 //! Compiled graph caching layer.
 
 use crate::{
-    backend::{BufferId, ProgramId},
-    cache::DeviceId,
+    backend::{BufferId, DeviceId, ProgramId},
     graph::Node,
     kernel::{Kernel, MoveOp, Op, OpId, OpNode},
     kernelize::KMKernelId,

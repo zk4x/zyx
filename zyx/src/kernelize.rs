@@ -4,7 +4,7 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
-    backend::{AutotuneConfig, BufferId, Device},
+    backend::{AutotuneConfig, BufferId, Device, DeviceId, PoolId},
     cache::Cache,
     dtype::Constant,
     graph::{Graph, Node},
@@ -54,10 +54,10 @@ struct Kernelizer<'a> {
     visited: Map<TensorId, (KMKernelId, OpId)>,
     rcs: Map<TensorId, u32>,
     graph: &'a Graph,
-    pools: &'a mut [Pool],
+    pools: &'a mut Slab<PoolId, Pool>,
     temp_data: &'a mut Map<BufferId, Box<[u8]>>,
     buffer_map: &'a mut Map<TensorId, BufferId>,
-    devices: &'a mut [Device],
+    devices: &'a mut Slab<DeviceId, Device>,
     cache: &'a mut Cache,
     autotune_config: &'a AutotuneConfig,
     debug: DebugMask,
@@ -69,10 +69,10 @@ impl<'a> Kernelizer<'a> {
         to_eval: &'a Set<TensorId>,
         rcs: Map<TensorId, u32>,
         graph: &'a Graph,
-        pools: &'a mut [Pool],
+        pools: &'a mut Slab<PoolId, Pool>,
         temp_data: &'a mut Map<BufferId, Box<[u8]>>,
         buffer_map: &'a mut Map<TensorId, BufferId>,
-        devices: &'a mut [Device],
+        devices: &'a mut Slab<DeviceId, Device>,
         cache: &'a mut Cache,
         search_config: &'a AutotuneConfig,
         debug: DebugMask,
@@ -565,7 +565,7 @@ impl<'a> Kernelizer<'a> {
         debug_assert!(!kernel.ops.is_empty());
 
         //let time_w = std::time::Instant::now();
-        let (dev_id, mpid, event_wait_list, output_buffers, args) = schedule(
+        let (dev_id, pool_id, event_wait_list, output_buffers, args) = schedule(
             &kernel.loads,
             &kernel.stores,
             self.graph,
@@ -577,8 +577,8 @@ impl<'a> Kernelizer<'a> {
         /***** CACHE and OPTIMIZATION SEARCH *****/
 
         let device = &mut self.devices[dev_id];
-        let dev_id = crate::cache::DeviceId(dev_id as u32);
-        let pool = &mut self.pools[mpid];
+        // ...
+        let pool = &mut self.pools[pool_id];
 
         let dev_info_id = self.cache.get_or_add_dev_info(device.info());
 
@@ -587,10 +587,10 @@ impl<'a> Kernelizer<'a> {
             // If it has been compiled for the device
             if let Some(&program_id) = self.cache.programs.get(&(kid, dev_id)) {
                 if self.debug.kmd() {
-                    println!("Kernel launch from memory pool {mpid} with args: {args:?}");
+                    println!("Kernel launch from memory pool {pool_id:?} with args: {args:?}");
                 }
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-                self.pools[mpid].events.insert(output_buffers, event);
+                self.pools[pool_id].events.insert(output_buffers, event);
                 //println!("Elapsed during kernel launch {:?}", time_w.elapsed());
                 return Ok(());
             }
@@ -600,7 +600,7 @@ impl<'a> Kernelizer<'a> {
                 opt_seq.apply(&mut kernel);
                 let program_id = device.compile(&kernel, self.debug.asm())?;
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-                self.pools[mpid].events.insert(output_buffers, event);
+                self.pools[pool_id].events.insert(output_buffers, event);
                 return Ok(());
             }
         }
@@ -655,7 +655,7 @@ impl<'a> Kernelizer<'a> {
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
         let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-        self.pools[mpid].events.insert(output_buffers, event);
+        self.pools[pool_id].events.insert(output_buffers, event);
 
         Ok(())
     }

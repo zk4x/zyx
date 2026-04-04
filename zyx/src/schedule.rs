@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::{
-    backend::{BufferId, Device, PoolBufferId, PoolId},
+    backend::{BufferId, Device, DeviceId, PoolBufferId, PoolId},
     graph::Graph,
     runtime::Pool,
     shape::Dim,
+    slab::Slab,
     tensor::TensorId,
     Map, ZyxError,
 };
@@ -15,13 +16,13 @@ pub fn schedule(
     loads: &[TensorId],
     stores: &[TensorId],
     graph: &Graph,
-    devices: &[Device],
-    pools: &mut [Pool],
+    devices: &Slab<DeviceId, Device>,
+    pools: &mut Slab<PoolId, Pool>,
     buffer_map: &mut Map<TensorId, BufferId>,
 ) -> Result<
     (
-        usize,
-        usize,
+        DeviceId,
+        PoolId,
         Vec<crate::backend::Event>,
         BTreeSet<PoolBufferId>,
         Vec<PoolBufferId>,
@@ -32,17 +33,17 @@ pub fn schedule(
         .iter()
         .map(|&tid| graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim)
         .sum::<Dim>();
-    let mut dev_ids: Vec<usize> = (0..devices.len()).collect();
+    let mut dev_ids: Vec<DeviceId> = devices.ids().collect();
     dev_ids.sort_unstable_by_key(|&dev_id| devices[dev_id].free_compute());
     dev_ids.reverse();
     let mut device_id = None;
     for dev_id in dev_ids {
-        let mpid = devices[dev_id].memory_pool_id() as usize;
-        let free_memory = pools[mpid].pool.free_bytes();
+        let pool_id = PoolId::from(devices[dev_id].memory_pool_id() as usize);
+        let free_memory = pools[pool_id].pool.free_bytes();
         let missing_loads_memory = loads
             .iter()
             .map(|tid| {
-                if buffer_map.get(tid).map_or(false, |b| usize::from(b.pool) == mpid) {
+                if buffer_map.get(tid).map_or(false, |b| b.pool == pool_id) {
                     0
                 } else {
                     graph.shape(*tid).iter().product::<Dim>() * graph.dtype(*tid).byte_size() as Dim
@@ -60,47 +61,47 @@ pub fn schedule(
             format!("no device has enough memory to store {required_stores_memory} B for intermedite tensors.").into(),
         ));
     };
-    let mpid = devices[dev_id].memory_pool_id() as usize;
+    let pool_id = PoolId::from(devices[dev_id].memory_pool_id() as usize);
 
     let mut event_wait_list = Vec::new();
     for &tid in loads {
-        let in_target = buffer_map.get(&tid).map_or(false, |b| usize::from(b.pool) == mpid);
+        let in_target = buffer_map.get(&tid).map_or(false, |b| b.pool == pool_id);
         if !in_target {
             let Some(buf_id) = buffer_map.get(&tid) else {
                 panic!("Tensor {tid:?} not found in any pool");
             };
-            let old_mpid = usize::from(buf_id.pool);
+            let old_pool_id = buf_id.pool;
             let src = buf_id.buffer;
             let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
             let mut byte_slice = vec![0u8; bytes as usize];
 
             let mut ev_wait = Vec::new();
-            for buffers in pools[old_mpid].events.keys() {
+            for buffers in pools[old_pool_id].events.keys() {
                 if buffers.contains(&src) {
                     let buffers = buffers.clone();
-                    let event = pools[old_mpid].events.remove(&buffers).unwrap();
+                    let event = pools[old_pool_id].events.remove(&buffers).unwrap();
                     ev_wait.push(event);
                     break;
                 }
             }
-            pools[old_mpid].pool.pool_to_host(src, &mut byte_slice, ev_wait)?;
+            pools[old_pool_id].pool.pool_to_host(src, &mut byte_slice, ev_wait)?;
 
             buffer_map.remove(&tid);
             if !buffer_map.values().any(|b| b.buffer == src) {
-                pools[old_mpid].pool.deallocate(src, vec![]);
+                pools[old_pool_id].pool.deallocate(src, vec![]);
             }
 
-            let (dst, event) = pools[mpid].pool.allocate(bytes)?;
-            let event = pools[mpid].pool.host_to_pool(&byte_slice, dst, vec![event])?;
-            pools[mpid].pool.sync_events(vec![event])?;
-            buffer_map.insert(tid, BufferId { pool: PoolId::from(mpid), buffer: dst });
+            let (dst, event) = pools[pool_id].pool.allocate(bytes)?;
+            let event = pools[pool_id].pool.host_to_pool(&byte_slice, dst, vec![event])?;
+            pools[pool_id].pool.sync_events(vec![event])?;
+            buffer_map.insert(tid, BufferId { pool: pool_id, buffer: dst });
         }
     }
     let mut output_buffers = BTreeSet::new();
     for &tid in stores {
         let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
-        let (buffer_id, event) = pools[mpid].pool.allocate(bytes)?;
-        buffer_map.insert(tid, BufferId { pool: PoolId::from(mpid), buffer: buffer_id });
+        let (buffer_id, event) = pools[pool_id].pool.allocate(bytes)?;
+        buffer_map.insert(tid, BufferId { pool: pool_id, buffer: buffer_id });
         event_wait_list.push(event);
         output_buffers.insert(buffer_id);
     }
@@ -111,5 +112,5 @@ pub fn schedule(
     for tid in stores {
         args.push(buffer_map[tid].buffer);
     }
-    Ok((dev_id, mpid, event_wait_list, output_buffers, args))
+    Ok((dev_id, pool_id, event_wait_list, output_buffers, args))
 }

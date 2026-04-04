@@ -8,7 +8,7 @@
 #![allow(unused)]
 
 use super::{Device, DeviceInfo, MemoryPool};
-use crate::backend::{DeviceProgramId, Event, PoolBufferId};
+use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Kernel;
@@ -116,8 +116,8 @@ unsafe impl Send for HIPEvent {}
 
 pub(super) fn initialize_device(
     config: &HIPConfig,
-    memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Device>,
+    memory_pools: &mut Slab<PoolId, Pool>,
+    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     let _ = config;
@@ -273,7 +273,7 @@ pub(super) fn initialize_device(
             },
             streams,
             programs: Slab::new(),
-            memory_pool_id: u32::try_from(memory_pools.len()).unwrap() - 1,
+            memory_pool_id: usize::from(memory_pools.len()) as u32 - 1,
             hipModuleLoadData,
             hipModuleGetFunction,
             hipModuleUnload,

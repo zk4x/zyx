@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Runtime handles tensor graph and connects tensors to device buffers.
-use crate::backend::{AutotuneConfig, BufferId, Config, Device, Event, MemoryPool, PoolBufferId, PoolId};
+use crate::backend::{AutotuneConfig, BufferId, Config, Device, DeviceId, Event, MemoryPool, PoolBufferId, PoolId};
 use crate::cache::Cache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
@@ -11,7 +11,7 @@ use crate::kernel::{BOp, UOp};
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{Dim, UAxis, permute, reduce};
-use crate::slab::SlabId;
+use crate::slab::{Slab, SlabId};
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::DeJson;
@@ -30,9 +30,9 @@ pub struct Runtime {
     /// Current graph of tensor operations as nodes
     pub graph: Graph,
     /// Physical compute devices, each has their own program cache
-    pub devices: Vec<Device>,
+    pub devices: Slab<DeviceId, Device>,
     /// Physical memory pools
-    pub pools: Vec<Pool>,
+    pub pools: Slab<PoolId, Pool>,
     /// Global mapping from tensor ID to (pool_index, buffer_id).
     pub buffer_map: Map<TensorId, BufferId>,
     /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
@@ -93,8 +93,8 @@ impl Runtime {
     pub(super) const fn new() -> Self {
         Runtime {
             graph: Graph::new(),
-            devices: Vec::new(),
-            pools: Vec::new(),
+            devices: Slab::new(),
+            pools: Slab::new(),
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
             config_dir: None,
@@ -205,8 +205,6 @@ impl Runtime {
         }
 
         crate::backend::initialize_backends(&config, &mut self.pools, &mut self.devices, self.debug.dev())?;
-        self.pools.shrink_to_fit();
-        self.devices.shrink_to_fit();
 
         self.autotune_config = config.autotune;
         //println!("INIT runtime");
@@ -283,7 +281,7 @@ impl Runtime {
     ) -> Result<TensorId, ZyxError> {
         let bytes = shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
         self.initialize_devices()?;
-        if let Some(disk) = self.pools[0].pool.disk_pool() {
+        if let Some(disk) = self.pools[PoolId::ZERO].pool.disk_pool() {
             let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
             let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
             self.buffer_map.insert(id, BufferId { pool: PoolId::ZERO, buffer: buffer_id });
@@ -319,13 +317,12 @@ impl Runtime {
         }
         self.initialize_devices()?;
         // Put it into memory pool with fastest device out of memory pools with enough free capacity
-        let mem_pools: Vec<u32> = self
+        let mem_pools: Vec<PoolId> = self
             .pools
             .iter()
-            .enumerate()
             .filter_map(|(id, mp)| {
                 if mp.pool.free_bytes() > bytes {
-                    Some(u32::try_from(id).unwrap())
+                    Some(id)
                 } else {
                     None
                 }
@@ -334,31 +331,28 @@ impl Runtime {
         if mem_pools.is_empty() {
             return Err(ZyxError::AllocationError("no memory pool has been initialized.".into()));
         }
-        //println!("Memory pools: {mem_pools:?}");
         // Pick memory pool with fastest device
         let mut memory_pool_id = mem_pools[0];
         let mut max_compute = 0;
-        for dev in &self.devices {
-            let mpid = dev.memory_pool_id();
-            //println!("Compute: {}, id: {mpid}", dev.free_compute());
+        for (_id, dev) in self.devices.iter() {
+            let mpid = PoolId::from(dev.memory_pool_id() as usize);
             if dev.free_compute() > max_compute && mem_pools.contains(&mpid) {
                 max_compute = dev.free_compute();
                 memory_pool_id = mpid;
             }
         }
-        let mpid = memory_pool_id as usize;
-        let (buffer_id, event) = self.pools[mpid].pool.allocate(bytes)?;
-        let global_id = BufferId { pool: PoolId::from(mpid), buffer: buffer_id };
+        let (buffer_id, event) = self.pools[memory_pool_id].pool.allocate(bytes)?;
+        let global_id = BufferId { pool: memory_pool_id, buffer: buffer_id };
         self.temp_data.insert(global_id, data.read());
 
         //println!("len = {}", self.temp_data[&global_id].len());
 
-        let event = self.pools[mpid]
+        let event = self.pools[memory_pool_id]
             .pool
             .host_to_pool(&self.temp_data[&global_id], buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.buffer_map.insert(id, global_id);
-        self.pools[mpid].events.insert([buffer_id].into(), event);
+        self.pools[memory_pool_id].events.insert([buffer_id].into(), event);
         Ok(id)
     }
 
@@ -564,7 +558,7 @@ impl Runtime {
         }
 
         let buffer_id = get_mut_buffer(&self.buffer_map, x).unwrap();
-        let pool = &mut self.pools[usize::from(buffer_id.pool)];
+        let pool = &mut self.pools[buffer_id.pool];
 
         Self::load_buffer(data, pool, buffer_id.buffer)
     }
@@ -770,12 +764,12 @@ impl Runtime {
     }
 }
 
-pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut [Pool], temp_data: &mut Map<BufferId, Box<[u8]>>, buffer_map: &mut Map<TensorId, BufferId>) {
+pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut Slab<PoolId, Pool>, temp_data: &mut Map<BufferId, Box<[u8]>>, buffer_map: &mut Map<TensorId, BufferId>) {
     for tensor_id in to_remove {
         if let Some(buffer_id) = buffer_map.remove(tensor_id) {
             if !buffer_map.values().any(|&bid| bid == buffer_id) {
                 let pool_id = usize::from(buffer_id.pool);
-                let pool = &mut pools[pool_id];
+                let pool = &mut pools[PoolId::from(pool_id)];
                 let mut events = Vec::new();
                 if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id.buffer)) {
                     let event = pool.events.remove(&key.clone()).unwrap();

@@ -38,7 +38,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{PoolPoolBufferId, Device, DeviceInfo, Event, MemoryPool, Pool, DeviceDeviceProgramId};
+use super::{PoolBufferId, Device, DeviceId, DeviceInfo, Event, MemoryPool, Pool, DeviceProgramId, PoolId};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -143,8 +143,8 @@ unsafe impl Send for CUDACommand {}
 
 pub(super) fn initialize_device(
     config: &CUDAConfig,
-    memory_pools: &mut Vec<Pool>,
-    devices: &mut Vec<Device>,
+    memory_pools: &mut Slab<PoolId, Pool>,
+    devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if let Some(device_ids) = &config.device_ids
@@ -587,7 +587,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major > 7,
             },
-            memory_pool_id: u32::try_from(memory_pools.len()).expect("You've got more than u32::MAX memory pools?") - 1,
+            memory_pool_id: usize::from(memory_pools.len()) as u32 - 1,
             compute_capability: [major, minor],
         };
         dev.dev_info = DeviceInfo {
