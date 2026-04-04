@@ -3,9 +3,9 @@
 
 use super::autotune::Optimization;
 use crate::{
+    Map, Set,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
-    Map, Set,
 };
 
 impl Kernel {
@@ -32,8 +32,8 @@ impl Kernel {
         // Verify op_id is a global index
         debug_assert!(matches!(self.ops[op_id].op, Op::Index { scope: Scope::Global, .. }));
 
-        println!("Upcast {op_id} by factor={factor}");
-        self.debug_colorless();
+        //println!("Upcast {op_id} by factor={factor}");
+        //self.debug_colorless();
 
         if !self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
             // No reduce loop - just split the dimension
@@ -168,8 +168,8 @@ impl Kernel {
         // Ensure kernel ends with EndLoop
         self.insert_after(self.tail, Op::EndLoop);
 
-        println!(" ==== After upcast: ==== ");
-        self.debug_colorless();
+        //println!(" ==== After upcast: ==== ");
+        //self.debug_colorless();
 
         self.verify();
     }

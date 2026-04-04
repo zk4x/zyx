@@ -1,13 +1,13 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use crate::kernel::{BOp, MoveOp, Scope, UOp, IDX_T};
+use crate::kernel::{BOp, IDX_T, MoveOp, Scope, UOp};
 use crate::slab::SlabId;
-use crate::{
-    kernel::{Kernel, Op, OpId},
-    DType, Map,
-};
 use crate::{BLUE, BOLD, CYAN, GREEN, GREY, MAGENTA, ORANGE, RED, RESET, YELLOW};
+use crate::{
+    DType, Map,
+    kernel::{Kernel, Op, OpId},
+};
 
 impl Kernel {
     pub fn debug(&self) {

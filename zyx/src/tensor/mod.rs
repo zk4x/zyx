@@ -10,9 +10,9 @@
 use crate::dtype::DType;
 use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
-use crate::runtime::{apply_padding, TempData};
+use crate::runtime::{TempData, apply_padding};
 use crate::scalar::{Float, Scalar};
-use crate::shape::{into_axes, into_axis, Dim, IntoShape, UAxis};
+use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
 use crate::slab::SlabId;
 use crate::{DebugMask, RT};
 use core::cmp::Ordering;
@@ -2598,7 +2598,7 @@ impl Tensor {
                 index.push(0..isize::try_from(d).unwrap());
             }
             index.push(acc_size..acc_size + size);
-            println!("Index {index:?}");
+            //println!("Index {index:?}");
             res.push(self.slice(index)?);
             acc_size += size;
         }
