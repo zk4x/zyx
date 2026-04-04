@@ -6,7 +6,6 @@
 use crate::{
     backend::{AutotuneConfig, BufferId, Device},
     cache::Cache,
-    compiled_graph::CompiledGraph,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
@@ -654,15 +653,6 @@ impl<'a> Kernelizer<'a> {
 }
 
 impl Runtime {
-    pub(crate) fn kernelize(
-        &mut self,
-        _compacted: &crate::compiled_graph::CompactedGraph,
-        _realized_nodes: Set<TensorId>,
-        _to_eval: &Set<TensorId>,
-    ) -> Result<CompiledGraph, ZyxError> {
-        todo!()
-    }
-
     fn realize_with_order(
         &mut self,
         rcs: Map<TensorId, u32>,
