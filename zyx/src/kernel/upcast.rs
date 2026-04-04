@@ -4,7 +4,7 @@
 use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, Scope},
+    kernel::{Kernel, Op, OpId, Scope},
     Map, Set,
 };
 
@@ -65,7 +65,7 @@ impl Kernel {
         let mut upcast_loop;
         let mut id = self.head;
         let mut remap: Map<OpId, OpId> = Map::default();
-        let mut latest_mad;
+        let latest_mad;
         loop {
             let next = self.next_op(id);
             if !matches!(
@@ -117,7 +117,7 @@ impl Kernel {
                 Op::Define { .. } if loop_depth == 0 => {
                     seen_in_scope.insert(id);
                     self.move_op_before(id, upcast_loop);
-                    if let Op::Define { len, scope, .. } = &mut self.ops[id].op {
+                    if let Op::Define { len, .. } = &mut self.ops[id].op {
                         *len = *len * factor;
                     }
                     acc_defines.insert(id);
@@ -144,7 +144,7 @@ impl Kernel {
                         }
                     }
                     // Fix accumulator indexing for Load/Store
-                    if let Op::Load { src, index, vlen } = &self.ops[id].op {
+                    if let Op::Load { src, index, .. } = &self.ops[id].op {
                         if acc_defines.contains(src) {
                             let mad = self.insert_before(id, Op::Mad { x: *index, y: factor_const, z: upcast_loop });
                             if let Op::Load { index: load_index, .. } = &mut self.ops[id].op {
@@ -152,7 +152,7 @@ impl Kernel {
                             }
                         }
                     }
-                    if let Op::Store { dst, index, vlen, .. } = &self.ops[id].op {
+                    if let Op::Store { dst, index, .. } = &self.ops[id].op {
                         if acc_defines.contains(dst) {
                             let mad = self.insert_before(id, Op::Mad { x: *index, y: factor_const, z: upcast_loop });
                             if let Op::Store { index: store_index, .. } = &mut self.ops[id].op {
