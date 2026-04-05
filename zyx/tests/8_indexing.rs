@@ -325,3 +325,155 @@ fn gather_4d_tensor() -> Result<(), ZyxError> {
     assert_eq!(gathered, [[[[1], [4]]]]);
     Ok(())
 }
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_large_tensor_axis0() -> Result<(), ZyxError> {
+    let x = Tensor::arange(0, 10000, 1)?;
+    let indices = Tensor::from([0u16, 5000, 9999, 0, 9999]);
+    let gathered = x.gather(0, &indices)?;
+    let result: Vec<i32> = gathered.try_into()?;
+    assert_eq!(result, [0, 5000, 9999, 0, 9999]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_large_2d_tensor() -> Result<(), ZyxError> {
+    let data: Vec<i32> = (0..10000).collect();
+    let x = Tensor::from(data).reshape([100, 100])?;
+    let indices = Tensor::from([[0u16, 50, 99], [99, 0, 50]]);
+    let gathered = x.gather(1, &indices)?;
+    let result: Vec<i32> = gathered.try_into()?;
+    assert_eq!(result, [0, 50, 99, 199, 100, 150]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_mnist_like_sampling() -> Result<(), ZyxError> {
+    let n = 1000;
+    let data: Vec<f32> = (0..n).map(|i| i as f32).collect();
+    let x = Tensor::from(data).reshape([n, 1])?;
+    let indices = Tensor::from([0u16, 500, 999, 0, 999, 100, 200]);
+    let gathered = x.gather(0, &indices.reshape([7, 1])?)?;
+    let result: Vec<f32> = gathered.try_into()?;
+    let expected: Vec<f32> = vec![0.0, 500.0, 999.0, 0.0, 999.0, 100.0, 200.0];
+    for (a, b) in result.iter().zip(expected.iter()) {
+        assert!((a - b).abs() < 1e-5, "a={a}, b={b}");
+    }
+    Ok(())
+}
+
+#[test]
+fn slice_range_clamped_to_dim_size() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3, 4, 5]);
+    let y = x.slice(0..100)?;
+    assert_eq!(y, [1, 2, 3, 4, 5]);
+    Ok(())
+}
+
+#[test]
+fn slice_negative_range_clamped() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3, 4, 5]);
+    let y = x.slice(-10..3)?;
+    assert_eq!(y, [1, 2, 3]);
+    Ok(())
+}
+
+#[test]
+fn slice_range_to_clamped() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3, 4, 5]);
+    let y = x.slice(..100)?;
+    assert_eq!(y, [1, 2, 3, 4, 5]);
+    Ok(())
+}
+
+#[test]
+fn slice_invalid_range_end_less_than_start() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3, 4, 5]);
+    let result = x.slice(3..2);
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn slice_index_out_of_bounds_positive() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3]);
+    let result = x.slice(10);
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn slice_index_out_of_bounds_negative() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3]);
+    let result = x.slice(-10);
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn slice_range_start_out_of_bounds() -> Result<(), ZyxError> {
+    let x = Tensor::from([1, 2, 3]);
+    let result = x.slice(10..20);
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn rslice_range_clamped_to_dim_size() -> Result<(), ZyxError> {
+    let x = Tensor::from([[1, 2, 3], [4, 5, 6]]);
+    let y = x.rslice(-10..)?;
+    assert_eq!(y, [[1, 2, 3], [4, 5, 6]]);
+    Ok(())
+}
+
+#[test]
+fn cumsum_large_tensor() -> Result<(), ZyxError> {
+    let n = 1000;
+    let data: Vec<i32> = std::iter::repeat_n(1, n).collect();
+    let x = Tensor::from(data);
+    let result = x.cumsum(0)?;
+    let result_vec: Vec<i32> = result.try_into()?;
+    for (i, &val) in result_vec.iter().enumerate() {
+        assert_eq!(val, (i + 1) as i32, "Mismatch at index {i}");
+    }
+    Ok(())
+}
+
+#[test]
+fn arange_large_range() -> Result<(), ZyxError> {
+    let x = Tensor::arange(0i64, 1000, 1i64)?;
+    assert_eq!(x.shape(), [1000]);
+    let result: Vec<i64> = x.try_into()?;
+    for (i, &val) in result.iter().enumerate() {
+        assert_eq!(val, i as i64, "Mismatch at index {i}");
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn one_hot_large_num_classes() -> Result<(), ZyxError> {
+    let indices = Tensor::from([0u16, 1, 2]);
+    let one_hot = indices.one_hot(100);
+    assert_eq!(one_hot.shape(), [3, 100]);
+    Ok(())
+}
+
+#[cfg(not(feature = "wgpu"))]
+#[test]
+fn gather_with_one_hot_large_dim() -> Result<(), ZyxError> {
+    let n = 500;
+    let data: Vec<f32> = (0..n).map(|i| i as f32).collect();
+    let x = Tensor::from(data);
+    let indices = Tensor::from([0u16, n as u16 - 1, 0, n as u16 / 2]);
+    let gathered = x.gather(0, &indices)?;
+    let result: Vec<f32> = gathered.try_into()?;
+    let expected = vec![0.0, (n - 1) as f32, 0.0, (n / 2) as f32];
+    for (a, b) in result.iter().zip(expected.iter()) {
+        assert!((a - b).abs() < 1e-5, "a={a}, b={b}");
+    }
+    Ok(())
+}

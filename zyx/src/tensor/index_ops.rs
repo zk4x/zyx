@@ -97,39 +97,57 @@ impl Tensor {
         let padding = index
             .zip(shape.into_iter())
             .enumerate()
-            .map(|(axis, (dim_index, dim_size))| match dim_index {
-                DimIndex::Range { start, end } => {
-                    let s = if start < 0 { start + dim_size as i32 } else { start };
-                    let e = if end > dim_size as i32 {
-                        dim_size as i32
-                    } else if end < 0 {
-                        end + dim_size as i32
-                    } else {
-                        end
-                    };
-                    (-(s as i64), -((dim_size as i64) - e as i64))
+            .map(|(axis, (dim_index, dim_size))| {
+                let dim_size = dim_size as i64;
+                match dim_index {
+                    DimIndex::Range { start, end } => {
+                        let s = if start < 0 { (start + dim_size).max(0) } else { start };
+                        let s = s.min(dim_size);
+                        let e = if end > dim_size {
+                            dim_size
+                        } else if end < 0 {
+                            (end + dim_size).max(0)
+                        } else {
+                            end
+                        };
+                        let e = e.min(dim_size).max(0);
+                        if e < s {
+                            return Err(ZyxError::shape_error(
+                                format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
+                            ));
+                        }
+                        Ok((-(s as i64), -((dim_size as i64) - e as i64)))
+                    }
+                    DimIndex::Index(i) => {
+                        squeeze_axes.push(axis as i32);
+                        let i = if i < 0 { i + dim_size } else { i };
+                        if i < 0 || i >= dim_size {
+                            return Err(ZyxError::shape_error(
+                                format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
+                            ));
+                        }
+                        Ok((-(i as i64), -((dim_size as i64) - i as i64 - 1)))
+                    }
+                    DimIndex::RangeFull => Ok((0i64, 0i64)),
+                    DimIndex::RangeFrom { start } => {
+                        let s = if start < 0 { (start + dim_size).max(0) } else { start };
+                        let s = s.min(dim_size);
+                        Ok((-(s as i64), 0i64))
+                    }
+                    DimIndex::RangeTo { end } => {
+                        let e = if end > dim_size {
+                            dim_size
+                        } else if end < 0 {
+                            (end + dim_size).max(0)
+                        } else {
+                            end
+                        };
+                        let e = e.min(dim_size).max(0);
+                        Ok((0i64, -((dim_size as i64) - e as i64)))
+                    }
                 }
-                DimIndex::Index(i) => {
-                    squeeze_axes.push(axis as i32);
-                    let i = if i < 0 { i + dim_size as i32 } else { i };
-                    (-(i as i64), -((dim_size as i64) - i as i64 - 1))
-                }
-                DimIndex::RangeFull => (0i64, 0i64),
-                DimIndex::RangeFrom { start } => {
-                    let s = if start < 0 { start + dim_size as i32 } else { start };
-                    (-(s as i64), 0i64)
-                }
-                DimIndex::RangeTo { end } => {
-                    let e = if end > dim_size as i32 {
-                        dim_size as i32
-                    } else if end < 0 {
-                        end + dim_size as i32
-                    } else {
-                        end
-                    };
-                    (0i64, -((dim_size as i64) - e as i64))
-                }
-            });
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         //let padding_vec: Vec<(i32, i32)> = padding.into_iter().collect();
         //println!("padding={padding_vec:?}");
@@ -160,41 +178,61 @@ impl Tensor {
         let padding = index
             .zip(shape.into_iter().rev())
             .enumerate()
-            .map(|(axis, (dim_index, dim_size))| match dim_index {
-                DimIndex::Range { start, end } => {
-                    let s = if start < 0 { start + dim_size as i32 } else { start };
-                    let e = if end > dim_size as i32 {
-                        dim_size as i32
-                    } else if end < 0 {
-                        end + dim_size as i32
-                    } else {
-                        end
-                    };
-                    (-(s as i64), -((dim_size as i64) - e as i64))
+            .map(|(axis, (dim_index, dim_size))| {
+                let dim_size = dim_size as i64;
+                match dim_index {
+                    DimIndex::Range { start, end } => {
+                        let s = if start < 0 { (start + dim_size).max(0) } else { start };
+                        let s = s.min(dim_size);
+                        let e = if end > dim_size {
+                            dim_size
+                        } else if end < 0 {
+                            (end + dim_size).max(0)
+                        } else {
+                            end
+                        };
+                        let e = e.min(dim_size).max(0);
+                        if e < s {
+                            return Err(ZyxError::shape_error(
+                                format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
+                            ));
+                        }
+                        Ok((-(s as i64), -((dim_size as i64) - e as i64)))
+                    }
+                    DimIndex::Index(i) => {
+                        squeeze_axes.push(axis as i32);
+                        let i = if i < 0 { i + dim_size } else { i };
+                        if i < 0 || i >= dim_size {
+                            return Err(ZyxError::shape_error(
+                                format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
+                            ));
+                        }
+                        Ok((-(i as i64), -((dim_size as i64) - i as i64 - 1)))
+                    }
+                    DimIndex::RangeFull => Ok((0i64, 0i64)),
+                    DimIndex::RangeFrom { start } => {
+                        let s = if start < 0 { (start + dim_size).max(0) } else { start };
+                        let s = s.min(dim_size);
+                        Ok((-(s as i64), 0i64))
+                    }
+                    DimIndex::RangeTo { end } => {
+                        let e = if end > dim_size {
+                            dim_size
+                        } else if end < 0 {
+                            (end + dim_size).max(0)
+                        } else {
+                            end
+                        };
+                        let e = e.min(dim_size).max(0);
+                        Ok((0i64, -((dim_size as i64) - e as i64)))
+                    }
                 }
-                DimIndex::Index(i) => {
-                    squeeze_axes.push(axis as i32);
-                    let i = if i < 0 { i + dim_size as i32 } else { i };
-                    (-(i as i64), -((dim_size as i64) - i as i64 - 1))
-                }
-                DimIndex::RangeFull => (0i64, 0i64),
-                DimIndex::RangeFrom { start } => {
-                    let s = if start < 0 { start + dim_size as i32 } else { start };
-                    (-(s as i64), 0i64)
-                }
-                DimIndex::RangeTo { end } => {
-                    let e = if end > dim_size as i32 {
-                        dim_size as i32
-                    } else if end < 0 {
-                        end + dim_size as i32
-                    } else {
-                        end
-                    };
-                    (0i64, -((dim_size as i64) - e as i64))
-                }
-            });
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let padding = padding.chain(std::iter::repeat_n((0i64, 0i64), rank - padding_len));
+        let padding = padding
+            .into_iter()
+            .chain(std::iter::repeat_n((0i64, 0i64), rank - padding_len));
 
         let mut padding_vec: Vec<(i64, i64)> = padding.into_iter().collect();
         padding_vec.reverse();
@@ -245,13 +283,13 @@ impl Tensor {
 #[derive(Clone, Debug)]
 pub enum DimIndex {
     /// Single index
-    Index(i32),
+    Index(i64),
     /// Range
-    Range { start: i32, end: i32 },
+    Range { start: i64, end: i64 },
     /// Range from
-    RangeFrom { start: i32 },
+    RangeFrom { start: i64 },
     /// Range to
-    RangeTo { end: i32 },
+    RangeTo { end: i64 },
     /// Range full
     RangeFull,
 }
@@ -263,11 +301,17 @@ pub trait IntoIndex {
 
 impl Into<DimIndex> for isize {
     fn into(self) -> DimIndex {
-        DimIndex::Index(self as i32)
+        DimIndex::Index(self as i64)
     }
 }
 
 impl Into<DimIndex> for i32 {
+    fn into(self) -> DimIndex {
+        DimIndex::Index(self as i64)
+    }
+}
+
+impl Into<DimIndex> for i64 {
     fn into(self) -> DimIndex {
         DimIndex::Index(self)
     }
@@ -275,17 +319,23 @@ impl Into<DimIndex> for i32 {
 
 impl Into<DimIndex> for usize {
     fn into(self) -> DimIndex {
-        DimIndex::Index(self as i32)
+        DimIndex::Index(self as i64)
     }
 }
 
 impl Into<DimIndex> for Range<isize> {
     fn into(self) -> DimIndex {
-        DimIndex::Range { start: self.start as i32, end: self.end as i32 }
+        DimIndex::Range { start: self.start as i64, end: self.end as i64 }
     }
 }
 
 impl Into<DimIndex> for Range<i32> {
+    fn into(self) -> DimIndex {
+        DimIndex::Range { start: self.start as i64, end: self.end as i64 }
+    }
+}
+
+impl Into<DimIndex> for Range<i64> {
     fn into(self) -> DimIndex {
         DimIndex::Range { start: self.start, end: self.end }
     }
@@ -293,17 +343,23 @@ impl Into<DimIndex> for Range<i32> {
 
 impl Into<DimIndex> for Range<usize> {
     fn into(self) -> DimIndex {
-        DimIndex::Range { start: self.start as i32, end: self.end as i32 }
+        DimIndex::Range { start: self.start as i64, end: self.end as i64 }
     }
 }
 
 impl Into<DimIndex> for RangeInclusive<isize> {
     fn into(self) -> DimIndex {
-        DimIndex::Range { start: *self.start() as i32, end: *self.end() as i32 + 1 }
+        DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
     }
 }
 
 impl Into<DimIndex> for RangeInclusive<i32> {
+    fn into(self) -> DimIndex {
+        DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
+    }
+}
+
+impl Into<DimIndex> for RangeInclusive<i64> {
     fn into(self) -> DimIndex {
         DimIndex::Range { start: *self.start(), end: self.end() + 1 }
     }
@@ -311,17 +367,23 @@ impl Into<DimIndex> for RangeInclusive<i32> {
 
 impl Into<DimIndex> for RangeInclusive<usize> {
     fn into(self) -> DimIndex {
-        DimIndex::Range { start: *self.start() as i32, end: *self.end() as i32 + 1 }
+        DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
     }
 }
 
 impl Into<DimIndex> for RangeFrom<isize> {
     fn into(self) -> DimIndex {
-        DimIndex::RangeFrom { start: self.start as i32 }
+        DimIndex::RangeFrom { start: self.start as i64 }
     }
 }
 
 impl Into<DimIndex> for RangeFrom<i32> {
+    fn into(self) -> DimIndex {
+        DimIndex::RangeFrom { start: self.start as i64 }
+    }
+}
+
+impl Into<DimIndex> for RangeFrom<i64> {
     fn into(self) -> DimIndex {
         DimIndex::RangeFrom { start: self.start }
     }
@@ -329,17 +391,23 @@ impl Into<DimIndex> for RangeFrom<i32> {
 
 impl Into<DimIndex> for RangeFrom<usize> {
     fn into(self) -> DimIndex {
-        DimIndex::RangeFrom { start: self.start as i32 }
+        DimIndex::RangeFrom { start: self.start as i64 }
     }
 }
 
 impl Into<DimIndex> for RangeTo<isize> {
     fn into(self) -> DimIndex {
-        DimIndex::RangeTo { end: self.end as i32 }
+        DimIndex::RangeTo { end: self.end as i64 }
     }
 }
 
 impl Into<DimIndex> for RangeTo<i32> {
+    fn into(self) -> DimIndex {
+        DimIndex::RangeTo { end: self.end as i64 }
+    }
+}
+
+impl Into<DimIndex> for RangeTo<i64> {
     fn into(self) -> DimIndex {
         DimIndex::RangeTo { end: self.end }
     }
@@ -347,7 +415,7 @@ impl Into<DimIndex> for RangeTo<i32> {
 
 impl Into<DimIndex> for RangeTo<usize> {
     fn into(self) -> DimIndex {
-        DimIndex::RangeTo { end: self.end as i32 }
+        DimIndex::RangeTo { end: self.end as i64 }
     }
 }
 
