@@ -217,7 +217,7 @@ impl Kernel {
         }*/
         //kernel.unroll_loops(4);
 
-        kernel.debug();
+        //kernel.debug();
 
         kernel.run_always_on_optimizations();
         kernel.debug();

@@ -43,7 +43,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{PoolBufferId, Device, DeviceId, DeviceInfo, Event, MemoryPool, Pool, DeviceProgramId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Pool, PoolBufferId, PoolId};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -1353,6 +1353,13 @@ impl CUDADevice {
                             dtype.cu(),
                         );
                         acc_bytes += dtype.byte_size() as usize * len;
+                    } else if scope == Scope::Local {
+                        _ = writeln!(
+                            source,
+                            "{indent}__shared__ {}{} p{op_id}[{len}];",
+                            if ro { "const " } else { "" },
+                            dtype.cu(),
+                        );
                     }
                 }
                 &Op::Load { src, index, vlen } => {
