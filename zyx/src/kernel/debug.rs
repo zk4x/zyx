@@ -275,7 +275,8 @@ impl Kernel {
 
     #[allow(unused)]
     pub fn debug_colorless(&self) {
-        let remap_ids = false;
+        println!(); // Just an empty line for readability
+        let remap_ids = true;
         let mut indent = String::from(" ");
         let bounds = self.compute_bounds();
         let mut dtypes: Map<OpId, DType> = Map::default();

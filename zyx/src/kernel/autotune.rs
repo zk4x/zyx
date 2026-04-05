@@ -168,6 +168,7 @@ impl Optimization {
 
 impl Kernel {
     pub fn run_always_on_optimizations(&mut self) {
+        self.eliminate_zero_len_index();
         self.constant_folding();
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
@@ -200,10 +201,15 @@ impl Kernel {
         // Here come series of custom optimizations
 
         // Apply upcast (vectorization) with factor 2
-        /*let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
+        let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
         if n_upcast_configs > 0 {
             upcast_opt.apply(&mut kernel, 0);
-        }*/
+        }
+        kernel.run_always_on_optimizations();
+        let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
+        if n_upcast_configs > 0 {
+            upcast_opt.apply(&mut kernel, 0);
+        }
 
         // Tiled reduce disabled
         // Apply tiled reduce optimization
@@ -216,7 +222,7 @@ impl Kernel {
         //kernel.debug();
 
         kernel.run_always_on_optimizations();
-        kernel.debug();
+        kernel.debug_colorless();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)

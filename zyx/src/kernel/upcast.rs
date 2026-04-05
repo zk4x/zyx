@@ -50,6 +50,14 @@ impl Kernel {
             return;
         }
 
+        /*if self
+            .ops
+            .iter()
+            .any(|(id, node)| matches!(node.op, Op::Loop { .. }) && self.loop_uses_gidx(id, op_id))
+        {
+            return;
+        }*/
+
         // === UPCAST WITH REDUCE LOOPS === //
 
         let Op::Index { len, .. } = &mut self.ops[op_id].op else {
@@ -80,11 +88,6 @@ impl Kernel {
             }
             id = next;
         }
-
-        // Fix reduce loops and their dependencies
-        // Resize accumulators
-        // Fix indexing
-        // THIS IS THE LOOP THAT DOES EVERYTHING
 
         let mut loop_depth = 0;
         let mut seen_in_scope: Set<OpId> = Set::default();
@@ -172,6 +175,53 @@ impl Kernel {
         //self.debug_colorless();
 
         self.verify();
+    }
+
+    fn loop_uses_gidx(&self, loop_id: OpId, gidx_id: OpId) -> bool {
+        println!("Checking for usage of loop={loop_id} gidx={gidx_id}");
+        let mut id = self.next_op(loop_id);
+        let mut depth = 1;
+        while !id.is_null() {
+            match self.ops[id].op {
+                Op::Loop { .. } => depth += 1,
+                Op::EndLoop => {
+                    depth -= 1;
+                    if depth == 0 {
+                        println!("not used, end loop");
+                        return false;
+                    }
+                }
+                _ => {
+                    let mut stack = vec![id];
+                    let mut uses_loop = false;
+                    let mut uses_gidx = false;
+                    let mut visited = Set::default();
+                    while let Some(cur) = stack.pop() {
+                        if cur == loop_id {
+                            uses_loop = true;
+                        }
+                        if cur == gidx_id {
+                            uses_gidx = true;
+                        }
+                        if uses_loop && uses_gidx {
+                            println!("used");
+                            return true;
+                        }
+                        if !visited.insert(cur) {
+                            continue;
+                        }
+                        if !self.ops.contains_key(cur) {
+                            continue;
+                        }
+                        for param in self.ops[cur].op.parameters() {
+                            stack.push(param);
+                        }
+                    }
+                }
+            }
+            id = self.next_op(id);
+        }
+        false
     }
 
     fn clone_dep(

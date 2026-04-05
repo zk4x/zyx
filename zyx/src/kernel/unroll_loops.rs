@@ -4,9 +4,9 @@
 use super::autotune::Optimization;
 #[allow(unused)]
 use crate::{
-    Map,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
+    Map,
 };
 
 impl Kernel {
@@ -16,6 +16,17 @@ impl Kernel {
 
     pub fn opt_unroll_constant_loops(&self) -> (Optimization, usize) {
         (Optimization::UnrollConstantLoops, 1)
+    }
+
+    pub fn eliminate_zero_len_index(&mut self) {
+        for node in self.ops.values_mut() {
+            if let Op::Index { len, .. } = node.op {
+                if len == 1 {
+                    node.op = Op::Const(Constant::idx(0));
+                }
+            }
+        }
+        self.verify();
     }
 
     pub fn unroll_loops(&mut self, unroll_dim: usize) {
