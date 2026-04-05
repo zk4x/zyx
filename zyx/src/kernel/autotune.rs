@@ -197,10 +197,10 @@ impl Kernel {
         // Here come series of custom optimizations
 
         // Apply upcast (vectorization) with factor 2
-        let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
+        /*let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
         if n_upcast_configs > 0 {
             upcast_opt.apply(&mut kernel, 0);
-        }
+        }*/
 
         // Tiled reduce disabled
         /*
