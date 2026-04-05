@@ -50,13 +50,13 @@ impl Kernel {
             return;
         }
 
-        if self
+        /*if self
             .ops
             .iter()
             .any(|(id, node)| matches!(node.op, Op::Loop { .. }) && self.loop_uses_gidx(id, op_id))
         {
             return;
-        }
+        }*/
 
         // === UPCAST WITH REDUCE LOOPS === //
 
@@ -191,8 +191,8 @@ impl Kernel {
                         return false;
                     }
                 }
-                Op::Load { index, .. } | Op::Store { index, .. } => {
-                    let mut stack = vec![index];
+                _ => {
+                    let mut stack = vec![id];
                     let mut uses_loop = false;
                     let mut uses_gidx = false;
                     let mut visited = Set::default();
@@ -218,7 +218,6 @@ impl Kernel {
                         }
                     }
                 }
-                _ => {}
             }
             id = self.next_op(id);
         }
