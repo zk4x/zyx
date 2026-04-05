@@ -169,6 +169,49 @@ impl Kernel {
         self.verify();
     }
 
+    fn op_uses(&self, op_id: OpId, target: OpId, visited: &mut Set<OpId>) -> bool {
+        if op_id == target {
+            return true;
+        }
+        if !visited.insert(op_id) {
+            return false;
+        }
+        let Some(node) = self.ops.get(op_id) else {
+            return false;
+        };
+        for param in node.op.parameters() {
+            if self.op_uses(param, target, visited) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn loop_uses_gidx(&self, loop_id: OpId, gidx_id: OpId) -> bool {
+        let mut id = self.next_op(loop_id);
+        let mut depth = 0;
+        let mut visited = Set::default();
+        while !id.is_null() {
+            match self.ops[id].op {
+                Op::Loop { .. } => depth += 1,
+                Op::EndLoop => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                }
+                Op::Load { index, .. } | Op::Store { index, .. } => {
+                    if depth == 0 && self.op_uses(index, loop_id, &mut visited) && self.op_uses(index, gidx_id, &mut visited) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            id = self.next_op(id);
+        }
+        false
+    }
+
     fn clone_dep(
         &mut self,
         dep_id: OpId,
