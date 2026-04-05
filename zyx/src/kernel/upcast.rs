@@ -32,8 +32,8 @@ impl Kernel {
         // Verify op_id is a global index
         debug_assert!(matches!(self.ops[op_id].op, Op::Index { scope: Scope::Global, .. }));
 
-        println!("Upcast {op_id} by factor={factor}");
-        self.debug_colorless();
+        //println!("Upcast {op_id} by factor={factor}");
+        //self.debug_colorless();
 
         if !self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
             // No reduce loop - just split the dimension
@@ -80,11 +80,6 @@ impl Kernel {
             }
             id = next;
         }
-
-        // Fix reduce loops and their dependencies
-        // Resize accumulators
-        // Fix indexing
-        // THIS IS THE LOOP THAT DOES EVERYTHING
 
         let mut loop_depth = 0;
         let mut seen_in_scope: Set<OpId> = Set::default();
@@ -168,8 +163,8 @@ impl Kernel {
         // Ensure kernel ends with EndLoop
         self.insert_after(self.tail, Op::EndLoop);
 
-        println!(" ==== After upcast: ==== ");
-        self.debug_colorless();
+        //println!(" ==== After upcast: ==== ");
+        //self.debug_colorless();
 
         self.verify();
     }

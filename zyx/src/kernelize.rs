@@ -613,8 +613,9 @@ impl<'a> Kernelizer<'a> {
         // Fix kernels for movement ops and if they have too many dims
         kernel.unfold_movement_ops();
         let global_indices = kernel.get_global_indices();
-        if global_indices.len() > 3 {
-            let n = global_indices.len() - 2;
+        let max_global_dims = device.info().max_global_work_dims.len();
+        if global_indices.len() > max_global_dims {
+            let n = global_indices.len() + 1 - max_global_dims;
             let loops: Vec<OpId> = global_indices.values().copied().take(n).collect();
             kernel.merge_indices(&loops);
         }
