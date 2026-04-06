@@ -37,6 +37,13 @@ impl Kernel {
         } else {
             return;
         };
+        // Also let's not tile reduce kernel with barriers for now
+        if self.ops.values().any(|node| match node.op {
+            Op::Barrier { .. } => true,
+            _ => false,
+        }) {
+            return;
+        }
 
         // Get new free axis for the local dimension
         let laxis = self

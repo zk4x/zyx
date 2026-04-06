@@ -10,18 +10,18 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
-static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 9] = [
-    Kernel::opt_reassociate_commutative,
-    //Kernel::opt_unroll, // disabled - interacts badly with upcast
-    Kernel::opt_split_global_to_local,
-    Kernel::opt_upcast,
+const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 2] = [
+    //Kernel::opt_reassociate_commutative,
+    //Kernel::opt_unroll,
+    //Kernel::opt_split_global_to_local,
+    //Kernel::opt_upcast,
     //Kernel::opt_register_tiling,
     Kernel::opt_fuse_mad,
-    Kernel::opt_unfuse_mad,
-    Kernel::opt_unroll_constant_loops,
+    //Kernel::opt_unfuse_mad,
+    //Kernel::opt_unroll_constant_loops,
     Kernel::opt_tiled_reduce,
-    Kernel::opt_split_loop,
-    Kernel::opt_licm,
+    //Kernel::opt_split_loop,
+    //Kernel::opt_licm,
 ];
 
 pub enum Optimization {
@@ -201,12 +201,13 @@ impl Kernel {
 
         // Here come series of custom optimizations
 
+        //kernel.fuse_mad();
         let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_tiled_reduce();
         if n_tiled_reduce_configs > 0 {
-            tiled_reduce_opt.apply(&mut kernel, 0); // tree_branch=2
+            tiled_reduce_opt.apply(&mut kernel, 1); // tree_branch=2
         }
         // Apply upcast (vectorization) with factor 2
-        let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
+        /*let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
         if n_upcast_configs > 0 {
             upcast_opt.apply(&mut kernel, 0);
         }
@@ -214,7 +215,7 @@ impl Kernel {
         let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
         if n_upcast_configs > 0 {
             upcast_opt.apply(&mut kernel, 0);
-        }
+        }*/
         //kernel.unroll_loops(2);
 
         // Tiled reduce disabled
