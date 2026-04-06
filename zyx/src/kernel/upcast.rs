@@ -3,39 +3,12 @@
 
 use super::autotune::Optimization;
 use crate::{
-    Map, Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
+    Map, Set,
 };
 
 impl Kernel {
-    fn make_accumulator_index(&mut self, id: OpId, index: OpId, offset_id: OpId, factor: usize, acc_define_id: OpId) -> OpId {
-        let acc_len = match self.ops[acc_define_id].op {
-            Op::Define { len, .. } => len,
-            _ => panic!("expected Define"),
-        };
-        let old_acc_len = acc_len / factor;
-
-        let index_op = &self.ops[index].op;
-        let old_offset = match index_op {
-            Op::Const(c) => c.as_dim() as usize,
-            _ => {
-                todo!();
-            }
-        };
-        let new_offset = match self.ops[offset_id].op {
-            Op::Const(c) => c.as_dim() as usize,
-            _ => panic!("offset should be Const"),
-        };
-
-        let result = if old_acc_len == 1 {
-            new_offset
-        } else {
-            new_offset * old_acc_len + old_offset
-        };
-        self.insert_before(id, Op::Const(Constant::idx(result as u64)))
-    }
-
     pub fn opt_upcast(&self) -> (Optimization, usize) {
         let mut factors = Vec::new();
         let mut op_id = self.head;
@@ -139,18 +112,16 @@ impl Kernel {
                     if acc_defines.contains(&dst) {
                         let mut ids = Vec::with_capacity(factor - 1);
                         let mut id = op_id;
-                        let original_index = index;
                         for i in 0..factor - 1 {
                             let mut x = x;
                             if let Some(remap) = remaps.get(&x) {
                                 x = remap[i];
                             }
-                            let index = self.make_accumulator_index(id, original_index, offsets[i], factor, dst);
+                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
                             id = self.insert_after(index, Op::Store { dst, x, index, vlen });
                             ids.push(id);
                         }
-                        // Original: keep x as is, but multiply index by factor
-                        //let index = self.insert_before(op_id, Op::Binary { x: original_index, y: const_factor, bop: BOp::Mul });
+                        let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
                         self.ops[op_id].op = Op::Store { dst, x, index, vlen };
                         remaps.insert(op_id, ids);
                     } else {
@@ -175,13 +146,12 @@ impl Kernel {
                     if acc_defines.contains(&src) {
                         let mut ids = Vec::with_capacity(factor - 1);
                         let mut id = op_id;
-                        let original_index = index;
                         for i in 0..factor - 1 {
-                            let index = self.make_accumulator_index(id, original_index, offsets[i], factor, src);
+                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
                             id = self.insert_after(index, Op::Load { src, index, vlen });
                             ids.push(id);
                         }
-                        //let index = self.insert_before(op_id, Op::Binary { x: original_index, y: const_factor, bop: BOp::Mul });
+                        let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
                         self.ops[op_id].op = Op::Load { src, index, vlen };
                         remaps.insert(op_id, ids);
                     } else {
