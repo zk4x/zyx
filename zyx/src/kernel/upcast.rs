@@ -35,11 +35,15 @@ impl Kernel {
         debug_assert!(len.is_multiple_of(factor));
         debug_assert_eq!(scope, Scope::Global);
 
+        //println!("upcast gidx_id={gidx_id} by factor={factor}");
+
         // === Some checks when we just cannot upcast === //
 
         // We cannot upcast if the kernel is already vectorized
+        // Also let's not upcast kernel with barriers for now
         if self.ops.values().any(|node| match node.op {
             Op::Load { vlen, .. } | Op::Store { vlen, .. } => vlen != 1,
+            Op::Barrier { .. } => true,
             _ => false,
         }) {
             return;
@@ -58,6 +62,9 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
+
+        // Move gidx_id to the beginning, so that it's not getting transformed by it's own function
+        self.move_op_before(gidx_id, op_id);
 
         // Create constant for factor
         let const_factor = self.insert_before(gidx_id, Op::Const(Constant::idx(factor as u64)));
@@ -87,14 +94,15 @@ impl Kernel {
         while !op_id.is_null() {
             let next_op_id = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Define { dtype, scope, ro, len } => {
-                    self.ops[op_id].op = Op::Define { dtype, scope, ro, len: len * factor };
+                Op::Define { dtype, scope: Scope::Register, ro, len } => {
+                    self.ops[op_id].op = Op::Define { dtype, scope: Scope::Register, ro, len: len * factor };
                     acc_defines.insert(op_id);
                 }
                 Op::Loop { .. } => {}
                 Op::EndLoop { .. } => {}
                 Op::If { .. } => {}
                 Op::EndIf => {}
+                Op::Barrier { .. } => {}
                 Op::Store { dst, x, index, vlen } => {
                     if acc_defines.contains(&dst) {
                         let mut ids = Vec::with_capacity(factor - 1);
@@ -178,6 +186,5 @@ impl Kernel {
         }
 
         self.verify();
-        //self.debug_colorless();
     }
 }

@@ -201,6 +201,10 @@ impl Kernel {
 
         // Here come series of custom optimizations
 
+        let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_tiled_reduce();
+        if n_tiled_reduce_configs > 0 {
+            tiled_reduce_opt.apply(&mut kernel, 0); // tree_branch=2
+        }
         // Apply upcast (vectorization) with factor 2
         let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
         if n_upcast_configs > 0 {
@@ -211,19 +215,15 @@ impl Kernel {
         if n_upcast_configs > 0 {
             upcast_opt.apply(&mut kernel, 0);
         }
+        //kernel.unroll_loops(2);
 
         // Tiled reduce disabled
         // Apply tiled reduce optimization
-        /*let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_tiled_reduce();
-        if n_tiled_reduce_configs > 0 {
-            tiled_reduce_opt.apply(&mut kernel, 0); // tree_branch=2
-        }*/
         //kernel.unroll_loops(4);
 
-        //kernel.debug();
-
+        //kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
-        kernel.debug_colorless();
+        //kernel.debug();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
