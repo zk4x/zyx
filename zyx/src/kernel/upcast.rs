@@ -3,9 +3,9 @@
 
 use super::autotune::Optimization;
 use crate::{
+    Map, Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
-    Map, Set,
 };
 
 impl Kernel {
@@ -35,17 +35,6 @@ impl Kernel {
         debug_assert!(len.is_multiple_of(factor));
         debug_assert_eq!(scope, Scope::Global);
 
-        if !self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
-            let Op::Index { len, scope, axis } = self.ops[gidx_id].op else {
-                return;
-            };
-            self.split_dim(
-                gidx_id,
-                vec![Op::Index { len: len / factor, scope, axis }, Op::Loop { len: factor }],
-            );
-            return;
-        }
-
         // === Some checks when we just cannot upcast === //
 
         // We cannot upcast if the kernel is already vectorized
@@ -55,8 +44,6 @@ impl Kernel {
         }) {
             return;
         }
-
-        // === UPCAST WITH REDUCE LOOPS === //
 
         // First skip ops that don't need duplication
         let mut op_id = self.head;
