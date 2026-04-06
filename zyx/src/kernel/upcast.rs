@@ -3,9 +3,9 @@
 
 use super::autotune::Optimization;
 use crate::{
-    Map, Set,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
+    Map, Set,
 };
 
 impl Kernel {
@@ -89,17 +89,7 @@ impl Kernel {
             }
         }
 
-        // Pre-create accumulator index helpers at the beginning (just constants 0..factor-1)
         let first_non_trivial = ops_to_dup[0];
-        let mut acc_index_helpers: Map<OpId, Vec<OpId>> = Map::default();
-        for &acc_id in &acc_defines {
-            let mut helpers = Vec::with_capacity(factor);
-            for i in 0..factor {
-                let ic = self.insert_before(first_non_trivial, Op::Const(Constant::idx(i as u64)));
-                helpers.push(ic);
-            }
-            acc_index_helpers.insert(acc_id, helpers);
-        }
 
         // Process ops in forward order
         let mut remap: Map<OpId, Vec<OpId>> = Map::default();
@@ -125,23 +115,25 @@ impl Kernel {
                     }
                 }
 
-                // Fix accumulator indexing
-                if let Op::Load { src, .. } = &new_op {
+                // Fix accumulator indexing: index = original_index * factor + i
+                if let Op::Load { src, index: li, .. } = &mut new_op {
                     if acc_defines.contains(src) {
-                        if let Some(helpers) = acc_index_helpers.get(src) {
-                            if let Op::Load { index: li, .. } = &mut new_op {
-                                *li = helpers[i];
-                            }
-                        }
+                        let insert_point = if i == 0 { orig_id } else { *copies.last().unwrap() };
+                        let fc = self.insert_before(insert_point, Op::Const(Constant::idx(factor as u64)));
+                        let ic = self.insert_before(insert_point, Op::Const(Constant::idx(i as u64)));
+                        let mul = self.insert_before(insert_point, Op::Binary { x: *li, y: fc, bop: crate::kernel::BOp::Mul });
+                        let add = self.insert_before(insert_point, Op::Binary { x: mul, y: ic, bop: crate::kernel::BOp::Add });
+                        *li = add;
                     }
                 }
-                if let Op::Store { dst, .. } = &new_op {
+                if let Op::Store { dst, index: si, .. } = &mut new_op {
                     if acc_defines.contains(dst) {
-                        if let Some(helpers) = acc_index_helpers.get(dst) {
-                            if let Op::Store { index: si, .. } = &mut new_op {
-                                *si = helpers[i];
-                            }
-                        }
+                        let insert_point = if i == 0 { orig_id } else { *copies.last().unwrap() };
+                        let fc = self.insert_before(insert_point, Op::Const(Constant::idx(factor as u64)));
+                        let ic = self.insert_before(insert_point, Op::Const(Constant::idx(i as u64)));
+                        let mul = self.insert_before(insert_point, Op::Binary { x: *si, y: fc, bop: crate::kernel::BOp::Mul });
+                        let add = self.insert_before(insert_point, Op::Binary { x: mul, y: ic, bop: crate::kernel::BOp::Add });
+                        *si = add;
                     }
                 }
 
