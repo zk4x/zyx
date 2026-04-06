@@ -4,7 +4,7 @@
 use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
-    kernel::{Kernel, Op, OpId, Scope},
+    kernel::{BOp, Kernel, Op, OpId, Scope},
     Map, Set,
 };
 
@@ -28,15 +28,19 @@ impl Kernel {
         (Optimization::Upcast { factors }, n_configs)
     }
 
-    pub fn upcast(&mut self, op_id: OpId, factor: usize) {
-        debug_assert!(matches!(self.ops[op_id].op, Op::Index { scope: Scope::Global, .. }));
+    pub fn upcast(&mut self, gidx_id: OpId, factor: usize) {
+        let Op::Index { len, scope, axis } = self.ops[gidx_id].op else {
+            unreachable!()
+        };
+        debug_assert!(len.is_multiple_of(factor));
+        debug_assert_eq!(scope, Scope::Global);
 
         if !self.ops.values().any(|node| matches!(node.op, Op::Loop { .. })) {
-            let Op::Index { len, scope, axis } = self.ops[op_id].op else {
+            let Op::Index { len, scope, axis } = self.ops[gidx_id].op else {
                 return;
             };
             self.split_dim(
-                op_id,
+                gidx_id,
                 vec![
                     Op::Index { len: len / factor, scope, axis },
                     Op::Index { len: factor, scope: Scope::Local, axis },
@@ -45,108 +49,148 @@ impl Kernel {
             return;
         }
 
+        // === Some checks when we just cannot upcast === //
+
+        // We cannot upcast if the kernel is already vectorized
+        if self.ops.values().any(|node| match node.op {
+            Op::Load { vlen, .. } | Op::Store { vlen, .. } => vlen != 1,
+            _ => false,
+        }) {
+            return;
+        }
+
         // === UPCAST WITH REDUCE LOOPS === //
-        let Op::Index { len, scope, axis } = self.ops[op_id].op else {
-            unreachable!()
-        };
-        debug_assert!(len.is_multiple_of(factor));
-        self.ops[op_id].op = Op::Index { len: len / factor, scope, axis };
 
-        // Collect all non-trivial ops in order
-        let mut ops_to_dup: Vec<OpId> = Vec::new();
-        let mut id = self.head;
-        while !id.is_null() {
-            match self.ops[id].op {
-                Op::Index { .. } | Op::Const(_) | Op::Define { .. } | Op::Loop { .. } | Op::EndLoop => {}
-                _ => ops_to_dup.push(id),
+        // First skip ops that don't need duplication
+        let mut op_id = self.head;
+        loop {
+            match self.ops[op_id].op {
+                Op::Define { scope: Scope::Global | Scope::Local, .. } => {}
+                Op::Index { .. } => {}
+                Op::Const(_) => {}
+                _ => {
+                    break;
+                }
             }
-            id = self.next_op(id);
+            op_id = self.next_op(op_id);
         }
 
-        // Find accumulator defines (mutable defines used by Load/Store)
-        // Only register/local accumulators need index remapping
-        let mut acc_defines: Set<OpId> = Set::default();
-        for &dup_id in &ops_to_dup {
-            match self.ops[dup_id].op {
-                Op::Load { src, .. } => {
-                    if let Op::Define { ro: false, scope: Scope::Register | Scope::Local, .. } = self.ops[src].op {
-                        acc_defines.insert(src);
-                    }
-                }
-                Op::Store { dst, .. } => {
-                    if let Op::Define { ro: false, scope: Scope::Register | Scope::Local, .. } = self.ops[dst].op {
-                        acc_defines.insert(dst);
-                    }
-                }
-                _ => {}
-            }
+        // Create constant for factor
+        let const_factor = self.insert_before(gidx_id, Op::Const(Constant::idx(factor as u64)));
+
+        // Create index offsets
+        let mut offsets = Vec::with_capacity(factor - 1);
+        for i in 1..factor {
+            offsets.push(self.insert_before(gidx_id, Op::Const(Constant::idx(i as u64))));
         }
 
-        // Increase accumulator sizes by factor
-        for &acc_id in &acc_defines {
-            if let Op::Define { len, .. } = &mut self.ops[acc_id].op {
-                *len *= factor;
-            }
+        // For remapping parameters
+        let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
+
+        // Global index now split into multiple indices with constant offsets
+        let x = self.insert_before(gidx_id, Op::Index { len: len / factor, scope, axis });
+        self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
+        let mut ids = Vec::with_capacity(factor - 1);
+        let mut id = gidx_id;
+        for i in 0..factor - 1 {
+            id = self.insert_after(id, Op::Binary { x: gidx_id, y: offsets[i], bop: BOp::Add });
+            ids.push(id);
         }
+        remaps.insert(gidx_id, ids);
 
-        let first_non_trivial = ops_to_dup[0];
-
-        // Process ops in forward order
-        let mut remap: Map<OpId, Vec<OpId>> = Map::default();
-
-        for &orig_id in &ops_to_dup {
-            let orig_op = self.ops[orig_id].op.clone();
-            let mut copies = Vec::with_capacity(factor);
-
-            for i in 0..factor {
-                let mut new_op = orig_op.clone();
-
-                // Remap gidx - insert helpers right before this copy (inside the loop)
-                for param in new_op.parameters_mut() {
-                    if *param == op_id {
-                        let insert_point = if i == 0 { orig_id } else { *copies.last().unwrap() };
-                        let fc = self.insert_before(insert_point, Op::Const(Constant::idx(factor as u64)));
-                        let ic = self.insert_before(insert_point, Op::Const(Constant::idx(i as u64)));
-                        let mul = self.insert_before(insert_point, Op::Binary { x: op_id, y: fc, bop: crate::kernel::BOp::Mul });
-                        let add = self.insert_before(insert_point, Op::Binary { x: mul, y: ic, bop: crate::kernel::BOp::Add });
-                        *param = add;
-                    } else if let Some(mapped) = remap.get(param) {
-                        *param = mapped[i];
+        // Now loop over remaining ops and duplicate as needed
+        let mut acc_defines = Set::default();
+        while !op_id.is_null() {
+            let next_op_id = self.next_op(op_id);
+            match self.ops[op_id].op {
+                Op::Define { dtype, scope, ro, len } => {
+                    self.ops[op_id].op = Op::Define { dtype, scope, ro, len: len * factor };
+                    acc_defines.insert(op_id);
+                }
+                Op::Loop { .. } => {}
+                Op::EndLoop { .. } => {}
+                Op::If { .. } => {}
+                Op::EndIf => {}
+                Op::Store { dst, x, index, vlen } => {
+                    if acc_defines.contains(&dst) {
+                        let mut ids = Vec::with_capacity(factor - 1);
+                        let mut id = op_id;
+                        for i in 0..factor - 1 {
+                            let mut x = x;
+                            if let Some(remap) = remaps.get(&x) {
+                                x = remap[i];
+                            }
+                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
+                            id = self.insert_after(index, Op::Store { dst, x, index, vlen });
+                            ids.push(id);
+                        }
+                        let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                        self.ops[op_id].op = Op::Store { dst, x, index, vlen };
+                        remaps.insert(op_id, ids);
+                    } else {
+                        let mut ids = Vec::with_capacity(factor - 1);
+                        let mut id = op_id;
+                        for i in 0..factor - 1 {
+                            let mut x = x;
+                            if let Some(remap) = remaps.get(&x) {
+                                x = remap[i];
+                            }
+                            let mut index = index;
+                            if let Some(remap) = remaps.get(&index) {
+                                index = remap[i];
+                            }
+                            id = self.insert_after(id, Op::Store { dst, x, index, vlen });
+                            ids.push(id);
+                        }
+                        remaps.insert(op_id, ids);
                     }
                 }
-
-                // Fix accumulator indexing: index = original_index * factor + i
-                if let Op::Load { src, index: li, .. } = &mut new_op {
-                    if acc_defines.contains(src) {
-                        let insert_point = if i == 0 { orig_id } else { *copies.last().unwrap() };
-                        let fc = self.insert_before(insert_point, Op::Const(Constant::idx(factor as u64)));
-                        let ic = self.insert_before(insert_point, Op::Const(Constant::idx(i as u64)));
-                        let mul = self.insert_before(insert_point, Op::Binary { x: *li, y: fc, bop: crate::kernel::BOp::Mul });
-                        let add = self.insert_before(insert_point, Op::Binary { x: mul, y: ic, bop: crate::kernel::BOp::Add });
-                        *li = add;
+                Op::Load { src, index, vlen } => {
+                    if acc_defines.contains(&src) {
+                        let mut ids = Vec::with_capacity(factor - 1);
+                        let mut id = op_id;
+                        for i in 0..factor - 1 {
+                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
+                            id = self.insert_after(index, Op::Load { src, index, vlen });
+                            ids.push(id);
+                        }
+                        let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
+                        self.ops[op_id].op = Op::Load { src, index, vlen };
+                        remaps.insert(op_id, ids);
+                    } else {
+                        let mut ids = Vec::with_capacity(factor - 1);
+                        let mut id = op_id;
+                        for i in 0..factor - 1 {
+                            let mut index = index;
+                            if let Some(remap) = remaps.get(&index) {
+                                index = remap[i];
+                            }
+                            id = self.insert_after(id, Op::Load { src, index, vlen });
+                            ids.push(id);
+                        }
+                        remaps.insert(op_id, ids);
                     }
                 }
-                if let Op::Store { dst, index: si, .. } = &mut new_op {
-                    if acc_defines.contains(dst) {
-                        let insert_point = if i == 0 { orig_id } else { *copies.last().unwrap() };
-                        let fc = self.insert_before(insert_point, Op::Const(Constant::idx(factor as u64)));
-                        let ic = self.insert_before(insert_point, Op::Const(Constant::idx(i as u64)));
-                        let mul = self.insert_before(insert_point, Op::Binary { x: *si, y: fc, bop: crate::kernel::BOp::Mul });
-                        let add = self.insert_before(insert_point, Op::Binary { x: mul, y: ic, bop: crate::kernel::BOp::Add });
-                        *si = add;
+                ref op => {
+                    let op = op.clone();
+                    let mut ids = Vec::with_capacity(factor - 1);
+                    let mut id = op_id;
+                    for i in 0..factor - 1 {
+                        let mut op = op.clone();
+                        // Reindex the op
+                        for param in op.parameters_mut() {
+                            if let Some(remap) = remaps.get(&param) {
+                                *param = remap[i];
+                            }
+                        }
+                        id = self.insert_after(id, op);
+                        ids.push(id);
                     }
+                    // Store which remaps will be used in the future
+                    remaps.insert(op_id, ids);
                 }
-
-                let new_id = if i == 0 {
-                    self.ops[orig_id].op = new_op;
-                    orig_id
-                } else {
-                    self.insert_after(*copies.last().unwrap(), new_op)
-                };
-                copies.push(new_id);
             }
-
-            remap.insert(orig_id, copies);
+            op_id = next_op_id;
         }
 
         self.verify();
