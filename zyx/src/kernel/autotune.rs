@@ -224,7 +224,7 @@ impl Kernel {
 
         //kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
-        //kernel.debug();
+        kernel.debug();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)

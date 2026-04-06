@@ -143,7 +143,7 @@ impl Kernel {
         self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
 
         // Tree reduce: each step threads with lidx < stride load from lidx+stride and add to lidx
-        // For factor=16: stride 8 -> 4 -> 2 -> 1
+        // For factor=32, tree_branch 4: stride 32 -> 8 -> 2 -> 1
         let mut stride = factor / 2;
         while stride > 0 {
             let stride_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(stride as u64)));
