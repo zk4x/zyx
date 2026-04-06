@@ -9,12 +9,6 @@ use crate::{
 };
 
 impl Kernel {
-    /// Duplicate an op, inserting the copy right after the given position.
-    fn dup_after(&mut self, after_id: OpId, orig_id: OpId) -> OpId {
-        let op = self.ops[orig_id].op.clone();
-        self.insert_after(after_id, op)
-    }
-
     pub fn opt_upcast(&self) -> (Optimization, usize) {
         let mut factors = Vec::new();
         let mut op_id = self.head;
@@ -132,7 +126,7 @@ impl Kernel {
                 }
 
                 // Fix accumulator indexing
-                if let Op::Load { src, index, .. } = &new_op {
+                if let Op::Load { src, .. } = &new_op {
                     if acc_defines.contains(src) {
                         if let Some(helpers) = acc_index_helpers.get(src) {
                             if let Op::Load { index: li, .. } = &mut new_op {
@@ -141,7 +135,7 @@ impl Kernel {
                         }
                     }
                 }
-                if let Op::Store { dst, index, .. } = &new_op {
+                if let Op::Store { dst, .. } = &new_op {
                     if acc_defines.contains(dst) {
                         if let Some(helpers) = acc_index_helpers.get(dst) {
                             if let Op::Store { index: si, .. } = &mut new_op {

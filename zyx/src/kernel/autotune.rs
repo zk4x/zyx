@@ -10,13 +10,14 @@ use std::hash::{Hash, Hasher};
 use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
-static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
+static AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 9] = [
     Kernel::opt_reassociate_commutative,
     //Kernel::opt_unroll, // disabled - interacts badly with upcast
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
     //Kernel::opt_register_tiling,
     Kernel::opt_fuse_mad,
+    Kernel::opt_unfuse_mad,
     Kernel::opt_unroll_constant_loops,
     Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
