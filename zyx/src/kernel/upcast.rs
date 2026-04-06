@@ -68,10 +68,7 @@ impl Kernel {
             };
             self.split_dim(
                 gidx_id,
-                vec![
-                    Op::Index { len: len / factor, scope, axis },
-                    Op::Index { len: factor, scope: Scope::Local, axis },
-                ],
+                vec![Op::Index { len: len / factor, scope, axis }, Op::Loop { len: factor }],
             );
             return;
         }
@@ -224,6 +221,6 @@ impl Kernel {
         }
 
         self.verify();
-        self.debug_colorless();
+        //self.debug_colorless();
     }
 }
