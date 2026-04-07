@@ -9,6 +9,21 @@ use crate::{
 
 impl Kernel {
     pub fn opt_tiled_reduce(&self) -> (Optimization, usize) {
+        // Let's not tile reduce kernel with barriers for now
+        // Don't apply tiled reduce if there's already a local index
+        if self.ops.values().any(|node| match node.op {
+            Op::Barrier { .. } => true,
+            //Op::Index { scope: Scope::Local, .. } => true,
+            _ => false,
+        }) {
+            return (Optimization::TiledReduce { factors: Vec::new() }, 0);
+        }
+        // Only apply tiled reduce if there's exactly one loop in the kernel
+        let n_loops = self.ops.values().filter(|node| matches!(node.op, Op::Loop { .. })).count();
+        if n_loops != 1 {
+            return (Optimization::TiledReduce { factors: Vec::new() }, 0);
+        }
+
         let candidates = vec![32, 16, 8, 64, 128];
         let tree_branch_candidates = vec![2, 4];
         let mut factors = Vec::new();
@@ -37,22 +52,6 @@ impl Kernel {
         } else {
             return;
         };
-
-        // Let's not tile reduce kernel with barriers for now
-        // Don't apply tiled reduce if there's already a local index
-        if self.ops.values().any(|node| match node.op {
-            Op::Barrier { .. } => true,
-            Op::Index { scope: Scope::Local, .. } => true,
-            _ => false,
-        }) {
-            return;
-        }
-
-        // Only apply tiled reduce if there's exactly one loop in the kernel
-        let n_loops = self.ops.values().filter(|node| matches!(node.op, Op::Loop { .. })).count();
-        if n_loops != 1 {
-            return;
-        }
 
         // Get new free axis for the local dimension
         let laxis = self

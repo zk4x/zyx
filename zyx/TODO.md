@@ -131,7 +131,7 @@
     - [ ] tensor core ops
   - [x] merge all mul + add into mad instructions
   - [ ] local memory tiling
-    - [ ] local tiling for accumulators in large reduces
+    - [x] local tiling for accumulators in large reduces
     - [ ] local tiling for caching
   - [ ] multi step reduce (with multiple accumulators)
   - [ ] streaming dual reduce ops (e.g. streaming softmax)

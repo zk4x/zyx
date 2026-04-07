@@ -139,6 +139,7 @@ fn sum_reduce_last_dim_3d() -> Result<(), ZyxError> {
         }
         arr
     };
+    //println!("{x0:?}");
     if x0 != expected {
         panic!("test failure");
     }

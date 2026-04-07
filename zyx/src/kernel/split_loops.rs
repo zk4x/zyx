@@ -9,6 +9,12 @@ use crate::{
 
 impl Kernel {
     pub fn opt_split_global_to_local(&self) -> (Optimization, usize) {
+        // This should not be needed, but for some reason there are failures when applying
+        // split global to local on tiled_reduce kernel. Looks like some weird data races.
+        if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
+            let factors = Vec::new();
+            return (Optimization::SplitLoop { factors }, 0);
+        }
         let mut op_id = self.head;
         let mut factors = Vec::new();
         let mut seen_axes = crate::Map::default();

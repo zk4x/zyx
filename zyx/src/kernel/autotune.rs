@@ -7,23 +7,24 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
-const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 11] = [
+const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
     Kernel::opt_reassociate_commutative,
-    Kernel::opt_unroll,
+    //Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
-    Kernel::opt_register_tiling,
+    //Kernel::opt_register_tiling,
     Kernel::opt_fuse_mad,
     Kernel::opt_unfuse_mad,
     Kernel::opt_unroll_constant_loops,
     Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
-    Kernel::opt_licm,
+    //Kernel::opt_licm,
 ];
 
+#[derive(Debug)]
 pub enum Optimization {
     ReassociateCommutative,
     UnrollLoops {
@@ -72,6 +73,7 @@ impl Optimization {
                     unreachable!()
                 };
                 debug_assert_eq!(scope, Scope::Global);
+                //println!("Splitting global axis={axis} to factor={factor}");
                 kernel.split_dim(
                     op_id,
                     vec![
@@ -201,13 +203,34 @@ impl Kernel {
 
         // Here come series of custom optimizations
 
-        //kernel.fuse_mad();
-        let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_tiled_reduce();
+        let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_split_loop();
         if n_tiled_reduce_configs > 0 {
             tiled_reduce_opt.apply(&mut kernel, 0);
         }
+        let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_upcast();
+        if n_tiled_reduce_configs > 0 {
+            tiled_reduce_opt.apply(&mut kernel, 0);
+        }
+        let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_upcast();
+        if n_tiled_reduce_configs > 0 {
+            tiled_reduce_opt.apply(&mut kernel, 1);
+        }
+        kernel.unroll_loops(8);
+
+        //kernel.fuse_mad();
+        /*let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_tiled_reduce();
+        if n_tiled_reduce_configs > 0 {
+            tiled_reduce_opt.apply(&mut kernel, 1);
+        }
+        kernel.unroll_loops(16);
+        kernel.unfuse_mad();
+        kernel.run_always_on_optimizations();
+        kernel.reassociate_commutative();
+        kernel.loop_invariant_code_motion();*/
+        //kernel.unroll_constant_loops();
+
         // Apply upcast (vectorization) with factor 2
-        let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
+        /*let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
         if n_upcast_configs > 0 {
             upcast_opt.apply(&mut kernel, 0);
         }
@@ -215,7 +238,7 @@ impl Kernel {
         let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
         if n_upcast_configs > 0 {
             upcast_opt.apply(&mut kernel, 0);
-        }
+        }*/
         //kernel.unroll_loops(2);
 
         // Tiled reduce disabled
@@ -245,7 +268,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> (DeviceProgramId, OptSeq) {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
@@ -298,22 +321,21 @@ impl Kernel {
 
             let jobs: Vec<_> = (0..n_threads)
                 .map(|thread_id| {
-                    let base_kernel = self.clone();
+                    let mut thread_kernel = kernel.clone();
 
                     let items_ref: &Vec<OptSeq> = unsafe { &*items_ptr };
                     let visited_ref: &Set<_> = unsafe { &*visited_ptr };
 
                     move || {
-                        let mut kernel = base_kernel.clone();
                         let mut local_items = Vec::new();
                         let mut local_visited = Set::default();
 
                         let mut rng = Rng::seed_from_u64(3902938402398423 + thread_id as u64);
 
                         let opt_seq = sample_best(items_ref, &mut rng);
-                        opt_seq.apply(&mut kernel);
+                        opt_seq.apply(&mut thread_kernel);
 
-                        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
+                        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel));
                         let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
                         let mult = n_added_per_step.min(total_configs);
 
@@ -325,7 +347,7 @@ impl Kernel {
                                 let mut opts = opt_seq.opts.clone();
                                 opts.push((opt_id, config_id));
 
-                                let mut new_kernel = kernel.clone();
+                                let mut new_kernel = thread_kernel.clone();
                                 avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
                                 new_kernel.run_always_on_optimizations();
                                 let hash = new_kernel.get_hash();
@@ -371,6 +393,10 @@ impl Kernel {
 
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel);
+                println!(
+                    "Running opt: {opt_id}, cfg={opt_cfg} -> {opt:?} -> {:?}",
+                    AVAILABLE_OPTIMIZATIONS[opt_id]
+                );
                 opt.apply(&mut kernel, opt_cfg);
             }
             kernel.run_always_on_optimizations();
