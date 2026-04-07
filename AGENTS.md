@@ -224,20 +224,23 @@ kernel.run_always_on_optimizations();
 
 ```rust
 const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 5] = [
-    Kernel::opt_split_global_to_local,  // Must be before tiled_reduce
+    Kernel::opt_split_global_to_local,
     Kernel::opt_fuse_mad,
     Kernel::opt_unfuse_mad,
-    Kernel::opt_split_loop,              // Flaky in exploration
-    Kernel::opt_tiled_reduce,           // Skip when local index exists
+    Kernel::opt_split_loop,
+    Kernel::opt_tiled_reduce,
 ];
 ```
 
+All of these work together and pass all tests.
+
 ### Debugging Tips
 
-- Use `ZYX_AUTOTUNE_CACHE_DISABLE=1` to bypass cached autotune results
+- Use `ZYX_AUTOTUNE_CACHE_DISABLE=1` to bypass cached autotune results when debugging
 - Check kernel hash via `kernel.get_hash()` to see if kernels are being deduplicated
 - The exploration can apply the same optimization multiple times to the same kernel - this can cause issues
 - Use `kernel.debug_colorless()` to inspect IR state
+- **Important**: Bad optimization results can get cached! Clear cache (`rm -rf ~/.cache/zyx`) when testing fixes
 
 ### Adding an Optimization
 
