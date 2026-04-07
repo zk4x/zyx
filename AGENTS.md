@@ -165,6 +165,80 @@ Mark allowed exceptions with `#[allow(...)]`.
 
 The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel configurations.
 
+### How Autotune Works
+
+The autotune system is simple:
+1. Start with initial kernel and run always-on optimizations
+2. Apply ONE optimization variant and run always-on optimizations
+3. Hash the kernel and check if visited (duplicate detection)
+4. If not visited, launch kernel and record timing
+5. Repeat by combining with existing optimization sequences
+6. At the end, launch ONE final kernel configuration
+
+The key insight: **only one kernel is launched at the end**. The exploration phase just builds up optimization sequences without actually running them.
+
+### Debugging with apply_selected_optimizations
+
+To debug optimization issues, use the `apply_selected_optimizations` function which launches a kernel:
+
+```rust
+// In autotune.rs, find this line and change to true:
+if true {  // was: if false
+    return self.apply_selected_optimizations(...)
+}
+```
+
+Then customize the optimizations applied in that function:
+
+```rust
+kernel.fuse_mad();
+kernel.unfuse_mad();
+
+// Apply in specific order to test
+let (split_opt, n_split) = kernel.opt_split_loop();
+if n_split > 0 {
+    split_opt.apply(&mut kernel, 0);
+}
+// ... more optimizations
+kernel.run_always_on_optimizations();
+```
+
+### Known Optimization Issues
+
+| Optimization | Status | Notes |
+|--------------|--------|-------|
+| `opt_fuse_mad` | ✅ Working | Baseline |
+| `opt_unfuse_mad` | ✅ Working | Works with fuse_mad |
+| `opt_tiled_reduce` | ✅ Working | Skip when local index exists or multiple loops |
+| `opt_split_global_to_local` | ✅ Working | Must run before tiled_reduce creates local index |
+| `opt_split_loop` | ⚠️ Flaky | Fails in real autotune exploration, works in apply_selected |
+| `opt_reassociate_commutative` | ❌ Disabled | Buggy - breaks with licm |
+| `opt_upcast` | ❌ Disabled | Fails matmul_disk |
+| `opt_register_tiling` | ❌ Disabled | Fails gather |
+| `opt_unfuse_mad` (standalone) | ❌ Disabled | Fails reduce when alone |
+| `opt_unroll` | ❌ Disabled | Timeout/slow |
+| `opt_unroll_constant_loops` | ❌ Disabled | Timeout/slow |
+| `opt_licm` | ❌ Disabled | Conflicts with reassociate |
+
+### Current Working Set
+
+```rust
+const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 5] = [
+    Kernel::opt_split_global_to_local,  // Must be before tiled_reduce
+    Kernel::opt_fuse_mad,
+    Kernel::opt_unfuse_mad,
+    Kernel::opt_split_loop,              // Flaky in exploration
+    Kernel::opt_tiled_reduce,           // Skip when local index exists
+];
+```
+
+### Debugging Tips
+
+- Use `ZYX_AUTOTUNE_CACHE_DISABLE=1` to bypass cached autotune results
+- Check kernel hash via `kernel.get_hash()` to see if kernels are being deduplicated
+- The exploration can apply the same optimization multiple times to the same kernel - this can cause issues
+- Use `kernel.debug_colorless()` to inspect IR state
+
 ### Adding an Optimization
 
 1. Define config function (how many variants):
