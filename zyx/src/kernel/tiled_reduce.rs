@@ -37,11 +37,20 @@ impl Kernel {
         } else {
             return;
         };
-        // Also let's not tile reduce kernel with barriers for now
+
+        // Let's not tile reduce kernel with barriers for now
+        // Don't apply tiled reduce if there's already a local index
         if self.ops.values().any(|node| match node.op {
             Op::Barrier { .. } => true,
+            Op::Index { scope: Scope::Local, .. } => true,
             _ => false,
         }) {
+            return;
+        }
+
+        // Only apply tiled reduce if there's exactly one loop in the kernel
+        let n_loops = self.ops.values().filter(|node| matches!(node.op, Op::Loop { .. })).count();
+        if n_loops != 1 {
             return;
         }
 
