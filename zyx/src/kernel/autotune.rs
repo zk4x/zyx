@@ -7,7 +7,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 2] = [
@@ -204,7 +204,7 @@ impl Kernel {
         //kernel.fuse_mad();
         let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_tiled_reduce();
         if n_tiled_reduce_configs > 0 {
-            tiled_reduce_opt.apply(&mut kernel, 1); // tree_branch=2
+            tiled_reduce_opt.apply(&mut kernel, 3);
         }
         // Apply upcast (vectorization) with factor 2
         /*let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
@@ -224,7 +224,7 @@ impl Kernel {
 
         //kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
-        kernel.debug();
+        //kernel.debug_colorless();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)

@@ -14,3 +14,4 @@ zyx-examples/models
 zyx-examples/venv
 docs/*
 zyx/Cargo.lock
+zyx/tests/__temp_test.rs

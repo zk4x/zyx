@@ -142,25 +142,41 @@ impl Kernel {
         // Sync memory
         self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
 
-        // Tree reduce: each step threads with lidx < stride load from lidx+stride and add to lidx
-        // For factor=32, tree_branch 4: stride 32 -> 8 -> 2 -> 1
-        let mut stride = factor / 2;
-        while stride > 0 {
-            let stride_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(stride as u64)));
-            let limit_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(stride as u64)));
+        // Tree reduce: each step threads with lidx < active_threads load tree_branch elements and sum them
+        // For factor=32, tree_branch 4:
+        //   level 0: stride=32, active=8, offsets=8,16,24 -> combine for i in 0..8
+        //   level 1: stride=8, active=2, offsets=2,4,6 -> combine for i in 0..2
+        //   level 2: stride=2 < tree_branch=4, exit first loop
+        //   Then binary reduction: stride=2 -> 1
+        let mut stride = factor;
+        while stride > 1 {
+            let use_tree_branch = stride >= tree_branch;
+            let active_threads = if use_tree_branch { stride / tree_branch } else { stride / 2 };
+            let limit_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(active_threads as u64)));
             let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: limit_const, bop: BOp::Cmplt });
             self.insert_before(acc_load_id, Op::If { condition });
 
-            let offset_idx = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: stride_const, bop: BOp::Add });
-            let local_load = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: offset_idx, vlen: 1 });
-            let current_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: lidx, vlen: 1 });
-            let bop_id = self.insert_before(acc_load_id, Op::Binary { x: current_val, y: local_load, bop });
+            let branch = if use_tree_branch { tree_branch } else { 2 };
+            let mut sum_x = None;
+            for i in 1..branch {
+                let offset = i * active_threads;
+                let offset_const = self.insert_before(acc_load_id, Op::Const(Constant::idx(offset as u64)));
+                let offset_idx = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: offset_const, bop: BOp::Add });
+                let local_load = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: offset_idx, vlen: 1 });
+                if let Some(prev_sum) = sum_x {
+                    sum_x = Some(self.insert_before(acc_load_id, Op::Binary { x: prev_sum, y: local_load, bop }));
+                } else {
+                    let current_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: lidx, vlen: 1 });
+                    sum_x = Some(self.insert_before(acc_load_id, Op::Binary { x: current_val, y: local_load, bop }));
+                }
+            }
+            let bop_id = sum_x.unwrap();
             self.insert_before(acc_load_id, Op::Store { dst: loc_acc, x: bop_id, index: lidx, vlen: 1 });
 
             self.insert_before(acc_load_id, Op::EndIf);
             self.insert_before(acc_load_id, Op::Barrier { scope: Scope::Local });
 
-            stride /= tree_branch;
+            stride = active_threads;
         }
 
         // Load final result from local[0] to register (only thread 0)
