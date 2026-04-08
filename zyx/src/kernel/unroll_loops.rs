@@ -11,6 +11,7 @@ use crate::{
 };
 
 impl Kernel {
+    #[allow(unused)]
     pub fn opt_unroll(&self) -> (Optimization, usize) {
         (Optimization::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
     }

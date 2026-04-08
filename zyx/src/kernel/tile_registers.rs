@@ -6,6 +6,7 @@ use crate::kernel::{Kernel, Op, Scope};
 use crate::{Map, Set};
 
 impl Kernel {
+    #[allow(unused)]
     pub fn opt_register_tiling(&self) -> (Optimization, usize) {
         let candidates: Vec<u64> = vec![2, 4, 8, 16];
         let mut global_upcasts = Map::default();

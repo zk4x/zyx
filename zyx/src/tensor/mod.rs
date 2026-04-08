@@ -10,9 +10,9 @@
 use crate::dtype::DType;
 use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
-use crate::runtime::{apply_padding, TempData};
+use crate::runtime::{TempData, apply_padding};
 use crate::scalar::{Float, Scalar};
-use crate::shape::{into_axes, into_axis, Dim, IntoShape, UAxis};
+use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
 use crate::slab::SlabId;
 use crate::{DebugMask, RT};
 use core::cmp::Ordering;
@@ -2125,6 +2125,21 @@ impl Tensor {
         let result = one_hot.where_(&x, 0.0)?.sum_dtype([-1], self.dtype())?;
 
         Ok(result)
+    }
+
+    /// Index select
+    pub fn index_select(&self, dim: Axis, index: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let index = index.into();
+        let mut shape = self.shape();
+        let rank = shape.len();
+        let dim = into_axis(dim, rank)?;
+
+        shape[dim] = index.shape()[0];
+        let mut view_shape: Vec<Dim> = vec![1; rank];
+        view_shape[dim] = 0;
+        let index_expanded = index.reshape(view_shape)?.expand(shape)?;
+
+        self.gather(dim as Axis, index_expanded)
     }
 
     /// Shrink

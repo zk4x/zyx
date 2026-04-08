@@ -47,6 +47,7 @@ impl MnistNet {
     }
 
     fn forward(&self, x: &Tensor) -> Tensor {
+        println!("{:?}", x.shape());
         let x = x.reshape([0, 784]).unwrap();
         let x = self.l1.forward(x).unwrap().relu();
         self.l2.forward(&x).unwrap()
@@ -56,7 +57,7 @@ impl MnistNet {
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
     let train_dataset: HashMap<String, Tensor> = Tensor::load("data/mnist_dataset.safetensors")?;
-    let train_x = (train_dataset["train_x"].cast(DType::F32) / 255).reshape([60000, 1, 28 * 28])?;
+    let train_x = (train_dataset["train_x"].cast(DType::F32) / 255).reshape([60000, 784])?;
     let train_y = train_dataset["train_y"].clone();
     let test_x = train_dataset["test_x"].cast(DType::F32) / 255;
     let test_y = train_dataset["test_y"].clone();
@@ -89,17 +90,9 @@ fn main() -> Result<(), ZyxError> {
     for step in 0..7000usize {
         Tensor::set_training(true);
         let tape = GradientTape::new();
-        let samples = Tensor::uniform(batch_size, 0..n_train)?;
-        /*let x = train_x
-        .gather(
-            0,
-            samples
-                .reshape([batch_size, 1, 1])?
-                .expand([batch_size, 28, 28])?,
-        )
-        .unwrap();*/
-        let x = train_x.gather(0, &samples.reshape([batch_size, 1, 1])?)?;
-        let y = train_y.gather(0, samples).unwrap();
+        let samples = Tensor::uniform(batch_size, 0..n_train)?; // [128]
+        let x = train_x.index_select(0, &samples)?; // x shape: [batch_size, 784]
+        let y = train_y.index_select(0, &samples)?; // y shape: [batch_size]
 
         let logits = net.forward(&x);
         let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();

@@ -477,3 +477,36 @@ fn gather_with_one_hot_large_dim() -> Result<(), ZyxError> {
     }
     Ok(())
 }
+
+#[test]
+fn index_select() -> Result<(), ZyxError> {
+    // 2D tensor
+    let x = Tensor::from([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
+
+    // --- Row selection ---
+    let rows = Tensor::from([2, 0]); // pick 3rd row, then 1st row
+    let y = x.index_select(0, &rows)?;
+    assert_eq!(y, [[7, 8, 9], [1, 2, 3]]);
+
+    // --- Column selection ---
+    let cols = Tensor::from([2, 0]); // pick 3rd col, then 1st col
+    let y = x.index_select(1, &cols)?;
+    assert_eq!(y, [[3, 1], [6, 4], [9, 7]]);
+
+    // --- Negative indices ---
+    let rows = Tensor::from([-1, -3]); // last row, first row
+    let y = x.index_select(0, &rows)?;
+    assert_eq!(y, [[7, 8, 9], [1, 2, 3]]);
+
+    let cols = Tensor::from([-2, -1]); // second last col, last col
+    let y = x.index_select(1, &cols)?;
+    assert_eq!(y, [[2, 3], [5, 6], [8, 9]]);
+
+    // --- Single element selection ---
+    let row = Tensor::from([1]);
+    let col = Tensor::from([2]);
+    let y = x.index_select(0, &row)?.index_select(1, &col)?;
+    assert_eq!(y, [[6]]);
+
+    Ok(())
+}

@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
 use crate::error::BackendError;
 use crate::kernel::{Kernel, Op, OpId, Scope};
