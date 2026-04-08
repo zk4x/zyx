@@ -94,6 +94,9 @@ fn main() -> Result<(), ZyxError> {
         let x = train_x.index_select(0, &samples)?; // x shape: [batch_size, 784]
         let y = train_y.index_select(0, &samples)?; // y shape: [batch_size]
 
+        Tensor::realize([&x, &y])?;
+        println!("Index time above <");
+
         let logits = net.forward(&x);
         let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
         let grads = tape.gradient(&loss, &net);
@@ -106,6 +109,7 @@ fn main() -> Result<(), ZyxError> {
                 .forward(&test_x)
                 .argmax_axis(1)?
                 .equal(&test_y)?
+                .cast(DType::F32)
                 .mean_all()
                 .item::<f32>();
             println!(
@@ -116,19 +120,7 @@ fn main() -> Result<(), ZyxError> {
         }
     }
 
-    // Evaluation Loop
-    println!("Evaluating...");
-    let logits = net.forward(&test_x);
-    let preds: Vec<i64> = logits.argmax_axis(-1)?.try_into()?;
-
-    /*let correct = preds
-        .iter()
-        .zip(test_y.iter())
-        .filter(|(a, b)| a == b)
-        .count();
-
-    let accuracy = (correct as f32) / (test_y.len() as f32) * 100.0;
-    println!("Test accuracy: {:.2}%", accuracy);*/
+    // TODO Evaluation Loop
 
     Ok(())
 }

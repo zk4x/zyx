@@ -2510,10 +2510,12 @@ impl Tensor {
 
     /// Argmax
     pub fn argmax_axis(&self, axis: Axis) -> Result<Tensor, ZyxError> {
+        let rank = self.rank();
+        let _ = into_axis(axis, rank as usize)?;
         self.argmax_impl(axis, false)
     }
 
-    /// Argmax
+    /* // Argmax
     fn argmax_impl(&self, axis: Axis, keepdim: bool) -> Result<Tensor, ZyxError> {
         // Find the maximum values along the specified axis
         let max_vals = self.max_keepdim([axis]).unwrap();
@@ -2522,16 +2524,43 @@ impl Tensor {
         let mask = self.equal(max_vals)?;
         let shape = self.shape();
         let uaxis = into_axis(axis, shape.len())?;
+        println!("shape={shape:?}, uaxis={uaxis}");
         let range = Tensor::arange(shape[uaxis] as i32, 0, -1)?;
 
         let shape_value = shape[uaxis];
-        let repeat_count = shape.len() - uaxis - 1;
+        let repeat_count = shape.len() - uaxis;
         let mut shape = vec![shape_value];
         shape.extend(vec![1; repeat_count]);
 
         let reshaped_range = range.reshape(&shape)?;
         let idx = mask * reshaped_range;
         let res = Tensor::from(shape[uaxis] as i64) - if keepdim { idx.max_keepdim([axis])? } else { idx.max([axis])? };
+        Ok(res.cast(DType::I32))
+    }*/
+    /// Argmax
+    fn argmax_impl(&self, axis: Axis, keepdim: bool) -> Result<Tensor, ZyxError> {
+        // max values along the axis
+        let max_vals = self.max_keepdim([axis])?;
+
+        // mask where values equal the max
+        let mask = self.equal(max_vals)?;
+
+        // correct axis
+        let shape = self.shape();
+        let uaxis = into_axis(axis, shape.len())?;
+
+        // create a range tensor [0, 1, 2, ...] along the axis
+        let range = Tensor::arange(0, shape[uaxis] as i32, 1)?;
+        let mut reshape_shape = vec![1; shape.len()];
+        reshape_shape[uaxis] = shape[uaxis];
+        let reshaped_range = range.reshape(&reshape_shape)?;
+
+        // mask * range -> positions of max values
+        let idx = mask * reshaped_range;
+
+        // max along axis gives argmax
+        let res = if keepdim { idx.max_keepdim([axis])? } else { idx.max([axis])? };
+
         Ok(res.cast(DType::I32))
     }
 

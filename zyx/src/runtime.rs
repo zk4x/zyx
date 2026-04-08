@@ -77,10 +77,7 @@ pub struct Pool {
 
 impl Pool {
     pub(crate) fn new(pool: MemoryPool) -> Self {
-        Self {
-            pool,
-            events: Map::with_capacity_and_hasher(100, BuildHasherDefault::default()),
-        }
+        Self { pool, events: Map::with_capacity_and_hasher(100, BuildHasherDefault::default()) }
     }
 }
 
@@ -302,7 +299,7 @@ impl Runtime {
         let dtype = data.dtype();
         //println!("bytes={} dtype={} shape={:?}", data.bytes(), data.dtype(), shape);
         debug_assert_eq!(shape.iter().product::<Dim>() * dtype.byte_size() as Dim, bytes);
-        if bytes == dtype.byte_size() as Dim {
+        if bytes == dtype.byte_size() as Dim && shape.len() == 1 {
             let value = data.read();
             let value = Constant::from_le_bytes(&value, dtype);
             if self.constants_len < NUM_CONSTANTS {
@@ -320,13 +317,7 @@ impl Runtime {
         let mem_pools: Vec<PoolId> = self
             .pools
             .iter()
-            .filter_map(|(id, mp)| {
-                if mp.pool.free_bytes() > bytes {
-                    Some(id)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(id, mp)| if mp.pool.free_bytes() > bytes { Some(id) } else { None })
             .collect();
         if mem_pools.is_empty() {
             return Err(ZyxError::AllocationError("no memory pool has been initialized.".into()));
@@ -764,7 +755,12 @@ impl Runtime {
     }
 }
 
-pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut Slab<PoolId, Pool>, temp_data: &mut Map<BufferId, Box<[u8]>>, buffer_map: &mut Map<TensorId, BufferId>) {
+pub fn deallocate_tensors(
+    to_remove: &Set<TensorId>,
+    pools: &mut Slab<PoolId, Pool>,
+    temp_data: &mut Map<BufferId, Box<[u8]>>,
+    buffer_map: &mut Map<TensorId, BufferId>,
+) {
     for tensor_id in to_remove {
         if let Some(buffer_id) = buffer_map.remove(tensor_id) {
             if !buffer_map.values().any(|&bid| bid == buffer_id) {

@@ -510,3 +510,59 @@ fn index_select() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn argmax_comprehensive() -> Result<(), ZyxError> {
+    // --- 1D tensor ---
+    let x1 = Tensor::from([1, 3, 2, 5]);
+    assert_eq!(x1.argmax(), 3); // max is 5 at index 3
+    let y = x1.argmax_axis(0)?; // Axis=0
+    assert_eq!(y, [3]); // same for axis=0
+
+    // --- 2D tensor ---
+    let x2 = Tensor::from([[1, 3, 2], [4, 6, 5], [7, 9, 8]]);
+
+    // Flattened argmax
+    assert_eq!(x2.argmax(), 7); // max 9 at index 7
+
+    // Axis=0 (column-wise)
+    let y = x2.argmax_axis(0)?;
+    assert_eq!(y, [2, 2, 2]); // max in each column
+
+    // Axis=1 (row-wise)
+    let y = x2.argmax_axis(1)?;
+    assert_eq!(y, [1, 1, 1]); // max in each row
+
+    // Negative values
+    let x2_neg = Tensor::from([[-1, -3, -2], [-4, -6, -5]]);
+    assert_eq!(x2_neg.argmax(), 0); // max -1 at index 0
+    let y = x2_neg.argmax_axis(0)?;
+    assert_eq!(y, [0, 0, 0]);
+    let y = x2_neg.argmax_axis(1)?;
+    assert_eq!(y, [0, 0]);
+
+    // Single-element tensor
+    let x_single = Tensor::from([[42]]);
+    assert_eq!(x_single.argmax(), 0);
+    let y = x_single.argmax_axis(0)?;
+    assert_eq!(y, [0]);
+    let y = x_single.argmax_axis(1)?;
+    assert_eq!(y, [0]);
+
+    // --- 3D tensor ---
+    let x3 = Tensor::from([[[1, 5, 2], [4, 0, 3]], [[7, 2, 6], [1, 8, 0]]]);
+
+    // Axis=0
+    let y = x3.argmax_axis(0)?;
+    assert_eq!(y, [[1, 0, 1], [0, 1, 0]]);
+
+    // Axis=1
+    let y = x3.argmax_axis(1)?;
+    assert_eq!(y, [[1, 0, 1], [0, 1, 0]]);
+
+    // Axis=2
+    let y = x3.argmax_axis(2)?;
+    assert_eq!(y, [[1, 0], [0, 1]]);
+
+    Ok(())
+}

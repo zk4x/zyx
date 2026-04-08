@@ -22,7 +22,6 @@ fn randn() {
     assert_eq!(x.isnan().sum(), 0);
 }*/
 
-use half::f16;
 use zyx::{DType, Scalar, Tensor, ZyxError};
 
 #[allow(unused)]
@@ -1342,17 +1341,17 @@ fn rope_2() -> Result<(), ZyxError> {
     // Create a tensor of frequencies for each dimension
     let mut freqs = Tensor::arange(0., embed_dim as f32 / 2., 1.)?; // Shape: (embed_dim // 2)
     freqs = Tensor::from(base).pow(freqs * (2.0 / embed_dim as f32))?; // Apply scaling for frequency
-                                                                       //println!("freqs={freqs}");
+    //println!("freqs={freqs}");
 
     // Create the positional encoding matrix (sinusoidal)
     let pos_enc = position * freqs; // Shape: (seq_len, embed_dim // 2)
-                                    //println!("{pos_enc}");
+    //println!("{pos_enc}");
 
     // Apply sin and cos to each dimension
     let sin_enc = pos_enc.sin(); // Shape: (seq_len, embed_dim // 2)
     let cos_enc = pos_enc.cos(); // Shape: (seq_len, embed_dim // 2)
-                                 //Tensor::realize([&sin_enc, &cos_enc])?;
-                                 //println!("{sin_enc}\n{cos_enc}");
+    //Tensor::realize([&sin_enc, &cos_enc])?;
+    //println!("{sin_enc}\n{cos_enc}");
 
     //drop(pos_enc);
     //Tensor::realize([&sin_enc, &cos_enc])?;

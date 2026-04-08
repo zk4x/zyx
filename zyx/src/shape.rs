@@ -186,9 +186,5 @@ pub fn reduce(shape: &[Dim], axes: &[UAxis]) -> Vec<Dim> {
         .enumerate()
         .filter_map(|(i, d)| if axes.contains(&(i as UAxis)) { None } else { Some(d) })
         .collect();
-    if res.is_empty() {
-        vec![1]
-    } else {
-        res
-    }
+    if res.is_empty() { vec![1] } else { res }
 }

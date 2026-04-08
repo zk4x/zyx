@@ -4,17 +4,17 @@
 //! Converts graph to kernels and schedules them to devices
 
 use crate::{
+    DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Device, DeviceId, PoolId},
     cache::Cache,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
-    runtime::{deallocate_tensors, Pool, Runtime},
+    runtime::{Pool, Runtime, deallocate_tensors},
     schedule::schedule,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
-    DType, DebugMask, Map, Set, ZyxError,
 };
 use std::{collections::BTreeMap, hash::BuildHasherDefault};
 
@@ -61,6 +61,7 @@ struct Kernelizer<'a> {
     cache: &'a mut Cache,
     autotune_config: &'a AutotuneConfig,
     debug: DebugMask,
+    n_launches: u32,
 }
 
 impl<'a> Kernelizer<'a> {
@@ -95,6 +96,7 @@ impl<'a> Kernelizer<'a> {
             cache,
             autotune_config: search_config,
             debug,
+            n_launches: 0,
         }
     }
 
@@ -564,6 +566,8 @@ impl<'a> Kernelizer<'a> {
         debug_assert!(!kernel.stores.is_empty());
         debug_assert!(!kernel.ops.is_empty());
 
+        self.n_launches += 1;
+
         //let time_w = std::time::Instant::now();
         let (dev_id, pool_id, event_wait_list, output_buffers, args) = schedule(
             &kernel.loads,
@@ -608,6 +612,10 @@ impl<'a> Kernelizer<'a> {
         // If it is not in cache, we just get new empty kernel id where we insert the kernel
         let kernel_id = self.cache.insert_kernel(kernel.clone());
 
+        if self.debug.sched() {
+            kernel.debug();
+        }
+
         let (flop, read, write) = kernel.flop_mem_rw();
 
         // Fix kernels for movement ops and if they have too many dims
@@ -642,6 +650,8 @@ impl<'a> Kernelizer<'a> {
 
             kernel.verify();
         }
+        kernel.run_always_on_optimizations();
+        kernel.debug();
 
         let (program_id, opts) = kernel.autotune(
             &args,
@@ -811,7 +821,11 @@ impl Runtime {
 
         let elapsed = begin.elapsed();
         if self.debug.perf() {
-            println!("Kernelizer took {} μs", elapsed.as_micros());
+            println!(
+                "Kernelizer took {} μs for {} kernels",
+                elapsed.as_micros(),
+                kernelizer.n_launches
+            );
         }
         Ok(())
     }
