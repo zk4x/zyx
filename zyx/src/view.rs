@@ -163,7 +163,7 @@ impl View {
             axes.clone()
         );*/
         debug_assert!(
-            axes.end <= self.0.last().map_or(1, Vec::len) as Dim,
+            axes.end as Dim <= self.0.last().map_or(1, Vec::len) as Dim,
             "Reshape axes range {axes:?} is greater than view's rank {}",
             self.0.last().map_or(1, Vec::len)
         );
@@ -401,7 +401,7 @@ impl View {
     }
 }
 
-fn try_reshape(block: &[RDim], new_shape: &[usize]) -> Vec<RDim> {
+fn try_reshape(block: &[RDim], new_shape: &[Dim]) -> Vec<RDim> {
     fn is_contiguous_block(dims: &[RDim]) -> bool {
         //println!("is contiguous: {dims:?}");
         let mut expected_stride = dims.last().map_or(1, |rd| rd.st);

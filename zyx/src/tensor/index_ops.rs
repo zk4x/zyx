@@ -347,6 +347,12 @@ impl Into<DimIndex> for Range<usize> {
     }
 }
 
+impl Into<DimIndex> for Range<u64> {
+    fn into(self) -> DimIndex {
+        DimIndex::Range { start: self.start as i64, end: self.end as i64 }
+    }
+}
+
 impl Into<DimIndex> for RangeInclusive<isize> {
     fn into(self) -> DimIndex {
         DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
@@ -366,6 +372,12 @@ impl Into<DimIndex> for RangeInclusive<i64> {
 }
 
 impl Into<DimIndex> for RangeInclusive<usize> {
+    fn into(self) -> DimIndex {
+        DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
+    }
+}
+
+impl Into<DimIndex> for RangeInclusive<u64> {
     fn into(self) -> DimIndex {
         DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
     }
@@ -395,6 +407,12 @@ impl Into<DimIndex> for RangeFrom<usize> {
     }
 }
 
+impl Into<DimIndex> for RangeFrom<u64> {
+    fn into(self) -> DimIndex {
+        DimIndex::RangeFrom { start: self.start as i64 }
+    }
+}
+
 impl Into<DimIndex> for RangeTo<isize> {
     fn into(self) -> DimIndex {
         DimIndex::RangeTo { end: self.end as i64 }
@@ -414,6 +432,12 @@ impl Into<DimIndex> for RangeTo<i64> {
 }
 
 impl Into<DimIndex> for RangeTo<usize> {
+    fn into(self) -> DimIndex {
+        DimIndex::RangeTo { end: self.end as i64 }
+    }
+}
+
+impl Into<DimIndex> for RangeTo<u64> {
     fn into(self) -> DimIndex {
         DimIndex::RangeTo { end: self.end as i64 }
     }

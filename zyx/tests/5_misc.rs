@@ -248,7 +248,7 @@ fn batched_matmul() -> Result<(), ZyxError> {
                         }
                     }
 
-                    let expected_shape = vec![b, m, n];
+                    let expected_shape = vec![b as u64, m as u64, n as u64];
                     assert_eq!(
                         z.shape(),
                         expected_shape,
@@ -835,8 +835,8 @@ fn eye1() {
 fn bench_mm1() -> Result<(), ZyxError> {
     const N: usize = 1024;
     let dtype = zyx::DType::F32;
-    let x = Tensor::rand([N, N], dtype)?;
-    let y = Tensor::rand([N, N], dtype)?;
+    let x = Tensor::rand([N as u64, N as u64], dtype)?;
+    let y = Tensor::rand([N as u64, N as u64], dtype)?;
 
     let x_data: Vec<f32> = x.clone().try_into()?;
     //let x_data: Vec<f32> = x_data.iter().map(|x| x.to_f32()).collect();
@@ -1342,17 +1342,17 @@ fn rope_2() -> Result<(), ZyxError> {
     // Create a tensor of frequencies for each dimension
     let mut freqs = Tensor::arange(0., embed_dim as f32 / 2., 1.)?; // Shape: (embed_dim // 2)
     freqs = Tensor::from(base).pow(freqs * (2.0 / embed_dim as f32))?; // Apply scaling for frequency
-    //println!("freqs={freqs}");
+                                                                       //println!("freqs={freqs}");
 
     // Create the positional encoding matrix (sinusoidal)
     let pos_enc = position * freqs; // Shape: (seq_len, embed_dim // 2)
-    //println!("{pos_enc}");
+                                    //println!("{pos_enc}");
 
     // Apply sin and cos to each dimension
     let sin_enc = pos_enc.sin(); // Shape: (seq_len, embed_dim // 2)
     let cos_enc = pos_enc.cos(); // Shape: (seq_len, embed_dim // 2)
-    //Tensor::realize([&sin_enc, &cos_enc])?;
-    //println!("{sin_enc}\n{cos_enc}");
+                                 //Tensor::realize([&sin_enc, &cos_enc])?;
+                                 //println!("{sin_enc}\n{cos_enc}");
 
     //drop(pos_enc);
     //Tensor::realize([&sin_enc, &cos_enc])?;

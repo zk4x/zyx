@@ -7,7 +7,7 @@ use crate::{Map, Set};
 
 impl Kernel {
     pub fn opt_register_tiling(&self) -> (Optimization, usize) {
-        let candidates: Vec<usize> = vec![2, 4, 8, 16];
+        let candidates: Vec<u64> = vec![2, 4, 8, 16];
         let mut global_upcasts = Map::default();
         let mut reduce_factors = Map::default();
         let mut reduce_ids = Set::default();
@@ -16,7 +16,7 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Loop { len } = self.ops[op_id].op {
                 if len >= 16 {
-                    let applicable: Vec<usize> = candidates
+                    let applicable: Vec<u64> = candidates
                         .iter()
                         .copied()
                         .filter(|&f| len.is_multiple_of(f) && len / f >= 4)
@@ -29,7 +29,7 @@ impl Kernel {
             }
             if let Op::Index { len, scope, .. } = self.ops[op_id].op {
                 if scope == Scope::Global && len >= 8 {
-                    let applicable: Vec<usize> = candidates
+                    let applicable: Vec<u64> = candidates
                         .iter()
                         .copied()
                         .filter(|&f| len.is_multiple_of(f) && len / f >= 4)

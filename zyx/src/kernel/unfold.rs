@@ -412,7 +412,7 @@ impl Kernel {
 
                     let src = self.insert_before(
                         start,
-                        Op::Define { dtype, scope: Scope::Global, ro: true, len: view.original_numel() },
+                        Op::Define { dtype, scope: Scope::Global, ro: true, len: view.original_numel() as u64 },
                     );
                     let z = self.new_op(opi, Op::Load { src, index: offset, vlen: 1 });
 

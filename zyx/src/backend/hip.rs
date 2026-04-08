@@ -33,7 +33,7 @@ pub struct HIPMemoryPool {
     cuda: Arc<Library>,
     context: HIPcontext,
     device: HIPdevice,
-    free_bytes: usize,
+    free_bytes: Dim,
     buffers: Slab<PoolBufferId, HIPBuffer>,
     stream: HIPstream,
     hipMemAlloc: unsafe extern "C" fn(*mut HIPdeviceptr, usize) -> HIPStatus,
@@ -52,7 +52,7 @@ pub struct HIPMemoryPool {
 #[derive(Debug)]
 pub(super) struct HIPBuffer {
     ptr: u64,
-    bytes: usize,
+    bytes: Dim,
 }
 
 #[derive(Debug)]
@@ -219,7 +219,7 @@ pub(super) fn initialize_device(
                 std::ffi::CStr::from_ptr(device_name.as_ptr())
             });
         }
-        let mut free_bytes = 0;
+        let mut free_bytes: usize = 0;
         let Ok(()) = unsafe { hipDeviceTotalMem(&mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
@@ -231,7 +231,7 @@ pub(super) fn initialize_device(
             cuda: hip.clone(),
             context,
             device,
-            free_bytes,
+            free_bytes: free_bytes as u64,
             buffers: Slab::new(),
             stream,
             hipEventCreate,
@@ -298,11 +298,11 @@ impl HIPMemoryPool {
         // TODO
     }
 
-    pub(super) const fn free_bytes(&self) -> usize {
+    pub(super) const fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
 
-    pub(super) fn allocate(&mut self, bytes: usize) -> Result<(PoolBufferId, Event), BackendError> {
+    pub(super) fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure".into() });
         }

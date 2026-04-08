@@ -7,7 +7,9 @@ use core::fmt::Debug;
 
 use crate::{error::ZyxError, tensor::Axis};
 
-pub type Dim = usize;
+/// Type alias for dimension values (u64)
+pub type Dim = u64;
+/// Type alias for axis indices (usize)
 pub type UAxis = usize;
 
 /// `IntoShape` trait
@@ -45,6 +47,26 @@ impl IntoShape for (Dim, Dim, Dim) {
 
     fn rank(&self) -> UAxis {
         3
+    }
+}
+
+impl<const N: usize> IntoShape for [usize; N] {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
+        self.map(|x| x as Dim).into_iter()
+    }
+
+    fn rank(&self) -> UAxis {
+        N as UAxis
+    }
+}
+
+impl<const N: usize> IntoShape for [i32; N] {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
+        self.map(|x| x as Dim).into_iter()
+    }
+
+    fn rank(&self) -> UAxis {
+        N as UAxis
     }
 }
 
@@ -144,5 +166,9 @@ pub fn reduce(shape: &[Dim], axes: &[UAxis]) -> Vec<Dim> {
         .enumerate()
         .filter_map(|(i, d)| if axes.contains(&(i as UAxis)) { None } else { Some(d) })
         .collect();
-    if res.is_empty() { vec![1] } else { res }
+    if res.is_empty() {
+        vec![1]
+    } else {
+        res
+    }
 }

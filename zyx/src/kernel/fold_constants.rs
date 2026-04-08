@@ -186,7 +186,7 @@ impl Kernel {
             unreachable!()
         };
         self.remove_op(define_id);
-        let mut latest_stores = vec![OpId::NULL; len];
+        let mut latest_stores = vec![OpId::NULL; len as usize];
 
         let mut remaps = Map::default();
         let mut op_id = self.head;

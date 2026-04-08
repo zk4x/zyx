@@ -7,7 +7,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{thread, u64};
 
 const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
@@ -28,26 +28,26 @@ const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
 pub enum Optimization {
     ReassociateCommutative,
     UnrollLoops {
-        factors: Vec<usize>,
+        factors: Vec<u64>,
     },
     SplitGlobalToLocal {
-        factors: Vec<(OpId, usize)>,
+        factors: Vec<(OpId, u64)>,
     },
     Upcast {
-        factors: Vec<(OpId, usize)>,
+        factors: Vec<(OpId, u64)>,
     },
     RegisterTiling {
-        reduce_splits: Map<OpId, Vec<usize>>,
-        global_upcasts: Map<OpId, Vec<usize>>,
+        reduce_splits: Map<OpId, Vec<u64>>,
+        global_upcasts: Map<OpId, Vec<u64>>,
     },
     FuseMad,
     UnfuseMad,
     UnrollConstantLoops,
     TiledReduce {
-        factors: Vec<(OpId, usize, usize)>,
+        factors: Vec<(OpId, u64, u64)>,
     },
     SplitLoop {
-        factors: Vec<(OpId, usize)>,
+        factors: Vec<(OpId, u64)>,
     },
     Licm,
 }
@@ -73,6 +73,7 @@ impl Optimization {
                     unreachable!()
                 };
                 debug_assert_eq!(scope, Scope::Global);
+                let factor: Dim = factor;
                 //println!("Splitting global axis={axis} to factor={factor}");
                 kernel.split_dim(
                     op_id,
@@ -137,7 +138,7 @@ impl Optimization {
                 for (op_id, _) in global_upcasts.iter() {
                     let factor = new_global_upcasts[idx];
                     if factor > 1 {
-                        kernel.upcast(*op_id, factor);
+                        kernel.upcast(*op_id, factor as u64);
                     }
                     idx += 1;
                 }

@@ -6,6 +6,7 @@ use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
+    shape::Dim,
     Map,
 };
 
@@ -29,7 +30,7 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn unroll_loops(&mut self, unroll_dim: usize) {
+    pub fn unroll_loops(&mut self, unroll_dim: Dim) {
         let mut endloop_ids = Vec::new();
         let mut op_id = self.tail;
         while !op_id.is_null() {
@@ -38,7 +39,9 @@ impl Kernel {
             }
             if let Op::Loop { len, .. } = self.ops[op_id].op {
                 let endloop_id = endloop_ids.pop().unwrap();
-                if len <= unroll_dim && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len - 1)) < 5_000 {
+                if len as usize <= unroll_dim as usize
+                    && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000
+                {
                     self.unroll_loop(op_id, endloop_id, len);
                 }
             }
@@ -88,7 +91,9 @@ impl Kernel {
                             *inner_loop = false;
                         }
                     }
-                    if len == 1 || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len - 1)) < 5_000) {
+                    if len == 1
+                        || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000)
+                    {
                         self.unroll_loop(op_id, endloop_id, len);
                     }
                 }
@@ -114,7 +119,7 @@ impl Kernel {
         }
     }
 
-    pub fn unroll_loop(&mut self, loop_id: OpId, endloop_id: OpId, dim: usize) {
+    pub fn unroll_loop(&mut self, loop_id: OpId, endloop_id: OpId, dim: Dim) {
         self.ops[loop_id].op = Op::Const(Constant::idx(0));
         let last_loop_op = self.prev_op(endloop_id);
 

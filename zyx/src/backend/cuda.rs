@@ -99,7 +99,7 @@ unsafe impl Send for CUDAEvent {}
 
 enum CUDACommand {
     Allocate {
-        bytes: usize,
+        bytes: Dim,
         reply: Sender<Result<(PoolBufferId, Event), BackendError>>,
     },
     Deallocate {
@@ -108,7 +108,7 @@ enum CUDACommand {
     },
     HostToPool {
         src: *const u8,
-        bytes: usize,
+        bytes: Dim,
         dst: PoolBufferId,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<Event, BackendError>>,
@@ -116,7 +116,7 @@ enum CUDACommand {
     PoolToHost {
         src: PoolBufferId,
         dst: *mut u8,
-        bytes: usize,
+        bytes: Dim,
         event_wait_list: Vec<Event>,
         reply: Sender<Result<(), BackendError>>,
     },
@@ -360,6 +360,7 @@ pub(super) fn initialize_device(
 
             let mut buffers: Slab<PoolBufferId, CUDABuffer> = Slab::new();
             let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
+            let mut free_bytes: u64 = 0;
 
             // Worker loop
             'work_thread_loop: while let Ok(cmd) = rx.recv() {
@@ -426,7 +427,7 @@ pub(super) fn initialize_device(
                         debug_assert!(!stream.is_null());
                         //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
                         send_or_continue!(
-                            unsafe { (cuMemcpyHtoDAsync)(dst.ptr, src.cast(), bytes, stream) }.check(ErrorStatus::MemoryCopyH2P),
+                            unsafe { (cuMemcpyHtoDAsync)(dst.ptr, src.cast(), bytes as usize, stream) }.check(ErrorStatus::MemoryCopyH2P),
                             reply
                         );
                         //unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check(ErrorStatus::MemoryCopyH2P)?;
@@ -455,7 +456,7 @@ pub(super) fn initialize_device(
                             reply
                         );
                         send_or_continue!(
-                            unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes, stream) }.check(ErrorStatus::MemoryCopyP2H),
+                            unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes as usize, stream) }.check(ErrorStatus::MemoryCopyP2H),
                             reply
                         );
                         send_or_continue!(
@@ -594,7 +595,7 @@ pub(super) fn initialize_device(
             //println!("DEINIT receiver");
         });
 
-        let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes });
+        let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes: free_bytes as u64 });
         memory_pools.push(Pool::new(pool));
 
         let mut dev = CUDADevice {
@@ -676,7 +677,7 @@ impl CUDAMemoryPool {
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply })
+            .send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len() as u64, dst, event_wait_list, reply })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -685,7 +686,7 @@ impl CUDAMemoryPool {
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
-            .send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len(), event_wait_list, reply })
+            .send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len() as u64, event_wait_list, reply })
             .unwrap();
         reply_rx.recv().unwrap()
     }
@@ -1203,7 +1204,7 @@ impl CUDADevice {
             op_id = kernel.next_op(op_id);
         }
 
-        if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
+        if lws.iter().product::<u64>() > self.dev_info.max_local_threads {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
@@ -1326,7 +1327,7 @@ impl CUDADevice {
         let mut source = String::with_capacity(1000);
         let mut helper_funcs = String::new();
 
-        let mut acc_bytes = 0;
+        let mut acc_bytes: u64 = 0;
 
         let mut op_id = kernel.head;
         while !op_id.is_null() {
@@ -1352,7 +1353,7 @@ impl CUDADevice {
                             if ro { "const " } else { "" },
                             dtype.cu(),
                         );
-                        acc_bytes += dtype.byte_size() as usize * len;
+                        acc_bytes += dtype.byte_size() as u64 * len;
                     } else if scope == Scope::Local {
                         _ = writeln!(
                             source,
@@ -1554,8 +1555,8 @@ impl CUDADevice {
         }
         let _total_bytes = registers
             .iter()
-            .map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize)
-            .sum::<usize>()
+            .map(|(dtype, ..)| dtype.0.byte_size() as u64 * dtype.1 as u64)
+            .sum::<u64>()
             + acc_bytes;
         /*if total_bytes > 1024 {
             return Err(BackendError {

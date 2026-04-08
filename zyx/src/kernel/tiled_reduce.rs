@@ -46,7 +46,7 @@ impl Kernel {
         (Optimization::TiledReduce { factors }, n)
     }
 
-    pub fn tiled_reduce(&mut self, loop_start: OpId, factor: usize, tree_branch: usize) {
+    pub fn tiled_reduce(&mut self, loop_start: OpId, factor: u64, tree_branch: u64) {
         let loop_len = if let Op::Loop { len } = self.at(loop_start) {
             *len
         } else {

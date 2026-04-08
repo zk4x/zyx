@@ -3,7 +3,7 @@
 
 use std::{collections::HashMap, ffi::OsStr, fs::File, path::Path};
 
-use crate::{DType, Map, RT, Tensor, ZyxError, shape::Dim};
+use crate::{shape::Dim, DType, Map, Tensor, ZyxError, RT};
 
 /// Module trait
 pub trait Module {
@@ -242,11 +242,11 @@ impl Tensor {
             let rank = u32::from_le_bytes(rank);
 
             // shape (NOTE there is no explicit check for endiannes here)
-            let mut shape = vec![0; rank as usize * 8];
-            f.read_exact(shape.as_mut_slice())?;
+            let mut shape = vec![0u8; rank as usize * 8];
+            f.read_exact(&mut shape)?;
             let shape: Vec<Dim> = shape
                 .chunks_exact(8)
-                .map(|x| usize::try_from(u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]])).unwrap())
+                .map(|x| u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]))
                 .collect();
 
             // dtype
@@ -348,7 +348,7 @@ impl Tensor {
                         shape = text
                             .split(',')
                             .map(|d| {
-                                d.parse::<usize>()
+                                d.parse::<u64>()
                                     .map_err(|err| ZyxError::parse_error(format!("Cannot parse safetensors shape: {err}").into()))
                             })
                             .collect::<Result<_, ZyxError>>()?;
@@ -358,7 +358,7 @@ impl Tensor {
                         let offsets = text
                             .split(',')
                             .map(|offset| {
-                                offset.parse::<usize>().map_err(|err| {
+                                offset.parse::<u64>().map_err(|err| {
                                     ZyxError::parse_error(format!("Could not parse safetensors offset: {err}").into())
                                 })
                             })

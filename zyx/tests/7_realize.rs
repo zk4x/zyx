@@ -109,7 +109,7 @@ fn b_sftmx1() -> Result<(), ZyxError> {
     use zyx::DType;
     use zyx::Tensor;
 
-    let shape = [2048, 320];
+    let shape: [usize; 2] = [2048, 320];
 
     let x = Tensor::rand(shape, DType::F32)?;
     let y = x.softmax([-1])?;
@@ -158,7 +158,7 @@ fn b_sftmx2() -> Result<(), ZyxError> {
 fn sftmx3() -> Result<(), ZyxError> {
     use zyx::{DType, Tensor};
 
-    let shape = [2048, 320];
+    let shape: [usize; 2] = [2048, 320];
 
     // Input
     let x = Tensor::rand(shape, DType::F32)?;

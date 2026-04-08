@@ -14,11 +14,11 @@
 //
 
 use crate::{
-    DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, Op, OpId, Scope},
     shape::Dim,
+    DType, Map,
 };
 
 #[derive(Debug)]
@@ -199,11 +199,11 @@ impl Kernel {
         }
     }
 
-    fn index_base_and_offset(&self, index: OpId, k_loop_id: OpId) -> (Map<OpId, Dim>, usize) {
+    fn index_base_and_offset(&self, index: OpId, k_loop_id: OpId) -> (Map<OpId, Dim>, Dim) {
         //println!("Getting base index and offset of index={index}");
         //println!("{:?}", self.get_indices(index));
 
-        let mut offset = 0;
+        let mut offset: Dim = 0;
         let indices = self.get_strides(index);
         let mut new_indices = Map::default();
         for (loop_id, (_d, st)) in indices {

@@ -3,9 +3,9 @@
 
 use super::autotune::Optimization;
 use crate::{
-    Map, Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
+    Map, Set,
 };
 
 impl Kernel {
@@ -15,7 +15,8 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Index { len, scope, .. } = self.ops[op_id].op {
                 if scope == Scope::Global {
-                    for &f in &[4, 8, 2, 16] {
+                    for f in [4, 8, 2, 16] {
+                        let f = f as u64;
                         if len.is_multiple_of(f) && len / f >= 4 {
                             factors.push((op_id, f));
                         }
@@ -28,7 +29,7 @@ impl Kernel {
         (Optimization::Upcast { factors }, n_configs)
     }
 
-    pub fn upcast(&mut self, gidx_id: OpId, factor: usize) {
+    pub fn upcast(&mut self, gidx_id: OpId, factor: u64) {
         let Op::Index { len, scope, axis } = self.ops[gidx_id].op else {
             unreachable!()
         };
@@ -70,7 +71,7 @@ impl Kernel {
         let const_factor = self.insert_before(gidx_id, Op::Const(Constant::idx(factor as u64)));
 
         // Create index offsets
-        let mut offsets = Vec::with_capacity(factor - 1);
+        let mut offsets = Vec::with_capacity((factor - 1) as usize);
         for i in 1..factor {
             offsets.push(self.insert_before(gidx_id, Op::Const(Constant::idx(i as u64))));
         }
@@ -81,9 +82,9 @@ impl Kernel {
         // Global index now split into multiple indices with constant offsets
         let x = self.insert_before(gidx_id, Op::Index { len: len / factor, scope, axis });
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
-        let mut ids = Vec::with_capacity(factor - 1);
+        let mut ids = Vec::with_capacity((factor - 1) as usize);
         let mut id = gidx_id;
-        for i in 0..factor - 1 {
+        for i in 0..(factor - 1) as usize {
             id = self.insert_after(id, Op::Binary { x: gidx_id, y: offsets[i], bop: BOp::Add });
             ids.push(id);
         }
@@ -105,9 +106,9 @@ impl Kernel {
                 Op::Barrier { .. } => {}
                 Op::Store { dst, x, index, vlen } => {
                     if acc_defines.contains(&dst) {
-                        let mut ids = Vec::with_capacity(factor - 1);
+                        let mut ids = Vec::with_capacity((factor - 1) as usize);
                         let mut id = op_id;
-                        for i in 0..factor - 1 {
+                        for i in 0..(factor - 1) as usize {
                             let mut x = x;
                             if let Some(remap) = remaps.get(&x) {
                                 x = remap[i];
@@ -120,9 +121,9 @@ impl Kernel {
                         self.ops[op_id].op = Op::Store { dst, x, index, vlen };
                         remaps.insert(op_id, ids);
                     } else {
-                        let mut ids = Vec::with_capacity(factor - 1);
+                        let mut ids = Vec::with_capacity((factor - 1) as usize);
                         let mut id = op_id;
-                        for i in 0..factor - 1 {
+                        for i in 0..(factor - 1) as usize {
                             let mut x = x;
                             if let Some(remap) = remaps.get(&x) {
                                 x = remap[i];
@@ -139,9 +140,9 @@ impl Kernel {
                 }
                 Op::Load { src, index, vlen } => {
                     if acc_defines.contains(&src) {
-                        let mut ids = Vec::with_capacity(factor - 1);
+                        let mut ids = Vec::with_capacity((factor - 1) as usize);
                         let mut id = op_id;
-                        for i in 0..factor - 1 {
+                        for i in 0..(factor - 1) as usize {
                             let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
                             id = self.insert_after(index, Op::Load { src, index, vlen });
                             ids.push(id);
@@ -150,9 +151,9 @@ impl Kernel {
                         self.ops[op_id].op = Op::Load { src, index, vlen };
                         remaps.insert(op_id, ids);
                     } else {
-                        let mut ids = Vec::with_capacity(factor - 1);
+                        let mut ids = Vec::with_capacity((factor - 1) as usize);
                         let mut id = op_id;
-                        for i in 0..factor - 1 {
+                        for i in 0..(factor - 1) as usize {
                             let mut index = index;
                             if let Some(remap) = remaps.get(&index) {
                                 index = remap[i];
@@ -165,9 +166,9 @@ impl Kernel {
                 }
                 ref op => {
                     let op = op.clone();
-                    let mut ids = Vec::with_capacity(factor - 1);
+                    let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
-                    for i in 0..factor - 1 {
+                    for i in 0..(factor - 1) as usize {
                         let mut op = op.clone();
                         // Reindex the op
                         for param in op.parameters_mut() {

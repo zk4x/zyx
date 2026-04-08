@@ -9,8 +9,6 @@ use crate::{
 
 impl Kernel {
     pub fn opt_split_global_to_local(&self) -> (Optimization, usize) {
-        // This should not be needed, but for some reason there are failures when applying
-        // split global to local on tiled_reduce kernel. Looks like some weird data races.
         if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
@@ -20,7 +18,7 @@ impl Kernel {
         let mut seen_axes = crate::Map::default();
         while !op_id.is_null() {
             if let Op::Index { len, scope, axis } = self.ops[op_id].op {
-                let mut l_factors: Vec<usize> = vec![32, 64, 16, 8, 4, 2];
+                let mut l_factors: Vec<u64> = vec![32, 64, 16, 8, 4, 2];
                 if scope == Scope::Global {
                     l_factors.retain(|&f| len.is_multiple_of(f));
                     for &f in &l_factors {
@@ -48,8 +46,8 @@ impl Kernel {
             if let Op::Loop { len } = self.ops[op_id].op {
                 if len >= 16 {
                     for &factor in &candidates {
-                        if len.is_multiple_of(factor) {
-                            factors.push((op_id, factor));
+                        if len.is_multiple_of(factor as u64) {
+                            factors.push((op_id, factor as u64));
                         }
                     }
                 }

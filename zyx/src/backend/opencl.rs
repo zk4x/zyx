@@ -465,7 +465,7 @@ impl OpenCLMemoryPool {
 
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let dst = &self.buffers[dst];
-        debug_assert_eq!(src.len(), dst.bytes);
+        debug_assert_eq!(src.len() as u64, dst.bytes);
         //println!("Storing {src:?} with len={} to {dst:?} with capacity={} bytes", src.len(), dst.bytes);
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
@@ -686,7 +686,7 @@ impl OpenCLDevice {
             op_id = kernel.next_op(op_id);
         }
 
-        if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
+        if lws.iter().product::<u64>() > self.dev_info.max_local_threads {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
@@ -797,7 +797,7 @@ impl OpenCLDevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
-        let mut acc_bytes = 0;
+        let mut acc_bytes: u64 = 0;
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             let op = kernel.at(op_id);
@@ -817,7 +817,7 @@ impl OpenCLDevice {
                             if ro { "const " } else { "" },
                             dtype.ocl(),
                         );
-                        acc_bytes += dtype.byte_size() as usize * len;
+                        acc_bytes += dtype.byte_size() as u64 * len;
                     } else if scope == Scope::Local {
                         _ = writeln!(
                             source,
@@ -989,8 +989,8 @@ impl OpenCLDevice {
         }
         let _total_bytes = registers
             .iter()
-            .map(|(dtype, ..)| dtype.0.byte_size() as usize * dtype.1 as usize)
-            .sum::<usize>()
+            .map(|(dtype, ..)| dtype.0.byte_size() as u64 * dtype.1 as u64)
+            .sum::<u64>()
             + acc_bytes;
         /*if total_bytes > 4096 {
             println!("Invalid alloc of {total_bytes} bytes");
