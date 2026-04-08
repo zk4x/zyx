@@ -19,12 +19,7 @@ pub struct RNNCell {
 
 impl RNNCell {
     /// Initialize linear layer in device self
-    pub fn new(
-        self,
-        input_size: usize,
-        hidden_size: usize,
-        dtype: DType,
-    ) -> Result<RNNCell, ZyxError> {
+    pub fn new(self, input_size: u64, hidden_size: u64, dtype: DType) -> Result<RNNCell, ZyxError> {
         let l = (-(1. / (hidden_size as f32))).sqrt();
         let u = (1. / (hidden_size as f32)).sqrt();
         Ok(RNNCell {

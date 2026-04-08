@@ -10,7 +10,7 @@ use zyx_derive::Module;
 /// for each example independently. It optionally supports learnable scale (`weight`) and bias (`bias_tensor`) parameters.
 #[derive(Debug, Module)]
 pub struct LayerNorm {
-    normalized_shape: Vec<usize>,
+    normalized_shape: Vec<u64>,
     eps: f64,
     weight: Option<Tensor>,
     bias_tensor: Option<Tensor>,
@@ -45,7 +45,7 @@ impl LayerNorm {
         bias: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        let normalized_shape: Vec<usize> = normalized_shape.into_shape().collect();
+        let normalized_shape: Vec<u64> = normalized_shape.into_shape().collect();
 
         // Optional learnable parameters
         let weight = if elementwise_affine {

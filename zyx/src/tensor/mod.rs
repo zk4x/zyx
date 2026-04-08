@@ -2843,7 +2843,7 @@ impl Tensor {
         &self,
         weight: &Tensor,
         bias: Option<&Tensor>,
-        groups: usize,
+        groups: u64,
         stride: impl IntoShape,
         dilation: impl IntoShape,
         padding: impl IntoShape,

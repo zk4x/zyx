@@ -323,6 +323,12 @@ impl Into<DimIndex> for usize {
     }
 }
 
+impl Into<DimIndex> for u64 {
+    fn into(self) -> DimIndex {
+        DimIndex::Index(self as i64)
+    }
+}
+
 impl Into<DimIndex> for Range<isize> {
     fn into(self) -> DimIndex {
         DimIndex::Range { start: self.start as i64, end: self.end as i64 }

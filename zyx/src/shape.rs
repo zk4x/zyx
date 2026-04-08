@@ -30,6 +30,26 @@ impl IntoShape for Dim {
     }
 }
 
+impl IntoShape for usize {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
+        [self as Dim].into_iter()
+    }
+
+    fn rank(&self) -> UAxis {
+        1
+    }
+}
+
+impl IntoShape for i32 {
+    fn into_shape(self) -> impl Iterator<Item = Dim> {
+        [self as Dim].into_iter()
+    }
+
+    fn rank(&self) -> UAxis {
+        1
+    }
+}
+
 impl IntoShape for (Dim, Dim) {
     fn into_shape(self) -> impl Iterator<Item = Dim> {
         [self.0, self.1].into_iter()

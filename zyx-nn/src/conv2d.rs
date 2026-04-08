@@ -9,10 +9,10 @@ use zyx_derive::Module;
 /// See: https://pytorch.org/docs/stable/generated/torch.nn.Conv2d
 #[derive(Debug, Module)]
 pub struct Conv2d {
-    stride: Vec<usize>,
-    dilation: Vec<usize>,
-    groups: usize,
-    padding: Vec<usize>,
+    stride: Vec<u64>,
+    dilation: Vec<u64>,
+    groups: u64,
+    padding: Vec<u64>,
     /// weight
     pub weight: Tensor,
     /// bias
@@ -22,19 +22,19 @@ pub struct Conv2d {
 impl Conv2d {
     /// Initialize Conv2d
     pub fn new(
-        in_channels: usize,
-        out_channels: usize,
+        in_channels: u64,
+        out_channels: u64,
         kernel_size: impl IntoShape,
         stride: impl IntoShape,
         padding: impl IntoShape,
         dilation: impl IntoShape,
-        groups: usize,
+        groups: u64,
         bias: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        let mut kernel_size: Vec<usize> = kernel_size.into_shape().collect();
+        let mut kernel_size: Vec<u64> = kernel_size.into_shape().collect();
         kernel_size.push(2);
-        let scale = 1f32 / ((in_channels * kernel_size.iter().product::<usize>()) as f32).sqrt();
+        let scale = 1f32 / ((in_channels * kernel_size.iter().product::<u64>()) as f32).sqrt();
         let mut weight_shape = vec![out_channels, in_channels / groups];
         weight_shape.extend(kernel_size);
         Ok(Conv2d {

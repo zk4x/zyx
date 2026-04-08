@@ -16,14 +16,14 @@ pub struct GRUCell {
     /// bias hh
     pub bias_hh: Option<Tensor>, // (3*hidden_size)
     /// hidden
-    pub hidden_size: usize,
+    pub hidden_size: u64,
 }
 
 impl GRUCell {
     /// GRU new
     pub fn new(
-        input_size: usize,
-        hidden_size: usize,
+        input_size: u64,
+        hidden_size: u64,
         bias: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {

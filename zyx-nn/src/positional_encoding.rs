@@ -40,7 +40,7 @@ impl PositionalEncoding {
     /// let pe = PositionalEncoding::new(512, 1024, 0.1, DType::F32)?;
     /// ```
     pub fn new(
-        d_model: usize,
+        d_model: u64,
         max_len: usize,
         dropout_prob: f32,
         dtype: DType,
@@ -71,7 +71,7 @@ impl PositionalEncoding {
         let cos_part = angle_rates.cos(); // [max_len, d_model // 2]
 
         // Interleave sin and cos: [max_len, d_model]
-        let mut parts = Vec::with_capacity(d_model);
+        let mut parts = Vec::with_capacity(d_model as usize);
         for i in 0..(d_model / 2) {
             parts.push(sin_part.slice((0..max_len, i))?.unsqueeze(1)?);
             parts.push(cos_part.slice((0..max_len, i))?.unsqueeze(1)?);

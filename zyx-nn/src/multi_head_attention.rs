@@ -14,15 +14,15 @@ use crate::Linear;
 #[derive(Debug, Module)]
 pub struct MultiheadAttention {
     /// - `embed_dim`: Total dimension of the model (i.e. output embedding size).
-    pub embed_dim: usize,
+    pub embed_dim: u64,
     /// - `kdim`: Dimension of the key input. If `None`, defaults to `embed_dim`.
-    pub kdim: usize,
+    pub kdim: u64,
     /// - `vdim`: Dimension of the value input. If `None`, defaults to `embed_dim`.
-    pub vdim: usize,
+    pub vdim: u64,
     /// - `num_heads`: Number of parallel attention heads.
-    pub num_heads: usize,
+    pub num_heads: u64,
     /// - `head_dim`: Dimension per attention head (i.e. `embed_dim / num_heads`).
-    pub head_dim: usize,
+    pub head_dim: u64,
 
     /// - `q_proj`: Linear projection layer for the query.
     pub q_proj: Linear,
@@ -66,14 +66,14 @@ impl MultiheadAttention {
     /// # Returns
     /// A configured `MultiheadAttention` module, or error on shape issues.
     pub fn new(
-        embed_dim: usize,
-        num_heads: usize,
+        embed_dim: u64,
+        num_heads: u64,
         dropout: f32,
         bias: bool,
         add_bias_kv: bool,
         add_zero_attn: bool,
-        kdim: Option<usize>,
-        vdim: Option<usize>,
+        kdim: Option<u64>,
+        vdim: Option<u64>,
         batch_first: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {

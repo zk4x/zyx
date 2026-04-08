@@ -47,9 +47,9 @@ impl TransformerDecoderLayer {
     ///
     /// Returns a `Result` containing the new `TransformerDecoderLayer` or a `ZyxError` if initialization fails.
     pub fn new(
-        d_model: usize,                   // embed_dim
-        nhead: usize,                     // num_heads
-        dim_feedforward: usize,           // dim_feedforward
+        d_model: u64,                   // embed_dim
+        nhead: u64,                     // num_heads
+        dim_feedforward: u64,           // dim_feedforward
         dropout: f32,                     // dropout rate
         activation: fn(Tensor) -> Tensor, // activation function
         layer_norm_eps: f64,              // layer_norm_eps

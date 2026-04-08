@@ -10,15 +10,15 @@ use zyx_derive::Module;
 pub struct CausalSelfAttention {
     c_attn: Linear,
     c_proj: Linear,
-    n_head: usize,
+    n_head: u64,
     dropout_p: f32,
 }
 
 impl CausalSelfAttention {
     /// New causal self attention
     pub fn new(
-        n_embd: usize,
-        n_head: usize,
+        n_embd: u64,
+        n_head: u64,
         bias: bool,
         dropout_p: f32,
         dtype: DType,

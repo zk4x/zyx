@@ -8,7 +8,7 @@ use zyx_derive::Module;
 #[derive(Debug, Module)]
 pub struct GroupNorm {
     /// number of groups
-    pub num_groups: usize,
+    pub num_groups: u64,
     /// epsilon
     pub eps: f32,
     /// shape: [C]
@@ -37,8 +37,8 @@ impl GroupNorm {
     /// let out = gn.forward(x)?;
     /// ```
     pub fn new(
-        num_groups: usize,
-        num_channels: usize,
+        num_groups: u64,
+        num_channels: u64,
         affine: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
