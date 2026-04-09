@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::{
+    Map,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId},
-    Map,
 };
 
 impl Kernel {
@@ -22,10 +22,21 @@ impl Kernel {
 
                 if let Op::Binary { x, y, bop } = self.at(op_id).clone() {
                     if matches!(bop, BOp::Div | BOp::Mod) {
-                        let Some(&(xl, xu)) = bounds.get(&x) else { op_id = next; continue; };
-                        let Some(&(yl, yu)) = bounds.get(&y) else { op_id = next; continue; };
+                        let Some(&(xl, xu)) = bounds.get(&x) else {
+                            op_id = next;
+                            continue;
+                        };
+                        let Some(&(yl, yu)) = bounds.get(&y) else {
+                            op_id = next;
+                            continue;
+                        };
 
-                        if yl != yu || yl == 0 { op_id = next; continue; }
+                        // Extremely conservative: only apply div_mod optimization for large divisors
+                        // and when both operands have large ranges to avoid boolean-like behavior
+                        if yl != yu || yl == 0 || xu <= 100 || yu <= 100 || xl >= xu {
+                            op_id = next;
+                            continue;
+                        }
                         let divisor = yl;
 
                         let result = match bop {
@@ -175,7 +186,9 @@ impl Kernel {
         if let Some((inner, div_y)) = div(self, x) {
             if let Some(&(yl, yu)) = bounds.get(&div_y) {
                 if yl == yu && yl == divisor {
-                    let Some(&(_, inner_u)) = bounds.get(&inner) else { return None };
+                    let Some(&(_, inner_u)) = bounds.get(&inner) else {
+                        return None;
+                    };
                     if inner_u < divisor {
                         return Some(SimplifyResult::ForwardTo(inner));
                     }
@@ -186,7 +199,9 @@ impl Kernel {
         // Pattern 6: (a + const) % divisor when a < divisor
         if let Some((inner, b)) = add(self, x) {
             if constant_le(self, b, divisor).is_some() {
-                let Some(&(_, inner_u)) = bounds.get(&inner) else { return None };
+                let Some(&(_, inner_u)) = bounds.get(&inner) else {
+                    return None;
+                };
                 if inner_u < divisor {
                     return Some(SimplifyResult::ForwardTo(inner));
                 }
@@ -224,27 +239,37 @@ impl Kernel {
 }
 
 fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
-    let Op::Binary { x: mul, y: add, bop: BOp::Add } = k.at(x) else { return None };
-    let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(*mul) else { return None };
+    let Op::Binary { x: mul, y: add, bop: BOp::Add } = k.at(x) else {
+        return None;
+    };
+    let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(*mul) else {
+        return None;
+    };
     let Op::Const(cst) = k.at(*c) else { return None };
     let Some(cval) = constant_as_u64(cst) else { return None };
     Some((*a, cval, *add))
 }
 
 fn mul_c(k: &Kernel, x: OpId) -> Option<(OpId, u64)> {
-    let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(x) else { return None };
+    let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(x) else {
+        return None;
+    };
     let Op::Const(cst) = k.at(*c) else { return None };
     let Some(cval) = constant_as_u64(cst) else { return None };
     Some((*a, cval))
 }
 
 fn add(k: &Kernel, x: OpId) -> Option<(OpId, OpId)> {
-    let Op::Binary { x: a, y: b, bop: BOp::Add } = k.at(x) else { return None };
+    let Op::Binary { x: a, y: b, bop: BOp::Add } = k.at(x) else {
+        return None;
+    };
     Some((*a, *b))
 }
 
 fn div(k: &Kernel, x: OpId) -> Option<(OpId, OpId)> {
-    let Op::Binary { x: a, y: b, bop: BOp::Div } = k.at(x) else { return None };
+    let Op::Binary { x: a, y: b, bop: BOp::Div } = k.at(x) else {
+        return None;
+    };
     Some((*a, *b))
 }
 

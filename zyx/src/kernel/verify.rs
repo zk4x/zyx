@@ -185,7 +185,7 @@ impl Kernel {
         self.check_oob();
     }
 
-    pub fn compute_bounds(&self) -> Map<OpId, (u32, u32)> {
+    pub fn compute_bounds2(&self) -> Map<OpId, (u32, u32)> {
         let mut bounds: Map<OpId, (u32, u32)> = Map::default();
         let mut bounds_stack: Vec<Map<OpId, (u32, u32)>> = vec![Map::default()];
         let mut op_id = self.head;
@@ -198,6 +198,16 @@ impl Kernel {
                             unreachable!()
                         };
                         let v = u32::from_le_bytes(x[0..4].try_into().unwrap());
+                        b.insert(op_id, (v, v));
+                    } else {
+                        // Handle boolean constants - true=1, false=0 for boolean operations
+                        let v = match x {
+                            Constant::U64(x) => {
+                                let val = u32::from_le_bytes(x[0..4].try_into().unwrap());
+                                if val == 1 { 1 } else { 0 }
+                            }
+                            _ => 0,
+                        };
                         b.insert(op_id, (v, v));
                     }
                 }
@@ -217,7 +227,9 @@ impl Kernel {
                             BOp::Add => (xl.wrapping_add(yl), xu.wrapping_add(yu)),
                             BOp::Sub => (xl.wrapping_sub(yl), xu.wrapping_sub(yu)),
                             BOp::Mul => (xl.wrapping_mul(yl), xu.wrapping_mul(yu)),
+                            BOp::Div if yl == 0 || yu == 0 => (0, u32::MAX),
                             BOp::Div => (xl / yl, xu / yu),
+                            BOp::Mod if yl == 0 || yu == 0 => (0, u32::MAX),
                             BOp::Mod => (xl % yl, xu % yu),
                             BOp::Eq => {
                                 let overlaps = !(xu < yl || yu < xl);
@@ -230,16 +242,31 @@ impl Kernel {
                                 ((!always_eq) as u32, (!overlaps) as u32)
                             }
                             BOp::Cmpgt => {
-                                let maybe = xu > yl;
+                                // For Cmpgt (x > y):
+                                // always = true if min(x) > max(y)
+                                // never = true if max(x) <= min(y)
+                                // maybe = true otherwise
                                 let always = xl > yu;
+                                let never = xu <= yl;
+                                let maybe = !never;
                                 (always as u32, maybe as u32)
                             }
                             BOp::Cmplt => {
-                                let maybe = xl < yu;
+                                // For Cmplt (x < y):
+                                // always = true if max(x) < min(y)
+                                // never = true if max(y) <= min(x)
+                                // maybe = true otherwise
                                 let always = xu < yl;
+                                let never = yu <= xl;
+                                let maybe = !never;
                                 (always as u32, maybe as u32)
                             }
-                            BOp::And => ((xl == 1 && yl == 1) as u32, (xu == 1 && yu == 1) as u32),
+                            BOp::And => {
+                                // AND operation: result is 1 only if both inputs are 1, otherwise 0
+                                let always = (xl == 1 && xu == 1) && (yl == 1 && yu == 1);
+                                let maybe = (xl == 1 || xu == 1) && (yl == 1 || yu == 1);
+                                (always as u32, maybe as u32)
+                            }
                             BOp::BitShiftLeft => (xl << yl, xu << yu),
                             BOp::BitShiftRight => (xl >> yl, xu >> yu),
                             BOp::Pow => (xl.pow(yl as u32), xu.pow(yu as u32)),
@@ -402,5 +429,9 @@ impl Kernel {
             }
             op_id = self.ops[op_id].next;
         }
+    }
+
+    pub fn compute_bounds(&self) -> Map<OpId, (u32, u32)> {
+        todo!()
     }
 }
