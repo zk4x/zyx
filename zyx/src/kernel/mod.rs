@@ -16,6 +16,7 @@ use std::{fmt::Display, hash::Hash};
 pub mod autotune;
 pub mod custom;
 mod debug;
+mod div_mod;
 mod fold_constants;
 mod fuse;
 mod licm;

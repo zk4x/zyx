@@ -182,6 +182,7 @@ impl Kernel {
         self.fold_accs();
         self.delete_empty_loops();
         self.unfold_pows();
+        self.div_mod_simplification();
         self.dead_code_elimination();
     }
 
