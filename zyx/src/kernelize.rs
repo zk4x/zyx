@@ -650,8 +650,8 @@ impl<'a> Kernelizer<'a> {
 
             kernel.verify();
         }
-        kernel.run_always_on_optimizations();
-        kernel.debug();
+        //kernel.run_always_on_optimizations();
+        //kernel.debug();
 
         let (program_id, opts) = kernel.autotune(
             &args,

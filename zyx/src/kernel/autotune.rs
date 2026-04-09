@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
-const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 9] = [
+const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
     Kernel::opt_reassociate_commutative,
     //Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
@@ -20,7 +20,7 @@ const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 9] = [
     //Kernel::opt_register_tiling,
     Kernel::opt_fuse_mad,
     Kernel::opt_unfuse_mad,
-    Kernel::opt_unroll_constant_loops,
+    //Kernel::opt_unroll_constant_loops,
     Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
     Kernel::opt_licm,
