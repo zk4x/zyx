@@ -101,6 +101,11 @@ static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 pub struct DebugMask(u32);
 
 impl DebugMask {
+    /// Create a new DebugMask
+    pub const fn new(x: u32) -> Self {
+        Self(x)
+    }
+
     /// Is device debugging enabled?
     #[must_use]
     pub const fn dev(&self) -> bool {

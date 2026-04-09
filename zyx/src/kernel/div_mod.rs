@@ -261,7 +261,19 @@ fn constant_le(k: &Kernel, op: OpId, c: u32) -> Option<u64> {
     if v < c as u64 { Some(v) } else { None }
 }
 
-enum SimplifyResult { ReplaceWith(Op), ForwardTo(OpId) }
+enum SimplifyResult {
+    ReplaceWith(Op),
+    ForwardTo(OpId),
+}
+
+impl std::fmt::Debug for SimplifyResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SimplifyResult::ReplaceWith(op) => write!(f, "ReplaceWith({:?})", op),
+            SimplifyResult::ForwardTo(id) => write!(f, "ForwardTo({})", id.0),
+        }
+    }
+}
 
 fn constant_as_u64(c: &Constant) -> Option<u64> {
     match c {
