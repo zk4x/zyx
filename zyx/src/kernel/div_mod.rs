@@ -11,6 +11,7 @@ impl Kernel {
     pub fn div_mod_simplification(&mut self) {
         let bounds = self.compute_bounds();
 
+        let mut simplified = false;
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
@@ -18,9 +19,19 @@ impl Kernel {
             if let Op::Binary { x, y, bop } = self.at(op_id).clone() {
                 if matches!(bop, BOp::Div | BOp::Mod) {
                     let Some(&(_, _)) = bounds.get(&x) else { op_id = next; continue; };
-                    let Some(&(_, _)) = bounds.get(&y) else { op_id = next; continue; };
+                    let Some(&(yl, yu)) = bounds.get(&y) else { op_id = next; continue; };
 
-                    if let Some(result) = self.try_simplify_div_mod(x, y, bop, &bounds) {
+                    if yl != yu || yl == 0 { op_id = next; continue; }
+                    let divisor = yl;
+
+                    let result = match bop {
+                        BOp::Mod => self.simplify_mod(x, divisor, &bounds),
+                        BOp::Div => self.simplify_div(x, divisor, &bounds),
+                        _ => None,
+                    };
+
+                    if let Some(result) = result {
+                        simplified = true;
                         match result {
                             SimplifyResult::ReplaceWith(new_op) => {
                                 self.ops[op_id].op = new_op;
@@ -36,18 +47,8 @@ impl Kernel {
             op_id = next;
         }
 
-        self.verify();
-    }
-
-    fn try_simplify_div_mod(&self, x: OpId, y: OpId, bop: BOp, bounds: &Map<OpId, (u32, u32)>) -> Option<SimplifyResult> {
-        let Some(&(yl, yu)) = bounds.get(&y) else { return None };
-        if yl != yu || yl == 0 { return None; }
-        let divisor = yl;
-
-        match bop {
-            BOp::Mod => self.simplify_mod(x, divisor, bounds),
-            BOp::Div => self.simplify_div(x, divisor, bounds),
-            _ => None,
+        if simplified {
+            self.verify();
         }
     }
 
@@ -100,7 +101,7 @@ impl Kernel {
         }
 
         if let Some((inner, b)) = add(self, x) {
-            if let Some(_) = constant_le(self, b, divisor) {
+            if constant_le(self, b, divisor).is_some() {
                 let Some(&(_, inner_u)) = bounds.get(&inner) else { return None };
                 if inner_u < divisor {
                     return Some(SimplifyResult::ForwardTo(inner));
@@ -113,7 +114,7 @@ impl Kernel {
 
     fn simplify_div(&self, x: OpId, divisor: u32, bounds: &Map<OpId, (u32, u32)>) -> Option<SimplifyResult> {
         if let Some((a, c, b)) = mul_add(self, x) {
-            if let Some(_) = constant_le(self, b, divisor) {
+            if constant_le(self, b, divisor).is_some() {
                 if c == divisor as u64 {
                     return Some(SimplifyResult::ForwardTo(a));
                 }
