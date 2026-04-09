@@ -20,6 +20,7 @@ mod div_mod;
 mod fold_constants;
 mod fuse;
 mod licm;
+mod loop_fold;
 mod merge_loops;
 mod mma;
 mod split_loops;

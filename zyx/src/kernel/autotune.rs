@@ -183,6 +183,7 @@ impl Kernel {
         self.delete_empty_loops();
         self.unfold_pows();
         self.div_mod_simplification();
+        // self.simplify_accumulating_loop(); // TODO: fix loop body removal
         self.dead_code_elimination();
     }
 
