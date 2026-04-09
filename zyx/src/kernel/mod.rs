@@ -14,10 +14,10 @@ use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
 
 pub mod autotune;
+pub mod custom;
 mod debug;
 mod fold_constants;
 mod fuse;
-
 mod licm;
 mod merge_loops;
 mod mma;
@@ -29,7 +29,6 @@ mod unroll_loops;
 mod upcast;
 mod vectorize;
 mod verify;
-//mod emulate;
 
 // TODO later make this dynamic u32 or u64 depending on max range
 pub const IDX_T: DType = DType::U32;

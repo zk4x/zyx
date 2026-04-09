@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use crate::{
+    Map, RT, Set, Tensor,
     dtype::Constant,
     graph::Node,
     kernel::{BOp, UOp},
-    runtime::{deallocate_tensors, Runtime},
+    runtime::{Runtime, deallocate_tensors},
     shape::{Dim, UAxis},
     tensor::TensorId,
-    Map, Set, Tensor, RT,
 };
 use std::hash::BuildHasherDefault;
 
@@ -147,6 +147,7 @@ impl Runtime {
         for nid in topo {
             let grad = grads[&nid];
             match self.graph[nid] {
+                Node::Custom(_) => todo!(),
                 Node::Const { .. } | Node::Leaf { .. } => {}
                 Node::Binary { x, y, bop } => match bop {
                     BOp::Add => {

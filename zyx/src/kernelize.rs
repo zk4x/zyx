@@ -742,6 +742,7 @@ impl Runtime {
                     Node::Pad { x } => kernelizer.add_pad_op(nid, x)?,
                     Node::Reduce { x, rop } => kernelizer.add_reduce_op(nid, x, rop)?,
                     Node::Binary { x, y, bop } => kernelizer.add_binary_op(nid, x, y, bop)?,
+                    Node::Custom(_) => todo!(),
                 }
             }
 

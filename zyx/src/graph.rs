@@ -7,9 +7,9 @@ use crate::kernel::{BOp, UOp};
 use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::{
+    DType,
     shape::{Dim, UAxis},
     slab::Slab,
-    DType,
 };
 use crate::{Map, Set};
 use std::hash::BuildHasherDefault;
@@ -31,6 +31,7 @@ pub enum Node {
     Cast { x: TensorId, dtype: DType },
     Unary { x: TensorId, uop: UOp },
     Binary { x: TensorId, y: TensorId, bop: BOp },
+    Custom(Box<crate::kernel::custom::CustomKernel>),
 }
 
 #[derive(Debug)]
@@ -359,6 +360,7 @@ impl Graph {
                 Node::Expand { x } => add_node(id, &f!("Expand({x})"), "oval"),
                 Node::Pad { x } => add_node(id, &f!("Pad({x})"), "oval"),
                 Node::Reduce { x, rop } => add_node(id, &f!("{rop:?}({x})"), "oval"),
+                Node::Custom(_) => todo!(),
             }
             for param in node.parameters() {
                 writeln!(edges, "  {param} -> {id}").unwrap();
@@ -438,6 +440,7 @@ impl Node {
             | Node::Pad { x, .. }
             | Node::Reduce { x, .. } => NodeParametersIterator { parameters: [*x, TensorId::ZERO], idx: 0, len: 1 },
             Node::Binary { x, y, .. } => NodeParametersIterator { parameters: [*x, *y], idx: 0, len: 2 },
+            Node::Custom(_) => todo!(),
         }
     }
 
@@ -466,6 +469,7 @@ impl Node {
             | Node::Cast { x, .. }
             | Node::Unary { x, .. }
             | Node::Binary { x, .. } => x,
+            Node::Custom(_) => todo!(),
         }
     }
 
