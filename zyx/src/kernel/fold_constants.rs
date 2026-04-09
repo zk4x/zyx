@@ -42,7 +42,8 @@ impl Kernel {
                         self.ops[op_id].op = Op::Const(Constant::binary(cx, cy, bop));
                     }
                     (Op::Const(cx), _) => match bop {
-                        BOp::And if cx.dtype() == DType::Bool => self.remap(op_id, y),
+                        BOp::And if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, x),
+                        BOp::And if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, y),
                         BOp::Add if cx.is_zero() => self.remap(op_id, y),
                         BOp::Sub if cx.is_zero() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Neg },
                         BOp::Mul if cx.is_zero() => self.ops[op_id].op = Op::Const(cx.dtype().zero_constant()),
@@ -61,6 +62,8 @@ impl Kernel {
                         _ => {}
                     },
                     (_, Op::Const(cy)) => match bop {
+                        BOp::And if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, y),
+                        BOp::And if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, x),
                         BOp::Add if cy.is_zero() => self.remap(op_id, x),
                         BOp::Sub if cy.is_zero() => self.remap(op_id, x),
                         BOp::Div if cy.is_zero() => panic!("Division by constant zero"),

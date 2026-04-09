@@ -288,21 +288,39 @@ impl Constant {
 
     #[allow(unused)]
     #[must_use]
-    pub(super) fn as_dim(self) -> Dim {
+    pub(super) fn as_dim(self) -> Option<Dim> {
         match self {
-            Constant::BF16(_) => todo!(),
-            Constant::F16(_) => todo!(),
-            Constant::F32(_) => todo!(),
-            Constant::F64(_) => todo!(),
-            Constant::U8(_) => todo!(),
-            Constant::U16(_) => todo!(),
-            Constant::U32(d) => d as Dim,
-            Constant::U64(_) => todo!(),
-            Constant::I8(_) => todo!(),
-            Constant::I16(_) => todo!(),
-            Constant::I32(_) => todo!(),
-            Constant::I64(_) => todo!(),
-            Constant::Bool(_) => todo!(),
+            Constant::U8(d) => Some(d as Dim),
+            Constant::U16(d) => Some(d as Dim),
+            Constant::U32(d) => Some(d as Dim),
+            Constant::U64(d) => Some(u64::from_le_bytes(d)),
+            Constant::I8(d) => {
+                if d > 0 {
+                    Some(d as Dim)
+                } else {
+                    None
+                }
+            }
+            Constant::I16(d) => {
+                if d > 0 {
+                    Some(d as Dim)
+                } else {
+                    None
+                }
+            }
+            Constant::I32(d) => {
+                if d > 0 {
+                    Some(d as Dim)
+                } else {
+                    None
+                }
+            }
+            Constant::I64(d) => {
+                let d = i64::from_le_bytes(d);
+                if d > 0 { Some(d as Dim) } else { None }
+            }
+            Constant::Bool(d) => Some(d as Dim),
+            _ => None,
         }
     }
 

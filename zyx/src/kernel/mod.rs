@@ -809,16 +809,16 @@ impl Kernel {
                     if bop == BOp::Mul {
                         match (&self.ops[x].op, &self.ops[y].op) {
                             (Loop { len, .. }, Const(c)) => {
-                                indices.insert(x, (*len, c.as_dim()));
+                                indices.insert(x, (*len, c.as_dim().unwrap()));
                             }
                             (Index { len, .. }, Const(c)) => {
-                                indices.insert(x, (*len, c.as_dim()));
+                                indices.insert(x, (*len, c.as_dim().unwrap()));
                             }
                             (Const(c), Loop { len, .. }) => {
-                                indices.insert(y, (*len, c.as_dim()));
+                                indices.insert(y, (*len, c.as_dim().unwrap()));
                             }
                             (Const(c), Index { len, .. }) => {
-                                indices.insert(y, (*len, c.as_dim()));
+                                indices.insert(y, (*len, c.as_dim().unwrap()));
                             }
                             _ => {} //op => println!("op={op:?}"),
                         }
@@ -834,16 +834,16 @@ impl Kernel {
                     }
                     match (&self.ops[x].op, &self.ops[y].op) {
                         (Loop { len: dim, .. }, Const(c)) => {
-                            indices.insert(x, (*dim, c.as_dim()));
+                            indices.insert(x, (*dim, c.as_dim().unwrap()));
                         }
                         (Const(c), Loop { len: dim, .. }) => {
-                            indices.insert(y, (*dim, c.as_dim()));
+                            indices.insert(y, (*dim, c.as_dim().unwrap()));
                         }
                         _ => {}
                     }
                 }
                 Const(c) => {
-                    indices.insert(OpId::NULL, (0, c.as_dim()));
+                    indices.insert(OpId::NULL, (0, c.as_dim().unwrap()));
                 }
                 _ => {}
             }

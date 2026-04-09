@@ -26,19 +26,19 @@ impl Kernel {
                 Load { src, index, .. } => match self.ops[index].op {
                     Mad { x, y, z } => {
                         if let Const(c) = self.ops[z].op {
-                            loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
+                            loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                         }
                     }
                     Binary { x, y, bop } if bop == BOp::Add => {
                         if let Const(c) = self.ops[x].op {
-                            loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
+                            loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                         }
                         if let Const(c) = self.ops[y].op {
-                            loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
+                            loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                         }
                     }
                     Const(c) => {
-                        loads.last_mut().unwrap().push((op_id, src, c.as_dim(), index));
+                        loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                     }
                     _ => {}
                 },

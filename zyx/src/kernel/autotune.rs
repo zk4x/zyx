@@ -9,7 +9,7 @@ use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::{thread, u64};
 
 const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
@@ -250,7 +250,8 @@ impl Kernel {
         // Apply tiled reduce optimization
         //kernel.unroll_loops(4);
 
-        //kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         //kernel.debug_colorless();
 
