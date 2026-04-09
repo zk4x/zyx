@@ -1,12 +1,11 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use zyx::{DebugMask, Module, Tensor, ZyxError};
+use zyx::{Tensor, ZyxError};
 
 #[test]
-fn b_arange_asm() -> Result<(), ZyxError> {
-    let _guard = Tensor::with_debug(DebugMask::new(16));
-    let x = Tensor::arange(0, 100, 1)?;
+fn b_arange() -> Result<(), ZyxError> {
+    let x = Tensor::arange(0, 10000, 1)?;
     Tensor::realize([&x])?;
     Ok(())
 }
