@@ -137,6 +137,26 @@ impl Kernel {
             }
         }
 
+        // Pattern 4: (a * c) % divisor - reduce c modulo divisor
+        if let Op::Binary { x: a, y: c, bop: BOp::Mul } = self.ops[x].op {
+            if let Op::Const(y) = self.ops[c].op {
+                if let Some(c) = y.as_dim() {
+                    let c_reduced = c % divisor;
+                    if c_reduced != c && c_reduced > 0 {
+                        if let Some(&(min_a, max_a)) = bounds.get(&a) {
+                            if min_a > 0 {
+                                let prod = max_a.saturating_mul(c_reduced);
+                                if prod < divisor && prod > 0 {
+                                    self.remap(op_id, x);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Pattern 6: (a + const) % divisor = a when a < divisor
         if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
             if let Op::Const(y) = self.ops[b].op {
