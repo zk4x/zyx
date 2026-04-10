@@ -105,12 +105,15 @@ impl Kernel {
             // Pattern 2b: congruence - when c % divisor == 1, (a*c + b) % d = (a + b) % d
             // Only apply when bounds guarantee correctness
             if c % divisor == 1 {
-                if let Some(&(_, max_a)) = bounds.get(&a) {
-                    if let Some(&(_, max_b)) = bounds.get(&b) {
-                        if max_a.saturating_add(max_b) < divisor {
-                            let a_plus_b = Op::Binary { x: a, y: b, bop: BOp::Add };
-                            self.ops[op_id].op = a_plus_b;
-                            return;
+                if let Some(&(min_a, max_a)) = bounds.get(&a) {
+                    if let Some(&(min_b, max_b)) = bounds.get(&b) {
+                        if min_a > 0 && min_b > 0 {
+                            let sum = max_a.saturating_add(max_b);
+                            if sum < divisor && sum > 0 {
+                                let a_plus_b = Op::Binary { x: a, y: b, bop: BOp::Add };
+                                self.ops[op_id].op = a_plus_b;
+                                return;
+                            }
                         }
                     }
                 }
@@ -119,40 +122,20 @@ impl Kernel {
 
         // TODO Pattern 2: (a * c + b) % divisor -> b when b < divisor
 
-        // Pattern 3: (a + b) % divisor when max(a+b) < divisor
-        /*if let Some((a, b)) = add(self, x) {
-            let Some(&(au, _)) = bounds.get(&a) else { return None };
-            let Some(&(bu, _)) = bounds.get(&b) else { return None };
-            if au.saturating_add(bu) < divisor {
-                return Some(SimplifyResult::ForwardTo(x));
-            }
-        }
-
-        // Pattern 4: (a * c) % divisor - reduce c modulo divisor
-        if let Some((a, c)) = mul_c(self, x) {
-            let c = c as u32;
-            let c_reduced = c % divisor;
-            if c_reduced != c && c_reduced > 0 {
-                let Some(&(au, _)) = bounds.get(&a) else { return None };
-                if au.saturating_mul(c_reduced) < divisor {
-                    return Some(SimplifyResult::ForwardTo(x));
-                }
-            }
-        }
-
-        // Pattern 5: (a / d) % d -> a when a < d
-        if let Some((inner, div_y)) = div(self, x) {
-            if let Some(&(yl, yu)) = bounds.get(&div_y) {
-                if yl == yu && yl == divisor {
-                    let Some(&(_, inner_u)) = bounds.get(&inner) else {
-                        return None;
-                    };
-                    if inner_u < divisor {
-                        return Some(SimplifyResult::ForwardTo(inner));
+        // Pattern 3: (a + b) % divisor when max(a + b) < divisor
+        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
+            if let Some(&(min_a, max_a)) = bounds.get(&a) {
+                if let Some(&(min_b, max_b)) = bounds.get(&b) {
+                    if min_a > 0 && min_b > 0 {
+                        let sum = max_a.saturating_add(max_b);
+                        if sum < divisor && sum > 0 {
+                            self.remap(op_id, x);
+                            return;
+                        }
                     }
                 }
             }
-        }*/
+        }
 
         // Pattern 6: (a + const) % divisor = a when a < divisor
         if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
