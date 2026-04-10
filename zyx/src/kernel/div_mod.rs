@@ -157,7 +157,27 @@ impl Kernel {
             }
         }
 
-        // Pattern 6: (a + const) % divisor = a when a < divisor
+        // Pattern 5: (a / d) % d -> a when a < d - MATHEMATICALLY WRONG!
+        // Example: a=2, d=3 -> (2/3) % 3 = 0 % 3 = 0 ≠ 2
+        /*        if let Op::Binary { x: inner, y: div_y, bop: BOp::Div } = self.ops[x].op {
+                    if let Op::Const(d) = self.ops[div_y].op {
+                        if let Some(d) = d.as_dim() {
+                            if let Some(&(yl, yu)) = bounds.get(&div_y) {
+                                if yl == yu && d == divisor {
+                                    if let Some(&(min_a, max_a)) = bounds.get(&inner) {
+                                        if min_a > 0 && max_a < divisor {
+                                            self.remap(op_id, inner);
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+        */
+
+        // Pattern 6:
         if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
             if let Op::Const(y) = self.ops[b].op {
                 if let Some(y) = y.as_dim() {
