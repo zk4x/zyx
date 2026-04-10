@@ -205,58 +205,11 @@ impl Kernel {
     ) -> (DeviceProgramId, OptSeq) {
         //eprintln!("=== autotune_debug called ===");
         let mut kernel = self.clone();
-        //println!("Before associate_commutative:");
-        //kernel.debug_colorless();
-        kernel.run_always_on_optimizations();
-
-        // Here come series of custom optimizations
-
-        let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_split_loop();
-        if n_tiled_reduce_configs > 0 {
-            tiled_reduce_opt.apply(&mut kernel, 0);
-        }
-        let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_upcast();
-        if n_tiled_reduce_configs > 0 {
-            tiled_reduce_opt.apply(&mut kernel, 0);
-        }
-        let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_upcast();
-        if n_tiled_reduce_configs > 0 {
-            tiled_reduce_opt.apply(&mut kernel, 1);
-        }
-        kernel.unroll_loops(8);
-
-        //kernel.fuse_mad();
-        /*let (tiled_reduce_opt, n_tiled_reduce_configs) = kernel.opt_tiled_reduce();
-        if n_tiled_reduce_configs > 0 {
-            tiled_reduce_opt.apply(&mut kernel, 1);
-        }
-        kernel.unroll_loops(16);
-        kernel.unfuse_mad();
-        kernel.run_always_on_optimizations();
-        kernel.reassociate_commutative();
-        kernel.loop_invariant_code_motion();*/
-        //kernel.unroll_constant_loops();
-
-        // Apply upcast (vectorization) with factor 2
-        /*let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
-        if n_upcast_configs > 0 {
-            upcast_opt.apply(&mut kernel, 0);
-        }
-        kernel.run_always_on_optimizations();
-        let (upcast_opt, n_upcast_configs) = kernel.opt_upcast();
-        if n_upcast_configs > 0 {
-            upcast_opt.apply(&mut kernel, 0);
-        }*/
-        //kernel.unroll_loops(2);
-
-        // Tiled reduce disabled
-        // Apply tiled reduce optimization
-        //kernel.unroll_loops(4);
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
-        //kernel.debug_colorless();
+        kernel.debug_colorless();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
@@ -277,7 +230,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> (DeviceProgramId, OptSeq) {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
