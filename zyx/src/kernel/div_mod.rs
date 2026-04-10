@@ -98,10 +98,10 @@ impl Kernel {
 
         // Pattern 2: (a * c + b) % c -> b (the remainder is just b, c cancels out)
         if let Some((a, c, b)) = mul_add(self, x) {
-            if c == divisor {
+            /*if c == divisor {
                 self.remap(op_id, b);
                 return;
-            }
+            }*/
             // Pattern 2b: congruence - when c % divisor == 1, (a*c + b) % d = (a + b) % d
             if c % divisor == 1 {
                 if let Some(&(_, max_a)) = bounds.get(&a) {
