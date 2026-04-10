@@ -10,63 +10,34 @@ use crate::{
 
 impl Kernel {
     pub fn div_mod_simplification(&mut self) {
-        //self.debug();
-        let mut changed = true;
-        let mut iterations = 0;
-        while changed && iterations < 10 {
-            changed = false;
-            iterations += 1;
-            let bounds = self.compute_bounds();
+        let bounds = self.compute_bounds();
 
-            let mut op_id = self.head;
-            while !op_id.is_null() {
-                let next = self.next_op(op_id);
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
 
-                if let Op::Binary { x, y, bop } = self.at(op_id).clone() {
-                    if matches!(bop, BOp::Div | BOp::Mod) {
-                        if let Op::Const(divisor) = self.at(y) {
-                            let dtype = divisor.dtype();
-                            if let Some(divisor) = divisor.as_dim() {
-                                match bop {
-                                    BOp::Mod => self.simplify_mod(op_id, x, divisor, dtype, &bounds),
-                                    BOp::Div => self.simplify_div(op_id, x, divisor, dtype, &bounds),
-                                    _ => {}
-                                };
-                                /*if let Some(result) = result {
-                                    changed = true;
-                                    match result {
-                                        SimplifyResult::ForwardTo(src) => {
-                                            self.remap(op_id, src);
-                                        }
-                                        SimplifyResult::ReplaceWith(new_op) => {
-                                            self.ops[op_id].op = new_op;
-                                        }
-                                        SimplifyResult::ReplaceWithSeq(mut new_ops) => {
-                                            let new_op = new_ops.pop().unwrap();
-                                            self.ops[op_id].op = new_op;
-                                            while let Some(op) = new_ops.pop() {
-                                                self.insert_before(op_id, op);
-                                            }
-                                        }
-                                    }
-                                }*/
-                            }
+            if let Op::Binary { x, y, bop } = self.at(op_id).clone() {
+                if matches!(bop, BOp::Div | BOp::Mod) {
+                    if let Op::Const(divisor) = self.at(y) {
+                        let dtype = divisor.dtype();
+                        if let Some(divisor) = divisor.as_dim() {
+                            match bop {
+                                BOp::Mod => self.simplify_mod(op_id, x, divisor, dtype, &bounds),
+                                BOp::Div => self.simplify_div(op_id, x, divisor, dtype, &bounds),
+                                _ => {}
+                            };
                         }
                     }
                 }
-
-                op_id = next;
             }
+
+            op_id = next;
         }
-        //self.debug();
-        //panic!();
 
         self.verify();
     }
 
     fn simplify_div(&mut self, op_id: OpId, x: OpId, divisor: Dim, dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
-        // Pattern: (a * c + b) / c -> a (integer division discards remainder)
-        // This always works regardless of b's value!
         if let Some((a, c, _)) = mul_add(self, x) {
             if c == divisor {
                 self.remap(op_id, a);
@@ -74,7 +45,6 @@ impl Kernel {
             }
         }
 
-        // Also handle Mad (multiply-add in one op)
         if let Some((a, c, _)) = mad(self, x) {
             if c == divisor {
                 self.remap(op_id, a);
@@ -88,25 +58,28 @@ impl Kernel {
         }
     }
 
-    fn simplify_mod(&mut self, op_id: OpId, x: OpId, divisor: Dim, dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
-        // Pattern 1: x already in range [0, divisor-1]
+    fn simplify_mod(&mut self, op_id: OpId, x: OpId, divisor: Dim, _dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
         let Some(&(min_x, max_x)) = bounds.get(&x) else { return };
         if min_x == 0 && max_x < divisor {
             self.remap(op_id, x);
             return;
         }
 
-        // Pattern 2: (a * c + b) % c -> b (the remainder is just b, c cancels out)
         if let Some((a, c, b)) = mul_add(self, x) {
+            // Pattern 2: (a * c + b) % c -> b
             if c == divisor {
                 self.remap(op_id, b);
                 return;
             }
-            // Pattern 2b: congruence - when c % divisor == 1, (a*c + b) % d = (a + b) % d
-            // DISABLED: causes dtype mismatch issues in some cases
+            // Pattern 2b: when c % divisor == 1, (a*c + b) % d = (a + b) % d
+            // Only apply when both a and b are simple: Const or Index
+            if c % divisor == 1 {
+                let divisor_const = self.insert_before(op_id, Op::Const(Constant::idx(divisor)));
+                let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
+                self.ops[op_id].op = Op::Binary { x: a_plus_b, y: divisor_const, bop: BOp::Mod };
+                return;
+            }
         }
-
-        // TODO Pattern 2: (a * c + b) % divisor -> b when b < divisor
 
         // Pattern 3: (a + b) % divisor when max(a + b) < divisor
         if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
@@ -163,7 +136,7 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
     if let Some(x) = mad(k, x) {
         return Some(x);
     }
-    // Pattern: a * c + b
+    // Case 1: (a * c) + b
     let Op::Binary { x: mul, y: add, bop: BOp::Add } = k.at(x) else {
         return None;
     };
@@ -174,7 +147,7 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
             }
         }
     }
-    // Pattern: b + a * c (Mul on right side of Add)
+    // Case 2: b + (a * c)
     let Op::Binary { x: b, y: mul, bop: BOp::Add } = k.at(x) else {
         return None;
     };
