@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: GPL-2.0-only
+
 #![allow(unused)]
 
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
@@ -296,6 +299,8 @@ impl Kernel {
 
         // Initial seed
         let mut kernel = self.clone();
+        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));

@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
@@ -38,7 +38,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{PoolBufferId, Device, DeviceId, DeviceInfo, Event, MemoryPool, Pool, DeviceProgramId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Pool, PoolBufferId, PoolId};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -172,23 +172,20 @@ pub(super) fn initialize_device(
     };
 
     let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus = *unsafe { cuda.get(b"cuInit\0") }?;
-    let cuDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDriverGetVersion\0") }?;
+    let cuDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> CUDAStatus = *unsafe { cuda.get(b"cuDriverGetVersion\0") }?;
     let cuDeviceGetCount: unsafe extern "C" fn(*mut c_int) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceGetCount\0") }?;
     let cuDeviceGet: unsafe extern "C" fn(*mut CUdevice, c_int) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceGet\0") }?;
     let cuDeviceGetName: unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuDeviceGetName\0") }?;
     let cuDeviceComputeCapability: unsafe extern "C" fn(*mut c_int, *mut c_int, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuDeviceComputeCapability\0") }?;
-    let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuDeviceTotalMem\0") }?;
+    let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceTotalMem\0") }?;
     let cuDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuDeviceGetAttribute\0") }?;
     let cuCtxCreate: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuCtxCreate\0") }?;
     //let cuMemAllocAsync = *unsafe { cuda.get(b"cuMemAllocAsync\0") }?;
-    let cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuMemAlloc\0") }?;
+    let cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus = *unsafe { cuda.get(b"cuMemAlloc\0") }?;
     //let cuMemFreeAsync = *unsafe { cuda.get(b"cuMemFreeAsync\0") }?;
     let cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus = *unsafe { cuda.get(b"cuMemFree\0") }?;
     let cuMemcpyHtoDAsync: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize, CUstream) -> CUDAStatus =
@@ -221,20 +218,15 @@ pub(super) fn initialize_device(
         *mut *mut c_void,
         *mut *mut c_void,
     ) -> CUDAStatus = *unsafe { cuda.get(b"cuLaunchKernel\0") }?;
-    let cuStreamCreate: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuStreamCreate\0") }?;
-    let cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuStreamSynchronize\0") }?;
+    let cuStreamCreate: unsafe extern "C" fn(*mut CUstream, c_uint) -> CUDAStatus = *unsafe { cuda.get(b"cuStreamCreate\0") }?;
+    let cuStreamSynchronize: unsafe extern "C" fn(CUstream) -> CUDAStatus = *unsafe { cuda.get(b"cuStreamSynchronize\0") }?;
     let cuStreamWaitEvent: unsafe extern "C" fn(CUstream, CUevent, c_uint) -> CUDAStatus =
         *unsafe { cuda.get(b"cuStreamWaitEvent\0") }?;
     //let cuStreamDestroy = *unsafe { cuda.get(b"cuStreamDestroy\0") }?;
     let cuModuleUnload: unsafe extern "C" fn(CUmodule) -> CUDAStatus = *unsafe { cuda.get(b"cuModuleUnload\0") }?;
-    let cuEventCreate: unsafe extern "C" fn(*mut CUevent, c_uint) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuEventCreate\0") }?;
-    let cuEventRecord: unsafe extern "C" fn(CUevent, CUstream) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuEventRecord\0") }?;
-    let cuEventSynchronize: unsafe extern "C" fn(CUevent) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuEventSynchronize\0") }?;
+    let cuEventCreate: unsafe extern "C" fn(*mut CUevent, c_uint) -> CUDAStatus = *unsafe { cuda.get(b"cuEventCreate\0") }?;
+    let cuEventRecord: unsafe extern "C" fn(CUevent, CUstream) -> CUDAStatus = *unsafe { cuda.get(b"cuEventRecord\0") }?;
+    let cuEventSynchronize: unsafe extern "C" fn(CUevent) -> CUDAStatus = *unsafe { cuda.get(b"cuEventSynchronize\0") }?;
     let cuEventDestroy: unsafe extern "C" fn(CUevent) -> CUDAStatus = *unsafe { cuda.get(b"cuEventDestroy\0") }?;
     //let cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus = *unsafe { cuda.get(b"cuCtxDestroy\0") }?;
     //let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }?;
@@ -250,13 +242,11 @@ pub(super) fn initialize_device(
     let mut num_devices = 0;
     unsafe { cuDeviceGetCount(&raw mut num_devices) }.check(ErrorStatus::DeviceQuery)?;
     if num_devices == 0 {
-        return Err(BackendError {
-            status: ErrorStatus::DeviceEnumeration,
-            context: "No available cuda device.".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "No available cuda device.".into() });
     }
-    let device_ids: Vec<i32> =
-        (0..num_devices).filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id))).collect();
+    let device_ids: Vec<i32> = (0..num_devices)
+        .filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id)))
+        .collect();
     if debug_dev && !device_ids.is_empty() {
         println!(
             "Using CUDA driver, driver version: {}.{} on devices:",
@@ -274,14 +264,12 @@ pub(super) fn initialize_device(
             continue;
         }
         let mut device_name = [0; 100];
-        let Ok(()) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check(ErrorStatus::DeviceQuery)
-        else {
+        let Ok(()) = unsafe { cuDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         let mut major = 0;
         let mut minor = 0;
-        let Ok(()) = unsafe { cuDeviceComputeCapability(&raw mut major, &raw mut minor, device) }
-            .check(ErrorStatus::DeviceQuery)
+        let Ok(()) = unsafe { cuDeviceComputeCapability(&raw mut major, &raw mut minor, device) }.check(ErrorStatus::DeviceQuery)
         else {
             continue;
         };
@@ -363,8 +351,7 @@ pub(super) fn initialize_device(
                         let stream = next_stream(&mut streams, cuStreamSynchronize);
                         while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
                             if !event.is_null() {
-                                _ = unsafe { (cuStreamWaitEvent)(stream, event, 0) }
-                                    .check(ErrorStatus::MemoryDeallocation);
+                                _ = unsafe { (cuStreamWaitEvent)(stream, event, 0) }.check(ErrorStatus::MemoryDeallocation);
                                 _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H);
                             }
                         }
@@ -393,8 +380,7 @@ pub(super) fn initialize_device(
                         debug_assert!(!stream.is_null());
                         //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
                         send_or_continue!(
-                            unsafe { (cuMemcpyHtoDAsync)(dst.ptr, src.cast(), bytes, stream) }
-                                .check(ErrorStatus::MemoryCopyH2P),
+                            unsafe { (cuMemcpyHtoDAsync)(dst.ptr, src.cast(), bytes, stream) }.check(ErrorStatus::MemoryCopyH2P),
                             reply
                         );
                         //unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check(ErrorStatus::MemoryCopyH2P)?;
@@ -423,8 +409,7 @@ pub(super) fn initialize_device(
                             reply
                         );
                         send_or_continue!(
-                            unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes, stream) }
-                                .check(ErrorStatus::MemoryCopyP2H),
+                            unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes, stream) }.check(ErrorStatus::MemoryCopyP2H),
                             reply
                         );
                         send_or_continue!(
@@ -436,22 +421,13 @@ pub(super) fn initialize_device(
                             unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::MemoryCopyP2H),
                             reply
                         );
-                        send_or_continue!(
-                            unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H),
-                            reply
-                        );
+                        send_or_continue!(unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H), reply);
                         _ = reply.send(Ok(()));
                     }
                     CUDACommand::Compile { gws, lws, name, ptx, reply } => {
                         let mut module = ptr::null_mut();
                         if let Err(err) = unsafe {
-                            (cuModuleLoadDataEx)(
-                                &raw mut module,
-                                ptx.as_ptr().cast(),
-                                0,
-                                ptr::null_mut(),
-                                ptr::null_mut(),
-                            )
+                            (cuModuleLoadDataEx)(&raw mut module, ptx.as_ptr().cast(), 0, ptr::null_mut(), ptr::null_mut())
                         }
                         .check(ErrorStatus::KernelCompilation)
                         {
@@ -463,9 +439,8 @@ pub(super) fn initialize_device(
                         }
                         let mut function: CUfunction = ptr::null_mut();
                         // Don't forget that the name is null terminated string
-                        if let Err(err) =
-                            unsafe { (cuModuleGetFunction)(&raw mut function, module, name.as_ptr().cast()) }
-                                .check(ErrorStatus::KernelCompilation)
+                        if let Err(err) = unsafe { (cuModuleGetFunction)(&raw mut function, module, name.as_ptr().cast()) }
+                            .check(ErrorStatus::KernelCompilation)
                         {
                             if debug_dev {
                                 println!("Failed to launch kernel with err: {err:?}\n");
@@ -508,8 +483,7 @@ pub(super) fn initialize_device(
                         }
                         //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::KernelLaunch).unwrap();
                         let mut event = ptr::null_mut();
-                        if let Err(err) = unsafe { (cuEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch)
-                        {
+                        if let Err(err) = unsafe { (cuEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch) {
                             _ = reply.send(Err(err));
                             continue;
                         };
@@ -542,8 +516,7 @@ pub(super) fn initialize_device(
                     CUDACommand::SyncEvents { mut events, reply } => {
                         while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
                             if !event.is_null() {
-                                if let Err(err) = unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync)
-                                {
+                                if let Err(err) = unsafe { (cuEventSynchronize)(event) }.check(ErrorStatus::KernelSync) {
                                     _ = reply.send(Err(err));
                                     continue;
                                 }
@@ -556,13 +529,14 @@ pub(super) fn initialize_device(
                         _ = reply.send(Ok(()));
                     }
                     CUDACommand::ReleaseProgram { program_id } => {
-                        let _ = unsafe { (cuModuleUnload)(programs[program_id].module) }
-                            .check(ErrorStatus::Deinitialization);
+                        let _ = unsafe { (cuModuleUnload)(programs[program_id].module) }.check(ErrorStatus::Deinitialization);
                         programs.remove(program_id);
                     }
                     CUDACommand::ReleaseEvents { events } => {
                         for event in events {
-                            let Event::CUDA(CUDAEvent { event }) = event else { unreachable!() };
+                            let Event::CUDA(CUDAEvent { event }) = event else {
+                                unreachable!()
+                            };
                             _ = unsafe { (cuEventDestroy)(event) }.check(ErrorStatus::Deinitialization);
                         }
                     }
@@ -593,21 +567,9 @@ pub(super) fn initialize_device(
         dev.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024, // TODO run a kernel to get an estimate
             max_global_work_dims: vec![
-                Dim::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-                Dim::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-                Dim::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
+                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, cuDeviceGetAttribute)?).unwrap(),
+                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
+                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
             ],
             max_local_threads: Dim::try_from(dev.get(
                 CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
@@ -615,21 +577,9 @@ pub(super) fn initialize_device(
             )?)
             .unwrap(),
             max_local_work_dims: vec![
-                Dim::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-                Dim::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
-                Dim::try_from(dev.get(
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z,
-                    cuDeviceGetAttribute,
-                )?)
-                .unwrap(),
+                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, cuDeviceGetAttribute)?).unwrap(),
+                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
+                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
             ],
             local_mem_size: Dim::try_from(dev.get(
                 CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK,
@@ -671,12 +621,7 @@ impl CUDAMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
             .send(CUDACommand::HostToPool { src: src.as_ptr(), bytes: src.len(), dst, event_wait_list, reply })
@@ -685,12 +630,7 @@ impl CUDAMemoryPool {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_host(
-        &mut self,
-        src: PoolBufferId,
-        dst: &mut [u8],
-        event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let (reply, reply_rx) = channel();
         self.tx
             .send(CUDACommand::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len(), event_wait_list, reply })
@@ -733,8 +673,7 @@ impl CUDADevice {
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         //let (gws, lws, name, ptx) = self.compile_cuda(kernel, debug_asm)?;
         //let (gws, lws, name, ptx) = self.compile_ptx(kernel, debug_asm)?;
-        let (ptx, name, gws, lws) =
-            Compiler::new().compile(kernel, self.compute_capability, &self.dev_info, debug_asm)?;
+        let (ptx, name, gws, lws) = Compiler::new().compile(kernel, self.compute_capability, &self.dev_info, debug_asm)?;
 
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Compile { gws, lws, name, ptx, reply }).unwrap();
@@ -751,7 +690,9 @@ impl CUDADevice {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (reply, reply_rx) = channel();
-        self.tx.send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply }).unwrap();
+        self.tx
+            .send(CUDACommand::Launch { program_id, args: args.into(), event_wait_list, reply })
+            .unwrap();
         reply_rx.recv().unwrap()
     }
 
@@ -1009,11 +950,7 @@ impl Constant {
             // Use 9 decimal digits, which is enough for full f32 precision
             let s = format!("{:.*}", decimals, val);
             let s = s.trim_end_matches('0').trim_end_matches('.');
-            if s.contains(".") {
-                s.to_string()
-            } else {
-                format!("{s}.0")
-            }
+            if s.contains(".") { s.to_string() } else { format!("{s}.0") }
         }
         match self {
             &Self::BF16(x) => format!("{}f", half::bf16::from_le_bytes(x)),
@@ -1339,10 +1276,7 @@ impl Compiler {
             }
         }
         if lws.iter().product::<usize>() > dev_info.max_local_threads {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "Invalid local work size.".into(),
-            });
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
         let name = format!(
             "k_{}__{}",
@@ -1423,11 +1357,7 @@ impl Compiler {
                             } else {
                                 _ = writeln!(self.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", self.indent);
                             }
-                            _ = writeln!(
-                                self.body,
-                                "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};",
-                                self.indent
-                            );
+                            _ = writeln!(self.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", self.indent);
                             _ = writeln!(self.body, "{}add.u64 %address, %p{src}, %r{offset};", self.indent);
                             let scope = match self.get_scope(*src) {
                                 Scope::Global => "global",
@@ -1435,13 +1365,7 @@ impl Compiler {
                                 Scope::Register => "local",
                             };
                             self.release_reg(offset);
-                            _ = writeln!(
-                                self.body,
-                                "{}ld.{}.{} %r{reg}, [%address];",
-                                self.indent,
-                                scope,
-                                dtype.ptx()
-                            );
+                            _ = writeln!(self.body, "{}ld.{}.{} %r{reg}, [%address];", self.indent, scope, dtype.ptx());
                         }
                         Scope::Local => todo!(),
                         Scope::Register => {
@@ -1491,11 +1415,7 @@ impl Compiler {
                                 } else {
                                     _ = writeln!(self.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", self.indent);
                                 }
-                                _ = writeln!(
-                                    self.body,
-                                    "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};",
-                                    self.indent
-                                );
+                                _ = writeln!(self.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", self.indent);
                                 _ = writeln!(self.body, "{}add.u64 %address, %p{dst}, %r{offset};", self.indent);
                                 _ = writeln!(self.body, "{}st.global.{} [%address], %r{x};", self.indent, dtype.ptx());
                             }
@@ -1523,33 +1443,18 @@ impl Compiler {
                     match (dtype, xdtype) {
                         (DType::Bool, _) => {
                             if dtype.is_float() {
-                                _ = writeln!(
-                                    self.body,
-                                    "{}setp.ne.{} %r{reg}, %r{x}, 0.0;",
-                                    self.indent,
-                                    xdtype.ptx()
-                                );
+                                _ = writeln!(self.body, "{}setp.ne.{} %r{reg}, %r{x}, 0.0;", self.indent, xdtype.ptx());
                             } else {
                                 _ = writeln!(self.body, "{}setp.ne.{} %r{reg}, %r{x}, 0;", self.indent, xdtype.ptx());
                             }
                         }
                         (_, DType::Bool) => {
                             if dtype == DType::F64 {
-                                _ = writeln!(
-                                    self.body,
-                                    "{}selp.{} %r{reg}, 1.0, 0.0, %r{x};",
-                                    self.indent,
-                                    dtype.ptx(),
-                                );
+                                _ = writeln!(self.body, "{}selp.{} %r{reg}, 1.0, 0.0, %r{x};", self.indent, dtype.ptx(),);
                             } else if dtype == DType::F32 {
                                 let a = self.new_reg(DType::F32, 0);
                                 let b = self.new_reg(DType::F32, 0);
-                                _ = writeln!(
-                                    self.body,
-                                    "{}selp.{} %r{reg}, %r{a}, %r{b}, %r{x};",
-                                    self.indent,
-                                    dtype.ptx(),
-                                );
+                                _ = writeln!(self.body, "{}selp.{} %r{reg}, %r{a}, %r{b}, %r{x};", self.indent, dtype.ptx(),);
                             } else {
                                 _ = writeln!(self.body, "{}selp.{} %r{reg}, 1, 0, %r{x};", self.indent, dtype.ptx());
                             }
@@ -1646,12 +1551,7 @@ impl Compiler {
                 Op::EndLoop => {
                     loop_id -= 1;
                     if let Some((dim, loop_pred, loop_idx)) = self.loops.pop() {
-                        _ = writeln!(
-                            self.body,
-                            "{}add.{} %r{loop_idx}, %r{loop_idx}, 1;",
-                            self.indent,
-                            IDX_T.ptx()
-                        );
+                        _ = writeln!(self.body, "{}add.{} %r{loop_idx}, %r{loop_idx}, 1;", self.indent, IDX_T.ptx());
                         writeln!(
                             self.body,
                             "{}setp.lt.{} %r{loop_pred}, %r{loop_idx}, {};",

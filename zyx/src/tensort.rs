@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 use std::marker::PhantomData;
 
@@ -70,10 +70,7 @@ impl<T: Scalar, S: Shape> Tensor<T, S> {
 }
 
 impl<T: Scalar, const D0: Dim, const D1: Dim> Tensor<T, S2<D0, D1>> {
-    pub fn matmul<const D2: Dim>(
-        &self,
-        rhs: impl Into<Tensor<T, S2<D1, D2>>>,
-    ) -> Result<Tensor<T, S2<D0, D2>>, ZyxError> {
+    pub fn matmul<const D2: Dim>(&self, rhs: impl Into<Tensor<T, S2<D1, D2>>>) -> Result<Tensor<T, S2<D0, D2>>, ZyxError> {
         todo!()
     }
 }

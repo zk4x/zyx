@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: GPL-2.0-only
+
 use crate::{
     DType, Map, Set,
     dtype::Constant,

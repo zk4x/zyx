@@ -1,9 +1,12 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 #![allow(unused)]
 
-use crate::{tensor::{Tensor, TensorId}, Set, RT};
+use crate::{
+    RT, Set,
+    tensor::{Tensor, TensorId},
+};
 
 pub struct StaticGraph {
     inputs: Set<TensorId>,
@@ -25,7 +28,6 @@ impl StaticGraph {
     /// Inputs are tensors that can be changed during each forward pass.
     /// Outputs are tensors that get realized during forward pass.
     pub fn new(inputs: impl IntoIterator<Item = Tensor>, outputs: impl IntoIterator<Item = Tensor>) -> Self {
-
         // TODO keep order of inputs and resolve the fact, that input IDs can change, so there needs to be some
         // perhaps some interior mutability to keep the graph valid.
         // But actually we don't need to do that. We only need to work on the level of buffer IDs.
@@ -40,11 +42,7 @@ impl StaticGraph {
             rt.retain(tid);
         }
         let graph = rt.compile_graph(&inputs, &outputs);
-        Self {
-            inputs,
-            outputs,
-            graph,
-        }
+        Self { inputs, outputs, graph }
     }
 
     /// Launch the graph with given inputs.

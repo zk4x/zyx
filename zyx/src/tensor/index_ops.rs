@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
-use crate::{tensor::Axis, Tensor, ZyxError};
+use crate::{Tensor, ZyxError, tensor::Axis};
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo};
 
 /// Panics on indexing, with a helpful message directing to `.slice(...)`.
@@ -522,14 +522,14 @@ impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimInd
 }
 
 impl<
-        I0: Into<DimIndex>,
-        I1: Into<DimIndex>,
-        I2: Into<DimIndex>,
-        I3: Into<DimIndex>,
-        I4: Into<DimIndex>,
-        I5: Into<DimIndex>,
-        I6: Into<DimIndex>,
-    > IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
+    I0: Into<DimIndex>,
+    I1: Into<DimIndex>,
+    I2: Into<DimIndex>,
+    I3: Into<DimIndex>,
+    I4: Into<DimIndex>,
+    I5: Into<DimIndex>,
+    I6: Into<DimIndex>,
+> IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
 {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
         [
@@ -546,15 +546,15 @@ impl<
 }
 
 impl<
-        I0: Into<DimIndex>,
-        I1: Into<DimIndex>,
-        I2: Into<DimIndex>,
-        I3: Into<DimIndex>,
-        I4: Into<DimIndex>,
-        I5: Into<DimIndex>,
-        I6: Into<DimIndex>,
-        I7: Into<DimIndex>,
-    > IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
+    I0: Into<DimIndex>,
+    I1: Into<DimIndex>,
+    I2: Into<DimIndex>,
+    I3: Into<DimIndex>,
+    I4: Into<DimIndex>,
+    I5: Into<DimIndex>,
+    I6: Into<DimIndex>,
+    I7: Into<DimIndex>,
+> IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
 {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
         [

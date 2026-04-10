@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 #![allow(unused)]
 
@@ -14,11 +14,11 @@
 //
 
 use crate::{
+    DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, Op, OpId, Scope},
     shape::Dim,
-    DType, Map,
 };
 
 #[derive(Debug)]

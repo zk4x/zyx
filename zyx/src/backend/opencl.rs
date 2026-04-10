@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! `OpenCL` backend
 
@@ -11,7 +11,7 @@ const VEC_COMPONENTS: [&str; 16] = [
     "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
 ];
 
-use super::{PoolBufferId, Device, DeviceId, DeviceInfo, Event, MemoryPool, Pool, DeviceProgramId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Pool, PoolBufferId, PoolId};
 use crate::{
     DType, Map,
     dtype::Constant,

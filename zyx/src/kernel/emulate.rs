@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: GPL-2.0-only
+
 use crate::{
     Map,
     dtype::Constant,
@@ -7,12 +10,18 @@ use crate::{
 impl Constant {
     /// Converts a Vec<Vec<f32>> into Vec<Vec<Constant>>
     pub fn from_f32_matrix(matrix: Vec<Vec<f32>>) -> Vec<Vec<Constant>> {
-        matrix.into_iter().map(|row| row.into_iter().map(|v| Constant::F32(v.to_le_bytes())).collect()).collect()
+        matrix
+            .into_iter()
+            .map(|row| row.into_iter().map(|v| Constant::F32(v.to_le_bytes())).collect())
+            .collect()
     }
 
     /// Converts a Vec<Vec<i32>> into Vec<Vec<Constant>>
     pub fn from_i32_matrix(matrix: Vec<Vec<i32>>) -> Vec<Vec<Constant>> {
-        matrix.into_iter().map(|row| row.into_iter().map(|v| Constant::I32(v)).collect()).collect()
+        matrix
+            .into_iter()
+            .map(|row| row.into_iter().map(|v| Constant::I32(v)).collect())
+            .collect()
     }
 }
 
@@ -103,19 +112,18 @@ impl Kernel {
                     (format!("r{op_id}: {dtype} = r{x}[{index}]"), dtype, Vec::new())
                 }
                 Op::Load { src, index, vlen } => todo!(),
-                Op::Index { len, scope, axis } => {
-                    (
-                        format!("r{op_id}: {IDX_T} = gidx{axis}"),
-                        IDX_T,
-                        match scope {
-                            Scope::Global => {
-                                index_combinations[axis as usize].iter().map(|&i| Constant::idx(i as u64)).collect()
-                            }
-                            Scope::Local => todo!(),
-                            Scope::Register => todo!(),
-                        },
-                    )
-                }
+                Op::Index { len, scope, axis } => (
+                    format!("r{op_id}: {IDX_T} = gidx{axis}"),
+                    IDX_T,
+                    match scope {
+                        Scope::Global => index_combinations[axis as usize]
+                            .iter()
+                            .map(|&i| Constant::idx(i as u64))
+                            .collect(),
+                        Scope::Local => todo!(),
+                        Scope::Register => todo!(),
+                    },
+                ),
                 Op::Loop { len, axis } => {
                     let dtype = IDX_T;
                     //(format!("r{op_id}: {IDX_T} = gidx{axis}"), dtype, vec![; n_threads])

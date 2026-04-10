@@ -1,13 +1,13 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 use std::collections::BTreeMap;
 
 use crate::{
-    dtype::Constant,
-    kernel::{BOp, Kernel, MoveOp, Op, OpId, Scope, IDX_T},
-    shape::{Dim, UAxis},
     Set,
+    dtype::Constant,
+    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, Scope},
+    shape::{Dim, UAxis},
 };
 
 impl Kernel {

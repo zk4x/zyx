@@ -1,13 +1,13 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 use super::autotune::Optimization;
 #[allow(unused)]
 use crate::{
+    Map,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
     shape::Dim,
-    Map,
 };
 
 impl Kernel {

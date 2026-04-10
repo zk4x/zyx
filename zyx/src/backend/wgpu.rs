@@ -1,22 +1,22 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, PoolId};
 use crate::{
+    DType, Map,
     backend::{DeviceProgramId, PoolBufferId},
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, Scope, UOp, IDX_T},
+    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope, UOp},
     runtime::Pool,
     shape::Dim,
     slab::Slab,
-    DType, Map,
 };
 use nanoserde::DeJson;
 use pollster::FutureExt;
 use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc, time::Duration};
 use wgpu::{
-    wgt::PollType, BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource,
-    SubmissionIndex,
+    BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource, SubmissionIndex,
+    wgt::PollType,
 };
 
 #[derive(DeJson, Debug)]

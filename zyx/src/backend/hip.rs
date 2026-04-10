@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! HIP backend
 
@@ -8,6 +8,7 @@
 #![allow(unused)]
 
 use super::{Device, DeviceInfo, MemoryPool};
+use crate::DType;
 use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
@@ -15,7 +16,6 @@ use crate::kernel::Kernel;
 use crate::runtime::Pool;
 use crate::shape::Dim;
 use crate::slab::Slab;
-use crate::DType;
 use libloading::Library;
 use nanoserde::DeJson;
 use std::ffi::{c_char, c_int, c_uint, c_void};

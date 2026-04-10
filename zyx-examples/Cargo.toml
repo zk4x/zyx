@@ -19,14 +19,14 @@ opt-level = 2
 lto = "off"
 
 [profile.release]
-opt-level = 2
+opt-level = 3
 strip = true
 debug-assertions = false
 overflow-checks = false
-lto = "thin"
+lto = true
 panic = "abort"
 incremental = true
-codegen-units = 16
+codegen-units = 1
 debug = 0
 
 #[profile.release]

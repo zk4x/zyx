@@ -8,7 +8,7 @@ documentation = "https://docs.rs/zyx"
 readme = "README.md"
 homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
-license = "AGPL-3.0-only"
+license = "GPL-2.0-only"
 keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "science"]
 

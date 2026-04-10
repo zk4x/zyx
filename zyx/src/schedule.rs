@@ -1,14 +1,14 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 use crate::{
+    Map, ZyxError,
     backend::{BufferId, Device, DeviceId, PoolBufferId, PoolId},
     graph::Graph,
     runtime::Pool,
     shape::Dim,
     slab::Slab,
     tensor::TensorId,
-    Map, ZyxError,
 };
 use std::collections::BTreeSet;
 

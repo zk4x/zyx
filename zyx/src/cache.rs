@@ -1,11 +1,11 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 use crate::{
-    backend::{Device, DeviceId, DeviceInfo, DeviceProgramId},
-    kernel::{autotune::OptSeq, Kernel},
     //optimizer::{self, Optimizer},
     Map,
+    backend::{Device, DeviceId, DeviceInfo, DeviceProgramId},
+    kernel::{Kernel, autotune::OptSeq},
 };
 use nanoserde::{DeBin, SerBin};
 use std::hash::BuildHasherDefault;

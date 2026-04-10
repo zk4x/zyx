@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
-use super::{opencl::OpenCLEvent, Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId, opencl::OpenCLEvent};
 use crate::{
     error::{BackendError, ErrorStatus},
     kernel::Kernel,

@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 #![allow(unused)]
 #![allow(non_snake_case)]
@@ -427,7 +427,8 @@ pub(super) fn initialize_device(
                         debug_assert!(!stream.is_null());
                         //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
                         send_or_continue!(
-                            unsafe { (cuMemcpyHtoDAsync)(dst.ptr, src.cast(), bytes as usize, stream) }.check(ErrorStatus::MemoryCopyH2P),
+                            unsafe { (cuMemcpyHtoDAsync)(dst.ptr, src.cast(), bytes as usize, stream) }
+                                .check(ErrorStatus::MemoryCopyH2P),
                             reply
                         );
                         //unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check(ErrorStatus::MemoryCopyH2P)?;
@@ -456,7 +457,8 @@ pub(super) fn initialize_device(
                             reply
                         );
                         send_or_continue!(
-                            unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes as usize, stream) }.check(ErrorStatus::MemoryCopyP2H),
+                            unsafe { (cuMemcpyDtoHAsync)(dst.cast(), src.ptr, bytes as usize, stream) }
+                                .check(ErrorStatus::MemoryCopyP2H),
                             reply
                         );
                         send_or_continue!(

@@ -1,3 +1,6 @@
+// Copyright (C) 2025 zk4x
+// SPDX-License-Identifier: GPL-2.0-only
+
 use crate::{Tensor, cache::KernelId, kernel::Kernel, tensor::TensorId};
 
 /// Custom kernel, for now custom kernels can have only 1 output

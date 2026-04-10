@@ -1,11 +1,11 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 use crate::{
+    DType, RT, Tensor, ZyxError,
     kernel::BOp,
-    shape::{into_axes, Dim, UAxis},
+    shape::{Dim, UAxis, into_axes},
     tensor::Axis,
-    DType, Tensor, ZyxError, RT,
 };
 use paste::paste;
 

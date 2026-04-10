@@ -1,9 +1,10 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: GPL-2.0-only
 
 //! Compiled graph caching layer.
 
 use crate::{
+    DType, Map, Set, ZyxError,
     backend::{BufferId, DeviceId, ProgramId},
     graph::Node,
     kernel::{Kernel, MoveOp, Op, OpId, OpNode},
@@ -13,7 +14,6 @@ use crate::{
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
-    DType, Map, Set, ZyxError,
 };
 use std::collections::BTreeMap;
 use std::hash::BuildHasherDefault;
