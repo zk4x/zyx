@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use crate::{
-    DType, Map,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId},
     shape::Dim,
+    DType, Map,
 };
 
 impl Kernel {
@@ -98,24 +98,22 @@ impl Kernel {
 
         // Pattern 2: (a * c + b) % c -> b (the remainder is just b, c cancels out)
         if let Some((a, c, b)) = mul_add(self, x) {
-            /*if c == divisor {
+            if c == divisor {
                 self.remap(op_id, b);
                 return;
-            }*/
+            }
             // Pattern 2b: congruence - when c % divisor == 1, (a*c + b) % d = (a + b) % d
+            // Only apply when bounds guarantee correctness
             if c % divisor == 1 {
                 if let Some(&(_, max_a)) = bounds.get(&a) {
                     if let Some(&(_, max_b)) = bounds.get(&b) {
                         if max_a.saturating_add(max_b) < divisor {
                             let a_plus_b = Op::Binary { x: a, y: b, bop: BOp::Add };
                             self.ops[op_id].op = a_plus_b;
+                            return;
                         }
                     }
                 }
-                let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
-                let d = self.insert_before(op_id, Op::Const(Constant::idx(divisor).cast(dtype)));
-                self.ops[op_id].op = Op::Binary { x: a_plus_b, y: d, bop: BOp::Mod };
-                return;
             }
         }
 
