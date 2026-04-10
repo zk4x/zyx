@@ -103,20 +103,7 @@ impl Kernel {
                 return;
             }
             // Pattern 2b: congruence - when c % divisor == 1, (a*c + b) % d = (a + b) % d
-            // Only apply when bounds guarantee correctness
-            if c % divisor == 1 {
-                if let Some(&(min_a, max_a)) = bounds.get(&a) {
-                    if let Some(&(min_b, max_b)) = bounds.get(&b) {
-                        // Allow simplification when a and b are non-negative
-                        let sum = max_a.saturating_add(max_b);
-                        if sum < divisor {
-                            let a_plus_b = Op::Binary { x: a, y: b, bop: BOp::Add };
-                            self.ops[op_id].op = a_plus_b;
-                            return;
-                        }
-                    }
-                }
-            }
+            // DISABLED: causes dtype mismatch issues in some cases
         }
 
         // TODO Pattern 2: (a * c + b) % divisor -> b when b < divisor
