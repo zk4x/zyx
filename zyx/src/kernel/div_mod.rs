@@ -107,13 +107,12 @@ impl Kernel {
             if c % divisor == 1 {
                 if let Some(&(min_a, max_a)) = bounds.get(&a) {
                     if let Some(&(min_b, max_b)) = bounds.get(&b) {
-                        if min_a > 0 && min_b > 0 {
-                            let sum = max_a.saturating_add(max_b);
-                            if sum < divisor && sum > 0 {
-                                let a_plus_b = Op::Binary { x: a, y: b, bop: BOp::Add };
-                                self.ops[op_id].op = a_plus_b;
-                                return;
-                            }
+                        // Allow simplification when a and b are non-negative
+                        let sum = max_a.saturating_add(max_b);
+                        if sum < divisor {
+                            let a_plus_b = Op::Binary { x: a, y: b, bop: BOp::Add };
+                            self.ops[op_id].op = a_plus_b;
+                            return;
                         }
                     }
                 }
@@ -177,15 +176,29 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
     if let Some(x) = mad(k, x) {
         return Some(x);
     }
+    // Pattern: a * c + b
     let Op::Binary { x: mul, y: add, bop: BOp::Add } = k.at(x) else {
         return None;
     };
-    let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(*mul) else {
+    if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(*mul) {
+        if let Op::Const(cst) = k.at(*c) {
+            if let Some(cval) = cst.as_dim() {
+                return Some((*a, cval, *add));
+            }
+        }
+    }
+    // Pattern: b + a * c (Mul on right side of Add)
+    let Op::Binary { x: b, y: mul, bop: BOp::Add } = k.at(x) else {
         return None;
     };
-    let Op::Const(cst) = k.at(*c) else { return None };
-    let Some(cval) = cst.as_dim() else { return None };
-    Some((*a, cval, *add))
+    if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(*mul) {
+        if let Op::Const(cst) = k.at(*c) {
+            if let Some(cval) = cst.as_dim() {
+                return Some((*a, cval, *b));
+            }
+        }
+    }
+    None
 }
 
 fn mad(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
