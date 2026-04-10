@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: LGPL-3.0-only
 
 use std::collections::HashMap;
 use zyx::{DType, GradientTape, Module, Tensor, ZyxError};

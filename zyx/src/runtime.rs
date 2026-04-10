@@ -1,5 +1,5 @@
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: LGPL-3.0-only
 
 //! Runtime handles tensor graph and connects tensors to device buffers.
 use crate::backend::{AutotuneConfig, BufferId, Config, Device, DeviceId, Event, MemoryPool, PoolBufferId, PoolId};

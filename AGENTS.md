@@ -100,7 +100,7 @@ r19: i32 = r18[r1]    // 0..=3 load
 
 ```rust
 // Copyright (C) 2025 zk4x
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: LGPL-3.0-only
 ```
 
 ## Documentation & Errors
