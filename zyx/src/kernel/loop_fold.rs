@@ -157,33 +157,22 @@ impl Kernel {
 
         // Check endloop
         let endloop_id = self.next_op(store_id);
-        if !matches!(self.at(endloop_id), Op::EndLoop) {
+        let Op::EndLoop = self.at(endloop_id) else {
             return;
-        }
+        };
 
         println!("endloop_id={endloop_id}");
 
         // Check final load
         let load2_id = self.next_op(endloop_id);
-        if !matches!(self.at(load2_id), Op::Load { .. }) {
-            return;
-        }
-        println!("load2_id={load2_id}");
-        let load2_op = self.at(load2_id).clone();
-        let load2_idx = if let Op::Load { src: load2_src, index, vlen: 1 } = load2_op {
-            if load2_src != def_id {
-                return;
-            }
-            let Op::Const(cst) = self.at(index) else {
-                return;
-            };
-            if let Some(0) = cst.as_dim() {
-                return;
-            }
-            index
-        } else {
+        let Op::Load { src: load2_src, .. } = self.at(load2_id) else {
             return;
         };
+        if *load2_src != def_id {
+            return;
+        }
+
+        println!("load2_id={load2_id}");
 
         println!("PATTERN FOUND: store_id={store1_id}");
 
