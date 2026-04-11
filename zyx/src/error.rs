@@ -66,9 +66,7 @@ impl std::fmt::Display for ZyxError {
             ZyxError::NoBackendAvailable => f.write_fmt(format_args!("No available backend")),
             ZyxError::AllocationError(e) => f.write_fmt(format_args!("Allocation error {e}")),
             ZyxError::BackendError(e) => f.write_fmt(format_args!("Backend {e}")),
-            ZyxError::KernelLaunchFailure => f.write_fmt(format_args!(
-                "Multiple kernel variations failed to launch. Could be autotuner issue, but more likely faulty hardware driver."
-            )),
+            ZyxError::KernelLaunchFailure => f.write_fmt(format_args!("Multiple kernel variations failed to launch. Could be autotuner issue, but more likely faulty hardware driver.")),
         }
     }
 }

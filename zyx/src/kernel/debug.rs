@@ -87,13 +87,9 @@ impl Kernel {
                     let src = id_map[&src];
                     let index = id_map[&index];
                     if len > 1 {
-                        println!(
-                            "{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}..+{len}]    // {lb}..={ub} {GREEN}load{RESET}"
-                        );
+                        println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}..+{len}]    // {lb}..={ub} {GREEN}load{RESET}");
                     } else {
-                        println!(
-                            "{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}]    // {lb}..={ub} {GREEN}load{RESET}"
-                        );
+                        println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}]    // {lb}..={ub} {GREEN}load{RESET}");
                     }
                 }
                 Op::Store { dst, x, index, vlen: len } => {
@@ -188,9 +184,7 @@ impl Kernel {
                     let a = id_map.get(&a).copied().unwrap_or(OpId::NULL);
                     let b = id_map.get(&b).copied().unwrap_or(OpId::NULL);
                     let c = id_map.get(&c).copied().unwrap_or(OpId::NULL);
-                    println!(
-                        "{indent}r{out_id}{GREY}: {cdtype}{RESET} = {ORANGE}wmma{RESET}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",
-                    );
+                    println!("{indent}r{out_id}{GREY}: {cdtype}{RESET} = {ORANGE}wmma{RESET}.{dims:?}.{layout:?}.{dtype:?}(c={c}, a={a}, b={b})",);
                 }
                 Op::Index { len, scope, axis } => {
                     dtypes.insert(op_id, IDX_T);
@@ -235,9 +229,7 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let vec = id_map.get(&vec).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
-                        println!(
-                            "{indent}r{out_id}{GREY}: {dtype}{RESET} = {ORANGE}devectorize{RESET} r{vec}[{idx}]    // {l}..={u}",
-                        );
+                        println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {ORANGE}devectorize{RESET} r{vec}[{idx}]    // {l}..={u}",);
                     } else {
                         println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {ORANGE}DEVECTORIZE{RESET} r{vec}[{idx}]",);
                     }
@@ -254,14 +246,10 @@ impl Kernel {
                             println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {CYAN}expand{RESET} r{x} -> {shape:?}");
                         }
                         MoveOp::Permute { axes, shape } => {
-                            println!(
-                                "{indent}r{out_id}{GREY}: {dtype}{RESET} = {CYAN}permute{RESET} r{x} axes={axes:?} -> {shape:?}",
-                            );
+                            println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {CYAN}permute{RESET} r{x} axes={axes:?} -> {shape:?}",);
                         }
                         MoveOp::Pad { padding, shape } => {
-                            println!(
-                                "{indent}r{out_id}{GREY}: {dtype}{RESET} = {CYAN}pad{RESET} r{x} padding={padding:?} -> {shape:?}",
-                            );
+                            println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {CYAN}pad{RESET} r{x} padding={padding:?} -> {shape:?}",);
                         }
                     };
                 }

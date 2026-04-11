@@ -1,3 +1,4 @@
 max_width = 999
 edition = "2021"
 struct_lit_width = 999
+single_line_let_else_max_width = 999

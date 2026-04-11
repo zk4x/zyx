@@ -7,9 +7,7 @@
 #![allow(non_snake_case)]
 #![allow(clippy::question_mark)]
 
-const VEC_COMPONENTS: [&str; 16] = [
-    "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
-];
+const VEC_COMPONENTS: [&str; 16] = ["x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb"];
 
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Pool, PoolBufferId, PoolId};
 use crate::{
@@ -57,28 +55,8 @@ pub struct OpenCLMemoryPool {
     clReleaseContext: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     clReleaseMemObject: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     //clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-    clEnqueueReadBuffer: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        cl_uint,
-        usize,
-        usize,
-        *mut c_void,
-        cl_uint,
-        *const *mut c_void,
-        *mut *mut c_void,
-    ) -> OpenCLStatus,
-    clEnqueueWriteBuffer: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        cl_uint,
-        usize,
-        usize,
-        *const c_void,
-        cl_uint,
-        *const *mut c_void,
-        *mut *mut c_void,
-    ) -> OpenCLStatus,
+    clEnqueueReadBuffer: unsafe extern "C" fn(*mut c_void, *mut c_void, cl_uint, usize, usize, *mut c_void, cl_uint, *const *mut c_void, *mut *mut c_void) -> OpenCLStatus,
+    clEnqueueWriteBuffer: unsafe extern "C" fn(*mut c_void, *mut c_void, cl_uint, usize, usize, *const c_void, cl_uint, *const *mut c_void, *mut *mut c_void) -> OpenCLStatus,
     clCreateBuffer: unsafe extern "C" fn(*mut c_void, cl_bitfield, usize, *mut c_void, *mut OpenCLStatus) -> *mut c_void,
 }
 
@@ -97,33 +75,14 @@ pub struct OpenCLDevice {
     programs: Slab<DeviceProgramId, OpenCLProgram>,
     queues: Vec<OpenCLQueue>,
     // Functions
-    clGetProgramBuildInfo:
-        unsafe extern "C" fn(*mut c_void, *mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
-    clBuildProgram: unsafe extern "C" fn(
-        *mut c_void,
-        cl_uint,
-        *const *mut c_void,
-        *const i8,
-        Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
-        *mut c_void,
-    ) -> OpenCLStatus,
+    clGetProgramBuildInfo: unsafe extern "C" fn(*mut c_void, *mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
+    clBuildProgram: unsafe extern "C" fn(*mut c_void, cl_uint, *const *mut c_void, *const i8, Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>, *mut c_void) -> OpenCLStatus,
     clReleaseProgram: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     clCreateKernel: unsafe extern "C" fn(*mut c_void, *const i8, *mut OpenCLStatus) -> *mut c_void,
     clGetDeviceInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
     clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus,
-    clCreateProgramWithSource:
-        unsafe extern "C" fn(*mut c_void, cl_uint, *const *const i8, *const usize, *mut OpenCLStatus) -> *mut c_void,
-    clEnqueueNDRangeKernel: unsafe extern "C" fn(
-        *mut c_void,
-        *mut c_void,
-        cl_uint,
-        *const usize,
-        *const usize,
-        *const usize,
-        cl_uint,
-        *const *mut c_void,
-        *mut *mut c_void,
-    ) -> OpenCLStatus,
+    clCreateProgramWithSource: unsafe extern "C" fn(*mut c_void, cl_uint, *const *const i8, *const usize, *mut OpenCLStatus) -> *mut c_void,
+    clEnqueueNDRangeKernel: unsafe extern "C" fn(*mut c_void, *mut c_void, cl_uint, *const usize, *const usize, *const usize, cl_uint, *const *mut c_void, *mut *mut c_void) -> OpenCLStatus,
     //clWaitForEvents: unsafe extern "C" fn(cl_uint, *const *mut c_void) -> OpenCLStatus,
     clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
     /*clGetCommandQueueInfo: unsafe extern "C" fn(
@@ -163,12 +122,7 @@ unsafe impl Send for OpenCLProgram {}
 unsafe impl Send for OpenCLQueue {}
 unsafe impl Send for OpenCLEvent {}
 
-pub(super) fn initialize_device(
-    config: &OpenCLConfig,
-    memory_pools: &mut Slab<PoolId, Pool>,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
+pub(super) fn initialize_device(config: &OpenCLConfig, memory_pools: &mut Slab<PoolId, Pool>, devices: &mut Slab<DeviceId, Device>, debug_dev: bool) -> Result<(), BackendError> {
     if let Some(device_ids) = &config.platform_ids
         && device_ids.is_empty()
     {
@@ -198,20 +152,10 @@ pub(super) fn initialize_device(
     let Some(opencl) = opencl else {
         return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "OpenCL runtime not found.".into() });
     };
-    let clGetPlatformIDs: unsafe extern "C" fn(cl_uint, *mut *mut c_void, *mut cl_uint) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clGetPlatformIDs\0") }?;
-    let clCreateContext: unsafe extern "C" fn(
-        *const isize,
-        cl_uint,
-        *const *mut c_void,
-        Option<unsafe extern "C" fn(*const i8, *const c_void, usize, *mut c_void)>,
-        *mut c_void,
-        *mut OpenCLStatus,
-    ) -> *mut c_void = *unsafe { opencl.get(b"clCreateContext\0") }?;
-    let clCreateCommandQueue: unsafe extern "C" fn(*mut c_void, *mut c_void, cl_bitfield, *mut OpenCLStatus) -> *mut c_void =
-        *unsafe { opencl.get(b"clCreateCommandQueue\0") }?;
-    let clGetDeviceIDs: unsafe extern "C" fn(*mut c_void, cl_bitfield, cl_uint, *mut *mut c_void, *mut cl_uint) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clGetDeviceIDs\0") }?;
+    let clGetPlatformIDs: unsafe extern "C" fn(cl_uint, *mut *mut c_void, *mut cl_uint) -> OpenCLStatus = *unsafe { opencl.get(b"clGetPlatformIDs\0") }?;
+    let clCreateContext: unsafe extern "C" fn(*const isize, cl_uint, *const *mut c_void, Option<unsafe extern "C" fn(*const i8, *const c_void, usize, *mut c_void)>, *mut c_void, *mut OpenCLStatus) -> *mut c_void = *unsafe { opencl.get(b"clCreateContext\0") }?;
+    let clCreateCommandQueue: unsafe extern "C" fn(*mut c_void, *mut c_void, cl_bitfield, *mut OpenCLStatus) -> *mut c_void = *unsafe { opencl.get(b"clCreateCommandQueue\0") }?;
+    let clGetDeviceIDs: unsafe extern "C" fn(*mut c_void, cl_bitfield, cl_uint, *mut *mut c_void, *mut cl_uint) -> OpenCLStatus = *unsafe { opencl.get(b"clGetDeviceIDs\0") }?;
     let clWaitForEvents = *unsafe { opencl.get(b"clWaitForEvents\0") }?;
     let clReleaseCommandQueue = *unsafe { opencl.get(b"clReleaseCommandQueue\0") }?;
     let clEnqueueNDRangeKernel = *unsafe { opencl.get(b"clEnqueueNDRangeKernel\0") }?;
@@ -229,8 +173,7 @@ pub(super) fn initialize_device(
     let clEnqueueWriteBuffer = *unsafe { opencl.get(b"clEnqueueWriteBuffer\0") }?;
     let clCreateBuffer = *unsafe { opencl.get(b"clCreateBuffer\0") }?;
     let clFinish = *unsafe { opencl.get(b"clFinish\0") }?;
-    let clGetPlatformInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clGetPlatformInfo\0") }?;
+    let clGetPlatformInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus = *unsafe { opencl.get(b"clGetPlatformInfo\0") }?;
     //let clGetCommandQueueInfo = *unsafe { opencl.get(b"clGetCommandQueueInfo\0") }?;
 
     let library = Arc::new(opencl);
@@ -250,11 +193,7 @@ pub(super) fn initialize_device(
         }
     };
     let mut memory_pool_id = PoolId::from(usize::from(memory_pools.len()));
-    for (platform_id, platform) in platform_ids
-        .iter()
-        .enumerate()
-        .filter(|(id, _)| config.platform_ids.as_ref().is_none_or(|ids| ids.contains(id)))
-    {
+    for (platform_id, platform) in platform_ids.iter().enumerate().filter(|(id, _)| config.platform_ids.as_ref().is_none_or(|ids| ids.contains(id))) {
         let platform = *platform;
         let Ok(device_ids) = {
             // Get the number of devices of device_type
@@ -270,11 +209,7 @@ pub(super) fn initialize_device(
                     status = clGetDeviceIDs(platform, CL_DEVICE_TYPE_ALL, count, ids.as_mut_ptr(), ptr::null_mut());
                     ids.set_len(len);
                 };
-                if OpenCLStatus::CL_SUCCESS == status {
-                    Ok(ids)
-                } else {
-                    Err(status)
-                }
+                if OpenCLStatus::CL_SUCCESS == status { Ok(ids) } else { Err(status) }
             } else {
                 Ok(Vec::default())
             }
@@ -283,16 +218,7 @@ pub(super) fn initialize_device(
             continue;
         };
         let mut status = OpenCLStatus::CL_SUCCESS;
-        let context = unsafe {
-            clCreateContext(
-                ptr::null(),
-                cl_uint::try_from(device_ids.len()).expect("So many devices..."),
-                device_ids.as_ptr(),
-                None,
-                ptr::null_mut(),
-                &raw mut status,
-            )
-        };
+        let context = unsafe { clCreateContext(ptr::null(), cl_uint::try_from(device_ids.len()).expect("So many devices..."), device_ids.as_ptr(), None, ptr::null_mut(), &raw mut status) };
         //println!("init context: {context:?}");
         let Ok(()) = status.check(ErrorStatus::Initialization) else {
             continue;
@@ -301,9 +227,7 @@ pub(super) fn initialize_device(
         if debug_dev {
             let platform_name = {
                 let mut size: usize = 0;
-                let Ok(()) = unsafe { clGetPlatformInfo(platform, CL_PLATFORM_NAME, 0, ptr::null_mut(), &raw mut size) }
-                    .check(ErrorStatus::Initialization)
-                else {
+                let Ok(()) = unsafe { clGetPlatformInfo(platform, CL_PLATFORM_NAME, 0, ptr::null_mut(), &raw mut size) }.check(ErrorStatus::Initialization) else {
                     continue;
                 };
                 if size > 0 {
@@ -321,10 +245,7 @@ pub(super) fn initialize_device(
                     Vec::default()
                 }
             };
-            println!(
-                "Using OpenCL platform id {platform_id}: {}, on devices:",
-                String::from_utf8(platform_name).unwrap()
-            );
+            println!("Using OpenCL platform id {platform_id}: {}, on devices:", String::from_utf8(platform_name).unwrap());
         }
         if device_ids.is_empty() {
             continue;
@@ -413,22 +334,11 @@ impl OpenCLMemoryPool {
         }
         //println!("OpenCL allocating bytes {bytes}");
         let mut status = OpenCLStatus::CL_SUCCESS;
-        let buffer = unsafe {
-            (self.clCreateBuffer)(
-                self.context,
-                CL_MEM_READ_WRITE,
-                bytes as usize,
-                ptr::null_mut(),
-                &raw mut status,
-            )
-        };
+        let buffer = unsafe { (self.clCreateBuffer)(self.context, CL_MEM_READ_WRITE, bytes as usize, ptr::null_mut(), &raw mut status) };
         status.check(ErrorStatus::MemoryAllocation)?;
         //println!("Allocated buffer {buffer:?}, bytes {bytes}");
         self.free_bytes = self.free_bytes.saturating_sub(bytes);
-        Ok((
-            self.buffers.push(OpenCLBuffer { buffer, bytes }),
-            Event::OpenCL(OpenCLEvent { event: ptr::null_mut() }),
-        ))
+        Ok((self.buffers.push(OpenCLBuffer { buffer, bytes }), Event::OpenCL(OpenCLEvent { event: ptr::null_mut() })))
     }
 
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
@@ -441,17 +351,14 @@ impl OpenCLMemoryPool {
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
-                    unreachable!()
-                };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
                 event
             })
             .filter(|event| !event.is_null())
             .collect();
         if !event_wait_list.is_empty() {
             let event_wait_list_ptr = event_wait_list.as_ptr();
-            let _ = unsafe { (self.clWaitForEvents)(event_wait_list.len().try_into().unwrap(), event_wait_list_ptr) }
-                .check(ErrorStatus::Deinitialization);
+            let _ = unsafe { (self.clWaitForEvents)(event_wait_list.len().try_into().unwrap(), event_wait_list_ptr) }.check(ErrorStatus::Deinitialization);
         }
         // This segfaults... AFAIK it shouldn't...
         /*for event in event_wait_list {
@@ -470,33 +377,14 @@ impl OpenCLMemoryPool {
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
-                    unreachable!()
-                };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
                 event
             })
             .filter(|event| !event.is_null())
             .collect();
-        let event_wait_list_ptr = if event_wait_list.is_empty() {
-            ptr::null()
-        } else {
-            event_wait_list.as_ptr()
-        };
+        let event_wait_list_ptr = if event_wait_list.is_empty() { ptr::null() } else { event_wait_list.as_ptr() };
         let mut event = ptr::null_mut();
-        unsafe {
-            (self.clEnqueueWriteBuffer)(
-                self.queue,
-                dst.buffer,
-                CL_NON_BLOCKING,
-                0,
-                src.len(),
-                src.as_ptr().cast(),
-                event_wait_list.len().try_into().expect("So many events..."),
-                event_wait_list_ptr,
-                &raw mut event,
-            )
-        }
-        .check(ErrorStatus::MemoryCopyH2P)?;
+        unsafe { (self.clEnqueueWriteBuffer)(self.queue, dst.buffer, CL_NON_BLOCKING, 0, src.len(), src.as_ptr().cast(), event_wait_list.len().try_into().expect("So many events..."), event_wait_list_ptr, &raw mut event) }.check(ErrorStatus::MemoryCopyH2P)?;
         let event = Event::OpenCL(OpenCLEvent { event });
         //self.sync_events(vec![event.clone()])?;
         Ok(event)
@@ -509,9 +397,7 @@ impl OpenCLMemoryPool {
         let mut event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
-                    unreachable!()
-                };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
                 event
             })
             .filter(|event| !event.is_null())
@@ -523,13 +409,7 @@ impl OpenCLMemoryPool {
         };*/
         if !event_wait_list.is_empty() {
             //println!("Syncing events: {event_wait_list:?}");
-            unsafe {
-                (self.clWaitForEvents)(
-                    u32::try_from(event_wait_list.len()).expect("So many events..."),
-                    event_wait_list.as_ptr(),
-                )
-            }
-            .check(ErrorStatus::MemoryCopyP2H)?;
+            unsafe { (self.clWaitForEvents)(u32::try_from(event_wait_list.len()).expect("So many events..."), event_wait_list.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H)?;
         }
         let mut event: *mut c_void = ptr::null_mut();
         unsafe {
@@ -577,17 +457,14 @@ impl OpenCLMemoryPool {
         let events: Vec<*mut c_void> = events
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
-                    unreachable!()
-                };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
                 event
             })
             .filter(|event| !event.is_null())
             .collect();
         let event_wait_list_ptr = if events.is_empty() { ptr::null() } else { events.as_ptr() };
         if !events.is_empty() {
-            unsafe { (self.clWaitForEvents)(events.len().try_into().expect("So many events..."), event_wait_list_ptr) }
-                .check(ErrorStatus::KernelSync)?;
+            unsafe { (self.clWaitForEvents)(events.len().try_into().expect("So many events..."), event_wait_list_ptr) }.check(ErrorStatus::KernelSync)?;
         }
         Ok(())
     }
@@ -619,14 +496,7 @@ impl OpenCLDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        fn new_reg(
-            op_id: OpId,
-            reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<((DType, u8), u32, u8)>,
-            dtype: (DType, u8),
-            rc: u32,
-            current_loop_level: u8,
-        ) -> usize {
+        fn new_reg(op_id: OpId, reg_map: &mut Map<OpId, usize>, registers: &mut Vec<((DType, u8), u32, u8)>, dtype: (DType, u8), rc: u32, current_loop_level: u8) -> usize {
             for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
                 /*#[cfg(debug_assertions)]
                 if *loop_level > current_loop_level {
@@ -645,14 +515,7 @@ impl OpenCLDevice {
             i
         }
 
-        fn get_var(
-            op_id: OpId,
-            constants: &Map<OpId, Constant>,
-            indices: &Map<OpId, u8>,
-            reg_map: &Map<OpId, usize>,
-            registers: &mut [((DType, u8), u32, u8)],
-            loop_level: u8,
-        ) -> String {
+        fn get_var(op_id: OpId, constants: &Map<OpId, Constant>, indices: &Map<OpId, u8>, reg_map: &Map<OpId, usize>, registers: &mut [((DType, u8), u32, u8)], loop_level: u8) -> String {
             if let Some(c) = constants.get(&op_id) {
                 c.ocl()
             } else if let Some(id) = indices.get(&op_id) {
@@ -696,12 +559,7 @@ impl OpenCLDevice {
             let op = kernel.at(op_id);
             if let &Op::Define { dtype, scope, ro, .. } = op {
                 if scope == Scope::Global {
-                    _ = writeln!(
-                        global_args,
-                        "  __global {}{}* p{op_id},",
-                        if ro { "const " } else { "" },
-                        dtype.ocl()
-                    );
+                    _ = writeln!(global_args, "  __global {}{}* p{op_id},", if ro { "const " } else { "" }, dtype.ocl());
                 }
             } else {
                 break;
@@ -749,11 +607,7 @@ impl OpenCLDevice {
                     *rcs.entry(x).or_insert(0) += 1;
                 }
                 &Op::Binary { x, y, bop } => {
-                    let dtype = if bop.returns_bool() {
-                        (DType::Bool, dtypes[&x].1)
-                    } else {
-                        dtypes[&x]
-                    };
+                    let dtype = if bop.returns_bool() { (DType::Bool, dtypes[&x].1) } else { dtypes[&x] };
                     dtypes.insert(op_id, dtype);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
@@ -811,20 +665,10 @@ impl OpenCLDevice {
                 }
                 &Op::Define { dtype, scope, ro, len } => {
                     if scope == Scope::Register {
-                        _ = writeln!(
-                            source,
-                            "{indent}{}{} p{op_id}[{len}] __attribute__ ((aligned));",
-                            if ro { "const " } else { "" },
-                            dtype.ocl(),
-                        );
+                        _ = writeln!(source, "{indent}{}{} p{op_id}[{len}] __attribute__ ((aligned));", if ro { "const " } else { "" }, dtype.ocl(),);
                         acc_bytes += dtype.byte_size() as u64 * len;
                     } else if scope == Scope::Local {
-                        _ = writeln!(
-                            source,
-                            "{indent}__local {}{} p{op_id}[{len}] __attribute__ ((aligned));",
-                            if ro { "const " } else { "" },
-                            dtype.ocl(),
-                        );
+                        _ = writeln!(source, "{indent}__local {}{} p{op_id}[{len}] __attribute__ ((aligned));", if ro { "const " } else { "" }, dtype.ocl(),);
                     }
                 }
                 &Op::Load { src, index, vlen } => {
@@ -937,18 +781,10 @@ impl OpenCLDevice {
                     indices.insert(op_id, loop_id);
                     match scope {
                         Scope::Global => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = get_group_id({axis}); // 0..={}",
-                                dim - 1
-                            );
+                            _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_group_id({axis}); // 0..={}", dim - 1);
                         }
                         Scope::Local => {
-                            _ = writeln!(
-                                source,
-                                "{indent}unsigned int idx{loop_id} = get_local_id({axis}); // 0..={}",
-                                dim - 1
-                            );
+                            _ = writeln!(source, "{indent}unsigned int idx{loop_id} = get_local_id({axis}); // 0..={}", dim - 1);
                         }
                         Scope::Register => {}
                     }
@@ -956,10 +792,7 @@ impl OpenCLDevice {
                 }
                 &Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
-                    _ = writeln!(
-                        source,
-                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
-                    );
+                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
                     indent += "  ";
                     loop_id += 1;
                 }
@@ -987,11 +820,7 @@ impl OpenCLDevice {
             }
             op_id = kernel.next_op(op_id);
         }
-        let _total_bytes = registers
-            .iter()
-            .map(|(dtype, ..)| dtype.0.byte_size() as u64 * dtype.1 as u64)
-            .sum::<u64>()
-            + acc_bytes;
+        let _total_bytes = registers.iter().map(|(dtype, ..)| dtype.0.byte_size() as u64 * dtype.1 as u64).sum::<u64>() + acc_bytes;
         /*if total_bytes > 4096 {
             println!("Invalid alloc of {total_bytes} bytes");
             return Err(BackendError {
@@ -1004,23 +833,13 @@ impl OpenCLDevice {
         if registers.len() > 0 {
             let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
-            _ = write!(
-                reg_str,
-                "{indent}{}{} r0",
-                dt.0.ocl(),
-                if dt.1 == 1 { "".into() } else { format!("{}", dt.1) }
-            );
+            _ = write!(reg_str, "{indent}{}{} r0", dt.0.ocl(), if dt.1 == 1 { "".into() } else { format!("{}", dt.1) });
             let mut i = 1;
             for (dt, _, _) in registers {
                 if dt == prev_dt {
                     _ = write!(reg_str, ", r{i}");
                 } else {
-                    _ = write!(
-                        reg_str,
-                        ";\n{indent}{}{} r{i}",
-                        dt.0.ocl(),
-                        if dt.1 == 1 { "".into() } else { format!("{}", dt.1) }
-                    );
+                    _ = write!(reg_str, ";\n{indent}{}{} r{i}", dt.0.ocl(), if dt.1 == 1 { "".into() } else { format!("{}", dt.1) });
                 }
                 prev_dt = dt;
                 i += 1;
@@ -1036,11 +855,7 @@ impl OpenCLDevice {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
 
-        let name = format!(
-            "k_{}__{}",
-            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-        );
+        let name = format!("k_{}__{}", gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"), lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
 
         let source = format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n",);
         if debug_asm {
@@ -1056,22 +871,9 @@ impl OpenCLDevice {
         let device = self.ptr;
         let sources: &[&str] = &[source.as_str()];
         let mut status = OpenCLStatus::CL_SUCCESS;
-        let program = unsafe {
-            (self.clCreateProgramWithSource)(context, 1, sources.as_ptr().cast(), [source.len()].as_ptr(), &raw mut status)
-        };
+        let program = unsafe { (self.clCreateProgramWithSource)(context, 1, sources.as_ptr().cast(), [source.len()].as_ptr(), &raw mut status) };
         status.check(ErrorStatus::KernelCompilation)?;
-        if let Err(e) = unsafe {
-            (self.clBuildProgram)(
-                program,
-                1,
-                [device].as_ptr(),
-                c"-cl-fast-relaxed-math".as_ptr().cast(),
-                None,
-                ptr::null_mut(),
-            )
-        }
-        .check(ErrorStatus::KernelCompilation)
-        {
+        if let Err(e) = unsafe { (self.clBuildProgram)(program, 1, [device].as_ptr(), c"-cl-fast-relaxed-math".as_ptr().cast(), None, ptr::null_mut()) }.check(ErrorStatus::KernelCompilation) {
             let build_log = self.get_program_build_data(program, CL_PROGRAM_BUILD_LOG);
             match build_log {
                 Ok(build_log) => {
@@ -1093,13 +895,7 @@ impl OpenCLDevice {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        memory_pool: &mut OpenCLMemoryPool,
-        args: &[PoolBufferId],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    pub fn launch(&mut self, program_id: DeviceProgramId, memory_pool: &mut OpenCLMemoryPool, args: &[PoolBufferId], event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         memory_pool.sync_events(event_wait_list.clone())?;
         /*for &arg in args {
             let buffer = &memory_pool.buffers[arg];
@@ -1126,46 +922,22 @@ impl OpenCLDevice {
             let arg = &memory_pool.buffers[arg];
             //println!("Kernel arg: {arg:?} at index {i}");
             let ptr: *const _ = &raw const arg.buffer;
-            unsafe { (self.clSetKernelArg)(program.kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast()) }
-                .check(ErrorStatus::IncorrectKernelArg)?;
+            unsafe { (self.clSetKernelArg)(program.kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast()) }.check(ErrorStatus::IncorrectKernelArg)?;
             i += 1;
         }
         let mut event: *mut c_void = ptr::null_mut();
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
             .map(|event| {
-                let Event::OpenCL(OpenCLEvent { event, .. }) = event else {
-                    unreachable!()
-                };
+                let Event::OpenCL(OpenCLEvent { event, .. }) = event else { unreachable!() };
                 event
             })
             .filter(|event| !event.is_null())
             .collect();
         //println!("Launch kernel with events: {event_wait_list:?}");
-        let event_wait_list_ptr = if event_wait_list.is_empty() {
-            ptr::null()
-        } else {
-            event_wait_list.as_ptr()
-        };
-        let lws_ptr = if program.lws.is_empty() {
-            ptr::null()
-        } else {
-            program.lws.as_ptr().cast()
-        };
-        unsafe {
-            (self.clEnqueueNDRangeKernel)(
-                self.queues[queue_id].queue,
-                program.kernel,
-                u32::try_from(program.gws.len()).expect("So many programs..."),
-                ptr::null(),
-                program.gws.as_ptr().cast(),
-                lws_ptr,
-                event_wait_list.len().try_into().expect("So many events..."),
-                event_wait_list_ptr,
-                &raw mut event,
-            )
-        }
-        .check(ErrorStatus::KernelLaunch)?;
+        let event_wait_list_ptr = if event_wait_list.is_empty() { ptr::null() } else { event_wait_list.as_ptr() };
+        let lws_ptr = if program.lws.is_empty() { ptr::null() } else { program.lws.as_ptr().cast() };
+        unsafe { (self.clEnqueueNDRangeKernel)(self.queues[queue_id].queue, program.kernel, u32::try_from(program.gws.len()).expect("So many programs..."), ptr::null(), program.gws.as_ptr().cast(), lws_ptr, event_wait_list.len().try_into().expect("So many events..."), event_wait_list_ptr, &raw mut event) }.check(ErrorStatus::KernelLaunch)?;
         self.queues[queue_id].load += 1;
         unsafe { (self.clFinish)(self.queues[queue_id].queue) }.check(ErrorStatus::KernelLaunch)?;
         //println!("Launch event: {event:?}");
@@ -1193,11 +965,7 @@ impl OpenCLDevice {
 
 impl OpenCLStatus {
     fn check(self, status: ErrorStatus) -> Result<(), BackendError> {
-        if self == Self::CL_SUCCESS {
-            Ok(())
-        } else {
-            Err(BackendError { status, context: format!("{self:?}").into() })
-        }
+        if self == Self::CL_SUCCESS { Ok(()) } else { Err(BackendError { status, context: format!("{self:?}").into() }) }
     }
 }
 
@@ -1213,16 +981,7 @@ impl OpenCLDevice {
         let mwis = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
         let mut max_local_work_dims = vec![0; max_work_item_dims];
         for i in 0..max_work_item_dims {
-            let max_dim_size: usize = usize::from_ne_bytes([
-                mwis[i * 8],
-                mwis[i * 8 + 1],
-                mwis[i * 8 + 2],
-                mwis[i * 8 + 3],
-                mwis[i * 8 + 4],
-                mwis[i * 8 + 5],
-                mwis[i * 8 + 6],
-                mwis[i * 8 + 7],
-            ]);
+            let max_dim_size: usize = usize::from_ne_bytes([mwis[i * 8], mwis[i * 8 + 1], mwis[i * 8 + 2], mwis[i * 8 + 3], mwis[i * 8 + 4], mwis[i * 8 + 5], mwis[i * 8 + 6], mwis[i * 8 + 7]]);
             max_local_work_dims[i] = max_dim_size as Dim;
         }
         let mlt = usize::from_ne_bytes(self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?.try_into().unwrap()) as Dim;
@@ -1231,17 +990,8 @@ impl OpenCLDevice {
             max_global_work_dims: vec![100000; max_work_item_dims],
             max_local_threads: mlt,
             max_local_work_dims,
-            preferred_vector_size: u8::try_from(u32::from_ne_bytes(
-                self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?
-                    .try_into()
-                    .unwrap(),
-            ))
-            .expect("What a vector width...")
-                * 4,
-            local_mem_size: Dim::try_from(usize::from_ne_bytes(
-                self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
-            ))
-            .expect("What a memory size..."),
+            preferred_vector_size: u8::try_from(u32::from_ne_bytes(self.get_device_data(CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT)?.try_into().unwrap())).expect("What a vector width...") * 4,
+            local_mem_size: Dim::try_from(usize::from_ne_bytes(self.get_device_data(CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap())).expect("What a memory size..."),
             max_register_bytes: 256,
             /*Dim::try_from(usize::from_ne_bytes(
                 self.get_device_data(CL_DEVICE_MAX_PRIVATE_MEMORY_SIZE).unwrap().try_into().unwrap(),
@@ -1259,10 +1009,7 @@ impl OpenCLDevice {
             let mut size: usize = 0;
             let ocl_status = unsafe { (self.clGetDeviceInfo)(object, param_name, 0, ptr::null_mut(), &raw mut size) };
             if OpenCLStatus::CL_SUCCESS != ocl_status {
-                return Err(BackendError {
-                    status: ErrorStatus::DeviceQuery,
-                    context: format!("Failed to get device info {param_name}, {ocl_status:?}").into(),
-                });
+                return Err(BackendError { status: ErrorStatus::DeviceQuery, context: format!("Failed to get device info {param_name}, {ocl_status:?}").into() });
             }
             Ok::<usize, BackendError>(size)
         }?;
@@ -1286,11 +1033,7 @@ impl OpenCLDevice {
             let idx = self.ptr;
             let mut size: usize = 0;
             let status = unsafe { (self.clGetProgramBuildInfo)(program, idx, param_name, 0, ptr::null_mut(), &raw mut size) };
-            if OpenCLStatus::CL_SUCCESS == status {
-                Ok(size)
-            } else {
-                Err(status)
-            }
+            if OpenCLStatus::CL_SUCCESS == status { Ok(size) } else { Err(status) }
         }?;
         if 0 < size {
             let count = size / core::mem::size_of::<u8>();
@@ -1299,11 +1042,7 @@ impl OpenCLDevice {
                 data.set_len(count);
                 (self.clGetProgramBuildInfo)(program, self.ptr, param_name, size, data.as_mut_ptr().cast(), ptr::null_mut())
             };
-            if OpenCLStatus::CL_SUCCESS == status {
-                Ok(data)
-            } else {
-                Err(status)
-            }
+            if OpenCLStatus::CL_SUCCESS == status { Ok(data) } else { Err(status) }
         } else {
             Ok(Vec::default())
         }
@@ -1312,10 +1051,7 @@ impl OpenCLDevice {
     fn next_queue(&mut self) -> usize {
         let mut id = self.queues.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
         if self.queues[id].load > 20 {
-            if unsafe { (self.clFinish)(self.queues[id].queue) }
-                .check(ErrorStatus::KernelSync)
-                .is_ok()
-            {
+            if unsafe { (self.clFinish)(self.queues[id].queue) }.check(ErrorStatus::KernelSync).is_ok() {
                 self.queues[id].load = 0;
             }
             id = self.queues.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;

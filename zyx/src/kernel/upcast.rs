@@ -30,9 +30,7 @@ impl Kernel {
     }
 
     pub fn upcast(&mut self, gidx_id: OpId, factor: u64) {
-        let Op::Index { len, scope, axis } = self.ops[gidx_id].op else {
-            unreachable!()
-        };
+        let Op::Index { len, scope, axis } = self.ops[gidx_id].op else { unreachable!() };
         debug_assert!(len.is_multiple_of(factor));
         debug_assert_eq!(scope, Scope::Global);
 

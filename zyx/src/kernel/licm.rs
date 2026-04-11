@@ -46,9 +46,7 @@ impl Kernel {
                     loop_dep[&x].max(loop_dep[&y])
                 }
                 Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
-                Op::Barrier { .. } | Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => {
-                    loop_depth
-                }
+                Op::Barrier { .. } | Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -93,13 +91,7 @@ impl Kernel {
                 }
                 Op::Unary { x, .. } | Op::Cast { x, .. } => loop_dep[x],
                 Op::Binary { x, y, .. } => loop_dep[x].max(loop_dep[y]),
-                Op::Index { .. }
-                | Op::Barrier { .. }
-                | Op::Load { .. }
-                | Op::Store { .. }
-                | Op::Const(_)
-                | Op::Define { .. }
-                | Op::WMMA { .. } => loop_depth,
+                Op::Index { .. } | Op::Barrier { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } | Op::WMMA { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);
@@ -172,11 +164,7 @@ impl Kernel {
                     let op = self.at(op_id);
                     let next_op_id = self.next_op(op_id);
 
-                    if !matches!(
-                        op,
-                        Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop | Op::Define { .. }
-                    ) && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
-                    {
+                    if !matches!(op, Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop | Op::Define { .. }) && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id)) {
                         self.move_op_before(op_id, loop_id);
                     } else {
                         op_ids_in_loop.insert(op_id);

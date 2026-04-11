@@ -191,12 +191,7 @@ impl From<libloading::Error> for BackendError {
     }
 }
 
-pub fn initialize_backends(
-    device_config: &Config,
-    memory_pools: &mut Slab<PoolId, Pool>,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_backends: bool,
-) -> Result<(), BackendError> {
+pub fn initialize_backends(device_config: &Config, memory_pools: &mut Slab<PoolId, Pool>, devices: &mut Slab<DeviceId, Device>, debug_backends: bool) -> Result<(), BackendError> {
     if let Err(err) = disk::initialize_pool(memory_pools, debug_backends) {
         if debug_backends {
             println!("{err}");
@@ -230,10 +225,7 @@ pub fn initialize_backends(
     }
 
     if devices.is_empty() || memory_pools.is_empty() {
-        return Err(BackendError {
-            status: ErrorStatus::Initialization,
-            context: "All backends failed to initialize or were configured out.".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "All backends failed to initialize or were configured out.".into() });
     }
     Ok(())
 }
@@ -276,14 +268,7 @@ impl Default for AutotuneConfig {
 
 impl AutotuneConfig {
     pub const fn new() -> AutotuneConfig {
-        AutotuneConfig {
-            save_to_disk: true,
-            n_added_per_step: 10,
-            n_launches: 10,
-            n_removed_per_step: 5,
-            n_seeds: 100,
-            n_total_opts: 1000,
-        }
+        AutotuneConfig { save_to_disk: true, n_added_per_step: 10, n_launches: 10, n_removed_per_step: 5, n_seeds: 100, n_total_opts: 1000 }
     }
 }
 
@@ -543,18 +528,10 @@ impl Device {
         }
     }
 
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        memory_pool: &mut MemoryPool,
-        args: &[PoolBufferId],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    pub fn launch(&mut self, program_id: DeviceProgramId, memory_pool: &mut MemoryPool, args: &[PoolBufferId], event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         match self {
             Device::Dummy(dev) => {
-                let MemoryPool::Dummy(pool) = memory_pool else {
-                    unreachable!()
-                };
+                let MemoryPool::Dummy(pool) = memory_pool else { unreachable!() };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::CUDA(dev) => {
@@ -562,9 +539,7 @@ impl Device {
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::OpenCL(dev) => {
-                let MemoryPool::OpenCL(pool) = memory_pool else {
-                    unreachable!()
-                };
+                let MemoryPool::OpenCL(pool) = memory_pool else { unreachable!() };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::HIP(dev) => {

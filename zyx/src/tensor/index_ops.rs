@@ -86,9 +86,7 @@ impl Tensor {
         let padding_len = index.len();
 
         if rank < padding_len {
-            return Err(ZyxError::shape_error(
-                format!("Slice with {padding_len} indices, but tensor has rank {rank}").into(),
-            ));
+            return Err(ZyxError::shape_error(format!("Slice with {padding_len} indices, but tensor has rank {rank}").into()));
         }
 
         //let padding = std::iter::repeat_n((0, 0), rank - padding_len);
@@ -112,9 +110,7 @@ impl Tensor {
                         };
                         let e = e.min(dim_size).max(0);
                         if e < s {
-                            return Err(ZyxError::shape_error(
-                                format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
-                            ));
+                            return Err(ZyxError::shape_error(format!("Slice range end {e} is less than start {s} for dimension {axis}").into()));
                         }
                         Ok((-(s as i64), -((dim_size as i64) - e as i64)))
                     }
@@ -122,9 +118,7 @@ impl Tensor {
                         squeeze_axes.push(axis as i32);
                         let i = if i < 0 { i + dim_size } else { i };
                         if i < 0 || i >= dim_size {
-                            return Err(ZyxError::shape_error(
-                                format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
-                            ));
+                            return Err(ZyxError::shape_error(format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into()));
                         }
                         Ok((-(i as i64), -((dim_size as i64) - i as i64 - 1)))
                     }
@@ -170,9 +164,7 @@ impl Tensor {
         let padding_len = index.len();
 
         if padding_len > rank {
-            return Err(ZyxError::shape_error(
-                format!("Index length {padding_len} > rank {rank}").into(),
-            ));
+            return Err(ZyxError::shape_error(format!("Index length {padding_len} > rank {rank}").into()));
         }
 
         let padding = index
@@ -193,9 +185,7 @@ impl Tensor {
                         };
                         let e = e.min(dim_size).max(0);
                         if e < s {
-                            return Err(ZyxError::shape_error(
-                                format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
-                            ));
+                            return Err(ZyxError::shape_error(format!("Slice range end {e} is less than start {s} for dimension {axis}").into()));
                         }
                         Ok((-(s as i64), -((dim_size as i64) - e as i64)))
                     }
@@ -203,9 +193,7 @@ impl Tensor {
                         squeeze_axes.push(axis as i32);
                         let i = if i < 0 { i + dim_size } else { i };
                         if i < 0 || i >= dim_size {
-                            return Err(ZyxError::shape_error(
-                                format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
-                            ));
+                            return Err(ZyxError::shape_error(format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into()));
                         }
                         Ok((-(i as i64), -((dim_size as i64) - i as i64 - 1)))
                     }
@@ -230,9 +218,7 @@ impl Tensor {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let padding = padding
-            .into_iter()
-            .chain(std::iter::repeat_n((0i64, 0i64), rank - padding_len));
+        let padding = padding.into_iter().chain(std::iter::repeat_n((0i64, 0i64), rank - padding_len));
 
         let mut padding_vec: Vec<(i64, i64)> = padding.into_iter().collect();
         padding_vec.reverse();
@@ -266,16 +252,7 @@ impl Tensor {
     #[must_use]
     pub fn diagonal(&self) -> Tensor {
         let n = *self.shape().last().expect("Shape in invalid state. Internal bug.");
-        self.flatten(..)
-            .unwrap()
-            .rpad_zeros([(0i64, i64::try_from(n).unwrap())])
-            .unwrap()
-            .reshape([n, n + 1])
-            .unwrap()
-            .slice((.., 0))
-            .unwrap()
-            .flatten(..)
-            .unwrap()
+        self.flatten(..).unwrap().rpad_zeros([(0i64, i64::try_from(n).unwrap())]).unwrap().reshape([n, n + 1]).unwrap().slice((.., 0)).unwrap().flatten(..).unwrap()
     }
 }
 
@@ -497,76 +474,26 @@ impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimInd
     }
 }
 
-impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimIndex>, I4: Into<DimIndex>> IntoIndex
-    for (I0, I1, I2, I3, I4)
-{
+impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimIndex>, I4: Into<DimIndex>> IntoIndex for (I0, I1, I2, I3, I4) {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
         [self.0.into(), self.1.into(), self.2.into(), self.3.into(), self.4.into()].into_iter()
     }
 }
 
-impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimIndex>, I4: Into<DimIndex>, I5: Into<DimIndex>>
-    IntoIndex for (I0, I1, I2, I3, I4, I5)
-{
+impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimIndex>, I4: Into<DimIndex>, I5: Into<DimIndex>> IntoIndex for (I0, I1, I2, I3, I4, I5) {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
-        [
-            self.0.into(),
-            self.1.into(),
-            self.2.into(),
-            self.3.into(),
-            self.4.into(),
-            self.5.into(),
-        ]
-        .into_iter()
+        [self.0.into(), self.1.into(), self.2.into(), self.3.into(), self.4.into(), self.5.into()].into_iter()
     }
 }
 
-impl<
-    I0: Into<DimIndex>,
-    I1: Into<DimIndex>,
-    I2: Into<DimIndex>,
-    I3: Into<DimIndex>,
-    I4: Into<DimIndex>,
-    I5: Into<DimIndex>,
-    I6: Into<DimIndex>,
-> IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
-{
+impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimIndex>, I4: Into<DimIndex>, I5: Into<DimIndex>, I6: Into<DimIndex>> IntoIndex for (I0, I1, I2, I3, I4, I5, I6) {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
-        [
-            self.0.into(),
-            self.1.into(),
-            self.2.into(),
-            self.3.into(),
-            self.4.into(),
-            self.5.into(),
-            self.6.into(),
-        ]
-        .into_iter()
+        [self.0.into(), self.1.into(), self.2.into(), self.3.into(), self.4.into(), self.5.into(), self.6.into()].into_iter()
     }
 }
 
-impl<
-    I0: Into<DimIndex>,
-    I1: Into<DimIndex>,
-    I2: Into<DimIndex>,
-    I3: Into<DimIndex>,
-    I4: Into<DimIndex>,
-    I5: Into<DimIndex>,
-    I6: Into<DimIndex>,
-    I7: Into<DimIndex>,
-> IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
-{
+impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimIndex>, I4: Into<DimIndex>, I5: Into<DimIndex>, I6: Into<DimIndex>, I7: Into<DimIndex>> IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7) {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
-        [
-            self.0.into(),
-            self.1.into(),
-            self.2.into(),
-            self.3.into(),
-            self.4.into(),
-            self.5.into(),
-            self.6.into(),
-            self.7.into(),
-        ]
-        .into_iter()
+        [self.0.into(), self.1.into(), self.2.into(), self.3.into(), self.4.into(), self.5.into(), self.6.into(), self.7.into()].into_iter()
     }
 }

@@ -269,13 +269,7 @@ impl Runtime {
         self.graph.dtype(x)
     }
 
-    pub(super) fn tensor_from_path(
-        &mut self,
-        shape: Vec<Dim>,
-        dtype: DType,
-        path: &Path,
-        offset_bytes: u64,
-    ) -> Result<TensorId, ZyxError> {
+    pub(super) fn tensor_from_path(&mut self, shape: Vec<Dim>, dtype: DType, path: &Path, offset_bytes: u64) -> Result<TensorId, ZyxError> {
         let bytes = shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
         self.initialize_devices()?;
         if let Some(disk) = self.pools[PoolId::ZERO].pool.disk_pool() {
@@ -314,11 +308,7 @@ impl Runtime {
         }
         self.initialize_devices()?;
         // Put it into memory pool with fastest device out of memory pools with enough free capacity
-        let mem_pools: Vec<PoolId> = self
-            .pools
-            .iter()
-            .filter_map(|(id, mp)| if mp.pool.free_bytes() > bytes { Some(id) } else { None })
-            .collect();
+        let mem_pools: Vec<PoolId> = self.pools.iter().filter_map(|(id, mp)| if mp.pool.free_bytes() > bytes { Some(id) } else { None }).collect();
         if mem_pools.is_empty() {
             return Err(ZyxError::AllocationError("no memory pool has been initialized.".into()));
         }
@@ -338,9 +328,7 @@ impl Runtime {
 
         //println!("len = {}", self.temp_data[&global_id].len());
 
-        let event = self.pools[memory_pool_id]
-            .pool
-            .host_to_pool(&self.temp_data[&global_id], buffer_id, vec![event])?;
+        let event = self.pools[memory_pool_id].pool.host_to_pool(&self.temp_data[&global_id], buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.buffer_map.insert(id, global_id);
         self.pools[memory_pool_id].events.insert([buffer_id].into(), event);
@@ -394,9 +382,7 @@ impl Runtime {
         let cd = dtype.byte_size() as Dim / self.dtype(x).byte_size() as Dim;
         if let Some(d) = shape.last_mut() {
             if *d % cd != 0 {
-                return Err(ZyxError::DTypeError(
-                    "Can't bitcast due to tensor's last dimension not being correct multiple of dtype.".into(),
-                ));
+                return Err(ZyxError::DTypeError("Can't bitcast due to tensor's last dimension not being correct multiple of dtype.".into()));
             }
             *d /= cd;
         }
@@ -441,9 +427,7 @@ impl Runtime {
         let mut reshaped = false;
         let new_shape = if shape.len() > sh.len() {
             reshaped = true;
-            std::iter::repeat_n(1, shape.len() - sh.len())
-                .chain(sh.iter().copied())
-                .collect()
+            std::iter::repeat_n(1, shape.len() - sh.len()).chain(sh.iter().copied()).collect()
         } else {
             sh
         };
@@ -452,9 +436,7 @@ impl Runtime {
         #[cfg(debug_assertions)]
         for (&s, &d) in new_shape.iter().zip(shape.iter()) {
             if !(s == d || s == 1) {
-                return Err(ZyxError::ShapeError(
-                    format!("Cannot expand {new_shape:?} into {shape:?}").into(),
-                ));
+                return Err(ZyxError::ShapeError(format!("Cannot expand {new_shape:?} into {shape:?}").into()));
             }
         }
 
@@ -536,9 +518,7 @@ impl Runtime {
         let n: Dim = self.shape(x).iter().product();
         let dt = self.dtype(x);
         if dt != T::dtype() {
-            return Err(ZyxError::DTypeError(
-                format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into(),
-            ));
+            return Err(ZyxError::DTypeError(format!("loading dtype {}, but the data has dtype {dt}", T::dtype()).into()));
         }
         debug_assert!(data.len() as Dim <= n, "Return buffer is bigger than tensor");
         // Check if tensor is evaluated
@@ -555,8 +535,7 @@ impl Runtime {
     }
 
     pub fn load_buffer<T: Scalar>(data: &mut [T], pool: &mut Pool, buffer_id: PoolBufferId) -> Result<(), ZyxError> {
-        let byte_slice: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size()) };
+        let byte_slice: &mut [u8] = unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * T::byte_size()) };
         for buffers in pool.events.keys() {
             if buffers.contains(&buffer_id) {
                 let event = pool.events.remove(&buffers.clone()).unwrap();
@@ -616,12 +595,7 @@ impl Runtime {
         debug_assert!(!to_eval.is_empty());
 
         if self.debug.perf() {
-            println!(
-                "Runtime realize graph order for {}/{} tensors with gradient_tape={}",
-                order.len(),
-                usize::from(self.graph.nodes.len()),
-                self.graph.gradient_tape.is_some(),
-            );
+            println!("Runtime realize graph order for {}/{} tensors with gradient_tape={}", order.len(), usize::from(self.graph.nodes.len()), self.graph.gradient_tape.is_some(),);
         }
 
         self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
@@ -710,12 +684,7 @@ impl Runtime {
         debug_assert!(!to_eval.is_empty());
 
         if self.debug.perf() {
-            println!(
-                "Runtime realize graph order for {}/{} tensors with gradient_tape={}",
-                order.len(),
-                usize::from(self.graph.nodes.len()),
-                self.graph.gradient_tape.is_some(),
-            );
+            println!("Runtime realize graph order for {}/{} tensors with gradient_tape={}", order.len(), usize::from(self.graph.nodes.len()), self.graph.gradient_tape.is_some(),);
         }
 
         self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
@@ -755,12 +724,7 @@ impl Runtime {
     }
 }
 
-pub fn deallocate_tensors(
-    to_remove: &Set<TensorId>,
-    pools: &mut Slab<PoolId, Pool>,
-    temp_data: &mut Map<BufferId, Box<[u8]>>,
-    buffer_map: &mut Map<TensorId, BufferId>,
-) {
+pub fn deallocate_tensors(to_remove: &Set<TensorId>, pools: &mut Slab<PoolId, Pool>, temp_data: &mut Map<BufferId, Box<[u8]>>, buffer_map: &mut Map<TensorId, BufferId>) {
     for tensor_id in to_remove {
         if let Some(buffer_id) = buffer_map.remove(tensor_id) {
             if !buffer_map.values().any(|&bid| bid == buffer_id) {

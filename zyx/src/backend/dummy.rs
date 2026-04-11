@@ -29,12 +29,7 @@ pub struct DummyDevice {
     memory_pool_id: PoolId,
 }
 
-pub(super) fn initialize_device(
-    config: &DummyConfig,
-    memory_pools: &mut Slab<PoolId, Pool>,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
+pub(super) fn initialize_device(config: &DummyConfig, memory_pools: &mut Slab<PoolId, Pool>, devices: &mut Slab<DeviceId, Device>, debug_dev: bool) -> Result<(), BackendError> {
     if !config.enabled {
         return Err(BackendError { status: ErrorStatus::Initialization, context: "Dummy backend configured out.".into() });
     }
@@ -43,20 +38,7 @@ pub(super) fn initialize_device(
     }
     let pool = MemoryPool::Dummy(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
     memory_pools.push(Pool::new(pool));
-    devices.push(Device::Dummy(DummyDevice {
-        device_info: DeviceInfo {
-            compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: vec![u32::MAX as Dim; 3],
-            max_local_threads: 256 * 256,
-            max_local_work_dims: vec![1, 256, 256],
-            preferred_vector_size: 8,
-            local_mem_size: 1024 * 1024 * 1024,
-            max_register_bytes: 128,
-            tensor_cores: true,
-            warp_size: 32,
-        },
-        memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
-    }));
+    devices.push(Device::Dummy(DummyDevice { device_info: DeviceInfo { compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024, max_global_work_dims: vec![u32::MAX as Dim; 3], max_local_threads: 256 * 256, max_local_work_dims: vec![1, 256, 256], preferred_vector_size: 8, local_mem_size: 1024 * 1024 * 1024, max_register_bytes: 128, tensor_cores: true, warp_size: 32 }, memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1) }));
     Ok(())
 }
 
@@ -103,12 +85,7 @@ impl DummyMemoryPool {
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn pool_to_host(
-        &mut self,
-        src: PoolBufferId,
-        dst: &mut [u8],
-        event_wait_list: Vec<super::Event>,
-    ) -> Result<(), BackendError> {
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<super::Event>) -> Result<(), BackendError> {
         let _ = self;
         let _ = src;
         let _ = dst;
@@ -171,13 +148,7 @@ impl DummyDevice {
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        memory_pool: &mut DummyMemoryPool,
-        args: &[PoolBufferId],
-        event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    pub fn launch(&mut self, program_id: DeviceProgramId, memory_pool: &mut DummyMemoryPool, args: &[PoolBufferId], event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let _ = self;
         let _ = program_id;
         let _ = event_wait_list;

@@ -70,11 +70,7 @@ impl GradientTape {
         let sources: Vec<TensorId> = sources.into_iter().map(Tensor::id).collect();
         //println!("Sources: {sources:?}");
         let grads: Map<TensorId, TensorId> = RT.lock().gradient(target.id(), &sources.iter().copied().collect());
-        sources
-            .into_iter()
-            .map(|x: TensorId| grads.get(&x).copied())
-            .map(|id: Option<TensorId>| id.map(|id| Tensor { id }))
-            .collect()
+        sources.into_iter().map(|x: TensorId| grads.get(&x).copied()).map(|id: Option<TensorId>| id.map(|id| Tensor { id })).collect()
     }
 }
 
@@ -289,17 +285,7 @@ impl Runtime {
                         }
                         self.release(eq);
                     }
-                    BOp::Cmplt
-                    | BOp::Cmpgt
-                    | BOp::NotEq
-                    | BOp::Eq
-                    | BOp::Or
-                    | BOp::And
-                    | BOp::BitAnd
-                    | BOp::BitOr
-                    | BOp::BitXor
-                    | BOp::BitShiftLeft
-                    | BOp::BitShiftRight => {}
+                    BOp::Cmplt | BOp::Cmpgt | BOp::NotEq | BOp::Eq | BOp::Or | BOp::And | BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::BitShiftLeft | BOp::BitShiftRight => {}
                 },
                 Node::Cast { x, .. } => {
                     let grad = self.cast(grad, self.dtype(x));
@@ -381,12 +367,7 @@ impl Runtime {
                     let sh = self.graph.shape(nid);
                     let x_shape: Vec<Dim> = self.shape(x).into();
                     debug_assert_eq!(sh.len(), x_shape.len());
-                    let expand_axes: Vec<UAxis> = sh
-                        .iter()
-                        .zip(&x_shape)
-                        .enumerate()
-                        .filter_map(|(a, (&d, &e))| if d == e { None } else { Some(a as UAxis) })
-                        .collect();
+                    let expand_axes: Vec<UAxis> = sh.iter().zip(&x_shape).enumerate().filter_map(|(a, (&d, &e))| if d == e { None } else { Some(a as UAxis) }).collect();
                     //println!("x shape {:?}, nid shape {:?}, expand_axes: {:?}", x_shape, sh, expand_axes);
                     debug_assert!(!expand_axes.is_empty());
                     let temp = self.reduce(grad, expand_axes, BOp::Add);

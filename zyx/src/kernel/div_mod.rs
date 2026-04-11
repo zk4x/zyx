@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use crate::{
+    DType, Map,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId},
     shape::Dim,
-    DType, Map,
 };
 
 impl Kernel {

@@ -17,10 +17,7 @@ impl Kernel {
         stack.push(Set::default());
         let check = |op_id, x: OpId, stack: &[Set<OpId>]| {
             if !stack.iter().any(|set| set.contains(&x)) {
-                println!(
-                    "{op_id} {:?} uses {x} -> {:?} before declaration.",
-                    self.ops[op_id].op, self.ops[x].op
-                );
+                println!("{op_id} {:?} uses {x} -> {:?} before declaration.", self.ops[op_id].op, self.ops[x].op);
                 self.debug_colorless();
                 panic!();
             }
@@ -198,9 +195,7 @@ impl Kernel {
                 Op::Const(x) => {
                     let b = bounds_stack.last_mut().unwrap();
                     if x.is_positive() {
-                        let Constant::U64(x) = x.cast(DType::U64) else {
-                            unreachable!()
-                        };
+                        let Constant::U64(x) = x.cast(DType::U64) else { unreachable!() };
                         let v = u32::from_le_bytes(x[0..4].try_into().unwrap());
                         b.insert(op_id, (v, v));
                     } else {
@@ -285,10 +280,7 @@ impl Kernel {
                         && let Some(&(yl, yu)) = b.get(&y)
                         && let Some(&(zl, zu)) = b.get(&z)
                     {
-                        b.insert(
-                            op_id,
-                            (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)),
-                        );
+                        b.insert(op_id, (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)));
                     }
                 }
                 Op::If { condition } => {
@@ -408,10 +400,7 @@ impl Kernel {
                         if idx_range.1 > defines[&src] - 1 {
                             if !self.is_masked_index(index, &bounds) {
                                 self.debug_colorless();
-                                panic!(
-                                    "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                                    op_id, idx_range, defines[&src]
-                                );
+                                panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, idx_range, defines[&src]);
                             }
                         }
                     }
@@ -421,10 +410,7 @@ impl Kernel {
                         if idx_range.1 > defines[&dst] - 1 {
                             if !self.is_masked_index(index, &bounds) {
                                 self.debug_colorless();
-                                panic!(
-                                    "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                                    op_id, idx_range, defines[&dst]
-                                );
+                                panic!("OOB detected in op {}: index {:?} exceeds buffer length {:?}", op_id, idx_range, defines[&dst]);
                             }
                         }
                     }
@@ -444,9 +430,7 @@ impl Kernel {
                 Op::Const(x) => {
                     let b = bounds_stack.last_mut().unwrap();
                     if x.is_positive() {
-                        let Constant::U64(x) = x.cast(DType::U64) else {
-                            unreachable!()
-                        };
+                        let Constant::U64(x) = x.cast(DType::U64) else { unreachable!() };
                         let v = u64::from_le_bytes(x);
                         b.insert(op_id, (v, v));
                     }
@@ -541,10 +525,7 @@ impl Kernel {
                         && let Some(&(yl, yu)) = b.get(&y)
                         && let Some(&(zl, zu)) = b.get(&z)
                     {
-                        b.insert(
-                            op_id,
-                            (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)),
-                        );
+                        b.insert(op_id, (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)));
                     }
                 }
                 Op::If { condition } => {

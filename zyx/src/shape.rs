@@ -132,26 +132,12 @@ impl IntoShape for &Vec<Dim> {
 
 pub fn into_axis(axis: Axis, rank: UAxis) -> Result<UAxis, ZyxError> {
     TryInto::<Axis>::try_into(rank).map_or_else(
-        |_| {
-            Err(ZyxError::ShapeError(
-                format!("Axis {axis} is out of range of rank {rank}").into(),
-            ))
-        },
+        |_| Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}").into())),
         |rank2| {
             TryInto::<UAxis>::try_into(axis + rank2).map_or_else(
-                |_| {
-                    Err(ZyxError::ShapeError(
-                        format!("Axis {axis} is out of range of rank {rank}").into(),
-                    ))
-                },
+                |_| Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}").into())),
                 |a| {
-                    if a < 2 * rank {
-                        Ok(a % rank)
-                    } else {
-                        Err(ZyxError::ShapeError(
-                            format!("Axis {axis} is out of range of rank {rank}").into(),
-                        ))
-                    }
+                    if a < 2 * rank { Ok(a % rank) } else { Err(ZyxError::ShapeError(format!("Axis {axis} is out of range of rank {rank}").into())) }
                 },
             )
         },
@@ -180,11 +166,6 @@ pub fn permute<T: Clone>(shape: &[T], axes: &[UAxis]) -> Vec<T> {
 }
 
 pub fn reduce(shape: &[Dim], axes: &[UAxis]) -> Vec<Dim> {
-    let res: Vec<_> = shape
-        .iter()
-        .copied()
-        .enumerate()
-        .filter_map(|(i, d)| if axes.contains(&(i as UAxis)) { None } else { Some(d) })
-        .collect();
+    let res: Vec<_> = shape.iter().copied().enumerate().filter_map(|(i, d)| if axes.contains(&(i as UAxis)) { None } else { Some(d) }).collect();
     if res.is_empty() { vec![1] } else { res }
 }

@@ -47,14 +47,7 @@ pub struct Graph {
 
 impl Graph {
     pub(super) const fn new() -> Self {
-        Self {
-            nodes: Slab::new(),
-            gradient_tape_ref_count: 0,
-            gradient_tape: None,
-            shapes: Map::with_hasher(BuildHasherDefault::new()),
-            paddings: Map::with_hasher(BuildHasherDefault::new()),
-            axes: Map::with_hasher(BuildHasherDefault::new()),
-        }
+        Self { nodes: Slab::new(), gradient_tape_ref_count: 0, gradient_tape: None, shapes: Map::with_hasher(BuildHasherDefault::new()), paddings: Map::with_hasher(BuildHasherDefault::new()), axes: Map::with_hasher(BuildHasherDefault::new()) }
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -267,18 +260,10 @@ impl Graph {
 
     /// Plot dot graph in dot format between given nodes
     #[must_use]
-    pub fn plot_dot_graph(
-        &self,
-        ids: &Set<TensorId>,
-        buffer_map: &crate::Map<crate::tensor::TensorId, crate::backend::BufferId>,
-    ) -> String {
+    pub fn plot_dot_graph(&self, ids: &Set<TensorId>, buffer_map: &crate::Map<crate::tensor::TensorId, crate::backend::BufferId>) -> String {
         use core::fmt::Write;
         use std::format as f;
-        let ids: Set<TensorId> = if ids.is_empty() {
-            self.nodes.ids().collect()
-        } else {
-            ids.clone()
-        };
+        let ids: Set<TensorId> = if ids.is_empty() { self.nodes.ids().collect() } else { ids.clone() };
         //println!("{ids:?}");
         // Make a list of visited nodes and their reference counts.
         let mut params: Vec<TensorId> = ids.iter().copied().collect();
@@ -326,22 +311,8 @@ impl Graph {
                 write!(res, "  {id}[label=\"{}NL{} x {}NL{}NL{}\", shape={}, fillcolor=\"{}\", style=filled]",
                     label, id, rc[id], text, get_shape(NodeId::new(id)), shape, fillcolor).unwrap();
             } else {*/
-            let (border_color, border_width) = if realized_nodes.contains(&i) {
-                ("darkred", 5)
-            } else {
-                ("black", 1)
-            };
-            write!(
-                res_dot_graph,
-                "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled, color=\"{border_color}\", penwidth={border_width}]",
-                i,
-                self.nodes[i].0,
-                text,
-                self.shape(i),
-                shape,
-                fillcolor
-            )
-            .unwrap();
+            let (border_color, border_width) = if realized_nodes.contains(&i) { ("darkred", 5) } else { ("black", 1) };
+            write!(res_dot_graph, "  {i}[label=\"{} x {}NL{}NL{:?}\", shape={}, fillcolor=\"{}\", style=filled, color=\"{border_color}\", penwidth={border_width}]", i, self.nodes[i].0, text, self.shape(i), shape, fillcolor).unwrap();
             writeln!(res_dot_graph).unwrap();
         };
         let mut edges = String::new();
@@ -390,10 +361,7 @@ use crate::dtype::Constant;
 impl BOp {
     pub fn is_associative(&self) -> bool {
         use BOp::*;
-        matches!(
-            self,
-            Add | Mul | And | Or | BitXor | BitAnd | BitOr | BitShiftLeft | BitShiftRight | Max
-        )
+        matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | BitShiftLeft | BitShiftRight | Max)
     }
 
     pub fn is_commutative(&self) -> bool {
@@ -429,16 +397,8 @@ impl Node {
     /// Get all parameters of self. This method does not allocate.
     pub const fn parameters(&self) -> NodeParametersIterator {
         match self {
-            Node::Const { .. } | Node::Leaf { .. } => {
-                NodeParametersIterator { parameters: [TensorId::ZERO, TensorId::ZERO], idx: 0, len: 0 }
-            }
-            Node::Unary { x, .. }
-            | Node::Cast { x, .. }
-            | Node::Reshape { x, .. }
-            | Node::Expand { x, .. }
-            | Node::Permute { x, .. }
-            | Node::Pad { x, .. }
-            | Node::Reduce { x, .. } => NodeParametersIterator { parameters: [*x, TensorId::ZERO], idx: 0, len: 1 },
+            Node::Const { .. } | Node::Leaf { .. } => NodeParametersIterator { parameters: [TensorId::ZERO, TensorId::ZERO], idx: 0, len: 0 },
+            Node::Unary { x, .. } | Node::Cast { x, .. } | Node::Reshape { x, .. } | Node::Expand { x, .. } | Node::Permute { x, .. } | Node::Pad { x, .. } | Node::Reduce { x, .. } => NodeParametersIterator { parameters: [*x, TensorId::ZERO], idx: 0, len: 1 },
             Node::Binary { x, y, .. } => NodeParametersIterator { parameters: [*x, *y], idx: 0, len: 2 },
             Node::Custom(_) => todo!(),
         }
@@ -461,14 +421,7 @@ impl Node {
     pub const fn param1(&self) -> TensorId {
         match *self {
             Node::Const { .. } | Node::Leaf { .. } => unreachable!(),
-            Node::Expand { x }
-            | Node::Permute { x }
-            | Node::Reshape { x }
-            | Node::Pad { x }
-            | Node::Reduce { x, .. }
-            | Node::Cast { x, .. }
-            | Node::Unary { x, .. }
-            | Node::Binary { x, .. } => x,
+            Node::Expand { x } | Node::Permute { x } | Node::Reshape { x } | Node::Pad { x } | Node::Reduce { x, .. } | Node::Cast { x, .. } | Node::Unary { x, .. } | Node::Binary { x, .. } => x,
             Node::Custom(_) => todo!(),
         }
     }

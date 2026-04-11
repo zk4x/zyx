@@ -90,12 +90,7 @@ impl DeBin for Cache {
 
 impl Cache {
     pub const fn new() -> Cache {
-        Cache {
-            device_infos: Map::with_hasher(BuildHasherDefault::new()),
-            kernels: Map::with_hasher(BuildHasherDefault::new()),
-            optimizations: Map::with_hasher(BuildHasherDefault::new()),
-            programs: Map::with_hasher(BuildHasherDefault::new()),
-        }
+        Cache { device_infos: Map::with_hasher(BuildHasherDefault::new()), kernels: Map::with_hasher(BuildHasherDefault::new()), optimizations: Map::with_hasher(BuildHasherDefault::new()), programs: Map::with_hasher(BuildHasherDefault::new()) }
     }
 
     #[allow(unused)]
@@ -110,11 +105,7 @@ impl Cache {
     }
 
     pub fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
-        if let Some(&dev_info_id) = self.device_infos.get(device_info) {
-            dev_info_id
-        } else {
-            self.insert_device_info(device_info.clone())
-        }
+        if let Some(&dev_info_id) = self.device_infos.get(device_info) { dev_info_id } else { self.insert_device_info(device_info.clone()) }
     }
 
     pub fn insert_device_info(&mut self, device_info: DeviceInfo) -> DeviceInfoId {
@@ -125,13 +116,7 @@ impl Cache {
     }
 
     pub fn insert_kernel(&mut self, kernel: Kernel) -> KernelId {
-        let kernel_id = KernelId(
-            self.kernels
-                .values()
-                .copied()
-                .max()
-                .map_or(0, |id| id.0.checked_add(1).unwrap()),
-        );
+        let kernel_id = KernelId(self.kernels.values().copied().max().map_or(0, |id| id.0.checked_add(1).unwrap()));
         let newly_inserted = self.kernels.insert(kernel, kernel_id).is_none();
         assert!(newly_inserted);
         kernel_id
@@ -189,15 +174,5 @@ pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> S
         bw % 100,
     )*/
 
-    format!(
-        "{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w",
-        t / 10,
-        t % 10,
-        fs / 100,
-        fs % 100,
-        brs / 100,
-        brs % 100,
-        bws / 100,
-        bws % 100,
-    )
+    format!("{}.{} {t_u} ~ {}.{:02} {f_us}FLOP/s, {}.{:02} {br_us}B/s r, {}.{:02} {bw_us}B/s w", t / 10, t % 10, fs / 100, fs % 100, brs / 100, brs % 100, bws / 100, bws % 100,)
 }

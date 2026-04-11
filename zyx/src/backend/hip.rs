@@ -68,19 +68,7 @@ pub struct HIPDevice {
     hipModuleUnload: unsafe extern "C" fn(HIPmodule) -> HIPStatus,
     hipStreamSynchronize: unsafe extern "C" fn(HIPstream) -> HIPStatus,
     hipEventCreate: unsafe extern "C" fn(*mut HIPevent, c_uint) -> HIPStatus,
-    hipLaunchKernel: unsafe extern "C" fn(
-        HIPfunction,
-        c_uint,
-        c_uint,
-        c_uint,
-        c_uint,
-        c_uint,
-        c_uint,
-        c_uint,
-        HIPstream,
-        *mut *mut c_void,
-        *mut *mut c_void,
-    ) -> HIPStatus,
+    hipLaunchKernel: unsafe extern "C" fn(HIPfunction, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, c_uint, HIPstream, *mut *mut c_void, *mut *mut c_void) -> HIPStatus,
     hipEventRecord: unsafe extern "C" fn(HIPevent, HIPstream) -> HIPStatus,
     hipStreamWaitEvent: unsafe extern "C" fn(HIPstream, HIPevent, c_uint) -> HIPStatus,
     //hipStreamDestroy: unsafe extern "C" fn(HIPstream) -> HIPStatus,
@@ -114,42 +102,25 @@ unsafe impl Send for HIPProgram {}
 unsafe impl Send for HIPStream {}
 unsafe impl Send for HIPEvent {}
 
-pub(super) fn initialize_device(
-    config: &HIPConfig,
-    memory_pools: &mut Slab<PoolId, Pool>,
-    devices: &mut Slab<DeviceId, Device>,
-    debug_dev: bool,
-) -> Result<(), BackendError> {
+pub(super) fn initialize_device(config: &HIPConfig, memory_pools: &mut Slab<PoolId, Pool>, devices: &mut Slab<DeviceId, Device>, debug_dev: bool) -> Result<(), BackendError> {
     let _ = config;
 
-    let hip_paths = [
-        "/lib64/libamdhip64.so",
-        "/lib/x86_64-linux-gnu/libamdhip64.so",
-        "/usr/lib64/hip/libhip_hcc.so",
-        "/usr/lib64/hip/libhiprtc.so",
-        "/opt/rocm/hip/lib/libhip_hcc.so",
-        "/opt/rocm/hip/lib/libhiprtc.so",
-    ];
+    let hip_paths = ["/lib64/libamdhip64.so", "/lib/x86_64-linux-gnu/libamdhip64.so", "/usr/lib64/hip/libhip_hcc.so", "/usr/lib64/hip/libhiprtc.so", "/opt/rocm/hip/lib/libhip_hcc.so", "/opt/rocm/hip/lib/libhiprtc.so"];
     let hip = hip_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(hip) = hip else {
         return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "HIP runtime not found.".into() });
     };
 
     let hipInit: unsafe extern "C" fn(c_uint) -> HIPStatus = *unsafe { hip.get(b"hipInit\0") }.unwrap();
-    let hipDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> HIPStatus =
-        *unsafe { hip.get(b"hipDriverGetVersion\0") }.unwrap();
+    let hipDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> HIPStatus = *unsafe { hip.get(b"hipDriverGetVersion\0") }.unwrap();
     let hipDeviceGetCount: unsafe extern "C" fn(*mut c_int) -> HIPStatus = *unsafe { hip.get(b"hipGetDeviceCount\0") }.unwrap();
     let hipDeviceGet: unsafe extern "C" fn(*mut HIPdevice, c_int) -> HIPStatus = *unsafe { hip.get(b"hipDeviceGet\0") }.unwrap();
-    let hipDeviceGetName: unsafe extern "C" fn(*mut c_char, c_int, HIPdevice) -> HIPStatus =
-        *unsafe { hip.get(b"hipDeviceGetName\0") }.unwrap();
-    let hipDeviceComputeCapability: unsafe extern "C" fn(*mut c_int, *mut c_int, HIPdevice) -> HIPStatus =
-        *unsafe { hip.get(b"hipDeviceComputeCapability\0") }.unwrap();
-    let hipDeviceTotalMem: unsafe extern "C" fn(*mut usize, HIPdevice) -> HIPStatus =
-        *unsafe { hip.get(b"hipDeviceTotalMem\0") }.unwrap();
+    let hipDeviceGetName: unsafe extern "C" fn(*mut c_char, c_int, HIPdevice) -> HIPStatus = *unsafe { hip.get(b"hipDeviceGetName\0") }.unwrap();
+    let hipDeviceComputeCapability: unsafe extern "C" fn(*mut c_int, *mut c_int, HIPdevice) -> HIPStatus = *unsafe { hip.get(b"hipDeviceComputeCapability\0") }.unwrap();
+    let hipDeviceTotalMem: unsafe extern "C" fn(*mut usize, HIPdevice) -> HIPStatus = *unsafe { hip.get(b"hipDeviceTotalMem\0") }.unwrap();
     //let hipDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, HIPdevice_attribute, HIPdevice) -> HIPStatus =
     //*unsafe { hip.get(b"hipDeviceGetAttribute\0") }.unwrap();
-    let hipCtxCreate: unsafe extern "C" fn(*mut HIPcontext, c_uint, HIPdevice) -> HIPStatus =
-        *unsafe { hip.get(b"hipCtxCreate\0") }.unwrap();
+    let hipCtxCreate: unsafe extern "C" fn(*mut HIPcontext, c_uint, HIPdevice) -> HIPStatus = *unsafe { hip.get(b"hipCtxCreate\0") }.unwrap();
     let hipMemAlloc = *unsafe { hip.get(b"hipMalloc\0") }.unwrap();
     let hipMemFree = *unsafe { hip.get(b"hipFree\0") }.unwrap();
     let hipMemcpyHtoDAsync = *unsafe { hip.get(b"hipMemcpyHtoDAsync\0") }.unwrap();
@@ -160,8 +131,7 @@ pub(super) fn initialize_device(
     let hipModuleLoadData = *unsafe { hip.get(b"hipModuleLoadData\0") }.unwrap();
     let hipModuleGetFunction = *unsafe { hip.get(b"hipModuleGetFunction\0") }.unwrap();
     let hipLaunchKernel = *unsafe { hip.get(b"hipLaunchKernel\0") }.unwrap();
-    let hipStreamCreate: unsafe extern "C" fn(*mut HIPstream, c_uint) -> HIPStatus =
-        *unsafe { hip.get(b"hipStreamCreate\0") }.unwrap();
+    let hipStreamCreate: unsafe extern "C" fn(*mut HIPstream, c_uint) -> HIPStatus = *unsafe { hip.get(b"hipStreamCreate\0") }.unwrap();
     let hipStreamSynchronize = *unsafe { hip.get(b"hipStreamSynchronize\0") }.unwrap();
     //let hipStreamDestroy = *unsafe { hip.get(b"hipStreamDestroy\0") }.unwrap();
     //let hipModuleUnload = *unsafe { hip.get(b"hipModuleUnload\0") }.unwrap();
@@ -184,21 +154,12 @@ pub(super) fn initialize_device(
     if num_devices == 0 {
         return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "HIP no devices found.".into() });
     }
-    let device_ids: Vec<_> = (0..num_devices)
-        .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
-        .collect();
+    let device_ids: Vec<_> = (0..num_devices).filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id))).collect();
     if device_ids.is_empty() {
-        return Err(BackendError {
-            status: ErrorStatus::DeviceEnumeration,
-            context: "HIP all available devices configured out.".into(),
-        });
+        return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "HIP all available devices configured out.".into() });
     }
     if debug_dev {
-        println!(
-            "Using HIP runtime, driver version: {}.{} on devices:",
-            driver_version / 1000,
-            (driver_version - (driver_version / 1000 * 1000)) / 10
-        );
+        println!("Using HIP runtime, driver version: {}.{} on devices:", driver_version / 1000, (driver_version - (driver_version / 1000 * 1000)) / 10);
     }
 
     let hip = Arc::new(hip);
@@ -215,9 +176,7 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("{:?}, compute capability: {major}.{minor}", unsafe {
-                std::ffi::CStr::from_ptr(device_name.as_ptr())
-            });
+            println!("{:?}, compute capability: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
         }
         let mut free_bytes: usize = 0;
         let Ok(()) = unsafe { hipDeviceTotalMem(&mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
@@ -258,32 +217,7 @@ pub(super) fn initialize_device(
             }
             streams.push(HIPStream { stream, load: 0 });
         }
-        let dev = HIPDevice {
-            device,
-            dev_info: DeviceInfo {
-                compute: 1024 * 1024 * 1024 * 1024,
-                max_global_work_dims: vec![64, 64, 64],
-                max_local_threads: 1,
-                max_local_work_dims: vec![1, 1, 1],
-                local_mem_size: 0,
-                max_register_bytes: 96,
-                preferred_vector_size: 16,
-                tensor_cores: major > 7,
-                warp_size: 64,
-            },
-            streams,
-            programs: Slab::new(),
-            memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
-            hipModuleLoadData,
-            hipModuleGetFunction,
-            hipModuleUnload,
-            compute_capability: [major, minor],
-            hipLaunchKernel,
-            hipStreamSynchronize,
-            hipEventCreate,
-            hipEventRecord,
-            hipStreamWaitEvent,
-        };
+        let dev = HIPDevice { device, dev_info: DeviceInfo { compute: 1024 * 1024 * 1024 * 1024, max_global_work_dims: vec![64, 64, 64], max_local_threads: 1, max_local_work_dims: vec![1, 1, 1], local_mem_size: 0, max_register_bytes: 96, preferred_vector_size: 16, tensor_cores: major > 7, warp_size: 64 }, streams, programs: Slab::new(), memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1), hipModuleLoadData, hipModuleGetFunction, hipModuleUnload, compute_capability: [major, minor], hipLaunchKernel, hipStreamSynchronize, hipEventCreate, hipEventRecord, hipStreamWaitEvent };
         devices.push(Device::HIP(dev));
         //queues,
     }
@@ -323,29 +257,18 @@ impl HIPMemoryPool {
     pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, mut event_wait_list: Vec<Event>) {
         while let Some(Event::HIP(HIPEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
-                unsafe { (self.hipStreamWaitEvent)(self.stream, event, 0) }
-                    .check(ErrorStatus::MemoryDeallocation)
-                    .unwrap();
-                unsafe { (self.hipEventDestroy)(event) }
-                    .check(ErrorStatus::MemoryCopyP2H)
-                    .unwrap();
+                unsafe { (self.hipStreamWaitEvent)(self.stream, event, 0) }.check(ErrorStatus::MemoryDeallocation).unwrap();
+                unsafe { (self.hipEventDestroy)(event) }.check(ErrorStatus::MemoryCopyP2H).unwrap();
             }
         }
         let buffer = &mut self.buffers[buffer_id];
         //unsafe { (self.hipMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation).unwrap();
-        unsafe { (self.hipMemFree)(buffer.ptr) }
-            .check(ErrorStatus::MemoryDeallocation)
-            .unwrap();
+        unsafe { (self.hipMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation).unwrap();
         self.free_bytes += buffer.bytes;
         self.buffers.remove(buffer_id);
     }
 
-    pub(super) fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: PoolBufferId,
-        mut event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    pub(super) fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, mut event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         //unsafe { (self.hipMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check("Failed to copy memory from host to pool.")
         let dst = &self.buffers[dst];
         while let Some(Event::HIP(HIPEvent { event })) = event_wait_list.pop() {
@@ -357,19 +280,13 @@ impl HIPMemoryPool {
         unsafe { (self.hipEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyH2P)?;
         debug_assert!(!self.stream.is_null());
         //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyH2P).unwrap();
-        unsafe { (self.hipMemcpyHtoDAsync)(dst.ptr, src.as_ptr().cast(), src.len(), self.stream) }
-            .check(ErrorStatus::MemoryCopyH2P)?;
+        unsafe { (self.hipMemcpyHtoDAsync)(dst.ptr, src.as_ptr().cast(), src.len(), self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
         //unsafe { (self.cuMemcpyHtoD)(dst.ptr, src.as_ptr().cast(), src.len()) }.check(ErrorStatus::MemoryCopyH2P)?;
         unsafe { (self.hipEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryCopyH2P)?;
         Ok(Event::HIP(HIPEvent { event }))
     }
 
-    pub(super) fn pool_to_host(
-        &mut self,
-        src: PoolBufferId,
-        dst: &mut [u8],
-        mut event_wait_list: Vec<Event>,
-    ) -> Result<(), BackendError> {
+    pub(super) fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], mut event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         //unsafe { (self.hipMemcpyDtoH)(dst.as_mut_ptr().cast(), src.ptr, dst.len()) }.check("Failed to copy memory from pool to host.")
         while let Some(Event::HIP(HIPEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
@@ -380,8 +297,7 @@ impl HIPMemoryPool {
         let src = &self.buffers[src];
         let mut event = ptr::null_mut();
         unsafe { (self.hipEventCreate)(&raw mut event, 0x2) }.check(ErrorStatus::MemoryCopyP2H)?;
-        unsafe { (self.hipMemcpyDtoHAsync)(dst.as_mut_ptr().cast(), src.ptr, dst.len(), self.stream) }
-            .check(ErrorStatus::MemoryCopyP2H)?;
+        unsafe { (self.hipMemcpyDtoHAsync)(dst.as_mut_ptr().cast(), src.ptr, dst.len(), self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
         unsafe { (self.hipEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
         //unsafe { (self.cuStreamSynchronize)(self.stream) }.check(ErrorStatus::MemoryCopyP2H)?;
         unsafe { (self.hipEventSynchronize)(event) }.check(ErrorStatus::MemoryCopyP2H)?;
@@ -406,12 +322,8 @@ impl HIPMemoryPool {
     #[allow(clippy::needless_pass_by_value)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         for event in events {
-            let Event::HIP(HIPEvent { event }) = event else {
-                unreachable!()
-            };
-            unsafe { (self.hipEventDestroy)(event) }
-                .check(ErrorStatus::Deinitialization)
-                .unwrap();
+            let Event::HIP(HIPEvent { event }) = event else { unreachable!() };
+            unsafe { (self.hipEventDestroy)(event) }.check(ErrorStatus::Deinitialization).unwrap();
         }
     }
 }
@@ -607,13 +519,7 @@ impl HIPDevice {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub fn launch(
-        &mut self,
-        program_id: DeviceProgramId,
-        memory_pool: &mut HIPMemoryPool,
-        args: &[PoolBufferId],
-        mut event_wait_list: Vec<Event>,
-    ) -> Result<Event, BackendError> {
+    pub fn launch(&mut self, program_id: DeviceProgramId, memory_pool: &mut HIPMemoryPool, args: &[PoolBufferId], mut event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let stream_id = self.next_stream()?;
         let program = &self.programs[program_id];
 
@@ -630,8 +536,7 @@ impl HIPDevice {
 
         while let Some(Event::HIP(HIPEvent { event })) = event_wait_list.pop() {
             if !event.is_null() {
-                unsafe { (self.hipStreamWaitEvent)(self.streams[stream_id].stream, event, 0) }
-                    .check(ErrorStatus::KernelLaunch)?;
+                unsafe { (self.hipStreamWaitEvent)(self.streams[stream_id].stream, event, 0) }.check(ErrorStatus::KernelLaunch)?;
             }
         }
 
@@ -639,22 +544,7 @@ impl HIPDevice {
 
         let mut event = ptr::null_mut();
         unsafe { (self.hipEventCreate)(&raw mut event, 0) }.check(ErrorStatus::KernelLaunch)?;
-        unsafe {
-            (self.hipLaunchKernel)(
-                program.function,
-                u32::try_from(program.global_work_size[0]).unwrap(),
-                u32::try_from(program.global_work_size[1]).unwrap(),
-                u32::try_from(program.global_work_size[2]).unwrap(),
-                u32::try_from(program.local_work_size[0]).unwrap(),
-                u32::try_from(program.local_work_size[1]).unwrap(),
-                u32::try_from(program.local_work_size[2]).unwrap(),
-                0,
-                self.streams[stream_id].stream,
-                kernel_params.as_mut_ptr(),
-                ptr::null_mut(),
-            )
-        }
-        .check(ErrorStatus::KernelLaunch)?;
+        unsafe { (self.hipLaunchKernel)(program.function, u32::try_from(program.global_work_size[0]).unwrap(), u32::try_from(program.global_work_size[1]).unwrap(), u32::try_from(program.global_work_size[2]).unwrap(), u32::try_from(program.local_work_size[0]).unwrap(), u32::try_from(program.local_work_size[1]).unwrap(), u32::try_from(program.local_work_size[2]).unwrap(), 0, self.streams[stream_id].stream, kernel_params.as_mut_ptr(), ptr::null_mut()) }.check(ErrorStatus::KernelLaunch)?;
         unsafe { (self.hipEventRecord)(event, self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch)?;
 
         //unsafe { (self.hipStreamSynchronize)(self.streams[stream_id].stream) }.check(ErrorStatus::KernelLaunch).unwrap();
@@ -675,11 +565,7 @@ impl HIPDevice {
 
 impl HIPStatus {
     fn check(self, status: ErrorStatus) -> Result<(), BackendError> {
-        if self == Self::hipSuccess {
-            Ok(())
-        } else {
-            Err(BackendError { status, context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into() })
-        }
+        if self == Self::hipSuccess { Ok(()) } else { Err(BackendError { status, context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into() }) }
     }
 }
 
@@ -780,11 +666,7 @@ enum hiprtcResult {
 
 impl hiprtcResult {
     fn check(self, status: ErrorStatus) -> Result<(), BackendError> {
-        if self == Self::HIPRTC_SUCCESS {
-            Ok(())
-        } else {
-            Err(BackendError { status, context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into() })
-        }
+        if self == Self::HIPRTC_SUCCESS { Ok(()) } else { Err(BackendError { status, context: format!("Try rerunning with env var AMD_LOG_LEVEL=2 {self:?}").into() }) }
     }
 }
 

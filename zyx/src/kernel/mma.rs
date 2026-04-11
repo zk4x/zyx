@@ -79,9 +79,7 @@ impl Kernel {
                 }
                 Store { .. } => {
                     if let Some(&k_loop_id) = loop_ids.last() {
-                        let Loop { len, .. } = self.ops[k_loop_id].op else {
-                            unreachable!()
-                        };
+                        let Loop { len, .. } = self.ops[k_loop_id].op else { unreachable!() };
                         if len == 8 {
                             if let Some(store_info) = self.mma_store_info(op_id, k_loop_id) {
                                 stores.last_mut().unwrap().push(store_info);
@@ -135,32 +133,15 @@ impl Kernel {
             let &Load { src: a, index, vlen: 1 } = self.at(x) else {
                 return None;
             };
-            let Define { dtype: a_dtype, .. } = self.ops[a].op else {
-                unreachable!()
-            };
+            let Define { dtype: a_dtype, .. } = self.ops[a].op else { unreachable!() };
             let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
             let &Load { src: b, index, vlen: 1 } = self.at(y) else {
                 return None;
             };
-            let Define { dtype: b_dtype, .. } = self.ops[b].op else {
-                unreachable!()
-            };
+            let Define { dtype: b_dtype, .. } = self.ops[b].op else { unreachable!() };
             let (b_base_index, b_offset) = self.index_base_and_offset(index, k_loop_id);
 
-            Some(MMAStore {
-                store_id,
-                a,
-                a_index: a_base_index,
-                a_offset,
-                a_dtype,
-                b,
-                b_index: b_base_index,
-                b_offset,
-                b_dtype,
-                c: acc_id,
-                c_offset,
-                c_dtype: dtype,
-            })
+            Some(MMAStore { store_id, a, a_index: a_base_index, a_offset, a_dtype, b, b_index: b_base_index, b_offset, b_dtype, c: acc_id, c_offset, c_dtype: dtype })
         } else {
             let x = y;
             // Version without cast
@@ -170,32 +151,15 @@ impl Kernel {
             let &Load { src: a, index, vlen: 1 } = self.at(x) else {
                 return None;
             };
-            let Define { dtype: a_dtype, .. } = self.ops[a].op else {
-                unreachable!()
-            };
+            let Define { dtype: a_dtype, .. } = self.ops[a].op else { unreachable!() };
             let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
             let &Load { src: b, index, vlen: 1 } = self.at(y) else {
                 return None;
             };
-            let Define { dtype: b_dtype, .. } = self.ops[b].op else {
-                unreachable!()
-            };
+            let Define { dtype: b_dtype, .. } = self.ops[b].op else { unreachable!() };
             let (b_base_index, b_offset) = self.index_base_and_offset(index, k_loop_id);
 
-            Some(MMAStore {
-                store_id,
-                a,
-                a_index: a_base_index,
-                a_offset,
-                a_dtype,
-                b,
-                b_index: b_base_index,
-                b_offset,
-                b_dtype,
-                c: acc_id,
-                c_offset,
-                c_dtype: a_dtype,
-            })
+            Some(MMAStore { store_id, a, a_index: a_base_index, a_offset, a_dtype, b, b_index: b_base_index, b_offset, b_dtype, c: acc_id, c_offset, c_dtype: a_dtype })
         }
     }
 
@@ -256,17 +220,7 @@ impl Kernel {
         let index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
         let c_load = self.insert_before(k_loop_id, Op::Load { src: stores[0].c, index, vlen: 4 });
 
-        let wmma_op = self.insert_before(
-            k_loop_id,
-            Op::WMMA {
-                dims: MMADims::m16n8k8,
-                layout: MMALayout::row_col,
-                dtype: MMADType::f16_f16_f16_f32,
-                c: c_load,
-                a: a_load,
-                b: b_load,
-            },
-        );
+        let wmma_op = self.insert_before(k_loop_id, Op::WMMA { dims: MMADims::m16n8k8, layout: MMALayout::row_col, dtype: MMADType::f16_f16_f16_f32, c: c_load, a: a_load, b: b_load });
         self.insert_after(wmma_op, Op::Store { dst: stores[0].c, x: wmma_op, index, vlen: 4 });
 
         for store in stores {
@@ -303,10 +257,7 @@ impl Kernel {
             return false;
         }
 
-        let warp_loop = self.insert_before(
-            local_loops[0],
-            Op::Index { len: local_dims[0] * n, scope: Scope::Local, axis: 0 },
-        );
+        let warp_loop = self.insert_before(local_loops[0], Op::Index { len: local_dims[0] * n, scope: Scope::Local, axis: 0 });
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));
         self.ops[local_loops[0]].op = Op::Binary { x: warp_loop, y, bop: BOp::Div };
         let y = self.insert_before(warp_loop, Op::Const(Constant::idx(n as u64)));

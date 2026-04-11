@@ -17,11 +17,7 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Loop { len } = self.ops[op_id].op {
                 if len >= 16 {
-                    let applicable: Vec<u64> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|&f| len.is_multiple_of(f) && len / f >= 4)
-                        .collect();
+                    let applicable: Vec<u64> = candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
                     if !applicable.is_empty() {
                         reduce_factors.insert(op_id, applicable);
                         reduce_ids.insert(op_id);
@@ -30,11 +26,7 @@ impl Kernel {
             }
             if let Op::Index { len, scope, .. } = self.ops[op_id].op {
                 if scope == Scope::Global && len >= 8 {
-                    let applicable: Vec<u64> = candidates
-                        .iter()
-                        .copied()
-                        .filter(|&f| len.is_multiple_of(f) && len / f >= 4)
-                        .collect();
+                    let applicable: Vec<u64> = candidates.iter().copied().filter(|&f| len.is_multiple_of(f) && len / f >= 4).collect();
                     if !applicable.is_empty() {
                         global_upcasts.insert(op_id, applicable);
                     }
@@ -44,19 +36,13 @@ impl Kernel {
         }
 
         if global_upcasts.is_empty() || reduce_factors.is_empty() {
-            return (
-                Optimization::RegisterTiling { reduce_splits: reduce_factors, global_upcasts },
-                0,
-            );
+            return (Optimization::RegisterTiling { reduce_splits: reduce_factors, global_upcasts }, 0);
         }
 
         let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
         let n_reduce_options: usize = reduce_factors.values().map(|v| v.len()).product();
 
         let n_configs = n_global_options * n_reduce_options;
-        (
-            Optimization::RegisterTiling { reduce_splits: reduce_factors, global_upcasts },
-            n_configs,
-        )
+        (Optimization::RegisterTiling { reduce_splits: reduce_factors, global_upcasts }, n_configs)
     }
 }
