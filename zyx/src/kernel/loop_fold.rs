@@ -42,7 +42,6 @@ impl Kernel {
         if store1_id.is_null() {
             return;
         }
-
         println!("store1_id={store1_id}");
 
         // Find loop
@@ -61,8 +60,23 @@ impl Kernel {
         if !matches!(self.at(loop_id), Op::Loop { .. }) {
             return;
         }
-
         println!("loop_id={loop_id}");
+
+        // After the loop is found, check add - one operand is load, other is something
+        let add_id = self.next_op(loop_id);
+        let Op::Binary { bop: BOp::Add, x, y, .. } = self.at(add_id) else {
+            return;
+        };
+        if *x != loop_id {
+            return;
+        }
+        let Op::Index { len, scope: Scope::Global, .. } = self.at(*y) else {
+            return;
+        };
+        println!("add_id={add_id}");
+
+        // cast
+        let Op::Cast { x, dtype } = self.at(add_id) else { return };
 
         self.verify();
     }
