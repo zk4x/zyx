@@ -526,6 +526,7 @@ impl Kernel {
                                 let upper = if always || maybe { 1 } else { 0 };
                                 (lower, upper)
                             }
+                            BOp::Max => (min_x.min(min_y), max_x.max(max_y)),
                             _ => (0, 0),
                         };
                         b.insert(op_id, range);

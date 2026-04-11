@@ -204,7 +204,7 @@ impl Kernel {
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
-        kernel.simplify_accumulating_loop();
+        //kernel.simplify_accumulating_loop();
         kernel.run_always_on_optimizations();
         kernel.debug_colorless();
 
