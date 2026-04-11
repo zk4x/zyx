@@ -62,6 +62,7 @@ impl Kernel {
                         _ => {}
                     },
                     (_, Op::Const(cy)) => match bop {
+                        BOp::Mul if cy.is_one() => self.remap(op_id, x),
                         BOp::And if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, y),
                         BOp::And if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, x),
                         BOp::Add if cy.is_zero() => self.remap(op_id, x),

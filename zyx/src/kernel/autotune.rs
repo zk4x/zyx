@@ -182,7 +182,7 @@ impl Kernel {
         self.delete_empty_loops();
         self.unfold_pows();
         self.div_mod_simplification();
-        self.simplify_accumulating_loop();
+        //self.simplify_accumulating_loop();
         self.dead_code_elimination();
     }
 
@@ -204,6 +204,7 @@ impl Kernel {
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
+        kernel.simplify_accumulating_loop();
         kernel.run_always_on_optimizations();
         kernel.debug_colorless();
 
