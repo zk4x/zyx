@@ -159,7 +159,7 @@ impl Kernel {
     ) -> bool {
         let &Op::Loop { len: loop_len } = self.at(loop_id) else { return false };
 
-        let Some((a, b, c, mul_const)) = self.trace_to_linear_comparison(accumulated_value_id) else {
+        let Some((a, b, c, mul_const, gidx_id)) = self.trace_to_linear_comparison(accumulated_value_id) else {
             return false;
         };
 
@@ -168,25 +168,6 @@ impl Kernel {
         }
 
         if !self.is_condition_based_accumulation(accumulated_value_id) {
-            return false;
-        }
-
-        let mut gidx_id = OpId::NULL;
-        let mut gidx_count = 0;
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let &Op::Index { scope: Scope::Global, .. } = self.at(op_id) {
-                gidx_count += 1;
-                if gidx_id.is_null() {
-                    gidx_id = op_id;
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-        if gidx_id.is_null() {
-            return false;
-        }
-        if gidx_count != 1 {
             return false;
         }
 
@@ -203,7 +184,7 @@ impl Kernel {
         true
     }
 
-    fn trace_to_linear_comparison(&self, accumulated_value_id: OpId) -> Option<(u64, u64, u64, u64)> {
+    fn trace_to_linear_comparison(&self, accumulated_value_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
         if let Op::Index { scope: Scope::Global, .. } = self.at(accumulated_value_id) {
             return None;
         }
@@ -229,7 +210,7 @@ impl Kernel {
         None
     }
 
-    fn trace_cmpgt(&self, op_id: OpId, mul_const: u64) -> Option<(u64, u64, u64, u64)> {
+    fn trace_cmpgt(&self, op_id: OpId, mul_const: u64) -> Option<(u64, u64, u64, u64, OpId)> {
         if let Op::Binary { x, y, bop: BOp::Cmpgt } = self.at(op_id) {
             let c = if let Op::Const(threshold) = self.at(*y) {
                 threshold.as_dim().unwrap_or(0)
@@ -237,8 +218,15 @@ impl Kernel {
                 return None;
             };
 
-            if let Op::Binary { bop: BOp::Add, .. } = self.at(*x) {
-                return Some((1, 1, c, mul_const));
+            if let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(*x) {
+                let gidx = if let Op::Index { .. } = self.at(*add_x) {
+                    *add_x
+                } else if let Op::Index { .. } = self.at(*add_y) {
+                    *add_y
+                } else {
+                    return None;
+                };
+                return Some((1, 1, c, mul_const, gidx));
             }
         }
         None
