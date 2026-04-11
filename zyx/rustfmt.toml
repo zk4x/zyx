@@ -1,4 +1,4 @@
-max_width = 999
-edition = "2021"
-struct_lit_width = 999
-single_line_let_else_max_width = 999
+max_width = 130
+edition = "2024"
+struct_lit_width = 125
+single_line_let_else_max_width = 130

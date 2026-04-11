@@ -173,9 +173,13 @@ impl Tensor {
         f.read_exact(&mut magic)?;
         if magic != [b'G', b'G', b'U', b'F'] {
             if magic == [b'F', b'U', b'G', b'G'] {
-                return Err(ZyxError::parse_error("GGUF data seems to be stored in big endian order. Only little endian is supported for GGUF in zyx.".into()));
+                return Err(ZyxError::parse_error(
+                    "GGUF data seems to be stored in big endian order. Only little endian is supported for GGUF in zyx.".into(),
+                ));
             }
-            return Err(ZyxError::parse_error(format!("Unknown GGUF magic: {magic:?}. Please check your file.").into()));
+            return Err(ZyxError::parse_error(
+                format!("Unknown GGUF magic: {magic:?}. Please check your file.").into(),
+            ));
         }
         let mut version = [0; 4];
         f.read_exact(&mut version)?;
@@ -185,7 +189,8 @@ impl Tensor {
         let tensor_count = u64::from_le_bytes(tensor_count);
         let mut metadata_kv_count = [0u8; 8];
         f.read_exact(&mut metadata_kv_count)?;
-        let metadata_kv_count = usize::try_from(u64::from_le_bytes(metadata_kv_count)).map_err(|e| ZyxError::parse_error(format!("Failed to parse tensor count in GGUF file. {e}").into()))?;
+        let metadata_kv_count = usize::try_from(u64::from_le_bytes(metadata_kv_count))
+            .map_err(|e| ZyxError::parse_error(format!("Failed to parse tensor count in GGUF file. {e}").into()))?;
 
         let mut metadata = HashMap::new();
         for _ in 0..metadata_kv_count {
@@ -239,7 +244,10 @@ impl Tensor {
             // shape (NOTE there is no explicit check for endiannes here)
             let mut shape = vec![0u8; rank as usize * 8];
             f.read_exact(&mut shape)?;
-            let shape: Vec<Dim> = shape.chunks_exact(8).map(|x| u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]])).collect();
+            let shape: Vec<Dim> = shape
+                .chunks_exact(8)
+                .map(|x| u64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]))
+                .collect();
 
             // dtype
             let mut dtype = [0; 4];
@@ -292,7 +300,8 @@ impl Tensor {
         //println!("File size is {} bytes", f.metadata()?.len());
         let mut header_len = [0u8; 8];
         f.read_exact(&mut header_len)?;
-        let n = usize::try_from(u64::from_le_bytes(header_len)).map_err(|e| ZyxError::parse_error(format!("Failed to parse header len in safetensors file. {e}").into()))?;
+        let n = usize::try_from(u64::from_le_bytes(header_len))
+            .map_err(|e| ZyxError::parse_error(format!("Failed to parse header len in safetensors file. {e}").into()))?;
         let mut header = vec![0u8; n];
         f.read_exact(&mut header)?;
         let header = core::str::from_utf8(&header).map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
@@ -336,11 +345,24 @@ impl Tensor {
                     } else if i % 7 == 2 {
                         dtype = DType::from_safetensors(&text)?;
                     } else if i % 7 == 4 {
-                        shape = text.split(',').map(|d| d.parse::<u64>().map_err(|err| ZyxError::parse_error(format!("Cannot parse safetensors shape: {err}").into()))).collect::<Result<_, ZyxError>>()?;
+                        shape = text
+                            .split(',')
+                            .map(|d| {
+                                d.parse::<u64>()
+                                    .map_err(|err| ZyxError::parse_error(format!("Cannot parse safetensors shape: {err}").into()))
+                            })
+                            .collect::<Result<_, ZyxError>>()?;
                     } else if i % 7 == 6 {
                         // TODO assert offsets
                         //println!("Offsets: {text}");
-                        let offsets = text.split(',').map(|offset| offset.parse::<u64>().map_err(|err| ZyxError::parse_error(format!("Could not parse safetensors offset: {err}").into()))).collect::<Result<Vec<_>, ZyxError>>()?;
+                        let offsets = text
+                            .split(',')
+                            .map(|offset| {
+                                offset.parse::<u64>().map_err(|err| {
+                                    ZyxError::parse_error(format!("Could not parse safetensors offset: {err}").into())
+                                })
+                            })
+                            .collect::<Result<Vec<_>, ZyxError>>()?;
                         //println!("Offsets: {offsets:?}");
                         let bytes = shape.iter().product::<Dim>() * dtype.byte_size() as Dim;
                         if offsets[1] - offsets[0] != bytes {

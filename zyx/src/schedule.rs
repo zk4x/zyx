@@ -12,8 +12,27 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
-pub fn schedule(loads: &[TensorId], stores: &[TensorId], graph: &Graph, devices: &Slab<DeviceId, Device>, pools: &mut Slab<PoolId, Pool>, buffer_map: &mut Map<TensorId, BufferId>) -> Result<(DeviceId, PoolId, Vec<crate::backend::Event>, BTreeSet<PoolBufferId>, Vec<PoolBufferId>), ZyxError> {
-    let required_stores_memory: Dim = stores.iter().map(|&tid| graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim).sum::<Dim>();
+pub fn schedule(
+    loads: &[TensorId],
+    stores: &[TensorId],
+    graph: &Graph,
+    devices: &Slab<DeviceId, Device>,
+    pools: &mut Slab<PoolId, Pool>,
+    buffer_map: &mut Map<TensorId, BufferId>,
+) -> Result<
+    (
+        DeviceId,
+        PoolId,
+        Vec<crate::backend::Event>,
+        BTreeSet<PoolBufferId>,
+        Vec<PoolBufferId>,
+    ),
+    ZyxError,
+> {
+    let required_stores_memory: Dim = stores
+        .iter()
+        .map(|&tid| graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim)
+        .sum::<Dim>();
     let mut dev_ids: Vec<DeviceId> = devices.ids().collect();
     dev_ids.sort_unstable_by_key(|&dev_id| devices[dev_id].free_compute());
     dev_ids.reverse();
@@ -21,7 +40,16 @@ pub fn schedule(loads: &[TensorId], stores: &[TensorId], graph: &Graph, devices:
     for dev_id in dev_ids {
         let pool_id = devices[dev_id].memory_pool_id();
         let free_memory = pools[pool_id].pool.free_bytes();
-        let missing_loads_memory = loads.iter().map(|tid| if buffer_map.get(tid).map_or(false, |b| b.pool == pool_id) { 0 } else { graph.shape(*tid).iter().product::<Dim>() * graph.dtype(*tid).byte_size() as Dim }).sum::<Dim>();
+        let missing_loads_memory = loads
+            .iter()
+            .map(|tid| {
+                if buffer_map.get(tid).map_or(false, |b| b.pool == pool_id) {
+                    0
+                } else {
+                    graph.shape(*tid).iter().product::<Dim>() * graph.dtype(*tid).byte_size() as Dim
+                }
+            })
+            .sum::<Dim>();
         let required_memory = required_stores_memory + missing_loads_memory;
         if free_memory > required_memory {
             device_id = Some(dev_id);
@@ -29,7 +57,9 @@ pub fn schedule(loads: &[TensorId], stores: &[TensorId], graph: &Graph, devices:
         }
     }
     let Some(dev_id) = device_id else {
-        return Err(ZyxError::AllocationError(format!("no device has enough memory to store {required_stores_memory} B for intermedite tensors.").into()));
+        return Err(ZyxError::AllocationError(
+            format!("no device has enough memory to store {required_stores_memory} B for intermedite tensors.").into(),
+        ));
     };
     let pool_id = devices[dev_id].memory_pool_id();
 

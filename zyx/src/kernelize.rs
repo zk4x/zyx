@@ -65,7 +65,19 @@ struct Kernelizer<'a> {
 }
 
 impl<'a> Kernelizer<'a> {
-    fn new(realized_nodes: Set<TensorId>, to_eval: &'a Set<TensorId>, rcs: Map<TensorId, u32>, graph: &'a Graph, pools: &'a mut Slab<PoolId, Pool>, temp_data: &'a mut Map<BufferId, Box<[u8]>>, buffer_map: &'a mut Map<TensorId, BufferId>, devices: &'a mut Slab<DeviceId, Device>, cache: &'a mut Cache, search_config: &'a AutotuneConfig, debug: DebugMask) -> Self {
+    fn new(
+        realized_nodes: Set<TensorId>,
+        to_eval: &'a Set<TensorId>,
+        rcs: Map<TensorId, u32>,
+        graph: &'a Graph,
+        pools: &'a mut Slab<PoolId, Pool>,
+        temp_data: &'a mut Map<BufferId, Box<[u8]>>,
+        buffer_map: &'a mut Map<TensorId, BufferId>,
+        devices: &'a mut Slab<DeviceId, Device>,
+        cache: &'a mut Cache,
+        search_config: &'a AutotuneConfig,
+        debug: DebugMask,
+    ) -> Self {
         let mut must_keep_nodes = realized_nodes.clone();
         must_keep_nodes.extend(to_eval);
         Self {
@@ -153,7 +165,14 @@ impl<'a> Kernelizer<'a> {
         let mut ops = Slab::with_capacity(100);
         let op = Op::LoadView(Box::new((dtype, View::contiguous(shape))));
         let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
-        let kernel = Kernel { outputs: vec![nid; self.rcs[&nid] as usize], loads: vec![nid], stores: Vec::new(), ops, head: op_id, tail: op_id };
+        let kernel = Kernel {
+            outputs: vec![nid; self.rcs[&nid] as usize],
+            loads: vec![nid],
+            stores: Vec::new(),
+            ops,
+            head: op_id,
+            tail: op_id,
+        };
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
         (kid, op_id)
@@ -163,7 +182,14 @@ impl<'a> Kernelizer<'a> {
         let mut ops = Slab::with_capacity(100);
         let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
         let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
-        let kernel = Kernel { outputs: vec![nid; self.rcs[&nid] as usize], loads: Vec::new(), stores: Vec::new(), ops, head: op_id, tail: op_id };
+        let kernel = Kernel {
+            outputs: vec![nid; self.rcs[&nid] as usize],
+            loads: Vec::new(),
+            stores: Vec::new(),
+            ops,
+            head: op_id,
+            tail: op_id,
+        };
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
     }
@@ -330,7 +356,8 @@ impl<'a> Kernelizer<'a> {
             //self.kernels[kid].apply_movement(|v| v.permute(&permute_axes));
             if !permute_axes.iter().copied().eq(0..permute_axes.len()) {
                 let shape = crate::shape::permute(self.graph.shape(x), &permute_axes);
-                op_id = self.kernels[kid].push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
+                op_id = self.kernels[kid]
+                    .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape }) });
             }
         }
 
@@ -476,7 +503,11 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].outputs.extend(outputs);
             self.kernels[kid].outputs.extend(vec![nid; self.rcs[&nid] as usize]);
 
-            let op = if swapped_xy { Op::Binary { x: y_ops_map[&op_idy], y: op_id, bop } } else { Op::Binary { x: op_id, y: y_ops_map[&op_idy], bop } };
+            let op = if swapped_xy {
+                Op::Binary { x: y_ops_map[&op_idy], y: op_id, bop }
+            } else {
+                Op::Binary { x: op_id, y: y_ops_map[&op_idy], bop }
+            };
             self.kernels[kid].push_back(op)
         };
 
@@ -538,7 +569,14 @@ impl<'a> Kernelizer<'a> {
         self.n_launches += 1;
 
         //let time_w = std::time::Instant::now();
-        let (dev_id, pool_id, event_wait_list, output_buffers, args) = schedule(&kernel.loads, &kernel.stores, self.graph, self.devices, self.pools, self.buffer_map)?;
+        let (dev_id, pool_id, event_wait_list, output_buffers, args) = schedule(
+            &kernel.loads,
+            &kernel.stores,
+            self.graph,
+            self.devices,
+            self.pools,
+            self.buffer_map,
+        )?;
 
         /***** CACHE and OPTIMIZATION SEARCH *****/
 
@@ -613,7 +651,16 @@ impl<'a> Kernelizer<'a> {
         //kernel.run_always_on_optimizations();
         //kernel.debug();
 
-        let (program_id, opts) = kernel.autotune(&args, device, &mut pool.pool, self.autotune_config, flop, read, write, self.debug);
+        let (program_id, opts) = kernel.autotune(
+            &args,
+            device,
+            &mut pool.pool,
+            self.autotune_config,
+            flop,
+            read,
+            write,
+            self.debug,
+        );
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
         let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
@@ -624,7 +671,13 @@ impl<'a> Kernelizer<'a> {
 }
 
 impl Runtime {
-    pub(crate) fn realize_with_order(&mut self, rcs: Map<TensorId, u32>, realized_nodes: Set<TensorId>, order: &[TensorId], to_eval: &Set<TensorId>) -> Result<(), ZyxError> {
+    pub(crate) fn realize_with_order(
+        &mut self,
+        rcs: Map<TensorId, u32>,
+        realized_nodes: Set<TensorId>,
+        order: &[TensorId],
+        to_eval: &Set<TensorId>,
+    ) -> Result<(), ZyxError> {
         #[cfg(debug_assertions)]
         {
             let mut rcs2 = Map::with_hasher(BuildHasherDefault::default());
@@ -649,7 +702,19 @@ impl Runtime {
 
         let begin = std::time::Instant::now();
 
-        let mut kernelizer = Kernelizer::new(realized_nodes, to_eval, rcs, &self.graph, &mut self.pools, &mut self.temp_data, &mut self.buffer_map, &mut self.devices, &mut self.cache, &self.autotune_config, self.debug);
+        let mut kernelizer = Kernelizer::new(
+            realized_nodes,
+            to_eval,
+            rcs,
+            &self.graph,
+            &mut self.pools,
+            &mut self.temp_data,
+            &mut self.buffer_map,
+            &mut self.devices,
+            &mut self.cache,
+            &self.autotune_config,
+            self.debug,
+        );
 
         for &nid in order {
             /*use crate::{RED, RESET};
@@ -711,7 +776,16 @@ impl Runtime {
 
         if kernelizer.kernels.len() > KMKernelId(0) {
             let mut kids: Vec<KMKernelId> = kernelizer.kernels.ids().collect();
-            while let Some(kid) = kids.iter().find(|&&kid| kernelizer.kernels[kid].loads.iter().all(|x| kernelizer.realized_nodes.contains(x))).copied() {
+            while let Some(kid) = kids
+                .iter()
+                .find(|&&kid| {
+                    kernelizer.kernels[kid]
+                        .loads
+                        .iter()
+                        .all(|x| kernelizer.realized_nodes.contains(x))
+                })
+                .copied()
+            {
                 kids.retain(|x| *x != kid);
                 let kernel = unsafe { kernelizer.kernels.remove_and_return(kid) };
 
@@ -725,7 +799,9 @@ impl Runtime {
                 // Delete unneeded intermediate tensors in memory pools
                 let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
                 for tid in loads {
-                    if !kernelizer.kernels.values().any(|kernel| kernel.loads.contains(&tid)) && !kernelizer.must_keep_nodes.contains(&tid) {
+                    if !kernelizer.kernels.values().any(|kernel| kernel.loads.contains(&tid))
+                        && !kernelizer.must_keep_nodes.contains(&tid)
+                    {
                         to_remove.insert(tid);
                     }
                 }
@@ -744,7 +820,11 @@ impl Runtime {
 
         let elapsed = begin.elapsed();
         if self.debug.perf() {
-            println!("Kernelizer took {} μs for {} kernels", elapsed.as_micros(), kernelizer.n_launches);
+            println!(
+                "Kernelizer took {} μs for {} kernels",
+                elapsed.as_micros(),
+                kernelizer.n_launches
+            );
         }
         Ok(())
     }

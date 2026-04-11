@@ -74,7 +74,11 @@ impl<T> Mutex<T> {
 
     pub(super) fn lock(&self) -> MutexGuard<'_, T> {
         loop {
-            if self.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            if self
+                .lock
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
                 return MutexGuard { mutex: self };
             }
 
@@ -97,7 +101,11 @@ impl<T> Mutex<T> {
 
     pub(super) fn try_lock(&self) -> Result<MutexGuard<'_, T>, ()> {
         loop {
-            if self.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            if self
+                .lock
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
                 return Ok(MutexGuard { mutex: self });
             }
 

@@ -330,15 +330,27 @@ impl Constant {
         match T::dtype() {
             DType::I32 => {
                 let idx: i32 = unsafe { t(&idx) };
-                if IDX_T == DType::U64 { Self::U64((idx as u64).to_le_bytes()) } else { Self::U32(idx as u32) }
+                if IDX_T == DType::U64 {
+                    Self::U64((idx as u64).to_le_bytes())
+                } else {
+                    Self::U32(idx as u32)
+                }
             }
             DType::U32 => {
                 let idx: u32 = unsafe { t(&idx) };
-                if IDX_T == DType::U64 { Self::U64((idx as u64).to_le_bytes()) } else { Self::U32(idx) }
+                if IDX_T == DType::U64 {
+                    Self::U64((idx as u64).to_le_bytes())
+                } else {
+                    Self::U32(idx)
+                }
             }
             DType::U64 => {
                 let idx: u64 = unsafe { t(&idx) };
-                if IDX_T == DType::U64 { Self::U64(idx.to_le_bytes()) } else { Self::U32(idx as u32) }
+                if IDX_T == DType::U64 {
+                    Self::U64(idx.to_le_bytes())
+                } else {
+                    Self::U32(idx as u32)
+                }
             }
             x => unreachable!("{x}"),
         }

@@ -34,7 +34,13 @@ impl Tensor {
     }
 
     /// Reduce implementation
-    pub(crate) fn reduce_impl<const KEEPDIM: bool>(&self, op: ReduceOp, axes: impl IntoIterator<Item = Axis>, dtype: Option<DType>, correction: Dim) -> Result<Tensor, ZyxError> {
+    pub(crate) fn reduce_impl<const KEEPDIM: bool>(
+        &self,
+        op: ReduceOp,
+        axes: impl IntoIterator<Item = Axis>,
+        dtype: Option<DType>,
+        correction: Dim,
+    ) -> Result<Tensor, ZyxError> {
         fn reduce_acc_dtype(dtype: DType) -> DType {
             if dtype.is_uint() {
                 return dtype.least_upper_dtype(DType::U32);
@@ -55,15 +61,27 @@ impl Tensor {
         // Start with the base reduction for ops runtime supports
         let mut tensor = match op {
             ReduceOp::Sum => {
-                let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.cast(reduce_acc_dtype(x_dtype)) };
+                let x = if let Some(dtype) = dtype {
+                    self.cast(dtype)
+                } else {
+                    self.cast(reduce_acc_dtype(x_dtype))
+                };
                 Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Add) }
             }
             ReduceOp::Max => {
-                let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.cast(reduce_acc_dtype(x_dtype)) };
+                let x = if let Some(dtype) = dtype {
+                    self.cast(dtype)
+                } else {
+                    self.cast(reduce_acc_dtype(x_dtype))
+                };
                 Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Max) }
             }
             ReduceOp::Prod => {
-                let x = if let Some(dtype) = dtype { self.cast(dtype) } else { self.cast(reduce_acc_dtype(x_dtype)) };
+                let x = if let Some(dtype) = dtype {
+                    self.cast(dtype)
+                } else {
+                    self.cast(reduce_acc_dtype(x_dtype))
+                };
                 Tensor { id: RT.lock().reduce(x.id, axes_vec.clone(), BOp::Mul) }
             }
             ReduceOp::Min => {
@@ -75,7 +93,11 @@ impl Tensor {
             }
             ReduceOp::Mean => {
                 let n: i64 = axes_vec.iter().map(|&a| shape[a]).product::<Dim>().try_into().unwrap();
-                let x = if let Some(dtype) = dtype { self.sum_dtype(axes, dtype)? } else { self.sum(axes)? };
+                let x = if let Some(dtype) = dtype {
+                    self.sum_dtype(axes, dtype)?
+                } else {
+                    self.sum(axes)?
+                };
                 x / Tensor::from(n).cast(x_dtype)
             }
             ReduceOp::Var => {

@@ -274,7 +274,18 @@ impl Kernel {
         let mut visited = Set::default();
         // We go backward from Stores and gather all needed ops, but we can't remove Loop and Define ops
         for (op_id, op) in self.iter_unordered() {
-            if matches!(op, Op::Store { .. } | Op::Define { .. } | Op::WMMA { .. } | Op::Barrier { .. } | Op::If { .. } | Op::EndIf | Op::Loop { .. } | Op::EndLoop | Op::StoreView { .. }) {
+            if matches!(
+                op,
+                Op::Store { .. }
+                    | Op::Define { .. }
+                    | Op::WMMA { .. }
+                    | Op::Barrier { .. }
+                    | Op::If { .. }
+                    | Op::EndIf
+                    | Op::Loop { .. }
+                    | Op::EndLoop
+                    | Op::StoreView { .. }
+            ) {
                 params.push(op_id);
             }
         }

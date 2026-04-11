@@ -94,7 +94,10 @@ impl Kernel {
                             if base_index == OpId::NULL {
                                 base_index = self.insert_before(loads[0].0, Const(Constant::idx(0)));
                             }
-                            let vload = self.insert_before(loads[0].0, Load { src: loads[0].1, index: base_index, vlen: loads.len() as u8 });
+                            let vload = self.insert_before(
+                                loads[0].0,
+                                Load { src: loads[0].1, index: base_index, vlen: loads.len() as u8 },
+                            );
                             for (idx, load) in loads.iter().enumerate() {
                                 self.ops[load.0].op = Devectorize { vec: vload, idx };
                             }

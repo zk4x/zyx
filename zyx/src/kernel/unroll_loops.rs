@@ -40,7 +40,9 @@ impl Kernel {
             }
             if let Op::Loop { len, .. } = self.ops[op_id].op {
                 let endloop_id = endloop_ids.pop().unwrap();
-                if len as usize <= unroll_dim as usize && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000 {
+                if len as usize <= unroll_dim as usize
+                    && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000
+                {
                     self.unroll_loop(op_id, endloop_id, len);
                 }
             }
@@ -90,7 +92,9 @@ impl Kernel {
                             *inner_loop = false;
                         }
                     }
-                    if len == 1 || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000) {
+                    if len == 1
+                        || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000)
+                    {
                         self.unroll_loop(op_id, endloop_id, len);
                     }
                 }

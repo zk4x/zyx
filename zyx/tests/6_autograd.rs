@@ -132,9 +132,17 @@ fn grad_pow_3() -> Result<(), ZyxError> {
     let y_val: Vec<f64> = y.clone().try_into().unwrap();
 
     // Expected gradients
-    let expected_x_vec: Vec<f64> = x_val.iter().zip(y_val.iter()).map(|(&xv, &yv): (&f64, &f64)| yv * xv.powf(yv - 1.0)).collect();
+    let expected_x_vec: Vec<f64> = x_val
+        .iter()
+        .zip(y_val.iter())
+        .map(|(&xv, &yv): (&f64, &f64)| yv * xv.powf(yv - 1.0))
+        .collect();
 
-    let expected_y_vec: Vec<f64> = x_val.iter().zip(y_val.iter()).map(|(&xv, &yv): (&f64, &f64)| xv.powf(yv) * xv.ln()).collect();
+    let expected_y_vec: Vec<f64> = x_val
+        .iter()
+        .zip(y_val.iter())
+        .map(|(&xv, &yv): (&f64, &f64)| xv.powf(yv) * xv.ln())
+        .collect();
 
     // Compare element-wise with tolerance
     let tol: f64 = 1e-12;
@@ -361,9 +369,25 @@ fn grad_linear_2() -> Result<(), ZyxError> {
     //println!("{w2_grad}");
     //println!("{b2_grad}");
 
-    assert_eq!(w1_grad, [[11528, 21316, 18580, 19872, 11476], [17292, 31974, 27870, 29808, 17214], [5764, 10658, 9290, 9936, 5738]]);
+    assert_eq!(
+        w1_grad,
+        [
+            [11528, 21316, 18580, 19872, 11476],
+            [17292, 31974, 27870, 29808, 17214],
+            [5764, 10658, 9290, 9936, 5738]
+        ]
+    );
     assert_eq!(b1_grad, [5764, 10658, 9290, 9936, 5738]);
-    assert_eq!(w2_grad, [[11628, 5542, 16082, 10506], [18468, 8802, 25542, 16686], [11628, 5542, 16082, 10506], [17100, 8150, 23650, 15450], [15732, 7498, 21758, 14214]]);
+    assert_eq!(
+        w2_grad,
+        [
+            [11628, 5542, 16082, 10506],
+            [18468, 8802, 25542, 16686],
+            [11628, 5542, 16082, 10506],
+            [17100, 8150, 23650, 15450],
+            [15732, 7498, 21758, 14214]
+        ]
+    );
     assert_eq!(b2_grad, [684, 326, 946, 618]);
 
     Ok(())

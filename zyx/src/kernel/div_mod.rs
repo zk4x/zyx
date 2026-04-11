@@ -168,11 +168,11 @@ fn mad(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
     Some((*a, cval, *b))
 }
 
-fn mul_c(k: &Kernel, x: OpId) -> Option<(OpId, u64)> {
+/*fn mul_c(k: &Kernel, x: OpId) -> Option<(OpId, u64)> {
     let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(x) else {
         return None;
     };
     let Op::Const(cst) = k.at(*c) else { return None };
     let Some(cval) = cst.as_dim() else { return None };
     Some((*a, cval))
-}
+}*/

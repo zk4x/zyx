@@ -94,12 +94,16 @@ impl View {
     }
 
     pub(crate) fn shape(&self) -> Vec<Dim> {
-        self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
+        self.0
+            .last()
+            .map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.d).collect())
     }
 
     #[cfg(test)]
     fn strides(&self) -> Vec<Dim> {
-        self.0.last().map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.st).collect())
+        self.0
+            .last()
+            .map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.st).collect())
     }
 
     pub(crate) fn original_numel(&self) -> usize {
@@ -158,8 +162,21 @@ impl View {
             self.shape(),
             axes.clone()
         );*/
-        debug_assert!(axes.end as Dim <= self.0.last().map_or(1, Vec::len) as Dim, "Reshape axes range {axes:?} is greater than view's rank {}", self.0.last().map_or(1, Vec::len));
-        debug_assert_eq!(self.0.last().unwrap()[axes.start as usize..axes.end as usize].iter().map(|dim| dim.d).product::<Dim>(), new_shape.iter().product::<Dim>(), "Reshape failed, products are different: {:?} axes {axes:?} -> {:?}", self.shape(), new_shape);
+        debug_assert!(
+            axes.end as Dim <= self.0.last().map_or(1, Vec::len) as Dim,
+            "Reshape axes range {axes:?} is greater than view's rank {}",
+            self.0.last().map_or(1, Vec::len)
+        );
+        debug_assert_eq!(
+            self.0.last().unwrap()[axes.start as usize..axes.end as usize]
+                .iter()
+                .map(|dim| dim.d)
+                .product::<Dim>(),
+            new_shape.iter().product::<Dim>(),
+            "Reshape failed, products are different: {:?} axes {axes:?} -> {:?}",
+            self.shape(),
+            new_shape
+        );
 
         let mut new_shape: Vec<Dim> = new_shape.into();
         // Means we are inserting new dims in front
@@ -263,8 +280,17 @@ impl View {
     pub(crate) fn permute(&mut self, axes: &[usize]) {
         // Move around strides, dim, rp and lp
         let inner = self.0.last_mut().unwrap();
-        debug_assert!(inner.len() >= axes.len(), "Failed to permute {:?} by axes={axes:?}", self.shape());
-        debug_assert_eq!(*axes.iter().max().unwrap(), axes.len() - 1, "Failed to permute {:?} by axes={axes:?}", self.shape());
+        debug_assert!(
+            inner.len() >= axes.len(),
+            "Failed to permute {:?} by axes={axes:?}",
+            self.shape()
+        );
+        debug_assert_eq!(
+            *axes.iter().max().unwrap(),
+            axes.len() - 1,
+            "Failed to permute {:?} by axes={axes:?}",
+            self.shape()
+        );
 
         let mut temp_data = inner.clone();
         for i in 0..axes.len() {
@@ -324,7 +350,16 @@ impl View {
                 .map(|(a, &d)| {
                     let st = stride;
                     stride *= d;
-                    RDim { st, d: if a == axis { Dim::try_from(i64::try_from(d).unwrap() + left_pad).unwrap() } else { d }, lp: if a == axis { left_pad } else { 0 }, rp: 0 }
+                    RDim {
+                        st,
+                        d: if a == axis {
+                            Dim::try_from(i64::try_from(d).unwrap() + left_pad).unwrap()
+                        } else {
+                            d
+                        },
+                        lp: if a == axis { left_pad } else { 0 },
+                        rp: 0,
+                    }
                 })
                 .collect();
             res.reverse();
@@ -344,7 +379,16 @@ impl View {
                 .map(|(a, &d)| {
                     let st = stride;
                     stride *= d;
-                    RDim { st, d: if a == axis { Dim::try_from(i64::try_from(d).unwrap() + right_pad).unwrap() } else { d }, lp: 0, rp: if a == axis { right_pad } else { 0 } }
+                    RDim {
+                        st,
+                        d: if a == axis {
+                            Dim::try_from(i64::try_from(d).unwrap() + right_pad).unwrap()
+                        } else {
+                            d
+                        },
+                        lp: 0,
+                        rp: if a == axis { right_pad } else { 0 },
+                    }
                 })
                 .collect();
             res.reverse();
@@ -469,7 +513,12 @@ fn try_reshape(block: &[RDim], new_shape: &[Dim]) -> Vec<RDim> {
 impl Display for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for inner in &self.0 {
-            f.write_fmt(format_args!("V(sh{:?} st{:?} pd{:?})", inner.iter().map(|d| d.d).collect::<Vec<Dim>>(), inner.iter().map(|d| d.st).collect::<Vec<Dim>>(), inner.iter().map(|d| (d.lp, d.rp)).collect::<Vec<(i64, i64)>>()))?;
+            f.write_fmt(format_args!(
+                "V(sh{:?} st{:?} pd{:?})",
+                inner.iter().map(|d| d.d).collect::<Vec<Dim>>(),
+                inner.iter().map(|d| d.st).collect::<Vec<Dim>>(),
+                inner.iter().map(|d| (d.lp, d.rp)).collect::<Vec<(i64, i64)>>()
+            ))?;
         }
         Ok(())
     }
@@ -560,7 +609,23 @@ fn view_pad2() {
     let mut view = View::contiguous(&[1, 1, 2, 6]);
     view.pad_axis(3, -3, 0);
     view.pad_axis(3, 2, 0);
-    assert_eq!(view, View(vec![vec![RDim { d: 1, st: 12, lp: 0, rp: 0 }, RDim { d: 1, st: 12, lp: 0, rp: 0 }, RDim { d: 2, st: 6, lp: 0, rp: 0 }, RDim { d: 3, st: 1, lp: -3, rp: 0 }], vec![RDim { d: 1, st: 6, lp: 0, rp: 0 }, RDim { d: 1, st: 6, lp: 0, rp: 0 }, RDim { d: 2, st: 3, lp: 0, rp: 0 }, RDim { d: 5, st: 1, lp: 2, rp: 0 }]]));
+    assert_eq!(
+        view,
+        View(vec![
+            vec![
+                RDim { d: 1, st: 12, lp: 0, rp: 0 },
+                RDim { d: 1, st: 12, lp: 0, rp: 0 },
+                RDim { d: 2, st: 6, lp: 0, rp: 0 },
+                RDim { d: 3, st: 1, lp: -3, rp: 0 }
+            ],
+            vec![
+                RDim { d: 1, st: 6, lp: 0, rp: 0 },
+                RDim { d: 1, st: 6, lp: 0, rp: 0 },
+                RDim { d: 2, st: 3, lp: 0, rp: 0 },
+                RDim { d: 5, st: 1, lp: 2, rp: 0 }
+            ]
+        ])
+    );
 }
 
 #[test]

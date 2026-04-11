@@ -575,13 +575,28 @@ impl Kernel {
                     let flops = shape.iter().product::<Dim>() as u64;
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
-                Op::WMMA { .. } | Op::Vectorize { .. } | Op::Devectorize { .. } | Op::Store { .. } | Op::If { .. } | Op::EndIf | Op::Barrier { .. } | Op::Mad { .. } | Op::Const(_) | Op::Define { .. } | Op::Load { .. } | Op::Index { .. } | Op::Loop { .. } | Op::EndLoop => todo!(),
+                Op::WMMA { .. }
+                | Op::Vectorize { .. }
+                | Op::Devectorize { .. }
+                | Op::Store { .. }
+                | Op::If { .. }
+                | Op::EndIf
+                | Op::Barrier { .. }
+                | Op::Mad { .. }
+                | Op::Const(_)
+                | Op::Define { .. }
+                | Op::Load { .. }
+                | Op::Index { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop => todo!(),
             };
             stack.insert(op_id, info);
             op_id = self.next_op(op_id);
         }
 
-        stack.into_values().fold((0, 0, 0), |acc, info| (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write))
+        stack.into_values().fold((0, 0, 0), |acc, info| {
+            (acc.0 + info.flops, acc.1 + info.mem_read, acc.2 + info.mem_write)
+        })
     }
 
     /*pub fn flop_mem_rw1(&self) -> (u64, u64, u64) {
@@ -681,7 +696,11 @@ impl Kernel {
                 .values()
                 .filter_map(|x| {
                     // TODO include both global and local, order by axis
-                    if let Op::Index { len: dim, axis, .. } = x.op { Some((dim, axis)) } else { None }
+                    if let Op::Index { len: dim, axis, .. } = x.op {
+                        Some((dim, axis))
+                    } else {
+                        None
+                    }
                 })
                 .collect();
             indices.sort_by_key(|x| x.1);
@@ -901,7 +920,20 @@ impl Kernel {
                         params.push(*y);
                     }
                     Op::Const { .. } | Op::ConstView { .. } | Op::LoadView { .. } => {}
-                    Op::Vectorize { .. } | Op::Devectorize { .. } | Op::WMMA { .. } | Op::Barrier { .. } | Op::Define { .. } | Op::Mad { .. } | Op::StoreView { .. } | Op::Load { .. } | Op::Store { .. } | Op::Index { .. } | Op::If { .. } | Op::EndIf | Op::Loop { .. } | Op::EndLoop { .. } => unreachable!(),
+                    Op::Vectorize { .. }
+                    | Op::Devectorize { .. }
+                    | Op::WMMA { .. }
+                    | Op::Barrier { .. }
+                    | Op::Define { .. }
+                    | Op::Mad { .. }
+                    | Op::StoreView { .. }
+                    | Op::Load { .. }
+                    | Op::Store { .. }
+                    | Op::Index { .. }
+                    | Op::If { .. }
+                    | Op::EndIf
+                    | Op::Loop { .. }
+                    | Op::EndLoop { .. } => unreachable!(),
                 }
             }
         }

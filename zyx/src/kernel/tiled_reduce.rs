@@ -54,7 +54,18 @@ impl Kernel {
         };
 
         // Get new free axis for the local dimension
-        let laxis = self.ops.values().filter_map(|node| if let Op::Index { scope: Scope::Local, axis, .. } = node.op { Some(axis + 1) } else { None }).max().unwrap_or(0);
+        let laxis = self
+            .ops
+            .values()
+            .filter_map(|node| {
+                if let Op::Index { scope: Scope::Local, axis, .. } = node.op {
+                    Some(axis + 1)
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0);
         if laxis > 2 {
             return;
         }
@@ -126,7 +137,10 @@ impl Kernel {
         self.ops[loop_start].op = Op::Mad { x: ridx, y: factor_const, z: lidx };
 
         // Add local accumulator
-        let loc_acc = self.insert_before(acc_load_id, Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor });
+        let loc_acc = self.insert_before(
+            acc_load_id,
+            Op::Define { dtype: acc_dtype, scope: Scope::Local, ro: false, len: factor },
+        );
 
         // Store to local accumulator
         let const_zero = self.insert_before(acc_load_id, Op::Const(Constant::idx(0)));
@@ -177,7 +191,10 @@ impl Kernel {
         let condition = self.insert_before(acc_load_id, Op::Binary { x: lidx, y: const_zero, bop: BOp::Eq });
         self.insert_before(acc_load_id, Op::If { condition });
         let final_val = self.insert_before(acc_load_id, Op::Load { src: loc_acc, index: const_zero, vlen: 1 });
-        self.insert_before(acc_load_id, Op::Store { dst: reg_acc, x: final_val, index: const_zero, vlen: 1 });
+        self.insert_before(
+            acc_load_id,
+            Op::Store { dst: reg_acc, x: final_val, index: const_zero, vlen: 1 },
+        );
         self.insert_after(self.tail, Op::EndIf);
 
         self.verify();

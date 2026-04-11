@@ -32,15 +32,28 @@ const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
 #[derive(Debug)]
 pub enum Optimization {
     ReassociateCommutative,
-    UnrollLoops { factors: Vec<u64> },
-    SplitGlobalToLocal { factors: Vec<(OpId, u64)> },
-    Upcast { factors: Vec<(OpId, u64)> },
-    RegisterTiling { reduce_splits: Map<OpId, Vec<u64>>, global_upcasts: Map<OpId, Vec<u64>> },
+    UnrollLoops {
+        factors: Vec<u64>,
+    },
+    SplitGlobalToLocal {
+        factors: Vec<(OpId, u64)>,
+    },
+    Upcast {
+        factors: Vec<(OpId, u64)>,
+    },
+    RegisterTiling {
+        reduce_splits: Map<OpId, Vec<u64>>,
+        global_upcasts: Map<OpId, Vec<u64>>,
+    },
     FuseMad,
     UnfuseMad,
     UnrollConstantLoops,
-    TiledReduce { factors: Vec<(OpId, u64, u64)> },
-    SplitLoop { factors: Vec<(OpId, u64)> },
+    TiledReduce {
+        factors: Vec<(OpId, u64, u64)>,
+    },
+    SplitLoop {
+        factors: Vec<(OpId, u64)>,
+    },
     Licm,
 }
 
@@ -65,7 +78,13 @@ impl Optimization {
                 debug_assert_eq!(scope, Scope::Global);
                 let factor: Dim = factor;
                 //println!("Splitting global axis={axis} to factor={factor}");
-                kernel.split_dim(op_id, vec![Op::Index { len: len / factor, scope: Scope::Global, axis }, Op::Index { len: factor, scope: Scope::Local, axis }]);
+                kernel.split_dim(
+                    op_id,
+                    vec![
+                        Op::Index { len: len / factor, scope: Scope::Global, axis },
+                        Op::Index { len: factor, scope: Scope::Local, axis },
+                    ],
+                );
             }
             Optimization::Upcast { factors } => {
                 if factors.is_empty() {
@@ -99,7 +118,13 @@ impl Optimization {
                         continue;
                     };
 
-                    kernel.split_dim(*reduce_id, vec![Op::Loop { len: original_len / reduce_factor }, Op::Loop { len: reduce_factor }]);
+                    kernel.split_dim(
+                        *reduce_id,
+                        vec![
+                            Op::Loop { len: original_len / reduce_factor },
+                            Op::Loop { len: reduce_factor },
+                        ],
+                    );
                 }
 
                 let mut new_global_upcasts = Vec::new();
@@ -163,21 +188,44 @@ impl Kernel {
 
     /// Autotune for debugging, applying only a selected series of optimizations
     #[allow(unused)]
-    pub fn apply_selected_optimizations(&self, buffers: &[PoolBufferId], device: &mut Device, memory_pool: &mut MemoryPool, config: &AutotuneConfig, flop: u64, read_bytes: u64, write_bytes: u64, debug: DebugMask) -> (DeviceProgramId, OptSeq) {
+    pub fn apply_selected_optimizations(
+        &self,
+        buffers: &[PoolBufferId],
+        device: &mut Device,
+        memory_pool: &mut MemoryPool,
+        config: &AutotuneConfig,
+        flop: u64,
+        read_bytes: u64,
+        write_bytes: u64,
+        debug: DebugMask,
+    ) -> (DeviceProgramId, OptSeq) {
         //eprintln!("=== autotune_debug called ===");
         let mut kernel = self.clone();
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
         kernel.debug_colorless();
 
-        let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes).unwrap();
+        let (program_id, _) = kernel
+            .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
+            .unwrap();
 
         (program_id, OptSeq { opts: Vec::new(), cost: Cost::default() })
     }
 
     /// Release mode autotune with beam like search and multithreading
-    pub fn autotune(&self, buffers: &[PoolBufferId], device: &mut Device, memory_pool: &mut MemoryPool, config: &AutotuneConfig, flop: u64, read_bytes: u64, write_bytes: u64, debug: DebugMask) -> (DeviceProgramId, OptSeq) {
+    pub fn autotune(
+        &self,
+        buffers: &[PoolBufferId],
+        device: &mut Device,
+        memory_pool: &mut MemoryPool,
+        config: &AutotuneConfig,
+        flop: u64,
+        read_bytes: u64,
+        write_bytes: u64,
+        debug: DebugMask,
+    ) -> (DeviceProgramId, OptSeq) {
         if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
@@ -252,7 +300,8 @@ impl Kernel {
                         let mult = n_added_per_step.min(total_configs);
 
                         for (opt_id, _config_fn) in AVAILABLE_OPTIMIZATIONS.iter().enumerate() {
-                            let n_configs_to_try = (((&avail_configs[opt_id]).1 * mult) as f32 / total_configs as f32).ceil() as usize;
+                            let n_configs_to_try =
+                                (((&avail_configs[opt_id]).1 * mult) as f32 / total_configs as f32).ceil() as usize;
 
                             for config_id in 0..n_configs_to_try {
                                 let mut opts = opt_seq.opts.clone();
@@ -304,7 +353,10 @@ impl Kernel {
 
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel);
-                println!("Running opt: {opt_id}, cfg={opt_cfg} -> {opt:?} -> {:?}", AVAILABLE_OPTIMIZATIONS[opt_id]);
+                println!(
+                    "Running opt: {opt_id}, cfg={opt_cfg} -> {opt:?} -> {:?}",
+                    AVAILABLE_OPTIMIZATIONS[opt_id]
+                );
                 opt.apply(&mut kernel, opt_cfg);
             }
             kernel.run_always_on_optimizations();
@@ -314,7 +366,9 @@ impl Kernel {
                     kernel.debug();
                 }
 
-                let Ok((program_id, time)) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes) else {
+                let Ok((program_id, time)) =
+                    kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
+                else {
                     continue;
                 };
 
@@ -425,7 +479,15 @@ impl Kernel {
         let global_stores_per_thread = n_scoped_stores[0] as u32;
         let local_stores_per_thread = n_scoped_stores[1] as u32;
 
-        Cost { global_ws, n_threads, instructions_per_thread, global_loads_per_thread, local_loads_per_thread, global_stores_per_thread, local_stores_per_thread }
+        Cost {
+            global_ws,
+            n_threads,
+            instructions_per_thread,
+            global_loads_per_thread,
+            local_loads_per_thread,
+            global_stores_per_thread,
+            local_stores_per_thread,
+        }
     }
 
     pub fn get_hash(&self) -> u64 {
@@ -434,7 +496,16 @@ impl Kernel {
         hasher.finish()
     }
 
-    pub fn launch_with_timings(&self, buffers: &[PoolBufferId], device: &mut Device, memory_pool: &mut MemoryPool, debug: DebugMask, flops: u64, bytes_read: u64, bytes_written: u64) -> Result<(DeviceProgramId, u64), BackendError> {
+    pub fn launch_with_timings(
+        &self,
+        buffers: &[PoolBufferId],
+        device: &mut Device,
+        memory_pool: &mut MemoryPool,
+        debug: DebugMask,
+        flops: u64,
+        bytes_read: u64,
+        bytes_written: u64,
+    ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
         let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
@@ -476,7 +547,10 @@ impl Ord for Cost {
             // Then global loads
             .then(self.global_loads_per_thread.cmp(&other.global_loads_per_thread))
             // Then total instructions (local access counts as ~1 instruction)
-            .then((self.instructions_per_thread + self.local_loads_per_thread + self.local_stores_per_thread).cmp(&(other.instructions_per_thread + other.local_loads_per_thread + other.local_stores_per_thread)))
+            .then(
+                (self.instructions_per_thread + self.local_loads_per_thread + self.local_stores_per_thread)
+                    .cmp(&(other.instructions_per_thread + other.local_loads_per_thread + other.local_stores_per_thread)),
+            )
             // Fewer threads with more work per thread is slightly preferred (less overhead)
             .then(other.n_threads.cmp(&self.n_threads))
     }

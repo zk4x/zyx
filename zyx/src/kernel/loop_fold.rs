@@ -12,12 +12,7 @@ impl Kernel {
         // try_fold1 is disabled as it may cause issues
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Define { len, scope, .. } = self.at(op_id).clone() {
-                if len == 1 && scope == Scope::Register {
-                    // Only try fold on arange-like patterns
-                    self.try_fold_conditional(op_id);
-                }
-            }
+            self.try_fold_conditional(op_id);
             op_id = self.next_op(op_id);
         }
 
@@ -25,12 +20,15 @@ impl Kernel {
     }
 
     fn try_fold_conditional(&mut self, def_id: OpId) {
+        // Define
+        let &Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 } = self.at(def_id) else { return };
+
         // Find first store to def_id (initial value)
         let mut store1_id = self.next_op(def_id);
         while !store1_id.is_null() {
-            if let Op::Store { dst, index, .. } = self.at(store1_id) {
-                if *dst == def_id {
-                    if let Op::Const(cst) = self.at(*index) {
+            if let &Op::Store { dst, index, .. } = self.at(store1_id) {
+                if dst == def_id {
+                    if let Op::Const(cst) = self.at(index) {
                         if let Some(0) = cst.as_dim() {
                             break;
                         }
@@ -57,26 +55,94 @@ impl Kernel {
             }
             loop_id = self.next_op(loop_id);
         }
-        if !matches!(self.at(loop_id), Op::Loop { .. }) {
-            return;
-        }
+        let Op::Loop { .. } = self.at(loop_id) else { return };
         println!("loop_id={loop_id}");
 
         // After the loop is found, check add - one operand is load, other is something
         let add_id = self.next_op(loop_id);
-        let Op::Binary { bop: BOp::Add, x, y, .. } = self.at(add_id) else {
-            return;
-        };
-        if *x != loop_id {
+        let &Op::Binary { bop: BOp::Add, x, y, .. } = self.at(add_id) else { return };
+        if x != loop_id {
             return;
         }
-        let Op::Index { len, scope: Scope::Global, .. } = self.at(*y) else {
+        let Op::Index { len: gidx_len, scope: Scope::Global, .. } = self.at(y) else {
             return;
         };
         println!("add_id={add_id}");
 
-        // cast
-        let Op::Cast { x, dtype } = self.at(add_id) else { return };
+        // cmpgt
+        let cmpgt_id = self.next_op(add_id);
+        let &Op::Binary { x, y, bop: BOp::Cmpgt } = self.at(cmpgt_id) else { return };
+        if x != add_id {
+            return;
+        }
+        let &Op::Const(threshold) = self.at(y) else { return };
+        println!("cmpgt_id={cmpgt_id}");
+
+        // Cast
+        let cast_id = self.next_op(cmpgt_id);
+        let &Op::Cast { x, dtype } = self.at(cast_id) else { return };
+        if x != cmpgt_id || dtype != acc_dtype {
+            return;
+        }
+        println!("cast_id={cast_id}");
+
+        // Mul
+        let mul_id = self.next_op(cast_id);
+        let &Op::Binary { x, y, bop: BOp::Mul } = self.at(mul_id) else { return };
+        if x != cast_id {
+            return;
+        }
+        let &Op::Const(mul_const) = self.at(y) else { return };
+        println!("mul_id={mul_id}");
+
+        // Load
+        let load_id = self.next_op(mul_id);
+        let &Op::Load { src, index, vlen: 1 } = self.at(load_id) else { return };
+        let &Op::Const(index) = self.at(index) else { return };
+        if index.as_dim() != Some(0) {
+            return;
+        }
+        if src != def_id {
+            return;
+        }
+        println!("load_id={load_id}");
+
+        // Add
+        let add2_id = self.next_op(load_id);
+        let &Op::Binary { x, y, bop: BOp::Add } = self.at(add2_id) else { return };
+        if x != mul_id || y != load_id {
+            return;
+        }
+        println!("add2_id={add2_id}");
+
+        // Store
+        let store2_id = self.next_op(add2_id);
+        let &Op::Store { dst, x, index, vlen: 1 } = self.at(store2_id) else { return };
+        let &Op::Const(index) = self.at(index) else { return };
+        if index.as_dim() != Some(0) {
+            return;
+        }
+        if dst != def_id || x != add2_id {
+            return;
+        }
+        println!("store2_id={store2_id}");
+
+        // Endloop
+        let endloop_id = self.next_op(store2_id);
+        let Op::EndLoop = self.at(endloop_id) else { return };
+        println!("endloop_id={endloop_id}");
+
+        // Load
+        let load2_id = self.next_op(endloop_id);
+        let &Op::Load { src, index, vlen: 1 } = self.at(load2_id) else { return };
+        let &Op::Const(index) = self.at(index) else { return };
+        if index.as_dim() != Some(0) {
+            return;
+        }
+        if src != def_id {
+            return;
+        }
+        println!("load2_id={load2_id}");
 
         self.verify();
     }

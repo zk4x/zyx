@@ -614,7 +614,9 @@ impl Scalar for f16 {
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        (self == -Self::INFINITY && rhs == -Self::INFINITY) || (self.is_nan() && rhs.is_nan()) || self.sub(rhs).abs() < self.abs() * f16::from_f32(0.0001)
+        (self == -Self::INFINITY && rhs == -Self::INFINITY)
+            || (self.is_nan() && rhs.is_nan())
+            || self.sub(rhs).abs() < self.abs() * f16::from_f32(0.0001)
     }
 
     fn epsilon() -> Self {

@@ -58,7 +58,10 @@ impl Rng {
 
     #[allow(unused)]
     pub fn seed_from_systime() -> Self {
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         Rng::seed_from_u64(seed as u64)
     }
 

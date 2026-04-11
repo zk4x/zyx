@@ -77,7 +77,8 @@ impl DiskMemoryPool {
         let _ = event_wait_list;
         let buffer = &self.buffers[src];
         let f = File::open(&buffer.path).unwrap();
-        f.read_exact_at(dst, buffer.offset_bytes).map_err(|err| BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("{err}").into() })
+        f.read_exact_at(dst, buffer.offset_bytes)
+            .map_err(|err| BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("{err}").into() })
     }
 
     #[allow(clippy::needless_pass_by_value)]

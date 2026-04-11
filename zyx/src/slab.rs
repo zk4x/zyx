@@ -127,11 +127,19 @@ impl<Id: SlabId, T> Slab<Id, T> {
     }
 
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.values.iter_mut().enumerate().filter(|(id, _)| !self.empty.contains(&(Id::from(*id)))).map(|(_, x)| unsafe { x.assume_init_mut() })
+        self.values
+            .iter_mut()
+            .enumerate()
+            .filter(|(id, _)| !self.empty.contains(&(Id::from(*id))))
+            .map(|(_, x)| unsafe { x.assume_init_mut() })
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (Id, &T)> {
-        self.values.iter().enumerate().filter(|(id, _)| !self.empty.contains(&(Id::from(*id)))).map(|(id, x)| (Id::from(id), unsafe { x.assume_init_ref() }))
+        self.values
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| !self.empty.contains(&(Id::from(*id))))
+            .map(|(id, x)| (Id::from(id), unsafe { x.assume_init_ref() }))
     }
 
     pub(crate) fn contains_key(&self, id: Id) -> bool {
@@ -277,13 +285,32 @@ impl<Id: SlabId, T: PartialOrd> PartialOrd for Slab<Id, T> {
 impl<Id: SlabId, T: Ord> Ord for Slab<Id, T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let mut iter = self.iter().zip(other.iter());
-        if let Some((x, y)) = iter.next() { x.cmp(&y) } else { self.values.len().cmp(&other.values.len()) }
+        if let Some((x, y)) = iter.next() {
+            x.cmp(&y)
+        } else {
+            self.values.len().cmp(&other.values.len())
+        }
     }
 }
 
 impl<T: Clone, Id: SlabId> Clone for Slab<Id, T> {
     fn clone(&self) -> Self {
-        Self { values: self.values.iter().enumerate().map(|(id, x)| if self.empty.contains(&(Id::from(id))) { MaybeUninit::uninit() } else { MaybeUninit::new(unsafe { x.assume_init_ref() }.clone()) }).collect(), empty: self.empty.clone(), _index: PhantomData }
+        Self {
+            values: self
+                .values
+                .iter()
+                .enumerate()
+                .map(|(id, x)| {
+                    if self.empty.contains(&(Id::from(id))) {
+                        MaybeUninit::uninit()
+                    } else {
+                        MaybeUninit::new(unsafe { x.assume_init_ref() }.clone())
+                    }
+                })
+                .collect(),
+            empty: self.empty.clone(),
+            _index: PhantomData,
+        }
     }
 }
 
