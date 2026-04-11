@@ -6,24 +6,16 @@ use crate::{
     kernel::{BOp, Kernel, Op, OpId, Scope},
 };
 
-fn constant_as_u64(c: &Constant) -> Option<u64> {
-    match c {
-        Constant::U32(x) => Some(*x as u64),
-        Constant::U64(x) => Some(u64::from_le_bytes(*x)),
-        _ => None,
-    }
-}
-
 impl Kernel {
     pub fn simplify_accumulating_loop(&mut self) {
         // Currently only try_fold_conditional is used (for arange pattern)
         // try_fold1 is disabled as it may cause issues
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if let Op::Define { len, scope, dtype, .. } = self.at(op_id).clone() {
+            if let Op::Define { len, scope, .. } = self.at(op_id).clone() {
                 if len == 1 && scope == Scope::Register {
                     // Only try fold on arange-like patterns
-                    self.try_fold_conditional(op_id, dtype);
+                    self.try_fold_conditional(op_id);
                 }
             }
             op_id = self.next_op(op_id);
@@ -32,14 +24,14 @@ impl Kernel {
         self.verify();
     }
 
-    fn try_fold_conditional(&mut self, def_id: OpId, acc_dtype: DType) {
+    fn try_fold_conditional(&mut self, def_id: OpId) {
         // Find first store to def_id (initial value)
         let mut store1_id = self.next_op(def_id);
         while !store1_id.is_null() {
             if let Op::Store { dst, index, .. } = self.at(store1_id) {
                 if *dst == def_id {
                     if let Op::Const(cst) = self.at(*index) {
-                        if constant_as_u64(cst) == Some(0) {
+                        if let Some(0) = cst.as_dim() {
                             break;
                         }
                     }
@@ -80,7 +72,7 @@ impl Kernel {
             if let Op::Load { src, index, vlen: 1 } = self.at(search_id) {
                 if *src == def_id {
                     if let Op::Const(cst) = self.at(*index) {
-                        if constant_as_u64(cst) == Some(0) {
+                        if let Some(0) = cst.as_dim() {
                             load_id = Some(search_id);
                             break;
                         }
@@ -166,7 +158,7 @@ impl Kernel {
         let Op::Const(cst) = self.at(*store_idx) else {
             return;
         };
-        if constant_as_u64(cst) != Some(0) {
+        if let Some(0) = cst.as_dim() {
             return;
         }
 
@@ -189,7 +181,7 @@ impl Kernel {
             let Op::Const(cst) = self.at(index) else {
                 return;
             };
-            if constant_as_u64(cst) != Some(0) {
+            if let Some(0) = cst.as_dim() {
                 return;
             }
             index
@@ -197,39 +189,9 @@ impl Kernel {
             return;
         };
 
+        println!("PATTERN FOUND: store_id={store1_id}");
+
         // Now replace the loop with conditional computation
-        // result = (gidx > threshold ? loop_len : threshold - gidx + 1) * step
-
-        // cond = gidx > threshold (result is bool, but we need it as int for multiply)
-        let cond_id = self.insert_before(load2_id, Op::Binary { x: gidx_id, y: threshold_id, bop: BOp::Cmpgt });
-
-        // Cast cond to integer for arithmetic
-        let cond_i32_id = self.insert_before(load2_id, Op::Cast { x: cond_id, dtype: DType::I32 });
-
-        // Cast gidx to i32 for arithmetic with i32 constants
-        let gidx_i32_id = self.insert_before(load2_id, Op::Cast { x: gidx_id, dtype: DType::I32 });
-
-        // Create constants - using I32 dtype
-        let loop_len_const = Constant::new(loop_len as i32);
-        let loop_len_id = self.insert_before(load2_id, Op::Const(loop_len_const));
-
-        // b = threshold - gidx + 1 = (threshold + 1) - gidx (will be negative for gidx > threshold)
-        let threshold_plus_1 = 9999i32;
-        let b_const = Constant::new(threshold_plus_1);
-        let b_const_id = self.insert_before(load2_id, Op::Const(b_const));
-        let b_id = self.insert_before(load2_id, Op::Binary { x: b_const_id, y: gidx_i32_id, bop: BOp::Sub });
-
-        // result = loop_len * cond + b * (1 - cond)
-        // = b + cond * (loop_len - b)
-        let diff_id = self.insert_before(load2_id, Op::Binary { x: loop_len_id, y: b_id, bop: BOp::Sub });
-        let cond_mul_diff_id = self.insert_before(load2_id, Op::Binary { x: cond_i32_id, y: diff_id, bop: BOp::Mul });
-        let result_id = self.insert_before(load2_id, Op::Binary { x: b_id, y: cond_mul_diff_id, bop: BOp::Add });
-
-        // Multiply by step
-        let result_with_step_id = self.insert_before(load2_id, Op::Binary { x: result_id, y: step, bop: BOp::Mul });
-
-        // Replace load2 (which loaded from accumulator) with the result
-        self.remap(load2_id, result_with_step_id);
 
         self.verify();
     }
@@ -241,7 +203,7 @@ impl Kernel {
             if let Op::Store { dst, index, .. } = self.at(store1_id) {
                 if *dst == def_id {
                     if let Op::Const(cst) = self.at(*index) {
-                        if constant_as_u64(cst) == Some(0) {
+                        if let Some(0) = cst.as_dim() {
                             break;
                         }
                     }
@@ -295,7 +257,7 @@ impl Kernel {
         let Op::Const(cst) = self.at(*load_idx) else {
             return;
         };
-        if constant_as_u64(cst) != Some(0) {
+        if cst.as_dim() != Some(0) {
             return;
         }
 
@@ -327,7 +289,7 @@ impl Kernel {
         let Op::Const(cst) = self.at(*store_idx) else {
             return;
         };
-        if constant_as_u64(cst) != Some(0) {
+        if cst.as_dim() != Some(0) {
             return;
         }
 
@@ -351,7 +313,7 @@ impl Kernel {
         let Op::Const(cst) = self.at(*load2_idx) else {
             return;
         };
-        if constant_as_u64(cst) != Some(0) {
+        if cst.as_dim() != Some(0) {
             return;
         }
 

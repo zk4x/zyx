@@ -207,6 +207,7 @@ impl Kernel {
         let mut kernel = self.clone();
 
         kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
         kernel.debug_colorless();
 
         let (program_id, _) = kernel
