@@ -88,10 +88,7 @@ impl Kernel {
 
         // Find Add after Load
         let add_id = self.next_op(load_id);
-        if !matches!(self.at(add_id), Op::Binary { bop: BOp::Add, .. }) {
-            return;
-        }
-        let Op::Binary { x: add_x, y: add_y, .. } = self.at(add_id) else {
+        let Op::Binary { bop: BOp::Add, x: add_x, y: add_y, .. } = self.at(add_id) else {
             return;
         };
         if *add_x != load_id && *add_y != load_id {
