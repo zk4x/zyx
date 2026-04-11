@@ -43,6 +43,8 @@ impl Kernel {
             return;
         }
 
+        println!("store1_id={store1_id}");
+
         // Find loop
         let mut loop_id = self.next_op(store1_id);
         while !loop_id.is_null() {
@@ -59,6 +61,8 @@ impl Kernel {
         if !matches!(self.at(loop_id), Op::Loop { .. }) {
             return;
         }
+
+        println!("loop_id={loop_id}");
 
         let loop_len = match self.at(loop_id) {
             Op::Loop { len, .. } => *len,
@@ -86,6 +90,8 @@ impl Kernel {
             None => return,
         };
 
+        println!("load_id={load_id}");
+
         // Find Add after Load
         let add_id = self.next_op(load_id);
         if !matches!(self.at(add_id), Op::Binary { bop: BOp::Add, .. }) {
@@ -98,8 +104,12 @@ impl Kernel {
             return;
         }
 
+        println!("add_id={add_id}");
+
         // Get computed value (the other operand of Add)
         let computed_val = if *add_x == load_id { *add_y } else { *add_x };
+
+        println!("computed_val={computed_val}");
 
         // Check: computed_val should be Mul(Cast(Cmpgt(...)), step)
         if !matches!(self.at(computed_val), Op::Binary { bop: BOp::Mul, .. }) {
@@ -117,6 +127,8 @@ impl Kernel {
         } else {
             return;
         };
+
+        println!("cast_id={cmp_id}");
 
         // Check: cast
         let Op::Cast { x: cmp_input, .. } = self.at(cmp_id) else {
@@ -162,17 +174,22 @@ impl Kernel {
             return;
         }
 
+        println!("store_id={store_id}");
+
         // Check endloop
         let endloop_id = self.next_op(store_id);
         if !matches!(self.at(endloop_id), Op::EndLoop) {
             return;
         }
 
+        println!("endloop_id={endloop_id}");
+
         // Check final load
         let load2_id = self.next_op(endloop_id);
         if !matches!(self.at(load2_id), Op::Load { .. }) {
             return;
         }
+        println!("load2_id={load2_id}");
         let load2_op = self.at(load2_id).clone();
         let load2_idx = if let Op::Load { src: load2_src, index, vlen: 1 } = load2_op {
             if load2_src != def_id {
