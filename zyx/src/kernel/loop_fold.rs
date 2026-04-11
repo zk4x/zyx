@@ -140,9 +140,6 @@ impl Kernel {
 
         // Check Store
         let store_id = self.next_op(add_id);
-        if !matches!(self.at(store_id), Op::Store { .. }) {
-            return;
-        }
         let Op::Store { dst: store_dst, index: store_idx, .. } = self.at(store_id) else {
             return;
         };
