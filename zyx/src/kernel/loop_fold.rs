@@ -123,12 +123,9 @@ impl Kernel {
             return;
         };
 
-        // Check: compare(add(loop_var, gidx), threshold)
+        // Check: compare(add(loop_var, gidx), threshold
         let cmp_compare_id = *cmp_input;
-        if !matches!(self.at(cmp_compare_id), Op::Binary { bop: BOp::Cmpgt, .. }) {
-            return;
-        }
-        let Op::Binary { x: cmp_x, y: cmp_y, .. } = self.at(cmp_compare_id) else {
+        let Op::Binary { bop: BOp::Cmpgt, x: cmp_x, y: cmp_y, .. } = self.at(cmp_compare_id) else {
             return;
         };
 
