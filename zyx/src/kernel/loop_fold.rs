@@ -70,19 +70,25 @@ impl Kernel {
         println!("loop_id={loop_id}");
 
         // Find Load of accumulator (at index 0) in loop body
-        let load_id = self.next_op(loop_id);
-        let Op::Load { src: load_src, index: load_idx, vlen: 1 } = self.at(load_id) else {
-            return;
-        };
-        if *load_src != def_id {
-            return;
+        let mut search_id = self.next_op(loop_id);
+        let mut load_id = None;
+        while !search_id.is_null() {
+            if let Op::Load { src, index, vlen: 1 } = self.at(search_id) {
+                if *src == def_id {
+                    if let Op::Const(cst) = self.at(*index) {
+                        if cst.as_dim() == Some(0) {
+                            load_id = Some(search_id);
+                            break;
+                        }
+                    }
+                }
+            }
+            search_id = self.next_op(search_id);
         }
-        let Op::Const(cst) = self.at(*load_idx) else {
-            return;
+        let load_id = match load_id {
+            Some(id) => id,
+            None => return,
         };
-        if cst.as_dim() != Some(0) {
-            return;
-        }
 
         println!("load_id={load_id}");
 
