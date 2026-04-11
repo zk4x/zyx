@@ -26,51 +26,63 @@ impl Kernel {
 
     fn try_fold_conditional(&mut self, def_id: OpId) {
         // Find first store to def_id (initial value)
-        let store1_id = self.next_op(def_id);
-        let Op::Store { dst, index, .. } = self.at(store1_id) else {
-            return;
-        };
-        if *dst != def_id {
-            return;
+        let mut store1_id = self.next_op(def_id);
+        while !store1_id.is_null() {
+            if let Op::Store { dst, index, .. } = self.at(store1_id) {
+                if *dst == def_id {
+                    if let Op::Const(cst) = self.at(*index) {
+                        if let Some(0) = cst.as_dim() {
+                            break;
+                        }
+                    }
+                }
+            }
+            store1_id = self.next_op(store1_id);
         }
-        let Op::Const(cst) = self.at(*index) else {
-            return;
-        };
-        if cst.as_dim() != Some(0) {
+        if store1_id.is_null() {
             return;
         }
 
         println!("store1_id={store1_id}");
 
         // Find loop
-        let loop_id = self.next_op(store1_id);
-        let Op::Loop { len, .. } = self.at(loop_id) else {
+        let mut loop_id = self.next_op(store1_id);
+        while !loop_id.is_null() {
+            if matches!(self.at(loop_id), Op::Loop { .. }) {
+                break;
+            }
+            match self.at(loop_id) {
+                Op::Load { src, .. } if *src == def_id => return,
+                Op::Store { dst, .. } if *dst == def_id => return,
+                _ => {}
+            }
+            loop_id = self.next_op(loop_id);
+        }
+        if !matches!(self.at(loop_id), Op::Loop { .. }) {
             return;
+        }
+
+        let loop_len = match self.at(loop_id) {
+            Op::Loop { len, .. } => *len,
+            _ => return,
         };
-        let loop_len = *len;
 
         println!("loop_id={loop_id}");
 
         // Find Load of accumulator (at index 0) in loop body
-        let mut search_id = self.next_op(loop_id);
-        let mut load_id = None;
-        while !search_id.is_null() {
-            if let Op::Load { src, index, vlen: 1 } = self.at(search_id) {
-                if *src == def_id {
-                    if let Op::Const(cst) = self.at(*index) {
-                        if let Some(0) = cst.as_dim() {
-                            load_id = Some(search_id);
-                            break;
-                        }
-                    }
-                }
-            }
-            search_id = self.next_op(search_id);
-        }
-        let load_id = match load_id {
-            Some(id) => id,
-            None => return,
+        let load_id = self.next_op(loop_id);
+        let Op::Load { src: load_src, index: load_idx, vlen: 1 } = self.at(load_id) else {
+            return;
         };
+        if *load_src != def_id {
+            return;
+        }
+        let Op::Const(cst) = self.at(*load_idx) else {
+            return;
+        };
+        if cst.as_dim() != Some(0) {
+            return;
+        }
 
         println!("load_id={load_id}");
 
