@@ -78,6 +78,7 @@ impl Kernel {
             return;
         }
         let Op::Const(cst) = self.at(*load_idx) else {
+            println!("load_idx not const");
             return;
         };
         if cst.as_dim() != Some(0) {
@@ -85,6 +86,63 @@ impl Kernel {
         }
 
         println!("load_id={load_id}");
+
+        // After the loop is found, check add - check that one of the add operands is the loop and store the other in a variable
+        let add_id = self.next_op(load_id);
+        let Op::Binary { bop: BOp::Add, x: add_x, y: add_y, .. } = self.at(add_id) else {
+            return;
+        };
+        let step_mul = if *add_x == load_id { *add_y } else { *add_x };
+        if *add_x != load_id && *add_y != load_id {
+            return;
+        }
+
+        println!("add_id={add_id}");
+
+        // Check that the other is gidx - step_mul should be Mul(Cast(Cmpgt(...)))
+        let step_mul_op = self.at(step_mul);
+        let Op::Binary { bop: BOp::Mul, .. } = step_mul_op else {
+            return;
+        };
+
+        println!("step_mul={step_mul}");
+
+        // Check mul has Cast
+        let (mul_x, mul_y) = match step_mul_op {
+            Op::Binary { x, y, .. } => (*x, *y),
+            _ => return,
+        };
+
+        // Check that one operand is Cast
+        let cmp_id = if let Op::Cast { .. } = self.at(mul_x) { mul_x } else { mul_y };
+        let Op::Cast { x: cmp_input, .. } = self.at(cmp_id) else {
+            return;
+        };
+
+        println!("cmp_id={cmp_id}");
+
+        // Check: compare(add(loop_var, gidx), threshold)
+        let cmp_compare_id = *cmp_input;
+        let Op::Binary { bop: BOp::Cmpgt, x: cmp_x, y: cmp_y, .. } = self.at(cmp_compare_id) else {
+            return;
+        };
+
+        // Check: one operand of compare is Add(loop_var, gidx)
+        let add_compare_id = *cmp_x;
+        let Op::Binary { bop: BOp::Add, .. } = self.at(add_compare_id) else {
+            return;
+        };
+
+        // Check the right operand is constant (threshold)
+        let Op::Const(cst) = self.at(*cmp_y) else {
+            return;
+        };
+
+        // Check: cast of the comparison op result to the dtype of the accumulator
+        // This is the Cast we already captured as cmp_id - verify it casts from the comparison result
+
+        // At this point, we've found: store1 -> loop -> load -> add -> step_mul(Mul) -> cast -> cmp(Cmpgt) -> add(loop+idx)
+        // The other operand of add in compare is gidx
 
         // Find Add after Load
         let add_id = self.next_op(load_id);
