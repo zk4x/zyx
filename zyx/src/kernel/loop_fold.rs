@@ -131,10 +131,7 @@ impl Kernel {
 
         // Check: add(loop_var, gidx)
         let add_compare_id = *cmp_x;
-        if !matches!(self.at(add_compare_id), Op::Binary { bop: BOp::Add, .. }) {
-            return;
-        }
-        let Op::Binary { x: add_cx, y: add_cy, .. } = self.at(add_compare_id) else {
+        let Op::Binary { bop: BOp::Add, x: add_cx, y: add_cy, .. } = self.at(add_compare_id) else {
             return;
         };
 
