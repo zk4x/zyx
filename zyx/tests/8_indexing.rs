@@ -7,7 +7,6 @@ use zyx::{Tensor, ZyxError};
 fn b_arange() -> Result<(), ZyxError> {
     let x = Tensor::arange(0i64, 10000, 1i64)?;
     let result: Vec<i64> = x.try_into()?;
-    eprintln!("Result: {:?}", &result[..5.min(result.len())]);
     for (i, &val) in result.iter().enumerate() {
         assert_eq!(val, i as i64, "Mismatch at index {i}");
     }

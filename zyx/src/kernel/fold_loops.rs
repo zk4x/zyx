@@ -152,7 +152,7 @@ impl Kernel {
     fn replace_loop_with_closed_form(
         &mut self,
         loop_id: OpId,
-        init_value: OpId,
+        _init_value: OpId,
         accumulated_value_id: OpId,
         acc_dtype: DType,
         after_loop_load_id: OpId,
@@ -167,32 +167,31 @@ impl Kernel {
             return false;
         }
 
-        let start = if let Op::Const(cst) = self.at(init_value) {
-            cst.as_dim().unwrap_or(0)
-        } else {
-            0
-        };
-        eprintln!(
-            "DETECTED: loop_len={}, c={}, mul_const={}, start={}",
-            loop_len, c, mul_const, start
-        );
+        if !self.is_condition_based_accumulation(accumulated_value_id) {
+            return false;
+        }
 
         let mut gidx_id = OpId::NULL;
+        let mut gidx_count = 0;
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let &Op::Index { scope: Scope::Global, .. } = self.at(op_id) {
-                gidx_id = op_id;
-                break;
+                gidx_count += 1;
+                if gidx_id.is_null() {
+                    gidx_id = op_id;
+                }
             }
             op_id = self.next_op(op_id);
         }
         if gidx_id.is_null() {
             return false;
         }
+        if gidx_count != 1 {
+            return false;
+        }
 
         let step = mul_const;
         let offset = loop_len.saturating_sub(c).saturating_sub(1);
-        eprintln!("FORMULA: loop_len={}, c={}, step={}, offset={}", loop_len, c, step, offset);
         let offset_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(offset)));
         let sum_id = self.insert_before(after_loop_load_id, Op::Binary { x: gidx_id, y: offset_id, bop: BOp::Add });
         let step_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(step)));
@@ -202,25 +201,6 @@ impl Kernel {
 
         self.verify();
         true
-    }
-
-    fn build_arange_formula_step1(&mut self, loop_len: u64, c: u64, gidx_id: OpId, insert_before: OpId) -> OpId {
-        let offset = loop_len.saturating_sub(c).saturating_sub(1);
-        eprintln!("FORMULA step1: loop_len={}, c={}, offset={}", loop_len, c, offset);
-        let offset_id = self.insert_before(insert_before, Op::Const(Constant::idx(offset)));
-        self.insert_before(insert_before, Op::Binary { x: gidx_id, y: offset_id, bop: BOp::Add })
-    }
-
-    fn build_arange_formula_step_k(&mut self, loop_len: u64, c: u64, step: u64, gidx_id: OpId, insert_before: OpId) -> OpId {
-        let offset = loop_len.saturating_sub(c).saturating_sub(2);
-        eprintln!(
-            "FORMULA step_k: loop_len={}, c={}, step={}, offset={}",
-            loop_len, c, step, offset
-        );
-        let offset_id = self.insert_before(insert_before, Op::Const(Constant::idx(offset)));
-        let sum_id = self.insert_before(insert_before, Op::Binary { x: gidx_id, y: offset_id, bop: BOp::Add });
-        let step_id = self.insert_before(insert_before, Op::Const(Constant::idx(step)));
-        self.insert_before(insert_before, Op::Binary { x: sum_id, y: step_id, bop: BOp::Mul })
     }
 
     fn trace_to_linear_comparison(&self, accumulated_value_id: OpId) -> Option<(u64, u64, u64, u64)> {
@@ -262,5 +242,32 @@ impl Kernel {
             }
         }
         None
+    }
+
+    fn is_condition_based_accumulation(&self, op_id: OpId) -> bool {
+        match self.at(op_id) {
+            Op::Cast { x, .. } => self.is_condition_based_accumulation(*x),
+            Op::Binary { x: _, y: _, bop: BOp::Mul } => {
+                let mut current = op_id;
+                loop {
+                    match self.at(current) {
+                        Op::Cast { x, .. } => current = *x,
+                        Op::Binary { x: mul_x, y: mul_y, bop: BOp::Mul } => {
+                            if let Op::Const(_) = self.at(*mul_x) {
+                                current = *mul_y;
+                            } else if let Op::Const(_) = self.at(*mul_y) {
+                                current = *mul_x;
+                            } else {
+                                return false;
+                            }
+                        }
+                        Op::Binary { bop: BOp::Cmpgt, .. } => return true,
+                        _ => return false,
+                    }
+                }
+            }
+            Op::Binary { bop: BOp::Cmpgt, .. } => true,
+            _ => false,
+        }
     }
 }
