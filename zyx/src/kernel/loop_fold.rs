@@ -103,10 +103,7 @@ impl Kernel {
         println!("computed_val={computed_val}");
 
         // Check: computed_val should be Mul(Cast(Cmpgt(...)), step)
-        if !matches!(self.at(computed_val), Op::Binary { bop: BOp::Mul, .. }) {
-            return;
-        }
-        let Op::Binary { x: mul_x, y: mul_y, .. } = self.at(computed_val) else {
+        let Op::Binary { bop: BOp::Mul, x: mul_x, y: mul_y, .. } = self.at(computed_val) else {
             return;
         };
 
