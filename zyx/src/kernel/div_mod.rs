@@ -66,18 +66,40 @@ impl Kernel {
         }
 
         if let Some((a, c, b)) = mul_add(self, x) {
-            // Pattern 2: (a * c + b) % c -> b
             if c == divisor {
                 self.remap(op_id, b);
                 return;
             }
-            // Pattern 2b: when c % divisor == 1, (a*c + b) % d = (a + b) % d
-            // Only apply when both a and b are simple: Const or Index
             if c % divisor == 1 {
                 let divisor_const = self.insert_before(op_id, Op::Const(Constant::idx(divisor)));
                 let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
                 self.ops[op_id].op = Op::Binary { x: a_plus_b, y: divisor_const, bop: BOp::Mod };
                 return;
+            }
+            if let Some(&(min_a, max_a)) = bounds.get(&a) {
+                let max_a_c = max_a.saturating_mul(c);
+                if max_a_c < divisor {
+                    if let Some(&(min_b, max_b)) = bounds.get(&b) {
+                        if min_b == 0 && max_b < divisor {
+                            let divisor_const = self.insert_before(op_id, Op::Const(Constant::idx(divisor)));
+                            self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
+                            return;
+                        }
+                    }
+                }
+            }
+            if divisor > c && divisor % c == 0 {
+                let k = divisor / c;
+                if let Some(&(min_a, max_a)) = bounds.get(&a) {
+                    if max_a < k {
+                        if let Some(&(min_b, max_b)) = bounds.get(&b) {
+                            if min_b == 0 && max_b < divisor {
+                                self.remap(op_id, b);
+                                return;
+                            }
+                        }
+                    }
+                }
             }
         }
 
