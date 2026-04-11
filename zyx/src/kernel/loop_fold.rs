@@ -26,48 +26,30 @@ impl Kernel {
 
     fn try_fold_conditional(&mut self, def_id: OpId) {
         // Find first store to def_id (initial value)
-        let mut store1_id = self.next_op(def_id);
-        while !store1_id.is_null() {
-            if let Op::Store { dst, index, .. } = self.at(store1_id) {
-                if *dst == def_id {
-                    if let Op::Const(cst) = self.at(*index) {
-                        if let Some(0) = cst.as_dim() {
-                            break;
-                        }
-                    }
-                }
-            }
-            store1_id = self.next_op(store1_id);
+        let store1_id = self.next_op(def_id);
+        let Op::Store { dst, index, .. } = self.at(store1_id) else {
+            return;
+        };
+        if *dst != def_id {
+            return;
         }
-        if store1_id.is_null() {
+        let Op::Const(cst) = self.at(*index) else {
+            return;
+        };
+        if cst.as_dim() != Some(0) {
             return;
         }
 
         println!("store1_id={store1_id}");
 
         // Find loop
-        let mut loop_id = self.next_op(store1_id);
-        while !loop_id.is_null() {
-            if matches!(self.at(loop_id), Op::Loop { .. }) {
-                break;
-            }
-            match self.at(loop_id) {
-                Op::Load { src, .. } if *src == def_id => return,
-                Op::Store { dst, .. } if *dst == def_id => return,
-                _ => {}
-            }
-            loop_id = self.next_op(loop_id);
-        }
-        if !matches!(self.at(loop_id), Op::Loop { .. }) {
+        let loop_id = self.next_op(store1_id);
+        let Op::Loop { len, .. } = self.at(loop_id) else {
             return;
-        }
+        };
+        let loop_len = *len;
 
         println!("loop_id={loop_id}");
-
-        let loop_len = match self.at(loop_id) {
-            Op::Loop { len, .. } => *len,
-            _ => return,
-        };
 
         // Find Load of accumulator (at index 0) in loop body
         let mut search_id = self.next_op(loop_id);
