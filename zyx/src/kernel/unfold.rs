@@ -492,16 +492,17 @@ impl Kernel {
         let mut params = vec![x];
         let mut reduce_params = Vec::new();
         while let Some(param) = params.pop() {
-            if let Op::Reduce { .. } = self.at(param) {
-                reduce_params.push(param);
+            if let &Op::Reduce { x, .. } = self.at(param) {
+                reduce_params.push(x);
                 break;
                 //return true;
             } else {
                 params.extend(self.ops[param].op.parameters());
             }
         }
+        // If there is a load (non constant reduce) or multiple reduces, return true
         while let Some(param) = reduce_params.pop() {
-            if let Op::Load { .. } = self.at(param) {
+            if matches!(self.at(param), Op::Load { .. } | Op::Reduce { .. }) {
                 return true;
             } else {
                 params.extend(self.ops[param].op.parameters());
