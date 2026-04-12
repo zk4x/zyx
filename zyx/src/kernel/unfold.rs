@@ -490,23 +490,23 @@ impl Kernel {
 
     pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
         let mut params = vec![x];
-        //let mut reduce_params = Vec::new();
+        let mut reduce_params = Vec::new();
         while let Some(param) = params.pop() {
             if let Op::Reduce { .. } = self.at(param) {
-                //reduce_params.push(param);
-                //break;
-                return true;
+                reduce_params.push(param);
+                break;
+                //return true;
             } else {
                 params.extend(self.ops[param].op.parameters());
             }
         }
-        /*while let Some(param) = reduce_params.pop() {
+        while let Some(param) = reduce_params.pop() {
             if let Op::Load { .. } = self.at(param) {
                 return true;
             } else {
                 params.extend(self.ops[param].op.parameters());
             }
-        }*/
+        }
         false
     }
 }

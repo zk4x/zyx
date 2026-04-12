@@ -198,7 +198,7 @@ impl<'a> Kernelizer<'a> {
         // TODO instead of store add expand op that inserts loop in IR
         let (mut kid, mut op_id) = self.visited[&x];
 
-        if self.kernels[kid].contains_stores() | self.kernels[kid].is_reduce() {
+        if self.kernels[kid].contains_stores() | self.kernels[kid].is_preceded_by_reduce(op_id) {
             self.add_store(x)?;
             (kid, op_id) = self.create_load_kernel(x);
             if self.kernels[kid].outputs.len() > 1 {
