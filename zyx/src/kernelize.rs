@@ -129,7 +129,7 @@ impl<'a> Kernelizer<'a> {
             //self.kernels[kid].debug();
             //let split_reduce_dim = 32; // Can be tuned later, or hardware based, likely needs to be MUCH higher for streaming softmax
             //let reduce_dims_big = self.kernels[kid].cumulative_reduce_dim(op_id, 1) > split_reduce_dim;
-            let reduce_dims_big = self.kernels[kid].is_preceded_by_dyn_reduce(op_id);
+            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
                 //println!("Adding store for reduce with outputs");
                 self.add_store(x)?;
@@ -207,7 +207,7 @@ impl<'a> Kernelizer<'a> {
         }
 
         if self.kernels[kid].outputs.len() > 1 {
-            let reduce_dims_big = self.kernels[kid].is_preceded_by_dyn_reduce(op_id);
+            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);
@@ -310,7 +310,7 @@ impl<'a> Kernelizer<'a> {
             //println!("prev_reduce_dims={prev_reduce_dims}");
             //let is_duplicated_big_reduce = prev_reduce_dims > 32;
             //let is_big_reduce = reduce_dims_product * prev_reduce_dims > split_reduce_dim;
-            let reduce_dims_big = self.kernels[kid].is_preceded_by_dyn_reduce(op_id);
+            let reduce_dims_big = self.kernels[kid].is_preceded_by_reduce(op_id);
             if reduce_dims_big {
                 self.add_store(x)?;
                 (kid, op_id) = self.create_load_kernel(x);

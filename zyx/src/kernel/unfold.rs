@@ -122,10 +122,14 @@ impl Kernel {
     }
 
     pub fn unfold_reduces(&mut self) {
-        let mut reduce_op_ids: Vec<OpId> = self
-            .iter_unordered()
-            .filter_map(|(id, op)| if matches!(op, Op::Reduce { .. }) { Some(id) } else { None })
-            .collect();
+        let mut reduce_op_ids: Vec<OpId> = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Reduce { .. } = self.at(op_id) {
+                reduce_op_ids.push(op_id);
+            }
+            op_id = self.next_op(op_id);
+        }
 
         while let Some(reduce_op_id) = reduce_op_ids.pop() {
             let Op::Reduce { x, rop, n_axes } = self.ops[reduce_op_id].op else { unreachable!() };
@@ -484,24 +488,25 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn is_preceded_by_dyn_reduce(&self, x: OpId) -> bool {
+    pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
         let mut params = vec![x];
-        let mut reduce_params = Vec::new();
+        //let mut reduce_params = Vec::new();
         while let Some(param) = params.pop() {
             if let Op::Reduce { .. } = self.at(param) {
-                reduce_params.push(param);
-                break;
-            } else {
-                params.extend(self.ops[param].op.parameters());
-            }
-        }
-        while let Some(param) = reduce_params.pop() {
-            if let Op::Load { .. } = self.at(param) {
+                //reduce_params.push(param);
+                //break;
                 return true;
             } else {
                 params.extend(self.ops[param].op.parameters());
             }
         }
+        /*while let Some(param) = reduce_params.pop() {
+            if let Op::Load { .. } = self.at(param) {
+                return true;
+            } else {
+                params.extend(self.ops[param].op.parameters());
+            }
+        }*/
         false
     }
 }
