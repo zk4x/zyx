@@ -489,6 +489,9 @@ impl Kernel {
     }
 
     pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
+        if self.ops.values().filter(|node| matches!(node.op, Op::Reduce { .. })).count() > 1 {
+            return true;
+        }
         let mut params = vec![x];
         let mut reduce_params = Vec::new();
         while let Some(param) = params.pop() {
@@ -502,7 +505,7 @@ impl Kernel {
         }
         // If there is a load (non constant reduce) or multiple reduces, return true
         while let Some(param) = reduce_params.pop() {
-            if matches!(self.at(param), Op::Load { .. } | Op::Reduce { .. }) {
+            if matches!(self.at(param), Op::LoadView(_) | Op::Reduce { .. }) {
                 return true;
             } else {
                 params.extend(self.ops[param].op.parameters());
