@@ -162,7 +162,7 @@ impl Kernel {
     ) -> bool {
         let &Op::Loop { len: loop_len } = self.at(loop_id) else { return false };
 
-        let Some((a, b, c, mul_const, gidx_id)) = self.trace_to_linear_comparison(accumulated_value_id) else {
+        let Some((a, b, c, mul_const, gidx_id)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id) else {
             return false;
         };
 
@@ -187,13 +187,13 @@ impl Kernel {
         true
     }
 
-    fn trace_to_linear_comparison(&self, accumulated_value_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
+    fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
         if let Op::Index { scope: Scope::Global, .. } = self.at(accumulated_value_id) {
             return None;
         }
 
         if let Op::Cast { x, .. } = self.at(accumulated_value_id) {
-            return self.trace_cmpgt(*x, 1);
+            return self.trace_cmpgt(*x, 1, loop_id);
         }
 
         if let Op::Binary { x: mul_x, y: mul_y, bop: BOp::Mul } = self.at(accumulated_value_id) {
@@ -206,33 +206,33 @@ impl Kernel {
             };
             let next_op = if let Op::Const(_) = self.at(*mul_x) { *mul_y } else { *mul_x };
             if let Op::Cast { x, .. } = self.at(next_op) {
-                return self.trace_cmpgt(*x, mul_const);
+                return self.trace_cmpgt(*x, mul_const, loop_id);
             }
         }
 
         if let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(accumulated_value_id) {
             if let Op::Cast { x, .. } = self.at(*add_x) {
-                return self.trace_cmpgt(*x, 1);
+                return self.trace_cmpgt(*x, 1, loop_id);
             }
             if let Op::Cast { x, .. } = self.at(*add_y) {
-                return self.trace_cmpgt(*x, 1);
+                return self.trace_cmpgt(*x, 1, loop_id);
             }
             let next_op = *add_x;
             if let Op::Cast { x, .. } = self.at(next_op) {
                 let mul_const = if let Op::Cast { .. } = self.at(*add_y) { 2 } else { 1 };
-                return self.trace_cmpgt(*x, mul_const);
+                return self.trace_cmpgt(*x, mul_const, loop_id);
             }
             let next_op = *add_y;
             if let Op::Cast { x, .. } = self.at(next_op) {
                 let mul_const = if let Op::Cast { .. } = self.at(*add_x) { 2 } else { 1 };
-                return self.trace_cmpgt(*x, mul_const);
+                return self.trace_cmpgt(*x, mul_const, loop_id);
             }
         }
 
         None
     }
 
-    fn trace_cmpgt(&self, op_id: OpId, mul_const: u64) -> Option<(u64, u64, u64, u64, OpId)> {
+    fn trace_cmpgt(&self, op_id: OpId, mul_const: u64, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
         if let Op::Binary { x, y, bop: BOp::Cmpgt } = self.at(op_id) {
             let c = if let Op::Const(threshold) = self.at(*y) {
                 threshold.as_dim().unwrap_or(0)
@@ -241,10 +241,10 @@ impl Kernel {
             };
 
             if let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(*x) {
-                let gidx = if let Op::Index { .. } = self.at(*add_x) {
-                    *add_x
-                } else if let Op::Index { .. } = self.at(*add_y) {
+                let gidx = if *add_x == loop_id {
                     *add_y
+                } else if *add_y == loop_id {
+                    *add_x
                 } else {
                     return None;
                 };
