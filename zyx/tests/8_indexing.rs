@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{Tensor, ZyxError};
+use zyx::{DType, Tensor, ZyxError};
 
 #[test]
 fn b_arange() -> Result<(), ZyxError> {
@@ -510,6 +510,17 @@ fn index_select() -> Result<(), ZyxError> {
     let y = x.index_select(0, &row)?.index_select(1, &col)?;
     assert_eq!(y, [[6]]);
 
+    Ok(())
+}
+
+#[test]
+fn index_select_large() -> Result<(), ZyxError> {
+    let n = 10000;
+    let x = Tensor::zeros([n, 512], DType::F32);
+    let indices = Tensor::rand([128], DType::I32)? * n as f32;
+    let indices = indices.cast(DType::I32);
+    let y = x.index_select(0, &indices)?;
+    Tensor::realize([&y])?;
     Ok(())
 }
 
