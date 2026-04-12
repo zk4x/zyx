@@ -211,14 +211,20 @@ impl Kernel {
         }
 
         if let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(accumulated_value_id) {
+            if let Op::Cast { x, .. } = self.at(*add_x) {
+                return self.trace_cmpgt(*x, 1);
+            }
+            if let Op::Cast { x, .. } = self.at(*add_y) {
+                return self.trace_cmpgt(*x, 1);
+            }
             let next_op = *add_x;
             if let Op::Cast { x, .. } = self.at(next_op) {
-                let mul_const = if let Op::Cast { x, .. } = self.at(*add_y) { 2 } else { 1 };
+                let mul_const = if let Op::Cast { .. } = self.at(*add_y) { 2 } else { 1 };
                 return self.trace_cmpgt(*x, mul_const);
             }
             let next_op = *add_y;
             if let Op::Cast { x, .. } = self.at(next_op) {
-                let mul_const = if let Op::Cast { x, .. } = self.at(*add_x) { 2 } else { 1 };
+                let mul_const = if let Op::Cast { .. } = self.at(*add_x) { 2 } else { 1 };
                 return self.trace_cmpgt(*x, mul_const);
             }
         }
