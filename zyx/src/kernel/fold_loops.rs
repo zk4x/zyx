@@ -20,12 +20,9 @@ impl Kernel {
     }
 
     fn fold_arange_loop(&mut self, acc_id: OpId) -> bool {
-        let &Op::Define { dtype: acc_dtype, scope, ro, len: 1 } = self.at(acc_id) else {
+        let &Op::Define { dtype: acc_dtype, scope: Scope::Register, ro: false, len: 1 } = self.at(acc_id) else {
             return false;
         };
-        if scope != Scope::Register || ro {
-            return false;
-        }
 
         let mut store_id = self.next_op(acc_id);
         while !store_id.is_null() {
@@ -206,19 +203,6 @@ impl Kernel {
             };
             let next_op = if let Op::Const(_) = self.at(*mul_x) { *mul_y } else { *mul_x };
             if let Op::Cast { x, .. } = self.at(next_op) {
-                return self.trace_cmpgt(*x, mul_const);
-            }
-        }
-
-        if let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(accumulated_value_id) {
-            let next_op = *add_x;
-            if let Op::Cast { x, .. } = self.at(next_op) {
-                let mul_const = if let Op::Cast { x, .. } = self.at(*add_y) { 2 } else { 1 };
-                return self.trace_cmpgt(*x, mul_const);
-            }
-            let next_op = *add_y;
-            if let Op::Cast { x, .. } = self.at(next_op) {
-                let mul_const = if let Op::Cast { x, .. } = self.at(*add_x) { 2 } else { 1 };
                 return self.trace_cmpgt(*x, mul_const);
             }
         }
