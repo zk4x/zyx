@@ -196,6 +196,9 @@ pub trait Float: Scalar {
     /// Square root of this scalar.
     #[must_use]
     fn sqrt(self) -> Self;
+    /// Truncate towards zero
+    #[must_use]
+    fn trunc(self) -> Self;
 }
 
 impl Scalar for bf16 {
@@ -411,6 +414,10 @@ impl Float for bf16 {
     }
 
     fn sqrt(self) -> Self {
+        todo!()
+    }
+
+    fn trunc(self) -> Self {
         todo!()
     }
 }
@@ -639,6 +646,10 @@ impl Float for f16 {
 
     fn floor(self) -> Self {
         f16::from_f32(self.to_f32().floor())
+    }
+
+    fn trunc(self) -> Self {
+        f16::from_f32(self.to_f32().trunc())
     }
 }
 
@@ -891,6 +902,10 @@ impl Float for f32 {
     fn reciprocal(self) -> Self {
         1.0 / self
     }
+
+    fn trunc(self) -> Self {
+        f32::trunc(self)
+    }
 }
 
 impl Scalar for f64 {
@@ -1110,6 +1125,10 @@ impl Float for f64 {
 
     fn sqrt(self) -> Self {
         f64::sqrt(self)
+    }
+
+    fn trunc(self) -> Self {
+        self.trunc()
     }
 }
 

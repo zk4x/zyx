@@ -372,6 +372,13 @@ impl Runtime {
                         self.release(temp);
                         insert_or_add_grad(self, &mut grads, x, grad);
                     }
+                    UOp::Trunc => {
+                        let dtype = self.dtype(x);
+                        let temp = self.graph.push(Node::Const { value: Constant::new(0).cast(dtype) });
+                        let grad = self.expand(temp, self.shape(x).into()).unwrap();
+                        self.release(temp);
+                        insert_or_add_grad(self, &mut grads, x, grad);
+                    }
                 },
                 Node::Reshape { x, .. } => {
                     let grad = self.reshape(grad, self.shape(x).into());

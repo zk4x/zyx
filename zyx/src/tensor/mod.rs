@@ -865,6 +865,18 @@ impl Tensor {
         x
     }
 
+    /// Returns a new tensor with each element truncated toward zero.
+    /// For positive numbers, this removes the fractional part (floor).
+    /// For negative numbers, this also removes the fractional part (ceiling).
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn trunc(&self) -> Tensor {
+        let x = self.float_cast().unwrap();
+        let x = Tensor { id: RT.lock().unary(x.id, UOp::Trunc) };
+        x
+    }
+
     /// Computes the exponential of each element in the input tensor using base e.
     ///
     /// This function returns a new tensor that is computed by taking the exponential of each

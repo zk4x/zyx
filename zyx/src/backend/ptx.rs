@@ -1203,6 +1203,7 @@ impl Compiler {
             UOp::Sin => "sin.approx",
             UOp::Cos => "cos.approx",
             UOp::Floor => "floor.approx",
+            UOp::Trunc => "trunc.approx",
         }
     }
 

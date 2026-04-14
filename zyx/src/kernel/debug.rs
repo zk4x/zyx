@@ -131,6 +131,7 @@ impl Kernel {
                         UOp::Sin => ("sin(", ")"),
                         UOp::Cos => ("cos(", ")"),
                         UOp::Floor => ("floor(", ")"),
+                        UOp::Trunc => ("trunc(", ")"),
                     };
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
@@ -392,6 +393,7 @@ impl Kernel {
                         UOp::Sin => ("sin(", ")"),
                         UOp::Cos => ("cos(", ")"),
                         UOp::Floor => ("floor(", ")"),
+                        UOp::Trunc => ("trunc(", ")"),
                     };
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     if let Some((lb, ub)) = bounds.get(&op_id) {

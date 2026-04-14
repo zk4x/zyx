@@ -206,3 +206,50 @@ fn sftmx3() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn trunc_1() -> Result<(), ZyxError> {
+    use zyx::Tensor;
+    
+    // Test positive numbers
+    let x = Tensor::from([1.7f32, 2.3, 3.9, 4.1]);
+    let y = x.trunc();
+    let y_host: Vec<f32> = y.try_into()?;
+    
+    let expected = [1.0f32, 2.0, 3.0, 4.0];
+    
+    for (i, (got, exp)) in y_host.iter().zip(expected.iter()).enumerate() {
+        assert!(got.is_equal(*exp), "Mismatch at index {i}: got {got}, expected {exp}");
+    }
+    
+    // Test negative numbers
+    let x = Tensor::from([-1.7f32, -2.3, -3.9, -4.1]);
+    let y = x.trunc();
+    let y_host: Vec<f32> = y.try_into()?;
+    
+    let expected = [-1.0f32, -2.0, -3.0, -4.0];
+    
+    for (i, (got, exp)) in y_host.iter().zip(expected.iter()).enumerate() {
+        assert!(got.is_equal(*exp), "Mismatch at index {i}: got {got}, expected {exp}");
+    }
+    
+    // Test integers (should remain unchanged)
+    let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
+    let y = x.trunc();
+    let x_host: Vec<f32> = x.try_into()?;
+    let y_host: Vec<f32> = y.try_into()?;
+    assert_eq!(x_host, y_host);
+    
+    // Test mixed positive and negative
+    let x = Tensor::from([1.7f32, -2.3, 3.9, -4.1]);
+    let y = x.trunc();
+    let y_host: Vec<f32> = y.try_into()?;
+    
+    let expected = [1.0f32, -2.0, 3.0, -4.0];
+    
+    for (i, (got, exp)) in y_host.iter().zip(expected.iter()).enumerate() {
+        assert!(got.is_equal(*exp), "Mismatch at index {i}: got {got}, expected {exp}");
+    }
+    
+    Ok(())
+}

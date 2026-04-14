@@ -874,6 +874,7 @@ impl OpenCLDevice {
                         UOp::Sin => _ = writeln!(source, "{indent}r{reg} = sin({x});"),
                         UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
                         UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
+                        UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
                     }
                 }
                 Op::Vectorize { ops } => {
