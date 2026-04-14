@@ -190,6 +190,42 @@ fn huber_loss_4() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn round_1() -> Result<(), ZyxError> {
+    // Test basic rounding functionality
+    let t = Tensor::from([1.2f32, 2.7, 3.5, -1.5, -2.3]);
+    let rounded = t.round();
+    
+    // Should round to nearest integers
+    assert_eq!(rounded, [1.0f32, 3.0, 4.0, -2.0, -2.0]);
+    
+    Ok(())
+}
+
+#[test]
+fn round_2() -> Result<(), ZyxError> {
+    // Test halfway cases (simple rounding away from zero)
+    let t = Tensor::from([2.5f32, 3.5, 4.5, 5.5]);
+    let rounded = t.round();
+    
+    // Simple rounding rounds away from zero: 3, 4, 5, 6
+    assert_eq!(rounded, [3.0f32, 4.0, 5.0, 6.0]);
+    
+    Ok(())
+}
+
+#[test]
+fn round_3() -> Result<(), ZyxError> {
+    // Test negative numbers
+    let t = Tensor::from([-1.2f32, -2.7, -3.5, -4.6]);
+    let rounded = t.round();
+    
+    // Should round to: -1.0, -3.0, -4.0, -5.0
+    assert_eq!(rounded, [-1.0f32, -3.0, -4.0, -5.0]);
+    
+    Ok(())
+}
+
+#[test]
 fn tanh_1() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).tanh().try_into()?;

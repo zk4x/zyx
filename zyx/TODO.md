@@ -57,7 +57,7 @@
   - [x] trunc
   - [ ] frac
   - [ ] ceil
-  - [ ] round
+  - [x] round
   - [ ] nll loss
   - [x] bce loss
   - [x] huber loss
