@@ -3333,7 +3333,7 @@ impl Tensor {
         let dtype = self.dtype();
         if !dtype.is_float() {
             if RT.lock().implicit_casts {
-                return Ok(match dtype.byte_size() {
+                return Ok(match (dtype.bit_size() / 8) as usize {
                     2 => self.cast(DType::F16),
                     4 => self.cast(DType::F32),
                     8 => self.cast(DType::F64),
@@ -3762,7 +3762,7 @@ impl<T: Scalar> From<T> for Tensor {
 
 impl<T: Scalar> TempData for T {
     fn bytes(&self) -> Dim {
-        T::byte_size() as Dim
+        (T::bit_size() / 8) as Dim
     }
 
     fn dtype(&self) -> DType {
@@ -3782,7 +3782,7 @@ impl<T: Scalar> From<Vec<T>> for Tensor {
 
 impl<T: Scalar> TempData for Vec<T> {
     fn bytes(&self) -> Dim {
-        (self.len() * T::byte_size()) as Dim
+        (self.len() * (T::bit_size() / 8) as usize) as Dim
     }
 
     fn dtype(&self) -> DType {
@@ -3807,7 +3807,7 @@ impl<T: Scalar> From<Vec<Vec<T>>> for Tensor {
 
 impl<T: Scalar> TempData for Vec<Vec<T>> {
     fn bytes(&self) -> Dim {
-        (self.len() * self[0].len() * T::byte_size()) as Dim
+        (self.len() * self[0].len() * (T::bit_size() / 8) as usize) as Dim
     }
 
     fn dtype(&self) -> DType {
@@ -3832,7 +3832,7 @@ impl<T: Scalar> From<Vec<Vec<Vec<T>>>> for Tensor {
 
 impl<T: Scalar> TempData for Vec<Vec<Vec<T>>> {
     fn bytes(&self) -> Dim {
-        (self.len() * self[0].len() * self[0][0].len() * T::byte_size()) as Dim
+        (self.len() * self[0].len() * self[0][0].len() * (T::bit_size() / 8) as usize) as Dim
     }
 
     fn dtype(&self) -> DType {
@@ -3858,7 +3858,7 @@ impl<T: Scalar> From<&'static [T]> for Tensor {
 
 impl<T: Scalar> TempData for &'static [T] {
     fn bytes(&self) -> Dim {
-        (self.len() * T::byte_size()) as Dim
+        (self.len() * (T::bit_size() / 8) as usize) as Dim
     }
 
     fn dtype(&self) -> DType {
@@ -3878,7 +3878,7 @@ impl<T: Scalar, const D0: usize> From<[T; D0]> for Tensor {
 
 impl<T: Scalar, const D0: usize> TempData for [T; D0] {
     fn bytes(&self) -> Dim {
-        (D0 * T::byte_size()) as Dim
+        (D0 * (T::bit_size() / 8) as usize) as Dim
     }
 
     fn dtype(&self) -> DType {
@@ -3899,7 +3899,7 @@ impl<T: Scalar, const D0: usize, const D1: usize> From<[[T; D1]; D0]> for Tensor
 
 impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
     fn bytes(&self) -> Dim {
-        (D0 * D1 * T::byte_size()) as Dim
+        (D0 * D1 * (T::bit_size() / 8) as usize) as Dim
     }
 
     fn dtype(&self) -> DType {
@@ -3920,7 +3920,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> From<[[[T; D2
 
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData for [[[T; D2]; D1]; D0] {
     fn bytes(&self) -> Dim {
-        (D0 * D1 * D2 * T::byte_size()) as Dim
+        (D0 * D1 * D2 * (T::bit_size() / 8) as usize) as Dim
     }
 
     fn dtype(&self) -> DType {
@@ -3951,7 +3951,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
 
 impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usize> TempData for [[[[T; D3]; D2]; D1]; D0] {
     fn bytes(&self) -> Dim {
-        (D0 * D1 * D2 * D3 * T::byte_size()) as Dim
+        (D0 * D1 * D2 * D3 * (T::bit_size() / 8) as usize) as Dim
     }
 
     fn dtype(&self) -> DType {

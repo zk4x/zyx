@@ -52,6 +52,11 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// To native endian bytes
     #[must_use]
     fn to_ne_bytes(&self) -> &[u8];
+    /// Get size in bits
+    #[must_use]
+    fn bit_size() -> u8 {
+        Self::dtype().bit_size()
+    }
     /// Get dtype of Self
     #[must_use]
     fn dtype() -> DType;
@@ -62,8 +67,7 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     #[must_use]
     fn one() -> Self;
     /// Bute size of Self
-    #[must_use]
-    fn byte_size() -> usize;
+
     /// Absolute value of self
     #[must_use]
     fn abs(self) -> Self;
@@ -266,10 +270,6 @@ impl Scalar for bf16 {
 
     fn one() -> Self {
         bf16::ONE
-    }
-
-    fn byte_size() -> usize {
-        2
     }
 
     fn abs(self) -> Self {
@@ -497,10 +497,6 @@ impl Scalar for f16 {
         f16::ONE
     }
 
-    fn byte_size() -> usize {
-        2
-    }
-
     fn abs(self) -> Self {
         todo!()
     }
@@ -723,10 +719,6 @@ impl Scalar for f32 {
 
     fn one() -> Self {
         1.
-    }
-
-    fn byte_size() -> usize {
-        4
     }
 
     fn abs(self) -> Self {
@@ -977,10 +969,6 @@ impl Scalar for f64 {
         1.
     }
 
-    fn byte_size() -> usize {
-        8
-    }
-
     fn abs(self) -> Self {
         self.abs()
     }
@@ -1205,10 +1193,6 @@ impl Scalar for i8 {
         1
     }
 
-    fn byte_size() -> usize {
-        1
-    }
-
     fn abs(self) -> Self {
         self.abs()
     }
@@ -1408,10 +1392,6 @@ impl Scalar for i16 {
         1
     }
 
-    fn byte_size() -> usize {
-        2
-    }
-
     fn abs(self) -> Self {
         todo!()
     }
@@ -1607,10 +1587,6 @@ impl Scalar for i32 {
         1
     }
 
-    fn byte_size() -> usize {
-        4
-    }
-
     fn abs(self) -> Self {
         todo!()
     }
@@ -1802,10 +1778,6 @@ impl Scalar for i64 {
 
     fn one() -> Self {
         1
-    }
-
-    fn byte_size() -> usize {
-        8
     }
 
     fn abs(self) -> Self {
@@ -2001,10 +1973,6 @@ impl Scalar for u8 {
         1
     }
 
-    fn byte_size() -> usize {
-        1
-    }
-
     fn abs(self) -> Self {
         todo!()
     }
@@ -2197,10 +2165,6 @@ impl Scalar for u16 {
 
     fn one() -> Self {
         1
-    }
-
-    fn byte_size() -> usize {
-        2
     }
 
     fn abs(self) -> Self {
@@ -2415,10 +2379,6 @@ impl Scalar for u32 {
         1
     }
 
-    fn byte_size() -> usize {
-        4
-    }
-
     fn abs(self) -> Self {
         todo!()
     }
@@ -2629,10 +2589,6 @@ impl Scalar for u64 {
         1
     }
 
-    fn byte_size() -> usize {
-        8
-    }
-
     fn abs(self) -> Self {
         todo!()
     }
@@ -2820,10 +2776,6 @@ impl Scalar for bool {
 
     fn one() -> Self {
         true
-    }
-
-    fn byte_size() -> usize {
-        1
     }
 
     fn abs(self) -> Self {

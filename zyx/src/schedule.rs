@@ -31,7 +31,7 @@ pub fn schedule(
 > {
     let required_stores_memory: Dim = stores
         .iter()
-        .map(|&tid| graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim)
+        .map(|&tid| graph.shape(tid).iter().product::<Dim>() * (graph.dtype(tid).bit_size() / 8) as Dim)
         .sum::<Dim>();
     let mut dev_ids: Vec<DeviceId> = devices.ids().collect();
     dev_ids.sort_unstable_by_key(|&dev_id| devices[dev_id].free_compute());
@@ -46,7 +46,7 @@ pub fn schedule(
                 if buffer_map.get(tid).map_or(false, |b| b.pool == pool_id) {
                     0
                 } else {
-                    graph.shape(*tid).iter().product::<Dim>() * graph.dtype(*tid).byte_size() as Dim
+                    graph.shape(*tid).iter().product::<Dim>() * (graph.dtype(*tid).bit_size() / 8) as Dim
                 }
             })
             .sum::<Dim>();
@@ -72,7 +72,7 @@ pub fn schedule(
             };
             let old_pool_id = buf_id.pool;
             let src = buf_id.buffer;
-            let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
+            let bytes = graph.shape(tid).iter().product::<Dim>() * (graph.dtype(tid).bit_size() / 8) as Dim;
             let mut byte_slice = vec![0u8; bytes as usize];
 
             let mut ev_wait = Vec::new();
@@ -99,7 +99,7 @@ pub fn schedule(
     }
     let mut output_buffers = BTreeSet::new();
     for &tid in stores {
-        let bytes = graph.shape(tid).iter().product::<Dim>() * graph.dtype(tid).byte_size() as Dim;
+        let bytes = graph.shape(tid).iter().product::<Dim>() * (graph.dtype(tid).bit_size() / 8) as Dim;
         let (buffer_id, event) = pools[pool_id].pool.allocate(bytes)?;
         buffer_map.insert(tid, BufferId { pool: pool_id, buffer: buffer_id });
         event_wait_list.push(event);

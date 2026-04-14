@@ -121,17 +121,7 @@ impl DType {
         order[i1.max(i2)]
     }
 
-    // TODO remove this in favor of bit_size, since we need to support quantized dtypes
-    /// Get the size of this dtype in bytes
-    #[must_use]
-    pub const fn byte_size(&self) -> u8 {
-        match self {
-            Self::U8 | Self::I8 | Self::Bool => 1,
-            Self::BF16 | Self::F16 | Self::I16 | Self::U16 => 2,
-            Self::F32 | Self::I32 | Self::U32 => 4,
-            Self::F64 | Self::I64 | Self::U64 => 8,
-        }
-    }
+
 
     /// Get the size of this dtype in bits
     #[must_use]
@@ -556,7 +546,6 @@ impl Constant {
         }
     }
 
-    // TODO binary constant evaluation
     // Assumes both constants are the same dtype
     pub(super) fn binary(x: Constant, y: Constant, bop: BOp) -> Constant {
         fn binary_func<T: Scalar>(x: T, y: T, bop: BOp) -> Constant {

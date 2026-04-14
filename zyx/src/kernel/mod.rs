@@ -537,12 +537,12 @@ impl Kernel {
                 Op::LoadView(x) => {
                     let (dtype, view) = x.as_ref();
                     let shape = view.shape();
-                    let mem_read = view.original_numel() as u64 * dtype.byte_size() as u64;
+                    let mem_read = view.original_numel() as u64 * (dtype.bit_size() / 8) as u64;
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
                 Op::StoreView { src, dtype } => {
                     let Info { shape, .. } = stack[src].clone();
-                    let mem_write = shape.iter().product::<Dim>() as u64 * dtype.byte_size() as u64;
+                    let mem_write = shape.iter().product::<Dim>() as u64 * (dtype.bit_size() / 8) as u64;
                     Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
                 Op::Move { mop, .. } => match mop.as_ref() {
@@ -621,7 +621,7 @@ impl Kernel {
                     let Op::Define { scope, dtype, len, .. } = self.at(*src) else {
                         unreachable!()
                     };
-                    let bytes = *len as u64 * dtype.byte_size() as u64 * *vlen as u64;
+                    let bytes = *len as u64 * (dtype.bit_size() / 8) as u64 * *vlen as u64;
                     match scope {
                         Scope::Global => bytes_read += bytes,
                         Scope::Local => bytes_read += bytes,
@@ -633,7 +633,7 @@ impl Kernel {
                     let Op::Define { scope, dtype, len, .. } = self.at(*dst) else {
                         unreachable!()
                     };
-                    let bytes = *len as u64 * dtype.byte_size() as u64 * *vlen as u64;
+                    let bytes = *len as u64 * (dtype.bit_size() / 8) as u64 * *vlen as u64;
                     match scope {
                         Scope::Global => bytes_written += bytes,
                         Scope::Local => bytes_written += bytes,

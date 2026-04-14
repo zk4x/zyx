@@ -1326,7 +1326,7 @@ impl Compiler {
                                 self.body,
                                 "{}.local .align {} .{} %p{op_id}[{len}];",
                                 self.indent,
-                                dtype.byte_size(),
+                                dtype.bit_size() / 8,
                                 dtype.ptx()
                             );
                         }
@@ -1346,7 +1346,7 @@ impl Compiler {
                     let dtype = dtypes[&src];
                     match self.get_scope(*src) {
                         Scope::Global => {
-                            let byte_shift = dtype.byte_size().ilog2();
+                            let byte_shift = (dtype.bit_size() / 8).ilog2();
                             let idx = self.get_var(*index);
                             let offset = self.new_reg(DType::U64, 1);
                             let reg = self.new_var(op_id, dtype, rcs[&op_id]);
@@ -1382,7 +1382,7 @@ impl Compiler {
                 }
                 Op::Store { dst, x, index } => {
                     let dtype = dtypes[x];
-                    let byte_shift = dtype.byte_size().ilog2();
+                    let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = self.new_reg(DType::U64, 1);
                     //println!("{}\n{:?}", self.body, self.registers);
                     match self.get_scope(*dst) {
