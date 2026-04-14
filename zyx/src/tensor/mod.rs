@@ -1354,10 +1354,21 @@ impl Tensor {
     /// ```
     #[must_use]
     pub fn huber_loss(&self, target: &Tensor, delta: impl Scalar) -> Tensor {
+        let input = self.float_cast().unwrap();
+        let target = target.float_cast().unwrap();
         let original_dtype = self.dtype();
-        let diff = self.clone() - target;
+        
+        // PyTorch huber loss formula:
+        // huber_loss(x, y) = {
+        //     0.5 * (x - y)²,                  if |x - y| ≤ δ
+        //     δ * |x - y| - 0.5 * δ²,          otherwise
+        // }
+        
+        let diff = input.clone() - target;
         let abs_diff = diff.abs();
-        let delta_tensor = Tensor::from(delta).cast(original_dtype);
+        
+        // Cast delta to the same dtype as input to follow PyTorch behavior
+        let delta_tensor = Tensor::from(delta).float_cast().unwrap().cast(original_dtype);
         
         // Create mask for quadratic region (|diff| ≤ delta)
         let quadratic_mask = abs_diff.cmplt(delta_tensor.clone()).unwrap();
@@ -1368,9 +1379,13 @@ impl Tensor {
         // Linear loss: delta * |diff| - 0.5 * delta²
         let linear_loss = delta_tensor.clone() * abs_diff - 0.5 * delta_tensor.clone() * delta_tensor;
         
-        // Combine: quadratic_mask * quadratic_loss + (1 - quadratic_mask) * linear_loss
-        let result = quadratic_loss * quadratic_mask.clone() + linear_loss * quadratic_mask.not();
-        result
+        // Combine: use quadratic_loss where |diff| ≤ delta, linear_loss otherwise
+        let result = quadratic_mask.clone() * quadratic_loss + quadratic_mask.not() * linear_loss;
+        
+        // Sum all elements to get total loss (like smooth_l1_loss does)
+        let total_loss = result.sum([0]).unwrap();
+        
+        total_loss.cast(original_dtype)
     }
 
     /// Applies the sigmoid activation function to each element in the input tensor.

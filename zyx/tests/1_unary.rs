@@ -184,7 +184,14 @@ fn huber_loss_4() -> Result<(), ZyxError> {
     let loss_delta_2 = predictions.huber_loss(&targets, 2.0);
     
     // Loss with smaller delta should be larger for large differences
-    assert!(loss_delta_1.item::<f32>() > loss_delta_2.item::<f32>());
+    let loss1_val = loss_delta_1.item::<f32>();
+    let loss2_val = loss_delta_2.item::<f32>();
+    
+    // Manual calculation:
+    // delta=1.0: [0.5, 1.5, 2.5] = 4.5
+    // delta=2.0: [0.5, 2.0, 4.0] = 6.5  
+    // So delta=2.0 should be larger
+    assert!(loss1_val < loss2_val);
     
     Ok(())
 }
