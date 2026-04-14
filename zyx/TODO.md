@@ -54,7 +54,7 @@
   - [ ] erfinv
   - [ ] lgamma (log gamma)
   - [ ] i0 (modified Bessel function)
-  - [ ] trunc
+  - [x] trunc
   - [ ] frac
   - [ ] ceil
   - [ ] round
