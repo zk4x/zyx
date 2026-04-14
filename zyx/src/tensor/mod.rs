@@ -1176,6 +1176,48 @@ impl Tensor {
         ceiled.cast(original_dtype)
     }
 
+    /// Linearly interpolates between input and target tensors.
+    ///
+    /// Performs linear interpolation between two tensors with a given weight factor.
+    /// The interpolation formula is: result = input * (1 - weight) + target * weight
+    /// This is commonly used for upsampling, downsampling, and smooth transitions between tensors.
+    /// Returns the same dtype as the input tensors.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: Input tensor
+    /// * target: Target tensor to interpolate towards
+    /// * weight: Interpolation weight between 0.0 and 1.0. 0.0 returns input, 1.0 returns target.
+    ///
+    /// **Returns:**
+    ///
+    /// A new tensor containing the interpolated values with the same shape as input.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    /// 
+    /// let input = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let target = Tensor::from([2.0, 4.0, 6.0]);
+    /// let interpolated = input.interpolate(&target, 0.5);  // Midway point
+    /// // Result: [1.5, 3.0, 4.5] (average of input and target)
+    /// ```
+    ///
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn interpolate(&self, target: &Tensor, weight: f32) -> Tensor {
+        let input = self.float_cast().unwrap();
+        let target = target.float_cast().unwrap();
+        let original_dtype = self.dtype();
+        
+        // Linear interpolation: input * (1 - weight) + target * weight
+        let result = input.clone() * (1.0 - weight) + target.clone() * weight;
+        
+        result.cast(original_dtype)
+    }
+
     /// Computes the Smooth L1 loss between input and target tensors.
     ///
     /// The Smooth L1 loss is a robust loss function that combines L1 and L2 loss. It uses L2 loss

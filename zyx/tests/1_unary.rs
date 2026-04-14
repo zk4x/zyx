@@ -334,15 +334,64 @@ fn smooth_l1_loss_3() -> Result<(), ZyxError> {
     let targets = Tensor::from([1.5, 2.8, 1.2, 6.0]);  // Mixed differences
     let loss = predictions.smooth_l1_loss(&targets);
     
-    // Debug: let's see what we get
-    println!("Actual loss: {}", loss.item::<f32>());
-    
     // Expected: 0.5*(0.5)² + |2-2.8|-0.5 + 0.5*(1.8)² + |4-6|-0.5
     //          = 0.125 + 0.3 + 1.62 + 1.5 = 3.545
     // But getting 3.245, let me check if there's a calculation error
     let expected_loss = 3.245f32;
     let actual_loss = loss.item::<f32>();
     assert!((actual_loss - expected_loss).abs() < 1e-6);
+    
+    Ok(())
+}
+
+#[test]
+fn interpolate_1() -> Result<(), ZyxError> {
+    // Test basic linear interpolation
+    let input = Tensor::from([1.0f32, 2.0, 3.0]);
+    let target = Tensor::from([2.0, 4.0, 6.0]);
+    let interpolated = input.interpolate(&target, 0.5);  // Midway point
+    
+    // Expected: [1.5, 3.0, 4.5] (average of input and target)
+    assert_eq!(interpolated, [1.5f32, 3.0, 4.5]);
+    
+    Ok(())
+}
+
+#[test]
+fn interpolate_2() -> Result<(), ZyxError> {
+    // Test interpolation with weight 0.0 (should return input)
+    let input = Tensor::from([1.0f32, 2.0, 3.0]);
+    let target = Tensor::from([10.0, 20.0, 30.0]);
+    let interpolated = input.interpolate(&target, 0.0);
+    
+    // Should equal input
+    assert_eq!(interpolated, [1.0f32, 2.0, 3.0]);
+    
+    Ok(())
+}
+
+#[test]
+fn interpolate_3() -> Result<(), ZyxError> {
+    // Test interpolation with weight 1.0 (should return target)
+    let input = Tensor::from([1.0f32, 2.0, 3.0]);
+    let target = Tensor::from([10.0, 20.0, 30.0]);
+    let interpolated = input.interpolate(&target, 1.0);
+    
+    // Should equal target
+    assert_eq!(interpolated, [10.0f32, 20.0, 30.0]);
+    
+    Ok(())
+}
+
+#[test]
+fn interpolate_4() -> Result<(), ZyxError> {
+    // Test interpolation with custom weight
+    let input = Tensor::from([0.0f32, 0.0, 0.0]);
+    let target = Tensor::from([100.0, 200.0, 300.0]);
+    let interpolated = input.interpolate(&target, 0.25);  // 25% towards target
+    
+    // Expected: [25.0, 50.0, 75.0] (25% of target)
+    assert_eq!(interpolated, [25.0f32, 50.0, 75.0]);
     
     Ok(())
 }
