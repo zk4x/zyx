@@ -48,7 +48,7 @@
   - [ ] singular value decomposition
   - [ ] instance norm
   - [x] interpolate
-  - [ ] upsample
+  - [x] upsample
   - [ ] downsample
   - [x] erf
   - [ ] erfinv

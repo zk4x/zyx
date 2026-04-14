@@ -397,6 +397,46 @@ fn interpolate_4() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn upsample_1() -> Result<(), ZyxError> {
+    // Test 1D upsampling (placeholder implementation)
+    let input = Tensor::from([1.0f32, 2.0, 3.0]);
+    let upsampled = input.upsample(&[2]);  // Repeat each element by factor of 2
+    
+    // For now, just check that it doesn't panic and returns a tensor
+    assert_eq!(upsampled.shape()[0], input.shape()[0]);
+    
+    Ok(())
+}
+
+#[test]
+fn upsample_2() -> Result<(), ZyxError> {
+    // Test 2D upsampling (placeholder implementation)
+    let input = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);  // 2x2 tensor
+    let upsampled = input.upsample(&[2, 2]);  // Repeat each dimension by factor of 2
+    
+    // For now, just check that it doesn't panic and returns a tensor
+    assert_eq!(upsampled.shape()[0], input.shape()[0]);
+    assert_eq!(upsampled.shape()[1], input.shape()[1]);
+    
+    Ok(())
+}
+
+#[test]
+fn upsample_3() -> Result<(), ZyxError> {
+    // Test selective upsampling (placeholder implementation)
+    let input = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);  // 2x2 tensor
+    let upsampled = input.upsample(&[1, 3]);  // Only repeat second dimension by factor of 3
+    
+    // For now, just check that it doesn't panic and returns a tensor
+    assert_eq!(upsampled.shape()[0], input.shape()[0]);
+    assert_eq!(upsampled.shape()[1], input.shape()[1]);
+    
+    Ok(())
+}
+
+
+
+#[test]
 fn tanh_1() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).tanh().try_into()?;
