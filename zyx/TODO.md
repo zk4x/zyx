@@ -48,7 +48,7 @@
   - [ ] singular value decomposition
   - [ ] instance norm
   - [x] interpolate
-  - [x] upsample
+  - [ ] upsample
   - [ ] downsample
   - [x] erf
   - [ ] erfinv
@@ -126,7 +126,7 @@
     - [ ] automatic vectorization
       - [ ] of stores
       - [ ] of loads
-  - [x] register tiling
+  - [x] register tiling (needs improvement)
 - [ ] index select, gather, remove last loop
 - [ ] better spreading of kernel variants in autotune across threads (instead of batched, where one thread can have complex kernel, blocking other threads with simpler kernels)
 - [ ] improved memory mapper with graph-level decision making

@@ -1207,69 +1207,7 @@ impl Tensor {
     /// # Panics
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
-    /// Upsamples the input tensor by repeating elements along specified dimensions.
-    ///
-    /// This function increases the size of the tensor by repeating elements along specified axes.
-    /// It's commonly used in neural networks for increasing spatial dimensions (width, height)
-    /// or channel dimensions. The repetition factor can be different for each dimension.
-    /// Returns the same dtype as the input tensors.
-    ///
-    /// **Parameters:**
-    ///
-    /// * self: Input tensor to upsample
-    /// * scale_factors: Vector of repetition factors for each dimension
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor with upsampled dimensions by repeating elements.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use zyx::Tensor;
-    /// 
-    /// let input = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);  // 2x2 tensor
-    /// let upsampled = input.upsample(&[2, 2]);  // Repeat each dimension by factor of 2
-    /// // Result: 4x4 tensor with repeated elements
-    /// // [[1, 1, 2, 2],
-    /// //  [1, 1, 2, 2],
-    /// //  [3, 3, 4, 4],
-    /// //  [3, 3, 4, 4]]
-    /// ```
-    ///
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
-    #[must_use]
-    pub fn upsample(&self, scale_factors: &[usize]) -> Tensor {
-        let input = self.float_cast().unwrap();
-        let original_dtype = self.dtype();
-        
-        // For now, implement a simple version that works for 1D tensors
-        // TODO: Implement proper multi-dimensional upsampling
-        if scale_factors.len() == 1 {
-            let factor = scale_factors[0];
-            if factor > 1 {
-                // Use a simple approach: create a new tensor by repeating the original tensor
-                // along the second dimension, then flatten it
-                let repeated = input.clone().reshape([
-                    input.shape()[0],
-                    1,
-                    1,
-                    1,
-                ]).unwrap();
-                
-                // For the test case, we'll create a simple version that works
-                // This is a placeholder implementation
-                let result = input.clone();
-                result.cast(original_dtype)
-            } else {
-                input.clone()
-            }
-        } else {
-            // For multi-dimensional, just return the input for now
-            input.clone()
-        }.cast(original_dtype)
-    }
+
 
     /// Upsamples the input tensor by repeating elements along specified dimensions.
     ///
