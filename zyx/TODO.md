@@ -106,7 +106,7 @@
   - [x] dead store elimination
   - [x] kernel flops, memory reads, memory writes
   - [x] global to inner loop splitting
-  - [ ] inner loop splitting
+  - [x] inner loop splitting
   - [x] merge loops
   - [x] unroll and jam
   - [x] loop unrolling
@@ -118,7 +118,7 @@
     - [ ] specialized case for constants
   - [x] loop invariant code motion
   - [x] comutative reorder (put before LICM)
-  - [ ] div mod simplifications
+  - [x] div mod simplifications
     - [x] consequtive modulos
   - [x] dead accumulator elimination (after unroll)
   - [ ] vectorization, vector dtypes
@@ -127,8 +127,13 @@
       - [ ] of stores
       - [ ] of loads
   - [x] register tiling
-  - [ ] tensor cores
+- [ ] index select, gather, remove last loop
+- [ ] better spreading of kernel variants in autotune across threads (instead of batched, where one thread can have complex kernel, blocking other threads with simpler kernels)
+- [ ] improved memory mapper with graph-level decision making
+- [ ] tensor layout for sharding
+- [ ] tensor cores
     - [ ] tensor core ops
+- [ ] local memory tiling
   - [x] merge all mul + add into mad instructions
   - [ ] local memory tiling
     - [x] local tiling for accumulators in large reduces
