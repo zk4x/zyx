@@ -55,7 +55,7 @@
   - [ ] lgamma (log gamma)
   - [ ] i0 (modified Bessel function)
   - [x] trunc
-  - [ ] frac
+  - [x] frac
   - [ ] ceil
   - [x] round
   - [ ] nll loss

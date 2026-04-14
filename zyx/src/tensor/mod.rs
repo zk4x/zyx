@@ -1096,6 +1096,49 @@ impl Tensor {
         rounded.cast(original_dtype)
     }
 
+    /// Returns the fractional part of each element in the input tensor.
+    ///
+    /// The fractional part is defined as x - floor(x), which gives the part of the number
+    /// after the decimal point. For positive numbers, this is straightforward. For negative
+    /// numbers, the fractional part is positive (e.g., frac(-1.7) = 0.3).
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:**
+    ///
+    /// A new tensor with the same shape as the input, containing fractional parts.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    /// 
+    /// let t = Tensor::from([1.2f32, 2.7, 3.5, -1.7, -2.3]);
+    /// // Fractional parts: [0.2, 0.7, 0.5, 0.3, 0.7]
+    /// let fractional = t.frac();
+    /// ```
+    ///
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn frac(&self) -> Tensor {
+        let x = self.float_cast().unwrap();
+        let original_dtype = self.dtype();
+        
+        // Fractional part = x - floor(x)
+        let fractional = x.clone() - x.floor();
+        
+        // For negative numbers, add 1 to make fractional part positive
+        // For positive numbers, keep as is
+        let is_negative = fractional.clone().cmplt(0.0_f32).unwrap();
+        let fractional_positive = is_negative.clone() * (fractional.clone() + 1.0_f32) + 
+                                 is_negative.not() * fractional;
+        
+        fractional_positive.cast(original_dtype)
+    }
+
     /// Computes the Huber loss between input and target tensors.
     ///
     /// The Huber loss is a robust loss function that is less sensitive to outliers than squared error loss.

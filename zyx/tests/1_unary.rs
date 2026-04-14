@@ -226,6 +226,42 @@ fn round_3() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn frac_1() -> Result<(), ZyxError> {
+    // Test basic fractional part functionality
+    let t = Tensor::from([1.2f32, 2.7, 3.5, -1.7, -2.3]);
+    let fractional = t.frac();
+    
+    // Fractional parts should be: [0.2, 0.7, 0.5, 0.3, 0.7]
+    assert_eq!(fractional, [0.2f32, 0.7, 0.5, 0.3, 0.7]);
+    
+    Ok(())
+}
+
+#[test]
+fn frac_2() -> Result<(), ZyxError> {
+    // Test with whole numbers
+    let t = Tensor::from([2.0f32, -3.0, 4.0, -5.0]);
+    let fractional = t.frac();
+    
+    // Fractional parts should be zero for whole numbers
+    assert_eq!(fractional, [0.0f32, 0.0, 0.0, 0.0]);
+    
+    Ok(())
+}
+
+#[test]
+fn frac_3() -> Result<(), ZyxError> {
+    // Test with numbers close to integers
+    let t = Tensor::from([1.0001f32, -2.9999, 3.9999, -4.0001]);
+    let fractional = t.frac();
+    
+    // Should extract small fractional parts
+    assert!((fractional.item::<f32>() - 0.0001).abs() < 1e-6);
+    
+    Ok(())
+}
+
+#[test]
 fn tanh_1() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).tanh().try_into()?;
