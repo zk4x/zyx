@@ -1202,36 +1202,7 @@ impl Tensor {
     /// // lgamma(2) = ln(1!) = ln(1) = 0  
     /// // lgamma(3) = ln(2!) = ln(2) ≈ 0.693
     /// // lgamma(4) = ln(3!) = ln(6) ≈ 1.792
-    /// ```
-    ///
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
-    #[must_use]
 
-
-    /// Upsamples the input tensor by repeating elements along specified dimensions.
-    ///
-    /// This function increases the size of the tensor by repeating elements along specified axes.
-    /// It's commonly used in neural networks for increasing spatial dimensions (width, height)
-    /// or channel dimensions. The repetition factor can be different for each dimension.
-    /// Returns the same dtype as the input tensors.
-    ///
-    /// **Parameters:**
-    ///
-    /// * self: Input tensor to upsample
-    /// * scale_factors: Vector of repetition factors for each dimension
-    ///
-    /// **Returns:**
-    ///
-    /// A new tensor with upsampled dimensions by repeating elements.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use zyx::Tensor;
-    /// 
-    /// let input = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);  // 2x2 tensor
-    /// let upsampled = input.upsample(&[2, 2]);  // Repeat each dimension by factor of 2
     /// // Result: 4x4 tensor with repeated elements
     /// // [[1, 1, 2, 2],
     /// //  [1, 1, 2, 2],
@@ -1245,7 +1216,7 @@ impl Tensor {
     ///
     /// Performs linear interpolation between two tensors with a given weight factor.
     /// The interpolation formula is: result = input * (1 - weight) + target * weight
-    /// This is commonly used for upsampling, downsampling, and smooth transitions between tensors.
+    /// This is commonly used for transitions between tensors.
     /// Returns the same dtype as the input tensors.
     ///
     /// **Parameters:**
