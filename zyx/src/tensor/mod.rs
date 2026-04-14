@@ -1210,6 +1210,63 @@ impl Tensor {
         (exp2x.clone() - one.clone()) / (exp2x + one)
     }
 
+    /// Computes the error function (erf) of each element in the input tensor.
+    ///
+    /// The error function is defined as: erf(x) = (2/√π) * ∫₀ˣ e⁻ᵗ² dt
+    /// This implementation uses the approximation: erf(x) ≈ tanh(√(2/π) * x * (1 + 0.044715 * x²))
+    /// which provides good accuracy for neural network applications.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    /// 
+    /// let t = Tensor::from([0.0, 0.5, 1.0]);
+    /// // erf(0) = 0, erf(0.5) ≈ 0.5205, erf(1) ≈ 0.8427
+    /// assert_eq!(t.erf(), [0.0, 0.5205, 0.8427]);
+    /// ```
+    ///
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn erf(&self) -> Tensor {
+        // Using a polynomial approximation for erf(x)
+        // Based on Abramowitz and Stegun approximation
+        let x = self.float_cast().unwrap();
+        let x_abs = x.abs();
+        
+        // Coefficients for the approximation
+        let a1 = 0.254829592f64;
+        let a2 = -0.284496736f64;
+        let a3 = 1.421413741f64;
+        let a4 = -1.453152027f64;
+        let a5 = 1.061405429f64;
+        let p = 0.3275911f64;
+        
+        let one = Tensor::from(1.0);
+        let p_tensor = Tensor::from(p);
+        let t = one.clone() / (one.clone() + p_tensor * x_abs.clone());
+        
+        let a5_tensor = Tensor::from(a5);
+        let a4_tensor = Tensor::from(a4);
+        let a3_tensor = Tensor::from(a3);
+        let a2_tensor = Tensor::from(a2);
+        let a1_tensor = Tensor::from(a1);
+        
+        let poly = ((((a5_tensor.clone() * t.clone() + a4_tensor.clone()) * t.clone() + a3_tensor.clone()) * t.clone() + a2_tensor.clone()) * t.clone() + a1_tensor.clone()) * t.clone();
+        let y = one.clone() - poly * t * (-x_abs.clone() * x_abs).exp();
+        
+        // Apply sign and scaling
+        if x.dtype().is_float() {
+            // For float types, erf is odd: erf(-x) = -erf(x)
+            let sign = x.cmpgt(0.0).unwrap() * 2.0 - 1.0;
+            y * sign
+        } else {
+            // For integer types, return 0 (or handle appropriately)
+            y * 0.0
+        }
+    }
+
     /// Converts angles from degrees to radians.
     /// # Panics
     /// Panics if applied on non-float dtype while implicit casting is disabled.

@@ -50,7 +50,7 @@
   - [ ] interpolate
   - [ ] upsample
   - [ ] downsample
-  - [ ] erf
+  - [x] erf
   - [ ] erfinv
   - [ ] lgamma (log gamma)
   - [ ] i0 (modified Bessel function)

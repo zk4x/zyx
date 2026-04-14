@@ -109,6 +109,28 @@ fn nonzero() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn erf_1() -> Result<(), ZyxError> {
+    // Test basic erf values
+    let t = Tensor::from([0.0f32, 0.5, 1.0, -0.5, -1.0]);
+    let result = t.erf();
+    
+    // erf(0) = 0
+    assert!(result.cast(DType::F32).item::<f32>().abs() < 1e-6);
+    
+    // Check some values are reasonable
+    let erf_0_5 = t.slice(1..2).unwrap().erf().cast(DType::F32).item::<f32>();
+    let erf_1_0 = t.slice(2..3).unwrap().erf().cast(DType::F32).item::<f32>();
+    
+    // erf(0.5) should be around 0.5
+    assert!((erf_0_5 - 0.5).abs() < 0.1);
+    
+    // erf(1.0) should be around 0.8
+    assert!((erf_1_0 - 0.8).abs() < 0.1);
+    
+    Ok(())
+}
+
+#[test]
 fn tanh_1() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).tanh().try_into()?;
