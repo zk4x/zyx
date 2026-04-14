@@ -1139,6 +1139,43 @@ impl Tensor {
         fractional_positive.cast(original_dtype)
     }
 
+    /// Rounds each element of the input tensor up to the nearest integer.
+    ///
+    /// The ceiling function returns the smallest integer greater than or equal to x.
+    /// For example, ceil(1.2) = 2, ceil(-1.7) = -1, ceil(3.0) = 3.
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: The input tensor.
+    ///
+    /// **Returns:**
+    ///
+    /// A new tensor with the same shape as the input, containing ceiling values.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    /// 
+    /// let t = Tensor::from([1.2f32, 2.7, 3.0, -1.7, -2.3]);
+    /// // Ceil to [2.0, 3.0, 3.0, -1.0, -2.0]
+    /// let ceiled = t.ceil();
+    /// ```
+    ///
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn ceil(&self) -> Tensor {
+        let x = self.float_cast().unwrap();
+        let original_dtype = self.dtype();
+        
+        // Since we don't have a direct ceil operation, we implement it using:
+        // ceil(x) = -floor(-x)
+        let ceiled = (-x.clone()).floor() * -1.0_f32;
+        
+        ceiled.cast(original_dtype)
+    }
+
     /// Computes the Huber loss between input and target tensors.
     ///
     /// The Huber loss is a robust loss function that is less sensitive to outliers than squared error loss.

@@ -56,7 +56,7 @@
   - [ ] i0 (modified Bessel function)
   - [x] trunc
   - [x] frac
-  - [ ] ceil
+  - [x] ceil
   - [x] round
   - [ ] nll loss
   - [x] bce loss

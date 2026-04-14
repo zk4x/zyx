@@ -262,6 +262,42 @@ fn frac_3() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn ceil_1() -> Result<(), ZyxError> {
+    // Test basic ceiling functionality
+    let t = Tensor::from([1.2f32, 2.7, 3.0, -1.7, -2.3]);
+    let ceiled = t.ceil();
+    
+    // Should round up to: [2.0, 3.0, 3.0, -1.0, -2.0]
+    assert_eq!(ceiled, [2.0f32, 3.0, 3.0, -1.0, -2.0]);
+    
+    Ok(())
+}
+
+#[test]
+fn ceil_2() -> Result<(), ZyxError> {
+    // Test with whole numbers
+    let t = Tensor::from([2.0f32, -3.0, 4.0, -5.0]);
+    let ceiled = t.ceil();
+    
+    // Ceiling of whole numbers should be themselves
+    assert_eq!(ceiled, [2.0f32, -3.0, 4.0, -5.0]);
+    
+    Ok(())
+}
+
+#[test]
+fn ceil_3() -> Result<(), ZyxError> {
+    // Test with negative numbers
+    let t = Tensor::from([-1.2f32, -2.7, -3.0, -4.5]);
+    let ceiled = t.ceil();
+    
+    // Should round up to: [-1.0, -2.0, -3.0, -4.0]
+    assert_eq!(ceiled, [-1.0f32, -2.0, -3.0, -4.0]);
+    
+    Ok(())
+}
+
+#[test]
 fn tanh_1() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).tanh().try_into()?;
