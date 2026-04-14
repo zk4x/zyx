@@ -131,6 +131,65 @@ fn erf_1() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn huber_loss_1() -> Result<(), ZyxError> {
+    // Test basic huber loss functionality
+    let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
+    let targets = Tensor::from([1.0, 2.0, 3.0]);  // Perfect match
+    let loss = predictions.huber_loss(&targets, 1.0);
+    
+    // Loss should be zero when predictions match targets exactly
+    assert!(loss.item::<f32>().abs() < 1e-6);
+    
+    Ok(())
+}
+
+#[test]
+fn huber_loss_2() -> Result<(), ZyxError> {
+    // Test huber loss with small differences (quadratic region)
+    let predictions = Tensor::from([1.0f32]);
+    let targets = Tensor::from([1.5]);  // Difference = 0.5 < delta (1.0)
+    let loss = predictions.huber_loss(&targets, 1.0);
+    
+    // Should be quadratic: 0.5 * (1.0 - 1.5)² = 0.5 * 0.25 = 0.125
+    let expected_loss = 0.125f32;
+    assert!((loss.item::<f32>() - expected_loss).abs() < 1e-6);
+    
+    Ok(())
+}
+
+#[test]
+fn huber_loss_3() -> Result<(), ZyxError> {
+    // Test huber loss with large differences (linear region)
+    let predictions = Tensor::from([1.0f32]);
+    let targets = Tensor::from([3.0]);  // Difference = 2.0 > delta (1.0)
+    let loss = predictions.huber_loss(&targets, 1.0);
+    
+    // Should be linear: 1.0 * |1.0 - 3.0| - 0.5 * 1.0² = 2.0 - 0.5 = 1.5
+    let expected_loss = 1.5f32;
+    assert!((loss.item::<f32>() - expected_loss).abs() < 1e-6);
+    
+    Ok(())
+}
+
+#[test]
+fn huber_loss_4() -> Result<(), ZyxError> {
+    // Test huber loss with different delta values
+    let predictions = Tensor::from([1.0f32, 1.0, 1.0]);
+    let targets = Tensor::from([2.0, 3.0, 4.0]);
+    
+    // With delta = 1.0: first two are quadratic, third is linear
+    let loss_delta_1 = predictions.huber_loss(&targets, 1.0);
+    
+    // With delta = 2.0: all are quadratic
+    let loss_delta_2 = predictions.huber_loss(&targets, 2.0);
+    
+    // Loss with smaller delta should be larger for large differences
+    assert!(loss_delta_1.item::<f32>() > loss_delta_2.item::<f32>());
+    
+    Ok(())
+}
+
+#[test]
 fn tanh_1() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).tanh().try_into()?;

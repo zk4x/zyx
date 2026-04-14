@@ -60,7 +60,7 @@
   - [ ] round
   - [ ] nll loss
   - [x] bce loss
-  - [ ] huber loss
+  - [x] huber loss
   - [ ] smooth l1 loss
   - [ ] ctc loss
   - [ ] triplet margin loss

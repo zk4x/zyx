@@ -1055,6 +1055,62 @@ impl Tensor {
             .cast(dtype)
     }
 
+    /// Computes the Huber loss between input and target tensors.
+    ///
+    /// The Huber loss is a robust loss function that is less sensitive to outliers than squared error loss.
+    /// It combines the best properties of L2 squared loss and L1 absolute loss by being quadratic for small
+    /// values and linear for large values.
+    /// Returns the same dtype as the input tensors.
+    ///
+    /// Formula:
+    /// ```
+    /// huber_loss(x, y) = {
+    ///     0.5 * (x - y)²,                  if |x - y| ≤ δ
+    ///     δ * |x - y| - 0.5 * δ²,          otherwise
+    /// }
+    /// ```
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: Input tensor (predictions)
+    /// * target: Target tensor (ground truth)
+    /// * delta: Threshold value (δ) for switching between quadratic and linear regions (default: 1.0)
+    ///
+    /// **Returns:**
+    ///
+    /// A new tensor with the same shape as the input, containing the Huber loss values.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    /// 
+    /// let predictions = Tensor::from([1.0, 2.0, 3.0]);
+    /// let targets = Tensor::from([1.5, 2.5, 2.8]);
+    /// let loss = predictions.huber_loss(&targets, 1.0);
+    /// // Huber loss will be quadratic for differences ≤ 1.0 and linear for differences > 1.0
+    /// ```
+    #[must_use]
+    pub fn huber_loss(&self, target: &Tensor, delta: impl Scalar) -> Tensor {
+        let original_dtype = self.dtype();
+        let diff = self.clone() - target;
+        let abs_diff = diff.abs();
+        let delta_tensor = Tensor::from(delta).cast(original_dtype);
+        
+        // Create mask for quadratic region (|diff| ≤ delta)
+        let quadratic_mask = abs_diff.cmplt(delta_tensor.clone()).unwrap();
+        
+        // Quadratic loss: 0.5 * diff²
+        let quadratic_loss = 0.5 * diff.clone() * diff;
+        
+        // Linear loss: delta * |diff| - 0.5 * delta²
+        let linear_loss = delta_tensor.clone() * abs_diff - 0.5 * delta_tensor.clone() * delta_tensor;
+        
+        // Combine: quadratic_mask * quadratic_loss + (1 - quadratic_mask) * linear_loss
+        let result = quadratic_loss * quadratic_mask.clone() + linear_loss * quadratic_mask.not();
+        result
+    }
+
     /// Applies the sigmoid activation function to each element in the input tensor.
     ///
     /// The sigmoid function returns `1 / (1 + exp(-x))`, i.e., it maps any real-valued input onto a value between 0 and 1. This function is commonly used for binary classification problems or as an activation function in neural networks.
@@ -1213,8 +1269,8 @@ impl Tensor {
     /// Computes the error function (erf) of each element in the input tensor.
     ///
     /// The error function is defined as: erf(x) = (2/√π) * ∫₀ˣ e⁻ᵗ² dt
-    /// This implementation uses the approximation: erf(x) ≈ tanh(√(2/π) * x * (1 + 0.044715 * x²))
-    /// which provides good accuracy for neural network applications.
+    /// This implementation uses a polynomial approximation that provides good accuracy.
+    /// Returns the same dtype as the input tensor.
     ///
     /// # Examples
     ///
@@ -1233,6 +1289,7 @@ impl Tensor {
         // Using a polynomial approximation for erf(x)
         // Based on Abramowitz and Stegun approximation
         let x = self.float_cast().unwrap();
+        let original_dtype = self.dtype();
         let x_abs = x.abs();
         
         // Coefficients for the approximation
@@ -1243,27 +1300,28 @@ impl Tensor {
         let a5 = 1.061405429f64;
         let p = 0.3275911f64;
         
-        let one = Tensor::from(1.0);
-        let p_tensor = Tensor::from(p);
+        let one = Tensor::from(1.0).cast(original_dtype);
+        let p_tensor = Tensor::from(p).cast(original_dtype);
         let t = one.clone() / (one.clone() + p_tensor * x_abs.clone());
         
-        let a5_tensor = Tensor::from(a5);
-        let a4_tensor = Tensor::from(a4);
-        let a3_tensor = Tensor::from(a3);
-        let a2_tensor = Tensor::from(a2);
-        let a1_tensor = Tensor::from(a1);
+        let a5_tensor = Tensor::from(a5).cast(original_dtype);
+        let a4_tensor = Tensor::from(a4).cast(original_dtype);
+        let a3_tensor = Tensor::from(a3).cast(original_dtype);
+        let a2_tensor = Tensor::from(a2).cast(original_dtype);
+        let a1_tensor = Tensor::from(a1).cast(original_dtype);
         
         let poly = ((((a5_tensor.clone() * t.clone() + a4_tensor.clone()) * t.clone() + a3_tensor.clone()) * t.clone() + a2_tensor.clone()) * t.clone() + a1_tensor.clone()) * t.clone();
-        let y = one.clone() - poly * t * (-x_abs.clone() * x_abs).exp();
+        let y = one.clone() - poly * t * (-x_abs.clone() * x_abs).exp().cast(original_dtype);
         
         // Apply sign and scaling
         if x.dtype().is_float() {
             // For float types, erf is odd: erf(-x) = -erf(x)
-            let sign = x.cmpgt(0.0).unwrap() * 2.0 - 1.0;
-            y * sign
+            let sign = x.cmpgt(0.0_f32).unwrap() * 2.0_f32 - 1.0_f32;
+            let result = y * sign;
+            result
         } else {
-            // For integer types, return 0 (or handle appropriately)
-            y * 0.0
+            // For integer types, return 0
+            Tensor::zeros(self.shape(), original_dtype)
         }
     }
 
