@@ -61,7 +61,7 @@
   - [ ] nll loss
   - [x] bce loss
   - [x] huber loss
-  - [ ] smooth l1 loss
+  - [x] smooth l1 loss
   - [ ] ctc loss
   - [ ] triplet margin loss
   - [ ] frobenius norm

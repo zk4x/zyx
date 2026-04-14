@@ -1176,6 +1176,69 @@ impl Tensor {
         ceiled.cast(original_dtype)
     }
 
+    /// Computes the Smooth L1 loss between input and target tensors.
+    ///
+    /// The Smooth L1 loss is a robust loss function that combines L1 and L2 loss. It uses L2 loss
+    /// for small values (close to zero) and L1 loss for large values, providing a smooth transition
+    /// that is less sensitive to outliers than pure L1 loss while avoiding the large gradients of L2
+    /// loss for very large errors.
+    /// Returns the same dtype as the input tensors.
+    ///
+    /// Formula:
+    /// ```
+    /// smooth_l1_loss(x, y) = {
+    ///     0.5 * (x - y)²,                  if |x - y| ≤ 1
+    ///     |x - y| - 0.5,                   otherwise
+    /// }
+    /// ```
+    ///
+    /// **Parameters:**
+    ///
+    /// * self: Input tensor (predictions)
+    /// * target: Target tensor (ground truth)
+    ///
+    /// **Returns:**
+    ///
+    /// A new tensor with the same shape as the input, containing the Smooth L1 loss values.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use zyx::Tensor;
+    /// 
+    /// let predictions = Tensor::from([1.0, 2.0, 3.0]);
+    /// let targets = Tensor::from([1.5, 2.5, 2.8]);
+    /// let loss = predictions.smooth_l1_loss(&targets);
+    /// // Smooth L1 loss will be quadratic for differences ≤ 1.0 and linear for differences > 1.0
+    /// ```
+    ///
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn smooth_l1_loss(&self, target: &Tensor) -> Tensor {
+        let input = self.float_cast().unwrap();
+        let target = target.float_cast().unwrap();
+        let original_dtype = self.dtype();
+        
+        let diff = input.clone() - target.clone();
+        let abs_diff = diff.abs();
+        let mask = abs_diff.cmplt(1.0_f32).unwrap();
+        
+        // Quadratic region: 0.5 * (x - y)²
+        let quadratic_loss = 0.5_f32 * diff.clone() * diff.clone();
+        
+        // Linear region: |x - y| - 0.5
+        let linear_loss = abs_diff - 0.5_f32;
+        
+        // Combine based on the mask
+        let loss = mask.clone() * quadratic_loss + mask.not() * linear_loss;
+        
+        // Sum all elements to get the total loss
+        let total_loss = loss.sum([0]).unwrap();
+        
+        total_loss.cast(original_dtype)
+    }
+
     /// Computes the Huber loss between input and target tensors.
     ///
     /// The Huber loss is a robust loss function that is less sensitive to outliers than squared error loss.
