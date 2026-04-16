@@ -1039,6 +1039,12 @@ impl Tensor {
         x / (Tensor::from(1f32) + abs)
     }
 
+    /// Applies hardtanh: clamp(x, -1, 1)
+    #[must_use]
+    pub fn hardtanh(&self) -> Tensor {
+        self.clone().clamp(Tensor::from(-1f32), Tensor::from(1f32)).unwrap()
+    }
+
     /// Computes the reciprocal square root of each element in the input tensor.
     ///
     /// This function returns a new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor. This operation can be useful for scaling and stabilizing certain types of computations.
