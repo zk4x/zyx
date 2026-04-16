@@ -144,6 +144,19 @@ fn sign_1() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn abs_1() -> Result<(), ZyxError> {
+    let t = Tensor::from([-2.0f32, 0.0, 3.0]);
+    let result = t.abs();
+    let v0 = result.slice(0..1).unwrap().cast(DType::F32).item::<f32>();
+    let v1 = result.slice(1..2).unwrap().cast(DType::F32).item::<f32>();
+    let v2 = result.slice(2..3).unwrap().cast(DType::F32).item::<f32>();
+    assert_eq!(v0, 2.0);
+    assert_eq!(v1, 0.0);
+    assert_eq!(v2, 3.0);
+    Ok(())
+}
+
+#[test]
 fn huber_loss_1() -> Result<(), ZyxError> {
     // Test basic huber loss functionality
     let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
