@@ -1480,8 +1480,13 @@ impl Tensor {
     #[must_use]
     pub fn sqrt(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().unary(x.id, UOp::Sqrt) };
-        x
+        Tensor { id: RT.lock().unary(x.id, UOp::Sqrt) }
+    }
+
+    /// Returns the square of each element.
+    #[must_use]
+    pub fn square(&self) -> Tensor {
+        self.clone() * self.clone()
     }
 
     /// Applies the Swish activation function to each element in the input tensor.
@@ -2371,7 +2376,9 @@ impl Tensor {
     /// Returns the sign of each element: -1 if negative, 1 if positive, 0 if zero.
     #[must_use]
     pub fn sign(&self) -> Tensor {
-        let zero = Tensor::zeros(self.shape(), self.dtype());
+        let shape = self.shape();
+        let dtype = self.dtype();
+        let zero = Tensor::zeros(shape, dtype);
         let neg_one: Tensor = (-1_i32).into();
         let pos_one: Tensor = (1_i32).into();
         let is_neg = self.clone().cmplt(zero.clone()).unwrap();
