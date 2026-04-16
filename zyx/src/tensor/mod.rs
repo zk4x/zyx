@@ -1423,8 +1423,7 @@ impl Tensor {
     #[must_use]
     pub fn sin(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().unary(x.id, UOp::Sin) };
-        x
+        Tensor { id: RT.lock().unary(x.id, UOp::Sin) }
     }
 
     /// Applies the hyperbolic sine function to each element in the input tensor.
