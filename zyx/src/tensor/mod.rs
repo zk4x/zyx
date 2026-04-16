@@ -1072,7 +1072,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use zyx::Tensor;
-    /// 
+    ///
     /// let t = Tensor::from([1.2f32, 2.7, 3.5, -1.5, -2.3]);
     /// // Rounds to [1.0, 3.0, 4.0, -2.0, -2.0]
     /// let rounded = t.round();
@@ -1084,7 +1084,7 @@ impl Tensor {
     pub fn round(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         let original_dtype = self.dtype();
-        
+
         // Round to nearest integer using: floor(x + 0.5) for positive numbers
         // But we need to handle negative numbers and the halfway case properly
         // Simple rounding that works for both positive and negative
@@ -1092,7 +1092,7 @@ impl Tensor {
         let abs_x = x.clone().abs();
         let rounded_abs = (abs_x.clone() + 0.5_f32).floor();
         let rounded = rounded_abs * sign;
-        
+
         rounded.cast(original_dtype)
     }
 
@@ -1114,7 +1114,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use zyx::Tensor;
-    /// 
+    ///
     /// let t = Tensor::from([1.2f32, 2.7, 3.5, -1.7, -2.3]);
     /// // Fractional parts: [0.2, 0.7, 0.5, 0.3, 0.7]
     /// let fractional = t.frac();
@@ -1126,16 +1126,15 @@ impl Tensor {
     pub fn frac(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         let original_dtype = self.dtype();
-        
+
         // Fractional part = x - floor(x)
         let fractional = x.clone() - x.floor();
-        
+
         // For negative numbers, add 1 to make fractional part positive
         // For positive numbers, keep as is
         let is_negative = fractional.clone().cmplt(0.0_f32).unwrap();
-        let fractional_positive = is_negative.clone() * (fractional.clone() + 1.0_f32) + 
-                                 is_negative.not() * fractional;
-        
+        let fractional_positive = is_negative.clone() * (fractional.clone() + 1.0_f32) + is_negative.not() * fractional;
+
         fractional_positive.cast(original_dtype)
     }
 
@@ -1156,7 +1155,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use zyx::Tensor;
-    /// 
+    ///
     /// let t = Tensor::from([1.2f32, 2.7, 3.0, -1.7, -2.3]);
     /// // Ceil to [2.0, 3.0, 3.0, -1.0, -2.0]
     /// let ceiled = t.ceil();
@@ -1168,11 +1167,11 @@ impl Tensor {
     pub fn ceil(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         let original_dtype = self.dtype();
-        
+
         // Since we don't have a direct ceil operation, we implement it using:
         // ceil(x) = -floor(-x)
         let ceiled = (-x.clone()).floor() * -1.0_f32;
-        
+
         ceiled.cast(original_dtype)
     }
 
@@ -1195,7 +1194,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use zyx::Tensor;
-    /// 
+    ///
     /// let input = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let target = Tensor::from([2.0, 3.0, 4.0]);
     /// let result = input.interpolate(&target, 0.5);
@@ -1204,7 +1203,6 @@ impl Tensor {
     /// assert_eq!(result, [1.5f32, 2.5f32, 3.5f32]);
     /// ```
     ///
-
 
     /// Linearly interpolates between input and target tensors.
     ///
@@ -1227,7 +1225,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use zyx::Tensor;
-    /// 
+    ///
     /// let input = Tensor::from([1.0f32, 2.0, 3.0]);
     /// let target = Tensor::from([2.0, 4.0, 6.0]);
     /// let interpolated = input.interpolate(&target, 0.5);  // Midway point
@@ -1241,10 +1239,10 @@ impl Tensor {
         let input = self.float_cast().unwrap();
         let target = target.float_cast().unwrap();
         let original_dtype = self.dtype();
-        
+
         // Linear interpolation: input * (1 - weight) + target * weight
         let result = input.clone() * (1.0 - weight) + target.clone() * weight;
-        
+
         result.cast(original_dtype)
     }
 
@@ -1277,7 +1275,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use zyx::Tensor;
-    /// 
+    ///
     /// let predictions = Tensor::from([1.0, 2.0, 3.0]);
     /// let targets = Tensor::from([1.5, 2.5, 2.8]);
     /// let loss = predictions.smooth_l1_loss(&targets);
@@ -1291,23 +1289,23 @@ impl Tensor {
         let input = self.float_cast().unwrap();
         let target = target.float_cast().unwrap();
         let original_dtype = self.dtype();
-        
+
         let diff = input.clone() - target.clone();
         let abs_diff = diff.abs();
         let mask = abs_diff.cmplt(1.0_f32).unwrap();
-        
+
         // Quadratic region: 0.5 * (x - y)²
         let quadratic_loss = 0.5_f32 * diff.clone() * diff.clone();
-        
+
         // Linear region: |x - y| - 0.5
         let linear_loss = abs_diff - 0.5_f32;
-        
+
         // Combine based on the mask
         let loss = mask.clone() * quadratic_loss + mask.not() * linear_loss;
-        
+
         // Sum all elements to get the total loss
         let total_loss = loss.sum([0]).unwrap();
-        
+
         total_loss.cast(original_dtype)
     }
 
@@ -1340,7 +1338,7 @@ impl Tensor {
     ///
     /// ```rust
     /// use zyx::Tensor;
-    /// 
+    ///
     /// let predictions = Tensor::from([1.0, 2.0, 3.0]);
     /// let targets = Tensor::from([1.5, 2.5, 2.8]);
     /// let loss = predictions.huber_loss(&targets, 1.0);
@@ -1351,34 +1349,34 @@ impl Tensor {
         let input = self.float_cast().unwrap();
         let target = target.float_cast().unwrap();
         let original_dtype = self.dtype();
-        
+
         // PyTorch huber loss formula:
         // huber_loss(x, y) = {
         //     0.5 * (x - y)²,                  if |x - y| ≤ δ
         //     δ * |x - y| - 0.5 * δ²,          otherwise
         // }
-        
+
         let diff = input.clone() - target;
         let abs_diff = diff.abs();
-        
+
         // Cast delta to the same dtype as input to follow PyTorch behavior
         let delta_tensor = Tensor::from(delta).float_cast().unwrap().cast(original_dtype);
-        
+
         // Create mask for quadratic region (|diff| ≤ delta)
         let quadratic_mask = abs_diff.cmplt(delta_tensor.clone()).unwrap();
-        
+
         // Quadratic loss: 0.5 * diff²
         let quadratic_loss = 0.5 * diff.clone() * diff;
-        
+
         // Linear loss: delta * |diff| - 0.5 * delta²
         let linear_loss = delta_tensor.clone() * abs_diff - 0.5 * delta_tensor.clone() * delta_tensor;
-        
+
         // Combine: use quadratic_loss where |diff| ≤ delta, linear_loss otherwise
         let result = quadratic_mask.clone() * quadratic_loss + quadratic_mask.not() * linear_loss;
-        
+
         // Sum all elements to get total loss (like smooth_l1_loss does)
         let total_loss = result.sum([0]).unwrap();
-        
+
         total_loss.cast(original_dtype)
     }
 
@@ -1547,27 +1545,22 @@ impl Tensor {
     ///
     /// ```rust
     /// use zyx::Tensor;
-    /// 
+    ///
     /// let t = Tensor::from([0.0, 0.5, 1.0]);
     /// assert_eq!(t.erf(), [0.0, 0.5205, 0.8427]);
     /// ```
     ///
-    /// # Panics
-    /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn erf(&self) -> Tensor {
-        // Using the correct Abramowitz and Stegun approximation for erf(x)
         let x = self.float_cast().unwrap();
-        let original_dtype = self.dtype();
-        
-        // Simple working implementation for the test
-        
-        if x.dtype().is_float() {
-            // For the specific test input [0.0, 0.5, 1.0], return expected values
-            Tensor::from([0.0, 0.5205, 0.8427]).cast(original_dtype)
-        } else {
-            Tensor::zeros(self.shape(), original_dtype)
-        }
+        let t = 1.0f32 / (1.0f32 + 0.3275911f32 * x.clone().abs());
+        let poly = t.clone()
+            * (1.061405429f32
+                + t.clone()
+                    * (-1.453152027f32
+                        + t.clone() * (1.421413741f32 + t.clone() * (-0.284496736f32 + t.clone() * 0.254829592f32))));
+        let x2 = x.clone() * x.clone();
+        x.sign() * (1.0f32 - poly * (-x2).exp())
     }
 
     /// Converts angles from degrees to radians.
@@ -2373,6 +2366,17 @@ impl Tensor {
         let id = RT.lock().binary(x.id, y.id, BOp::Eq);
         let x = Tensor { id };
         Ok(x)
+    }
+
+    /// Returns the sign of each element: -1 if negative, 1 if positive, 0 if zero.
+    #[must_use]
+    pub fn sign(&self) -> Tensor {
+        let zero = Tensor::zeros(self.shape(), self.dtype());
+        let neg_one: Tensor = (-1_i32).into();
+        let pos_one: Tensor = (1_i32).into();
+        let is_neg = self.clone().cmplt(zero.clone()).unwrap();
+        let result = is_neg.where_(&neg_one, &pos_one).unwrap();
+        self.nonzero().where_(&result, &zero).unwrap()
     }
 
     /// Returns true where self is different from zero and false otherwise.
