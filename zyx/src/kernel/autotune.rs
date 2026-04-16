@@ -394,8 +394,8 @@ impl Kernel {
         let mut n_scoped_loads = [0u64, 0, 0];
         let mut n_scoped_stores = [0u64, 0, 0];
 
-        let mut gws = vec![1; 3];
-        let mut lws = vec![1; 3];
+        let mut gws = [1; 3];
+        let mut lws = [1; 3];
         let mut loop_mult = 1;
         let mut latest_loop_lengths = Vec::new();
         let mut op_id = self.head;

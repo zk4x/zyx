@@ -123,19 +123,19 @@ impl Module for Vec<Tensor> {
 }
 
 impl<M0: Module, M1: Module> Module for (M0, M1) {
-    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
+    fn iter(&self) -> impl Iterator<Item = &Tensor> {
         self.0.iter().chain(self.1.iter())
     }
 
-    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Tensor> {
         self.0.iter_mut().chain(self.1.iter_mut())
     }
 
-    fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a Tensor)> {
+    fn iter_tensors(&self) -> impl Iterator<Item = (String, &Tensor)> {
         self.0.iter_tensors().chain(self.1.iter_tensors())
     }
 
-    fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)> {
+    fn iter_tensors_mut(&mut self) -> impl Iterator<Item = (String, &mut Tensor)> {
         self.0.iter_tensors_mut().chain(self.1.iter_tensors_mut())
     }
 }

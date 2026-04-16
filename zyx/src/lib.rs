@@ -101,7 +101,8 @@ static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 pub struct DebugMask(u32);
 
 impl DebugMask {
-    /// Create a new DebugMask
+    /// Create a new [DebugMask]
+    #[must_use]
     pub const fn new(x: u32) -> Self {
         Self(x)
     }
