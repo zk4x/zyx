@@ -1031,6 +1031,14 @@ impl Tensor {
         self.relu().clamp(Tensor::from(0f32), Tensor::from(6f32)).unwrap()
     }
 
+    /// Applies softsign: x / (1 + |x|)
+    #[must_use]
+    pub fn softsign(&self) -> Tensor {
+        let x = self.clone();
+        let abs = x.clone().abs();
+        x / (Tensor::from(1f32) + abs)
+    }
+
     /// Computes the reciprocal square root of each element in the input tensor.
     ///
     /// This function returns a new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor. This operation can be useful for scaling and stabilizing certain types of computations.
