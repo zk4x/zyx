@@ -2376,9 +2376,7 @@ impl Tensor {
     /// Returns the sign of each element: -1 if negative, 1 if positive, 0 if zero.
     #[must_use]
     pub fn sign(&self) -> Tensor {
-        let shape = self.shape();
-        let dtype = self.dtype();
-        let zero = Tensor::zeros(shape, dtype);
+        let zero = Tensor::zeros_like(self.clone());
         let neg_one: Tensor = (-1_i32).into();
         let pos_one: Tensor = (1_i32).into();
         let is_neg = self.clone().cmplt(zero.clone()).unwrap();
