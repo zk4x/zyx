@@ -24,6 +24,7 @@ use std::path::Path;
 use std::u32;
 
 mod binary_ops;
+mod elementwise;
 mod index_ops;
 mod reduce_ops;
 
@@ -695,15 +696,6 @@ impl Tensor {
         Tensor { id: RT.lock().zeros(shape.into_shape().collect(), dtype) }
     }
 
-    /// Evaluates polynomial with coefficients p: p[0]*x^N + p[1]*x^(N-1) + ... + p[N-1]*x + p[N]
-    fn polyN(x: Tensor, coeffs: [f32; 5]) -> Tensor {
-        let mut result: Tensor = 0.0f32.into();
-        for c in coeffs {
-            result = result * x.clone() + Tensor::from(c);
-        }
-        result
-    }
-
     /// Create tensor filled with zeros with the same shape and dtype as input.
     #[must_use]
     pub fn zeros_like(input: impl Into<Tensor>) -> Tensor {
@@ -1034,32 +1026,7 @@ impl Tensor {
         self.cmpgt(Tensor::from(0f32).cast(dtype)).unwrap() * self
     }
 
-    /// Applies ReLU6 activation: min(max(x, 0), 6)
-    #[must_use]
-    pub fn relu6(&self) -> Tensor {
-        self.relu().clamp(Tensor::from(0f32), Tensor::from(6f32)).unwrap()
-    }
-
-    /// Applies softsign: x / (1 + |x|)
-    #[must_use]
-    pub fn softsign(&self) -> Tensor {
-        let x = self.clone();
-        let abs = x.clone().abs();
-        x / (Tensor::from(1f32) + abs)
-    }
-
-    /// Applies hardtanh: clamp(x, -1, 1)
-    #[must_use]
-    pub fn hardtanh(&self) -> Tensor {
-        self.clone().clamp(Tensor::from(-1f32), Tensor::from(1f32)).unwrap()
-    }
-
-    /// Linear interpolation: self + weight * (end - self)
-    #[must_use]
-    pub fn lerp(&self, end: &Tensor, weight: impl Into<Tensor>) -> Tensor {
-        let w = weight.into();
-        self.clone() + w * (end.clone() - self.clone())
-    }
+    /// Computes the reciprocal square root of each element in the input tensor.
 
     /// Computes the reciprocal square root of each element in the input tensor.
     ///
@@ -1518,12 +1485,6 @@ impl Tensor {
         Tensor { id: RT.lock().unary(x.id, UOp::Sqrt) }
     }
 
-    /// Returns the square of each element.
-    #[must_use]
-    pub fn square(&self) -> Tensor {
-        self.clone() * self.clone()
-    }
-
     /// Applies the Swish activation function to each element in the input tensor.
     ///
     /// The Swish function returns `x * sigmoid(x)`, where `sigmoid(x) = 1 / (1 + exp(-x))`. This function is useful for various deep learning applications, as it has been shown to improve convergence speed and generalization performance compared to other activation functions like `ReLU`.
@@ -1589,22 +1550,6 @@ impl Tensor {
     /// let t = Tensor::from([0.0, 0.5, 1.0]);
     /// assert_eq!(t.erf(), [0.0, 0.5205, 0.8427]);
     /// ```
-    ///
-    #[must_use]
-    pub fn erf(&self) -> Tensor {
-        let x = self.float_cast().unwrap();
-        let one: Tensor = 1.0f32.into();
-        let t = one.clone() / (one.clone() + 0.3275911f32 * x.clone().abs());
-        let coeffs = [
-            1.061405429f32,
-            -1.453152027f32,
-            1.421413741f32,
-            -0.284496736f32,
-            0.254829592f32,
-        ];
-        let poly = Self::polyN(t.clone(), coeffs);
-        x.sign() * (one - t * poly * (-x.clone() * x.clone()).exp())
-    }
 
     /// Converts angles from degrees to radians.
     /// # Panics
@@ -1646,24 +1591,6 @@ impl Tensor {
     #[must_use]
     pub fn isnan(&self) -> Tensor {
         self.equal(f32::NAN).unwrap()
-    }
-
-    /// Returns true where elements are finite (not inf or nan)
-    #[must_use]
-    pub fn isfinite(&self) -> Tensor {
-        let inf = self.isinf();
-        let nan = self.isnan();
-        let dtype = self.dtype();
-        Tensor::from(1f32).cast(dtype) - (inf + nan)
-    }
-
-    /// Parameterized ReLU: x * (x > 0) + alpha * x * (x <= 0)
-    #[must_use]
-    pub fn prelu(&self, alpha: impl Into<Tensor>) -> Tensor {
-        let alpha = alpha.into();
-        let zero = Tensor::zeros_like(self.clone());
-        let pos = self.clone().cmpgt(zero.clone()).unwrap();
-        pos.where_(self, alpha * self.clone()).unwrap()
     }
 
     /// Returns the base-10 logarithm of each element in the tensor.
@@ -2427,17 +2354,6 @@ impl Tensor {
         let id = RT.lock().binary(x.id, y.id, BOp::Eq);
         let x = Tensor { id };
         Ok(x)
-    }
-
-    /// Returns the sign of each element: -1 if negative, 1 if positive, 0 if zero.
-    #[must_use]
-    pub fn sign(&self) -> Tensor {
-        let zero = Tensor::zeros_like(self.clone());
-        let neg_one: Tensor = (-1_i32).into();
-        let pos_one: Tensor = (1_i32).into();
-        let is_neg = self.clone().cmplt(zero.clone()).unwrap();
-        let result = is_neg.where_(&neg_one, &pos_one).unwrap();
-        self.nonzero().where_(&result, &zero).unwrap()
     }
 
     /// Returns true where self is different from zero and false otherwise.
