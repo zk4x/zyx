@@ -1636,6 +1636,15 @@ impl Tensor {
         self.equal(f32::NAN).unwrap()
     }
 
+    /// Returns true where elements are finite (not inf or nan)
+    #[must_use]
+    pub fn isfinite(&self) -> Tensor {
+        let inf = self.isinf();
+        let nan = self.isnan();
+        let dtype = self.dtype();
+        Tensor::from(1f32).cast(dtype) - (inf + nan)
+    }
+
     /// Returns the base-10 logarithm of each element in the tensor.
     /// # Panics
     /// Panics if applied on non-float dtype while implicit casting is disabled.
