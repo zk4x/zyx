@@ -216,3 +216,68 @@ self.verify();
 - Return `1` from config function if no tunable parameters
 - Cost model uses heuristic initially, then actual execution time
 - Use kernel hashing to avoid duplicate exploration
+
+## How zyx Works & What NOT to Do
+
+### Architecture Overview
+
+**zyx is a kernel fusion system** - it compiles tensor operations into highly optimized GPU kernels:
+
+✅ **DO:** Follow existing patterns (especially `gather()`, `index_select()`)
+✅ **DO:** Use the kernel IR system in `src/kernel/`
+✅ **DO:** Leverage one-hot encoding for indexing operations
+✅ **DO:** Use tensor operations that fuse into single kernels
+✅ **DO:** Follow the autotune system for optimization passes
+
+❌ **DO NOT:** Implement CPU loops for tensor operations
+❌ **DO NOT:** Use individual tensor operations that create multiple kernel launches
+❌ **DO NOT:** Convert tensors to vectors for manual manipulation
+❌ **DO NOT:** Ignore the kernel IR system and try to reimplement at a higher level
+❌ **DO NOT:** Fight the architecture - study existing working code and copy patterns
+
+### Performance Expectations
+
+zyx achieves 100-1000x speedups over naive implementations:
+
+- **Optimized zyx scatter**: ~1ms for 1000×1000 operations on GPU
+- **Naive CPU loop scatter**: ~100-1000ms (100-1000x slower)
+- **zyx approach**: Single fused kernel with massive parallelism
+- **Wrong approach**: Sequential CPU loops with individual tensor ops
+
+### Correct Implementation Pattern
+
+Study `gather()` in `tensor/mod.rs` - it shows the right way:
+
+1. **Handle negative indices** using `cmplt()` and `where_()`
+2. **Create one-hot encoding** using `unsqueeze()` and `one_hot_along_dim()`
+3. **Use `where_()` for conditional operations** - this fuses into GPU kernels
+4. **Leverage existing tensor operations** that the runtime can optimize
+5. **Let the kernelizer handle the fusion** - don't try to manually optimize
+
+### What NOT to Do (Examples from Real Mistakes)
+
+❌ **WRONG:** CPU loops with individual tensor operations
+```rust
+for i in 0..n {
+    let val = source.slice(i..=i)?.item::<f32>(); // Creates kernel launch
+    let idx = indices.slice(i..=i)?.item::<i32>(); // Creates kernel launch  
+    target.slice(idx..=idx)?.set_item(val);      // Creates kernel launch
+}
+```
+
+✅ **RIGHT:** Follow gather pattern with one-hot encoding
+```rust
+let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
+let result = one_hot.where_(&source_expanded, &target_expanded);
+```
+
+### Kernel Fusion is Everything
+
+Every tensor operation should fuse into a single optimized kernel:
+
+- **Memory access patterns**: Coalesced global memory access
+- **Vectorization**: SIMD instructions on GPU
+- **Parallelism**: Thousands of threads working simultaneously
+- **Register optimization**: Minimize global memory access
+
+The entire point of zyx is to avoid the "naive" approach of individual operations. Study existing implementations and copy their patterns exactly.
