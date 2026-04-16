@@ -3,7 +3,7 @@
 
 use std::ops::{Neg, Not};
 
-use crate::{Float, RT, Scalar, Tensor, kernel::UOp};
+use crate::{Float, RT, Scalar, Tensor, error::ZyxError, kernel::UOp};
 
 impl Tensor {
     fn poly_n(x: Tensor, coeffs: [f32; 5]) -> Tensor {
@@ -576,5 +576,136 @@ impl Tensor {
         let exp2x = (self + self).exp();
         let one = Tensor::from(1).cast(self.dtype());
         (exp2x.clone() - one.clone()) / (exp2x + one)
+    }
+
+    /// Converts angles from degrees to radians.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn deg2rad(&self) -> Tensor {
+        (self * (std::f64::consts::PI / 180.0)).cast(self.dtype())
+    }
+
+    /// Returns a boolean tensor where elements are close within a tolerance.
+    /// # Errors
+    /// Returns error if the tensors have non broadcasteable shapes.
+    pub fn isclose(
+        &self,
+        other: impl Into<Tensor>,
+        rtol: impl Into<Tensor>,
+        atol: impl Into<Tensor>,
+    ) -> Result<Tensor, ZyxError> {
+        let other = other.into();
+        let rtol = rtol.into();
+        let atol = atol.into();
+
+        let diff = (self - other.clone()).abs();
+        let tolerance = atol.clone() + other.clone() * rtol.clone();
+        diff.cmplt(tolerance)
+    }
+
+    /// Returns a boolean tensor where elements are infinite.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn isinf(&self) -> Tensor {
+        self.equal(f32::INFINITY).unwrap()
+    }
+
+    /// Returns a boolean tensor where elements are NaN.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn isnan(&self) -> Tensor {
+        self.equal(f32::NAN).unwrap()
+    }
+
+    /// Returns the base-10 logarithm of each element in the tensor.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn log10(&self) -> Tensor {
+        (self.log2() / Tensor::from(10f32).log2()).cast(self.dtype())
+    }
+
+    /// Converts angles from radians to degrees.
+    /// # Panics
+    /// Panics if applied on non-float dtype while implicit casting is disabled.
+    #[must_use]
+    pub fn rad2deg(&self) -> Tensor {
+        (self * (180.0 / std::f64::consts::PI)).cast(self.dtype())
+    }
+
+    /// Bitnot
+    pub fn bitnot(&self) -> Tensor {
+        Tensor { id: RT.lock().unary(self.id, UOp::BitNot) }
+    }
+
+    /// Clamps the elements of this tensor within a specified range.
+    ///
+    /// Each element in the tensor is constrained to lie between the corresponding
+    /// elements in the `min` and `max` tensors. Values below the minimum are set to
+    /// the minimum value, and values above the maximum are set to the maximum value.
+    ///
+    /// # Arguments
+    ///
+    /// * `min`: A tensor representing the lower bound for clamping.
+    /// * `max`: A tensor representing the upper bound for clamping.
+    ///
+    /// # Returns
+    ///
+    /// A new tensor with its elements clamped within the range defined by `min` and `max`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// # Ok::<(), zyx::ZyxError>(())
+    /// ```
+    #[allow(clippy::missing_panics_doc)]
+    #[must_use]
+    pub fn clamp(&self, min: impl Into<Tensor>, max: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        self.maximum(min.into())?.minimum(max.into())
+    }
+
+    /// Compare less than
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
+    pub fn cmplt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
+        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmplt);
+        Ok(Tensor { id })
+    }
+
+    /// Compare greater than
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
+    pub fn cmpgt(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
+        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Cmpgt);
+        Ok(Tensor { id })
+    }
+
+    /// Elementwise maximum between two tensors
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
+    pub fn maximum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let (x, y) = Tensor::broadcast(self.clone(), rhs)?;
+        let id = RT.lock().binary(x.id, y.id, crate::kernel::BOp::Max);
+        Ok(Tensor { id })
+    }
+
+    /// Elementwise minimum between two tensors
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non broadcasteable shapes.
+    pub fn minimum(&self, rhs: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        Ok(-(-self).maximum(-rhs.into())?)
     }
 }
