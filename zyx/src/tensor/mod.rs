@@ -695,6 +695,15 @@ impl Tensor {
         Tensor { id: RT.lock().zeros(shape.into_shape().collect(), dtype) }
     }
 
+    /// Evaluates polynomial with coefficients p: p[0]*x^N + p[1]*x^(N-1) + ... + p[N-1]*x + p[N]
+    fn polyN(x: Tensor, coeffs: [f32; 5]) -> Tensor {
+        let mut result: Tensor = 0.0f32.into();
+        for c in coeffs {
+            result = result * x.clone() + Tensor::from(c);
+        }
+        result
+    }
+
     /// Create tensor filled with zeros with the same shape and dtype as input.
     #[must_use]
     pub fn zeros_like(input: impl Into<Tensor>) -> Tensor {
@@ -1584,14 +1593,17 @@ impl Tensor {
     #[must_use]
     pub fn erf(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let t = 1.0f32 / (1.0f32 + 0.3275911f32 * x.clone().abs());
-        let poly = t.clone()
-            * (1.061405429f32
-                + t.clone()
-                    * (-1.453152027f32
-                        + t.clone() * (1.421413741f32 + t.clone() * (-0.284496736f32 + t.clone() * 0.254829592f32))));
-        let x2 = x.clone() * x.clone();
-        x.sign() * (1.0f32 - poly * (-x2).exp())
+        let one: Tensor = 1.0f32.into();
+        let t = one.clone() / (one.clone() + 0.3275911f32 * x.clone().abs());
+        let coeffs = [
+            1.061405429f32,
+            -1.453152027f32,
+            1.421413741f32,
+            -0.284496736f32,
+            0.254829592f32,
+        ];
+        let poly = Self::polyN(t.clone(), coeffs);
+        x.sign() * (one - t * poly * (-x.clone() * x.clone()).exp())
     }
 
     /// Converts angles from degrees to radians.
@@ -1650,7 +1662,7 @@ impl Tensor {
     pub fn prelu(&self, alpha: impl Into<Tensor>) -> Tensor {
         let alpha = alpha.into();
         let zero = Tensor::zeros_like(self.clone());
-        let pos = self.clone().gt(zero.clone()).unwrap();
+        let pos = self.clone().cmpgt(zero.clone()).unwrap();
         pos.where_(self, alpha * self.clone()).unwrap()
     }
 
