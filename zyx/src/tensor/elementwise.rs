@@ -96,4 +96,11 @@ impl Tensor {
     pub fn log1p(&self) -> Tensor {
         (self + Tensor::from(1f32)).log(Tensor::from(std::f32::consts::E))
     }
+
+    /// log(exp(self) + exp(other))
+    #[must_use]
+    pub fn logaddexp(&self, other: &Tensor) -> Tensor {
+        let m = self.clone().maximum(other.clone()).unwrap();
+        ((self.clone() - m.clone()).exp() + (other.clone() - m.clone()).exp()).log(Tensor::from(std::f32::consts::E)) + m
+    }
 }
