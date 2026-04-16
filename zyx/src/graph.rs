@@ -19,18 +19,44 @@ use std::hash::BuildHasherDefault;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub enum Node {
     // Constant tensor baked into kernels
-    Const { value: Constant },
+    Const {
+        value: Constant,
+    },
     // Tensor stored on device
-    Leaf { dtype: DType },
-    Expand { x: TensorId },
-    Permute { x: TensorId },
+    Leaf {
+        dtype: DType,
+    },
+    Expand {
+        x: TensorId,
+    },
+    Permute {
+        x: TensorId,
+    },
     // Reshape can be sometimes axis split or axis join
-    Reshape { x: TensorId },
-    Pad { x: TensorId },
-    Reduce { x: TensorId, rop: BOp },
-    Cast { x: TensorId, dtype: DType },
-    Unary { x: TensorId, uop: UOp },
-    Binary { x: TensorId, y: TensorId, bop: BOp },
+    Reshape {
+        x: TensorId,
+    },
+    Pad {
+        x: TensorId,
+    },
+    Reduce {
+        x: TensorId,
+        rop: BOp,
+    },
+    Cast {
+        x: TensorId,
+        dtype: DType,
+    },
+    Unary {
+        x: TensorId,
+        uop: UOp,
+    },
+    Binary {
+        x: TensorId,
+        y: TensorId,
+        bop: BOp,
+    },
+    #[allow(unused)]
     Custom(Box<crate::kernel::custom::CustomKernel>),
 }
 

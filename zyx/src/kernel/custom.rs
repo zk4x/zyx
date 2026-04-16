@@ -11,6 +11,7 @@ pub struct CustomKernel {
 }
 
 impl Kernel {
+    #[allow(unused)]
     pub fn into_tensor_op(self) -> fn(&Tensor) -> Tensor {
         todo!()
     }

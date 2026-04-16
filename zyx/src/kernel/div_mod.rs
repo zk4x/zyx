@@ -85,7 +85,7 @@ impl Kernel {
             }
             // Pattern 2c: (a*c + b) % d when max(a*c + b) < d -> b % d
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
-            if let Some(&(min_a, max_a)) = bounds.get(&a) {
+            if let Some(&(_min_a, max_a)) = bounds.get(&a) {
                 let max_a_c = max_a.saturating_mul(c);
                 if let Some(&(min_b, max_b)) = bounds.get(&b) {
                     if min_b == 0 && max_a_c.saturating_add(max_b) < divisor {
@@ -99,7 +99,7 @@ impl Kernel {
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
             // When max(a*c + b) < divisor, (a*c + b) % divisor = a*c + b, so if max < divisor -> result = b
             if divisor > c && divisor % c == 0 {
-                if let Some(&(min_a, max_a)) = bounds.get(&a)
+                if let Some(&(_min_a, max_a)) = bounds.get(&a)
                     && let Some(&(min_b, max_b)) = bounds.get(&b)
                 {
                     let max_ac = max_a.saturating_mul(c);

@@ -16,6 +16,7 @@ impl Kernel {
         (Optimization::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
     }
 
+    #[allow(unused)]
     pub fn opt_unroll_constant_loops(&self) -> (Optimization, usize) {
         (Optimization::UnrollConstantLoops, 1)
     }

@@ -655,12 +655,6 @@ impl Tensor {
     /// # Returns
     ///
     /// A new tensor with its elements clamped within the range defined by `min` and `max`.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn clamp(&self, min: impl Into<Tensor>, max: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
