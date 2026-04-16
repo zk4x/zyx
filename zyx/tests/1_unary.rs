@@ -157,6 +157,15 @@ fn abs_1() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn square_1() -> Result<(), ZyxError> {
+    let t = Tensor::from([2.0f32]);
+    let result = t.square();
+    let v = result.cast(DType::F32).item::<f32>();
+    assert_eq!(v, 4.0);
+    Ok(())
+}
+
+#[test]
 fn huber_loss_1() -> Result<(), ZyxError> {
     // Test basic huber loss functionality
     let predictions = Tensor::from([1.0f32, 2.0, 3.0]);

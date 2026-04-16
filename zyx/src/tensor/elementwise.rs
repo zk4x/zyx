@@ -18,6 +18,12 @@ impl Tensor {
         self.relu() + (-self).relu()
     }
 
+    /// Square
+    #[must_use]
+    pub fn square(&self) -> Tensor {
+        self.clone() * self.clone()
+    }
+
     /// Returns the sign of each element: -1 if negative, 1 if positive, 0 if zero.
     #[must_use]
     pub fn sign(&self) -> Tensor {
