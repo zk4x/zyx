@@ -1025,6 +1025,12 @@ impl Tensor {
         self.cmpgt(Tensor::from(0f32).cast(dtype)).unwrap() * self
     }
 
+    /// Applies ReLU6 activation: min(max(x, 0), 6)
+    #[must_use]
+    pub fn relu6(&self) -> Tensor {
+        self.relu().clamp(Tensor::from(0f32), Tensor::from(6f32)).unwrap()
+    }
+
     /// Computes the reciprocal square root of each element in the input tensor.
     ///
     /// This function returns a new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor. This operation can be useful for scaling and stabilizing certain types of computations.
