@@ -1645,6 +1645,15 @@ impl Tensor {
         Tensor::from(1f32).cast(dtype) - (inf + nan)
     }
 
+    /// Parameterized ReLU: x * (x > 0) + alpha * x * (x <= 0)
+    #[must_use]
+    pub fn prelu(&self, alpha: impl Into<Tensor>) -> Tensor {
+        let alpha = alpha.into();
+        let zero = Tensor::zeros_like(self.clone());
+        let pos = self.clone().gt(zero.clone()).unwrap();
+        pos.where_(self, alpha * self.clone()).unwrap()
+    }
+
     /// Returns the base-10 logarithm of each element in the tensor.
     /// # Panics
     /// Panics if applied on non-float dtype while implicit casting is disabled.
