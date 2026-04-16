@@ -761,12 +761,6 @@ impl Tensor {
     }
 
     // unary
-    /// Computes the absolute value of each element in self.
-    #[must_use]
-    pub fn abs(&self) -> Tensor {
-        self.relu() + (-self).relu()
-    }
-
     /// Casts self to [dtype](crate::DType).
     #[must_use]
     pub fn cast(&self, dtype: DType) -> Tensor {

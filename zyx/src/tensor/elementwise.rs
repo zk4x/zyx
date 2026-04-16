@@ -12,6 +12,12 @@ impl Tensor {
         result
     }
 
+    /// Absolute value
+    #[must_use]
+    pub fn abs(&self) -> Tensor {
+        self.relu() + (-self).relu()
+    }
+
     /// Returns the sign of each element: -1 if negative, 1 if positive, 0 if zero.
     #[must_use]
     pub fn sign(&self) -> Tensor {
