@@ -981,12 +981,11 @@ impl DType {
             Self::F16 => "half",
             Self::F32 => "float",
             Self::F64 => "double",
-            Self::I8 => "char",
+            Self::I8 | Self::U8 => "char",
             Self::I16 => "short",
             Self::I32 => "int",
             Self::I64 => "long",
             Self::Bool => "bool",
-            Self::U8 => "char",
             Self::U16 => "unsigned short",
             Self::U32 => "unsigned int",
             Self::U64 => "unsigned long",
@@ -1253,9 +1252,7 @@ impl CUDADevice {
                         MMADType::f16_f16_f16_f32 => DType::F32,
                     };
                     match dims {
-                        MMADims::m8n8k16 => dtypes.insert(op_id, (dtype, 4)),
-                        MMADims::m16n8k8 => dtypes.insert(op_id, (dtype, 4)),
-                        MMADims::m16n8k16 => dtypes.insert(op_id, (dtype, 4)),
+                        MMADims::m8n8k16 | MMADims::m16n8k8 | MMADims::m16n8k16 => dtypes.insert(op_id, (dtype, 4)),
                     };
                     *rcs.entry(a).or_insert(0) += 1;
                     *rcs.entry(b).or_insert(0) += 1;
@@ -1302,10 +1299,7 @@ impl CUDADevice {
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(z).or_insert(0) += 1;
                 }
-                Op::Index { .. } => {
-                    dtypes.insert(op_id, (DType::U32, 1));
-                }
-                Op::Loop { .. } => {
+                Op::Index { .. } | Op::Loop { .. } => {
                     dtypes.insert(op_id, (DType::U32, 1));
                 }
                 &Op::If { condition } => {

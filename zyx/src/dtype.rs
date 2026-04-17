@@ -386,15 +386,11 @@ impl Constant {
             Constant::F16(x) => f16::from_le_bytes(x) >= f16::ZERO,
             Constant::F32(x) => f32::from_le_bytes(x) >= 0f32,
             Constant::F64(x) => f64::from_le_bytes(x) >= 0f64,
-            Constant::U8(_) => true,
-            Constant::U16(_) => true,
-            Constant::U32(_) => true,
-            Constant::U64(_) => true,
+            Constant::U8(_) | Constant::U16(_) | Constant::U32(_) | Constant::U64(_) | Constant::Bool(_) => true,
             Constant::I8(x) => x >= 0,
             Constant::I16(x) => x >= 0,
             Constant::I32(x) => x >= 0,
             Constant::I64(x) => i64::from_le_bytes(x) >= 0,
-            Constant::Bool(_) => true,
         }
     }
 

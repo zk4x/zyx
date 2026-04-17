@@ -46,7 +46,7 @@ impl Kernel {
                         BOp::And if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, y),
                         BOp::Add if cx.is_zero() => self.remap(op_id, y),
                         BOp::Sub if cx.is_zero() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Neg },
-                        BOp::Mul if cx.is_zero() => self.ops[op_id].op = Op::Const(cx.dtype().zero_constant()),
+                        BOp::Mul | BOp::Div if cx.is_zero() => self.ops[op_id].op = Op::Const(cx.dtype().zero_constant()),
                         BOp::Mul if cx.is_one() => self.remap(op_id, y),
                         BOp::Mul if cx.is_two() => self.ops[op_id].op = Op::Binary { x: y, y, bop: BOp::Add },
                         BOp::Mul if cx.is_power_of_two() && cx.dtype() == IDX_T => {
@@ -65,8 +65,7 @@ impl Kernel {
                         BOp::Mul if cy.is_one() => self.remap(op_id, x),
                         BOp::And if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, y),
                         BOp::And if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, x),
-                        BOp::Add if cy.is_zero() => self.remap(op_id, x),
-                        BOp::Sub if cy.is_zero() => self.remap(op_id, x),
+                        BOp::Add | BOp::Sub if cy.is_zero() => self.remap(op_id, x),
                         BOp::Div if cy.is_zero() => panic!("Division by constant zero"),
                         BOp::Div if cy.is_one() => self.remap(op_id, x),
                         BOp::Div if cy.is_power_of_two() && cy.dtype() == IDX_T => {

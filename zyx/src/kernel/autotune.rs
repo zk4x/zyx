@@ -401,17 +401,10 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Cast { .. } => {
+                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
                     n_instructions += loop_mult;
                 }
-                Op::Unary { .. } => {
-                    n_instructions += loop_mult;
-                }
-                Op::Binary { .. } => {
-                    n_instructions += loop_mult;
-                }
-                Op::Const(_) => {}
-                Op::Define { .. } => {}
+                Op::Const(_) | Op::Define { .. } => {}
                 Op::Load { src, vlen, .. } => {
                     n_instructions += loop_mult;
                     let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };

@@ -469,13 +469,6 @@ impl Kernel {
                     println!("{indent}for r{out_id} in 0..{len} {{");
                     indent += "  ";
                 }
-                Op::EndLoop => {
-                    if indent.len() > 1 {
-                        indent.pop();
-                        indent.pop();
-                    }
-                    println!("{indent}}}");
-                }
                 Op::If { condition } => {
                     let condition = id_map.get(&condition).copied().unwrap_or(OpId::NULL);
                     println!("{indent}if r{condition} {{");

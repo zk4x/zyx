@@ -75,19 +75,11 @@ impl Kernel {
                 }
                 Op::Devectorize { .. } => todo!(),
                 Op::Mad { x, y, z } => loop_dep[x].max(loop_dep[y]).max(loop_dep[z]),
-                Op::Loop { .. } => {
+                Op::Loop { .. } | Op::If { .. } => {
                     loop_depth += 1;
                     loop_depth
                 }
-                Op::EndLoop => {
-                    loop_depth -= 1;
-                    loop_depth
-                }
-                Op::If { .. } => {
-                    loop_depth += 1;
-                    loop_depth
-                }
-                Op::EndIf { .. } => {
+                Op::EndLoop | Op::EndIf { .. } => {
                     loop_depth -= 1;
                     loop_depth
                 }

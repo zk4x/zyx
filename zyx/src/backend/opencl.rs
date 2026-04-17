@@ -757,18 +757,14 @@ impl OpenCLDevice {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                 }
-                &Op::Devectorize { .. } => todo!(),
-                Op::WMMA { .. } => todo!(),
+                &Op::Devectorize { .. } | Op::WMMA { .. } => todo!(),
                 &Op::Mad { x, y, z } => {
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(z).or_insert(0) += 1;
                 }
-                Op::Index { .. } => {
-                    dtypes.insert(op_id, (DType::U32, 1));
-                }
-                Op::Loop { .. } => {
+                Op::Index { .. } | Op::Loop { .. } => {
                     dtypes.insert(op_id, (DType::U32, 1));
                 }
                 &Op::If { condition } => {

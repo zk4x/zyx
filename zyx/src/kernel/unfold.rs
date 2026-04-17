@@ -100,16 +100,10 @@ impl Kernel {
                     }
                     Op::Reduce { n_axes, .. } => n_reduce_axes += n_axes,
                     Op::Move { mop, .. } => match mop.as_ref() {
-                        MoveOp::Reshape { shape, .. } => {
-                            return shape[shape.len() - n_reduce_axes..].into();
-                        }
-                        MoveOp::Expand { shape } => {
-                            return shape[shape.len() - n_reduce_axes..].into();
-                        }
-                        MoveOp::Permute { shape, .. } => {
-                            return shape[shape.len() - n_reduce_axes..].into();
-                        }
-                        MoveOp::Pad { shape, .. } => {
+                        MoveOp::Reshape { shape, .. }
+                        | MoveOp::Expand { shape }
+                        | MoveOp::Permute { shape, .. }
+                        | MoveOp::Pad { shape, .. } => {
                             return shape[shape.len() - n_reduce_axes..].into();
                         }
                     },
