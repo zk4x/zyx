@@ -46,11 +46,11 @@ impl Tensor {
         let one: Tensor = 1.0f32.into();
         let t = one.clone() / (one.clone() + 0.327_591_1f32 * x.abs());
         let coeffs = [
-            1.061_405_429f32,
-            -1.453_152_027f32,
-            1.421_413_741f32,
-            -0.284_496_736f32,
-            0.254_829_592f32,
+            1.061_405_4f32,
+            -1.453_152_1f32,
+            1.421_413_8f32,
+            -0.284_496_74f32,
+            0.254_829_6f32,
         ];
         let poly = Self::poly_n(t.clone(), coeffs);
         x.sign() * (one - t * poly * (-x.clone() * x).exp())
