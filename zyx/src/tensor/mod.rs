@@ -3467,7 +3467,7 @@ impl<T: Scalar> TempData for Vec<T> {
     }
 
     fn read(&self) -> Box<[u8]> {
-        self.iter().flat_map(|x| x.to_ne_bytes()).copied().collect()
+        self.iter().flat_map(Scalar::to_ne_bytes).copied().collect()
     }
 }
 
@@ -3492,7 +3492,7 @@ impl<T: Scalar> TempData for Vec<Vec<T>> {
     }
 
     fn read(&self) -> Box<[u8]> {
-        self.iter().flatten().flat_map(|x| x.to_ne_bytes()).copied().collect()
+        self.iter().flatten().flat_map(Scalar::to_ne_bytes).copied().collect()
     }
 }
 
@@ -3520,7 +3520,7 @@ impl<T: Scalar> TempData for Vec<Vec<Vec<T>>> {
         self.iter()
             .flatten()
             .flatten()
-            .flat_map(|x| x.to_ne_bytes())
+            .flat_map(Scalar::to_ne_bytes)
             .copied()
             .collect()
     }
@@ -3543,7 +3543,7 @@ impl<T: Scalar> TempData for &'static [T] {
     }
 
     fn read(&self) -> Box<[u8]> {
-        self.iter().flat_map(|x| x.to_ne_bytes()).copied().collect()
+        self.iter().flat_map(Scalar::to_ne_bytes).copied().collect()
     }
 }
 
@@ -3563,7 +3563,7 @@ impl<T: Scalar, const D0: usize> TempData for [T; D0] {
     }
 
     fn read(&self) -> Box<[u8]> {
-        self.iter().flat_map(|x| x.to_ne_bytes()).copied().collect()
+        self.iter().flat_map(Scalar::to_ne_bytes).copied().collect()
     }
 }
 
@@ -3584,7 +3584,7 @@ impl<T: Scalar, const D0: usize, const D1: usize> TempData for [[T; D1]; D0] {
     }
 
     fn read(&self) -> Box<[u8]> {
-        self.iter().flatten().flat_map(|x| x.to_ne_bytes()).copied().collect()
+        self.iter().flatten().flat_map(Scalar::to_ne_bytes).copied().collect()
     }
 }
 
@@ -3608,7 +3608,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize> TempData for 
         self.iter()
             .flatten()
             .flatten()
-            .flat_map(|x| x.to_ne_bytes())
+            .flat_map(Scalar::to_ne_bytes)
             .copied()
             .collect()
     }
@@ -3640,7 +3640,7 @@ impl<T: Scalar, const D0: usize, const D1: usize, const D2: usize, const D3: usi
             .flatten()
             .flatten()
             .flatten()
-            .flat_map(|x| x.to_ne_bytes())
+            .flat_map(Scalar::to_ne_bytes)
             .copied()
             .collect()
     }

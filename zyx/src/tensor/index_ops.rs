@@ -467,7 +467,7 @@ impl<I: Into<DimIndex>> IntoIndex for I {
 
 impl<I: Into<DimIndex>, const N: usize> IntoIndex for [I; N] {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
-        self.into_iter().map(|e| e.into())
+        self.into_iter().map(Into::into)
     }
 }
 

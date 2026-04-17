@@ -175,7 +175,7 @@ pub(super) fn initialize_device(
     } else {
         let mut cuda_paths = Vec::new();
         let roots = ["lib", "lib64", "/usr", "/opt"];
-        let mut stack: Vec<PathBuf> = roots.into_iter().map(|p| PathBuf::from(p)).collect();
+        let mut stack: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).collect();
         while let Some(dir) = stack.pop() {
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -210,7 +210,7 @@ pub(super) fn initialize_device(
                 if path.is_dir() {
                     stack.push(path);
                 } else if path.file_name().map(|f| f == "cuda_fp16.h").unwrap_or(false) {
-                    include_path = path.parent().map(|p| p.to_path_buf());
+                    include_path = path.parent().map(PathBuf::from);
                     break 'a;
                 }
             }

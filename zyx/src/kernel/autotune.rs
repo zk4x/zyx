@@ -240,7 +240,7 @@ impl Kernel {
         let n_removed_per_step = config.n_removed_per_step;
         let n_total_opts = config.n_total_opts;
 
-        let n_threads = std::thread::available_parallelism().map_or(4, |p| p.get());
+        let n_threads = std::thread::available_parallelism().map_or(4, usize::from);
 
         let pool = ThreadPool::new(n_threads);
 
