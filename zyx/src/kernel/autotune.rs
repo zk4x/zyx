@@ -276,7 +276,7 @@ impl Kernel {
         }
 
         let mut rng = Rng::seed_from_u64(3_498_203_498);
-        while items.len() < n_total_opts && items.len() > 0 {
+        while items.len() < n_total_opts && !items.is_empty() {
             let items_ptr: *const Vec<OptSeq> = &raw const items;
             let visited_ptr: *const Set<u64> = &raw const visited;
 

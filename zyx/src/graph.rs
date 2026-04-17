@@ -404,7 +404,7 @@ impl std::ops::IndexMut<TensorId> for Graph {
 use crate::dtype::Constant;
 
 impl BOp {
-    pub const fn is_associative(&self) -> bool {
+    pub const fn is_associative(self) -> bool {
         use BOp::{Add, And, BitAnd, BitOr, BitShiftLeft, BitShiftRight, BitXor, Max, Mul, Or};
         matches!(
             self,
@@ -412,12 +412,12 @@ impl BOp {
         )
     }
 
-    pub const fn is_commutative(&self) -> bool {
+    pub const fn is_commutative(self) -> bool {
         use BOp::{Add, And, BitAnd, BitOr, BitXor, Max, Mul, Or};
         matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | Max)
     }
 
-    pub const fn returns_bool(&self) -> bool {
+    pub const fn returns_bool(self) -> bool {
         use BOp::{And, Cmpgt, Cmplt, Eq, NotEq, Or};
         matches!(self, Cmpgt | Cmplt | NotEq | Eq | And | Or)
     }

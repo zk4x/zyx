@@ -294,6 +294,7 @@ impl Runtime {
         self.graph.push(Node::Const { value })
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn new_tensor(&mut self, shape: Vec<Dim>, data: impl TempData) -> Result<TensorId, ZyxError> {
         let bytes = data.bytes();
         let dtype = data.dtype();

@@ -6,6 +6,7 @@ use std::ops::{Neg, Not};
 use crate::{Float, RT, Scalar, Tensor, error::ZyxError, kernel::UOp};
 
 impl Tensor {
+    #[allow(clippy::needless_pass_by_value)]
     fn poly_n(x: Tensor, coeffs: [f32; 5]) -> Tensor {
         let mut result: Tensor = 0.0f32.into();
         for c in coeffs {

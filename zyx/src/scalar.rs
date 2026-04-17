@@ -51,6 +51,7 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     fn from_le_bytes(bytes: &[u8]) -> Self;
     /// To native endian bytes
     #[must_use]
+    #[allow(clippy::ptr_as_ptr)]
     fn to_ne_bytes(&self) -> &[u8];
     /// Get size in bits
     #[must_use]
@@ -487,7 +488,7 @@ impl Scalar for f16 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -715,7 +716,7 @@ impl Scalar for f32 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -968,7 +969,7 @@ impl Scalar for f64 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -1196,7 +1197,7 @@ impl Scalar for i8 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -1395,7 +1396,7 @@ impl Scalar for i16 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -1783,7 +1784,7 @@ impl Scalar for i64 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -1976,7 +1977,7 @@ impl Scalar for u8 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -2170,7 +2171,7 @@ impl Scalar for u16 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -2382,7 +2383,7 @@ impl Scalar for u32 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -2592,7 +2593,7 @@ impl Scalar for u64 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {
@@ -2781,7 +2782,7 @@ impl Scalar for bool {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const Self = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<Self>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<Self>()) }
     }
 
     fn dtype() -> DType {

@@ -38,7 +38,7 @@ impl TensorId {
         Self(u32::MAX)
     }
 
-    pub const fn is_null(&self) -> bool {
+    pub const fn is_null(self) -> bool {
         self.0 == u32::MAX
     }
 }

@@ -12,14 +12,7 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
-pub fn schedule(
-    loads: &[TensorId],
-    stores: &[TensorId],
-    graph: &Graph,
-    devices: &Slab<DeviceId, Device>,
-    pools: &mut Slab<PoolId, Pool>,
-    buffer_map: &mut Map<TensorId, BufferId>,
-) -> Result<
+type ScheduleResult = Result<
     (
         DeviceId,
         PoolId,
@@ -28,7 +21,16 @@ pub fn schedule(
         Vec<PoolBufferId>,
     ),
     ZyxError,
-> {
+>;
+
+pub fn schedule(
+    loads: &[TensorId],
+    stores: &[TensorId],
+    graph: &Graph,
+    devices: &Slab<DeviceId, Device>,
+    pools: &mut Slab<PoolId, Pool>,
+    buffer_map: &mut Map<TensorId, BufferId>,
+) -> ScheduleResult {
     let required_stores_memory: Dim = stores
         .iter()
         .map(|&tid| graph.shape(tid).iter().product::<Dim>() * Dim::from(graph.dtype(tid).bit_size() / 8))
