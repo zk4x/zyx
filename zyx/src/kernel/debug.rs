@@ -486,9 +486,9 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
                     if let Some((lb, ub)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}: {dtype} = vectorize{:?}    // {}..={}", ops, lb, ub,);
+                        println!("{indent}r{out_id}: {dtype} = vectorize{ops:?}    // {lb}..={ub}");
                     } else {
-                        println!("{indent}r{out_id}: {dtype} = vectorize{:?}", ops);
+                        println!("{indent}r{out_id}: {dtype} = vectorize{ops:?}");
                     }
                 }
                 Op::Devectorize { vec, idx } => {
@@ -496,7 +496,7 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     let vec = id_map.get(&vec).copied().unwrap_or(OpId::NULL);
                     if let Some((l, u)) = bounds.get(&op_id) {
-                        println!("{indent}r{out_id}: {dtype} = devectorize r{vec}[{idx}]    // {}..={}", l, u,);
+                        println!("{indent}r{out_id}: {dtype} = devectorize r{vec}[{idx}]    // {l}..={u}");
                     } else {
                         println!("{indent}r{out_id}: {dtype} = DEVECTORIZE r{vec}[{idx}]",);
                     }
