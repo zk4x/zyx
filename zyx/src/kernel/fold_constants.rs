@@ -6,6 +6,7 @@ use crate::{
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope, UOp},
 };
+use std::hash::BuildHasherDefault;
 
 impl Kernel {
     // Constant folding and deletion of useless ops, etc.
@@ -306,20 +307,20 @@ impl Kernel {
 
     pub fn common_subexpression_elimination(&mut self) {
         let mut stack: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
-        stack.push(Map::with_capacity_and_hasher(50, Default::default()));
+        stack.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::default()));
 
         let mut stored_locs: Vec<Map<OpId, bool>> = Vec::with_capacity(10);
-        stored_locs.push(Map::with_capacity_and_hasher(10, Default::default()));
+        stored_locs.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::default()));
 
-        let mut remaps = Map::with_capacity_and_hasher(10, Default::default());
+        let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
         let mut op_id = self.head;
         while !op_id.is_null() {
             let temp = self.next_op(op_id);
             match &mut self.ops[op_id].op {
                 Op::Barrier { .. } | Op::Define { .. } => {} // skip define and barrier ops, these can not be deduplicated
                 Op::If { .. } | Op::Loop { .. } => {
-                    stack.push(Map::with_capacity_and_hasher(50, Default::default()));
-                    stored_locs.push(Map::with_capacity_and_hasher(10, Default::default()));
+                    stack.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::default()));
+                    stored_locs.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::default()));
                 }
                 Op::EndIf | Op::EndLoop => {
                     stack.pop();
