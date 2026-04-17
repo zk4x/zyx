@@ -9,7 +9,7 @@ use crate::{
 use std::hash::BuildHasherDefault;
 
 impl Kernel {
-    // Constant folding and deletion of useless ops, etc.
+    #[allow(clippy::match_same_arms)]
     pub fn constant_folding(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -44,9 +44,7 @@ impl Kernel {
                     }
                     (Op::Const(cx), _) => match bop {
                         BOp::And if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, x),
-                        #[allow(clippy::match_same_arms)]
                         BOp::And if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, y),
-                        BOp::Add if cx.is_zero() => self.remap(op_id, y),
                         BOp::Sub if cx.is_zero() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Neg },
                         BOp::Mul | BOp::Div if cx.is_zero() => self.ops[op_id].op = Op::Const(cx.dtype().zero_constant()),
                         BOp::Mul if cx.is_one() => self.remap(op_id, y),

@@ -406,6 +406,7 @@ impl Kernel {
                 Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
                     n_instructions += loop_mult;
                 }
+                #[allow(clippy::match_same_arms)]
                 Op::Const(_) | Op::Define { .. } => {}
                 Op::Load { src, vlen, .. } => {
                     n_instructions += loop_mult;

@@ -551,10 +551,10 @@ impl Kernel {
                     Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
                 Op::Move { mop, .. } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Expand { shape } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Permute { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
-                    MoveOp::Pad { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
+                    MoveOp::Reshape { shape, .. }
+                    | MoveOp::Expand { shape }
+                    | MoveOp::Permute { shape, .. }
+                    | MoveOp::Pad { shape, .. } => Info { shape: shape.clone(), flops: 0, mem_read: 0, mem_write: 0 },
                 },
                 Op::Reduce { x, n_axes, .. } => {
                     let Info { mut shape, .. } = stack[x].clone();
@@ -734,36 +734,19 @@ impl Kernel {
                 Op::Reduce { n_axes, .. } => {
                     reduce_dims += n_axes;
                 }
-                Op::Move { mop, .. } => match mop.as_ref() {
-                    MoveOp::Reshape { shape, .. } => {
-                        let shape: Vec<Dim> = shape[..shape.len() - reduce_dims].into();
-                        if shape.is_empty() {
-                            return vec![1];
-                        }
-                        return shape;
+                Op::Move { mop, .. } => {
+                    let shape = match mop.as_ref() {
+                        MoveOp::Reshape { shape, .. }
+                        | MoveOp::Expand { shape }
+                        | MoveOp::Permute { shape, .. }
+                        | MoveOp::Pad { shape, .. } => shape,
+                    };
+                    let shape: Vec<Dim> = shape[..shape.len() - reduce_dims].into();
+                    if shape.is_empty() {
+                        return vec![1];
                     }
-                    MoveOp::Expand { shape } => {
-                        let shape: Vec<Dim> = shape[..shape.len() - reduce_dims].into();
-                        if shape.is_empty() {
-                            return vec![1];
-                        }
-                        return shape;
-                    }
-                    MoveOp::Permute { shape, .. } => {
-                        let shape: Vec<Dim> = shape[..shape.len() - reduce_dims].into();
-                        if shape.is_empty() {
-                            return vec![1];
-                        }
-                        return shape;
-                    }
-                    MoveOp::Pad { shape, .. } => {
-                        let shape: Vec<Dim> = shape[..shape.len() - reduce_dims].into();
-                        if shape.is_empty() {
-                            return vec![1];
-                        }
-                        return shape;
-                    }
-                },
+                    return shape;
+                }
                 _ => {}
             }
             op_id = self.prev_op(op_id);
@@ -813,16 +796,10 @@ impl Kernel {
                     }
                     if bop == BOp::Mul {
                         match (&self.ops[x].op, &self.ops[y].op) {
-                            (Loop { len, .. }, Const(c)) => {
+                            (Loop { len, .. }, Const(c)) | (Index { len, .. }, Const(c)) => {
                                 indices.insert(x, (*len, c.as_dim().unwrap()));
                             }
-                            (Index { len, .. }, Const(c)) => {
-                                indices.insert(x, (*len, c.as_dim().unwrap()));
-                            }
-                            (Const(c), Loop { len, .. }) => {
-                                indices.insert(y, (*len, c.as_dim().unwrap()));
-                            }
-                            (Const(c), Index { len, .. }) => {
+                            (Const(c), Loop { len, .. }) | (Const(c), Index { len, .. }) => {
                                 indices.insert(y, (*len, c.as_dim().unwrap()));
                             }
                             _ => {} //op => println!("op={op:?}"),
@@ -830,19 +807,22 @@ impl Kernel {
                     }
                 }
                 Mad { x, y, z } => {
-                    if let Loop { len, .. } = self.ops[z].op {
-                        indices.insert(z, (len, 1));
-                    } else if let Index { len, .. } = self.ops[z].op {
+                    if let Some(len) = match &self.ops[z].op {
+                        Loop { len, .. } | Index { len, .. } => Some(*len),
+                        _ => None,
+                    } {
                         indices.insert(z, (len, 1));
                     } else {
                         params.push(z);
                     }
                     match (&self.ops[x].op, &self.ops[y].op) {
-                        (Loop { len: dim, .. }, Const(c)) => {
-                            indices.insert(x, (*dim, c.as_dim().unwrap()));
-                        }
-                        (Const(c), Loop { len: dim, .. }) => {
-                            indices.insert(y, (*dim, c.as_dim().unwrap()));
+                        (Loop { len: dim, .. }, Const(c)) | (Const(c), Loop { len: dim, .. }) => {
+                            let (target, d) = if matches!(self.ops[x].op, Loop { .. }) {
+                                (x, *dim)
+                            } else {
+                                (y, *dim)
+                            };
+                            indices.insert(target, (d, c.as_dim().unwrap()));
                         }
                         _ => {}
                     }
