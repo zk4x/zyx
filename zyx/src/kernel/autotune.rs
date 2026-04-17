@@ -416,18 +416,18 @@ impl Kernel {
                     n_instructions += loop_mult;
                     let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
                     match scope {
-                        Scope::Global => n_scoped_loads[0] += loop_mult * vlen as u64,
-                        Scope::Local => n_scoped_loads[1] += loop_mult * vlen as u64,
-                        Scope::Register => n_scoped_loads[2] += loop_mult * vlen as u64,
+                        Scope::Global => n_scoped_loads[0] += loop_mult * u64::from(vlen),
+                        Scope::Local => n_scoped_loads[1] += loop_mult * u64::from(vlen),
+                        Scope::Register => n_scoped_loads[2] += loop_mult * u64::from(vlen),
                     }
                 }
                 Op::Store { dst, vlen, .. } => {
                     n_instructions += loop_mult * 3;
                     let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
                     match scope {
-                        Scope::Global => n_scoped_stores[0] += loop_mult * vlen as u64,
-                        Scope::Local => n_scoped_stores[1] += loop_mult * vlen as u64,
-                        Scope::Register => n_scoped_stores[2] += loop_mult * vlen as u64,
+                        Scope::Global => n_scoped_stores[0] += loop_mult * u64::from(vlen),
+                        Scope::Local => n_scoped_stores[1] += loop_mult * u64::from(vlen),
+                        Scope::Register => n_scoped_stores[2] += loop_mult * u64::from(vlen),
                     }
                 }
                 Op::Index { len, scope, axis } => match scope {
@@ -448,7 +448,7 @@ impl Kernel {
                 }
                 Op::WMMA { dims, .. } => {
                     let (m, n, k) = dims.decompose_mnk();
-                    let warp = dev_info.warp_size as u64;
+                    let warp = u64::from(dev_info.warp_size);
                     let cost = (m * n * k) as u64 / warp;
                     n_instructions += loop_mult * cost;
                 }

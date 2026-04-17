@@ -809,7 +809,7 @@ impl OpenCLDevice {
                             if ro { "const " } else { "" },
                             dtype.ocl(),
                         );
-                        acc_bytes += (dtype.bit_size() / 8) as u64 * len;
+                        acc_bytes += u64::from(dtype.bit_size() / 8) * len;
                     } else if scope == Scope::Local {
                         _ = writeln!(
                             source,
@@ -982,7 +982,7 @@ impl OpenCLDevice {
         }
         let _total_bytes = registers
             .iter()
-            .map(|(dtype, ..)| (dtype.0.bit_size() / 8) as u64 * dtype.1 as u64)
+            .map(|(dtype, ..)| u64::from(dtype.0.bit_size() / 8) * u64::from(dtype.1))
             .sum::<u64>()
             + acc_bytes;
         /*if total_bytes > 4096 {

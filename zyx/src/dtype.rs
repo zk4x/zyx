@@ -278,9 +278,9 @@ impl Constant {
     #[must_use]
     pub(super) fn as_dim(self) -> Option<Dim> {
         match self {
-            Constant::U8(d) => Some(d as Dim),
-            Constant::U16(d) => Some(d as Dim),
-            Constant::U32(d) => Some(d as Dim),
+            Constant::U8(d) => Some(Dim::from(d)),
+            Constant::U16(d) => Some(Dim::from(d)),
+            Constant::U32(d) => Some(Dim::from(d)),
             Constant::U64(d) => Some(u64::from_le_bytes(d)),
             Constant::I8(d) => {
                 if d > 0 {
@@ -307,7 +307,7 @@ impl Constant {
                 let d = i64::from_le_bytes(d);
                 if d > 0 { Some(d as Dim) } else { None }
             }
-            Constant::Bool(d) => Some(d as Dim),
+            Constant::Bool(d) => Some(Dim::from(d)),
             _ => None,
         }
     }
@@ -327,7 +327,7 @@ impl Constant {
             DType::U32 => {
                 let idx: u32 = unsafe { t(&idx) };
                 if IDX_T == DType::U64 {
-                    Self::U64((idx as u64).to_le_bytes())
+                    Self::U64(u64::from(idx).to_le_bytes())
                 } else {
                     Self::U32(idx)
                 }

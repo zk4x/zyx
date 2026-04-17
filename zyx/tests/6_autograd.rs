@@ -74,6 +74,28 @@ fn grad_reciprocal_2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn grad_floor() -> Result<(), ZyxError> {
+    let x = Tensor::from([0.5, 1.5, -0.5, -1.5, 0.1, 0.9, -0.1, -0.9, 2.3, -2.3]);
+    let tape = GradientTape::new();
+    let y = x.floor();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+    assert_eq!(x_grad, vec![0.0; 10]);
+    Ok(())
+}
+
+#[test]
+fn grad_trunc() -> Result<(), ZyxError> {
+    let x = Tensor::from([0.5, 1.5, -0.5, -1.5, 0.1, 0.9, -0.1, -0.9, 2.3, -2.3]);
+    let tape = GradientTape::new();
+    let y = x.trunc();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap().unwrap();
+    assert_eq!(x_grad, vec![0.0; 10]);
+    Ok(())
+}
+
+#[test]
 fn grad_pow_2() -> Result<(), ZyxError> {
     // Input tensors
     let x = Tensor::from([2.0f32, 3.0, 4.0]);

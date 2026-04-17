@@ -291,9 +291,8 @@ impl Kernel {
                             BOp::Add => (min_x.wrapping_add(min_y), max_x.wrapping_add(max_y)),
                             BOp::Sub => (min_x.wrapping_sub(min_y), max_x.wrapping_sub(max_y)),
                             BOp::Mul => (min_x.wrapping_mul(min_y), max_x.wrapping_mul(max_y)),
-                            BOp::Div if min_y == 0 || max_y == 0 => (0, Dim::MAX),
+                            BOp::Div | BOp::Mod if min_y == 0 || max_y == 0 => (0, Dim::MAX),
                             BOp::Div => (min_x / min_y, max_x / max_y),
-                            BOp::Mod if min_y == 0 || max_y == 0 => (0, Dim::MAX),
                             BOp::Mod => (min_x % min_y, max_x % max_y),
                             BOp::BitShiftLeft => (min_x << min_y, max_x << max_y),
                             BOp::BitShiftRight => (min_x >> min_y, max_x >> max_y),
@@ -407,11 +406,7 @@ impl Kernel {
                 Op::EndIf => {
                     bounds_stack.pop();
                 }
-                Op::Index { len, .. } => {
-                    let b = bounds_stack.last_mut().unwrap();
-                    b.insert(op_id, (0, len as Dim - 1));
-                }
-                Op::Loop { len } => {
+                Op::Index { len, .. } | Op::Loop { len } => {
                     let b = bounds_stack.last_mut().unwrap();
                     b.insert(op_id, (0, len as Dim - 1));
                 }

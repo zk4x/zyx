@@ -276,7 +276,7 @@ impl Runtime {
         path: &Path,
         offset_bytes: u64,
     ) -> Result<TensorId, ZyxError> {
-        let bytes = shape.iter().product::<Dim>() * (dtype.bit_size() / 8) as Dim;
+        let bytes = shape.iter().product::<Dim>() * Dim::from(dtype.bit_size() / 8);
         self.initialize_devices()?;
         if let Some(disk) = self.pools[PoolId::ZERO].pool.disk_pool() {
             let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
@@ -298,8 +298,8 @@ impl Runtime {
         let bytes = data.bytes();
         let dtype = data.dtype();
         //println!("bytes={} dtype={} shape={:?}", data.bytes(), data.dtype(), shape);
-        debug_assert_eq!(shape.iter().product::<Dim>() * (dtype.bit_size() / 8) as Dim, bytes);
-        if bytes == (dtype.bit_size() / 8) as Dim && shape.len() == 1 {
+        debug_assert_eq!(shape.iter().product::<Dim>() * Dim::from(dtype.bit_size() / 8), bytes);
+        if bytes == Dim::from(dtype.bit_size() / 8) && shape.len() == 1 {
             let value = data.read();
             let value = Constant::from_le_bytes(&value, dtype);
             if self.constants_len < NUM_CONSTANTS {
@@ -391,7 +391,7 @@ impl Runtime {
         // We create a new pointer in tensor_buffer_map to the same buffer
         // and create a new Leaf in graph
         //self.tensor_buffer_map.find();
-        let cd = (dtype.bit_size() / 8) as Dim / (self.dtype(x).bit_size() / 8) as Dim;
+        let cd = Dim::from(dtype.bit_size() / 8) / Dim::from(self.dtype(x).bit_size() / 8);
         if let Some(d) = shape.last_mut() {
             if *d % cd != 0 {
                 return Err(ZyxError::DTypeError(

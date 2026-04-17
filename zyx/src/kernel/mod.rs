@@ -538,12 +538,12 @@ impl Kernel {
                 Op::LoadView(x) => {
                     let (dtype, view) = x.as_ref();
                     let shape = view.shape();
-                    let mem_read = view.original_numel() as u64 * (dtype.bit_size() / 8) as u64;
+                    let mem_read = view.original_numel() as u64 * u64::from(dtype.bit_size() / 8);
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
                 Op::StoreView { src, dtype } => {
                     let Info { shape, .. } = stack[src].clone();
-                    let mem_write = shape.iter().product::<Dim>() as u64 * (dtype.bit_size() / 8) as u64;
+                    let mem_write = u64::from(shape.iter().product::<Dim>()) * u64::from(dtype.bit_size() / 8);
                     Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
                 Op::Move { mop, .. } => match mop.as_ref() {

@@ -46,7 +46,7 @@ pub(super) fn initialize_device(
     devices.push(Device::Dummy(DummyDevice {
         device_info: DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,
-            max_global_work_dims: vec![u32::MAX as Dim; 3],
+            max_global_work_dims: vec![Dim::from(u32::MAX); 3],
             max_local_threads: 256 * 256,
             max_local_work_dims: vec![1, 256, 256],
             preferred_vector_size: 8,

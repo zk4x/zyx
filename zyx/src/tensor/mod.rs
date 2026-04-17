@@ -35,11 +35,11 @@ pub type Axis = i32;
 pub struct TensorId(pub u32);
 
 impl TensorId {
-    pub fn null() -> Self {
+    pub const fn null() -> Self {
         Self(u32::MAX)
     }
 
-    pub fn is_null(&self) -> bool {
+    pub const fn is_null(&self) -> bool {
         self.0 == u32::MAX
     }
 }
