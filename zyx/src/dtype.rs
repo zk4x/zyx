@@ -395,6 +395,7 @@ impl Constant {
     }
 
     pub(crate) fn is_minimum(&self) -> bool {
+        #[allow(clippy::float_cmp)]
         match *self {
             Constant::BF16(x) => bf16::from_le_bytes(x) == bf16::MIN,
             Constant::F16(x) => f16::from_le_bytes(x) == f16::MIN,

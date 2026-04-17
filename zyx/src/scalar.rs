@@ -848,6 +848,7 @@ impl Scalar for f32 {
         if a.is_nan() && b.is_nan() {
             return true;
         }
+        #[allow(clippy::float_cmp)]
         if a == b {
             return true;
         }
