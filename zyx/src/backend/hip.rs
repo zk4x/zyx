@@ -1,6 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+#![allow(clippy::question_mark)]
+
 //! HIP backend
 
 #![allow(non_snake_case)]
@@ -23,6 +25,7 @@ use std::ptr;
 use std::sync::Arc;
 
 #[derive(Debug, Default, DeJson)]
+#[allow(clippy::question_mark)]
 pub struct HIPConfig {
     device_ids: Option<Vec<i32>>,
 }
@@ -178,14 +181,14 @@ pub(super) fn initialize_device(
 
     unsafe { hipInit(0) }.check(ErrorStatus::Initialization)?;
     let mut driver_version = 0;
-    unsafe { hipDriverGetVersion(&mut driver_version) }.check(ErrorStatus::Initialization)?;
+    unsafe { hipDriverGetVersion(&raw mut driver_version) }.check(ErrorStatus::Initialization)?;
     let mut num_devices = 0;
-    unsafe { hipDeviceGetCount(&mut num_devices) }.check(ErrorStatus::DeviceEnumeration)?;
+    unsafe { hipDeviceGetCount(&raw mut num_devices) }.check(ErrorStatus::DeviceEnumeration)?;
     if num_devices == 0 {
         return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "HIP no devices found.".into() });
     }
     let device_ids: Vec<_> = (0..num_devices)
-        .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(id)))
+        .filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id)))
         .collect();
     if device_ids.is_empty() {
         return Err(BackendError {
@@ -204,14 +207,16 @@ pub(super) fn initialize_device(
     let hip = Arc::new(hip);
     for dev_id in device_ids {
         let mut device = 0;
-        unsafe { hipDeviceGet(&mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration)?;
+        unsafe { hipDeviceGet(&raw mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration)?;
         let mut device_name = [0; 100];
         let Ok(()) = unsafe { hipDeviceGetName(device_name.as_mut_ptr(), 100, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         let mut major = 0;
         let mut minor = 0;
-        let Ok(()) = unsafe { hipDeviceComputeCapability(&mut major, &mut minor, device) }.check(ErrorStatus::DeviceQuery) else {
+        let Ok(()) =
+            unsafe { hipDeviceComputeCapability(&raw mut major, &raw mut minor, device) }.check(ErrorStatus::DeviceQuery)
+        else {
             continue;
         };
         if debug_dev {
@@ -220,11 +225,11 @@ pub(super) fn initialize_device(
             });
         }
         let mut free_bytes: usize = 0;
-        let Ok(()) = unsafe { hipDeviceTotalMem(&mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
+        let Ok(()) = unsafe { hipDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
         let mut context: HIPcontext = ptr::null_mut();
-        unsafe { hipCtxCreate(&mut context, 0, device) }.check(ErrorStatus::Initialization)?;
+        unsafe { hipCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization)?;
         let mut stream = ptr::null_mut();
         unsafe { hipStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization)?;
         let pool = HIPMemoryPool {
