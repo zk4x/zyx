@@ -103,10 +103,10 @@ impl Cache {
         for (&(_, dev_id), &program_id) in &self.programs {
             devices[dev_id.0 as usize].release(program_id);
         }
-        self.device_infos = Default::default();
-        self.kernels = Default::default();
+        self.device_infos = Map::default();
+        self.kernels = Map::default();
         //self.optimizations = Default::default();
-        self.programs = Default::default();
+        self.programs = Map::default();
     }
 
     pub fn get_or_add_dev_info(&mut self, device_info: &DeviceInfo) -> DeviceInfoId {
