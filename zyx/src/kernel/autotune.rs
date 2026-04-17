@@ -277,14 +277,16 @@ impl Kernel {
 
         let mut rng = Rng::seed_from_u64(3_498_203_498);
         while items.len() < n_total_opts && items.len() > 0 {
-            let items_ptr: *const Vec<OptSeq> = &items;
-            let visited_ptr: *const Set<u64> = &visited;
+            let items_ptr: *const Vec<OptSeq> = &raw const items;
+            let visited_ptr: *const Set<u64> = &raw const visited;
 
             let jobs: Vec<_> = (0..n_threads)
                 .map(|thread_id| {
                     let mut thread_kernel = kernel.clone();
 
+                    #[allow(trivial_casts)]
                     let items_ref: &Vec<OptSeq> = unsafe { &*items_ptr };
+                    #[allow(trivial_casts)]
                     let visited_ref: &Set<_> = unsafe { &*visited_ptr };
 
                     move || {
