@@ -68,7 +68,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Unary { x, .. } => {
+                Op::Unary { x, .. } | Op::Move { x, .. } => {
                     check(op_id, x, &stack);
                     dtypes.insert(op_id, dtypes[&x]);
                 }
@@ -165,10 +165,6 @@ impl Kernel {
                 }
                 Op::EndIf => {
                     stack.pop();
-                }
-                Op::Move { x, .. } => {
-                    check(op_id, x, &stack);
-                    dtypes.insert(op_id, dtypes[&x]);
                 }
                 Op::Barrier { .. } => {}
             }

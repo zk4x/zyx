@@ -52,9 +52,7 @@ impl Kernel {
         let mut op_id = self.head;
         loop {
             match self.ops[op_id].op {
-                Op::Define { scope: Scope::Global | Scope::Local, .. } => {}
-                Op::Index { .. } => {}
-                Op::Const(_) => {}
+                Op::Define { scope: Scope::Global | Scope::Local, .. } | Op::Index { .. } | Op::Const(_) => {}
                 _ => {
                     break;
                 }

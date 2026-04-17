@@ -67,15 +67,12 @@ impl Kernel {
             &mut Op::Reduce { x, n_axes, .. } => {
                 self.recursively_move(x, move_op, visited, n_reduce_axes + n_axes);
             }
-            &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } => {
+            &mut Op::Cast { x, .. } | &mut Op::Unary { x, .. } | &mut Op::Move { x, .. } => {
                 self.recursively_move(x, move_op, visited, n_reduce_axes);
             }
             &mut Op::Binary { x, y, .. } => {
                 self.recursively_move(x, move_op, visited, n_reduce_axes);
                 self.recursively_move(y, move_op, visited, n_reduce_axes);
-            }
-            &mut Op::Move { x, .. } => {
-                self.recursively_move(x, move_op, visited, n_reduce_axes);
             }
             _ => {}
         }
@@ -136,10 +133,9 @@ impl Kernel {
                     params.extend(self.at(param).parameters());
                     if acc_dtype.is_none() {
                         match self.at(param) {
-                            &Op::Define { dtype, .. } => acc_dtype = Some(dtype),
+                            &Op::Define { dtype, .. } | &Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
                             Op::ConstView(x) => acc_dtype = Some(x.0.dtype()),
                             Op::LoadView(x) => acc_dtype = Some(x.0),
-                            &Op::Cast { dtype, .. } => acc_dtype = Some(dtype),
                             _ => {}
                         }
                     }
