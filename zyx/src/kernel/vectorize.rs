@@ -27,7 +27,7 @@ impl Kernel {
                             loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                         }
                     }
-                    Op::Binary { x, y, bop } if bop == BOp::Add => {
+                    Op::Binary { x, y, bop: BOp::Add } => {
                         if let Op::Const(c) = self.ops[x].op {
                             loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                         }
@@ -71,7 +71,7 @@ impl Kernel {
                                         continue 'a;
                                     }
                                 }
-                                Op::Binary { x, y, bop } if bop == BOp::Add => {
+                                Op::Binary { x, y, bop: BOp::Add } => {
                                     if let Op::Const(_) = self.ops[x].op {
                                         base_index = y;
                                     } else if let Op::Const(_) = self.ops[y].op {

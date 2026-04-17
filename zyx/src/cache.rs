@@ -84,7 +84,7 @@ impl DeBin for Cache {
         }
 
         let programs = Map::with_hasher(BuildHasherDefault::new());
-        Ok(Cache { device_infos, kernels, programs, optimizations })
+        Ok(Cache { device_infos, kernels, optimizations, programs })
     }
 }
 
@@ -144,6 +144,8 @@ pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> S
     if nanos == u64::MAX {
         return "INF time taken".to_string();
     }
+    const K: usize = 16;
+
     const fn value_unit(x: u64) -> (u64, &'static str) {
         match x {
             0..1000 => (x * 100, ""),

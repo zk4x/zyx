@@ -471,10 +471,10 @@ impl Constant {
 
     pub(crate) const fn is_power_of_two(&self) -> bool {
         match *self {
-            Constant::U32(x) => x != 0 && (x & (x - 1)) == 0,
+            Constant::U32(x) => x != 0 && x.is_power_of_two(),
             Constant::U64(x) => {
                 let x = u64::from_le_bytes(x);
-                x != 0 && (x & (x - 1)) == 0
+                x != 0 && x.is_power_of_two()
             }
             _ => false,
         }

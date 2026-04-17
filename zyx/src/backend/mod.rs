@@ -8,6 +8,7 @@
 //! Events are used to achieve maximum asynchronous execution.
 
 #![allow(clippy::needless_pass_by_ref_mut)]
+#![allow(clippy::upper_case_acronyms)]
 
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 

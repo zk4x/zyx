@@ -297,7 +297,7 @@ impl Kernel {
                             BOp::Eq => {
                                 // x == y
                                 let always = (min_x == max_x) && (min_y == max_y) && (min_x == min_y);
-                                let maybe = !(max_x < min_y || max_y < min_x) && !always;
+                                let maybe = !(max_x < min_y || max_y < min_x || always);
                                 let lower = u64::from(always);
                                 let upper = u64::from(always || maybe);
                                 (lower, upper)
@@ -305,7 +305,7 @@ impl Kernel {
                             BOp::NotEq => {
                                 // x != y
                                 let always = max_x < min_y || max_y < min_x; // disjoint ranges → always true
-                                let maybe = !(min_x == max_x && min_y == max_y && min_x == min_y) && !always;
+                                let maybe = !(always || min_x == max_x && min_y == max_y && min_x == min_y);
                                 let lower = u64::from(always);
                                 let upper = u64::from(always || maybe);
                                 (lower, upper)
@@ -342,12 +342,10 @@ impl Kernel {
                                 let maybe = min_x == 1 || min_y == 1 || max_x == 1 || max_y == 1;
                                 let lower = if always {
                                     1
-                                } else if maybe {
-                                    0
                                 } else {
                                     0
                                 };
-                                let upper = if always || maybe { 1 } else { 0 };
+                                let upper = u64::from(always || maybe);
                                 (lower, upper)
                             }
                             BOp::Max => (min_x.min(min_y), max_x.max(max_y)),

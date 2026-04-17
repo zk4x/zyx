@@ -624,7 +624,7 @@ impl Tensor {
     /// Panics if applied on non-float dtype while implicit casting is disabled.
     #[must_use]
     pub fn log10(&self) -> Tensor {
-        (self.log2() / Tensor::from(10f32).log2()).cast(self.dtype())
+        (self.log(Tensor::from(10f32))).cast(self.dtype())
     }
 
     /// Converts angles from radians to degrees.

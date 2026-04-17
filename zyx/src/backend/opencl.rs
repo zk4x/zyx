@@ -185,7 +185,7 @@ pub(super) fn initialize_device(
             for entry in lib_folder.flatten() {
                 let path = entry.path();
                 if path.is_file() {
-                    let name = path.file_name().map(|x| x.to_str().unwrap()).unwrap_or("");
+                    let name = path.file_name().map_or("", |x| x.to_str().unwrap());
                     if name.contains("libOpenCL.so") {
                         opencl_paths.push(path);
                     }
@@ -750,7 +750,7 @@ impl OpenCLDevice {
                     *rcs.entry(x).or_insert(0) += 1;
                     *rcs.entry(y).or_insert(0) += 1;
                 }
-                &Op::Vectorize { ref ops } => {
+                Op::Vectorize { ops } => {
                     let dtype = dtypes[&ops[0]];
                     dtypes.insert(op_id, (dtype.0, ops.len() as u8));
                     for &x in ops {
@@ -990,14 +990,14 @@ impl OpenCLDevice {
         }*/
 
         let mut reg_str = String::new();
-        if registers.len() > 0 {
+        if !registers.is_empty() {
             let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
             _ = write!(
                 reg_str,
                 "{indent}{}{} r0",
                 dt.0.ocl(),
-                if dt.1 == 1 { "".into() } else { format!("{}", dt.1) }
+                if dt.1 == 1 { String::new() } else { format!("{}", dt.1) }
             );
             let mut i = 1;
             for (dt, _, _) in registers {
@@ -1008,7 +1008,7 @@ impl OpenCLDevice {
                         reg_str,
                         ";\n{indent}{}{} r{i}",
                         dt.0.ocl(),
-                        if dt.1 == 1 { "".into() } else { format!("{}", dt.1) }
+                        if dt.1 == 1 { String::new() } else { format!("{}", dt.1) }
                     );
                 }
                 prev_dt = dt;

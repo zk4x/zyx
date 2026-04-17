@@ -13,7 +13,7 @@ use crate::{DebugMask, Map, Set};
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
-use std::{thread, u64};
+use std::thread;
 
 const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
     Kernel::opt_reassociate_commutative,

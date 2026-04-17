@@ -182,7 +182,7 @@ pub(super) fn initialize_device(
                     let path = entry.path();
                     if path.is_dir() {
                         stack.push(path);
-                    } else if path.file_name().map(|f| f == "libcuda.so").unwrap_or(false) {
+                    } else if path.file_name().is_some_and(|f| f == "libcuda.so") {
                         cuda_paths.push(path);
                     }
                 }
