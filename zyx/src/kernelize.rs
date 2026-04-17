@@ -691,9 +691,7 @@ impl Runtime {
             for &nid in to_eval {
                 rcs2.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
             }
-            if rcs2 != rcs {
-                panic!("rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
-            }
+            assert_eq!(rcs2, rcs, "rcs are incorrect, rcs: {rcs:?}\nrcs2: {rcs2:?}");
         }
 
         //println!("{rcs:?}");
@@ -811,9 +809,7 @@ impl Runtime {
 
         #[cfg(debug_assertions)]
         {
-            if kernelizer.kernels.len() > KMKernelId(0) {
-                panic!();
-            }
+            assert!(kernelizer.kernels.len() <= KMKernelId(0));
             debug_assert!(to_eval.is_subset(&kernelizer.realized_nodes));
             //println!("Realized nodes in kernelizer: {:?}", kernelizer.realized_nodes);
         }

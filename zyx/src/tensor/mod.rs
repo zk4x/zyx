@@ -226,10 +226,10 @@ impl Tensor {
     ///
     /// # Errors
     ///
-    /// This function will return a ZyxError if:
+    /// This function will return a `ZyxError` if:
     ///
     /// * `N` is greater than the number of dimensions in this tensor,
-    ///   resulting in a ShapeError with a message indicating the mismatch.
+    ///   resulting in a `ShapeError` with a message indicating the mismatch.
     ///
     /// # Examples
     ///
@@ -271,10 +271,10 @@ impl Tensor {
     ///
     /// # Errors
     ///
-    /// This function will return a ZyxError if:
+    /// This function will return a `ZyxError` if:
     ///
     /// * `N` is greater than the number of dimensions in this tensor,
-    ///   resulting in a ShapeError with a message indicating the mismatch.
+    ///   resulting in a `ShapeError` with a message indicating the mismatch.
     ///
     /// # Examples
     ///
@@ -424,7 +424,7 @@ impl Tensor {
     /// }
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
-    /// [GradientTape](crate::GradientTape) limits scope of backpropagation graph, therefore detach
+    /// [`GradientTape`](crate::GradientTape) limits scope of backpropagation graph, therefore detach
     /// is only required in very advanced cases, not in simple RNNs.
     ///
     /// # Errors
@@ -1299,8 +1299,7 @@ impl Tensor {
             if inferred_dim * product_other != numel {
                 return Err(ZyxError::shape_error(
                     format!(
-                        "Cannot infer dimension: total elements {} not divisible by product of specified dims {}",
-                        numel, product_other
+                        "Cannot infer dimension: total elements {numel} not divisible by product of specified dims {product_other}"
                     )
                     .into(),
                 ));
@@ -1313,8 +1312,7 @@ impl Tensor {
         if final_product != numel {
             return Err(ZyxError::shape_error(
                 format!(
-                    "Invalid reshape: tensor has {} elements, but requested shape {:?} has {} elements",
-                    numel, shape, final_product
+                    "Invalid reshape: tensor has {numel} elements, but requested shape {shape:?} has {final_product} elements"
                 )
                 .into(),
             ));
@@ -1742,11 +1740,7 @@ impl Tensor {
         for (d, (&s, &i)) in shape.iter().zip(index_shape.iter()).enumerate() {
             if d != dim && s < i {
                 return Err(ZyxError::shape_error(
-                    format!(
-                        "Shape mismatch at dimension {}: self.shape[{}] = {} < indices.shape[{}] = {}",
-                        d, d, s, d, i
-                    )
-                    .into(),
+                    format!("Shape mismatch at dimension {d}: self.shape[{d}] = {s} < indices.shape[{d}] = {i}").into(),
                 ));
             }
         }
@@ -1818,6 +1812,7 @@ impl Tensor {
     ///
     /// If `num_classes` is less than any scalr in self, that scalar is ignored.
     #[allow(clippy::missing_panics_doc)]
+    #[must_use]
     pub fn one_hot(&self, num_classes: Dim) -> Tensor {
         let mut num_classes = num_classes;
         if num_classes == 0 {
@@ -2085,6 +2080,7 @@ impl Tensor {
     ///
     /// Returns error if self cannot be squeezed along axis.
     #[allow(clippy::missing_panics_doc)]
+    #[must_use]
     pub fn squeeze(&self, axes: impl IntoIterator<Item = Axis>) -> Tensor {
         let shape = self.shape();
         let mut naxes = Vec::new();
@@ -2171,6 +2167,7 @@ impl Tensor {
 
     /// Argmax
     #[allow(clippy::missing_panics_doc)]
+    #[must_use]
     pub fn argmax(&self) -> Tensor {
         self.flatten(..).unwrap().argmax_impl(0, false).unwrap()
     }
@@ -3397,7 +3394,7 @@ fn tensor_to_string<T: core::fmt::Display>(data: &[T], shape: &[Dim], precision:
             let mut var: Dim = 1;
             let mut r = rank;
             while r > 0 {
-                if (i as Dim) % (n / var) == 0 {
+                if (i as Dim).is_multiple_of(n / var) {
                     res += &(" ".repeat(rank - r) + "[".repeat(r - 1).as_str());
                     break;
                 }
@@ -3406,14 +3403,14 @@ fn tensor_to_string<T: core::fmt::Display>(data: &[T], shape: &[Dim], precision:
             }
         }
         let _ = write!(res, "{x:>w$.precision$}");
-        if (i as Dim + 1) % d0 != 0 {
+        if !(i as Dim + 1).is_multiple_of(d0) {
             res += "  ";
         }
         {
             let mut var: Dim = 1;
             let mut r = rank;
             while r > 0 {
-                if (i as Dim + 1) % (n / var) == 0 {
+                if (i as Dim + 1).is_multiple_of(n / var) {
                     res += &"]".repeat(r - 1);
                     break;
                 }
@@ -3421,7 +3418,7 @@ fn tensor_to_string<T: core::fmt::Display>(data: &[T], shape: &[Dim], precision:
                 r -= 1;
             }
         }
-        if (i as Dim + 1) % d0 == 0 && i as Dim != n - 1 {
+        if (i as Dim + 1).is_multiple_of(d0) && i as Dim != n - 1 {
             res += "\n";
         }
     }
