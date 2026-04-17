@@ -21,7 +21,6 @@ use std::fmt::{Debug, Display};
 use std::iter::{once, repeat_n};
 use std::ops::{Bound, Mul, Neg, Not, Range, RangeBounds};
 use std::path::Path;
-use std::u32;
 
 mod binary_ops;
 mod elementwise;
@@ -1858,7 +1857,7 @@ impl Tensor {
         let arange = arange.reshape(&new_shape)?;
 
         // Broadcast and compare
-        Ok(self.equal(&arange)?)
+        self.equal(&arange)
     }
 
     /// Calculates the L1 loss between `self` and the target tensor.
@@ -2091,9 +2090,7 @@ impl Tensor {
         }
         let mut new_shape = Vec::new();
         for (a, d) in shape.into_iter().enumerate() {
-            if d != 1 {
-                new_shape.push(d);
-            } else if !naxes.contains(&a) {
+            if d != 1 || !naxes.contains(&a) {
                 new_shape.push(d);
             }
         }
@@ -2134,7 +2131,7 @@ impl Tensor {
         if dim < 0 {
             if -dim > (rank + 1) as Axis {
                 return Err(ZyxError::shape_error(
-                    "Unsqueeze dim {dim} is not possible on rank {rank} tensor.".into(),
+                    format!("Unsqueeze dim {dim} is not possible on rank {rank} tensor.").into(),
                 ));
             }
             let dim = usize::try_from(-dim).unwrap();
@@ -2151,7 +2148,7 @@ impl Tensor {
             let dim = usize::try_from(dim).unwrap();
             if dim > rank {
                 return Err(ZyxError::shape_error(
-                    "Unsqueeze dim {dim} is not possible on rank {rank} tensor.".into(),
+                    format!("Unsqueeze dim {dim} is not possible on rank {rank} tensor.").into(),
                 ));
             }
             self.reshape(
@@ -2304,12 +2301,12 @@ impl Tensor {
         }
 
         let mut res = Vec::new();
-        let mut acc_size = 0;
+        let mut acc_size: i64 = 0;
         for size in sizes {
-            let size = isize::try_from(size).unwrap();
+            let size = size as i64;
             let mut index = Vec::new();
             for &d in shape.iter().take(dim) {
-                index.push(0..isize::try_from(d).unwrap());
+                index.push(0..d as i64);
             }
             index.push(acc_size..acc_size + size);
             //println!("Index {index:?}");
@@ -2332,11 +2329,11 @@ impl Tensor {
     #[must_use]
     #[track_caller]
     #[allow(clippy::missing_panics_doc)]
-    pub fn tri(r: Dim, c: Dim, diagonal: i32, dtype: DType) -> Tensor {
-        if r == 0 || c == 0 || diagonal >= c as i32 {
+    pub fn tri(r: Dim, c: Dim, diagonal: i64, dtype: DType) -> Tensor {
+        if r == 0 || c == 0 || diagonal >= c as i64 {
             return Tensor::zeros([r, c], dtype);
         }
-        if r as i32 + diagonal <= 0 {
+        if r as i64 + diagonal <= 0 {
             return Tensor::ones([r, c], dtype);
         }
         let s = r + c - 1;
@@ -2346,11 +2343,9 @@ impl Tensor {
         let t = t.reshape([s, 2 * s - 1]).unwrap();
         let t = t.rpad_zeros([(0i64, -((2 * s - 1 - s) as i64))]).unwrap();
         if diagonal <= 0 {
-            t.slice((0..r as usize, ((-diagonal) as usize)..((c as i32 - diagonal) as usize)))
-                .unwrap()
+            t.slice((0..r as i64, (-diagonal)..(c as i64 - diagonal))).unwrap()
         } else {
-            t.slice(((diagonal as usize)..((r + diagonal as u64) as usize), 0..c as usize))
-                .unwrap()
+            t.slice((diagonal..(r as i64 + diagonal), 0..c as i64)).unwrap()
         }
     }
 
@@ -2359,7 +2354,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns error if the tensor rank is less than 2.
-    pub fn triu(&self, diagonal: i32) -> Result<Tensor, ZyxError> {
+    pub fn triu(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal, device=self.device, dtype=dtypes.bool).where(self, self.zeros_like())
         let [r, c] = self.rdims::<2>()?;
         Tensor::tri(r, c, diagonal, DType::Bool).where_(self, Tensor::zeros_like(self))
@@ -2368,7 +2363,7 @@ impl Tensor {
     /// Returns lower triangular part of the input tensor, other elements are set to zero
     /// # Errors
     /// Returns error if self's rank < 2
-    pub fn tril(&self, diagonal: i32) -> Result<Tensor, ZyxError> {
+    pub fn tril(&self, diagonal: i64) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal+1, device=self.device, dtype=dtypes.bool).where(self.zeros_like(), self)
         let [r, c] = self.rdims::<2>()?;
         Tensor::tri(r, c, diagonal + 1, DType::Bool).where_(Tensor::zeros_like(self), self)
@@ -2420,16 +2415,13 @@ impl Tensor {
             )
             .collect();
         //println!("repeats {repeats:?}");
-        let pad_b: Vec<Range<isize>> = shape[..rank - k_.len()]
-            .iter()
-            .map(|&d| 0..isize::try_from(d).unwrap())
-            .collect();
+        let pad_b: Vec<Range<i64>> = shape[..rank - k_.len()].iter().map(|&d| 0..d as i64).collect();
         let sh_b: Vec<Dim> = shape[..rank - k_.len()].into();
         let mut xup = self.repeat(repeats)?;
 
         // dilation
         //println!("{xup:?} before padding");
-        let padding: Vec<Range<isize>> = pad_b
+        let padding: Vec<Range<i64>> = pad_b
             .iter()
             .cloned()
             .chain(
@@ -2437,7 +2429,7 @@ impl Tensor {
                     .copied()
                     .zip(i_.iter().copied())
                     .zip(d_.iter().copied())
-                    .map(|((k, i), d)| 0..isize::try_from(k * (i + d)).unwrap()),
+                    .map(|((k, i), d)| 0..(k * (i + d)) as i64),
             )
             .collect();
         //println!("Padding {padding:?}");
@@ -2460,7 +2452,7 @@ impl Tensor {
         // stride
         // padding = noop_ + flatten(((0,k), (0,o*s)) for k,o,s in zip(k_, o_, s_))
         // xup = xup.shrink(padding)
-        let padding: Vec<Range<isize>> = pad_b
+        let padding: Vec<Range<i64>> = pad_b
             .iter()
             .cloned()
             .chain(
@@ -2468,7 +2460,7 @@ impl Tensor {
                     .copied()
                     .zip(o_.iter().copied())
                     .zip(s_.iter().copied())
-                    .flat_map(|((k, o), s)| [(0..isize::try_from(k).unwrap()), (0..isize::try_from(o * s).unwrap())]),
+                    .flat_map(|((k, o), s)| [(0..k as i64), (0..(o * s) as i64)]),
             )
             .collect();
         xup = xup.slice(padding)?;
@@ -2488,14 +2480,14 @@ impl Tensor {
         xup = xup.reshape(sh)?;
         // padding = noop_ + flatten(((0,k), (0,o), (0,1)) for k,o in zip(k_, o_))
         // xup = xup.shrink(padding)
-        let padding: Vec<Range<isize>> = pad_b
+        let padding: Vec<Range<i64>> = pad_b
             .iter()
             .cloned()
             .chain(
                 k_.iter()
                     .copied()
                     .zip(o_.iter().copied())
-                    .flat_map(|(k, o)| [(0..isize::try_from(k).unwrap()), (0..isize::try_from(o).unwrap()), (0..1)]),
+                    .flat_map(|(k, o)| [(0..k as i64), (0..o as i64), (0..1)]),
             )
             .collect();
         xup = xup.slice(padding)?;
@@ -2628,11 +2620,7 @@ impl Tensor {
         }
 
         let x = self
-            .rpad_zeros(
-                padding_
-                    .chunks(2)
-                    .map(|x| (i64::try_from(x[0]).unwrap(), i64::try_from(x[1]).unwrap())),
-            )
+            .rpad_zeros(padding_.chunks(2).map(|x| (x[0], x[1])))
             .unwrap()
             .pool(hw, stride, dilation)
             .unwrap();
@@ -3099,6 +3087,7 @@ impl Tensor {
     }
 
     /// Tensor id
+    #[must_use]
     pub const fn id(&self) -> TensorId {
         self.id
     }

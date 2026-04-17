@@ -300,24 +300,18 @@ pub enum DimIndex {
 
 /// Into index
 pub trait IntoIndex {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator;
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator;
 }
 
-impl From<isize> for DimIndex {
-    fn from(val: isize) -> DimIndex {
-        DimIndex::Index(val as i64)
+impl From<i64> for DimIndex {
+    fn from(val: i64) -> DimIndex {
+        DimIndex::Index(val)
     }
 }
 
 impl From<i32> for DimIndex {
     fn from(val: i32) -> DimIndex {
         DimIndex::Index(val as i64)
-    }
-}
-
-impl From<i64> for DimIndex {
-    fn from(val: i64) -> DimIndex {
-        DimIndex::Index(val)
     }
 }
 
@@ -333,21 +327,15 @@ impl From<u64> for DimIndex {
     }
 }
 
-impl From<Range<isize>> for DimIndex {
-    fn from(val: Range<isize>) -> DimIndex {
-        DimIndex::Range { start: val.start as i64, end: val.end as i64 }
+impl From<Range<i64>> for DimIndex {
+    fn from(val: Range<i64>) -> DimIndex {
+        DimIndex::Range { start: val.start, end: val.end }
     }
 }
 
 impl From<Range<i32>> for DimIndex {
     fn from(val: Range<i32>) -> DimIndex {
         DimIndex::Range { start: val.start as i64, end: val.end as i64 }
-    }
-}
-
-impl From<Range<i64>> for DimIndex {
-    fn from(val: Range<i64>) -> DimIndex {
-        DimIndex::Range { start: val.start, end: val.end }
     }
 }
 
@@ -363,51 +351,39 @@ impl From<Range<u64>> for DimIndex {
     }
 }
 
-impl From<RangeInclusive<isize>> for DimIndex {
-    fn from(val: RangeInclusive<isize>) -> DimIndex {
-        DimIndex::Range { start: *val.start() as i64, end: (*val.end() as i64) + 1 }
-    }
-}
-
-impl From<RangeInclusive<i32>> for DimIndex {
-    fn from(val: RangeInclusive<i32>) -> DimIndex {
-        DimIndex::Range { start: *val.start() as i64, end: (*val.end() as i64) + 1 }
-    }
-}
-
 impl From<RangeInclusive<i64>> for DimIndex {
     fn from(val: RangeInclusive<i64>) -> DimIndex {
         DimIndex::Range { start: *val.start(), end: val.end() + 1 }
     }
 }
 
+impl From<RangeInclusive<i32>> for DimIndex {
+    fn from(val: RangeInclusive<i32>) -> DimIndex {
+        DimIndex::Range { start: *val.start() as i64, end: *val.end() as i64 + 1 }
+    }
+}
+
 impl From<RangeInclusive<usize>> for DimIndex {
     fn from(val: RangeInclusive<usize>) -> DimIndex {
-        DimIndex::Range { start: *val.start() as i64, end: (*val.end() as i64) + 1 }
+        DimIndex::Range { start: *val.start() as i64, end: *val.end() as i64 + 1 }
     }
 }
 
 impl From<RangeInclusive<u64>> for DimIndex {
     fn from(val: RangeInclusive<u64>) -> DimIndex {
-        DimIndex::Range { start: *val.start() as i64, end: (*val.end() as i64) + 1 }
-    }
-}
-
-impl From<RangeFrom<isize>> for DimIndex {
-    fn from(val: RangeFrom<isize>) -> DimIndex {
-        DimIndex::RangeFrom { start: val.start as i64 }
-    }
-}
-
-impl From<RangeFrom<i32>> for DimIndex {
-    fn from(val: RangeFrom<i32>) -> DimIndex {
-        DimIndex::RangeFrom { start: val.start as i64 }
+        DimIndex::Range { start: *val.start() as i64, end: *val.end() as i64 + 1 }
     }
 }
 
 impl From<RangeFrom<i64>> for DimIndex {
     fn from(val: RangeFrom<i64>) -> DimIndex {
         DimIndex::RangeFrom { start: val.start }
+    }
+}
+
+impl From<RangeFrom<i32>> for DimIndex {
+    fn from(val: RangeFrom<i32>) -> DimIndex {
+        DimIndex::RangeFrom { start: val.start as i64 }
     }
 }
 
@@ -423,21 +399,15 @@ impl From<RangeFrom<u64>> for DimIndex {
     }
 }
 
-impl From<RangeTo<isize>> for DimIndex {
-    fn from(val: RangeTo<isize>) -> DimIndex {
-        DimIndex::RangeTo { end: val.end as i64 }
+impl From<RangeTo<i64>> for DimIndex {
+    fn from(val: RangeTo<i64>) -> DimIndex {
+        DimIndex::RangeTo { end: val.end }
     }
 }
 
 impl From<RangeTo<i32>> for DimIndex {
     fn from(val: RangeTo<i32>) -> DimIndex {
         DimIndex::RangeTo { end: val.end as i64 }
-    }
-}
-
-impl From<RangeTo<i64>> for DimIndex {
-    fn from(val: RangeTo<i64>) -> DimIndex {
-        DimIndex::RangeTo { end: val.end }
     }
 }
 
@@ -460,43 +430,43 @@ impl From<RangeFull> for DimIndex {
 }
 
 impl<I: Into<DimIndex>> IntoIndex for I {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
         std::iter::once(self.into())
     }
 }
 
 impl<I: Into<DimIndex>, const N: usize> IntoIndex for [I; N] {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
         self.into_iter().map(Into::into)
     }
 }
 
 impl<I: Into<DimIndex> + Clone> IntoIndex for &[I] {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
-        self.into_iter().map(|e| e.clone().into())
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
+        self.iter().map(|e| e.clone().into())
     }
 }
 
 impl<I: Into<DimIndex>> IntoIndex for Vec<I> {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
-        self.into_iter().map(|e| e.into())
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
+        self.into_iter().map(Into::into)
     }
 }
 
 impl<I0: Into<DimIndex>, I1: Into<DimIndex>> IntoIndex for (I0, I1) {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
         [self.0.into(), self.1.into()].into_iter()
     }
 }
 
 impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>> IntoIndex for (I0, I1, I2) {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
         [self.0.into(), self.1.into(), self.2.into()].into_iter()
     }
 }
 
 impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimIndex>> IntoIndex for (I0, I1, I2, I3) {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
         [self.0.into(), self.1.into(), self.2.into(), self.3.into()].into_iter()
     }
 }
@@ -504,7 +474,7 @@ impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimInd
 impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimIndex>, I4: Into<DimIndex>> IntoIndex
     for (I0, I1, I2, I3, I4)
 {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
         [self.0.into(), self.1.into(), self.2.into(), self.3.into(), self.4.into()].into_iter()
     }
 }
@@ -512,7 +482,7 @@ impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimInd
 impl<I0: Into<DimIndex>, I1: Into<DimIndex>, I2: Into<DimIndex>, I3: Into<DimIndex>, I4: Into<DimIndex>, I5: Into<DimIndex>>
     IntoIndex for (I0, I1, I2, I3, I4, I5)
 {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
         [
             self.0.into(),
             self.1.into(),
@@ -535,7 +505,7 @@ impl<
     I6: Into<DimIndex>,
 > IntoIndex for (I0, I1, I2, I3, I4, I5, I6)
 {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
         [
             self.0.into(),
             self.1.into(),
@@ -560,7 +530,7 @@ impl<
     I7: Into<DimIndex>,
 > IntoIndex for (I0, I1, I2, I3, I4, I5, I6, I7)
 {
-    fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator {
+    fn into_index(self) -> impl ExactSizeIterator<Item = DimIndex> + DoubleEndedIterator {
         [
             self.0.into(),
             self.1.into(),

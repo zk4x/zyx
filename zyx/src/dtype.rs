@@ -112,8 +112,8 @@ impl DType {
     }
 
     pub(crate) fn least_upper_dtype(self, rhs: DType) -> DType {
-        use DType::*;
-        // define an ordered list of “widening” priority
+        use DType::{BF16, Bool, F16, F32, F64, I8, I16, I32, I64, U8, U16, U32, U64};
+        // define an ordered list of "widening" priority
         let order = [Bool, U8, U16, U32, U64, I8, I16, I32, I64, BF16, F16, F32, F64];
 
         let i1 = order.iter().position(|&d| d == self).unwrap();

@@ -405,7 +405,7 @@ use crate::dtype::Constant;
 
 impl BOp {
     pub const fn is_associative(&self) -> bool {
-        use BOp::*;
+        use BOp::{Add, And, BitAnd, BitOr, BitShiftLeft, BitShiftRight, BitXor, Max, Mul, Or};
         matches!(
             self,
             Add | Mul | And | Or | BitXor | BitAnd | BitOr | BitShiftLeft | BitShiftRight | Max
@@ -413,12 +413,12 @@ impl BOp {
     }
 
     pub const fn is_commutative(&self) -> bool {
-        use BOp::*;
+        use BOp::{Add, And, BitAnd, BitOr, BitXor, Max, Mul, Or};
         matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | Max)
     }
 
     pub const fn returns_bool(&self) -> bool {
-        use BOp::*;
+        use BOp::{And, Cmpgt, Cmplt, Eq, NotEq, Or};
         matches!(self, Cmpgt | Cmplt | NotEq | Eq | And | Or)
     }
 }

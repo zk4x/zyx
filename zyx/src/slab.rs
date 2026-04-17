@@ -217,9 +217,7 @@ impl<Id: SlabId, T> Index<Id> for Slab<Id, T> {
     type Output = T;
     fn index(&self, index: Id) -> &Self::Output {
         #[cfg(debug_assertions)]
-        if self.empty.contains(&index) {
-            panic!("Key {index:?} has been deleted from the slab.");
-        }
+        assert!(!self.empty.contains(&index), "Key {index:?} has been deleted from the slab.");
         unsafe { self.values[index.into()].assume_init_ref() }
     }
 }
@@ -227,9 +225,7 @@ impl<Id: SlabId, T> Index<Id> for Slab<Id, T> {
 impl<Id: SlabId, T> IndexMut<Id> for Slab<Id, T> {
     fn index_mut(&mut self, index: Id) -> &mut Self::Output {
         #[cfg(debug_assertions)]
-        if self.empty.contains(&index) {
-            panic!("Key {index:?} has been deleted from the slab.");
-        }
+        assert!(!self.empty.contains(&index), "Key {index:?} has been deleted from the slab.");
         unsafe { self.values[index.into()].assume_init_mut() }
     }
 }
@@ -341,6 +337,6 @@ impl<T: DeBin, Id: SlabId + DeBin> DeBin for Slab<Id, T> {
                 values.push(MaybeUninit::new(value));
             }
         }
-        Ok(Self { values, empty, _index: Default::default() })
+        Ok(Self { values, empty, _index: PhantomData::default() })
     }
 }

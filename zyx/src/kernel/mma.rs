@@ -41,6 +41,7 @@ impl Kernel {
     /// Finds loop trifectas and if possible, LICM moves these instructions before those loops
     /// and converts them into MMA instructions.
     pub fn fuse_mma(&mut self, dev_info: &DeviceInfo) {
+        #[allow(clippy::enum_glob_use)]
         use Op::*;
 
         if !dev_info.tensor_cores {
@@ -99,7 +100,9 @@ impl Kernel {
     }
 
     fn mma_store_info(&self, store_id: OpId, k_loop_id: OpId) -> Option<MMAStore> {
+        #[allow(clippy::enum_glob_use)]
         use BOp::*;
+        #[allow(clippy::enum_glob_use)]
         use Op::*;
 
         let &Store { dst: acc_id, x, index: store_idx, vlen: 1 } = self.at(store_id) else {
