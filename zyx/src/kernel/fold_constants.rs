@@ -43,6 +43,7 @@ impl Kernel {
                     }
                     (Op::Const(cx), _) => match bop {
                         BOp::And if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, x),
+                        #[allow(clippy::match_same_arms)]
                         BOp::And if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, y),
                         BOp::Add if cx.is_zero() => self.remap(op_id, y),
                         BOp::Sub if cx.is_zero() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Neg },
@@ -53,17 +54,16 @@ impl Kernel {
                             let c = self.insert_before(op_id, Op::Const(cx.unary(UOp::Log2)));
                             self.ops[op_id].op = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft };
                         }
-                        BOp::Div if cx.is_zero() => self.ops[op_id].op = Op::Const(cx.dtype().zero_constant()),
                         BOp::Div if cx.is_one() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Reciprocal },
                         BOp::Pow if cx.is_one() => self.ops[op_id].op = Op::Const(cx.dtype().one_constant()),
                         BOp::Max if cx.is_minimum() => self.remap(op_id, y),
-                        BOp::BitShiftLeft if cx.is_zero() => self.remap(op_id, y),
-                        BOp::BitShiftRight if cx.is_zero() => self.remap(op_id, y),
+                        BOp::BitShiftLeft | BOp::BitShiftRight if cx.is_zero() => self.remap(op_id, y),
                         _ => {}
                     },
                     (_, Op::Const(cy)) => match bop {
                         BOp::Mul if cy.is_one() => self.remap(op_id, x),
                         BOp::And if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, y),
+                        #[allow(clippy::match_same_arms)]
                         BOp::And if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, x),
                         BOp::Add | BOp::Sub if cy.is_zero() => self.remap(op_id, x),
                         BOp::Div if cy.is_zero() => panic!("Division by constant zero"),

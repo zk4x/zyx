@@ -401,7 +401,7 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
-                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
+                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
                     n_instructions += loop_mult;
                 }
                 Op::Const(_) | Op::Define { .. } => {}
@@ -435,9 +435,6 @@ impl Kernel {
                 }
                 Op::EndLoop => {
                     loop_mult /= latest_loop_lengths.pop().unwrap();
-                }
-                Op::Mad { .. } => {
-                    n_instructions += loop_mult;
                 }
                 Op::WMMA { dims, .. } => {
                     let (m, n, k) = dims.decompose_mnk();
