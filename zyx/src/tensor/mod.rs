@@ -889,13 +889,13 @@ impl Tensor {
 
         let diff = input.clone() - target.clone();
         let abs_diff = diff.abs();
-        let mask = abs_diff.cmplt(1.0_f32).unwrap();
+        let mask = abs_diff.cmplt(1.0f32).unwrap();
 
         // Quadratic region: 0.5 * (x - y)²
-        let quadratic_loss = 0.5_f32 * diff.clone() * diff.clone();
+        let quadratic_loss = 0.5f32 * diff.clone() * diff.clone();
 
         // Linear region: |x - y| - 0.5
-        let linear_loss = abs_diff - 0.5_f32;
+        let linear_loss = abs_diff - 0.5f32;
 
         // Combine based on the mask
         let loss = mask.clone() * quadratic_loss + mask.not() * linear_loss;

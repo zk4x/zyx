@@ -403,7 +403,7 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let prev = self.ops[before_id].prev;
-        let op_node = OpNode { prev, next: before_id, op: op };
+        let op_node = OpNode { prev, next: before_id, op };
         let op_id = self.ops.push(op_node);
         self.ops[before_id].prev = op_id;
         if prev.is_null() {
@@ -419,7 +419,7 @@ impl Kernel {
         debug_assert!(!self.ops.is_empty());
 
         let next = self.ops[after_id].next;
-        let op_node = OpNode { prev: after_id, next, op: op };
+        let op_node = OpNode { prev: after_id, next, op };
         let op_id = self.ops.push(op_node);
         self.ops[after_id].next = op_id;
         if next.is_null() {

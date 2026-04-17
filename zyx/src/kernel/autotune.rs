@@ -275,7 +275,7 @@ impl Kernel {
             }
         }
 
-        let mut rng = Rng::seed_from_u64(3498203498);
+        let mut rng = Rng::seed_from_u64(3_498_203_498);
         while items.len() < n_total_opts && items.len() > 0 {
             let items_ptr: *const Vec<OptSeq> = &items;
             let visited_ptr: *const Set<u64> = &visited;
@@ -291,7 +291,7 @@ impl Kernel {
                         let mut local_items = Vec::new();
                         let mut local_visited = Set::default();
 
-                        let mut rng = Rng::seed_from_u64(3902938402398423 + thread_id as u64);
+                        let mut rng = Rng::seed_from_u64(3_902_938_402_398_423 + thread_id as u64);
 
                         let opt_seq = sample_best(items_ref, &mut rng);
                         opt_seq.apply(&mut thread_kernel);

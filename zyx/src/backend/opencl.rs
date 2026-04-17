@@ -1219,7 +1219,7 @@ impl OpenCLDevice {
         let mlt = usize::from_ne_bytes(self.get_device_data(CL_DEVICE_MAX_WORK_GROUP_SIZE)?.try_into().unwrap()) as Dim;
         self.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024,
-            max_global_work_dims: vec![100000; max_work_item_dims],
+            max_global_work_dims: vec![100_000; max_work_item_dims],
             max_local_threads: mlt,
             max_local_work_dims,
             preferred_vector_size: u8::try_from(u32::from_ne_bytes(

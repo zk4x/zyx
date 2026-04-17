@@ -226,7 +226,7 @@ impl Graph {
 
     pub(super) fn shape(&self, tensor_id: TensorId) -> &[Dim] {
         let mut tensor_id = tensor_id;
-        for _ in 0..1000000 {
+        for _ in 0..1_000_000 {
             if let Some(shape) = self.shapes.get(&tensor_id) {
                 //println!("Found shape {shape:?} for tensor {tensor_id}");
                 return shape;

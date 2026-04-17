@@ -30,8 +30,8 @@ impl Tensor {
     #[must_use]
     pub fn sign(&self) -> Tensor {
         let zero = Tensor::zeros_like(self.clone());
-        let neg_one: Tensor = (-1_i32).into();
-        let pos_one: Tensor = (1_i32).into();
+        let neg_one: Tensor = (-1i32).into();
+        let pos_one: Tensor = (1i32).into();
         let is_neg = self.clone().cmplt(zero.clone()).unwrap();
         let result = is_neg.where_(&neg_one, &pos_one).unwrap();
         self.nonzero().where_(&result, &zero).unwrap()
@@ -42,13 +42,13 @@ impl Tensor {
     pub fn erf(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         let one: Tensor = 1.0f32.into();
-        let t = one.clone() / (one.clone() + 0.3275911f32 * x.clone().abs());
+        let t = one.clone() / (one.clone() + 0.327_591_1f32 * x.clone().abs());
         let coeffs = [
-            1.061405429f32,
-            -1.453152027f32,
-            1.421413741f32,
-            -0.284496736f32,
-            0.254829592f32,
+            1.061_405_429f32,
+            -1.453_152_027f32,
+            1.421_413_741f32,
+            -0.284_496_736f32,
+            0.254_829_592f32,
         ];
         let poly = Self::poly_n(t.clone(), coeffs);
         x.sign() * (one - t * poly * (-x.clone() * x.clone()).exp())
@@ -338,9 +338,9 @@ impl Tensor {
         // Round to nearest integer using: floor(x + 0.5) for positive numbers
         // But we need to handle negative numbers and the halfway case properly
         // Simple rounding that works for both positive and negative
-        let sign = x.clone().cmplt(0.0_f32).unwrap() * -2.0_f32 + 1.0_f32;
+        let sign = x.clone().cmplt(0.0f32).unwrap() * -2.0f32 + 1.0f32;
         let abs_x = x.clone().abs();
-        let rounded_abs = (abs_x.clone() + 0.5_f32).floor();
+        let rounded_abs = (abs_x.clone() + 0.5f32).floor();
         let rounded = rounded_abs * sign;
 
         rounded.cast(original_dtype)
@@ -382,8 +382,8 @@ impl Tensor {
 
         // For negative numbers, add 1 to make fractional part positive
         // For positive numbers, keep as is
-        let is_negative = fractional.clone().cmplt(0.0_f32).unwrap();
-        let fractional_positive = is_negative.clone() * (fractional.clone() + 1.0_f32) + is_negative.not() * fractional;
+        let is_negative = fractional.clone().cmplt(0.0f32).unwrap();
+        let fractional_positive = is_negative.clone() * (fractional.clone() + 1.0f32) + is_negative.not() * fractional;
 
         fractional_positive.cast(original_dtype)
     }
@@ -420,7 +420,7 @@ impl Tensor {
 
         // Since we don't have a direct ceil operation, we implement it using:
         // ceil(x) = -floor(-x)
-        let ceiled = (-x.clone()).floor() * -1.0_f32;
+        let ceiled = (-x.clone()).floor() * -1.0f32;
 
         ceiled.cast(original_dtype)
     }
