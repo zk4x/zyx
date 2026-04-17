@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use std::fmt::Display;
+use std::fmt::{Display, Write};
 
 /// Enumeration representing the various errors that can occur within the Zyx library.
 #[derive(Debug)]
@@ -30,7 +30,6 @@ impl ZyxError {
     #[must_use]
     pub fn shape_error(e: Box<str>) -> Self {
         let location = std::panic::Location::caller();
-        use std::fmt::Write;
         let mut e: String = e.into();
         write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
         Self::ShapeError(e.into())
@@ -41,7 +40,6 @@ impl ZyxError {
     #[must_use]
     pub fn dtype_error(e: Box<str>) -> Self {
         let location = std::panic::Location::caller();
-        use std::fmt::Write;
         let mut e: String = e.into();
         write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
         Self::DTypeError(e.into())
@@ -52,7 +50,6 @@ impl ZyxError {
     #[must_use]
     pub fn parse_error(e: Box<str>) -> Self {
         let location = std::panic::Location::caller();
-        use std::fmt::Write;
         let mut e: String = e.into();
         write!(e, ", {}:{}:{}", location.file(), location.line(), location.column()).unwrap();
         Self::ParseError(e.into())
