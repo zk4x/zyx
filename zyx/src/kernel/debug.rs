@@ -264,7 +264,7 @@ impl Kernel {
                                 "{indent}r{out_id}{GREY}: {dtype}{RESET} = {CYAN}pad{RESET} r{x} padding={padding:?} -> {shape:?}",
                             );
                         }
-                    };
+                    }
                 }
                 Op::Barrier { scope } => {
                     println!("{indent}barrier {scope}");
@@ -518,7 +518,7 @@ impl Kernel {
                         MoveOp::Pad { padding, shape } => {
                             println!("{indent}r{out_id}: {dtype} = pad r{x} padding={padding:?} -> {shape:?}",);
                         }
-                    };
+                    }
                 }
             }
             op_id = self.ops[op_id].next;

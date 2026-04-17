@@ -79,7 +79,7 @@ impl Kernel {
                     loop_depth += 1;
                     loop_depth
                 }
-                Op::EndLoop | Op::EndIf { .. } => {
+                Op::EndLoop | Op::EndIf => {
                     loop_depth -= 1;
                     loop_depth
                 }

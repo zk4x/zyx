@@ -239,7 +239,7 @@ impl Op {
             | Op::Define { .. }
             | Op::Index { .. }
             | Op::Loop { .. }
-            | Op::EndLoop { .. }
+            | Op::EndLoop
             | Op::Barrier { .. }
             | Op::EndIf => {
                 vec![]
@@ -938,7 +938,7 @@ impl Kernel {
                     | Op::If { .. }
                     | Op::EndIf
                     | Op::Loop { .. }
-                    | Op::EndLoop { .. } => unreachable!(),
+                    | Op::EndLoop => unreachable!(),
                 }
             }
         }

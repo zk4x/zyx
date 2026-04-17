@@ -25,7 +25,7 @@ impl Kernel {
                                 BOp::Mod => self.simplify_mod(op_id, x, divisor, dtype, &bounds),
                                 BOp::Div => self.simplify_div(op_id, x, divisor, dtype, &bounds),
                                 _ => {}
-                            };
+                            }
                         }
                     }
                 }
@@ -158,7 +158,7 @@ impl Kernel {
                             self.remap(op_id, x);
                             return;
                         }
-                    };
+                    }
                 }
             }
         }
