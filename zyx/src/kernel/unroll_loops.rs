@@ -12,12 +12,12 @@ use crate::{
 
 impl Kernel {
     #[allow(unused)]
-    pub fn opt_unroll(&self) -> (Optimization, usize) {
+    pub fn opt_unroll(_: &Kernel) -> (Optimization, usize) {
         (Optimization::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
     }
 
     #[allow(unused)]
-    pub const fn opt_unroll_constant_loops(&self) -> (Optimization, usize) {
+    pub const fn opt_unroll_constant_loops(_: &Kernel) -> (Optimization, usize) {
         (Optimization::UnrollConstantLoops, 1)
     }
 

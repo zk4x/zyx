@@ -114,5 +114,5 @@ impl Kernel {
     }
 
     #[allow(unused)]
-    pub const fn vectorize_stores(&self) {}
+    pub const fn vectorize_stores(_: &Kernel) {}
 }

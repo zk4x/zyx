@@ -8,7 +8,7 @@ use crate::{
 };
 
 impl Kernel {
-    pub const fn opt_fuse_mad(&self) -> (Optimization, usize) {
+    pub const fn opt_fuse_mad(_: &Kernel) -> (Optimization, usize) {
         (Optimization::FuseMad, 1)
     }
 
