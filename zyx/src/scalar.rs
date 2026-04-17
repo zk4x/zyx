@@ -66,8 +66,6 @@ pub trait Scalar: Copy + Clone + Sized + core::fmt::Debug + 'static + PartialEq 
     /// Get one of Self
     #[must_use]
     fn one() -> Self;
-    /// Bute size of Self
-
     /// Absolute value of self
     #[must_use]
     fn abs(self) -> Self;

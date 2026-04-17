@@ -498,18 +498,15 @@ impl Kernel {
             if let &Op::Reduce { x, .. } = self.at(param) {
                 reduce_params.push(x);
                 break;
-                //return true;
-            } else {
-                params.extend(self.ops[param].op.parameters());
             }
+            params.extend(self.ops[param].op.parameters());
         }
         // If there is a load (non constant reduce) or multiple reduces, return true
         while let Some(param) = reduce_params.pop() {
             if matches!(self.at(param), Op::LoadView(_) | Op::Reduce { .. }) {
                 return true;
-            } else {
-                params.extend(self.ops[param].op.parameters());
             }
+            params.extend(self.ops[param].op.parameters());
         }
         false
     }

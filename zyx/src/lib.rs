@@ -45,6 +45,8 @@
 #![allow(clippy::collapsible_if)]
 // Deny later
 #![allow(clippy::single_char_lifetime_names)]
+#![allow(clippy::many_single_char_names)]
+#![allow(clippy::unnested_or_patterns)]
 #![forbid(clippy::cargo)]
 #![allow(clippy::option_if_let_else)]
 #![allow(clippy::fallible_impl_from)]

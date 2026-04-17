@@ -121,8 +121,6 @@ impl DType {
         order[i1.max(i2)]
     }
 
-
-
     /// Get the size of this dtype in bits
     #[must_use]
     pub const fn bit_size(&self) -> u8 {

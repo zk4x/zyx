@@ -274,8 +274,6 @@ impl Tensor {
     }
 
     /// Computes the reciprocal square root of each element in the input tensor.
-
-    /// Computes the reciprocal square root of each element in the input tensor.
     ///
     /// This function returns a new tensor with the same shape as the input, where each element is the reciprocal square root (i.e., `1 / sqrt(x)`) of the corresponding element in the input tensor. This operation can be useful for scaling and stabilizing certain types of computations.
     ///
