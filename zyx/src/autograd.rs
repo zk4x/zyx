@@ -305,81 +305,84 @@ impl Runtime {
                     let grad = self.cast(grad, self.dtype(x));
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
-                Node::Unary { x, uop } => match uop {
-                    UOp::BitNot => todo!(),
-                    UOp::Reciprocal => {
-                        // -1/(x*x)
-                        let x_2_inv = self.binary(nid, nid, BOp::Mul);
-                        let x_grad = self.unary(x_2_inv, UOp::Neg);
-                        self.release(x_2_inv);
-                        insert_or_add_grad(self, &mut grads, x, x_grad);
+                Node::Unary { x, uop } => {
+                    #[allow(clippy::match_same_arms)]
+                    match uop {
+                        UOp::BitNot => todo!(),
+                        UOp::Reciprocal => {
+                            // -1/(x*x)
+                            let x_2_inv = self.binary(nid, nid, BOp::Mul);
+                            let x_grad = self.unary(x_2_inv, UOp::Neg);
+                            self.release(x_2_inv);
+                            insert_or_add_grad(self, &mut grads, x, x_grad);
+                        }
+                        UOp::Exp2 => {
+                            // grad_x = grad * 2^x * ln(2)
+                            let dtype = self.dtype(x);
+                            let ln2 = std::f32::consts::LN_2;
+                            let c = self.graph.push(Node::Const { value: Constant::new(ln2).cast(dtype) });
+                            let c_expanded = self.expand(c, self.shape(x).into()).unwrap();
+                            self.release(c);
+                            let x_mul = self.binary(nid, c_expanded, BOp::Mul);
+                            self.release(c_expanded);
+                            let grad_x = self.binary(grad, x_mul, BOp::Mul);
+                            self.release(x_mul);
+                            insert_or_add_grad(self, &mut grads, x, grad_x);
+                        }
+                        UOp::Log2 => {
+                            let dtype = self.dtype(x);
+                            let c = std::f32::consts::LN_2;
+                            let temp = self.graph.push(Node::Const { value: Constant::new(c).cast(dtype) });
+                            let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
+                            self.release(temp);
+                            let temp2 = self.binary(x, temp1, BOp::Mul);
+                            self.release(temp1);
+                            let grad = self.binary(grad, temp2, BOp::Div);
+                            self.release(temp2);
+                            insert_or_add_grad(self, &mut grads, x, grad);
+                        }
+                        UOp::Sin => {
+                            let x_temp = self.unary(x, UOp::Cos);
+                            let grad = self.binary(x_temp, grad, BOp::Mul);
+                            self.release(x_temp);
+                            insert_or_add_grad(self, &mut grads, x, grad);
+                        }
+                        UOp::Cos => {
+                            let x_temp1 = self.unary(x, UOp::Sin);
+                            let x_temp = self.unary(x_temp1, UOp::Neg);
+                            self.release(x_temp1);
+                            let grad = self.binary(x_temp, grad, BOp::Mul);
+                            self.release(x_temp);
+                            insert_or_add_grad(self, &mut grads, x, grad);
+                        }
+                        UOp::Sqrt => {
+                            // x_grad = grad/(2*sqrt(x))
+                            let sqrt_x = self.unary(x, UOp::Sqrt);
+                            let sqrtx_2 = self.binary(sqrt_x, sqrt_x, BOp::Add);
+                            self.release(sqrt_x);
+                            let grad = self.binary(grad, sqrtx_2, BOp::Div);
+                            insert_or_add_grad(self, &mut grads, x, grad);
+                        }
+                        UOp::Neg => {
+                            let grad = self.unary(grad, UOp::Neg);
+                            insert_or_add_grad(self, &mut grads, x, grad);
+                        }
+                        UOp::Floor => {
+                            let dtype = self.dtype(x);
+                            let temp = self.graph.push(Node::Const { value: Constant::new(0).cast(dtype) });
+                            let grad = self.expand(temp, self.shape(x).into()).unwrap();
+                            self.release(temp);
+                            insert_or_add_grad(self, &mut grads, x, grad);
+                        }
+                        UOp::Trunc => {
+                            let dtype = self.dtype(x);
+                            let temp = self.graph.push(Node::Const { value: Constant::new(0).cast(dtype) });
+                            let grad = self.expand(temp, self.shape(x).into()).unwrap();
+                            self.release(temp);
+                            insert_or_add_grad(self, &mut grads, x, grad);
+                        }
                     }
-                    UOp::Exp2 => {
-                        // grad_x = grad * 2^x * ln(2)
-                        let dtype = self.dtype(x);
-                        let ln2 = std::f32::consts::LN_2;
-                        let c = self.graph.push(Node::Const { value: Constant::new(ln2).cast(dtype) });
-                        let c_expanded = self.expand(c, self.shape(x).into()).unwrap();
-                        self.release(c);
-                        let x_mul = self.binary(nid, c_expanded, BOp::Mul);
-                        self.release(c_expanded);
-                        let grad_x = self.binary(grad, x_mul, BOp::Mul);
-                        self.release(x_mul);
-                        insert_or_add_grad(self, &mut grads, x, grad_x);
-                    }
-                    UOp::Log2 => {
-                        let dtype = self.dtype(x);
-                        let c = std::f32::consts::LN_2;
-                        let temp = self.graph.push(Node::Const { value: Constant::new(c).cast(dtype) });
-                        let temp1 = self.expand(temp, self.shape(x).into()).unwrap();
-                        self.release(temp);
-                        let temp2 = self.binary(x, temp1, BOp::Mul);
-                        self.release(temp1);
-                        let grad = self.binary(grad, temp2, BOp::Div);
-                        self.release(temp2);
-                        insert_or_add_grad(self, &mut grads, x, grad);
-                    }
-                    UOp::Sin => {
-                        let x_temp = self.unary(x, UOp::Cos);
-                        let grad = self.binary(x_temp, grad, BOp::Mul);
-                        self.release(x_temp);
-                        insert_or_add_grad(self, &mut grads, x, grad);
-                    }
-                    UOp::Cos => {
-                        let x_temp1 = self.unary(x, UOp::Sin);
-                        let x_temp = self.unary(x_temp1, UOp::Neg);
-                        self.release(x_temp1);
-                        let grad = self.binary(x_temp, grad, BOp::Mul);
-                        self.release(x_temp);
-                        insert_or_add_grad(self, &mut grads, x, grad);
-                    }
-                    UOp::Sqrt => {
-                        // x_grad = grad/(2*sqrt(x))
-                        let sqrt_x = self.unary(x, UOp::Sqrt);
-                        let sqrtx_2 = self.binary(sqrt_x, sqrt_x, BOp::Add);
-                        self.release(sqrt_x);
-                        let grad = self.binary(grad, sqrtx_2, BOp::Div);
-                        insert_or_add_grad(self, &mut grads, x, grad);
-                    }
-                    UOp::Neg => {
-                        let grad = self.unary(grad, UOp::Neg);
-                        insert_or_add_grad(self, &mut grads, x, grad);
-                    }
-                    UOp::Floor => {
-                        let dtype = self.dtype(x);
-                        let temp = self.graph.push(Node::Const { value: Constant::new(0).cast(dtype) });
-                        let grad = self.expand(temp, self.shape(x).into()).unwrap();
-                        self.release(temp);
-                        insert_or_add_grad(self, &mut grads, x, grad);
-                    }
-                    UOp::Trunc => {
-                        let dtype = self.dtype(x);
-                        let temp = self.graph.push(Node::Const { value: Constant::new(0).cast(dtype) });
-                        let grad = self.expand(temp, self.shape(x).into()).unwrap();
-                        self.release(temp);
-                        insert_or_add_grad(self, &mut grads, x, grad);
-                    }
-                },
+                }
                 Node::Reshape { x, .. } => {
                     let grad = self.reshape(grad, self.shape(x).into());
                     insert_or_add_grad(self, &mut grads, x, grad);

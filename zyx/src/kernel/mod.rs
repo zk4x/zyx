@@ -230,10 +230,20 @@ pub enum Op {
 
 impl Op {
     // TODO use custom non allocating iterator instead of allocating a vec
+    #[allow(clippy::match_same_arms)]
     pub fn parameters(&self) -> impl Iterator<Item = OpId> + DoubleEndedIterator {
         match self {
-            Op::ConstView { .. } => vec![],
-            Op::LoadView { .. } => vec![],
+            Op::ConstView { .. }
+            | Op::LoadView { .. }
+            | Op::Const { .. }
+            | Op::Define { .. }
+            | Op::Index { .. }
+            | Op::Loop { .. }
+            | Op::EndLoop { .. }
+            | Op::Barrier { .. }
+            | Op::EndIf => {
+                vec![]
+            }
             &Op::Move { x, .. } => vec![x],
             &Op::StoreView { src, .. } => vec![src],
             Op::Reduce { x, .. } => vec![*x],
@@ -241,25 +251,28 @@ impl Op {
             Op::Cast { x, .. } => vec![*x],
             Op::Unary { x, .. } => vec![*x],
             &Op::Binary { x, y, .. } => vec![x, y],
-            Op::Const { .. } => vec![],
-            Op::Define { .. } => vec![],
             &Op::Load { src, index, .. } => vec![src, index],
-            Op::Index { .. } | Op::Loop { .. } | Op::EndLoop { .. } => vec![],
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.clone(),
             &Op::Devectorize { vec, .. } => vec![vec],
             &Op::WMMA { a, b, c, .. } => vec![a, b, c],
-            Op::Barrier { .. } => vec![],
             Op::If { condition } => vec![*condition],
-            Op::EndIf => vec![],
         }
         .into_iter()
     }
 
+    #[allow(clippy::match_same_arms)]
     pub fn parameters_mut(&mut self) -> impl Iterator<Item = &mut OpId> + DoubleEndedIterator {
         match self {
-            Op::ConstView { .. } => vec![],
-            Op::LoadView { .. } => vec![],
+            Op::ConstView { .. }
+            | Op::LoadView { .. }
+            | Op::Const { .. }
+            | Op::Define { .. }
+            | Op::Index { .. }
+            | Op::Loop { .. }
+            | Op::EndLoop { .. }
+            | Op::EndIf
+            | Op::Barrier { .. } => vec![],
             Op::StoreView { src, .. } => vec![src],
             Op::Move { x, .. } => vec![x],
             Op::Reduce { x, .. } => vec![x],
@@ -267,16 +280,12 @@ impl Op {
             Op::Cast { x, .. } => vec![x],
             Op::Unary { x, .. } => vec![x],
             Op::Binary { x, y, .. } => vec![x, y],
-            Op::Const { .. } => vec![],
-            Op::Define { .. } => vec![],
             Op::Load { src, index, .. } => vec![src, index],
-            Op::Index { .. } | Op::Loop { .. } | Op::EndLoop { .. } => vec![],
             Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.iter_mut().collect(),
             Op::Devectorize { vec, .. } => vec![vec],
             Op::WMMA { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![condition],
-            Op::EndIf | Op::Barrier { .. } => vec![],
         }
         .into_iter()
     }
