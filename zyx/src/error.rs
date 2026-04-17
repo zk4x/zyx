@@ -27,6 +27,7 @@ pub enum ZyxError {
 impl ZyxError {
     /// Shape error
     #[track_caller]
+    #[must_use]
     pub fn shape_error(e: Box<str>) -> Self {
         let location = std::panic::Location::caller();
         use std::fmt::Write;
@@ -37,6 +38,7 @@ impl ZyxError {
 
     /// `DType` error
     #[track_caller]
+    #[must_use]
     pub fn dtype_error(e: Box<str>) -> Self {
         let location = std::panic::Location::caller();
         use std::fmt::Write;
@@ -47,6 +49,7 @@ impl ZyxError {
 
     /// Parse error
     #[track_caller]
+    #[must_use]
     pub fn parse_error(e: Box<str>) -> Self {
         let location = std::panic::Location::caller();
         use std::fmt::Write;
