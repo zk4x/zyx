@@ -8,19 +8,23 @@ use crate::{DType, Map, RT, Tensor, ZyxError, shape::Dim};
 /// Module trait
 pub trait Module {
     /// Iterate over all tensors immutably
-    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor>;
+    fn iter(&self) -> impl Iterator<Item = &Tensor>;
 
     /// Iterate over all tensors mutably
-    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor>;
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Tensor>;
 
     /// Iterate over tensors without consuming the module
-    fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a Tensor)>;
+    fn iter_tensors(&self) -> impl Iterator<Item = (String, &Tensor)>;
 
     /// From tensors
-    fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)>;
+    fn iter_tensors_mut(&mut self) -> impl Iterator<Item = (String, &mut Tensor)>;
 
     /// Realize all tensors in the module
-    fn realize<'a>(&'a self) -> Result<(), ZyxError> {
+    ///
+    /// # Errors
+    ///
+    /// Returns error if any tensor cannot be realized.
+    fn realize(&self) -> Result<(), ZyxError> {
         Tensor::realize(self.iter())
     }
 
@@ -87,37 +91,37 @@ pub enum GGUFMetadataValue {
 }
 
 impl<S: std::hash::BuildHasher + Default> Module for HashMap<String, Tensor, S> {
-    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
+    fn iter(&self) -> impl Iterator<Item = &Tensor> {
         self.values()
     }
 
-    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Tensor> {
         self.values_mut()
     }
 
-    fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a Tensor)> {
+    fn iter_tensors(&self) -> impl Iterator<Item = (String, &Tensor)> {
         self.iter().map(|(k, v): (&String, &Tensor)| (k.clone(), v))
     }
 
-    fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)> {
+    fn iter_tensors_mut(&mut self) -> impl Iterator<Item = (String, &mut Tensor)> {
         self.iter_mut().map(|(k, v): (&String, &mut Tensor)| (k.clone(), v))
     }
 }
 
 impl Module for Vec<Tensor> {
-    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
+    fn iter(&self) -> impl Iterator<Item = &Tensor> {
         self.into_iter()
     }
 
-    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Tensor> {
         self.into_iter()
     }
 
-    fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a Tensor)> {
+    fn iter_tensors(&self) -> impl Iterator<Item = (String, &Tensor)> {
         self.iter().map(|t: &Tensor| (format!("{}", t.id()), t))
     }
 
-    fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)> {
+    fn iter_tensors_mut(&mut self) -> impl Iterator<Item = (String, &mut Tensor)> {
         self.iter_mut().map(|t: &mut Tensor| (format!("{}", t.id()), t))
     }
 }
@@ -294,6 +298,7 @@ impl Tensor {
     ///
     /// # Errors
     /// Errors if path does not exist or IO failed for other reasons.
+    #[allow(clippy::missing_panics_doc)]
     pub fn load_safetensors(path: impl AsRef<Path>) -> Result<HashMap<String, Tensor>, ZyxError> {
         use std::io::Read;
         let mut f = std::fs::File::open(&path)?;

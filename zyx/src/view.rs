@@ -148,7 +148,7 @@ impl View {
         //println!("{:?} reshape to {:?}", self, new_shape);
         if let Some(last_block) = self.0.last() {
             // Try to reshape last block in place
-            let new_block = try_reshape(&last_block[axes.clone()], new_shape);
+            let new_block = try_reshape(&last_block[axes], new_shape);
             if new_block.is_empty() {
                 return false;
             }

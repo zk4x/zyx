@@ -28,6 +28,7 @@ impl Tensor {
 
     /// Returns the sign of each element: -1 if negative, 1 if positive, 0 if zero.
     #[must_use]
+    #[allow(clippy::missing_panics_doc)]
     pub fn sign(&self) -> Tensor {
         let zero = Tensor::zeros_like(self.clone());
         let neg_one: Tensor = (-1i32).into();
@@ -39,6 +40,7 @@ impl Tensor {
 
     /// Error function
     #[must_use]
+    #[allow(clippy::missing_panics_doc)]
     pub fn erf(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         let one: Tensor = 1.0f32.into();
@@ -51,7 +53,7 @@ impl Tensor {
             0.254_829_592f32,
         ];
         let poly = Self::poly_n(t.clone(), coeffs);
-        x.sign() * (one - t * poly * (-x.clone() * x.clone()).exp())
+        x.sign() * (one - t * poly * (-x.clone() * x).exp())
     }
 
     /// Applies element-wise, CELU(x)=max⁡(0,x)+min⁡(0,α∗(exp⁡(x/α)−1)).
@@ -266,6 +268,7 @@ impl Tensor {
     /// **Returns:** A new tensor with the same shape as the input, but with each element computed as `max(0, input_element)`.
     #[must_use]
     #[track_caller]
+    #[allow(clippy::missing_panics_doc)]
     pub fn relu(&self) -> Tensor {
         //return Tensor { id: RT.lock().unary(self.id, UOp::ReLU) };
         //self.cmpgt(0).unwrap().where_(self, 0).unwrap() // for whatever reason this is the fastest
@@ -336,9 +339,9 @@ impl Tensor {
         // Round to nearest integer using: floor(x + 0.5) for positive numbers
         // But we need to handle negative numbers and the halfway case properly
         // Simple rounding that works for both positive and negative
-        let sign = x.clone().cmplt(0.0f32).unwrap() * -2.0f32 + 1.0f32;
+        let sign = x.cmplt(0.0f32).unwrap() * -2.0f32 + 1.0f32;
         let abs_x = x.clone().abs();
-        let rounded_abs = (abs_x.clone() + 0.5f32).floor();
+        let rounded_abs = (abs_x + 0.5f32).floor();
         let rounded = rounded_abs * sign;
 
         rounded.cast(original_dtype)
@@ -418,7 +421,7 @@ impl Tensor {
 
         // Since we don't have a direct ceil operation, we implement it using:
         // ceil(x) = -floor(-x)
-        let ceiled = (-x.clone()).floor() * -1.0f32;
+        let ceiled = (-x).floor() * -1.0f32;
 
         ceiled.cast(original_dtype)
     }
@@ -597,8 +600,8 @@ impl Tensor {
         let rtol = rtol.into();
         let atol = atol.into();
 
-        let diff = (self - other.clone()).abs();
-        let tolerance = atol.clone() + other.clone() * rtol.clone();
+        let diff = (self - &other).abs();
+        let tolerance = &atol + &other * &rtol;
         diff.cmplt(tolerance)
     }
 
@@ -653,6 +656,10 @@ impl Tensor {
     /// # Returns
     ///
     /// A new tensor with its elements clamped within the range defined by `min` and `max`.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non-broadcastable shapes.
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn clamp(&self, min: impl Into<Tensor>, max: impl Into<Tensor>) -> Result<Tensor, ZyxError> {

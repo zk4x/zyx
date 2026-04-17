@@ -108,19 +108,19 @@ impl Drop for Tensor {
 }
 
 impl crate::Module for Tensor {
-    fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Tensor> {
+    fn iter(&self) -> impl Iterator<Item = &Tensor> {
         once(self)
     }
 
-    fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = &'a mut Tensor> {
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Tensor> {
         once(self)
     }
 
-    fn iter_tensors<'a>(&'a self) -> impl Iterator<Item = (String, &'a Tensor)> {
+    fn iter_tensors(&self) -> impl Iterator<Item = (String, &Tensor)> {
         once((format!("{}", self.id), self))
     }
 
-    fn iter_tensors_mut<'a>(&'a mut self) -> impl Iterator<Item = (String, &'a mut Tensor)> {
+    fn iter_tensors_mut(&mut self) -> impl Iterator<Item = (String, &mut Tensor)> {
         once((format!("{}", self.id), self))
     }
 }
@@ -240,6 +240,7 @@ impl Tensor {
     /// assert_eq!(d1, 2);
     /// assert_eq!(d2, 3);
     /// ```
+    #[allow(clippy::missing_panics_doc)]
     pub fn dims<const N: usize>(&self) -> Result<[Dim; N], ZyxError> {
         let rt = RT.lock();
         let shape = rt.shape(self.id);
@@ -393,11 +394,16 @@ impl Tensor {
     }
 
     /// Realize all user held tensors.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if any tensor cannot be realized.
     pub fn realize_all() -> Result<(), ZyxError> {
         RT.lock().realize_all()
     }
 
     /// Item
+    #[allow(clippy::missing_panics_doc)]
     pub fn item<T: Scalar>(&self) -> T {
         let mut rt = RT.lock();
         let mut data = [T::zero(); 1];
@@ -613,7 +619,7 @@ impl Tensor {
     pub fn randn(shape: impl IntoShape, dtype: DType) -> Result<Tensor, ZyxError> {
         // https://en.wikipedia.org/wiki/Box%E2%80%93Muller_transform
         let shape: Vec<Dim> = shape.into_shape().collect();
-        let nshape: Vec<Dim> = once(2).chain(shape.clone()).collect();
+        let nshape: Vec<Dim> = once(2).chain(shape).collect();
         let src = Tensor::rand(nshape, DType::F32)?;
         let x1 = src.slice(0)?.mul(2f32 * std::f32::consts::PI).cos();
         let x2 = (1f32 - src.slice(1)?).ln().mul(-2f32).sqrt();
@@ -838,7 +844,7 @@ impl Tensor {
         let original_dtype = self.dtype();
 
         // Linear interpolation: input * (1 - weight) + target * weight
-        let result = input.clone() * (1.0 - weight) + target.clone() * weight;
+        let result = &input * (1.0 - weight) + &target * weight;
 
         result.cast(original_dtype)
     }
@@ -887,12 +893,12 @@ impl Tensor {
         let target = target.float_cast().unwrap();
         let original_dtype = self.dtype();
 
-        let diff = input.clone() - target.clone();
+        let diff = &input - &target;
         let abs_diff = diff.abs();
         let mask = abs_diff.cmplt(1.0f32).unwrap();
 
         // Quadratic region: 0.5 * (x - y)²
-        let quadratic_loss = 0.5f32 * diff.clone() * diff.clone();
+        let quadratic_loss = 0.5f32 * &diff * &diff;
 
         // Linear region: |x - y| - 0.5
         let linear_loss = abs_diff - 0.5f32;
@@ -942,6 +948,7 @@ impl Tensor {
     /// // Huber loss will be quadratic for differences ≤ 1.0 and linear for differences > 1.0
     /// ```
     #[must_use]
+    #[allow(clippy::missing_panics_doc)]
     pub fn huber_loss(&self, target: &Tensor, delta: impl Scalar) -> Tensor {
         let input = self.float_cast().unwrap();
         let target = target.float_cast().unwrap();
@@ -953,7 +960,7 @@ impl Tensor {
         //     δ * |x - y| - 0.5 * δ²,          otherwise
         // }
 
-        let diff = input.clone() - target;
+        let diff = input - target;
         let abs_diff = diff.abs();
 
         // Cast delta to the same dtype as input to follow PyTorch behavior
@@ -1008,6 +1015,10 @@ impl Tensor {
     /// # Returns
     /// A new `Tensor` with the expanded shape on success, or a `ZyxError` if the
     /// expansion fails (e.g., out‑of‑range axis, runtime error).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the axis is out of bounds.
     ///
     /// # Example
     /// ```
@@ -1332,6 +1343,7 @@ impl Tensor {
     /// assert_eq!(t.t().shape(), &[2, 2]);
     /// ```
     #[must_use]
+    #[allow(clippy::missing_panics_doc)]
     pub fn t(&self) -> Tensor {
         let rank = self.rank();
         if rank == 1 {
@@ -1527,6 +1539,10 @@ impl Tensor {
     }
 
     /// Matmul
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have incompatible shapes for matmul.
     pub fn dot_dtype(&self, rhs: impl Into<Tensor>, out_dtype: DType) -> Result<Tensor, ZyxError> {
         let rhs: Tensor = rhs.into();
         let org_y_shape = rhs.shape();
@@ -1707,6 +1723,10 @@ impl Tensor {
     }*/
 
     /// Gather
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the shapes are incompatible or indices are out of bounds.
     pub fn gather(&self, axis: Axis, indices: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let indices = indices.into();
         let shape = self.shape();
@@ -1733,7 +1753,7 @@ impl Tensor {
 
         let dim_size = shape[dim];
         let idx_dtype = indices.dtype();
-        let is_negative = indices.clone().cmplt(0)?;
+        let is_negative = indices.cmplt(0)?;
         let wrapped = indices.clone() + dim_size as i32;
         let indices: Tensor = is_negative.where_(&wrapped, &indices)?.cast(idx_dtype);
 
@@ -1757,6 +1777,10 @@ impl Tensor {
     }
 
     /// Index select
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the dimension is out of bounds.
     pub fn index_select(&self, dim: Axis, index: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let index = index.into();
         let mut shape = self.shape();
@@ -1772,6 +1796,10 @@ impl Tensor {
     }
 
     /// Shrink
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the dimensions are invalid.
     pub fn shrink<I>(&self, dims: I) -> Result<Tensor, ZyxError>
     where
         I: IntoIterator<Item = (Dim, Dim)>,
@@ -1788,7 +1816,8 @@ impl Tensor {
 
     /// One hot
     ///
-    /// If num_classes is less than any scalr in self, that scalar is ignored.
+    /// If `num_classes` is less than any scalr in self, that scalar is ignored.
+    #[allow(clippy::missing_panics_doc)]
     pub fn one_hot(&self, num_classes: Dim) -> Tensor {
         let mut num_classes = num_classes;
         if num_classes == 0 {
@@ -1805,6 +1834,10 @@ impl Tensor {
     }
 
     /// One hot along dim
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensor dtype is not integer.
     pub fn one_hot_along_dim(&self, num_classes: Dim, dim: Axis) -> Result<Tensor, ZyxError> {
         if !self.dtype().is_int() {
             return Err(ZyxError::dtype_error(
@@ -1891,6 +1924,10 @@ impl Tensor {
     }
 
     /// BCE Loss
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensors have non-broadcastable shapes.
     #[track_caller]
     pub fn bce_loss(&self, target: impl Into<Tensor>, eps: f32) -> Result<Tensor, ZyxError> {
         let target: Tensor = target.into();
@@ -2133,11 +2170,16 @@ impl Tensor {
     }
 
     /// Argmax
+    #[allow(clippy::missing_panics_doc)]
     pub fn argmax(&self) -> Tensor {
         self.flatten(..).unwrap().argmax_impl(0, false).unwrap()
     }
 
     /// Argmax
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the axis is out of bounds.
     pub fn argmax_axis(&self, axis: Axis) -> Result<Tensor, ZyxError> {
         let rank = self.rank();
         let _ = into_axis(axis, rank as usize)?;
@@ -2292,6 +2334,7 @@ impl Tensor {
     /// Tri
     #[must_use]
     #[track_caller]
+    #[allow(clippy::missing_panics_doc)]
     pub fn tri(r: Dim, c: Dim, diagonal: i32, dtype: DType) -> Tensor {
         if r == 0 || c == 0 || diagonal >= c as i32 {
             return Tensor::zeros([r, c], dtype);
@@ -2315,6 +2358,10 @@ impl Tensor {
     }
 
     /// Returns upper triangular part of the input tensor, other elements are set to zero
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the tensor rank is less than 2.
     pub fn triu(&self, diagonal: i32) -> Result<Tensor, ZyxError> {
         //return Tensor._tri(self.shape[-2], self.shape[-1], diagonal=diagonal, device=self.device, dtype=dtypes.bool).where(self, self.zeros_like())
         let [r, c] = self.rdims::<2>()?;
@@ -2656,6 +2703,10 @@ impl Tensor {
       return pads*/
 
     /// Max pool
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the kernel size, stride, or padding is invalid.
     pub fn max_pool(
         &self,
         kernel_size: impl IntoShape,

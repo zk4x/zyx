@@ -159,6 +159,10 @@ impl Tensor {
     }
 
     /// Same as [Tensor::slice], but instead of indexing from first dimensions, it indexes from last dimensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if the index is invalid for the tensor shape.
     #[allow(clippy::missing_panics_doc)]
     pub fn rslice(&self, index: impl IntoIndex) -> Result<Tensor, ZyxError> {
         let shape = self.shape();

@@ -348,6 +348,9 @@ macro_rules! define_reduce_op_with_correction {
                 }
 
                 /// All correction
+                ///
+                /// # Errors
+                /// When correction is out of range.
                 pub fn [<$name _all_correction>](&self, correction: Dim) -> Result<Tensor, ZyxError> {
                     self.reduce_impl::<false>($op_variant, [], None, correction)
                 }
