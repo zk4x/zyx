@@ -1591,7 +1591,7 @@ impl Scalar for i32 {
 
     fn to_ne_bytes(&self) -> &[u8] {
         let i: *const i32 = self;
-        unsafe { std::slice::from_raw_parts(i as *const u8, std::mem::size_of::<i32>()) }
+        unsafe { std::slice::from_raw_parts(i.cast::<u8>(), std::mem::size_of::<i32>()) }
     }
 
     fn dtype() -> DType {

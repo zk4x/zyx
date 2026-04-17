@@ -95,7 +95,7 @@ impl Tensor {
         //print!("shape={shape:?}");
 
         let padding = index
-            .zip(shape.into_iter())
+            .zip(shape)
             .enumerate()
             .map(|(axis, (dim_index, dim_size))| {
                 let dim_size = dim_size as i64;

@@ -11,7 +11,7 @@ use paste::paste;
 
 /// Reduce op
 #[derive(Clone, Copy)]
-pub(crate) enum ReduceOp {
+pub enum ReduceOp {
     Sum,
     Mean,
     Var,

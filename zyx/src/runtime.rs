@@ -639,8 +639,6 @@ impl Runtime {
                     self.graph.nodes[nid].1 = Node::Leaf { dtype };
                 }
             }
-            let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
         } else {
             for &nid in &to_eval {
                 self.graph.add_shape(nid);
@@ -648,9 +646,9 @@ impl Runtime {
                 to_release.extend(self.graph[nid].parameters());
                 self.graph[nid] = Node::Leaf { dtype };
             }
-            let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
         }
+        let to_remove = self.graph.release(&to_release);
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
 
         #[cfg(debug_assertions)]
         {
@@ -733,8 +731,6 @@ impl Runtime {
                     self.graph.nodes[nid].1 = Node::Leaf { dtype };
                 }
             }
-            let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
         } else {
             for &nid in &to_eval {
                 self.graph.add_shape(nid);
@@ -742,9 +738,9 @@ impl Runtime {
                 to_release.extend(self.graph[nid].parameters());
                 self.graph[nid] = Node::Leaf { dtype };
             }
-            let to_remove = self.graph.release(&to_release);
-            deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
         }
+        let to_remove = self.graph.release(&to_release);
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
 
         #[cfg(debug_assertions)]
         {

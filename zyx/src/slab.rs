@@ -337,6 +337,6 @@ impl<T: DeBin, Id: SlabId + DeBin> DeBin for Slab<Id, T> {
                 values.push(MaybeUninit::new(value));
             }
         }
-        Ok(Self { values, empty, _index: PhantomData::default() })
+        Ok(Self { values, empty, _index: PhantomData })
     }
 }

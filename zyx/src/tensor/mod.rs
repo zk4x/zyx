@@ -1093,7 +1093,7 @@ impl Tensor {
 
         if padding.len() > rank {
             return Err(ZyxError::shape_error(
-                format!("Padding with {} dimensions, but tensor only has rank {rank}", padding.len(),).into(),
+                format!("Padding with {} dimensions, but tensor only has rank {rank}", padding.len()).into(),
             ));
         }
 
@@ -1149,7 +1149,7 @@ impl Tensor {
 
         if padding.len() > rank {
             return Err(ZyxError::shape_error(
-                format!("Padding with {} dimensions, but tensor only has rank {rank}", padding.len(),).into(),
+                format!("Padding with {} dimensions, but tensor only has rank {rank}", padding.len()).into(),
             ));
         }
 
@@ -2557,7 +2557,7 @@ impl Tensor {
         dilation: impl IntoShape,
         padding: impl IntoShape,
     ) -> Result<Tensor, ZyxError> {
-        fn resolve_pool_pads(padding: Vec<Dim>, dims: usize) -> Vec<i64> {
+        fn resolve_pool_pads(padding: &[Dim], dims: usize) -> Vec<i64> {
             if padding.len() == 1 {
                 vec![padding[0] as i64; 2 * dims]
             } else if padding.len() == 2 * dims {
@@ -2565,7 +2565,7 @@ impl Tensor {
             } else {
                 let mut npadding: Vec<i64> = Vec::new();
                 for _ in 0..2 {
-                    for &p in &padding {
+                    for &p in padding {
                         npadding.push(p as i64);
                     }
                 }
@@ -2605,7 +2605,7 @@ impl Tensor {
             return Err(ZyxError::shape_error("Stride/dilation length must match kernel spatial dimensions".into()));
         }*/
 
-        let padding_: Vec<i64> = resolve_pool_pads(padding.into_shape().collect(), hw.len());
+        let padding_: Vec<i64> = resolve_pool_pads(&padding.into_shape().collect::<Box<[Dim]>>(), hw.len());
 
         if (groups as Dim * cin != cin_) || (self.shape().len() != weight.shape().len()) {
             return Err(ZyxError::shape_error(

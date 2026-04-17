@@ -636,6 +636,7 @@ impl Tensor {
     }
 
     /// Bitnot
+    #[must_use]
     pub fn bitnot(&self) -> Tensor {
         Tensor { id: RT.lock().unary(self.id, UOp::BitNot) }
     }
@@ -659,7 +660,6 @@ impl Tensor {
     ///
     /// Returns error if the tensors have non-broadcastable shapes.
     #[allow(clippy::missing_panics_doc)]
-    #[must_use]
     pub fn clamp(&self, min: impl Into<Tensor>, max: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         self.maximum(min.into())?.minimum(max.into())
     }
