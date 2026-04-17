@@ -297,16 +297,16 @@ impl Kernel {
                                 // x == y
                                 let always = (min_x == max_x) && (min_y == max_y) && (min_x == min_y);
                                 let maybe = !(max_x < min_y || max_y < min_x) && !always;
-                                let lower = if always { 1 } else { 0 };
-                                let upper = if always || maybe { 1 } else { 0 };
+                                let lower = u64::from(always);
+                                let upper = u64::from(always || maybe);
                                 (lower, upper)
                             }
                             BOp::NotEq => {
                                 // x != y
                                 let always = max_x < min_y || max_y < min_x; // disjoint ranges → always true
                                 let maybe = !(min_x == max_x && min_y == max_y && min_x == min_y) && !always;
-                                let lower = if always { 1 } else { 0 };
-                                let upper = if always || maybe { 1 } else { 0 };
+                                let lower = u64::from(always);
+                                let upper = u64::from(always || maybe);
                                 (lower, upper)
                             }
                             BOp::Cmpgt => {
@@ -314,8 +314,8 @@ impl Kernel {
                                 let always = min_x > max_y; // min(x) > max(y) → always true
                                 let never = max_x <= min_y; // max(x) <= min(y) → always false
                                 let maybe = !always && !never;
-                                let lower = if always { 1 } else { 0 };
-                                let upper = if always || maybe { 1 } else { 0 };
+                                let lower = u64::from(always);
+                                let upper = u64::from(always || maybe);
                                 (lower, upper)
                             }
                             BOp::Cmplt => {
@@ -323,16 +323,16 @@ impl Kernel {
                                 let always = max_x < min_y; // max(x) < min(y) → always true
                                 let never = max_y <= min_x; // max(y) <= min(x) → always false
                                 let maybe = !always && !never;
-                                let lower = if always { 1 } else { 0 };
-                                let upper = if always || maybe { 1 } else { 0 };
+                                let lower = u64::from(always);
+                                let upper = u64::from(always || maybe);
                                 (lower, upper)
                             }
                             BOp::And => {
                                 // x & y
                                 let always = min_x == 1 && max_x == 1 && min_y == 1 && max_y == 1;
                                 let maybe = max_x >= 1 && max_y >= 1;
-                                let lower = if always { 1 } else { 0 };
-                                let upper = if always || maybe { 1 } else { 0 };
+                                let lower = u64::from(always);
+                                let upper = u64::from(always || maybe);
                                 (lower, upper)
                             }
                             BOp::Or => {
