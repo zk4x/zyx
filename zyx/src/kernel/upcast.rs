@@ -164,7 +164,7 @@ impl Kernel {
                         let mut op = op.clone();
                         // Reindex the op
                         for param in op.parameters_mut() {
-                            if let Some(remap) = remaps.get(&param) {
+                            if let Some(remap) = remaps.get(param) {
                                 *param = remap[i];
                             }
                         }

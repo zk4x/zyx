@@ -52,17 +52,17 @@ impl Kernel {
         match &mut self.ops[op_id].op {
             Op::LoadView(x) => match move_op {
                 MoveOp::Reshape { shape } => {
-                    x.1.reshape(0..x.1.rank() - n_reduce_axes, &shape);
+                    x.1.reshape(0..x.1.rank() - n_reduce_axes, shape);
                 }
-                MoveOp::Expand { shape } => x.1.expand(&shape),
-                MoveOp::Permute { axes, .. } => x.1.permute(&axes),
-                MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, &padding),
+                MoveOp::Expand { shape } => x.1.expand(shape),
+                MoveOp::Permute { axes, .. } => x.1.permute(axes),
+                MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, padding),
             },
             Op::ConstView(x) => match move_op {
-                MoveOp::Reshape { shape } => x.1.reshape(0..x.1.rank() - n_reduce_axes, &shape),
-                MoveOp::Expand { shape } => x.1.expand(&shape),
-                MoveOp::Permute { axes, .. } => x.1.permute(&axes),
-                MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, &padding),
+                MoveOp::Reshape { shape } => x.1.reshape(0..x.1.rank() - n_reduce_axes, shape),
+                MoveOp::Expand { shape } => x.1.expand(shape),
+                MoveOp::Permute { axes, .. } => x.1.permute(axes),
+                MoveOp::Pad { padding, .. } => x.1.pad(x.1.rank() - n_reduce_axes, padding),
             },
             &mut Op::Reduce { x, n_axes, .. } => {
                 self.recursively_move(x, move_op, visited, n_reduce_axes + n_axes);
