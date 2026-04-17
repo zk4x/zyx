@@ -236,9 +236,7 @@ All of these work together and pass all tests.
 
 ### Debugging Tips
 
-- Use `ZYX_AUTOTUNE_CACHE_DISABLE=1` to bypass cached autotune results when debugging
-- Check kernel hash via `kernel.get_hash()` to see if kernels are being deduplicated
-- The exploration can apply the same optimization multiple times to the same kernel - this can cause issues
+- The exploration can apply the same optimization multiple times to the same kernel
 - Use `kernel.debug_colorless()` to inspect IR state
 - **Important**: Bad optimization results can get cached! Clear cache (`rm -rf ~/.cache/zyx`) when testing fixes
 
