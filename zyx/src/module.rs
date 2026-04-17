@@ -56,7 +56,7 @@ pub trait Module {
             let mut st_shape = format!("{:?}", tensor.shape());
             st_shape.retain(|c| !c.is_whitespace());
             write!(header, "\"shape\":{st_shape},").unwrap();
-            let size = tensor.numel() * (dtype.bit_size() / 8) as Dim;
+            let size = tensor.numel() * Dim::from(dtype.bit_size() / 8);
             write!(header, "\"data_offsets\":[{},{}]", begin, begin + size).unwrap();
             begin += size;
             write!(header, "}},").unwrap();
@@ -369,7 +369,7 @@ impl Tensor {
                             })
                             .collect::<Result<Vec<_>, ZyxError>>()?;
                         //println!("Offsets: {offsets:?}");
-                        let bytes = shape.iter().product::<Dim>() * (dtype.bit_size() / 8) as Dim;
+                        let bytes = shape.iter().product::<Dim>() * Dim::from(dtype.bit_size() / 8);
                         if offsets[1] - offsets[0] != bytes {
                             return Err(ZyxError::parse_error("Safetensors shapes and offsets are incorrect.".into()));
                         }

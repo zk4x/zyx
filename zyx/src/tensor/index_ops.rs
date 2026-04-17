@@ -311,7 +311,7 @@ impl From<i64> for DimIndex {
 
 impl From<i32> for DimIndex {
     fn from(val: i32) -> DimIndex {
-        DimIndex::Index(val as i64)
+        DimIndex::Index(i64::from(val))
     }
 }
 
@@ -335,7 +335,7 @@ impl From<Range<i64>> for DimIndex {
 
 impl From<Range<i32>> for DimIndex {
     fn from(val: Range<i32>) -> DimIndex {
-        DimIndex::Range { start: val.start as i64, end: val.end as i64 }
+        DimIndex::Range { start: i64::from(val.start), end: i64::from(val.end) }
     }
 }
 
@@ -359,7 +359,7 @@ impl From<RangeInclusive<i64>> for DimIndex {
 
 impl From<RangeInclusive<i32>> for DimIndex {
     fn from(val: RangeInclusive<i32>) -> DimIndex {
-        DimIndex::Range { start: *val.start() as i64, end: *val.end() as i64 + 1 }
+        DimIndex::Range { start: i64::from(*val.start()), end: i64::from(*val.end()) + 1 }
     }
 }
 
@@ -383,7 +383,7 @@ impl From<RangeFrom<i64>> for DimIndex {
 
 impl From<RangeFrom<i32>> for DimIndex {
     fn from(val: RangeFrom<i32>) -> DimIndex {
-        DimIndex::RangeFrom { start: val.start as i64 }
+        DimIndex::RangeFrom { start: i64::from(val.start) }
     }
 }
 
@@ -407,7 +407,7 @@ impl From<RangeTo<i64>> for DimIndex {
 
 impl From<RangeTo<i32>> for DimIndex {
     fn from(val: RangeTo<i32>) -> DimIndex {
-        DimIndex::RangeTo { end: val.end as i64 }
+        DimIndex::RangeTo { end: i64::from(val.end) }
     }
 }
 

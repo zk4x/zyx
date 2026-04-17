@@ -3428,7 +3428,7 @@ impl<T: Scalar> From<T> for Tensor {
 
 impl<T: Scalar> TempData for T {
     fn bytes(&self) -> Dim {
-        (T::bit_size() / 8) as Dim
+        Dim::from(T::bit_size() / 8)
     }
 
     fn dtype(&self) -> DType {
