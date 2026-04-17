@@ -45,7 +45,7 @@ impl Kernel {
                     }
                     loop_dep[&x].max(loop_dep[&y])
                 }
-                Op::Mad { x, y, z } => loop_dep[&x].max(loop_dep[&y]).max(loop_dep[&z]),
+                Op::Mad { x, y, z } => loop_dep[x].max(loop_dep[y]).max(loop_dep[z]),
                 Op::Barrier { .. } | Op::Index { .. } | Op::Load { .. } | Op::Store { .. } | Op::Const(_) | Op::Define { .. } => {
                     loop_depth
                 }
