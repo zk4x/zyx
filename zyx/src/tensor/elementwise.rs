@@ -44,7 +44,7 @@ impl Tensor {
     pub fn erf(&self) -> Tensor {
         let x = self.float_cast().unwrap();
         let one: Tensor = 1.0f32.into();
-        let t = one.clone() / (one.clone() + 0.327_591_1f32 * x.clone().abs());
+        let t = one.clone() / (one.clone() + 0.327_591_1f32 * x.abs());
         let coeffs = [
             1.061_405_429f32,
             -1.453_152_027f32,
@@ -340,7 +340,7 @@ impl Tensor {
         // But we need to handle negative numbers and the halfway case properly
         // Simple rounding that works for both positive and negative
         let sign = x.cmplt(0.0f32).unwrap() * -2.0f32 + 1.0f32;
-        let abs_x = x.clone().abs();
+        let abs_x = x.abs();
         let rounded_abs = (abs_x + 0.5f32).floor();
         let rounded = rounded_abs * sign;
 
@@ -383,6 +383,7 @@ impl Tensor {
 
         // For negative numbers, add 1 to make fractional part positive
         // For positive numbers, keep as is
+        #[allow(clippy::redundant_clone)]
         let is_negative = fractional.clone().cmplt(0.0f32).unwrap();
         let fractional_positive = is_negative.clone() * (fractional.clone() + 1.0f32) + is_negative.not() * fractional;
 
