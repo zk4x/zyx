@@ -59,7 +59,7 @@ impl Kernel {
     }
 
     /// Splits dim (index or loop) into multiple indices or loops
-    /// Returns the OpIds of the created split operations in the order they were provided
+    /// Returns the `OpId`s of the created split operations in the order they were provided
     pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) -> Vec<OpId> {
         let is_loop = matches!(self.ops[dim_id].op, Op::Loop { .. });
 

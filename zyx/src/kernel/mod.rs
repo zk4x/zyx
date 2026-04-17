@@ -772,8 +772,8 @@ impl Kernel {
     }
 
     /// Get index loop ids, dimensions and strides
-    /// returns loop_id -> (dimension, stride)
-    /// if returned loop_id is OpId::NULL, the stride is constant and dimension is 0 (unknown)
+    /// returns `loop_id` -> (dimension, stride)
+    /// if returned `loop_id` is `OpId::NULL`, the stride is constant and dimension is 0 (unknown)
     pub fn get_strides(&self, index: OpId) -> Map<OpId, (Dim, Dim)> {
         use Op::*;
         //println!("Get index {index}");

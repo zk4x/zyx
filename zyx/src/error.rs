@@ -35,7 +35,7 @@ impl ZyxError {
         Self::ShapeError(e.into())
     }
 
-    /// DType error
+    /// `DType` error
     #[track_caller]
     pub fn dtype_error(e: Box<str>) -> Self {
         let location = std::panic::Location::caller();

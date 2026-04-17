@@ -85,7 +85,7 @@ impl SlabId for DeviceProgramId {
     }
 }
 
-/// Pool identifier for use with Slab<PoolId, Pool>
+/// Pool identifier for use with `Slab<PoolId, Pool>`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolId(u32);
 
@@ -116,7 +116,7 @@ impl std::ops::AddAssign<u32> for PoolId {
     }
 }
 
-/// Device identifier for use with Slab<DeviceId, Device>
+/// Device identifier for use with `Slab<DeviceId, Device>`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, DeBin, SerBin)]
 pub struct DeviceId(pub u32);
 

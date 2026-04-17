@@ -33,7 +33,7 @@ pub struct Runtime {
     pub devices: Slab<DeviceId, Device>,
     /// Physical memory pools
     pub pools: Slab<PoolId, Pool>,
-    /// Global mapping from tensor ID to (pool_index, buffer_id).
+    /// Global mapping from tensor ID to (`pool_index`, `buffer_id`).
     pub buffer_map: Map<TensorId, BufferId>,
     /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
     pub cache: Cache,

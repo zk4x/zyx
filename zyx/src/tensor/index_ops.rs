@@ -158,7 +158,7 @@ impl Tensor {
         Ok(result)
     }
 
-    /// Same as [Tensor::slice], but instead of indexing from first dimensions, it indexes from last dimensions.
+    /// Same as [[`Tensor::slice`]], but instead of indexing from first dimensions, it indexes from last dimensions.
     ///
     /// # Errors
     ///

@@ -309,7 +309,7 @@ impl Tensor {
     /// Rounds each element of the input tensor to the nearest integer.
     ///
     /// For values exactly halfway between two integers, this function rounds to the nearest even integer
-    /// (banker's rounding). This is consistent with Python's round() behavior and IEEE 754 standards.
+    /// (banker's rounding). This is consistent with Python's `round()` behavior and IEEE 754 standards.
     ///
     /// **Parameters:**
     ///
