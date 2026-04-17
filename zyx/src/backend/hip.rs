@@ -294,6 +294,7 @@ impl HIPMemoryPool {
     #[allow(clippy::unused_self)]
     #[allow(clippy::unnecessary_wraps)]
     #[allow(clippy::needless_pass_by_ref_mut)]
+    #[allow(clippy::missing_const_for_fn)]
     pub(super) fn deinitialize(&mut self) {
         // TODO
     }
@@ -682,7 +683,7 @@ impl HIPStatus {
 }
 
 impl DType {
-    pub(super) fn hip(&self) -> &str {
+    pub(super) const fn hip(&self) -> &str {
         match self {
             Self::BF16 => "hip_bfloat16",
             Self::F16 => "half",

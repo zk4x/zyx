@@ -6,11 +6,11 @@ use crate::kernel::{Kernel, Op, OpId};
 use crate::{Map, Set};
 
 impl Kernel {
-    pub fn opt_licm(&self) -> (Optimization, usize) {
+    pub const fn opt_licm(&self) -> (Optimization, usize) {
         (Optimization::Licm, 1)
     }
 
-    pub fn opt_reassociate_commutative(&self) -> (Optimization, usize) {
+    pub const fn opt_reassociate_commutative(&self) -> (Optimization, usize) {
         (Optimization::ReassociateCommutative, 1)
     }
 

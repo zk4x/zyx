@@ -402,7 +402,7 @@ impl OpenCLMemoryPool {
         _ = unsafe { (self.clReleaseCommandQueue)(self.queue) }.check(ErrorStatus::Deinitialization);
     }
 
-    pub fn free_bytes(&self) -> Dim {
+    pub const fn free_bytes(&self) -> Dim {
         //println!("checking free bytes = {}", self.free_bytes);
         self.free_bytes
     }

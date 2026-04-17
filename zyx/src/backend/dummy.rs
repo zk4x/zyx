@@ -66,7 +66,7 @@ impl DummyMemoryPool {
         let _ = self;
     }
 
-    pub fn free_bytes(&self) -> Dim {
+    pub const fn free_bytes(&self) -> Dim {
         //println!("Free bytes {} B", self.free_bytes);
         self.free_bytes
     }

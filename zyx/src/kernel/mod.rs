@@ -286,11 +286,11 @@ impl Op {
         .into_iter()
     }
 
-    pub fn is_const(&self) -> bool {
+    pub const fn is_const(&self) -> bool {
         matches!(self, Op::Cast { .. })
     }
 
-    pub fn is_load(&self) -> bool {
+    pub const fn is_load(&self) -> bool {
         matches!(self, Op::Load { .. })
     }
 
@@ -306,7 +306,7 @@ impl Op {
 impl OpId {
     pub const NULL: Self = Self(u32::MAX);
 
-    pub fn is_null(&self) -> bool {
+    pub const fn is_null(&self) -> bool {
         self.0 == u32::MAX
     }
 }
@@ -971,7 +971,7 @@ impl Kernel {
 }
 
 impl MMADims {
-    pub fn decompose_mnk(&self) -> (u64, u64, u64) {
+    pub const fn decompose_mnk(&self) -> (u64, u64, u64) {
         match self {
             MMADims::m8n8k16 => (8, 8, 16),
             MMADims::m16n8k8 => (16, 8, 8),

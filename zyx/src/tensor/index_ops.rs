@@ -303,158 +303,158 @@ pub trait IntoIndex {
     fn into_index(self) -> impl Iterator<Item = DimIndex> + ExactSizeIterator + DoubleEndedIterator;
 }
 
-impl Into<DimIndex> for isize {
-    fn into(self) -> DimIndex {
-        DimIndex::Index(self as i64)
+impl From<isize> for DimIndex {
+    fn from(val: isize) -> DimIndex {
+        DimIndex::Index(val as i64)
     }
 }
 
-impl Into<DimIndex> for i32 {
-    fn into(self) -> DimIndex {
-        DimIndex::Index(self as i64)
+impl From<i32> for DimIndex {
+    fn from(val: i32) -> DimIndex {
+        DimIndex::Index(val as i64)
     }
 }
 
-impl Into<DimIndex> for i64 {
-    fn into(self) -> DimIndex {
-        DimIndex::Index(self)
+impl From<i64> for DimIndex {
+    fn from(val: i64) -> DimIndex {
+        DimIndex::Index(val)
     }
 }
 
-impl Into<DimIndex> for usize {
-    fn into(self) -> DimIndex {
-        DimIndex::Index(self as i64)
+impl From<usize> for DimIndex {
+    fn from(val: usize) -> DimIndex {
+        DimIndex::Index(val as i64)
     }
 }
 
-impl Into<DimIndex> for u64 {
-    fn into(self) -> DimIndex {
-        DimIndex::Index(self as i64)
+impl From<u64> for DimIndex {
+    fn from(val: u64) -> DimIndex {
+        DimIndex::Index(val as i64)
     }
 }
 
-impl Into<DimIndex> for Range<isize> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: self.start as i64, end: self.end as i64 }
+impl From<Range<isize>> for DimIndex {
+    fn from(val: Range<isize>) -> DimIndex {
+        DimIndex::Range { start: val.start as i64, end: val.end as i64 }
     }
 }
 
-impl Into<DimIndex> for Range<i32> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: self.start as i64, end: self.end as i64 }
+impl From<Range<i32>> for DimIndex {
+    fn from(val: Range<i32>) -> DimIndex {
+        DimIndex::Range { start: val.start as i64, end: val.end as i64 }
     }
 }
 
-impl Into<DimIndex> for Range<i64> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: self.start, end: self.end }
+impl From<Range<i64>> for DimIndex {
+    fn from(val: Range<i64>) -> DimIndex {
+        DimIndex::Range { start: val.start, end: val.end }
     }
 }
 
-impl Into<DimIndex> for Range<usize> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: self.start as i64, end: self.end as i64 }
+impl From<Range<usize>> for DimIndex {
+    fn from(val: Range<usize>) -> DimIndex {
+        DimIndex::Range { start: val.start as i64, end: val.end as i64 }
     }
 }
 
-impl Into<DimIndex> for Range<u64> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: self.start as i64, end: self.end as i64 }
+impl From<Range<u64>> for DimIndex {
+    fn from(val: Range<u64>) -> DimIndex {
+        DimIndex::Range { start: val.start as i64, end: val.end as i64 }
     }
 }
 
-impl Into<DimIndex> for RangeInclusive<isize> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
+impl From<RangeInclusive<isize>> for DimIndex {
+    fn from(val: RangeInclusive<isize>) -> DimIndex {
+        DimIndex::Range { start: *val.start() as i64, end: (*val.end() as i64) + 1 }
     }
 }
 
-impl Into<DimIndex> for RangeInclusive<i32> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
+impl From<RangeInclusive<i32>> for DimIndex {
+    fn from(val: RangeInclusive<i32>) -> DimIndex {
+        DimIndex::Range { start: *val.start() as i64, end: (*val.end() as i64) + 1 }
     }
 }
 
-impl Into<DimIndex> for RangeInclusive<i64> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: *self.start(), end: self.end() + 1 }
+impl From<RangeInclusive<i64>> for DimIndex {
+    fn from(val: RangeInclusive<i64>) -> DimIndex {
+        DimIndex::Range { start: *val.start(), end: val.end() + 1 }
     }
 }
 
-impl Into<DimIndex> for RangeInclusive<usize> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
+impl From<RangeInclusive<usize>> for DimIndex {
+    fn from(val: RangeInclusive<usize>) -> DimIndex {
+        DimIndex::Range { start: *val.start() as i64, end: (*val.end() as i64) + 1 }
     }
 }
 
-impl Into<DimIndex> for RangeInclusive<u64> {
-    fn into(self) -> DimIndex {
-        DimIndex::Range { start: *self.start() as i64, end: (*self.end() as i64) + 1 }
+impl From<RangeInclusive<u64>> for DimIndex {
+    fn from(val: RangeInclusive<u64>) -> DimIndex {
+        DimIndex::Range { start: *val.start() as i64, end: (*val.end() as i64) + 1 }
     }
 }
 
-impl Into<DimIndex> for RangeFrom<isize> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeFrom { start: self.start as i64 }
+impl From<RangeFrom<isize>> for DimIndex {
+    fn from(val: RangeFrom<isize>) -> DimIndex {
+        DimIndex::RangeFrom { start: val.start as i64 }
     }
 }
 
-impl Into<DimIndex> for RangeFrom<i32> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeFrom { start: self.start as i64 }
+impl From<RangeFrom<i32>> for DimIndex {
+    fn from(val: RangeFrom<i32>) -> DimIndex {
+        DimIndex::RangeFrom { start: val.start as i64 }
     }
 }
 
-impl Into<DimIndex> for RangeFrom<i64> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeFrom { start: self.start }
+impl From<RangeFrom<i64>> for DimIndex {
+    fn from(val: RangeFrom<i64>) -> DimIndex {
+        DimIndex::RangeFrom { start: val.start }
     }
 }
 
-impl Into<DimIndex> for RangeFrom<usize> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeFrom { start: self.start as i64 }
+impl From<RangeFrom<usize>> for DimIndex {
+    fn from(val: RangeFrom<usize>) -> DimIndex {
+        DimIndex::RangeFrom { start: val.start as i64 }
     }
 }
 
-impl Into<DimIndex> for RangeFrom<u64> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeFrom { start: self.start as i64 }
+impl From<RangeFrom<u64>> for DimIndex {
+    fn from(val: RangeFrom<u64>) -> DimIndex {
+        DimIndex::RangeFrom { start: val.start as i64 }
     }
 }
 
-impl Into<DimIndex> for RangeTo<isize> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeTo { end: self.end as i64 }
+impl From<RangeTo<isize>> for DimIndex {
+    fn from(val: RangeTo<isize>) -> DimIndex {
+        DimIndex::RangeTo { end: val.end as i64 }
     }
 }
 
-impl Into<DimIndex> for RangeTo<i32> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeTo { end: self.end as i64 }
+impl From<RangeTo<i32>> for DimIndex {
+    fn from(val: RangeTo<i32>) -> DimIndex {
+        DimIndex::RangeTo { end: val.end as i64 }
     }
 }
 
-impl Into<DimIndex> for RangeTo<i64> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeTo { end: self.end }
+impl From<RangeTo<i64>> for DimIndex {
+    fn from(val: RangeTo<i64>) -> DimIndex {
+        DimIndex::RangeTo { end: val.end }
     }
 }
 
-impl Into<DimIndex> for RangeTo<usize> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeTo { end: self.end as i64 }
+impl From<RangeTo<usize>> for DimIndex {
+    fn from(val: RangeTo<usize>) -> DimIndex {
+        DimIndex::RangeTo { end: val.end as i64 }
     }
 }
 
-impl Into<DimIndex> for RangeTo<u64> {
-    fn into(self) -> DimIndex {
-        DimIndex::RangeTo { end: self.end as i64 }
+impl From<RangeTo<u64>> for DimIndex {
+    fn from(val: RangeTo<u64>) -> DimIndex {
+        DimIndex::RangeTo { end: val.end as i64 }
     }
 }
 
-impl Into<DimIndex> for RangeFull {
-    fn into(self) -> DimIndex {
+impl From<RangeFull> for DimIndex {
+    fn from(_val: RangeFull) -> DimIndex {
         DimIndex::RangeFull
     }
 }

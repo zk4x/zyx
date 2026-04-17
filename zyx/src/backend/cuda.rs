@@ -975,7 +975,7 @@ enum CUdevice_attribute {
 }
 
 impl DType {
-    pub(super) fn cu(&self) -> &str {
+    pub(super) const fn cu(&self) -> &str {
         match self {
             Self::BF16 => "bfloat16",
             Self::F16 => "half",

@@ -367,7 +367,7 @@ impl MemoryPool {
         }
     }
 
-    pub fn free_bytes(&self) -> Dim {
+    pub const fn free_bytes(&self) -> Dim {
         match self {
             MemoryPool::Dummy(pool) => pool.free_bytes(),
             MemoryPool::Disk(pool) => pool.free_bytes(),

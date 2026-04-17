@@ -17,7 +17,7 @@ impl Kernel {
     }
 
     #[allow(unused)]
-    pub fn opt_unroll_constant_loops(&self) -> (Optimization, usize) {
+    pub const fn opt_unroll_constant_loops(&self) -> (Optimization, usize) {
         (Optimization::UnrollConstantLoops, 1)
     }
 
