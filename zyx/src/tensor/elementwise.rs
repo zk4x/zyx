@@ -68,8 +68,7 @@ impl Tensor {
     #[must_use]
     pub fn cos(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().unary(x.id, UOp::Cos) };
-        x
+        Tensor { id: RT.lock().unary(x.id, UOp::Cos) }
     }
 
     /// `cosh(x) = (exp(x) + exp(-x)) / 2`.
@@ -101,8 +100,7 @@ impl Tensor {
     #[must_use]
     pub fn exp2(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().unary(x.id, UOp::Exp2) };
-        x
+        Tensor { id: RT.lock().unary(x.id, UOp::Exp2) }
     }
 
     /// Returns a new floored tensor
@@ -111,8 +109,7 @@ impl Tensor {
     #[must_use]
     pub fn floor(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().unary(x.id, UOp::Floor) };
-        x
+        Tensor { id: RT.lock().unary(x.id, UOp::Floor) }
     }
 
     /// Returns a new tensor with each element truncated toward zero.
@@ -123,8 +120,7 @@ impl Tensor {
     #[must_use]
     pub fn trunc(&self) -> Tensor {
         let x = self.float_cast().unwrap();
-        let x = Tensor { id: RT.lock().unary(x.id, UOp::Trunc) };
-        x
+        Tensor { id: RT.lock().unary(x.id, UOp::Trunc) }
     }
 
     /// Computes the exponential of each element in the input tensor using base e.

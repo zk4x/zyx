@@ -56,9 +56,7 @@ impl DiskMemoryPool {
 
     pub fn buffer_from_path(&mut self, bytes: Dim, path: &Path, offset_bytes: u64) -> PoolBufferId {
         // TODO perhaps add verification that the file exists and it contains enough bytes at given offset
-        let id = self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes });
-        //println!("Create buffer={id:?} on disk from path={path:?}");
-        id
+        self.buffers.push(DiskBuffer { bytes, path: path.into(), offset_bytes })
     }
 
     #[allow(clippy::needless_pass_by_value)]
