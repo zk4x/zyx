@@ -310,7 +310,7 @@ impl Op {
 impl OpId {
     pub const NULL: Self = Self(u32::MAX);
 
-    pub const fn is_null(&self) -> bool {
+    pub const fn is_null(self) -> bool {
         self.0 == u32::MAX
     }
 }
@@ -767,7 +767,6 @@ impl Kernel {
     /// returns `loop_id` -> (dimension, stride)
     /// if returned `loop_id` is `OpId::NULL`, the stride is constant and dimension is 0 (unknown)
     pub fn get_strides(&self, index: OpId) -> Map<OpId, (Dim, Dim)> {
-        use Op::*;
         //println!("Get index {index}");
 
         let mut params = vec![index];
@@ -775,18 +774,18 @@ impl Kernel {
 
         while let Some(param) = params.pop() {
             match self.ops[param].op {
-                Binary { x, y, bop } => {
+                Op::Binary { x, y, bop } => {
                     if bop == BOp::Add {
-                        if let Loop { len, .. } = self.ops[x].op {
+                        if let Op::Loop { len, .. } = self.ops[x].op {
                             indices.insert(x, (len, 1));
                             params.push(y);
-                        } else if let Index { len, .. } = self.ops[x].op {
+                        } else if let Op::Index { len, .. } = self.ops[x].op {
                             indices.insert(x, (len, 1));
                             params.push(y);
-                        } else if let Loop { len, .. } = self.ops[y].op {
+                        } else if let Op::Loop { len, .. } = self.ops[y].op {
                             indices.insert(y, (len, 1));
                             params.push(x);
-                        } else if let Index { len, .. } = self.ops[y].op {
+                        } else if let Op::Index { len, .. } = self.ops[y].op {
                             indices.insert(y, (len, 1));
                             params.push(x);
                         } else {
@@ -796,19 +795,19 @@ impl Kernel {
                     }
                     if bop == BOp::Mul {
                         match (&self.ops[x].op, &self.ops[y].op) {
-                            (Loop { len, .. }, Const(c)) | (Index { len, .. }, Const(c)) => {
+                            (Op::Loop { len, .. }, Op::Const(c)) | (Op::Index { len, .. }, Op::Const(c)) => {
                                 indices.insert(x, (*len, c.as_dim().unwrap()));
                             }
-                            (Const(c), Loop { len, .. }) | (Const(c), Index { len, .. }) => {
+                            (Op::Const(c), Op::Loop { len, .. }) | (Op::Const(c), Op::Index { len, .. }) => {
                                 indices.insert(y, (*len, c.as_dim().unwrap()));
                             }
                             _ => {} //op => println!("op={op:?}"),
                         }
                     }
                 }
-                Mad { x, y, z } => {
+                Op::Mad { x, y, z } => {
                     if let Some(len) = match &self.ops[z].op {
-                        Loop { len, .. } | Index { len, .. } => Some(*len),
+                        Op::Loop { len, .. } | Op::Index { len, .. } => Some(*len),
                         _ => None,
                     } {
                         indices.insert(z, (len, 1));
@@ -816,8 +815,8 @@ impl Kernel {
                         params.push(z);
                     }
                     match (&self.ops[x].op, &self.ops[y].op) {
-                        (Loop { len: dim, .. }, Const(c)) | (Const(c), Loop { len: dim, .. }) => {
-                            let (target, d) = if matches!(self.ops[x].op, Loop { .. }) {
+                        (Op::Loop { len: dim, .. }, Op::Const(c)) | (Op::Const(c), Op::Loop { len: dim, .. }) => {
+                            let (target, d) = if matches!(self.ops[x].op, Op::Loop { .. }) {
                                 (x, *dim)
                             } else {
                                 (y, *dim)
@@ -827,7 +826,7 @@ impl Kernel {
                         _ => {}
                     }
                 }
-                Const(c) => {
+                Op::Const(c) => {
                     indices.insert(OpId::NULL, (0, c.as_dim().unwrap()));
                 }
                 _ => {}
@@ -955,7 +954,7 @@ impl Kernel {
 }
 
 impl MMADims {
-    pub const fn decompose_mnk(&self) -> (u64, u64, u64) {
+    pub const fn decompose_mnk(self) -> (u64, u64, u64) {
         match self {
             MMADims::m8n8k16 => (8, 8, 16),
             MMADims::m16n8k8 => (16, 8, 8),

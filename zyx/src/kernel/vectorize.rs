@@ -13,36 +13,34 @@ impl Kernel {
         // TODO for now this function ignores aliasing of stores and loads.
         // So later we need to make sure there are no aliasing issues
 
-        use Op::*;
-
         let mut op_id = self.head;
         let mut loads: Vec<Vec<(OpId, OpId, Dim, OpId)>> = Vec::new();
         loads.push(Vec::new());
         'a: while !op_id.is_null() {
             match self.ops[op_id].op {
-                Loop { .. } => {
+                Op::Loop { .. } => {
                     loads.push(Vec::new());
                 }
-                Load { src, index, .. } => match self.ops[index].op {
-                    Mad { x, y, z } => {
-                        if let Const(c) = self.ops[z].op {
+                Op::Load { src, index, .. } => match self.ops[index].op {
+                    Op::Mad { x, y, z } => {
+                        if let Op::Const(c) = self.ops[z].op {
                             loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                         }
                     }
-                    Binary { x, y, bop } if bop == BOp::Add => {
-                        if let Const(c) = self.ops[x].op {
+                    Op::Binary { x, y, bop } if bop == BOp::Add => {
+                        if let Op::Const(c) = self.ops[x].op {
                             loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                         }
-                        if let Const(c) = self.ops[y].op {
+                        if let Op::Const(c) = self.ops[y].op {
                             loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                         }
                     }
-                    Const(c) => {
+                    Op::Const(c) => {
                         loads.last_mut().unwrap().push((op_id, src, c.as_dim().unwrap(), index));
                     }
                     _ => {}
                 },
-                EndLoop => {
+                Op::EndLoop => {
                     if let Some(mut loads) = loads.pop() {
                         if !loads.is_empty() {
                             // Check if constant offsets are continuous numbers
@@ -66,23 +64,23 @@ impl Kernel {
                             // Get the base index
                             let mut base_index;
                             match self.ops[loads[0].3].op {
-                                Mad { x, y, z } => {
-                                    if let Const(c) = self.ops[z].op {
-                                        base_index = self.insert_before(loads[0].0, Binary { x, y, bop: BOp::Mul });
+                                Op::Mad { x, y, z } => {
+                                    if let Op::Const(c) = self.ops[z].op {
+                                        base_index = self.insert_before(loads[0].0, Op::Binary { x, y, bop: BOp::Mul });
                                     } else {
                                         continue 'a;
                                     }
                                 }
-                                Binary { x, y, bop } if bop == BOp::Add => {
-                                    if let Const(_) = self.ops[x].op {
+                                Op::Binary { x, y, bop } if bop == BOp::Add => {
+                                    if let Op::Const(_) = self.ops[x].op {
                                         base_index = y;
-                                    } else if let Const(_) = self.ops[y].op {
+                                    } else if let Op::Const(_) = self.ops[y].op {
                                         base_index = x;
                                     } else {
                                         continue 'a;
                                     }
                                 }
-                                Const(c) => {
+                                Op::Const(c) => {
                                     base_index = OpId::NULL;
                                 }
                                 _ => {
@@ -92,14 +90,14 @@ impl Kernel {
 
                             // Now that we know offsets are continues, we can replace the loads with single vectorized load
                             if base_index == OpId::NULL {
-                                base_index = self.insert_before(loads[0].0, Const(Constant::idx(0)));
+                                base_index = self.insert_before(loads[0].0, Op::Const(Constant::idx(0)));
                             }
                             let vload = self.insert_before(
                                 loads[0].0,
-                                Load { src: loads[0].1, index: base_index, vlen: loads.len() as u8 },
+                                Op::Load { src: loads[0].1, index: base_index, vlen: loads.len() as u8 },
                             );
                             for (idx, load) in loads.iter().enumerate() {
-                                self.ops[load.0].op = Devectorize { vec: vload, idx };
+                                self.ops[load.0].op = Op::Devectorize { vec: vload, idx };
                             }
                         }
                     }
