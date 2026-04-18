@@ -3,7 +3,6 @@
 
 use crate::{
     DType, Map,
-    dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId},
     shape::Dim,
 };
@@ -76,8 +75,8 @@ impl Kernel {
         let Some(divisor) = divisor.as_dim() else { return };
 
         // Pattern 1: x % divisor when 0 <= x < divisor -> x
-        if let Some(&(min_x, max_x)) = bounds.get(&x) {
-            if min_x == 0 && max_x < divisor {
+        if let Some(&(_, max_x)) = bounds.get(&x) {
+            if max_x < divisor {
                 self.remap(op_id, x);
                 return;
             }
@@ -100,7 +99,7 @@ impl Kernel {
             }
             // Pattern 2c: (a*c + b) % d when max(a*c + b) < d -> b % d
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
-            if let Some(&(_min_a, max_a)) = bounds.get(&a) {
+            /*if let Some(&(_min_a, max_a)) = bounds.get(&a) {
                 let max_a_c = max_a.saturating_mul(c);
                 if let Some(&(min_b, max_b)) = bounds.get(&b) {
                     if min_b == 0 && max_a_c.saturating_add(max_b) < divisor {
@@ -108,11 +107,11 @@ impl Kernel {
                         return;
                     }
                 }
-            }
+            }*/
             // Pattern 2d: (a*c + b) % d when d = c*k and max(a*c+b) < d -> b
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
             // When max(a*c + b) < divisor, (a*c + b) % divisor = a*c + b, so if max < divisor -> result = b
-            if divisor > c && divisor.is_multiple_of(c) {
+            /*if divisor > c && divisor.is_multiple_of(c) {
                 if let Some(&(_min_a, max_a)) = bounds.get(&a)
                     && let Some(&(min_b, max_b)) = bounds.get(&b)
                 {
@@ -122,12 +121,12 @@ impl Kernel {
                         return;
                     }
                 }
-            }
+            }*/
         }
 
         // Pattern 3: (a + b) % divisor when min_a > 0, min_b > 0, max(a+b) < divisor
         // If both are positive and sum < divisor, no wraparound, so result = a + b
-        if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
+        /*if let Op::Binary { x: a, y: b, bop: BOp::Add } = self.ops[x].op {
             if let Some(&(min_a, max_a)) = bounds.get(&a) {
                 if let Some(&(min_b, max_b)) = bounds.get(&b) {
                     if min_a > 0 && min_b > 0 {
@@ -139,7 +138,7 @@ impl Kernel {
                     }
                 }
             }
-        }
+        }*/
 
         // Pattern 4: (a * c) % divisor -> reduce c modulo divisor
         // Math: (a * c) % d = (a * (c % d)) % d

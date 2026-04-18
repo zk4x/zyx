@@ -38,9 +38,9 @@ impl Kernel {
     pub fn simplify_accumulating_loop(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
-            /*if self.fold_arange_loop(op_id) {
+            if self.fold_arange_loop(op_id) {
                 break;
-            }*/
+            }
             op_id = self.next_op(op_id);
         }
 
@@ -341,8 +341,14 @@ impl Kernel {
                 } else {
                     return None;
                 };
-                let Op::Index { scope: Scope::Global, .. } = self.ops[gidx].op else { return None };
-                return Some((1, 1, c, mul_const, gidx));
+                // We need to check gidx is declared before loop
+                let mut x = gidx;
+                while x != op_id {
+                    if x == loop_id {
+                        return Some((1, 1, c, mul_const, gidx));
+                    }
+                    x = self.next_op(x);
+                }
             }
         }
         None

@@ -359,7 +359,8 @@ impl Kernel {
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.fuse_mad();
-            kernel.dead_code_elimination();
+            kernel.run_always_on_optimizations();
+            kernel.run_always_on_optimizations();
 
             if launched_kernels.insert(kernel.get_hash()) {
                 if debug.ir() {
