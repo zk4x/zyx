@@ -1247,7 +1247,7 @@ impl CUDADevice {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
                 }
-                &Op::WMMA { dims, layout, dtype, c, a, b } => {
+                &Op::Wmma { dims, layout, dtype, c, a, b } => {
                     let dtype = match dtype {
                         MMADType::f16_f16_f16_f32 => DType::F32,
                     };
@@ -1387,7 +1387,7 @@ impl CUDADevice {
                         _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
                     }
                 }
-                &Op::WMMA { dims, layout, dtype, c, a, b } => {
+                &Op::Wmma { dims, layout, dtype, c, a, b } => {
                     helper_funcs += r#"__device__ float4 wmma_m16n8k8_row_col_f32_f16_f16_f32(half4 a, half2 b, float4 c) {
   int *a_pk = (int *)(&a), *b_pk = (int *)(&b), *c_pk = (int *)(&c);
   asm("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32"

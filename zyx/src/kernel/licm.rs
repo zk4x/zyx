@@ -24,7 +24,7 @@ impl Kernel {
                 Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
-                Op::Devectorize { .. } | Op::WMMA { .. } | Op::Vectorize { .. } => loop_depth,
+                Op::Devectorize { .. } | Op::Wmma { .. } | Op::Vectorize { .. } => loop_depth,
                 Op::If { .. } | Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -91,7 +91,7 @@ impl Kernel {
                 | Op::Store { .. }
                 | Op::Const(_)
                 | Op::Define { .. }
-                | Op::WMMA { .. } => loop_depth,
+                | Op::Wmma { .. } => loop_depth,
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);

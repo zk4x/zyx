@@ -439,14 +439,11 @@ impl Kernel {
                 Op::EndLoop => {
                     loop_mult /= latest_loop_lengths.pop().unwrap();
                 }
-                Op::WMMA { dims, .. } => {
+                Op::Wmma { dims, .. } => {
                     let (m, n, k) = dims.decompose_mnk();
                     let warp = u64::from(dev_info.warp_size);
                     let cost = (m * n * k) as u64 / warp;
                     n_instructions += loop_mult * cost;
-                }
-                Op::Vectorize { .. } => {
-                    // TODO multiply all ops that are vectorized by the vectorization factor
                 }
                 Op::Barrier { .. } => {
                     n_instructions += loop_mult * 5;
@@ -455,7 +452,13 @@ impl Kernel {
                     n_instructions += loop_mult * 3;
                 }
                 Op::EndIf => {}
-                Op::Devectorize { .. } => {}
+                Op::Devectorize { .. } => {
+                    todo!()
+                }
+                Op::Vectorize { .. } => {
+                    // TODO multiply all ops that are vectorized by the vectorization factor
+                    todo!()
+                }
                 Op::ConstView(_) => todo!(),
                 Op::LoadView(_) => todo!(),
                 Op::StoreView { .. } => todo!(),
@@ -526,7 +529,20 @@ pub struct Cost {
 
 impl PartialEq for Cost {
     fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == core::cmp::Ordering::Equal
+        // Global memory accesses are most expensive, prioritize minimizing them
+        // Global stores are most critical (write bandwidth)
+        self.global_stores_per_thread
+            .cmp(&other.global_stores_per_thread)
+            // Then global loads
+            .then(self.global_loads_per_thread.cmp(&other.global_loads_per_thread))
+            // Then total instructions (local access counts as ~1 instruction)
+            .then(
+                (self.instructions_per_thread + self.local_loads_per_thread + self.local_stores_per_thread)
+                    .cmp(&(other.instructions_per_thread + other.local_loads_per_thread + other.local_stores_per_thread)),
+            )
+            // Fewer threads with more work per thread is slightly preferred (less overhead)
+            .then(other.n_threads.cmp(&self.n_threads))
+            == std::cmp::Ordering::Equal
     }
 }
 
@@ -596,8 +612,8 @@ fn remove_worst(items: &mut Vec<OptSeq>, mut n: usize, rng: &mut Rng) {
 }
 
 fn sample_best<'a>(items: &'a [OptSeq], rng: &mut Rng) -> &'a OptSeq {
-    debug_assert!(!items.is_empty(), "sample_best called with empty items");
     const K: usize = 16;
+    debug_assert!(!items.is_empty(), "sample_best called with empty items");
     let len = items.len();
     let mut best_idx = rng.range::<u64>(0..len as u64) as usize;
     let mut best_cost = items[best_idx].cost;

@@ -39,6 +39,7 @@ impl Kernel {
         self.verify();
     }
 
+    #[allow(clippy::unused_self)]
     pub const fn opt_unfuse_mad(&self) -> (Optimization, usize) {
         (Optimization::UnfuseMad, 1)
     }

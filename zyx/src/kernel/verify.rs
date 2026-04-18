@@ -99,7 +99,7 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                 }
                 Op::Devectorize { .. } => todo!(),
-                Op::WMMA { c, a, b, .. } => {
+                Op::Wmma { c, a, b, .. } => {
                     let dtype = dtypes[&c];
                     check(op_id, c, &stack);
                     check(op_id, a, &stack);
@@ -340,12 +340,8 @@ impl Kernel {
                                 // x | y
                                 let always = max_x == 1 && max_y == 1;
                                 let maybe = min_x == 1 || min_y == 1 || max_x == 1 || max_y == 1;
-                                let lower = if always {
-                                    1
-                                } else {
-                                    0
-                                };
-                                let upper = u64::from(always || maybe);
+                                let lower = Dim::from(always);
+                                let upper = Dim::from(always || maybe);
                                 (lower, upper)
                             }
                             BOp::Max => (min_x.min(min_y), max_x.max(max_y)),

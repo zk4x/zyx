@@ -80,8 +80,8 @@ impl Kernel {
         self.ops[gidx_id].op = Op::Binary { x, y: const_factor, bop: BOp::Mul };
         let mut ids = Vec::with_capacity((factor - 1) as usize);
         let mut id = gidx_id;
-        for i in 0..(factor - 1) as usize {
-            id = self.insert_after(id, Op::Binary { x: gidx_id, y: offsets[i], bop: BOp::Add });
+        for &offset in &offsets {
+            id = self.insert_after(id, Op::Binary { x: gidx_id, y: offset, bop: BOp::Add });
             ids.push(id);
         }
         remaps.insert(gidx_id, ids);
@@ -97,9 +97,9 @@ impl Kernel {
                 }
                 Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier { .. } => {}
                 Op::Store { dst, x, index, vlen } => {
+                    let mut ids = Vec::with_capacity((factor - 1) as usize);
+                    let mut id = op_id;
                     if acc_defines.contains(&dst) {
-                        let mut ids = Vec::with_capacity((factor - 1) as usize);
-                        let mut id = op_id;
                         for i in 0..(factor - 1) as usize {
                             let mut x = x;
                             if let Some(remap) = remaps.get(&x) {
@@ -111,10 +111,7 @@ impl Kernel {
                         }
                         let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
                         self.ops[op_id].op = Op::Store { dst, x, index, vlen };
-                        remaps.insert(op_id, ids);
                     } else {
-                        let mut ids = Vec::with_capacity((factor - 1) as usize);
-                        let mut id = op_id;
                         for i in 0..(factor - 1) as usize {
                             let mut x = x;
                             if let Some(remap) = remaps.get(&x) {
@@ -127,24 +124,21 @@ impl Kernel {
                             id = self.insert_after(id, Op::Store { dst, x, index, vlen });
                             ids.push(id);
                         }
-                        remaps.insert(op_id, ids);
                     }
+                    remaps.insert(op_id, ids);
                 }
                 Op::Load { src, index, vlen } => {
+                    let mut ids = Vec::with_capacity((factor - 1) as usize);
+                    let mut id = op_id;
                     if acc_defines.contains(&src) {
-                        let mut ids = Vec::with_capacity((factor - 1) as usize);
-                        let mut id = op_id;
-                        for i in 0..(factor - 1) as usize {
-                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
+                        for &offset in &offsets {
+                            let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offset });
                             id = self.insert_after(index, Op::Load { src, index, vlen });
                             ids.push(id);
                         }
                         let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
                         self.ops[op_id].op = Op::Load { src, index, vlen };
-                        remaps.insert(op_id, ids);
                     } else {
-                        let mut ids = Vec::with_capacity((factor - 1) as usize);
-                        let mut id = op_id;
                         for i in 0..(factor - 1) as usize {
                             let mut index = index;
                             if let Some(remap) = remaps.get(&index) {
@@ -153,8 +147,8 @@ impl Kernel {
                             id = self.insert_after(id, Op::Load { src, index, vlen });
                             ids.push(id);
                         }
-                        remaps.insert(op_id, ids);
                     }
+                    remaps.insert(op_id, ids);
                 }
                 ref op => {
                     let op = op.clone();

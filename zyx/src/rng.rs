@@ -162,7 +162,7 @@ impl Rng {
                     (start, end) = (end, start);
                 }
                 let x = self.next_f64();
-                (x * (end - start) + start).cast()
+                x.mul_add(end - start, start).cast()
             }
 
             DType::U8 | DType::U16 | DType::U32 | DType::U64 => {

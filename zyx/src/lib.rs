@@ -56,6 +56,7 @@
 #![allow(clippy::cast_possible_wrap)]
 #![allow(clippy::into_iter_on_ref)]
 #![allow(clippy::explicit_counter_loop)]
+#![allow(clippy::needless_return)]
 
 use crate::runtime::Runtime;
 

@@ -106,11 +106,11 @@ impl View {
             .map_or_else(|| vec![1], |inner| inner.iter().map(|dim| dim.st).collect())
     }
 
-    pub(crate) fn original_numel(&self) -> usize {
+    pub(crate) fn original_numel(&self) -> Dim {
         let mut res = 1;
         for dim in &self.0[0] {
             if dim.st != 0 {
-                res *= usize::try_from(i64::try_from(dim.d).unwrap() - dim.lp - dim.rp).unwrap();
+                res *= Dim::try_from(i64::try_from(dim.d).unwrap() - dim.lp - dim.rp).unwrap();
             }
         }
         res

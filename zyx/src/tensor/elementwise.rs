@@ -208,6 +208,7 @@ impl Tensor {
 
     /// Compute logarithm with any base
     #[must_use]
+    #[allow(clippy::suboptimal_flops)]
     pub fn log(&self, base: impl Into<Tensor>) -> Tensor {
         self.log2() / base.into().log2()
     }

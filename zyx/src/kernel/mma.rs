@@ -251,7 +251,7 @@ impl Kernel {
 
         let wmma_op = self.insert_before(
             k_loop_id,
-            Op::WMMA {
+            Op::Wmma {
                 dims: MMADims::m16n8k8,
                 layout: MMALayout::row_col,
                 dtype: MMADType::f16_f16_f16_f32,

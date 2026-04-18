@@ -98,7 +98,7 @@ impl Kernel {
             // Pattern 2d: (a*c + b) % d when d = c*k and max(a*c+b) < d -> b
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
             // When max(a*c + b) < divisor, (a*c + b) % divisor = a*c + b, so if max < divisor -> result = b
-            if divisor > c && divisor % c == 0 {
+            if divisor > c && divisor.is_multiple_of(c) {
                 if let Some(&(_min_a, max_a)) = bounds.get(&a)
                     && let Some(&(min_b, max_b)) = bounds.get(&b)
                 {
@@ -197,7 +197,7 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
 fn mad(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
     let Op::Mad { x: a, y: c, z: b } = k.at(x) else { return None };
     let Op::Const(cst) = k.at(*c) else { return None };
-    let Some(cval) = cst.as_dim() else { return None };
+    let cval = cst.as_dim()?;
     Some((*a, cval, *b))
 }
 

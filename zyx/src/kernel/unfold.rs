@@ -467,10 +467,8 @@ impl Kernel {
                 if last_load.is_null() {
                     last_load = op_id;
                 }
-            } else {
-                if !last_load.is_null() {
-                    self.move_op_after(op_id, last_load);
-                }
+            } else if !last_load.is_null() {
+                self.move_op_after(op_id, last_load);
             }
             op_id = self.prev_op(op_id);
         }

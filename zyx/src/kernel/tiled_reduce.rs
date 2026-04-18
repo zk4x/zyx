@@ -105,12 +105,10 @@ impl Kernel {
                         reduce_bop_id = x;
                     }
                 }
-                Op::Load { src, vlen, .. } => {
-                    if depth == 0 && src == reg_acc {
-                        debug_assert_eq!(vlen, 1);
-                        acc_load_id = op_id;
-                        break;
-                    }
+                Op::Load { src, vlen, .. } if depth == 0 && src == reg_acc => {
+                    debug_assert_eq!(vlen, 1);
+                    acc_load_id = op_id;
+                    break;
                 }
                 Op::Loop { .. } => depth += 1,
                 Op::EndLoop => depth -= 1,

@@ -15,7 +15,7 @@ impl Kernel {
         while !op_id.is_null() {
             match *self.at(op_id) {
                 Op::Move { .. } | Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Reduce { .. } => todo!(),
-                Op::WMMA { .. }
+                Op::Wmma { .. }
                 | Op::Barrier { .. }
                 | Op::If { .. }
                 | Op::EndIf => {}
@@ -153,10 +153,8 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::Define { scope, .. } => {
-                    if scope == Scope::Register {
-                        defines.insert(op_id, loop_level);
-                    }
+                Op::Define { scope: Scope::Register, .. } => {
+                    defines.insert(op_id, loop_level);
                 }
                 Op::Store { dst, .. } => {
                     //println!("Store to {dst}, loop_level={loop_level}");
@@ -210,15 +208,13 @@ impl Kernel {
                         continue;
                     }
                 }
-                Op::Load { src, index, .. } => {
-                    if src == define_id {
-                        self.remove_op(op_id);
-                        let Op::Const(index) = self.ops[index].op else { unreachable!() };
-                        let Constant::U32(index) = index else { unreachable!() };
-                        remaps.insert(op_id, latest_stores[index as usize]);
-                        op_id = next;
-                        continue;
-                    }
+                Op::Load { src, index, .. } if src == define_id => {
+                    self.remove_op(op_id);
+                    let Op::Const(index) = self.ops[index].op else { unreachable!() };
+                    let Constant::U32(index) = index else { unreachable!() };
+                    remaps.insert(op_id, latest_stores[index as usize]);
+                    op_id = next;
+                    continue;
                 }
                 _ => {}
             }
@@ -244,7 +240,7 @@ impl Kernel {
                 Op::Loop { .. } => stack.push((false, vec![op_id])),
                 Op::Store { .. } => {
                     for s in &mut stack {
-                        s.0 = true
+                        s.0 = true;
                     }
                 }
                 Op::EndLoop => {
@@ -277,7 +273,7 @@ impl Kernel {
                 op,
                 Op::Store { .. }
                     | Op::Define { .. }
-                    | Op::WMMA { .. }
+                    | Op::Wmma { .. }
                     | Op::Barrier { .. }
                     | Op::If { .. }
                     | Op::EndIf
@@ -294,6 +290,7 @@ impl Kernel {
             }
         }
         //self.ops.retain(|op_id| visited.contains(op_id));
+        #[allow(clippy::needless_collect)] // REASON - borrowck
         for op_id in self.ops.ids().collect::<Vec<_>>() {
             if !visited.contains(&op_id) {
                 self.remove_op(op_id);

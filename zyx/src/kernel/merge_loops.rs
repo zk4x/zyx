@@ -58,7 +58,7 @@ impl Kernel {
         let Op::Index { scope, axis, .. } = self.ops[first_id.unwrap()].op else { unreachable!() };
         let mut x = self.insert_before(first_id.unwrap(), Op::Index { len: acc, scope, axis });
 
-        for (.., (loop_id, len)) in axes.into_iter() {
+        for (.., (loop_id, len)) in axes {
             let y = self.insert_before(loop_id, Op::Const(Constant::idx(len as u64)));
             self.ops[loop_id].op = Op::Binary { x, y, bop: BOp::Mod };
             x = self.insert_after(loop_id, Op::Binary { x, y, bop: BOp::Div });

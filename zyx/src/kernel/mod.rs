@@ -182,7 +182,7 @@ pub enum Op {
         z: OpId,
     },
     // fused matmul, a, b, c are fragments, each is a vector, c is accumulator, returns new accumulated vector d
-    WMMA {
+    Wmma {
         dims: MMADims,
         layout: MMALayout,
         dtype: MMADType,
@@ -231,7 +231,7 @@ pub enum Op {
 impl Op {
     // TODO use custom non allocating iterator instead of allocating a vec
     #[allow(clippy::match_same_arms)]
-    pub fn parameters(&self) -> impl Iterator<Item = OpId> + DoubleEndedIterator {
+    pub fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
         match self {
             Op::ConstView { .. }
             | Op::LoadView { .. }
@@ -255,14 +255,14 @@ impl Op {
             &Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.clone(),
             &Op::Devectorize { vec, .. } => vec![vec],
-            &Op::WMMA { a, b, c, .. } => vec![a, b, c],
+            &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![*condition],
         }
         .into_iter()
     }
 
     #[allow(clippy::match_same_arms)]
-    pub fn parameters_mut(&mut self) -> impl Iterator<Item = &mut OpId> + DoubleEndedIterator {
+    pub fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
             Op::ConstView { .. }
             | Op::LoadView { .. }
@@ -270,7 +270,7 @@ impl Op {
             | Op::Define { .. }
             | Op::Index { .. }
             | Op::Loop { .. }
-            | Op::EndLoop { .. }
+            | Op::EndLoop
             | Op::EndIf
             | Op::Barrier { .. } => vec![],
             Op::StoreView { src, .. } => vec![src],
@@ -284,7 +284,7 @@ impl Op {
             Op::Mad { x, y, z } => vec![x, y, z],
             Op::Vectorize { ops } => ops.iter_mut().collect(),
             Op::Devectorize { vec, .. } => vec![vec],
-            Op::WMMA { a, b, c, .. } => vec![a, b, c],
+            Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::If { condition } => vec![condition],
         }
         .into_iter()
@@ -542,12 +542,12 @@ impl Kernel {
                 Op::LoadView(x) => {
                     let (dtype, view) = x.as_ref();
                     let shape = view.shape();
-                    let mem_read = view.original_numel() as u64 * u64::from(dtype.bit_size() / 8);
+                    let mem_read = view.original_numel() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read, mem_write: 0 }
                 }
                 Op::StoreView { src, dtype } => {
                     let Info { shape, .. } = stack[src].clone();
-                    let mem_write = u64::from(shape.iter().product::<Dim>()) * u64::from(dtype.bit_size() / 8);
+                    let mem_write = shape.iter().product::<Dim>() * u64::from(dtype.bit_size()) / 8;
                     Info { shape, flops: 0, mem_read: 0, mem_write }
                 }
                 Op::Move { mop, .. } => match mop.as_ref() {
@@ -580,7 +580,7 @@ impl Kernel {
                     let flops = shape.iter().product::<Dim>() as u64;
                     Info { shape, flops, mem_read: 0, mem_write: 0 }
                 }
-                Op::WMMA { .. }
+                Op::Wmma { .. }
                 | Op::Vectorize { .. }
                 | Op::Devectorize { .. }
                 | Op::Store { .. }
@@ -906,7 +906,7 @@ impl Kernel {
                     Op::Const { .. } | Op::ConstView { .. } | Op::LoadView { .. } => {}
                     Op::Vectorize { .. }
                     | Op::Devectorize { .. }
-                    | Op::WMMA { .. }
+                    | Op::Wmma { .. }
                     | Op::Barrier { .. }
                     | Op::Define { .. }
                     | Op::Mad { .. }

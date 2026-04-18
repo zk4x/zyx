@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use super::autotune::Optimization;
+use crate::Map;
 use crate::kernel::{Kernel, Op, Scope};
-use crate::{Map, Set};
 
 impl Kernel {
     #[allow(unused)]
@@ -11,7 +11,6 @@ impl Kernel {
         let candidates: Vec<u64> = vec![2, 4, 8, 16];
         let mut global_upcasts = Map::default();
         let mut reduce_factors = Map::default();
-        let mut reduce_ids = Set::default();
 
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -24,7 +23,6 @@ impl Kernel {
                         .collect();
                     if !applicable.is_empty() {
                         reduce_factors.insert(op_id, applicable);
-                        reduce_ids.insert(op_id);
                     }
                 }
             }
@@ -51,7 +49,7 @@ impl Kernel {
         }
 
         let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
-        let n_reduce_options: usize = reduce_factors.values().map(|v| v.len()).product();
+        let n_reduce_options: usize = reduce_factors.values().map(Vec::len).product();
 
         let n_configs = n_global_options * n_reduce_options;
         (

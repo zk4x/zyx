@@ -32,7 +32,7 @@ impl Kernel {
             if let &Op::Store { dst, index, .. } = self.at(store_id) {
                 if dst == acc_id {
                     if let Op::Const(cst) = self.at(index) {
-                        if let Some(0) = cst.as_dim() {
+                        if cst.as_dim() == Some(0) {
                             break;
                         }
                     }
