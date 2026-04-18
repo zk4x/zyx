@@ -248,8 +248,6 @@ impl Kernel {
             return false;
         }
 
-        println!("after_loop_load_id={after_loop_load_id}");
-
         let step = mul_const;
         let offset = loop_len - c - 1;
         let offset_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(offset)));
@@ -343,6 +341,7 @@ impl Kernel {
                 } else {
                     return None;
                 };
+                let Op::Index { scope: Scope::Global, .. } = self.ops[gidx].op else { return None };
                 return Some((1, 1, c, mul_const, gidx));
             }
         }
