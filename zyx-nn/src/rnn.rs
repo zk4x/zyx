@@ -49,6 +49,6 @@ impl RNNCell {
         if let Some(b) = &self.bias_ih {
             hx = hx + b
         }
-        return Ok((x, hx));
+        Ok((x, hx))
     }
 }

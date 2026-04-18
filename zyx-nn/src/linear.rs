@@ -40,7 +40,7 @@ impl Linear {
         if let Some(bias) = &self.bias {
             return Ok(x + bias);
         }
-        return Ok(x);
+        Ok(x)
     }
 }
 

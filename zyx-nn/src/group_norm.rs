@@ -42,7 +42,7 @@ impl GroupNorm {
         affine: bool,
         dtype: DType,
     ) -> Result<Self, ZyxError> {
-        if num_channels % num_groups != 0 {
+        if !num_channels.is_multiple_of(num_groups) {
             return Err(ZyxError::ShapeError(
                 format!(
                     "num_channels ({}) must be divisible by num_groups ({})",

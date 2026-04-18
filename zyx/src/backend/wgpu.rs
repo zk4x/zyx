@@ -1,6 +1,18 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+#![allow(clippy::redundant_clone)]
+#![allow(clippy::cast_lossless)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::unnecessary_box_returns)]
+#![allow(clippy::let_and_return)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::box_default)]
+#![allow(clippy::unnecessary_wraps)]
+
 use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, PoolId};
 use crate::{
     DType, Map,
@@ -32,7 +44,7 @@ impl Default for WGPUConfig {
 
 #[derive(Debug)]
 pub struct WGPUMemoryPool {
-    free_bytes: usize,
+    free_bytes: Dim,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     buffers: Slab<PoolBufferId, wgpu::Buffer>,
@@ -57,7 +69,7 @@ pub struct WGPUEvent {
 #[derive(Debug)]
 pub(super) struct WGPUProgram {
     name: String,
-    gws: Vec<usize>,
+    gws: Vec<u64>,
     //local_work_size: [usize; 3],
     arg_ro_flags: Vec<bool>,
     shader: ShaderModule,
@@ -151,14 +163,14 @@ pub(super) fn initialize_device(
 }
 
 impl WGPUMemoryPool {
-    pub fn deinitialize(&mut self) {}
+    pub const fn deinitialize(&mut self) {}
 
-    pub const fn free_bytes(&self) -> usize {
+    pub const fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
 
-    pub fn allocate(&mut self, bytes: usize) -> Result<(PoolBufferId, Event), BackendError> {
-        const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
+        const ALIGN: Dim = wgpu::COPY_BUFFER_ALIGNMENT;
         let bytes = (bytes + ALIGN - 1) / ALIGN * ALIGN;
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
@@ -177,7 +189,7 @@ impl WGPUMemoryPool {
     }
 
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
-        let _ = event_wait_list;
+        drop(event_wait_list);
         let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
         buffer.destroy();
     }
@@ -202,11 +214,11 @@ impl WGPUMemoryPool {
         dst: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) -> Result<super::Event, BackendError> {
-        let _ = event_wait_list;
-        let dst = &self.buffers[dst];
-
         // wgpu requires writes to be multiples of 4 bytes
         const ALIGN: usize = wgpu::COPY_BUFFER_ALIGNMENT as usize;
+        drop(event_wait_list);
+
+        let dst = &self.buffers[dst];
 
         let aligned_len = (src.len() + ALIGN - 1) / ALIGN * ALIGN;
 
@@ -263,8 +275,9 @@ impl WGPUMemoryPool {
         Ok(())
     }*/
 
+    #[allow(clippy::unnecessary_box_returns)]
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        let _ = event_wait_list; // You can eventually use events if needed
+        drop(event_wait_list); // You can eventually use events if needed
 
         // Get the source buffer
         let src = &self.buffers[src];
@@ -284,7 +297,7 @@ impl WGPUMemoryPool {
 
         // Copy data from the source buffer to the download buffer
         encoder.copy_buffer_to_buffer(
-            &src,
+            src,
             0, // Start at the beginning of the source buffer
             &download_buffer,
             0,                // Start at the beginning of the destination buffer
@@ -326,6 +339,7 @@ impl WGPUMemoryPool {
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_box_returns)]
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         for event in events {
             if let Event::WGPU(event) = event {
@@ -338,7 +352,7 @@ impl WGPUMemoryPool {
     }
 
     pub fn release_events(&mut self, events: Vec<Event>) {
-        let _ = events;
+        drop(events);
     }
 }
 
@@ -358,8 +372,8 @@ impl WGPUDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let mut gws = Vec::new();
-        let mut lws = Vec::new();
+        let mut gws: Vec<u64> = Vec::new();
+        let mut lws: Vec<u64> = Vec::new();
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             if let &Op::Index { len, scope, axis: _ } = kernel.at(op_id) {
@@ -376,7 +390,7 @@ impl WGPUDevice {
             op_id = kernel.next_op(op_id);
         }
 
-        if lws.iter().product::<usize>() > self.dev_info.max_local_threads {
+        if lws.iter().product::<u64>() > self.dev_info.max_local_threads as u64 {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
@@ -413,7 +427,7 @@ impl WGPUDevice {
         while !op_id.is_null() {
             //println!("{i} -> {op:?}");
             match kernel.at(op_id) {
-                Op::WMMA { .. }
+                Op::Wmma { .. }
                 | Op::ConstView { .. }
                 | Op::LoadView { .. }
                 | Op::StoreView { .. }
@@ -429,7 +443,7 @@ impl WGPUDevice {
                     dtypes.insert(op_id, dtype);
                     match scope {
                         Scope::Register => {
-                            writeln!(source, "{indent}var p{op_id}: array<{}, 1>;", dtype.wgsl(),).unwrap();
+                            writeln!(source, "{indent}var p{op_id}: array<{}, 1>;", dtype.wgsl()).unwrap();
                         }
                         Scope::Local | Scope::Global => {}
                     }
@@ -439,7 +453,7 @@ impl WGPUDevice {
                     writeln!(source, "{indent}let r{op_id} = p{src}[r{index}];").unwrap();
                 }
                 &Op::Store { dst, x: src, index, vlen: _ } => {
-                    writeln!(source, "{indent}p{dst}[r{}] = r{};", index, src,).unwrap();
+                    writeln!(source, "{indent}p{dst}[r{}] = r{};", index, src).unwrap();
                 }
                 &Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
@@ -622,7 +636,7 @@ impl WGPUDevice {
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        let _ = event_wait_list;
+        drop(event_wait_list);
         let program = &self.programs[program_id];
         let mut set_layout: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
         let mut binds: Vec<wgpu::BindGroupEntry> = Vec::new();
@@ -684,7 +698,7 @@ impl WGPUDevice {
             }
             cpass.insert_debug_marker(&program.name);
             cpass.dispatch_workgroups(
-                u32::try_from(program.gws.get(0).copied().unwrap_or(1)).unwrap(),
+                u32::try_from(program.gws.first().copied().unwrap_or(1)).unwrap(),
                 u32::try_from(program.gws.get(1).copied().unwrap_or(1)).unwrap(),
                 u32::try_from(program.gws.get(2).copied().unwrap_or(1)).unwrap(),
             );
@@ -695,7 +709,7 @@ impl WGPUDevice {
 }
 
 impl DType {
-    fn wgsl(&self) -> &str {
+    const fn wgsl(&self) -> &str {
         match self {
             DType::BF16 => "bf16",
             DType::F16 => "f16",
