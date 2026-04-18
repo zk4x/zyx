@@ -160,6 +160,7 @@ impl Kernel {
         acc_dtype: DType,
         after_loop_load_id: OpId,
     ) -> bool {
+        self.debug();
         let &Op::Loop { len: loop_len } = self.at(loop_id) else { return false };
 
         let Some((a, b, c, mul_const, gidx_id)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id) else {
