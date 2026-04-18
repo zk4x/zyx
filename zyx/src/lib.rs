@@ -67,7 +67,6 @@ mod error;
 mod graph;
 mod kernel;
 mod mutex;
-//mod optimizer;
 #[cfg(feature = "py")]
 mod py_bindings;
 mod rng;

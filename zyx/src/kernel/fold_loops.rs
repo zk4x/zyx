@@ -160,7 +160,6 @@ impl Kernel {
         acc_dtype: DType,
         after_loop_load_id: OpId,
     ) -> bool {
-        self.debug();
         let &Op::Loop { len: loop_len } = self.at(loop_id) else { return false };
 
         let Some((a, b, c, mul_const, gidx_id)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id) else {
@@ -176,7 +175,7 @@ impl Kernel {
         }
 
         let step = mul_const;
-        let offset = loop_len.saturating_sub(c).saturating_sub(1);
+        let offset = loop_len - c - 1;
         let offset_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(offset)));
         let sum_id = self.insert_before(after_loop_load_id, Op::Binary { x: gidx_id, y: offset_id, bop: BOp::Add });
         let step_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(step)));
