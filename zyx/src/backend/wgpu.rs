@@ -1,18 +1,6 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-#![allow(clippy::redundant_clone)]
-#![allow(clippy::cast_lossless)]
-#![allow(clippy::unused_self)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::ptr_arg)]
-#![allow(clippy::unnecessary_box_returns)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::uninlined_format_args)]
-#![allow(clippy::match_same_arms)]
-#![allow(clippy::box_default)]
-#![allow(clippy::unnecessary_wraps)]
-
 use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, PoolId};
 use crate::{
     DType, Map,
@@ -142,11 +130,11 @@ pub(super) fn initialize_device(
         dev_info: DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![100_000; 3],
-            max_local_threads: limits.max_compute_invocations_per_workgroup as Dim,
+            max_local_threads: Dim::from(limits.max_compute_invocations_per_workgroup),
             max_local_work_dims: vec![
-                limits.max_compute_workgroup_size_x as Dim,
-                limits.max_compute_workgroup_size_y as Dim,
-                limits.max_compute_workgroup_size_z as Dim,
+                Dim::from(limits.max_compute_workgroup_size_x),
+                Dim::from(limits.max_compute_workgroup_size_y),
+                Dim::from(limits.max_compute_workgroup_size_z),
             ],
             preferred_vector_size: 4,
             local_mem_size: 64 * 1024,
@@ -156,13 +144,14 @@ pub(super) fn initialize_device(
         },
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         programs: Slab::new(),
-        queue: queue.clone(),
+        queue,
     }));
 
     Ok(())
 }
 
 impl WGPUMemoryPool {
+    #[allow(clippy::unused_self)]
     pub const fn deinitialize(&mut self) {}
 
     pub const fn free_bytes(&self) -> Dim {
@@ -171,7 +160,8 @@ impl WGPUMemoryPool {
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         const ALIGN: Dim = wgpu::COPY_BUFFER_ALIGNMENT;
-        let bytes = (bytes + ALIGN - 1) / ALIGN * ALIGN;
+        //let bytes = (bytes + ALIGN - 1) / ALIGN * ALIGN;
+        let bytes = bytes.div_ceil(ALIGN);
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
@@ -194,20 +184,7 @@ impl WGPUMemoryPool {
         buffer.destroy();
     }
 
-    /*pub fn host_to_pool(
-        &mut self,
-        src: &[u8],
-        dst: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) -> Result<super::Event, BackendError> {
-        let _ = event_wait_list;
-        let dst = &self.buffers[dst];
-        self.queue.write_buffer(&dst, 0, src);
-        let encoder =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("GpuBuffer::write") });
-        self.queue.submit(Some(encoder.finish()));
-        Ok(Event::WGPU(WGPUEvent { submission_index: None }))
-    }*/
+    #[allow(clippy::unnecessary_wraps)]
     pub fn host_to_pool(
         &mut self,
         src: &[u8],
@@ -220,7 +197,8 @@ impl WGPUMemoryPool {
 
         let dst = &self.buffers[dst];
 
-        let aligned_len = (src.len() + ALIGN - 1) / ALIGN * ALIGN;
+        //let aligned_len = (src.len() + ALIGN - 1) / ALIGN * ALIGN;
+        let aligned_len = src.len().div_ceil(ALIGN);
 
         // Use write_buffer for the aligned portion
         if aligned_len > src.len() {
@@ -276,6 +254,7 @@ impl WGPUMemoryPool {
     }*/
 
     #[allow(clippy::unnecessary_box_returns)]
+    #[allow(clippy::unnecessary_wraps)]
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         drop(event_wait_list); // You can eventually use events if needed
 
@@ -340,6 +319,7 @@ impl WGPUMemoryPool {
     }
 
     #[allow(clippy::unnecessary_box_returns)]
+    #[allow(clippy::unnecessary_wraps)]
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         for event in events {
             if let Event::WGPU(event) = event {
@@ -351,12 +331,14 @@ impl WGPUMemoryPool {
         Ok(())
     }
 
+    #[allow(clippy::unused_self)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         drop(events);
     }
 }
 
 impl WGPUDevice {
+    #[allow(clippy::unused_self)]
     pub const fn deinitialize(&mut self) {}
 
     pub const fn info(&self) -> &DeviceInfo {
@@ -453,7 +435,7 @@ impl WGPUDevice {
                     writeln!(source, "{indent}let r{op_id} = p{src}[r{index}];").unwrap();
                 }
                 &Op::Store { dst, x: src, index, vlen: _ } => {
-                    writeln!(source, "{indent}p{dst}[r{}] = r{};", index, src).unwrap();
+                    writeln!(source, "{indent}p{dst}[r{index}] = r{src};").unwrap();
                 }
                 &Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
@@ -575,9 +557,8 @@ impl WGPUDevice {
                     _ = writeln!(source, "{indent}}}");
                 }
                 Op::Barrier { scope } => match scope {
-                    Scope::Global => unreachable!(),
+                    Scope::Global | Scope::Register => unreachable!(),
                     Scope::Local => _ = writeln!(source, "{indent}workgroupBarrier();"),
-                    Scope::Register => unreachable!(),
                 },
             }
             op_id = kernel.next_op(op_id);
@@ -612,7 +593,7 @@ impl WGPUDevice {
 
         let shader_module = self.device.create_shader_module(ShaderModuleDescriptor {
             label: None,
-            source: ShaderSource::Wgsl(std::borrow::Cow::Owned(source.clone())),
+            source: ShaderSource::Wgsl(std::borrow::Cow::Owned(source)),
         });
         let id = self.programs.push(WGPUProgram {
             name,
@@ -629,6 +610,7 @@ impl WGPUDevice {
         self.programs.remove(program_id);
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
