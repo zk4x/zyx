@@ -19,14 +19,12 @@ use std::thread;
 
 type OptConfigFn = fn(&Kernel) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 6] = [
     Kernel::opt_reassociate_commutative,
     //Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
     //Kernel::opt_register_tiling,
-    Kernel::opt_fuse_mad,
-    Kernel::opt_unfuse_mad,
     //Kernel::opt_unroll_constant_loops,
     Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
@@ -49,8 +47,6 @@ pub enum Optimization {
         reduce_splits: Map<OpId, Vec<u64>>,
         global_upcasts: Map<OpId, Vec<u64>>,
     },
-    FuseMad,
-    UnfuseMad,
     UnrollConstantLoops,
     TiledReduce {
         factors: Vec<(OpId, u64, u64)>,
@@ -148,12 +144,6 @@ impl Optimization {
                     }
                     idx += 1;
                 }
-            }
-            Optimization::FuseMad => {
-                kernel.fuse_mad();
-            }
-            Optimization::UnfuseMad => {
-                kernel.unfuse_mad();
             }
             Optimization::UnrollConstantLoops => {
                 kernel.unroll_constant_loops();
@@ -366,6 +356,10 @@ impl Kernel {
                 opt.apply(&mut kernel, opt_cfg);
             }
             kernel.run_always_on_optimizations();
+            kernel.run_always_on_optimizations();
+            kernel.run_always_on_optimizations();
+            kernel.fuse_mad();
+            kernel.dead_code_elimination();
 
             if launched_kernels.insert(kernel.get_hash()) {
                 if debug.ir() {

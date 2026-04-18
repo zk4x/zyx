@@ -1,17 +1,12 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use super::autotune::Optimization;
 use crate::{
     Map,
     kernel::{BOp, Kernel, Op},
 };
 
 impl Kernel {
-    pub const fn opt_fuse_mad(_: &Kernel) -> (Optimization, usize) {
-        (Optimization::FuseMad, 1)
-    }
-
     /// Find all multiply add operations and fuse them
     pub fn fuse_mad(&mut self) {
         let mut op_id = self.head;
@@ -37,11 +32,6 @@ impl Kernel {
         }
 
         self.verify();
-    }
-
-    #[allow(clippy::unused_self)]
-    pub const fn opt_unfuse_mad(&self) -> (Optimization, usize) {
-        (Optimization::UnfuseMad, 1)
     }
 
     /// Find all multiply add operations and unfuse them

@@ -10,13 +10,15 @@ use crate::{
 
 impl Kernel {
     pub fn div_mod_simplification(&mut self) {
+        self.unfuse_mad();
+
         let bounds = self.compute_bounds();
 
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
 
-            if let Op::Binary { x, y, bop } = self.at(op_id).clone() {
+            if let &Op::Binary { x, y, bop } = self.at(op_id) {
                 if matches!(bop, BOp::Div | BOp::Mod) {
                     if let Op::Const(divisor) = self.at(y) {
                         let dtype = divisor.dtype();
@@ -35,6 +37,17 @@ impl Kernel {
         }
 
         self.verify();
+    }
+
+    #[allow(unused)]
+    fn const_dim(&self, op_id: OpId) -> Option<Dim> {
+        let Op::Const(c) = self.ops[op_id].op else { return None };
+        c.as_dim()
+    }
+
+    #[allow(unused)]
+    fn get_add_sub_chain(&self, op_id: OpId) -> Vec<OpId> {
+        todo!()
     }
 
     fn simplify_div(&mut self, op_id: OpId, x: OpId, divisor: Dim, dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
