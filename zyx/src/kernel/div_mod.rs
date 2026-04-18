@@ -24,7 +24,7 @@ impl Kernel {
                         let dtype = divisor.dtype();
                         if let Some(divisor) = divisor.as_dim() {
                             match bop {
-                                BOp::Mod => self.simplify_mod(op_id, x, divisor, dtype, &bounds),
+                                BOp::Mod => self.simplify_mod(op_id, x, y, dtype, &bounds),
                                 BOp::Div => self.simplify_div(op_id, x, divisor, dtype, &bounds),
                                 _ => {}
                             }
@@ -71,12 +71,16 @@ impl Kernel {
         }
     }
 
-    fn simplify_mod(&mut self, op_id: OpId, x: OpId, divisor: Dim, _dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
-        let Some(&(min_x, max_x)) = bounds.get(&x) else { return };
+    fn simplify_mod(&mut self, op_id: OpId, x: OpId, divisor_const: OpId, _dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
+        let Op::Const(divisor) = self.ops[divisor_const].op else { return };
+        let Some(divisor) = divisor.as_dim() else { return };
+
         // Pattern 1: x % divisor when 0 <= x < divisor -> x
-        if min_x == 0 && max_x < divisor {
-            self.remap(op_id, x);
-            return;
+        if let Some(&(min_x, max_x)) = bounds.get(&x) {
+            if min_x == 0 && max_x < divisor {
+                self.remap(op_id, x);
+                return;
+            }
         }
 
         if let Some((a, c, b)) = mul_add(self, x) {
@@ -84,14 +88,12 @@ impl Kernel {
             // Math: (a*c + b) % c = ((a*c) % c + b % c) % c = (0 + b % c) % c = b % c
             // Since c == divisor: result = b % divisor
             if c == divisor {
-                let divisor_const = self.insert_before(op_id, Op::Const(Constant::idx(divisor)));
                 self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
                 return;
             }
             // Pattern 2b: (a*c + b) % d when c % d == 1 -> (a + b) % d
             // Math: (a*c + b) % d = ((a*(c%d) + b) % d) = ((a*1 + b) % d) = (a + b) % d
             if c % divisor == 1 {
-                let divisor_const = self.insert_before(op_id, Op::Const(Constant::idx(divisor)));
                 let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
                 self.ops[op_id].op = Op::Binary { x: a_plus_b, y: divisor_const, bop: BOp::Mod };
                 return;
@@ -102,7 +104,6 @@ impl Kernel {
                 let max_a_c = max_a.saturating_mul(c);
                 if let Some(&(min_b, max_b)) = bounds.get(&b) {
                     if min_b == 0 && max_a_c.saturating_add(max_b) < divisor {
-                        let divisor_const = self.insert_before(op_id, Op::Const(Constant::idx(divisor)));
                         self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
                         return;
                     }

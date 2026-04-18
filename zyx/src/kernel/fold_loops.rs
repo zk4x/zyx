@@ -38,9 +38,9 @@ impl Kernel {
     pub fn simplify_accumulating_loop(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if self.fold_arange_loop(op_id) {
+            /*if self.fold_arange_loop(op_id) {
                 break;
-            }
+            }*/
             op_id = self.next_op(op_id);
         }
 
