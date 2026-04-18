@@ -6,6 +6,8 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(clippy::question_mark)]
+#![allow(clippy::needless_pass_by_ref_mut)]
+#![allow(clippy::unused_self)]
 
 const VEC_COMPONENTS: [&str; 16] = [
     "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
@@ -586,8 +588,7 @@ impl OpenCLMemoryPool {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn release_events(&mut self, events: Vec<Event>) {
-        let _ = self;
-        let _ = events;
+        drop(events);
         // For whatever reason this segfaults... Buggy opencl implementation?
         /*for event in events {
             let Event::OpenCL(OpenCLEvent { event }) = event else { unreachable!() };
@@ -1031,7 +1032,7 @@ impl OpenCLDevice {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
-        let source = format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n",);
+        let source = format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n");
         if debug_asm {
             println!();
             println!("{source}");

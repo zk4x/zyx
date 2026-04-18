@@ -1,6 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+#![allow(clippy::while_let_loop)]
+
 use super::autotune::Optimization;
 use crate::{
     Map, Set,
@@ -50,13 +52,12 @@ impl Kernel {
 
         // First skip ops that don't need duplication
         let mut op_id = self.head;
-        loop {
-            match self.ops[op_id].op {
-                Op::Define { scope: Scope::Global | Scope::Local, .. } | Op::Index { .. } | Op::Const(_) => {}
-                _ => {
-                    break;
-                }
-            }
+        while !op_id.is_null()
+            && matches!(
+                self.ops[op_id].op,
+                Op::Define { scope: Scope::Global | Scope::Local, .. } | Op::Index { .. } | Op::Const(_)
+            )
+        {
             op_id = self.next_op(op_id);
         }
 

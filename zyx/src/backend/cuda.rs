@@ -4,6 +4,19 @@
 #![allow(unused)]
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
+#![allow(clippy::needless_continue)]
+#![allow(clippy::unnecessary_semicolon)]
+#![allow(clippy::manual_assert)]
+#![allow(clippy::get_first)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::single_char_pattern)]
+#![allow(clippy::useless_format)]
+#![allow(clippy::cast_lossless)]
+#![allow(clippy::similar_names)]
+#![allow(clippy::len_zero)]
+#![allow(clippy::question_mark)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::manual_string_new)]
 
 // TODO properly deallocate events
 
@@ -46,6 +59,7 @@ macro_rules! send_or_continue {
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Pool, PoolBufferId, PoolId};
 
 /// CUDA configuration
+#[allow(clippy::question_mark)]
 #[derive(Debug, Default, DeJson)]
 pub struct CUDAConfig {
     /// If set to None, then it will automatically use all CUDA devices,
@@ -209,7 +223,7 @@ pub(super) fn initialize_device(
                 let path = entry.path();
                 if path.is_dir() {
                     stack.push(path);
-                } else if path.file_name().map(|f| f == "cuda_fp16.h").unwrap_or(false) {
+                } else if path.file_name().is_some_and(|f| f == "cuda_fp16.h") {
                     include_path = path.parent().map(PathBuf::from);
                     break 'a;
                 }
@@ -381,9 +395,7 @@ pub(super) fn initialize_device(
                             unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation),
                             reply
                         );
-                        if ptr % 8 != 0 {
-                            panic!("Memory is not 8-byte aligned!");
-                        }
+                        assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
                         send_or_continue!(
                             unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryAllocation),
                             reply
@@ -530,7 +542,7 @@ pub(super) fn initialize_device(
                                 {
                                     _ = reply.send(Err(err));
                                     continue 'work_thread_loop;
-                                };
+                                }
                             }
                         }
                         //unsafe { (cuStreamSynchronize)(stream) }.check(ErrorStatus::KernelLaunch).unwrap();
@@ -543,10 +555,10 @@ pub(super) fn initialize_device(
                             unsafe {
                                 (cuLaunchKernel)(
                                     program.function,
-                                    u32::try_from(program.gws.get(0).copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(program.gws.first().copied().unwrap_or(1)).unwrap(),
                                     u32::try_from(program.gws.get(1).copied().unwrap_or(1)).unwrap(),
                                     u32::try_from(program.gws.get(2).copied().unwrap_or(1)).unwrap(),
-                                    u32::try_from(program.lws.get(0).copied().unwrap_or(1)).unwrap(),
+                                    u32::try_from(program.lws.first().copied().unwrap_or(1)).unwrap(),
                                     u32::try_from(program.lws.get(1).copied().unwrap_or(1)).unwrap(),
                                     u32::try_from(program.lws.get(2).copied().unwrap_or(1)).unwrap(),
                                     0,
@@ -997,9 +1009,9 @@ impl Constant {
     fn cu(&self) -> String {
         fn format_precise(val: impl std::fmt::Display, decimals: usize) -> String {
             // Use 9 decimal digits, which is enough for full f32 precision
-            let s = format!("{:.*}", decimals, val);
+            let s = format!("{val:.decimals$}");
             let s = s.trim_end_matches('0').trim_end_matches('.');
-            if s.contains(".") { s.to_string() } else { format!("{s}.0") }
+            if s.contains('.') { s.to_string() } else { format!("{s}.0") }
         }
         match self {
             &Self::BF16(x) => format!("{}f", half::bf16::from_le_bytes(x)),
@@ -1009,7 +1021,7 @@ impl Constant {
                 format!("(half)0x{:04X}", bits)
             }
             &Self::F32(x) => format!("{}f", format_precise(f32::from_le_bytes(x), 9)),
-            &Self::F64(x) => format!("{}", format_precise(f64::from_le_bytes(x), 18)),
+            &Self::F64(x) => format_precise(f64::from_le_bytes(x), 18),
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),
@@ -1018,7 +1030,7 @@ impl Constant {
             &Self::U64(x) => format!("{}", u64::from_le_bytes(x)),
             Self::I32(x) => format!("{x}"),
             &Self::I64(x) => format!("{}", i64::from_le_bytes(x)),
-            &Self::Bool(x) => format!("{}", if x { 1 } else { 0 }),
+            &Self::Bool(x) => format!("{}", x as i32),
         }
     }
 }
@@ -1561,14 +1573,14 @@ impl CUDADevice {
         }*/
 
         let mut reg_str = String::new();
-        if registers.len() > 0 {
+        if !registers.is_empty() {
             let (dt, _, _) = registers.remove(0);
             let mut prev_dt = dt;
             _ = write!(
                 reg_str,
                 "{indent}{}{} r0",
                 dt.0.cu(),
-                if dt.1 > 1 { format!("{}", dt.1) } else { "".into() }
+                if dt.1 > 1 { dt.1.to_string() } else { "".into() }
             );
             let mut i = 1;
             for (dt, _, _) in registers {
@@ -1579,7 +1591,7 @@ impl CUDADevice {
                         reg_str,
                         ";\n{indent}{}{} r{i}",
                         dt.0.cu(),
-                        if dt.1 > 1 { format!("{}", dt.1) } else { "".into() }
+                        if dt.1 > 1 { dt.1.to_string() } else { "".into() }
                     );
                 }
                 prev_dt = dt;
@@ -1601,7 +1613,7 @@ impl CUDADevice {
         );
 
         let source =
-            format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0",);
+            format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0");
 
         if debug_asm {
             println!();
@@ -1665,7 +1677,7 @@ impl CUDADevice {
             //println!("path = {}", path.display());
             let path = format!("--include-path={}", path.display());
             opts.push(path);
-        };
+        }
         // Because rust
         let opts_cstrings: Vec<CString> = opts.iter().map(|s| CString::new(s.as_str()).unwrap()).collect();
 

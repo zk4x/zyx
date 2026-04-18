@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 #![allow(unused)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::derived_hash_with_manual_eq)]
 
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
 use crate::error::BackendError;
@@ -15,7 +17,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
-const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 8] = [
+type OptConfigFn = fn(&Kernel) -> (Optimization, usize);
+
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     Kernel::opt_reassociate_commutative,
     //Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
@@ -112,11 +116,10 @@ impl Optimization {
                     remaining_reduce /= n_options;
                     let reduce_factor = factors[factor_idx];
 
-                    let original_len = if let Op::Loop { len, .. } = kernel.ops[*reduce_id].op {
-                        len
-                    } else {
+                    let Op::Loop { len, .. } = kernel.ops[*reduce_id].op else {
                         continue;
                     };
+                    let original_len = len;
 
                     kernel.split_dim(
                         *reduce_id,
@@ -256,8 +259,8 @@ impl Kernel {
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
         let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
         let mult = n_seeds.min(total_configs);
-        for opt_id in 0..AVAILABLE_OPTIMIZATIONS.len() {
-            let n_configs_to_try = ((avail_configs[opt_id].1 * mult) as f32 / total_configs as f32).ceil() as usize;
+        for (opt_id, (_, n_configs)) in avail_configs.iter().enumerate() {
+            let n_configs_to_try = ((n_configs * mult) as f32 / total_configs as f32).ceil() as usize;
             let mut config_id = 0;
             while config_id < n_configs_to_try {
                 let mut new_kernel = kernel.clone();
@@ -302,9 +305,9 @@ impl Kernel {
                         let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
                         let mult = n_added_per_step.min(total_configs);
 
-                        for (opt_id, _config_fn) in AVAILABLE_OPTIMIZATIONS.iter().enumerate() {
+                        for (opt_id, _) in avail_configs.iter().enumerate() {
                             let n_configs_to_try =
-                                (((&avail_configs[opt_id]).1 * mult) as f32 / total_configs as f32).ceil() as usize;
+                                ((avail_configs[opt_id].1 * mult) as f32 / total_configs as f32).ceil() as usize;
 
                             for config_id in 0..n_configs_to_try {
                                 let mut opts = opt_seq.opts.clone();
