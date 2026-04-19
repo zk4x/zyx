@@ -1764,7 +1764,7 @@ impl Tensor {
         }
 
         let x = self.rpad_zeros(padding)?.unsqueeze(-1)?.transpose(-1, dim as i32)?;
-        let result = (one_hot * x)?.sum_dtype([-1], self.dtype())?;
+        let result = one_hot.mul(&x).sum_dtype([-1], self.dtype())?;
 
         Ok(result)
     }
