@@ -38,7 +38,7 @@ impl Kernel {
     pub fn simplify_accumulating_loop(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
-            if self.fold_arange_loop(op_id) {
+            if self.fold_loop(op_id) {
                 break;
             }
             op_id = self.next_op(op_id);
@@ -59,7 +59,7 @@ impl Kernel {
     ///
     /// Returns true if the loop was successfully folded, false otherwise.
     /// On success, the loop and accumulator are removed and replaced with closed-form ops.
-    fn fold_arange_loop(&mut self, acc_id: OpId) -> bool {
+    fn fold_loop(&mut self, acc_id: OpId) -> bool {
         // Step 1: Check that acc_id is a register define with length 1 (scalar accumulator)
         let &Op::Define { dtype: acc_dtype, scope, ro, len: 1 } = self.at(acc_id) else {
             return false;
@@ -129,7 +129,10 @@ impl Kernel {
         let &Op::Store { x: init_value, .. } = self.at(store_id) else { return false };
 
         // Step 5: Replace the loop with closed-form arithmetic if possible
-        if !self.replace_loop_with_closed_form(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id) {
+        let arange_replaced = self.replace_arange_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
+        let gather_replaced = self.replace_gather_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
+
+        if !arange_replaced && !gather_replaced {
             return false;
         }
 
@@ -226,7 +229,7 @@ impl Kernel {
     /// And step is the multiplication factor if the value is like `i*i` (step=1) or `2*i` (step=2)
     ///
     /// Returns true if closed-form was applied, false if the pattern can't be simplified.
-    fn replace_loop_with_closed_form(
+    fn replace_arange_loop(
         &mut self,
         loop_id: OpId,
         _init_value: OpId,
@@ -259,6 +262,187 @@ impl Kernel {
 
         self.verify();
         true
+    }
+
+    /// Detects and replaces the index_select/gather loop pattern.
+    ///
+    /// Pattern:
+    /// ```c
+    /// acc = 0;
+    /// for (i = 0; i < dim_size; i++) {
+    ///     if (index == i) {
+    ///         acc += source[i * stride + offset];
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Replaces with:
+    /// ```c
+    /// acc = source[index * stride + offset];
+    /// ```
+    fn replace_gather_loop(
+        &mut self,
+        loop_id: OpId,
+        _init_value: OpId,
+        accumulated_value_id: OpId,
+        acc_dtype: DType,
+        after_loop_load_id: OpId,
+    ) -> bool {
+        eprintln!("DEBUG replace_gather_loop: accumulated_value_id={}", accumulated_value_id);
+
+        // Step 1: accumulated_value_id should be: mask * loaded_value
+        let &Op::Binary { x: mask_id, y: loaded_value_id, bop: BOp::Mul } = self.at(accumulated_value_id) else {
+            eprintln!("DEBUG: Step 1 failed - not a mul");
+            return false;
+        };
+        eprintln!(
+            "DEBUG: Step 1 passed - mask_id={}, loaded_value_id={}",
+            mask_id, loaded_value_id
+        );
+
+        // Step 2: The loaded_value should come from a Load at address using loop counter
+        let &Op::Load { src: source_tensor, index: load_address_id, .. } = self.at(loaded_value_id) else {
+            eprintln!("DEBUG: Step 2 failed - not a load");
+            return false;
+        };
+        eprintln!("DEBUG: Step 2 passed - load_address_id={}", load_address_id);
+
+        // Step 3: Check that the load address is: loop_counter * stride + offset
+        let loop_counter_id = self.extract_loop_counter_from_address(load_address_id);
+        if loop_counter_id.is_null() {
+            eprintln!(
+                "DEBUG: Step 3 failed - extract_loop_counter returned NULL for address_id={}",
+                load_address_id
+            );
+            // Debug: print what the address op is
+            eprintln!("DEBUG: address op = {:?}", self.at(load_address_id));
+            return false;
+        }
+        eprintln!("DEBUG: Step 3 passed - loop_counter_id={}", loop_counter_id);
+
+        // Step 4: mask should come from: cast(comparison(wrapped_index, loop_counter))
+        let (wrapped_index_id, comparison_result_id) = self.extract_mask_from_comparison(mask_id);
+        if wrapped_index_id.is_null() {
+            eprintln!(
+                "DEBUG: Step 4 failed - extract_mask_from_comparison returned NULL for mask_id={}",
+                mask_id
+            );
+            eprintln!("DEBUG: mask op = {:?}", self.at(mask_id));
+            return false;
+        }
+        eprintln!(
+            "DEBUG: Step 4 passed - wrapped_index_id={}, comparison_result_id={}",
+            wrapped_index_id, comparison_result_id
+        );
+
+        // Step 5: Verify the comparison is: wrapped_index == loop_counter
+        let &Op::Binary { x: comp_x, y: comp_y, bop: BOp::Eq } = self.at(comparison_result_id) else {
+            return false;
+        };
+
+        // Ensure comp_x is loop_counter and comp_y is wrapped_index (or vice versa)
+        let eq_valid = (comp_x == loop_counter_id && comp_y == wrapped_index_id)
+            || (comp_x == wrapped_index_id && comp_y == loop_counter_id);
+        if !eq_valid {
+            return false;
+        }
+
+        // Step 6: Now replace the loop with direct indexed load
+        // Compute: source_tensor[wrapped_index * stride + offset]
+        // We need to extract stride from load_address computation
+
+        // Create new address: wrapped_index * stride + offset
+        let new_address_id = self.compute_gather_address(load_address_id, wrapped_index_id, loop_counter_id);
+
+        // Replace the after_loop_load with direct load at new address
+        self.ops[after_loop_load_id].op = Op::Load { src: source_tensor, index: new_address_id, vlen: 1 };
+
+        // Cast to expected dtype
+        let cast_id = self.insert_before(after_loop_load_id, Op::Cast { x: after_loop_load_id, dtype: acc_dtype });
+        self.ops[after_loop_load_id].op = Op::Cast { x: cast_id, dtype: acc_dtype };
+
+        self.verify();
+        true
+    }
+
+    /// Extracts the loop counter from a load address computation.
+    /// Address is: loop_counter * stride + offset
+    fn extract_loop_counter_from_address(&self, address_id: OpId) -> OpId {
+        let op = self.at(address_id);
+        if let Op::Binary { x: mul_x, y: mul_y, bop: BOp::Add } = op {
+            // Check if one side is multiplication
+            if let Op::Binary { x: lc_x, y: lc_y, bop: BOp::Mul } = self.at(*mul_x) {
+                // Try to identify loop counter (usually from Index scope)
+                if let Op::Index { .. } = self.at(*lc_x) {
+                    return *lc_x;
+                }
+                if let Op::Index { .. } = self.at(*lc_y) {
+                    return *lc_y;
+                }
+            }
+            if let Op::Binary { x: lc_x, y: lc_y, bop: BOp::Mul } = self.at(*mul_y) {
+                if let Op::Index { .. } = self.at(*lc_x) {
+                    return *lc_x;
+                }
+                if let Op::Index { .. } = self.at(*lc_y) {
+                    return *lc_y;
+                }
+            }
+        }
+        // Could also be just the index directly (if stride = 1)
+        if let Op::Index { .. } = op {
+            return address_id;
+        }
+        OpId::NULL
+    }
+
+    /// Extracts the wrapped_index from the mask computation.
+    /// mask = cast(comparison(wrapped_index, loop_counter))
+    fn extract_mask_from_comparison(&self, mask_id: OpId) -> (OpId, OpId) {
+        // mask_id should be: cast(comparison_result)
+        let &Op::Cast { x: comp_result_id, .. } = self.at(mask_id) else {
+            return (OpId::NULL, OpId::NULL);
+        };
+
+        // comp_result should be: comparison(wrapped_index, loop_counter)
+        let op = self.at(comp_result_id);
+        if let Op::Binary { x, y, bop } = op {
+            if *bop == BOp::Eq {
+                return (*x, comp_result_id);
+            }
+        }
+        (OpId::NULL, OpId::NULL)
+    }
+
+    /// Computes the new address for gather: wrapped_index * stride + offset
+    fn compute_gather_address(&mut self, old_address_id: OpId, wrapped_index_id: OpId, _loop_counter_id: OpId) -> OpId {
+        // Extract stride and offset from old address
+        let op = self.at(old_address_id);
+        if let Op::Binary { x: mul_x, y: mul_y, bop: BOp::Add } = op {
+            // mul_x should be: loop_counter * stride
+            let stride_id = if let Op::Binary { x: stride_x, y: stride_y, bop: BOp::Mul } = self.at(*mul_x) {
+                if let Op::Const(c) = self.at(*stride_x) {
+                    *stride_y
+                } else if let Op::Const(c) = self.at(*stride_y) {
+                    *stride_x
+                } else {
+                    *mul_x // use the whole mul as stride
+                }
+            } else {
+                *mul_x
+            };
+
+            let offset_id = *mul_y;
+
+            // Create new address: wrapped_index * stride + offset
+            let mul_id = self.insert_before(
+                old_address_id,
+                Op::Binary { x: wrapped_index_id, y: stride_id, bop: BOp::Mul },
+            );
+            return self.insert_before(old_address_id, Op::Binary { x: mul_id, y: offset_id, bop: BOp::Add });
+        }
+        // Fallback: just return wrapped_index (might not work correctly)
+        wrapped_index_id
     }
 
     /// Traces through operations to find a linear comparison pattern.
