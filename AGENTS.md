@@ -37,6 +37,16 @@ cd zyx && cargo test -- --nocapture  # with output
 └── zyx-examples/  # Example code
 ```
 
+## The Graph
+
+Zyx is ALL about the graph. The graph is the core.
+
+- **Lazy**: Puts ops into graph, no calculations until `Tensor::realize`
+- **Dynamic**: Graph dynamically grows and shrinks at runtime
+- **One graph for everything**: Autograd uses the same graph
+- Other libraries use 2 graphs (one for laziness, one for autograd), zyx uses ONE
+- **Super lean**: Only 16 bytes per tensor. 10k virtual tensors = ~160kB + shape metadata
+
 ## Core Principles
 
 - **Simplicity first**: Debuggable/understandable > "clean"
