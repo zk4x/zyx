@@ -1750,10 +1750,9 @@ impl Tensor {
         }
 
         let dim_size = shape[dim];
-        let idx_dtype = indices.dtype();
         let is_negative = indices.cmplt(0)?;
         let wrapped = indices.clone() + dim_size as i32;
-        let indices: Tensor = is_negative.where_(&wrapped, &indices)?.cast(idx_dtype);
+        let indices = is_negative.where_(&wrapped, &indices)?;
 
         // Prepare one-hot along dim
         let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
