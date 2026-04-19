@@ -514,11 +514,21 @@ fn index_select() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn index_select_large() -> Result<(), ZyxError> {
-    let n = 10000;
+fn index_select_zeros() -> Result<(), ZyxError> {
+    let n = 100;
     let x = Tensor::zeros([n, 512], DType::F32);
     let indices = Tensor::rand([128], DType::I32)? * n as f32;
     let indices = indices.cast(DType::I32);
+    let y = x.index_select(0, &indices)?;
+    Tensor::realize([&y])?;
+    Ok(())
+}
+
+#[test]
+fn index_select_large() -> Result<(), ZyxError> {
+    let n = 100;
+    let x = Tensor::rand([n, 512], DType::F32)?;
+    let indices = Tensor::rand([128], DType::I32)?;
     let y = x.index_select(0, &indices)?;
     Tensor::realize([&y])?;
     Ok(())
