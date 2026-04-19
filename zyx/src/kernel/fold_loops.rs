@@ -132,7 +132,6 @@ impl Kernel {
         // Try arange first, if that fails try gather
         let arange_replaced = self.replace_arange_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
         if arange_replaced {
-            eprintln!("DEBUG: arange loop replaced successfully");
         } else {
             let gather_replaced =
                 self.replace_gather_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
@@ -293,52 +292,27 @@ impl Kernel {
         acc_dtype: DType,
         after_loop_load_id: OpId,
     ) -> bool {
-        eprintln!("DEBUG replace_gather_loop: accumulated_value_id={}", accumulated_value_id);
-
         // Step 1: accumulated_value_id should be: mask * loaded_value
         let &Op::Binary { x: mask_id, y: loaded_value_id, bop: BOp::Mul } = self.at(accumulated_value_id) else {
-            eprintln!("DEBUG: Step 1 failed - not a mul");
             return false;
         };
-        eprintln!(
-            "DEBUG: Step 1 passed - mask_id={}, loaded_value_id={}",
-            mask_id, loaded_value_id
-        );
 
         // Step 2: The loaded_value should come from a Load at address using loop counter
         let &Op::Load { src: source_tensor, index: load_address_id, .. } = self.at(loaded_value_id) else {
-            eprintln!("DEBUG: Step 2 failed - not a load");
             return false;
         };
-        eprintln!("DEBUG: Step 2 passed - load_address_id={}", load_address_id);
 
         // Step 3: Check that the load address is: loop_counter * stride + offset
         let loop_counter_id = self.extract_loop_counter_from_address(load_address_id, loop_id);
         if loop_counter_id.is_null() {
-            eprintln!(
-                "DEBUG: Step 3 failed - extract_loop_counter returned NULL for address_id={}",
-                load_address_id
-            );
-            // Debug: print what the address op is
-            eprintln!("DEBUG: address op = {:?}", self.at(load_address_id));
             return false;
         }
-        eprintln!("DEBUG: Step 3 passed - loop_counter_id={}", loop_counter_id);
 
         // Step 4: mask should come from: cast(comparison(wrapped_index, loop_counter))
         let (wrapped_index_id, comparison_result_id) = self.extract_mask_from_comparison(mask_id);
         if wrapped_index_id.is_null() {
-            eprintln!(
-                "DEBUG: Step 4 failed - extract_mask_from_comparison returned NULL for mask_id={}",
-                mask_id
-            );
-            eprintln!("DEBUG: mask op = {:?}", self.at(mask_id));
             return false;
         }
-        eprintln!(
-            "DEBUG: Step 4 passed - wrapped_index_id={}, comparison_result_id={}",
-            wrapped_index_id, comparison_result_id
-        );
 
         // Step 5: Verify the comparison is: wrapped_index == loop_counter
         let &Op::Binary { x: comp_x, y: comp_y, bop: BOp::Eq } = self.at(comparison_result_id) else {
