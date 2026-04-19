@@ -28,7 +28,7 @@
 
 use crate::{
     dtype::{Constant, DType},
-    kernel::{BOp, Kernel, Op, OpId, Scope},
+    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope},
 };
 
 impl Kernel {
@@ -216,6 +216,123 @@ impl Kernel {
         Some((accumulated_value_id, load2_id))
     }
 
+    /// Detects and replaces the index_select/gather loop pattern.
+    ///
+    /// Pattern:
+    /// ```c
+    /// acc = 0;
+    /// for (i = 0; i < dim_size; i++) {
+    ///     if (index == i) {
+    ///         acc += source[i * stride + offset];
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Replaces with:
+    /// ```c
+    /// acc = source[index * stride + offset];
+    /// ```
+    fn replace_gather_loop(
+        &mut self,
+        loop_id: OpId,
+        _init_value: OpId,
+        accumulated_value_id: OpId,
+        _acc_dtype: DType,
+        after_loop_load_id: OpId,
+    ) -> bool {
+        // accumulated value must be a binary multiply (mask * source)
+        let &Op::Binary { x, y, bop: BOp::Mul } = self.at(accumulated_value_id) else {
+            return false;
+        };
+
+        let Some(((gather_loop_id, indices_def_id, indices_index_id), source_id)) =
+            self.either_match(x, y, Self::get_gather_mask, Self::get_gather_source)
+        else {
+            return false;
+        };
+
+        if gather_loop_id != loop_id {
+            return false;
+        }
+
+        /*todo!(
+            "Gather possible with gather_loop_id={gather_loop_id}, indices_def_id={indices_def_id} at={indices_index_id}, source_id={source_id}"
+        );*/
+
+        // Load indices
+        let indices_load = self.insert_before(
+            after_loop_load_id,
+            Op::Load { src: indices_def_id, index: indices_index_id, vlen: 1 },
+        );
+        // Convert indices to IDX_T
+        let indices_cast = self.insert_before(after_loop_load_id, Op::Cast { x: indices_load, dtype: IDX_T });
+        // Load source at indices
+        self.ops[after_loop_load_id].op = Op::Load { src: source_id, index: indices_cast, vlen: 1 };
+
+        self.verify();
+        true
+    }
+
+    fn get_gather_mask(&self, mask_id: OpId) -> Option<(OpId, OpId, OpId)> {
+        let Op::Cast { x, .. } = self.ops[mask_id].op else { return None };
+        let Op::Binary { x, y, bop: BOp::Eq } = self.ops[x].op else { return None };
+
+        let Some((loop_id, (indices_def_id, indices_index_id))) =
+            self.either_match(x, y, Self::get_gather_loop, Self::get_gather_indices)
+        else {
+            return None;
+        };
+
+        // TODO check that indices_index_id is outside of the loop
+
+        Some((loop_id, indices_def_id, indices_index_id))
+    }
+
+    fn get_gather_loop(&self, op_id: OpId) -> Option<OpId> {
+        let Op::Cast { x, .. } = self.ops[op_id].op else { return None };
+        let Op::Loop { .. } = self.ops[x].op else { return None };
+        Some(x)
+    }
+
+    fn get_gather_indices(&self, op_id: OpId) -> Option<(OpId, OpId)> {
+        let Op::Binary { x, y, bop: BOp::Add } = self.ops[op_id].op else { return None };
+        println!("Found gather 1");
+        let (src, index) = match self.ops[x].op {
+            Op::Load { src, index, vlen: 1 } => (src, index),
+            Op::Binary { x, y, bop: BOp::Mul } => match self.ops[x].op {
+                Op::Load { src, index, vlen: 1 } => (src, index),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        println!("Found gather 2");
+        let Op::Binary { x, y: _dim_size, bop: BOp::Mul } = self.ops[y].op else { return None };
+        println!("Found gather 3");
+        // TODO check that dim_size is the same length as loop
+        let Op::Cast { x, .. } = self.ops[x].op else { return None };
+        println!("Found gather 4");
+        let Op::Binary { x, y, bop: BOp::Cmplt } = self.ops[x].op else { return None };
+        println!("Found gather 5");
+        let Op::Const(y) = self.ops[y].op else { return None };
+        println!("Found gather 6");
+        println!("{y:?}");
+        if y.as_dim() != Some(0) {
+            return None;
+        }
+        println!("Found gather 7");
+        let Op::Load { src: src2, index: index2, vlen: 1 } = self.ops[x].op else { return None };
+        if src != src2 && index != index2 {
+            return None;
+        }
+
+        Some((src, index))
+    }
+
+    fn get_gather_source(&self, op_id: OpId) -> Option<OpId> {
+        let Op::Load { src, .. } = self.ops[op_id].op else { return None };
+        Some(src)
+    }
+
     /// Replaces a loop with closed-form arithmetic if possible.
     ///
     /// This analyzes what value is being accumulated and tries to replace the iteration
@@ -262,83 +379,6 @@ impl Kernel {
 
         self.verify();
         true
-    }
-
-    /// Detects and replaces the index_select/gather loop pattern.
-    ///
-    /// Pattern:
-    /// ```c
-    /// acc = 0;
-    /// for (i = 0; i < dim_size; i++) {
-    ///     if (index == i) {
-    ///         acc += source[i * stride + offset];
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// Replaces with:
-    /// ```c
-    /// acc = source[index * stride + offset];
-    /// ```
-    fn replace_gather_loop(
-        &mut self,
-        loop_id: OpId,
-        init_value: OpId,
-        accumulated_value_id: OpId,
-        acc_dtype: DType,
-        after_loop_load_id: OpId,
-    ) -> bool {
-        // accumulated value must be a binary multiply (mask * source)
-        let &Op::Binary { x, y, bop: BOp::Mul } = self.at(accumulated_value_id) else {
-            return false;
-        };
-
-        let Some(((gather_loop_id, indices_def_id, indices_index_id), source_id)) =
-            self.either_match(x, y, Self::get_gather_mask, Self::get_gather_source)
-        else {
-            return false;
-        };
-
-        todo!(
-            "Gather possible with gather_loop_id={gather_loop_id}, indices_def_id={indices_def_id} at={indices_index_id}, source_id={source_id}"
-        );
-
-        self.verify();
-        true
-    }
-
-    fn get_gather_mask(&self, mask_id: OpId) -> Option<(OpId, OpId, OpId)> {
-        let Op::Cast { x, .. } = self.ops[mask_id].op else { return None };
-        let Op::Binary { x, y, bop: BOp::Eq } = self.ops[x].op else { return None };
-
-        let Some((loop_id, (indices_def_id, indices_index_id))) =
-            self.either_match(x, y, Self::get_gather_loop, Self::get_gather_indices)
-        else {
-            return None;
-        };
-
-        Some((loop_id, indices_def_id, indices_index_id))
-    }
-
-    fn get_gather_loop(&self, op_id: OpId) -> Option<OpId> {
-        let Op::Cast { x, .. } = self.ops[op_id].op else { return None };
-        let Op::Loop { .. } = self.ops[x].op else { return None };
-        Some(x)
-    }
-
-    fn get_gather_indices(&self, op_id: OpId) -> Option<(OpId, OpId)> {
-        let Op::Binary { x, y, bop: BOp::Add } = self.ops[op_id].op else { return None };
-        let Op::Binary { x, y, bop: BOp::Mul } = self.ops[x].op else { return None };
-        let Op::Cast { x, .. } = self.ops[x].op else { return None };
-        let Op::Binary { x, y, bop: BOp::Cmplt } = self.ops[x].op else { return None };
-        let Op::Load { src, index, vlen: 1 } = self.ops[x].op else { return None };
-
-        Some((src, index))
-    }
-
-    fn get_gather_source(&self, op_id: OpId) -> Option<OpId> {
-        let Op::Load { src, .. } = self.ops[op_id].op else { return None };
-        Some(src)
     }
 
     /// Traces through operations to find a linear comparison pattern.

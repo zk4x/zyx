@@ -175,7 +175,7 @@ impl Kernel {
         self.delete_empty_loops();
         self.unfold_pows();
         self.div_mod_simplification();
-        self.simplify_accumulating_loop();
+        //self.simplify_accumulating_loop();
         self.dead_code_elimination();
     }
 
@@ -199,7 +199,9 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.simplify_accumulating_loop();
         kernel.run_always_on_optimizations();
-        kernel.debug_colorless();
+        kernel.debug();
+        kernel.simplify_accumulating_loop();
+        kernel.debug();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
@@ -220,7 +222,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> (DeviceProgramId, OptSeq) {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

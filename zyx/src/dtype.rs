@@ -283,21 +283,21 @@ impl Constant {
             Constant::U32(d) => Some(Dim::from(d)),
             Constant::U64(d) => Some(u64::from_le_bytes(d)),
             Constant::I8(d) => {
-                if d > 0 {
+                if d >= 0 {
                     Some(d as Dim)
                 } else {
                     None
                 }
             }
             Constant::I16(d) => {
-                if d > 0 {
+                if d >= 0 {
                     Some(d as Dim)
                 } else {
                     None
                 }
             }
             Constant::I32(d) => {
-                if d > 0 {
+                if d >= 0 {
                     Some(d as Dim)
                 } else {
                     None
@@ -305,7 +305,7 @@ impl Constant {
             }
             Constant::I64(d) => {
                 let d = i64::from_le_bytes(d);
-                if d > 0 { Some(d as Dim) } else { None }
+                if d >= 0 { Some(d as Dim) } else { None }
             }
             Constant::Bool(d) => Some(Dim::from(d)),
             _ => None,
