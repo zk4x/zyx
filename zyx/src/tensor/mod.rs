@@ -1721,9 +1721,14 @@ impl Tensor {
 
     /// Gather
     ///
+    /// Gathers values along axis based on indices.
+    ///
+    /// Negative indices are wrapped (e.g., -1 → last element).
+    /// Out-of-bounds indices return 0 (zya doesn't check bounds, returns 0 for OOB).
+    ///
     /// # Errors
     ///
-    /// Returns error if the shapes are incompatible or indices are out of bounds.
+    /// Returns error if the shapes are incompatible.
     pub fn gather(&self, axis: Axis, indices: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let indices = indices.into();
         let shape = self.shape();
