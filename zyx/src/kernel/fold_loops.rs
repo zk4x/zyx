@@ -288,9 +288,66 @@ impl Kernel {
         acc_dtype: DType,
         after_loop_load_id: OpId,
     ) -> bool {
-        todo!();
+        /* Looking at the loop body, tracing backwards from r79:
+        r79: f32 = r38 * r111         <- r79 = masked_value (mask * source value)
+        r111: f32 = r110[r107]        <- load from source at loop_counter*stride+offset
+        r107: u32 = r105 + r5         <- address = loop_counter*stride + base
+        r105: u32 = r3 << r101        <- loop_counter * stride
+        r38: f32 = f32(r37)           <- cast to float
+        r37: i32 = r34 == r20         <- ONE-HOT: wrapped_index == loop_counter
+        r20: i32 = i32(r3)            <- loop counter
+        r34: i32 = r71 + r92          <- wrapped_index = mask*dim_size + original_index
+        r92: i32 = r91[r40]           <- load index tensor value
+
+        Pattern to detect:
+        1. Start from r79 (accumulated value)
+        2. r79 = r38 * r111 → multiplication with load
+        3. r111 is a load at address computed from loop counter
+        4. r38 comes from r37 == r20 → comparison with loop counter
+        5. r34 is wrapped_index = mask*dim_size + original_index
+        6. r92 is the actual index value from tensor
+        Detection algorithm:
+        from r79 (accumulator):
+          - must be: mul(load_result, mask)
+          - load address must use loop counter * stride + offset
+          - mask must come from: comparison(wrapped_index, loop_counter)
+          - wrapped_index must be: original_index + mask*dim_size
+        The optimization replaces:
+        - source[loop_counter * stride] → source[wrapped_index * stride]
+        - Removes loop, does single indexed load */
+
+        // accumulated value must be a binary multiply (mask * source)
+        let &Op::Binary { x, y, bop: BOp::Mul } = self.at(accumulated_value_id) else {
+            return false;
+        };
+
+        let (mask_id, source_id) = if self.is_gather_mask(x) {
+            if self.is_gather_source(y) {
+                (x, y)
+            } else {
+                return false;
+            }
+        } else if self.is_gather_mask(y) {
+            if self.is_gather_source(x) {
+                (y, x)
+            } else {
+                return false;
+            }
+        } else {
+            return false;
+        };
+
+        // Check the source id
 
         self.verify();
+        true
+    }
+
+    fn is_gather_mask(&self, mask_id: OpId) -> bool {
+        true
+    }
+
+    fn is_gather_source(&self, source_id: OpId) -> bool {
         true
     }
 
