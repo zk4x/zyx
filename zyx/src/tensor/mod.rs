@@ -1751,8 +1751,7 @@ impl Tensor {
 
         let dim_size = shape[dim];
         let is_negative = indices.cmplt(0)?;
-        let wrapped = indices.clone() + dim_size as i32;
-        let indices = wrapped + is_negative.mul(dim_size as i32);
+        let indices = indices + is_negative.mul(dim_size as i32);
 
         // Prepare one-hot along dim
         let one_hot = indices.unsqueeze(-1)?.one_hot_along_dim(dim_size, -1)?;
