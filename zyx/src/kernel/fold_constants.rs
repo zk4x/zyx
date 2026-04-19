@@ -58,6 +58,16 @@ impl Kernel {
                             }
                         }
                     }
+                    // Cast(Binary(Cast(a), Cast(b))) -> Cast(Binary(a, b))
+                    // e.g., f32(f64(a) * f64(b)) -> f32(a * b)
+                    if let Op::Binary { x: bin_x, y: bin_y, bop } = *self.at(x) {
+                        let x_op = self.at(bin_x);
+                        let y_op = self.at(bin_y);
+                        if let (&Op::Cast { x: ca, .. }, &Op::Cast { x: cb, .. }) = (x_op, y_op) {
+                            let new_bin = self.insert_before(op_id, Op::Binary { x: ca, y: cb, bop });
+                            self.ops[op_id].op = Op::Cast { x: new_bin, dtype };
+                        }
+                    }
                 }
                 Op::Unary { x, uop } => {
                     if let Op::Const(cx) = self.at(x) {
