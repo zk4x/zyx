@@ -238,7 +238,6 @@ All of these work together and pass all tests.
 
 - The exploration can apply the same optimization multiple times to the same kernel
 - Use `kernel.debug_colorless()` to inspect IR state
-- **Important**: Bad optimization results can get cached! Clear cache (`rm -rf ~/.cache/zyx`) when testing fixes
 
 ### Adding an Optimization
 

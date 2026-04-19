@@ -242,33 +242,64 @@ impl Kernel {
 
     // Loops that don't contain stores can be deleted
     pub fn delete_empty_loops(&mut self) {
-        // TODO delete empty ifs too
-        let mut stack: Vec<(bool, Vec<OpId>)> = Vec::new();
         let mut dead = Set::default();
+
+        let mut defines_stack: Vec<Set<OpId>> = Vec::new();
+        defines_stack.push(Set::default());
+        let mut ops_stack: Vec<Set<OpId>> = Vec::new();
+        ops_stack.push(Set::default());
+        let mut delete_stack: Vec<bool> = Vec::new();
+        delete_stack.push(false);
 
         let mut op_id = self.head;
         while !op_id.is_null() {
-            for s in &mut stack {
-                s.1.push(op_id);
-            }
             match self.at(op_id) {
-                Op::Loop { .. } => stack.push((false, vec![op_id])),
-                Op::Store { .. } => {
-                    for s in &mut stack {
-                        s.0 = true;
+                Op::Loop { .. } | Op::If { .. } => {
+                    ops_stack.push(Set::default());
+                    defines_stack.push(Set::default());
+                    delete_stack.push(true);
+                    for slice in &mut ops_stack {
+                        slice.insert(op_id);
                     }
                 }
-                Op::EndLoop => {
-                    let (has_store, ops) = stack.pop().unwrap();
-                    if has_store {
-                        if let Some(p) = stack.last_mut() {
-                            p.1.extend(ops);
+                Op::Define { ro, .. } => {
+                    if !ro {
+                        defines_stack.last_mut().unwrap().insert(op_id);
+                    }
+                }
+                Op::Store { dst, .. } => {
+                    for i in 0..defines_stack.len() - 1 {
+                        if defines_stack[i].contains(dst) {
+                            for j in i + 1..delete_stack.len() {
+                                delete_stack[j] = false;
+                            }
+                            break;
+                        }
+                    }
+                    for slice in &mut ops_stack {
+                        slice.insert(op_id);
+                    }
+                }
+                Op::EndLoop | Op::EndIf => {
+                    for slice in &mut ops_stack {
+                        slice.insert(op_id);
+                    }
+                    defines_stack.pop();
+                    if let Some(delete_slice) = delete_stack.pop() {
+                        if delete_slice {
+                            dead.extend(ops_stack.pop().unwrap());
+                        } else {
+                            ops_stack.pop();
                         }
                     } else {
-                        dead.extend(ops);
+                        ops_stack.pop();
                     }
                 }
-                _ => {}
+                _ => {
+                    for slice in &mut ops_stack {
+                        slice.insert(op_id);
+                    }
+                }
             }
             op_id = self.next_op(op_id);
         }
