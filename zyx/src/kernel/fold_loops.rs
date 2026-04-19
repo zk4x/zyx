@@ -129,11 +129,16 @@ impl Kernel {
         let &Op::Store { x: init_value, .. } = self.at(store_id) else { return false };
 
         // Step 5: Replace the loop with closed-form arithmetic if possible
+        // Try arange first, if that fails try gather
         let arange_replaced = self.replace_arange_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
-        let gather_replaced = self.replace_gather_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
-
-        if !arange_replaced && !gather_replaced {
-            return false;
+        if arange_replaced {
+            eprintln!("DEBUG: arange loop replaced successfully");
+        } else {
+            let gather_replaced =
+                self.replace_gather_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
+            if !gather_replaced {
+                return false;
+            }
         }
 
         // Step 6: Remove the now-obsolete loop operations (Loop, body, EndLoop, init store, define)
@@ -308,7 +313,7 @@ impl Kernel {
         eprintln!("DEBUG: Step 2 passed - load_address_id={}", load_address_id);
 
         // Step 3: Check that the load address is: loop_counter * stride + offset
-        let loop_counter_id = self.extract_loop_counter_from_address(load_address_id);
+        let loop_counter_id = self.extract_loop_counter_from_address(load_address_id, loop_id);
         if loop_counter_id.is_null() {
             eprintln!(
                 "DEBUG: Step 3 failed - extract_loop_counter returned NULL for address_id={}",
@@ -366,32 +371,21 @@ impl Kernel {
     }
 
     /// Extracts the loop counter from a load address computation.
-    /// Address is: loop_counter * stride + offset
-    fn extract_loop_counter_from_address(&self, address_id: OpId) -> OpId {
+    /// Address is: loop_counter << stride + offset OR loop_counter * stride + offset
+    fn extract_loop_counter_from_address(&self, address_id: OpId, loop_id: OpId) -> OpId {
         let op = self.at(address_id);
-        if let Op::Binary { x: mul_x, y: mul_y, bop: BOp::Add } = op {
-            // Check if one side is multiplication
-            if let Op::Binary { x: lc_x, y: lc_y, bop: BOp::Mul } = self.at(*mul_x) {
-                // Try to identify loop counter (usually from Index scope)
-                if let Op::Index { .. } = self.at(*lc_x) {
-                    return *lc_x;
-                }
-                if let Op::Index { .. } = self.at(*lc_y) {
-                    return *lc_y;
-                }
-            }
-            if let Op::Binary { x: lc_x, y: lc_y, bop: BOp::Mul } = self.at(*mul_y) {
-                if let Op::Index { .. } = self.at(*lc_x) {
-                    return *lc_x;
-                }
-                if let Op::Index { .. } = self.at(*lc_y) {
-                    return *lc_y;
+        if let Op::Binary { x, y, bop: BOp::Add } = op {
+            // Check both orderings - try both x and y being the stride computation
+            for &side in &[*x, *y] {
+                if let Op::Binary { x: stride_x, y: stride_y, bop } = self.at(side) {
+                    if *bop == BOp::Mul || *bop == BOp::BitShiftLeft {
+                        // Check if either operand is the loop itself
+                        if *stride_x == loop_id || *stride_y == loop_id {
+                            return loop_id;
+                        }
+                    }
                 }
             }
-        }
-        // Could also be just the index directly (if stride = 1)
-        if let Op::Index { .. } = op {
-            return address_id;
         }
         OpId::NULL
     }
