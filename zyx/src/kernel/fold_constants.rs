@@ -40,6 +40,24 @@ impl Kernel {
                     if let Op::Const(cx) = self.at(x) {
                         self.ops[op_id].op = Op::Const(cx.cast(dtype));
                     }
+                    // Cast of Cast: remove intermediate cast
+                    if let Op::Cast { x: inner_x, .. } = *self.at(x) {
+                        self.ops[op_id].op = Op::Cast { x: inner_x, dtype };
+                    }
+                    // x + c1 - c1 simplifies to x
+                    // Handle: Cast(Sub(Cast(Add(x, c1)), c2)) where c1 == c2 → Cast(x)
+                    if let Op::Binary { x: sub_x, y: sub_y, bop: BOp::Sub } = *self.at(x) {
+                        let add_x = if let Op::Cast { x: inner_cast_x, .. } = *self.at(sub_x) {
+                            inner_cast_x
+                        } else {
+                            sub_x
+                        };
+                        if let Op::Binary { x: inner_add_x, y: add_y, bop: BOp::Add } = *self.at(add_x) {
+                            if self.constants_equal(add_y, sub_y) {
+                                self.ops[op_id].op = Op::Cast { x: inner_add_x, dtype };
+                            }
+                        }
+                    }
                 }
                 Op::Unary { x, uop } => {
                     if let Op::Const(cx) = self.at(x) {
@@ -446,5 +464,33 @@ impl Kernel {
 
         #[cfg(debug_assertions)]
         self.verify();
+    }
+
+    fn constants_equal(&self, a: OpId, b: OpId) -> bool {
+        let a = self.at(a);
+        let b = self.at(b);
+        match (a, b) {
+            (Op::Const(ca), Op::Const(cb)) => {
+                let a_val: Option<i64> = match ca {
+                    Constant::U32(x) => Some(*x as i64),
+                    Constant::I32(x) => Some(*x as i64),
+                    Constant::U64(x) => Some(i64::from_le_bytes(*x)),
+                    Constant::I64(x) => Some(i64::from_le_bytes(*x)),
+                    _ => None,
+                };
+                let b_val: Option<i64> = match cb {
+                    Constant::U32(x) => Some(*x as i64),
+                    Constant::I32(x) => Some(*x as i64),
+                    Constant::U64(x) => Some(i64::from_le_bytes(*x)),
+                    Constant::I64(x) => Some(i64::from_le_bytes(*x)),
+                    _ => None,
+                };
+                match (a_val, b_val) {
+                    (Some(av), Some(bv)) => av == bv,
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
     }
 }
