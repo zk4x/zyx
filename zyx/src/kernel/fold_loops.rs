@@ -128,16 +128,12 @@ impl Kernel {
         }
         let &Op::Store { x: init_value, .. } = self.at(store_id) else { return false };
 
-        // Step 5: Replace the loop with closed-form arithmetic if possible
-        // Try arange first, if that fails try gather
+        // Step 5: Replace the loop with closed-form arithmetic (arange or gather)
         let arange_replaced = self.replace_arange_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
-        if arange_replaced {
-        } else {
-            let gather_replaced =
-                self.replace_gather_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
-            if !gather_replaced {
-                return false;
-            }
+        let gather_replaced = !arange_replaced
+            && self.replace_gather_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
+        if !arange_replaced && !gather_replaced {
+            return false;
         }
 
         // Step 6: Remove the now-obsolete loop operations (Loop, body, EndLoop, init store, define)
