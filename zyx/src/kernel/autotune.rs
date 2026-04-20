@@ -152,7 +152,7 @@ impl Kernel {
         let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
         if n_reg_tile > 0 {
             if let Optimization::RegisterTiling { reduce_splits, global_upcasts } = reg_tile_opt {
-                kernel.apply_register_tiling(&reduce_splits, &global_upcasts, 86);
+                kernel.apply_register_tiling(&reduce_splits, &global_upcasts, 31);
             }
         }
 
