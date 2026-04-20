@@ -35,6 +35,7 @@ num_train = train_x.shape[0]
 
 # ----- Model and optimizer -----
 net = MnistNet().to(device)
+net.compile()
 optimizer = torch.optim.SGD(net.parameters(), lr=0.01, momentum=0.6)
 
 # ----- Profile the full epoch -----

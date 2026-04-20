@@ -87,15 +87,15 @@ fn main() -> Result<(), ZyxError> {
     Tensor::realize_all()?;
 
     println!("Training...");
-    for step in 0..7000usize {
+    for step in 0..70usize {
         Tensor::set_training(true);
         let tape = GradientTape::new();
         let samples = Tensor::uniform(batch_size, 0..n_train)?; // [128]
         let x = train_x.index_select(0, &samples)?; // x shape: [batch_size, 784]
         let y = train_y.index_select(0, &samples)?; // y shape: [batch_size]
 
-        Tensor::realize([&x, &y])?;
-        println!("Index time above <");
+        //Tensor::realize([&x, &y])?;
+        //println!("Index time above <");
 
         let logits = net.forward(&x);
         let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();

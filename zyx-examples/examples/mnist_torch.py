@@ -36,6 +36,7 @@ batch_size = 129
 num_train = train_x.shape[0]
 
 net = MnistNet().to(device)
+net.compile()
 
 # net.load_state_dict(torch.load("models/mnist.safetensors"))
 
