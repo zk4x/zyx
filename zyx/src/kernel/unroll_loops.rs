@@ -128,16 +128,25 @@ impl Kernel {
             endloop_id = self.next_op(endloop_id);
         }
 
-        self.ops[loop_id].op = Op::Const(Constant::idx(0));
-
-        for _ in 1..len {
+        for iter in 1..len {
+            let mut ops = Vec::new();
             let mut op_id = self.next_op(loop_id);
             while op_id != endloop_id {
-                let new_op = self.ops[op_id].op.clone();
-                self.insert_before(endloop_id, new_op);
+                ops.push(op_id);
                 op_id = self.next_op(op_id);
             }
+            let iter_op = self.insert_before(endloop_id, Op::Const(Constant::idx(iter as u64)));
+            for op_id in ops {
+                let mut new_op = self.ops[op_id].op.clone();
+                for param in new_op.parameters_mut() {
+                    if *param == loop_id {
+                        *param = iter_op;
+                    }
+                }
+                self.insert_before(endloop_id, new_op);
+            }
         }
+        self.ops[loop_id].op = Op::Const(Constant::idx(0));
         self.verify();
     }
 }
