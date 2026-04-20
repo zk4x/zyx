@@ -119,24 +119,24 @@ impl Kernel {
     pub fn unroll_loop(&mut self, loop_id: OpId) {
         let Op::Loop { len } = self.ops[loop_id].op else { return };
         let len = len as usize;
-        if len == 0 || len > 64 {
+        eprintln!("UNROLL len={} limit={}", len, len > 64);
+        if len == 0 || len > 256 {
             return;
         }
+        eprintln!("UNROLL doing it");
 
         let mut endloop_id = self.next_op(loop_id);
         while !matches!(self.ops[endloop_id].op, Op::EndLoop) {
             endloop_id = self.next_op(endloop_id);
         }
 
+        let body_start = self.next_op(loop_id);
+        let body_end = endloop_id;
+
         for iter in 1..len {
-            let mut ops = Vec::new();
-            let mut op_id = self.next_op(loop_id);
-            while op_id != endloop_id {
-                ops.push(op_id);
-                op_id = self.next_op(op_id);
-            }
             let iter_op = self.insert_before(endloop_id, Op::Const(Constant::idx(iter as u64)));
-            for op_id in ops {
+            let mut op_id = body_start;
+            while op_id != body_end {
                 let mut new_op = self.ops[op_id].op.clone();
                 for param in new_op.parameters_mut() {
                     if *param == loop_id {
@@ -144,6 +144,7 @@ impl Kernel {
                     }
                 }
                 self.insert_before(endloop_id, new_op);
+                op_id = self.next_op(op_id);
             }
         }
         self.ops[loop_id].op = Op::Const(Constant::idx(0));

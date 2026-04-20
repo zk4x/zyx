@@ -115,8 +115,6 @@ impl Kernel {
         split_ids.push(y);
         self.ops[dim_id].op = Op::Binary { x: acc, y, bop: BOp::Add };
 
-        split_ids.reverse();
-
         self.verify();
         split_ids
     }
