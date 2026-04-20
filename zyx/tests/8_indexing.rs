@@ -481,7 +481,7 @@ fn gather_with_one_hot_large_dim() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn index_select() -> Result<(), ZyxError> {
+fn index_select_1() -> Result<(), ZyxError> {
     // 2D tensor
     let x = Tensor::from([[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
 

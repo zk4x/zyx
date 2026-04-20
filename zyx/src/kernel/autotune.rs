@@ -199,12 +199,12 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.simplify_accumulating_loop();
         kernel.run_always_on_optimizations();
-        kernel.debug();
         kernel.simplify_accumulating_loop();
         kernel.run_always_on_optimizations();
         kernel.simplify_accumulating_loop();
         kernel.run_always_on_optimizations();
-        kernel.debug();
+        kernel.simplify_accumulating_loop();
+        kernel.run_always_on_optimizations();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)

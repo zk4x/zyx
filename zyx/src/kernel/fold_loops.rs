@@ -27,7 +27,7 @@
 //! 3. If it's a simple pattern (like sum of 0+1+2+...), replace with arithmetic formula
 
 use crate::{
-    dtype::Constant,
+    dtype::{Constant, DType},
     kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope},
 };
 
@@ -61,7 +61,7 @@ impl Kernel {
     /// On success, the loop and accumulator are removed and replaced with closed-form ops.
     fn fold_loop(&mut self, acc_id: OpId) -> bool {
         // Step 1: Check that acc_id is a register define with length 1 (scalar accumulator)
-        let &Op::Define { dtype: _, scope, ro, len: 1 } = self.at(acc_id) else {
+        let &Op::Define { dtype: acc_dtype, scope, ro, len: 1 } = self.at(acc_id) else {
             return false;
         };
         // We only fold register-scoped accumulators; global/local have different semantics
@@ -133,7 +133,7 @@ impl Kernel {
         }
 
         // : Replace the loop with closed-form arithmetic (gather)
-        if self.replace_gather_loop(acc_id, store_id, loop_id, accumulated_value_id, after_loop_load_id) {
+        if self.replace_gather_loop(acc_dtype, loop_id, accumulated_value_id, after_loop_load_id) {
             return true;
         }
 
@@ -208,19 +208,19 @@ impl Kernel {
     /// acc = 0;
     /// for (i = 0; i < dim_size; i++) {
     ///     if (index == i) {
-    ///         acc += source[i * stride + offset];
+    ///         acc += source;
     ///     }
     /// }
     /// ```
     ///
     /// Replaces with:
     /// ```c
-    /// acc = source[index * stride + offset];
+    /// i = index
+    /// acc = source;
     /// ```
     fn replace_gather_loop(
         &mut self,
-        acc_id: OpId,
-        store_id: OpId,
+        acc_dtype: DType,
         loop_id: OpId,
         accumulated_value_id: OpId,
         after_loop_load_id: OpId,
@@ -230,103 +230,68 @@ impl Kernel {
             return false;
         };
 
-        let Some(((gather_loop_id, indices_id), source_id)) =
-            self.either_match(x, y, Self::get_gather_mask, Self::get_gather_source)
-        else {
+        let (source_id, indices_id) = if let Some(indices_id) = self.get_indices(x, loop_id) {
+            (y, indices_id)
+        } else if let Some(indices_id) = self.get_indices(y, loop_id) {
+            (x, indices_id)
+        } else {
             return false;
         };
 
-        if gather_loop_id != loop_id {
-            return false;
-        }
+        //println!("Applying loop removal with loop_id={loop_id}, indices_id={indices_id}, source_id={source_id}");
 
-        println!("Applying gather with gather_loop_id={gather_loop_id}, indices_id={indices_id}, source_id={source_id}");
-
-        let endloop_id = self.prev_op(after_loop_load_id);
-
-        // Convert indices to IDX_T
-        let indices_cast = self.insert_before(after_loop_load_id, Op::Cast { x: indices_id, dtype: IDX_T });
-        // Load source at indices
-        self.ops[after_loop_load_id].op = Op::Load { src: source_id, index: indices_cast, vlen: 1 };
-
-        // TODO Remove needless ops
-        //self.remove_op(acc_id);
-        //self.remove_op(store_id);
-        self.remove_op(endloop_id);
         self.ops[loop_id].op = Op::Const(Constant::idx(0));
 
+        // Convert indices to IDX_T
+        let loop_replace = self.insert_after(indices_id, Op::Cast { x: indices_id, dtype: IDX_T });
+
+        // Replace loop index
+        let endloop_id = self.prev_op(after_loop_load_id);
+        let mut op_id = loop_replace;
+        while op_id != endloop_id {
+            for param in self.ops[op_id].op.parameters_mut() {
+                if *param == loop_id {
+                    *param = loop_replace;
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        self.remove_op(endloop_id);
+        // Replace accumulator load
+        self.remap(after_loop_load_id, source_id);
         self.verify();
         true
     }
 
-    fn get_gather_source(&self, op_id: OpId) -> Option<OpId> {
-        let Op::Load { src, .. } = self.ops[op_id].op else { return None };
-        Some(src)
-    }
-
-    fn get_gather_mask(&self, mask_id: OpId) -> Option<(OpId, OpId)> {
-        let Op::Cast { x, .. } = self.ops[mask_id].op else { return None };
-        let Op::Binary { x, y, bop: BOp::Eq } = self.ops[x].op else { return None };
-
-        let Some((loop_id, (indices_id))) = self.either_match(x, y, Self::get_gather_loop, Self::get_gather_indices) else {
-            return None;
-        };
-
-        println!("Found gather mask");
-
-        // TODO check that indices_index_id is outside of the loop
-
-        Some((loop_id, indices_id))
-    }
-
-    fn get_gather_loop(&self, op_id: OpId) -> Option<OpId> {
-        let Op::Cast { x, .. } = self.ops[op_id].op else { return None };
-        let Op::Loop { .. } = self.ops[x].op else { return None };
-        println!("Found gather loop");
-        Some(x)
-    }
-
-    fn get_gather_indices(&self, op_id: OpId) -> Option<OpId> {
-        let Op::Binary { x, y, bop: BOp::Add } = self.ops[op_id].op else { return None };
-        println!("Found gather 1");
-        let (src, index) = match self.ops[x].op {
-            Op::Load { src, index, vlen: 1 } => (src, index),
-            Op::Binary { x, y, bop: BOp::Mul } => match self.ops[x].op {
-                Op::Load { src, index, vlen: 1 } => (src, index),
+    /// Find the equality op
+    fn get_indices(&self, mask_id: OpId, loop_id: OpId) -> Option<OpId> {
+        let (x, y) = match self.ops[mask_id].op {
+            Op::Binary { x, y, bop: BOp::Eq } => (x, y),
+            Op::Cast { x, .. } => match self.ops[x].op {
+                Op::Binary { x, y, bop: BOp::Eq } => (x, y),
                 _ => return None,
-            },
+            }
             _ => return None,
         };
-        println!("Found gather 2");
-        let Op::Binary { x, y: _dim_size, bop: BOp::Mul } = self.ops[y].op else { return None };
-        println!("Found gather 3");
-        // TODO check that dim_size is the same length as loop
-        let Op::Cast { x, .. } = self.ops[x].op else { return None };
-        println!("Found gather 4");
-        let Op::Binary { x, y, bop: BOp::Cmplt } = self.ops[x].op else { return None };
-        println!("Found gather 5");
-        let Op::Const(y) = self.ops[y].op else { return None };
-        println!("Found gather 6");
-        println!("{y:?}");
-        if y.as_dim() != Some(0) {
+        let indices_id = if self.check_loop(x, loop_id) {
+            y
+        } else if self.check_loop(y, loop_id) {
+            x
+        } else {
             return None;
-        }
-        println!("Found gather 7");
-        let (src2, index2) = match self.ops[x].op {
-            Op::Load { src, index, vlen: 1 } => (src, index),
-            Op::Binary { x, y, bop: BOp::Mul } => match self.ops[x].op {
-                Op::Load { src, index, vlen: 1 } => (src, index),
-                _ => return None,
-            },
-            _ => return None,
         };
-        println!("Found gather 8");
-        if src != src2 && index != index2 {
-            return None;
-        }
-        println!("Found gather 9");
+        //println!("Found indices");
+        Some(indices_id)
+    }
 
-        Some(op_id)
+    /// Returns all ops to the loop from the mask, the last op is the loop
+    fn check_loop(&self, op_id: OpId, loop_id: OpId) -> bool {
+        let Op::Cast { x, .. } = self.ops[op_id].op else { return false };
+        if x != loop_id {
+            return false;
+        }
+        //println!("Found loop");
+        true
     }
 
     /// Replaces a loop with closed-form arithmetic if possible.
@@ -519,19 +484,5 @@ impl Kernel {
             Op::Binary { bop: BOp::Cmpgt, .. } => true,
             _ => false,
         }
-    }
-
-    fn either_match<T, T2, F1, F2>(&self, x: OpId, y: OpId, is_a: F1, is_b: F2) -> Option<(T, T2)>
-    where
-        F1: Fn(&Self, OpId) -> Option<T>,
-        F2: Fn(&Self, OpId) -> Option<T2>,
-    {
-        if let (Some(a), Some(b)) = (is_a(self, x), is_b(self, y)) {
-            return Some((a, b));
-        }
-        if let (Some(a), Some(b)) = (is_a(self, y), is_b(self, x)) {
-            return Some((a, b));
-        }
-        None
     }
 }

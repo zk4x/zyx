@@ -836,6 +836,7 @@ impl Kernel {
         indices
     }
 
+    /// Remap slab indices from x to y
     fn remap(&mut self, x: OpId, y: OpId) {
         for op_node in self.ops.values_mut() {
             for param in op_node.op.parameters_mut() {
