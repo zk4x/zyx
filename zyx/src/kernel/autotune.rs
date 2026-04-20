@@ -94,56 +94,7 @@ impl Optimization {
                 kernel.upcast(op_id, factor);
             }
             Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
-                let n_global = global_upcasts.len();
-                let n_reduce = reduce_splits.len();
-                if n_global == 0 || n_reduce == 0 {
-                    return;
-                }
-
-                let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
-                //let n_reduce_options: usize = reduce_factors.values().map(|v| v.len()).product();
-
-                let mut remaining_global = config % n_global_options;
-                let mut remaining_reduce = config / n_global_options;
-
-                for (reduce_id, factors) in reduce_splits.iter() {
-                    let n_options = factors.len();
-                    let factor_idx = remaining_reduce % n_options;
-                    remaining_reduce /= n_options;
-                    let reduce_factor = factors[factor_idx];
-
-                    let Op::Loop { len, .. } = kernel.ops[*reduce_id].op else {
-                        continue;
-                    };
-                    let original_len = len;
-
-                    kernel.split_dim(
-                        *reduce_id,
-                        vec![
-                            Op::Loop { len: original_len / reduce_factor },
-                            Op::Loop { len: reduce_factor },
-                        ],
-                    );
-                }
-
-                let mut new_global_upcasts = Vec::new();
-                for (_, factors) in global_upcasts.iter() {
-                    let n_options = factors.len() + 1;
-                    let factor_idx = remaining_global % n_options;
-                    remaining_global /= n_options;
-
-                    let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
-                    new_global_upcasts.push(factor);
-                }
-
-                let mut idx = 0;
-                for (op_id, _) in global_upcasts.iter() {
-                    let factor = new_global_upcasts[idx];
-                    if factor > 1 {
-                        kernel.upcast(*op_id, factor as u64);
-                    }
-                    idx += 1;
-                }
+                kernel.apply_register_tiling(reduce_splits, global_upcasts, config);
             }
             Optimization::UnrollConstantLoops => {
                 kernel.unroll_constant_loops();
@@ -200,7 +151,9 @@ impl Kernel {
 
         let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
         if n_reg_tile > 0 {
-            reg_tile_opt.apply(&mut kernel, 86);
+            if let Optimization::RegisterTiling { reduce_splits, global_upcasts } = reg_tile_opt {
+                kernel.apply_register_tiling(&reduce_splits, &global_upcasts, 86);
+            }
         }
 
         kernel.run_always_on_optimizations();
