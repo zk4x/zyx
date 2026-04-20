@@ -6,7 +6,6 @@ use crate::Map;
 use crate::kernel::{Kernel, Op, OpId, Scope};
 
 impl Kernel {
-    #[allow(unused)]
     pub fn opt_register_tiling(&self) -> (Optimization, usize) {
         let candidates: Vec<u64> = vec![2, 4, 8, 16];
         let mut global_upcasts = Map::default();
@@ -58,7 +57,6 @@ impl Kernel {
         )
     }
 
-    #[allow(unused)]
     pub fn apply_register_tiling(
         &mut self,
         reduce_splits: &Map<OpId, Vec<u64>>,
@@ -87,13 +85,15 @@ impl Kernel {
             };
             let original_len = len;
 
-            self.split_dim(
+            let [_, factor_loop] = self.split_dim(
                 *reduce_id,
                 vec![
                     Op::Loop { len: original_len / reduce_factor },
                     Op::Loop { len: reduce_factor },
                 ],
-            );
+            ) else { unreachable!() };
+
+            self.unroll_loop(factor_loop);
         }
 
         let mut new_global_upcasts = Vec::new();

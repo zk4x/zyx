@@ -44,7 +44,7 @@ impl Kernel {
                 if len as usize <= unroll_dim as usize
                     && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000
                 {
-                    self.unroll_loop(op_id, endloop_id, len);
+                    self.unroll_loop(op_id);
                 }
             }
             op_id = self.prev_op(op_id);
@@ -86,7 +86,7 @@ impl Kernel {
                     constant_loops.push(true);
                 }
                 Op::Loop { len, .. } => {
-                    let endloop_id = endloop_ids.pop().unwrap();
+                    endloop_ids.pop().unwrap();
                     let is_const = constant_loops.pop().unwrap();
                     if !is_const {
                         if let Some(inner_loop) = constant_loops.last_mut() {
@@ -96,7 +96,7 @@ impl Kernel {
                     if len == 1
                         || (is_const && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000)
                     {
-                        self.unroll_loop(op_id, endloop_id, len);
+                        self.unroll_loop(op_id);
                     }
                 }
                 Op::Store { dst, .. } => {
@@ -117,8 +117,8 @@ impl Kernel {
         }
     }
 
-    pub fn unroll_loop(&mut self, loop_id: OpId, endloop_id: OpId, dim: Dim) {
-        self.ops[loop_id].op = Op::Const(Constant::idx(0));
+    pub fn unroll_loop(&mut self, loop_id: OpId) {
+        /*self.ops[loop_id].op = Op::Const(Constant::idx(0));
 
         let mut loop_ops = Vec::new();
         let mut op_id = self.next_op(loop_id);
@@ -145,7 +145,7 @@ impl Kernel {
             }
         }
 
-        self.remove_op(endloop_id);
+        self.remove_op(endloop_id);*/
         self.verify();
     }
 }
