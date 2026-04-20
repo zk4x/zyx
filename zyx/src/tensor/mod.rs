@@ -657,15 +657,15 @@ impl Tensor {
     /// Returns device error if the device fails to allocate memory for tensor.
     pub fn uniform<T: Scalar>(shape: impl IntoShape, range: impl core::ops::RangeBounds<T>) -> Result<Tensor, ZyxError> {
         use core::ops::Bound;
-        let low = match range.start_bound() {
-            Bound::Included(value) | Bound::Excluded(value) => *value,
-            Bound::Unbounded => T::min_value(),
+        let low: f32 = match range.start_bound() {
+            Bound::Included(value) | Bound::Excluded(value) => value.cast(),
+            Bound::Unbounded => f32::min_value(),
         };
-        let high = match range.end_bound() {
-            Bound::Included(value) | Bound::Excluded(value) => *value,
-            Bound::Unbounded => T::max_value(),
+        let high: f32 = match range.end_bound() {
+            Bound::Included(value) | Bound::Excluded(value) => value.cast(),
+            Bound::Unbounded => f32::max_value(),
         };
-        Ok(Tensor::rand(shape, T::dtype())? * high.sub(low) + low)
+        Ok((Tensor::rand(shape, DType::F32)? * high.sub(low) + low).cast(T::dtype()))
     }
 
     /// Create tensor sampled from kaiming uniform distribution.

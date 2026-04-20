@@ -529,6 +529,7 @@ fn index_select_large() -> Result<(), ZyxError> {
     let n = 100;
     let x = Tensor::rand([n, 512], DType::F32)?;
     let indices = Tensor::uniform([128], 0..100i32)?;
+    //println!("{indices}");
     let y = x.index_select(0, &indices)?;
     Tensor::realize([&y])?;
     Ok(())

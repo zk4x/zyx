@@ -220,7 +220,7 @@ impl Kernel {
     /// ```
     fn replace_gather_loop(
         &mut self,
-        acc_dtype: DType,
+        _acc_dtype: DType,
         loop_id: OpId,
         accumulated_value_id: OpId,
         after_loop_load_id: OpId,
@@ -237,13 +237,18 @@ impl Kernel {
         } else {
             return false;
         };
+        //self.debug();
 
         //println!("Applying loop removal with loop_id={loop_id}, indices_id={indices_id}, source_id={source_id}");
 
         self.ops[loop_id].op = Op::Const(Constant::idx(0));
 
+        //let Op::Loop { len: loop_len } = self.ops[loop_id].op else { return false };
+
         // Convert indices to IDX_T
         let loop_replace = self.insert_after(indices_id, Op::Cast { x: indices_id, dtype: IDX_T });
+        //let loop_size = self.insert_after(index_casted, Op::Const(Constant::idx(loop_len)));
+        //let loop_replace = self.insert_after(loop_size, Op::Binary { x: index_casted, y: loop_size, bop: BOp::Cmplt });
 
         // Replace loop index
         let endloop_id = self.prev_op(after_loop_load_id);
@@ -259,6 +264,7 @@ impl Kernel {
         self.remove_op(endloop_id);
         // Replace accumulator load
         self.remap(after_loop_load_id, source_id);
+        //self.debug();
         self.verify();
         true
     }
