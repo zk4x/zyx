@@ -124,8 +124,33 @@ impl Kernel {
             return;
         }
 
+        let mut loop_depth = 1;
+        let mut endloop_id = self.next_op(loop_id);
+        while !endloop_id.is_null() {
+            match self.ops[endloop_id].op {
+                Op::Loop { .. } => {
+                    loop_depth += 1;
+                }
+                Op::EndLoop => {
+                    loop_depth -= 1;
+                    if loop_depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            endloop_id = self.next_op(endloop_id);
+        }
+
+        /*
+        // This is a skeleton of interleaved unroll
+        // TODO fix the load/store interleaving issue later if it's worth it
         let mut endloop_id = self.next_op(loop_id);
         while !matches!(self.ops[endloop_id].op, Op::EndLoop) {
+            // For now just don't unroll if there are inner loops
+            if matches!(self.ops[endloop_id].op, Op::Loop { .. }) {
+                return;
+            }
             endloop_id = self.next_op(endloop_id);
         }
 
@@ -154,9 +179,37 @@ impl Kernel {
                 let new_id = self.insert_before(op_id, new_op);
                 new_ones.push(new_id);
             }
-            map.insert(loop_id, new_ones);
+            map.insert(this_id, new_ones);
+        }
+        self.remove_op(endloop_id);*/
+
+        self.ops[loop_id].op = Op::Const(Constant::idx(0));
+        let last_loop_op = self.prev_op(endloop_id);
+
+        for idx in 1..len {
+            let mut new_ops_map = Map::default();
+            let idx_op = self.insert_before(endloop_id, Op::Const(Constant::idx(idx)));
+            new_ops_map.insert(loop_id, idx_op);
+
+            let mut op_id = self.next_op(loop_id);
+            loop {
+                let mut op = self.ops[op_id].op.clone();
+                for param in op.parameters_mut() {
+                    if let Some(&new_param) = new_ops_map.get(param) {
+                        *param = new_param;
+                    }
+                }
+                let new_op_id = self.insert_before(endloop_id, op);
+                new_ops_map.insert(op_id, new_op_id);
+
+                if op_id == last_loop_op {
+                    break;
+                }
+                op_id = self.next_op(op_id);
+            }
         }
         self.remove_op(endloop_id);
+
 
         self.verify();
     }
