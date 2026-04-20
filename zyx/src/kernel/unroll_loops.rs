@@ -119,32 +119,33 @@ impl Kernel {
 
     pub fn unroll_loop(&mut self, loop_id: OpId, endloop_id: OpId, dim: Dim) {
         self.ops[loop_id].op = Op::Const(Constant::idx(0));
-        let last_loop_op = self.prev_op(endloop_id);
 
-        for idx in 1..dim {
-            let mut new_ops_map = Map::default();
-            let idx_op = self.insert_before(endloop_id, Op::Const(Constant::idx(idx as u64)));
-            new_ops_map.insert(loop_id, idx_op);
+        let mut loop_ops = Vec::new();
+        let mut op_id = self.next_op(loop_id);
+        while op_id != endloop_id {
+            loop_ops.push(op_id);
+            op_id = self.next_op(op_id);
+        }
 
-            let mut op_id = self.next_op(loop_id);
-            loop {
-                let mut op = self.ops[op_id].op.clone();
-                for param in op.parameters_mut() {
-                    if let Some(&new_param) = new_ops_map.get(param) {
-                        *param = new_param;
+        for orig_op_id in loop_ops {
+            if dim > 1 {
+                for idx in 1..dim {
+                    let idx_op = self.insert_before(endloop_id, Op::Const(Constant::idx(idx as u64)));
+                    let mut idx_map = Map::default();
+                    idx_map.insert(loop_id, idx_op);
+
+                    let mut op = self.ops[orig_op_id].op.clone();
+                    for param in op.parameters_mut() {
+                        if let Some(&new_param) = idx_map.get(param) {
+                            *param = new_param;
+                        }
                     }
+                    self.insert_before(endloop_id, op);
                 }
-                let new_op_id = self.insert_before(endloop_id, op);
-                new_ops_map.insert(op_id, new_op_id);
-
-                if op_id == last_loop_op {
-                    break;
-                }
-                op_id = self.next_op(op_id);
             }
         }
-        self.remove_op(endloop_id);
 
+        self.remove_op(endloop_id);
         self.verify();
     }
 }

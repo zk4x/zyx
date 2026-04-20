@@ -21,14 +21,14 @@ type OptConfigFn = fn(&Kernel) -> (Optimization, usize);
 
 const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
     Kernel::opt_reassociate_commutative,
+    //Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
     Kernel::opt_register_tiling,
+    //Kernel::opt_unroll_constant_loops,
     Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
     Kernel::opt_licm,
-    //Kernel::opt_unroll,
-    //Kernel::opt_unroll_constant_loops,
 ];
 
 #[derive(Debug)]
@@ -44,9 +44,8 @@ pub enum Optimization {
         factors: Vec<(OpId, u64)>,
     },
     RegisterTiling {
-        global_ids: Vec<(OpId, u64)>,
-        loop_id: OpId,
-        loop_factors: Vec<u64>,
+        reduce_splits: Map<OpId, Vec<u64>>,
+        global_upcasts: Map<OpId, Vec<u64>>,
     },
     UnrollConstantLoops,
     TiledReduce {
@@ -94,8 +93,57 @@ impl Optimization {
                 let (op_id, factor) = factors[config];
                 kernel.upcast(op_id, factor);
             }
-            Optimization::RegisterTiling { global_ids, loop_id, loop_factors } => {
-                kernel.register_tiling(global_ids.clone(), *loop_id, loop_factors.clone(), config);
+            Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
+                let n_global = global_upcasts.len();
+                let n_reduce = reduce_splits.len();
+                if n_global == 0 || n_reduce == 0 {
+                    return;
+                }
+
+                let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
+                //let n_reduce_options: usize = reduce_factors.values().map(|v| v.len()).product();
+
+                let mut remaining_global = config % n_global_options;
+                let mut remaining_reduce = config / n_global_options;
+
+                for (reduce_id, factors) in reduce_splits.iter() {
+                    let n_options = factors.len();
+                    let factor_idx = remaining_reduce % n_options;
+                    remaining_reduce /= n_options;
+                    let reduce_factor = factors[factor_idx];
+
+                    let Op::Loop { len, .. } = kernel.ops[*reduce_id].op else {
+                        continue;
+                    };
+                    let original_len = len;
+
+                    kernel.split_dim(
+                        *reduce_id,
+                        vec![
+                            Op::Loop { len: original_len / reduce_factor },
+                            Op::Loop { len: reduce_factor },
+                        ],
+                    );
+                }
+
+                let mut new_global_upcasts = Vec::new();
+                for (_, factors) in global_upcasts.iter() {
+                    let n_options = factors.len() + 1;
+                    let factor_idx = remaining_global % n_options;
+                    remaining_global /= n_options;
+
+                    let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
+                    new_global_upcasts.push(factor);
+                }
+
+                let mut idx = 0;
+                for (op_id, _) in global_upcasts.iter() {
+                    let factor = new_global_upcasts[idx];
+                    if factor > 1 {
+                        kernel.upcast(*op_id, factor as u64);
+                    }
+                    idx += 1;
+                }
             }
             Optimization::UnrollConstantLoops => {
                 kernel.unroll_constant_loops();
@@ -203,7 +251,6 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        println!("Seeding {}", items.len());
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
         let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
         let mult = n_seeds.min(total_configs);
@@ -228,7 +275,6 @@ impl Kernel {
 
         let mut rng = Rng::seed_from_u64(3_498_203_498);
         while items.len() < n_total_opts && !items.is_empty() {
-            println!("Autotuning {}", items.len());
             let items_ptr: *const Vec<OptSeq> = &raw const items;
             let visited_ptr: *const Set<u64> = &raw const visited;
 
