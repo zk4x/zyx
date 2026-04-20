@@ -4,7 +4,6 @@
 use super::autotune::Optimization;
 #[allow(unused)]
 use crate::{
-    Map,
     dtype::Constant,
     kernel::{Kernel, Op, OpId, Scope},
     shape::Dim,
@@ -40,7 +39,7 @@ impl Kernel {
                 endloop_ids.push(op_id);
             }
             if let Op::Loop { len, .. } = self.ops[op_id].op {
-                let endloop_id = endloop_ids.pop().unwrap();
+                let _ = endloop_ids.pop().unwrap();
                 if len as usize <= unroll_dim as usize
                     && self.ops.len().0 as usize + (self.n_ops_in_loop(op_id) * (len as usize - 1)) < 5_000
                 {
@@ -118,34 +117,27 @@ impl Kernel {
     }
 
     pub fn unroll_loop(&mut self, loop_id: OpId) {
-        /*self.ops[loop_id].op = Op::Const(Constant::idx(0));
-
-        let mut loop_ops = Vec::new();
-        let mut op_id = self.next_op(loop_id);
-        while op_id != endloop_id {
-            loop_ops.push(op_id);
-            op_id = self.next_op(op_id);
+        let Op::Loop { len } = self.ops[loop_id].op else { return };
+        let len = len as usize;
+        if len == 0 || len > 64 {
+            return;
         }
 
-        for orig_op_id in loop_ops {
-            if dim > 1 {
-                for idx in 1..dim {
-                    let idx_op = self.insert_before(endloop_id, Op::Const(Constant::idx(idx as u64)));
-                    let mut idx_map = Map::default();
-                    idx_map.insert(loop_id, idx_op);
+        let mut endloop_id = self.next_op(loop_id);
+        while !matches!(self.ops[endloop_id].op, Op::EndLoop) {
+            endloop_id = self.next_op(endloop_id);
+        }
 
-                    let mut op = self.ops[orig_op_id].op.clone();
-                    for param in op.parameters_mut() {
-                        if let Some(&new_param) = idx_map.get(param) {
-                            *param = new_param;
-                        }
-                    }
-                    self.insert_before(endloop_id, op);
-                }
+        self.ops[loop_id].op = Op::Const(Constant::idx(0));
+
+        for _ in 1..len {
+            let mut op_id = self.next_op(loop_id);
+            while op_id != endloop_id {
+                let new_op = self.ops[op_id].op.clone();
+                self.insert_before(endloop_id, new_op);
+                op_id = self.next_op(op_id);
             }
         }
-
-        self.remove_op(endloop_id);*/
         self.verify();
     }
 }

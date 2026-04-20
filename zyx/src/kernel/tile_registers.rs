@@ -85,15 +85,16 @@ impl Kernel {
             };
             let original_len = len;
 
-            let [_, factor_loop] = self.split_dim(
+            let loops = self.split_dim(
                 *reduce_id,
                 vec![
                     Op::Loop { len: original_len / reduce_factor },
                     Op::Loop { len: reduce_factor },
                 ],
-            ) else { unreachable!() };
-
-            self.unroll_loop(factor_loop);
+            );
+            if let Some(factor_loop) = loops.get(1) {
+                self.unroll_loop(*factor_loop);
+            }
         }
 
         let mut new_global_upcasts = Vec::new();
