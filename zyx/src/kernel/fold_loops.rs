@@ -27,7 +27,7 @@
 //! 3. If it's a simple pattern (like sum of 0+1+2+...), replace with arithmetic formula
 
 use crate::{
-    dtype::{Constant, DType},
+    dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope},
 };
 
@@ -61,7 +61,7 @@ impl Kernel {
     /// On success, the loop and accumulator are removed and replaced with closed-form ops.
     fn fold_loop(&mut self, acc_id: OpId) -> bool {
         // Step 1: Check that acc_id is a register define with length 1 (scalar accumulator)
-        let &Op::Define { dtype: acc_dtype, scope, ro, len: 1 } = self.at(acc_id) else {
+        let &Op::Define { dtype: _, scope, ro, len: 1 } = self.at(acc_id) else {
             return false;
         };
         // We only fold register-scoped accumulators; global/local have different semantics
@@ -126,33 +126,18 @@ impl Kernel {
         if store_id.is_null() {
             return false;
         }
-        let &Op::Store { x: init_value, .. } = self.at(store_id) else { return false };
 
-        // Step 5: Replace the loop with closed-form arithmetic (arange or gather)
-        let arange_replaced = self.replace_arange_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
-        let gather_replaced = !arange_replaced
-            && self.replace_gather_loop(loop_id, init_value, accumulated_value_id, acc_dtype, after_loop_load_id);
-        if !arange_replaced && !gather_replaced {
-            return false;
+        // : Replace the loop with closed-form arithmetic (arange)
+        if self.replace_arange_loop(acc_id, store_id, loop_id, accumulated_value_id, after_loop_load_id) {
+            return true;
         }
 
-        // Step 6: Remove the now-obsolete loop operations (Loop, body, EndLoop, init store, define)
-        let mut current = self.next_op(loop_id);
-        while !current.is_null() {
-            let next = self.next_op(current);
-            if matches!(self.at(current), Op::EndLoop) {
-                self.remove_op(current);
-                break;
-            }
-            self.remove_op(current);
-            current = next;
+        // : Replace the loop with closed-form arithmetic (gather)
+        if self.replace_gather_loop(acc_id, store_id, loop_id, accumulated_value_id, after_loop_load_id) {
+            return true;
         }
-        self.remove_op(loop_id);
-        self.remove_op(store_id);
-        self.remove_op(acc_id);
 
-        self.verify();
-        true
+        false
     }
 
     /// Identifies the accumulate pattern inside a loop.
@@ -234,10 +219,10 @@ impl Kernel {
     /// ```
     fn replace_gather_loop(
         &mut self,
+        acc_id: OpId,
+        store_id: OpId,
         loop_id: OpId,
-        _init_value: OpId,
         accumulated_value_id: OpId,
-        _acc_dtype: DType,
         after_loop_load_id: OpId,
     ) -> bool {
         // accumulated value must be a binary multiply (mask * source)
@@ -245,7 +230,7 @@ impl Kernel {
             return false;
         };
 
-        let Some(((gather_loop_id, indices_def_id, indices_index_id), source_id)) =
+        let Some(((gather_loop_id, indices_id), source_id)) =
             self.either_match(x, y, Self::get_gather_mask, Self::get_gather_source)
         else {
             return false;
@@ -255,46 +240,53 @@ impl Kernel {
             return false;
         }
 
-        /*todo!(
-            "Gather possible with gather_loop_id={gather_loop_id}, indices_def_id={indices_def_id} at={indices_index_id}, source_id={source_id}"
-        );*/
+        println!("Applying gather with gather_loop_id={gather_loop_id}, indices_id={indices_id}, source_id={source_id}");
 
-        // Load indices
-        let indices_load = self.insert_before(
-            after_loop_load_id,
-            Op::Load { src: indices_def_id, index: indices_index_id, vlen: 1 },
-        );
+        let endloop_id = self.prev_op(after_loop_load_id);
+
         // Convert indices to IDX_T
-        let indices_cast = self.insert_before(after_loop_load_id, Op::Cast { x: indices_load, dtype: IDX_T });
+        let indices_cast = self.insert_before(after_loop_load_id, Op::Cast { x: indices_id, dtype: IDX_T });
         // Load source at indices
         self.ops[after_loop_load_id].op = Op::Load { src: source_id, index: indices_cast, vlen: 1 };
+
+        // TODO Remove needless ops
+        //self.remove_op(acc_id);
+        //self.remove_op(store_id);
+        self.remove_op(endloop_id);
+        self.ops[loop_id].op = Op::Const(Constant::idx(0));
 
         self.verify();
         true
     }
 
-    fn get_gather_mask(&self, mask_id: OpId) -> Option<(OpId, OpId, OpId)> {
+    fn get_gather_source(&self, op_id: OpId) -> Option<OpId> {
+        let Op::Load { src, .. } = self.ops[op_id].op else { return None };
+        Some(src)
+    }
+
+    fn get_gather_mask(&self, mask_id: OpId) -> Option<(OpId, OpId)> {
         let Op::Cast { x, .. } = self.ops[mask_id].op else { return None };
         let Op::Binary { x, y, bop: BOp::Eq } = self.ops[x].op else { return None };
 
-        let Some((loop_id, (indices_def_id, indices_index_id))) =
-            self.either_match(x, y, Self::get_gather_loop, Self::get_gather_indices)
-        else {
+        let Some((loop_id, (indices_id))) = self.either_match(x, y, Self::get_gather_loop, Self::get_gather_indices) else {
             return None;
         };
 
+        println!("Found gather mask");
+
         // TODO check that indices_index_id is outside of the loop
 
-        Some((loop_id, indices_def_id, indices_index_id))
+        Some((loop_id, indices_id))
     }
 
     fn get_gather_loop(&self, op_id: OpId) -> Option<OpId> {
         let Op::Cast { x, .. } = self.ops[op_id].op else { return None };
         let Op::Loop { .. } = self.ops[x].op else { return None };
+        println!("Found gather loop");
         Some(x)
     }
 
-    fn get_gather_indices(&self, op_id: OpId) -> Option<(OpId, OpId)> {
+    fn get_gather_indices(&self, op_id: OpId) -> Option<OpId> {
         let Op::Binary { x, y, bop: BOp::Add } = self.ops[op_id].op else { return None };
         println!("Found gather 1");
         let (src, index) = match self.ops[x].op {
@@ -320,17 +312,21 @@ impl Kernel {
             return None;
         }
         println!("Found gather 7");
-        let Op::Load { src: src2, index: index2, vlen: 1 } = self.ops[x].op else { return None };
+        let (src2, index2) = match self.ops[x].op {
+            Op::Load { src, index, vlen: 1 } => (src, index),
+            Op::Binary { x, y, bop: BOp::Mul } => match self.ops[x].op {
+                Op::Load { src, index, vlen: 1 } => (src, index),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        println!("Found gather 8");
         if src != src2 && index != index2 {
             return None;
         }
+        println!("Found gather 9");
 
-        Some((src, index))
-    }
-
-    fn get_gather_source(&self, op_id: OpId) -> Option<OpId> {
-        let Op::Load { src, .. } = self.ops[op_id].op else { return None };
-        Some(src)
+        Some(op_id)
     }
 
     /// Replaces a loop with closed-form arithmetic if possible.
@@ -348,13 +344,14 @@ impl Kernel {
     /// Returns true if closed-form was applied, false if the pattern can't be simplified.
     fn replace_arange_loop(
         &mut self,
+        acc_id: OpId,
+        store_id: OpId,
         loop_id: OpId,
-        _init_value: OpId,
         accumulated_value_id: OpId,
-        acc_dtype: DType,
         after_loop_load_id: OpId,
     ) -> bool {
         let &Op::Loop { len: loop_len } = self.at(loop_id) else { return false };
+        let &Op::Define { dtype, scope: Scope::Register, ro: false, len: 1 } = self.at(acc_id) else { return false };
 
         let Some((a, b, c, mul_const, gidx_id)) = self.trace_to_linear_comparison(accumulated_value_id, loop_id) else {
             return false;
@@ -375,7 +372,22 @@ impl Kernel {
         let step_id = self.insert_before(after_loop_load_id, Op::Const(Constant::idx(step)));
         let result_id = self.insert_before(after_loop_load_id, Op::Binary { x: sum_id, y: step_id, bop: BOp::Mul });
 
-        self.ops[after_loop_load_id].op = Op::Cast { x: result_id, dtype: acc_dtype };
+        self.ops[after_loop_load_id].op = Op::Cast { x: result_id, dtype };
+
+        // Remove the now-obsolete loop operations (Loop, body, EndLoop, init store, define)
+        let mut current = self.next_op(loop_id);
+        while !current.is_null() {
+            let next = self.next_op(current);
+            if matches!(self.at(current), Op::EndLoop) {
+                self.remove_op(current);
+                break;
+            }
+            self.remove_op(current);
+            current = next;
+        }
+        self.remove_op(loop_id);
+        self.remove_op(store_id);
+        self.remove_op(acc_id);
 
         self.verify();
         true

@@ -201,6 +201,9 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.debug();
         kernel.simplify_accumulating_loop();
+        kernel.run_always_on_optimizations();
+        kernel.simplify_accumulating_loop();
+        kernel.run_always_on_optimizations();
         kernel.debug();
 
         let (program_id, _) = kernel
