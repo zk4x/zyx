@@ -161,7 +161,7 @@ impl Kernel {
 
         let (reg_tile_opt, n_reg_tile) = kernel.opt_split_global_to_local();
         if n_reg_tile > 0 {
-            reg_tile_opt.apply(&mut kernel, 0);
+            reg_tile_opt.apply(&mut kernel, 1);
         }
 
         kernel.run_always_on_optimizations();

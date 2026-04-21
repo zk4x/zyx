@@ -74,27 +74,12 @@ impl Kernel {
         let mut remaining_global = config % n_global_options;
         let mut remaining_reduce = config / n_global_options;
 
-        for (reduce_id, factors) in reduce_splits.iter() {
+        for (&reduce_id, factors) in reduce_splits.iter() {
             let n_options = factors.len();
             let factor_idx = remaining_reduce % n_options;
             remaining_reduce /= n_options;
             let reduce_factor = factors[factor_idx];
-
-            let Op::Loop { len, .. } = self.ops[*reduce_id].op else {
-                continue;
-            };
-            let original_len = len;
-
-            let _loops = self.split_dim(
-                *reduce_id,
-                vec![
-                    Op::Loop { len: original_len / reduce_factor },
-                    Op::Loop { len: reduce_factor },
-                ],
-            );
-            /*if let Some(factor_loop) = loops.get(1) {
-                //self.unroll_loop(*factor_loop);
-            }*/
+            self.unroll_tree_reduce(reduce_id, reduce_factor);
         }
 
         let mut new_global_upcasts = Vec::new();

@@ -213,4 +213,36 @@ impl Kernel {
 
         self.verify();
     }
+
+    /// Unrolls loop:
+    /// acc a
+    /// for 0..32 {
+    ///     z = ...
+    ///     x = load a
+    ///     x1 = x + z
+    ///     store a <- x1
+    /// }
+    ///
+    /// Using tree reduce unroll to:
+    ///
+    /// acc a
+    /// for 0..8 {
+    ///     z = ...
+    ///     z1 = ...
+    ///     z2 = ...
+    ///     z3 = ...
+    ///     x = load a
+    ///     x1 = x + z
+    ///     x2 = x1 + z1
+    ///     x3 = x2 + z2
+    ///     x4 = x3 + z3
+    ///     store a <- x4
+    /// }
+    ///
+    pub fn unroll_tree_reduce(&mut self, loop_id: OpId, factor: Dim) {
+        self.debug_colorless();
+        println!("Unroll tree reduce on the above kernel, loop_id={loop_id}, factor={factor}");
+
+        self.verify();
+    }
 }
