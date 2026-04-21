@@ -353,17 +353,18 @@ impl WGPUDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let mut gws: Vec<u64> = Vec::new();
-        let mut lws: Vec<u64> = Vec::new();
+        let mut gws: Vec<u64> = vec![1; 3];
+        let mut lws: Vec<u64> = vec![1; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
-            if let &Op::Index { len, scope, axis: _ } = kernel.at(op_id) {
+            let op = kernel.at(op_id);
+            if let &Op::Index { len, scope, axis } = op {
                 match scope {
                     Scope::Global => {
-                        gws.push(len);
+                        gws[axis as usize] = len;
                     }
                     Scope::Local => {
-                        lws.push(len);
+                        lws[axis as usize] = len;
                     }
                     Scope::Register => {}
                 }
@@ -399,8 +400,6 @@ impl WGPUDevice {
         }
 
         let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
-        let mut n_global_ids = 0;
-        let mut loop_id = 0;
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
@@ -500,32 +499,29 @@ impl WGPUDevice {
                 }
                 Op::Vectorize { .. } => todo!(),
                 Op::Devectorize { .. } => todo!(),
-                &Op::Index { len, scope, axis: _ } => {
+                &Op::Index { len, scope, axis } => {
                     dtypes.insert(op_id, IDX_T);
                     match scope {
                         Scope::Global => {
                             writeln!(
                                 source,
-                                "{indent}let r{op_id} = {}(gidx[{loop_id}]); // 0..={}",
+                                "{indent}let r{op_id} = {}(gidx[{axis}]); // 0..={}",
                                 IDX_T.wgsl(),
                                 len - 1
                             )
                             .unwrap();
-                            n_global_ids += 1;
                         }
                         Scope::Local => {
                             writeln!(
                                 source,
-                                "{indent}let r{op_id} = {}(lidx[{}]); // 0..={}",
+                                "{indent}let r{op_id} = {}(lidx[{axis}]); // 0..={}",
                                 IDX_T.wgsl(),
-                                loop_id - n_global_ids,
                                 len - 1
                             )
                             .unwrap();
                         }
                         Scope::Register => {}
                     }
-                    loop_id += 1;
                 }
                 &Op::Loop { len } => {
                     dtypes.insert(op_id, IDX_T);
@@ -536,15 +532,11 @@ impl WGPUDevice {
                     )
                     .unwrap();
                     indent += "  ";
-                    loop_id += 1;
                 }
                 Op::EndLoop => {
-                    if loop_id as usize > lws.len() + gws.len() {
-                        indent.pop();
-                        indent.pop();
-                        writeln!(source, "{indent}}}").unwrap();
-                        loop_id -= 1;
-                    }
+                    indent.pop();
+                    indent.pop();
+                    writeln!(source, "{indent}}}").unwrap();
                 }
                 &Op::If { condition } => {
                     _ = writeln!(source, "{indent}if (r{condition}) {{");
@@ -574,10 +566,11 @@ impl WGPUDevice {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
-        let workgroup_size = if lws.is_empty() {
+        let lws_filtered: Vec<u64> = lws.iter().copied().filter(|&x| x != 1).collect();
+        let workgroup_size = if lws_filtered.is_empty() {
             "1".to_string()
         } else {
-            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+            lws_filtered.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
         };
         let source = format!(
             "{pragma}{global_args}{workgroup_args}@compute @workgroup_size({workgroup_size}) fn {name}(
