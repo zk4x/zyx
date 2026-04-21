@@ -160,8 +160,7 @@ impl WGPUMemoryPool {
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         const ALIGN: Dim = wgpu::COPY_BUFFER_ALIGNMENT;
-        //let bytes = (bytes + ALIGN - 1) / ALIGN * ALIGN;
-        let bytes = bytes.div_ceil(ALIGN);
+        let bytes = (bytes + ALIGN - 1) / ALIGN * ALIGN;
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }
@@ -421,11 +420,11 @@ impl WGPUDevice {
                     dtypes.insert(op_id, x.dtype());
                     writeln!(source, "{indent}const r{op_id}: {} = {};", x.dtype().wgsl(), x.wgsl()).unwrap();
                 }
-                &Op::Define { dtype, scope, ro: _, len: _ } => {
+                &Op::Define { dtype, scope, ro: _, len } => {
                     dtypes.insert(op_id, dtype);
                     match scope {
                         Scope::Register => {
-                            writeln!(source, "{indent}var p{op_id}: array<{}, 1>;", dtype.wgsl()).unwrap();
+                            writeln!(source, "{indent}var p{op_id}: array<{}, {len}>;", dtype.wgsl()).unwrap();
                         }
                         Scope::Local | Scope::Global => {}
                     }

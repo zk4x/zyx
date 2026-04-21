@@ -21,14 +21,14 @@ type OptConfigFn = fn(&Kernel) -> (Optimization, usize);
 
 const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
     Kernel::opt_reassociate_commutative,
-    //Kernel::opt_unroll,
     Kernel::opt_split_global_to_local,
     Kernel::opt_upcast,
     Kernel::opt_register_tiling,
-    //Kernel::opt_unroll_constant_loops,
     Kernel::opt_tiled_reduce,
     Kernel::opt_split_loop,
     Kernel::opt_licm,
+    //Kernel::opt_unroll,
+    //Kernel::opt_unroll_constant_loops,
 ];
 
 #[derive(Debug)]
@@ -149,15 +149,30 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
+        let (reg_tile_opt, n_reg_tile) = kernel.opt_split_global_to_local();
+        if n_reg_tile > 0 {
+            reg_tile_opt.apply(&mut kernel, 1);
+        }
+
+        /*let (reg_tile_opt, n_reg_tile) = kernel.opt_split_global_to_local();
+        if n_reg_tile > 0 {
+            reg_tile_opt.apply(&mut kernel, 4);
+        }*/
+
         let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
         if n_reg_tile > 0 {
-            if let Optimization::RegisterTiling { reduce_splits, global_upcasts } = reg_tile_opt {
-                kernel.apply_register_tiling(&reduce_splits, &global_upcasts, 37);
-            }
+            reg_tile_opt.apply(&mut kernel, 37);
         }
+
+        /*let (reg_tile_opt, n_reg_tile) = kernel.opt_split_global_to_local();
+        if n_reg_tile > 0 {
+            reg_tile_opt.apply(&mut kernel, 0);
+        }*/
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
+
+        kernel.debug();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)

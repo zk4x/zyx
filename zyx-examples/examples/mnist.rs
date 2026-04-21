@@ -47,7 +47,7 @@ impl MnistNet {
     }
 
     fn forward(&self, x: &Tensor) -> Tensor {
-        println!("{:?}", x.shape());
+        //println!("{:?}", x.shape());
         let x = x.reshape([0, 784]).unwrap();
         let x = self.l1.forward(x).unwrap().relu();
         self.l2.forward(&x).unwrap()
