@@ -84,8 +84,8 @@ impl Kernel {
                     let dtype = dtypes[&src];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                    let src = id_map[&src];
-                    let index = id_map[&index];
+                    let src = id_map.get(&src).copied().unwrap_or(OpId::NULL);
+                    let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
                     if len > 1 {
                         println!(
                             "{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}..+{len}]    // {lb}..={ub} {GREEN}load{RESET}"
@@ -100,9 +100,9 @@ impl Kernel {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                    let dst = id_map[&dst];
-                    let index = id_map[&index];
-                    let x = id_map[&x];
+                    let dst = id_map.get(&dst).copied().unwrap_or(OpId::NULL);
+                    let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     if len > 1 {
                         println!("{indent}{RED}r{dst}{RESET}[r{index}..+len] = r{x}    // {lb}..={ub} {RED}store{RESET}");
                     } else {
@@ -309,14 +309,14 @@ impl Kernel {
                     println!("{indent}r{out_id}: {dtype} = load {view}");
                 }
                 Op::StoreView { src, dtype, .. } => {
-                    let src = id_map[&src];
+                    let src = id_map.get(&src).copied().unwrap_or(OpId::NULL);
                     dtypes.insert(op_id, dtype);
                     println!("{indent}store r{src}");
                 }
                 Op::Reduce { x, rop, n_axes, .. } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
-                    let x = id_map[&x];
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     if has_loops {
                         for _ in 0..n_axes * 2 {
                             indent.pop();
@@ -347,8 +347,8 @@ impl Kernel {
                     let dtype = dtypes[&src];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                    let src = id_map[&src];
-                    let index = id_map[&index];
+                    let src = id_map.get(&src).copied().unwrap_or(OpId::NULL);
+                    let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
                     if len > 1 {
                         println!("{indent}r{out_id}: {dtype} = r{src}[r{index}..+{len}]    // {lb}..={ub} load");
                     } else {
@@ -359,9 +359,9 @@ impl Kernel {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
-                    let dst = id_map[&dst];
-                    let index = id_map[&index];
-                    let x = id_map[&x];
+                    let dst = id_map.get(&dst).copied().unwrap_or(OpId::NULL);
+                    let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
                     if len > 1 {
                         println!("{indent}r{dst}[r{index}..+len] = r{x}    // {lb}..={ub} store");
                     } else {
@@ -425,8 +425,8 @@ impl Kernel {
                         BOp::NotEq => ("", " != ", ""),
                         BOp::Eq => ("", " == ", ""),
                     };
-                    let x = id_map[&x];
-                    let y = id_map[&y];
+                    let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
+                    let y = id_map.get(&y).copied().unwrap_or(OpId::NULL);
                     if let Some((lb, ub)) = bounds.get(&op_id) {
                         println!("{indent}r{out_id}: {dtype} = {op1}r{x}{op2}r{y}{op3}    // {lb}..={ub}");
                     } else {
