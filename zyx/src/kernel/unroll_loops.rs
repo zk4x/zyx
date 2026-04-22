@@ -298,9 +298,47 @@ impl Kernel {
             map.insert(this_id, new_ones);
         }
 
+        let mut stores = Vec::new();
+        let mut id = self.prev_op(endloop_id);
+        for _ in 0..factor {
+            if let Op::Store { .. } = self.ops[id].op {
+                stores.push(id);
+                id = self.prev_op(id);
+            } else {
+                break;
+            }
+        }
+        stores.reverse();
+
+        if stores.len() as u64 != factor {
+            return;
+        }
+
+        let mut prev_result = None;
+        for (i, store_id) in stores.iter().enumerate() {
+            let x = if let Op::Store { x, .. } = self.ops[*store_id].op {
+                x
+            } else {
+                unreachable!()
+            };
+
+            if let Op::Binary { x: partial, y: _load, bop } = self.ops[x].op {
+                if i == 0 {
+                    prev_result = Some(x);
+                } else {
+                    self.ops[x].op = Op::Binary { x: partial, y: prev_result.unwrap(), bop };
+                    prev_result = Some(x);
+                }
+            } else {
+                unreachable!()
+            }
+        }
+
+        for store_id in &stores[..stores.len() - 1] {
+            self.remove_op(*store_id);
+        }
+
         self.debug_colorless();
         self.verify();
-
-        todo!();
     }
 }
