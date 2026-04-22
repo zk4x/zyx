@@ -142,7 +142,7 @@ impl Kernel {
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
-    ) -> (DeviceProgramId, OptSeq) {
+    ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
         //eprintln!("=== autotune_debug called ===");
         let mut kernel = self.clone();
 
@@ -166,10 +166,9 @@ impl Kernel {
         kernel.run_always_on_optimizations();
 
         let (program_id, _) = kernel
-            .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
-            .unwrap();
+            .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
 
-        (program_id, OptSeq { opts: Vec::new(), cost: Cost::default() })
+        Ok((program_id, OptSeq { opts: Vec::new(), cost: Cost::default() }))
     }
 
     /// Release mode autotune with beam like search and multithreading
@@ -183,7 +182,7 @@ impl Kernel {
         read_bytes: u64,
         write_bytes: u64,
         debug: DebugMask,
-    ) -> (DeviceProgramId, OptSeq) {
+    ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
         if false {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
@@ -307,6 +306,7 @@ impl Kernel {
         let mut best_program = DeviceProgramId::NULL;
         let mut best_opt_seq = OptSeq { opts: Vec::new(), cost: Cost::default() };
         let mut i = n_launches;
+        let mut last_error = None;
         while i > 0 {
             let opt_seq = sample_best(&items, &mut rng);
             let mut kernel = kernel.clone();
@@ -331,25 +331,28 @@ impl Kernel {
                     kernel.debug();
                 }
 
-                let Ok((program_id, time)) =
-                    kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
-                else {
-                    continue;
-                };
-
-                if time < best_time {
-                    best_program = program_id;
-                    best_time = time;
-                    best_opt_seq = opt_seq.clone();
+                match kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes) {
+                    Ok((program_id, time)) => {
+                        if time < best_time {
+                            best_program = program_id;
+                            best_time = time;
+                            best_opt_seq = opt_seq.clone();
+                        }
+                    }
+                    Err(e) => {
+                        last_error = Some(e);
+                    }
                 }
             }
 
             i -= 1;
         }
 
-        // println!("DEBUG: Returning best_program={:?}, best_time={}", best_program, best_time);
+        if let Some(e) = last_error {
+            return Err(e);
+        }
 
-        (best_program, best_opt_seq)
+        Ok((best_program, best_opt_seq))
     }
 
     pub fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {

@@ -661,7 +661,7 @@ impl<'a> Kernelizer<'a> {
             read,
             write,
             self.debug,
-        );
+        )?;
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
         let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
