@@ -315,6 +315,7 @@ impl Kernel {
         }
 
         let mut prev_result = None;
+        let mut loads_to_delete = Vec::new();
         for (i, store_id) in stores.iter().enumerate() {
             let x = if let Op::Store { x, .. } = self.ops[*store_id].op {
                 x
@@ -322,11 +323,12 @@ impl Kernel {
                 unreachable!()
             };
 
-            if let Op::Binary { x: partial, y: _load, bop } = self.ops[x].op {
+            if let Op::Binary { x: partial, y: load, bop } = self.ops[x].op {
                 if i == 0 {
                     prev_result = Some(x);
                 } else {
                     self.ops[x].op = Op::Binary { x: partial, y: prev_result.unwrap(), bop };
+                    loads_to_delete.push(load);
                     prev_result = Some(x);
                 }
             } else {
@@ -336,6 +338,10 @@ impl Kernel {
 
         for store_id in &stores[..stores.len() - 1] {
             self.remove_op(*store_id);
+        }
+
+        for load_id in loads_to_delete {
+            self.remove_op(load_id);
         }
 
         self.debug_colorless();
