@@ -99,7 +99,7 @@ fn max_large_3d() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn sum_warp_reduce() -> Result<(), ZyxError> {
+fn sum_warp_reduce_1() -> Result<(), ZyxError> {
     // Large tensor to trigger warp reduce (needs >= 256 elements in reduce dim)
     let x = Tensor::from(vec![1i32; 512]);
     let x = x.reshape([8, 64])?;

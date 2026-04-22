@@ -4,7 +4,7 @@
 use super::autotune::Optimization;
 #[allow(unused)]
 use crate::{
-    Map,
+    Map, Set,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
     shape::Dim,
@@ -172,6 +172,23 @@ impl Kernel {
         self.verify();
     }
 
+    fn leads_to_acc(&self, op_id: OpId) -> bool {
+        let mut params = vec![op_id];
+        let mut visited = Set::default();
+        while let Some(param) = params.pop() {
+            if !visited.insert(param) || param.is_null() {
+                continue;
+            }
+            if let Op::Load { src, .. } = self.ops[param].op {
+                if let Op::Define { scope: Scope::Register, ro: false, .. } = self.ops[src].op {
+                    return true;
+                }
+            }
+            params.extend(self.ops[param].op.parameters());
+        }
+        false
+    }
+
     /// Unrolls loop:
     /// acc a
     /// for 0..32 {
@@ -230,7 +247,7 @@ impl Kernel {
 
         let new_loop = self.insert_before(loop_id, Op::Loop { len: len / factor });
         let mut op_id = self.next_op(loop_id);
-        let stride = self.insert_before(loop_id, Op::Const(Constant::idx(4)));
+        let stride = self.insert_before(loop_id, Op::Const(Constant::idx(factor)));
         self.ops[loop_id].op = Op::Binary { x: new_loop, y: stride, bop: BOp::Mul };
         let mut new_ones = Vec::with_capacity(factor as usize - 1);
         for i in 1..factor {
@@ -274,7 +291,6 @@ impl Kernel {
         }
 
         let mut prev_result = None;
-        let mut loads_to_delete = Vec::new();
         for (i, store_id) in stores.iter().enumerate() {
             let x = if let Op::Store { x, .. } = self.ops[*store_id].op {
                 x
@@ -282,13 +298,13 @@ impl Kernel {
                 unreachable!()
             };
 
-            if let Op::Binary { x: partial, y: load, bop } = self.ops[x].op {
+            if let Op::Binary { x, y, bop } = self.ops[x].op {
+                let (elem, acc_side) = if self.leads_to_acc(y) { (x, y) } else { (y, x) };
                 if i == 0 {
-                    prev_result = Some(x);
+                    prev_result = Some(acc_side);
                 } else {
-                    self.ops[x].op = Op::Binary { x: partial, y: prev_result.unwrap(), bop };
-                    loads_to_delete.push(load);
-                    prev_result = Some(x);
+                    self.ops[x].op = Op::Binary { x: elem, y: prev_result.unwrap(), bop };
+                    prev_result = Some(acc_side);
                 }
             } else {
                 unreachable!()
@@ -299,11 +315,7 @@ impl Kernel {
             self.remove_op(*store_id);
         }
 
-        for load_id in loads_to_delete {
-            self.remove_op(load_id);
-        }
-
-        //self.debug_colorless();
+        self.debug_colorless();
         self.verify();
     }
 }

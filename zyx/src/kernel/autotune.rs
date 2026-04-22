@@ -151,17 +151,12 @@ impl Kernel {
 
         let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
         if n_reg_tile > 0 {
-            reg_tile_opt.apply(&mut kernel, 37);
+            reg_tile_opt.apply(&mut kernel, 2);
         }
 
-        let (reg_tile_opt, n_reg_tile) = kernel.opt_split_global_to_local();
+        let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
         if n_reg_tile > 0 {
-            reg_tile_opt.apply(&mut kernel, 4);
-        }
-
-        let (reg_tile_opt, n_reg_tile) = kernel.opt_split_global_to_local();
-        if n_reg_tile > 0 {
-            reg_tile_opt.apply(&mut kernel, 1);
+            reg_tile_opt.apply(&mut kernel, 2);
         }
 
         kernel.run_always_on_optimizations();
@@ -188,7 +183,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> (DeviceProgramId, OptSeq) {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
