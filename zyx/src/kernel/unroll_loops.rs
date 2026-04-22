@@ -176,15 +176,14 @@ impl Kernel {
         let mut params = vec![op_id];
         let mut visited = Set::default();
         while let Some(param) = params.pop() {
-            if !visited.insert(param) || param.is_null() {
-                continue;
-            }
-            if let Op::Load { src, .. } = self.ops[param].op {
-                if let Op::Define { scope: Scope::Register, ro: false, .. } = self.ops[src].op {
-                    return true;
+            if visited.insert(param) {
+                if let Op::Load { src, .. } = self.ops[param].op {
+                    if let Op::Define { scope: Scope::Register, ro: false, .. } = self.ops[src].op {
+                        return true;
+                    }
                 }
+                params.extend(self.ops[param].op.parameters());
             }
-            params.extend(self.ops[param].op.parameters());
         }
         false
     }
@@ -289,22 +288,23 @@ impl Kernel {
         if stores.len() as u64 != factor {
             return;
         }
+        self.debug_colorless();
 
         let mut prev_result = None;
         for (i, store_id) in stores.iter().enumerate() {
-            let x = if let Op::Store { x, .. } = self.ops[*store_id].op {
+            let acc_bop = if let Op::Store { x, .. } = self.ops[*store_id].op {
                 x
             } else {
                 unreachable!()
             };
 
-            if let Op::Binary { x, y, bop } = self.ops[x].op {
-                let (elem, acc_side) = if self.leads_to_acc(y) { (x, y) } else { (y, x) };
+            if let Op::Binary { x, y, bop } = self.ops[acc_bop].op {
+                let elem = if self.leads_to_acc(y) { x } else { y };
                 if i == 0 {
-                    prev_result = Some(acc_side);
+                    prev_result = Some(acc_bop);
                 } else {
-                    self.ops[x].op = Op::Binary { x: elem, y: prev_result.unwrap(), bop };
-                    prev_result = Some(acc_side);
+                    self.ops[acc_bop].op = Op::Binary { x: elem, y: prev_result.unwrap(), bop };
+                    prev_result = Some(acc_bop);
                 }
             } else {
                 unreachable!()
@@ -316,6 +316,9 @@ impl Kernel {
         }
 
         self.debug_colorless();
+
+        //todo!();
+
         self.verify();
     }
 }
