@@ -50,6 +50,10 @@ impl Kernel {
             return;
         }
 
+        if self.ops.len().0 as u64 * factor > 5000 {
+            return;
+        }
+
         // First skip ops that don't need duplication
         let mut op_id = self.head;
         while !op_id.is_null()

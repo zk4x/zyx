@@ -172,22 +172,6 @@ impl Kernel {
         self.verify();
     }
 
-    fn leads_to_acc(&self, op_id: OpId) -> bool {
-        let mut params = vec![op_id];
-        let mut visited = Set::default();
-        while let Some(param) = params.pop() {
-            if visited.insert(param) {
-                if let Op::Load { src, .. } = self.ops[param].op {
-                    if let Op::Define { scope: Scope::Register, ro: false, .. } = self.ops[src].op {
-                        return true;
-                    }
-                }
-                params.extend(self.ops[param].op.parameters());
-            }
-        }
-        false
-    }
-
     /// Unrolls loop:
     /// acc a
     /// for 0..32 {
@@ -219,7 +203,43 @@ impl Kernel {
             return;
         }
 
+        if self.ops.len().0 as u64 * factor > 5000 {
+            return;
+        }
+
         println!("Unroll tree reduce for loop={loop_id}, factor={factor}");
+
+        // Find the acc
+        let acc_id;
+        let mut op_id = self.prev_op(loop_id);
+        loop {
+            if op_id.is_null() {
+                return; // not a reduce, just a loop
+            }
+            match self.ops[op_id].op {
+                Op::Loop { .. } => return, // nested reduce or no reduce
+                Op::Define { scope: Scope::Register, .. } => {
+                    acc_id = op_id;
+                    break;
+                }
+                _ => {}
+            }
+            op_id = self.prev_op(op_id);
+        };
+
+        // Find the store to acc
+        let mut op_id = acc_id;
+        let acc_init;
+        loop {
+            if let Op::Store { dst, x, .. } = self.ops[op_id].op && dst == acc_id {
+                acc_init = x;
+                break;
+            }
+            op_id = self.next_op(op_id);
+            if op_id == loop_id {
+                unreachable!();
+            }
+        }
 
         let mut has_store = false;
         let mut op_id = self.next_op(loop_id);
@@ -227,8 +247,8 @@ impl Kernel {
         loop {
             match self.ops[op_id].op {
                 Op::Loop { .. } => return, // no nested loops
-                Op::Store { .. } => {
-                    if has_store {
+                Op::Store { vlen, .. } => {
+                    if has_store || vlen != 1 {
                         return;
                     }
                     has_store = true;
@@ -259,62 +279,42 @@ impl Kernel {
         while op_id != endloop_id {
             let this_id = op_id;
             op_id = self.next_op(op_id);
-            let mut new_ones = Vec::with_capacity(factor as usize - 1);
-            for i in 1..factor {
-                let mut new_op = self.ops[this_id].op.clone();
-                for param in new_op.parameters_mut() {
-                    if let Some(mapping) = map.get(param) {
-                        *param = mapping[i as usize - 1];
-                    }
-                }
-                let new_id = self.insert_before(op_id, new_op);
-                new_ones.push(new_id);
-            }
-            map.insert(this_id, new_ones);
-        }
-
-        let mut stores = Vec::new();
-        let mut id = self.prev_op(endloop_id);
-        for _ in 0..factor {
-            if let Op::Store { .. } = self.ops[id].op {
-                stores.push(id);
-                id = self.prev_op(id);
-            } else {
-                unreachable!();
-            }
-        }
-        stores.reverse();
-
-        if stores.len() as u64 != factor {
-            return;
-        }
-
-        let mut prev_result = None;
-        for (i, store_id) in stores.iter().enumerate() {
-            let acc_bop = if let Op::Store { x, .. } = self.ops[*store_id].op {
-                x
-            } else {
-                unreachable!()
-            };
-
-            if let Op::Binary { x, y, bop } = self.ops[acc_bop].op {
-                let elem = if self.leads_to_acc(y) { x } else { y };
-                if i == 0 {
-                    prev_result = Some(acc_bop);
+            if let Op::Load { src, index: _, vlen: 1 } = self.ops[this_id].op && src == acc_id {
+                // TODO debug assert index is const zero
+                map.insert(this_id, vec![acc_init; factor as usize- 1]);
+            } else if let Op::Store { dst, x, index, vlen: 1 } = self.ops[this_id].op && dst == acc_id {
+                // TODO debug assert index is const zero
+                let y = if let Some(mapping) = map.get(&x) {
+                    mapping[0]
                 } else {
-                    self.ops[acc_bop].op = Op::Binary { x: elem, y: prev_result.unwrap(), bop };
-                    prev_result = Some(acc_bop);
+                    x
+                };
+                let mut carry = this_id;
+                self.ops[this_id].op = Op::Binary { x, y, bop: BOp::Add };
+                for i in 1..factor - 1 {
+                    let x = if let Some(mapping) = map.get(&x) {
+                        mapping[i as usize]
+                    } else {
+                        x
+                    };
+                    carry = self.insert_before(op_id, Op::Binary { x, y: carry, bop: BOp::Add });
                 }
+                self.insert_before(op_id, Op::Store { dst, x: carry, index, vlen: 1 });
             } else {
-                unreachable!()
+                let mut new_ones = Vec::with_capacity(factor as usize - 1);
+                for i in 1..factor {
+                    let mut new_op = self.ops[this_id].op.clone();
+                    for param in new_op.parameters_mut() {
+                        if let Some(mapping) = map.get(param) {
+                            *param = mapping[i as usize - 1];
+                        }
+                    }
+                    let new_id = self.insert_before(op_id, new_op);
+                    new_ones.push(new_id);
+                }
+                map.insert(this_id, new_ones);
             }
         }
-
-        for store_id in &stores[..stores.len() - 1] {
-            self.remove_op(*store_id);
-        }
-
-        //todo!();
 
         self.verify();
     }

@@ -148,20 +148,22 @@ impl Kernel {
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
+        kernel.debug_colorless();
 
         let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
         if n_reg_tile > 0 {
             reg_tile_opt.apply(&mut kernel, 2);
         }
         kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
         kernel.debug_colorless();
 
         kernel.unroll_tree_reduce(OpId(23), 4);
 
-        kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
-
         kernel.debug_colorless();
+
+        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
 
         let (program_id, _) = kernel
             .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)
@@ -182,7 +184,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> (DeviceProgramId, OptSeq) {
-        if true {
+        if false {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
