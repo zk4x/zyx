@@ -288,7 +288,6 @@ impl Kernel {
         if stores.len() as u64 != factor {
             return;
         }
-        self.debug_colorless();
 
         let mut prev_result = None;
         for (i, store_id) in stores.iter().enumerate() {
@@ -314,8 +313,6 @@ impl Kernel {
         for store_id in &stores[..stores.len() - 1] {
             self.remove_op(*store_id);
         }
-
-        self.debug_colorless();
 
         //todo!();
 
