@@ -10,11 +10,13 @@ use crate::{
 
 impl Kernel {
     pub fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
+        let max_threads = dev_info.max_local_threads;
+        eprintln!("DEBUG: max_threads = {}", max_threads);
         if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
         }
-        let max_threads = dev_info.max_local_threads;
+        let max_threads = dev_info.max_local_threads/self.ops.values().filter_map(|op| if let Op::Index { len, scope: Scope::Local, .. } = op.op { Some(len) } else { None }).product::<u64>();
         let mut op_id = self.head;
         let mut factors = Vec::new();
         let mut seen_axes = crate::Map::default();
@@ -22,7 +24,8 @@ impl Kernel {
             if let Op::Index { len, scope, axis } = self.ops[op_id].op {
                 let mut l_factors: Vec<u64> = vec![64, 32, 16, 8, 4, 2];
                 if scope == Scope::Global {
-                    l_factors.retain(|&f| len.is_multiple_of(f) && f <= max_threads);
+                    let max_per_axis = dev_info.max_local_work_dims[axis as usize] as u64;
+                    l_factors.retain(|&f| len.is_multiple_of(f) && f <= max_threads && f <= max_per_axis);
                     for &f in &l_factors {
                         factors.push((op_id, f));
                     }
