@@ -22,6 +22,12 @@ cd zyx && cargo test --test 1_unary  # test file
 cd zyx && cargo test -- --nocapture  # with output
 ```
 
+## Python
+
+- Always use `python3.12` (not system python)
+- Install packages with: `python3.12 -m pip install <package>`
+- Run scripts with: `python3.12 <script>.py`
+
 **Note**: This is a workspace with multiple crates (zyx, zyx-nn, zyx-optim, etc.). **Always run commands from the `zyx/zyx` subdirectory** (not the workspace root).
 
 ## Project Structure
