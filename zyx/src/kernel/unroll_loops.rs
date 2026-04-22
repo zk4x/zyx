@@ -6,7 +6,7 @@ use super::autotune::Optimization;
 use crate::{
     Map,
     dtype::Constant,
-    kernel::{Kernel, Op, OpId, Scope},
+    kernel::{BOp, Kernel, Op, OpId, Scope},
     shape::Dim,
 };
 
@@ -210,7 +210,6 @@ impl Kernel {
         }
         self.remove_op(endloop_id);
 
-
         self.verify();
     }
 
@@ -240,9 +239,47 @@ impl Kernel {
     /// }
     ///
     pub fn unroll_tree_reduce(&mut self, loop_id: OpId, factor: Dim) {
-        self.debug_colorless();
-        println!("Unroll tree reduce on the above kernel, loop_id={loop_id}, factor={factor}");
+        let Op::Loop { len } = self.ops[loop_id].op else { return };
+        if factor < 2 || !len.is_multiple_of(factor) {
+            return;
+        }
 
+        println!("Unroll tree reduce for loop={loop_id}, factor={factor}");
+
+        let mut map = Map::default();
+
+        let new_loop = self.insert_before(loop_id, Op::Loop { len: len / factor });
+        let mut op_id = self.next_op(loop_id);
+        let stride = self.insert_before(loop_id, Op::Const(Constant::idx(4)));
+        self.ops[loop_id].op = Op::Binary { x: new_loop, y: stride, bop: BOp::Mul };
+        let mut new_ones = Vec::with_capacity(factor as usize - 1);
+        for i in 1..factor {
+            let offset = self.insert_before(op_id, Op::Const(Constant::idx(i)));
+            let new_id = self.insert_before(op_id, Op::Binary { x: loop_id, y: offset, bop: BOp::Add });
+            new_ones.push(new_id);
+        }
+        map.insert(loop_id, new_ones);
+
+        while !matches!(self.ops[op_id].op, Op::EndLoop) {
+            let this_id = op_id;
+            op_id = self.next_op(op_id);
+            let mut new_ones = Vec::with_capacity(factor as usize - 1);
+            for i in 1..factor {
+                let mut new_op = self.ops[this_id].op.clone();
+                for param in new_op.parameters_mut() {
+                    if let Some(mapping) = map.get(param) {
+                        *param = mapping[i as usize - 1];
+                    }
+                }
+                let new_id = self.insert_before(op_id, new_op);
+                new_ones.push(new_id);
+            }
+            map.insert(this_id, new_ones);
+        }
+
+        self.debug_colorless();
         self.verify();
+
+        todo!();
     }
 }
