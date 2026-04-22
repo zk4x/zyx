@@ -602,7 +602,7 @@ impl<'a> Kernelizer<'a> {
 
             // The kernel was optimized and is cached in disk, but was not compiled as of this run
             if let Some(opt_seq) = self.cache.optimizations.get(&(kid, dev_info_id)) {
-                opt_seq.apply(&mut kernel);
+                opt_seq.apply(&mut kernel, device.info());
                 let program_id = device.compile(&kernel, self.debug.asm())?;
                 let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
                 self.pools[pool_id].events.insert(output_buffers, event);

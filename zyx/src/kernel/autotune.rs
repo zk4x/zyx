@@ -17,18 +17,16 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
-type OptConfigFn = fn(&Kernel) -> (Optimization, usize);
+type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
 const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
-    Kernel::opt_reassociate_commutative,
-    Kernel::opt_split_global_to_local,
-    Kernel::opt_upcast,
-    Kernel::opt_register_tiling,
-    Kernel::opt_tiled_reduce,
-    Kernel::opt_split_loop,
-    Kernel::opt_licm,
-    //Kernel::opt_unroll,
-    //Kernel::opt_unroll_constant_loops,
+    |k, _| Kernel::opt_reassociate_commutative(k),
+    |k, d| k.opt_split_global_to_local(d),
+    |k, _| Kernel::opt_upcast(k),
+    |k, _| Kernel::opt_register_tiling(k),
+    |k, _| Kernel::opt_tiled_reduce(k),
+    |k, _| Kernel::opt_split_loop(k),
+    |k, _| Kernel::opt_licm(k),
 ];
 
 #[derive(Debug)]
@@ -209,7 +207,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel));
+        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel, dev_info_ref));
         let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
         let mult = n_seeds.min(total_configs);
         for (opt_id, (_, n_configs)) in avail_configs.iter().enumerate() {
@@ -252,9 +250,9 @@ impl Kernel {
                         let mut rng = Rng::seed_from_u64(3_902_938_402_398_423 + thread_id as u64);
 
                         let opt_seq = sample_best(items_ref, &mut rng);
-                        opt_seq.apply(&mut thread_kernel);
+                        opt_seq.apply(&mut thread_kernel, dev_info_ref);
 
-                        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel));
+                        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel, dev_info_ref));
                         let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
                         let mult = n_added_per_step.min(total_configs);
 
@@ -312,7 +310,7 @@ impl Kernel {
             let mut kernel = kernel.clone();
 
             for &(opt_id, opt_cfg) in &opt_seq.opts {
-                let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel);
+                let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, dev_info_ref);
                 println!(
                     "Running opt: {opt_id}, cfg={opt_cfg} -> {opt:?} -> {:?}",
                     AVAILABLE_OPTIMIZATIONS[opt_id]
@@ -544,9 +542,9 @@ pub struct OptSeq {
 }
 
 impl OptSeq {
-    pub fn apply(&self, kernel: &mut Kernel) {
+    pub fn apply(&self, kernel: &mut Kernel, dev_info: &DeviceInfo) {
         for &(opt_id, opt_cfg) in &self.opts {
-            let (opt, _): (Optimization, usize) = AVAILABLE_OPTIMIZATIONS[opt_id](kernel);
+            let (opt, _): (Optimization, usize) = AVAILABLE_OPTIMIZATIONS[opt_id](kernel, dev_info);
             opt.apply(kernel, opt_cfg);
         }
     }

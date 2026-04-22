@@ -3,24 +3,26 @@
 
 use super::autotune::Optimization;
 use crate::{
+    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
 };
 
 impl Kernel {
-    pub fn opt_split_global_to_local(&self) -> (Optimization, usize) {
+    pub fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
         if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
         }
+        let max_threads = dev_info.max_local_threads;
         let mut op_id = self.head;
         let mut factors = Vec::new();
         let mut seen_axes = crate::Map::default();
         while !op_id.is_null() {
             if let Op::Index { len, scope, axis } = self.ops[op_id].op {
-                let mut l_factors: Vec<u64> = vec![32, 64, 16, 8, 4, 2];
+                let mut l_factors: Vec<u64> = vec![64, 32, 16, 8, 4, 2];
                 if scope == Scope::Global {
-                    l_factors.retain(|&f| len.is_multiple_of(f));
+                    l_factors.retain(|&f| len.is_multiple_of(f) && f <= max_threads);
                     for &f in &l_factors {
                         factors.push((op_id, f));
                     }
