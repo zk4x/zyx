@@ -207,7 +207,7 @@ impl Kernel {
             return;
         }
 
-        println!("Unroll tree reduce for loop={loop_id}, factor={factor}");
+        //println!("Unroll tree reduce for loop={loop_id}, factor={factor}");
 
         // Find the acc
         let acc_id;
