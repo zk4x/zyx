@@ -127,7 +127,7 @@
       - [ ] of stores
       - [ ] of loads
   - [x] register tiling (needs improvement)
-- [ ] index select, gather, remove last loop
+- [x] index select, gather, remove last loop
 - [ ] better spreading of kernel variants in autotune across threads (instead of batched, where one thread can have complex kernel, blocking other threads with simpler kernels)
 - [ ] improved memory mapper with graph-level decision making
 - [ ] tensor layout for sharding
@@ -176,5 +176,5 @@
   - [x] tiny net
   - [x] tiny net with sigmoid activation
   - [x] mnist
-  - [ ] RNN
+  - [x] RNN
   - [ ] phi LLM

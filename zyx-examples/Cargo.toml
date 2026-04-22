@@ -57,6 +57,10 @@ name = "mnist"
 path = "examples/mnist.rs"
 
 [[example]]
+name = "rnn"
+path = "examples/rnn.rs"
+
+[[example]]
 name = "phi"
 path = "examples/phi.rs"
 required-features = ["phi-example"]
