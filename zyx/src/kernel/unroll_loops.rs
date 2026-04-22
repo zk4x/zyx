@@ -119,7 +119,7 @@ impl Kernel {
 
     pub fn unroll_loop(&mut self, loop_id: OpId) {
         let Op::Loop { len } = self.ops[loop_id].op else { return };
-        println!("UNROLL len={} limit={}", len, len > 64);
+        //println!("UNROLL len={} limit={}", len, len > 64);
         if len == 0 || len > 64 {
             return;
         }
@@ -141,47 +141,6 @@ impl Kernel {
             }
             endloop_id = self.next_op(endloop_id);
         }
-
-        /*
-        // This is a skeleton of interleaved unroll
-        // TODO fix the load/store interleaving issue later if it's worth it
-        let mut endloop_id = self.next_op(loop_id);
-        while !matches!(self.ops[endloop_id].op, Op::EndLoop) {
-            // For now just don't unroll if there are inner loops
-            if matches!(self.ops[endloop_id].op, Op::Loop { .. }) {
-                return;
-            }
-            endloop_id = self.next_op(endloop_id);
-        }
-
-        let mut map = Map::default();
-
-        let mut op_id = self.next_op(loop_id);
-        self.ops[loop_id].op = Op::Const(Constant::idx(0));
-        let mut new_ones = Vec::with_capacity(len as usize - 1);
-        for i in 1..len {
-            let new_id = self.insert_before(op_id, Op::Const(Constant::idx(i)));
-            new_ones.push(new_id);
-        }
-        map.insert(loop_id, new_ones);
-
-        while op_id != endloop_id {
-            let this_id = op_id;
-            op_id = self.next_op(op_id);
-            let mut new_ones = Vec::with_capacity(len as usize - 1);
-            for i in 1..len {
-                let mut new_op = self.ops[this_id].op.clone();
-                for param in new_op.parameters_mut() {
-                    if let Some(mapping) = map.get(param) {
-                        *param = mapping[i as usize - 1];
-                    }
-                }
-                let new_id = self.insert_before(op_id, new_op);
-                new_ones.push(new_id);
-            }
-            map.insert(this_id, new_ones);
-        }
-        self.remove_op(endloop_id);*/
 
         self.ops[loop_id].op = Op::Const(Constant::idx(0));
         let last_loop_op = self.prev_op(endloop_id);
@@ -305,7 +264,7 @@ impl Kernel {
                 stores.push(id);
                 id = self.prev_op(id);
             } else {
-                break;
+                unreachable!();
             }
         }
         stores.reverse();
@@ -344,7 +303,7 @@ impl Kernel {
             self.remove_op(load_id);
         }
 
-        self.debug_colorless();
+        //self.debug_colorless();
         self.verify();
     }
 }
