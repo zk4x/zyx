@@ -246,6 +246,27 @@ impl Kernel {
 
         println!("Unroll tree reduce for loop={loop_id}, factor={factor}");
 
+        let mut has_store = false;
+        let mut op_id = self.next_op(loop_id);
+        let endloop_id;
+        loop {
+            match self.ops[op_id].op {
+                Op::Loop { .. } => return, // no nested loops
+                Op::Store { .. } => {
+                    if has_store {
+                        return;
+                    }
+                    has_store = true;
+                }
+                Op::EndLoop => {
+                    endloop_id = op_id;
+                    break;
+                }
+                _ => {}
+            }
+            op_id = self.next_op(op_id);
+        }
+
         let mut map = Map::default();
 
         let new_loop = self.insert_before(loop_id, Op::Loop { len: len / factor });
@@ -260,7 +281,7 @@ impl Kernel {
         }
         map.insert(loop_id, new_ones);
 
-        while !matches!(self.ops[op_id].op, Op::EndLoop) {
+        while op_id != endloop_id {
             let this_id = op_id;
             op_id = self.next_op(op_id);
             let mut new_ones = Vec::with_capacity(factor as usize - 1);
