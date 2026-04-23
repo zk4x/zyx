@@ -229,9 +229,9 @@ impl Scalar for bf16 {
         bf16::from_f64(f64::from(t))
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn from_u64(t: u64) -> Self {
-        let _ = t;
-        todo!()
+        bf16::from_f64(t as f64)
     }
 
     fn from_i8(t: i8) -> Self {
@@ -242,12 +242,14 @@ impl Scalar for bf16 {
         bf16::from_f32(f32::from(t))
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn from_i32(t: i32) -> Self {
-        bf16::from_f32(f32::from(u16::try_from(t).unwrap()))
+        bf16::from_f32(t as f32)
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn from_i64(t: i64) -> Self {
-        bf16::from_f32(f32::from(u16::try_from(t).unwrap()))
+        bf16::from_f32(t as f32)
     }
 
     fn from_bool(t: bool) -> Self {
@@ -259,7 +261,8 @@ impl Scalar for bf16 {
     }
 
     fn to_ne_bytes(&self) -> &[u8] {
-        todo!()
+        let x: *const Self = self;
+        unsafe { std::slice::from_raw_parts(x.cast(), 2) }
     }
 
     fn dtype() -> DType {
@@ -283,11 +286,11 @@ impl Scalar for bf16 {
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        bf16::from_f64(f64::from(self).exp2())
     }
 
     fn log2(self) -> Self {
-        todo!()
+        bf16::from_f64(f64::from(self).log2())
     }
 
     fn relu(self) -> Self {
@@ -295,11 +298,11 @@ impl Scalar for bf16 {
     }
 
     fn not(self) -> Self {
-        todo!()
+        bf16::from_f32(if f64::from(self) != 0.0 { 1.0 } else { 0.0 })
     }
 
     fn nonzero(self) -> Self {
-        todo!()
+        bf16::from_f32(if f64::from(self) != 0.0 { 1.0 } else { 0.0 })
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -318,8 +321,8 @@ impl Scalar for bf16 {
         self / rhs
     }
 
-    fn pow(self, _rhs: Self) -> Self {
-        todo!()
+    fn pow(self, rhs: Self) -> Self {
+        bf16::from_f64(f64::from(self).powf(f64::from(rhs)))
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -343,31 +346,33 @@ impl Scalar for bf16 {
     }
 
     fn bitxor(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self | rhs
-        todo!()
+        let a = f64::from(self) as i64;
+        let b = f64::from(rhs) as i64;
+        bf16::from_f32((a ^ b) as f32)
     }
 
     fn bitor(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self ^ rhs
-        todo!()
+        let a = f64::from(self) as i64;
+        let b = f64::from(rhs) as i64;
+        bf16::from_f32((a | b) as f32)
     }
 
     fn bitand(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self & rhs
-        todo!()
+        let a = f64::from(self) as i64;
+        let b = f64::from(rhs) as i64;
+        bf16::from_f32((a & b) as f32)
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        let a = f64::from(self) as i64;
+        let b = f64::from(rhs) as i64;
+        bf16::from_f32((a << b) as f32)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        let a = f64::from(self) as i64;
+        let b = f64::from(rhs) as i64;
+        bf16::from_f32((a >> b) as f32)
     }
 
     fn and(self, rhs: Self) -> bool {
