@@ -546,6 +546,113 @@ impl Tensor {
     }
 
     #[must_use]
+    #[pyo3(name = "sum", signature = (axes=None))]
+    pub fn sum_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
+        match axes {
+            Some(axes_list) => {
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
+                self.sum(axes)
+            }
+            None => Ok(self.sum_all()),
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "mean", signature = (axes=None))]
+    pub fn mean_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
+        match axes {
+            Some(axes_list) => {
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
+                self.mean(axes)
+            }
+            None => Ok(self.mean_all()),
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "var", signature = (axes=None, correction=None))]
+    pub fn var_py(&self, axes: Option<&Bound<'_, PyList>>, correction: Option<Dim>) -> Result<Tensor, ZyxError> {
+        let corr = correction.unwrap_or(1);
+        match axes {
+            Some(axes_list) => {
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
+                self.var_correction(axes, corr)
+            }
+            None => self.var_all_correction(corr),
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "std", signature = (axes=None, correction=None))]
+    pub fn std_py(&self, axes: Option<&Bound<'_, PyList>>, correction: Option<Dim>) -> Result<Tensor, ZyxError> {
+        let corr = correction.unwrap_or(1);
+        match axes {
+            Some(axes_list) => {
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
+                self.std_correction(axes, corr)
+            }
+            None => self.std_all_correction(corr),
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "min", signature = (axes=None))]
+    pub fn min_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
+        match axes {
+            Some(axes_list) => {
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
+                self.min(axes)
+            }
+            None => Ok(self.min_all()),
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "max", signature = (axes=None))]
+    pub fn max_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
+        match axes {
+            Some(axes_list) => {
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
+                self.max(axes)
+            }
+            None => Ok(self.max_all()),
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "prod", signature = (axes=None))]
+    pub fn prod_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
+        match axes {
+            Some(axes_list) => {
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
+                self.prod(axes)
+            }
+            None => Ok(self.prod_all()),
+        }
+    }
+
+    #[must_use]
     #[pyo3(name = "softplus")]
     pub fn softplus_py(&self, beta: &Bound<'_, PyAny>, threshold: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         if let Ok(beta_val) = beta.extract::<f64>() {
