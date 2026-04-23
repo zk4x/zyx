@@ -10,7 +10,6 @@ use crate::{
 
 impl Kernel {
     pub fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
-        let max_threads = dev_info.max_local_threads;
         if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
