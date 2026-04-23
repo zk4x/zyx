@@ -546,109 +546,81 @@ impl Tensor {
     }
 
     #[must_use]
-    #[pyo3(name = "sum", signature = (axes=None))]
-    pub fn sum_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
-        match axes {
-            Some(axes_list) => {
-                let axes: Vec<Axis> = axes_list
-                    .into_iter()
-                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-                    .collect();
-                self.sum(axes)
-            }
-            None => Ok(self.sum_all()),
+    #[pyo3(name = "sum", signature = (dim=None, keepdim=false, dtype=None))]
+    pub fn sum_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+        if keepdim {
+            self.reduce_impl::<true>(ReduceOp::Sum, axes, dtype, 1)
+        } else {
+            self.reduce_impl::<false>(ReduceOp::Sum, axes, dtype, 1)
         }
     }
 
     #[must_use]
-    #[pyo3(name = "mean", signature = (axes=None))]
-    pub fn mean_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
-        match axes {
-            Some(axes_list) => {
-                let axes: Vec<Axis> = axes_list
-                    .into_iter()
-                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-                    .collect();
-                self.mean(axes)
-            }
-            None => Ok(self.mean_all()),
+    #[pyo3(name = "mean", signature = (dim=None, keepdim=false, dtype=None))]
+    pub fn mean_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+        if keepdim {
+            self.reduce_impl::<true>(ReduceOp::Mean, axes, dtype, 1)
+        } else {
+            self.reduce_impl::<false>(ReduceOp::Mean, axes, dtype, 1)
         }
     }
 
     #[must_use]
-    #[pyo3(name = "var", signature = (axes=None, correction=None))]
-    pub fn var_py(&self, axes: Option<&Bound<'_, PyList>>, correction: Option<Dim>) -> Result<Tensor, ZyxError> {
-        let corr = correction.unwrap_or(1);
-        match axes {
-            Some(axes_list) => {
-                let axes: Vec<Axis> = axes_list
-                    .into_iter()
-                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-                    .collect();
-                self.var_correction(axes, corr)
-            }
-            None => self.var_all_correction(corr),
+    #[pyo3(name = "var", signature = (dim=None, keepdim=false, unbiased=true, dtype=None))]
+    pub fn var_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, unbiased: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let correction = if unbiased { 1 } else { 0 };
+        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+        if keepdim {
+            self.reduce_impl::<true>(ReduceOp::Var, axes, dtype, correction)
+        } else {
+            self.reduce_impl::<false>(ReduceOp::Var, axes, dtype, correction)
         }
     }
 
     #[must_use]
-    #[pyo3(name = "std", signature = (axes=None, correction=None))]
-    pub fn std_py(&self, axes: Option<&Bound<'_, PyList>>, correction: Option<Dim>) -> Result<Tensor, ZyxError> {
-        let corr = correction.unwrap_or(1);
-        match axes {
-            Some(axes_list) => {
-                let axes: Vec<Axis> = axes_list
-                    .into_iter()
-                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-                    .collect();
-                self.std_correction(axes, corr)
-            }
-            None => self.std_all_correction(corr),
+    #[pyo3(name = "std", signature = (dim=None, keepdim=false, unbiased=true, dtype=None))]
+    pub fn std_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, unbiased: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let correction = if unbiased { 1 } else { 0 };
+        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+        if keepdim {
+            self.reduce_impl::<true>(ReduceOp::Std, axes, dtype, correction)
+        } else {
+            self.reduce_impl::<false>(ReduceOp::Std, axes, dtype, correction)
         }
     }
 
     #[must_use]
-    #[pyo3(name = "min", signature = (axes=None))]
-    pub fn min_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
-        match axes {
-            Some(axes_list) => {
-                let axes: Vec<Axis> = axes_list
-                    .into_iter()
-                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-                    .collect();
-                self.min(axes)
-            }
-            None => Ok(self.min_all()),
+    #[pyo3(name = "min", signature = (dim=None, keepdim=false))]
+    pub fn min_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool) -> Result<Tensor, ZyxError> {
+        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+        if keepdim {
+            self.reduce_impl::<true>(ReduceOp::Min, axes, None, 1)
+        } else {
+            self.reduce_impl::<false>(ReduceOp::Min, axes, None, 1)
         }
     }
 
     #[must_use]
-    #[pyo3(name = "max", signature = (axes=None))]
-    pub fn max_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
-        match axes {
-            Some(axes_list) => {
-                let axes: Vec<Axis> = axes_list
-                    .into_iter()
-                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-                    .collect();
-                self.max(axes)
-            }
-            None => Ok(self.max_all()),
+    #[pyo3(name = "max", signature = (dim=None, keepdim=false))]
+    pub fn max_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool) -> Result<Tensor, ZyxError> {
+        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+        if keepdim {
+            self.reduce_impl::<true>(ReduceOp::Max, axes, None, 1)
+        } else {
+            self.reduce_impl::<false>(ReduceOp::Max, axes, None, 1)
         }
     }
 
     #[must_use]
-    #[pyo3(name = "prod", signature = (axes=None))]
-    pub fn prod_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
-        match axes {
-            Some(axes_list) => {
-                let axes: Vec<Axis> = axes_list
-                    .into_iter()
-                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-                    .collect();
-                self.prod(axes)
-            }
-            None => Ok(self.prod_all()),
+    #[pyo3(name = "prod", signature = (dim=None, keepdim=false, dtype=None))]
+    pub fn prod_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+        if keepdim {
+            self.reduce_impl::<true>(ReduceOp::Prod, axes, dtype, 1)
+        } else {
+            self.reduce_impl::<false>(ReduceOp::Prod, axes, dtype, 1)
         }
     }
 
@@ -1251,6 +1223,60 @@ impl Tensor {
         } else {
             return Err(ZyxError::DTypeError("unsupported rhs for add".into()));
         }
+    }
+
+    #[must_use]
+    #[pyo3(name = "argmax")]
+    pub fn argmax_py(&self) -> Tensor {
+        self.argmax()
+    }
+
+    #[must_use]
+    #[pyo3(name = "argmax_axis")]
+    pub fn argmax_axis_py(&self, axis: Axis) -> Result<Tensor, ZyxError> {
+        self.argmax_axis(axis)
+    }
+
+    #[must_use]
+    #[pyo3(name = "one_hot_along_dim")]
+    pub fn one_hot_along_dim_py(&self, num_classes: Dim, dim: Axis) -> Result<Tensor, ZyxError> {
+        self.one_hot_along_dim(num_classes, dim)
+    }
+
+    #[must_use]
+    #[pyo3(name = "gather")]
+    pub fn gather_py(&self, axis: Axis, indices: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(indices) = indices.extract::<Self>() {
+            self.gather(axis, indices)
+        } else {
+            Err(ZyxError::DTypeError("indices must be a Tensor".into()))
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "index_select")]
+    pub fn index_select_py(&self, dim: Axis, index: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(index) = index.extract::<Self>() {
+            self.index_select(dim, index)
+        } else {
+            Err(ZyxError::DTypeError("index must be a Tensor".into()))
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "conv")]
+    pub fn conv_py(
+        &self,
+        weight: &Bound<'_, PyAny>,
+        bias: Option<&Bound<'_, PyAny>>,
+        groups: u64,
+        stride: &Bound<'_, PyTuple>,
+        dilation: &Bound<'_, PyTuple>,
+        padding: &Bound<'_, PyTuple>,
+    ) -> Result<Tensor, ZyxError> {
+        let weight = weight.extract::<Tensor>().map_err(|e| ZyxError::DTypeError(format!("weight: {e}").into()))?;
+        let bias = bias.and_then(|b| b.extract::<Tensor>().ok());
+        self.conv(&weight, bias.as_ref(), groups, to_sh(stride)?, to_sh(dilation)?, to_sh(padding)?)
     }
 }
 
