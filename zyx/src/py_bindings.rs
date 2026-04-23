@@ -1037,6 +1037,67 @@ impl Tensor {
     }
 
     #[must_use]
+    #[pyo3(name = "reshape", signature = (*shape))]
+    pub fn reshape_py(&self, shape: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
+        self.reshape(to_sh(shape)?)
+    }
+
+    #[must_use]
+    #[pyo3(name = "transpose")]
+    pub fn transpose_py(&self, dim0: Axis, dim1: Axis) -> Result<Tensor, ZyxError> {
+        self.transpose(dim0, dim1)
+    }
+
+    #[must_use]
+    #[pyo3(name = "permute", signature = (*axes))]
+    pub fn permute_py(&self, axes: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
+        let axes: Vec<Axis> = axes
+            .into_iter()
+            .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+            .collect();
+        self.permute(axes)
+    }
+
+    #[must_use]
+    #[pyo3(name = "squeeze", signature = (axes=None))]
+    pub fn squeeze_py(&self, axes: Option<&Bound<'_, PyList>>) -> Tensor {
+        match axes {
+            Some(axes_list) => {
+                let axes: Vec<Axis> = axes_list
+                    .into_iter()
+                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
+                    .collect();
+                self.squeeze(axes)
+            }
+            None => self.squeeze([]),
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "unsqueeze")]
+    pub fn unsqueeze_py(&self, dim: Axis) -> Result<Tensor, ZyxError> {
+        self.unsqueeze(dim)
+    }
+
+    #[must_use]
+    #[pyo3(name = "flatten")]
+    pub fn flatten_py(&self, start_dim: Axis, end_dim: Axis) -> Result<Tensor, ZyxError> {
+        self.flatten(start_dim..=end_dim)
+    }
+
+    #[must_use]
+    #[pyo3(name = "expand")]
+    pub fn expand_py(&self, shape: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
+        self.expand(to_sh(shape)?)
+    }
+
+    #[must_use]
+    #[pyo3(name = "t")]
+    pub fn t_py(&self) -> Tensor {
+        return self.t();
+    }
+
+    #[must_use]
     #[pyo3(name = "to_le_bytes")]
     pub fn to_le_bytes_py(&self) -> Result<Vec<u8>, ZyxError> {
         self.to_le_bytes()

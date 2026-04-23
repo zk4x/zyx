@@ -184,8 +184,8 @@
   - [x] elementwise ops: abs, cos, cosh, exp, floor, ln, log2, relu, rsqrt, sigmoid, sin, sinh, sqrt, tan, tanh, leaky_relu, celu, elu, softplus, exp2, mish, quick_gelu, selu, hard_sigmoid, swish, cmplt, cmpgt, maximum, minimum, clamp
   - [x] elementwise ops: bitnot, ceil, erf, frac, isnan, isinf, isclose, log10, rad2deg, deg2rad, round, sign, square, trunc, logical_and, logical_or
   - [x] reduction ops: sum, mean, var, std, min, max, prod
-  - [ ] shape ops: reshape, transpose, permute, squeeze, unsqueeze, flatten
+  - [x] shape ops: reshape, transpose, permute, squeeze, unsqueeze, flatten, expand, t
   - [ ] indexing: slice, index_select, gather, scatter
   - [ ] linear algebra: matmul, dot, conv
   - [ ] nn ops: softmax, log_softmax, cross_entropy
-  - [ ] other: where, expand, narrow, split, pad, one_hot, argmax, argmax_axis
+  - [ ] other: where, narrow, split, pad, one_hot, argmax, argmax_axis
