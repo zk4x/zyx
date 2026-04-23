@@ -975,6 +975,23 @@ impl Tensor {
     }
 
     #[must_use]
+    #[pyo3(name = "pad")]
+    pub fn pad_py(&self, padding: &Bound<'_, PyList>, value: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        let items: Vec<i64> = padding
+            .into_iter()
+            .map(|d| d.extract().expect("padding must be integers"))
+            .collect();
+        let pairs: Vec<(i64, i64)> = items.chunks(2).map(|c| (c[0], c[1])).collect();
+        if let Ok(value_tensor) = value.extract::<Self>() {
+            self.pad(pairs, value_tensor)
+        } else if let Ok(value_val) = value.extract::<f64>() {
+            self.pad(pairs, Tensor::from(value_val))
+        } else {
+            Err(ZyxError::DTypeError("value must be Tensor or numeric".into()))
+        }
+    }
+
+    #[must_use]
     #[pyo3(name = "narrow")]
     pub fn narrow_py(&self, axis: Axis, start: Dim, length: Dim) -> Result<Tensor, ZyxError> {
         self.narrow(axis, start, length)
@@ -984,6 +1001,12 @@ impl Tensor {
     #[pyo3(name = "split")]
     pub fn split_py(&self, sizes: &Bound<'_, PyTuple>, axis: isize) -> Result<Vec<Tensor>, ZyxError> {
         self.split(to_sh(sizes)?, axis)
+    }
+
+    #[must_use]
+    #[pyo3(name = "one_hot")]
+    pub fn one_hot_py(&self, num_classes: Dim) -> Tensor {
+        self.one_hot(num_classes)
     }
 
     #[must_use]
