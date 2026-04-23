@@ -22,7 +22,9 @@ use std::iter::{once, repeat_n};
 use std::ops::{Bound, Mul, Neg, Not, Range, RangeBounds};
 use std::path::Path;
 
+#[cfg(feature = "py")]
 pub use reduce_ops::ReduceOp;
+#[cfg(feature = "py")]
 pub use index_ops::DimIndex;
 
 mod binary_ops;

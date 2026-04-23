@@ -290,7 +290,7 @@ impl Kernel {
                             BOp::Mul => (min_x.wrapping_mul(min_y), max_x.wrapping_mul(max_y)),
                             BOp::Div | BOp::Mod if min_y == 0 || max_y == 0 => (0, Dim::MAX),
                             BOp::Div => (min_x / min_y, max_x / max_y),
-                            BOp::Mod => (min_x % min_y, max_x % max_y),
+                            BOp::Mod => (min_y, max_y),
                             BOp::BitShiftLeft => (min_x << min_y, max_x << max_y),
                             BOp::BitShiftRight => (min_x >> min_y, max_x >> max_y),
                             BOp::Pow => (min_x.pow(min_y as u32), max_x.pow(max_y as u32)),

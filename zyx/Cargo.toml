@@ -42,12 +42,12 @@ pyo3 = { version = "0.25.1", optional = true, features = ["extension-module", "a
 matrixmultiply = "0.3"
 
 [lib]
-crate-type = ["lib"] #, "cdylib"]
+crate-type = ["lib", "cdylib"]
 
 [features]
 default = [
     #"wgpu",
-    #"py",
+    "py",
 ]
 
 # Enables wgpu backend

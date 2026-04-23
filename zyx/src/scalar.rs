@@ -1257,7 +1257,16 @@ impl Scalar for i8 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        i32::pow(self, u32::try_from(rhs).unwrap()) as i8
+        if rhs >= 0 {
+            return self.pow(rhs as u32);
+        }
+        if self == 1 {
+            return 1;
+        }
+        if self == -1 {
+            return if rhs % 2 == 0 { 1 } else { -1 };
+        }
+        0
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -1453,7 +1462,16 @@ impl Scalar for i16 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        i32::pow(self, u32::try_from(rhs).unwrap()) as i16
+        if rhs >= 0 {
+            return self.pow(rhs as u32);
+        }
+        if self == 1 {
+            return 1;
+        }
+        if self == -1 {
+            return if rhs % 2 == 0 { 1 } else { -1 };
+        }
+        0
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2023,7 +2041,7 @@ impl Scalar for u8 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        i32::pow(self, u32::try_from(rhs).unwrap()) as u8
+        Self::pow(self, u32::try_from(rhs).unwrap())
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2214,7 +2232,7 @@ impl Scalar for u16 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        i32::pow(self, u32::try_from(rhs).unwrap()) as u16
+        Self::pow(self, u32::try_from(rhs).unwrap()) as u16
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2426,7 +2444,7 @@ impl Scalar for u32 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        i32::pow(self, u32::try_from(rhs).unwrap()) as u32
+        u32::pow(self, rhs)
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2599,7 +2617,7 @@ impl Scalar for u64 {
 
     fn exp2(self) -> Self {
         if self <= 63 {
-            2u64.pow(self)
+            2u64.pow(self as u32)
         } else {
             u64::MAX
         }
@@ -2864,12 +2882,12 @@ impl Scalar for bool {
         self & rhs
     }
 
-    fn bitshiftleft(self, rhs: Self) -> Self {
-        panic!()
+    fn bitshiftleft(self, _rhs: Self) -> Self {
+        self
     }
 
-    fn bitshiftright(self, rhs: Self) -> Self {
-        panic!()
+    fn bitshiftright(self, _rhs: Self) -> Self {
+        false
     }
 
     fn and(self, rhs: Self) -> bool {
