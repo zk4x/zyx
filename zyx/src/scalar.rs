@@ -1528,15 +1528,13 @@ impl Scalar for i16 {
 }
 
 impl Scalar for i32 {
-    fn from_bf16(t: bf16) -> Self {
-        let _ = t;
-        todo!()
-    }
+        fn from_bf16(t: bf16) -> Self {
+            t.to_f32() as i32
+        }
 
-    fn from_f16(t: f16) -> Self {
-        let _ = t;
-        todo!()
-    }
+        fn from_f16(t: f16) -> Self {
+            t.to_f32() as i32
+        }
 
     #[allow(clippy::cast_possible_truncation)]
     fn from_f32(t: f32) -> Self {
@@ -1607,7 +1605,7 @@ impl Scalar for i32 {
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self.abs()
     }
 
     fn neg(self) -> Self {
@@ -1615,23 +1613,23 @@ impl Scalar for i32 {
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        2i32.pow(self as u32)
     }
 
     fn log2(self) -> Self {
-        todo!()
+        f64::from(self).log2() as i32
     }
 
     fn relu(self) -> Self {
-        <i32 as Ord>::max(self, 0)
+        Scalar::max(self, 0)
     }
 
     fn not(self) -> Self {
-        todo!()
+        if self == 0 { 1 } else { 0 }
     }
 
     fn nonzero(self) -> Self {
-        todo!()
+        if self == 0 { 0 } else { 1 }
     }
 
     fn add(self, rhs: Self) -> Self {
