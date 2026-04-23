@@ -1,6 +1,6 @@
 # zyx
 
-A pure Rust machine learning library focused on **kernel fusion** and **minimal overhead**.
+A machine learning library focused on **kernel fusion** and **minimal overhead**.
 
 ```rust
 use zyx::{DType, GradientTape, Tensor};
@@ -95,6 +95,9 @@ optim.update(&mut model, grads);
 **Utilities**
 - Safe serialization (safetensors format)
 - GGUF model loading
+
+**Bindings**
+- Python via pyo3
 
 ## Quick Start
 
