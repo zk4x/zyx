@@ -1721,13 +1721,11 @@ impl Scalar for i32 {
 
 impl Scalar for i64 {
     fn from_bf16(t: bf16) -> Self {
-        let _ = t;
-        todo!()
+        t.to_f32() as i64
     }
 
     fn from_f16(t: f16) -> Self {
-        let _ = t;
-        todo!()
+        t.to_f32() as i64
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -1798,7 +1796,7 @@ impl Scalar for i64 {
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self.abs()
     }
 
     fn neg(self) -> Self {
@@ -1806,23 +1804,23 @@ impl Scalar for i64 {
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        2i64.pow(self as u32)
     }
 
     fn log2(self) -> Self {
-        todo!()
+        self as f64 as i64
     }
 
     fn relu(self) -> Self {
-        <i64 as Ord>::max(self, 0)
+        Scalar::max(self, 0)
     }
 
     fn not(self) -> Self {
-        todo!()
+        if self == 0 { 1 } else { 0 }
     }
 
     fn nonzero(self) -> Self {
-        todo!()
+        if self == 0 { 0 } else { 1 }
     }
 
     fn add(self, rhs: Self) -> Self {
