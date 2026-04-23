@@ -7,8 +7,7 @@
 
 use crate::DebugMask;
 use crate::shape::Dim;
-use crate::tensor::{Axis, DebugGuard};
-use crate::tensor2::ReduceOp;
+use crate::tensor::{Axis, DebugGuard, ReduceOp};
 use crate::{DType, GradientTape, Tensor, ZyxError};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyIndexError;
@@ -216,19 +215,19 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "shape")]
-    pub fn shape_py(&self) -> Vec<usize> {
+    pub fn shape_py(&self) -> Vec<Dim> {
         self.shape()
     }
 
     #[must_use]
     #[pyo3(name = "numel")]
-    pub fn numel_py(&self) -> usize {
+    pub fn numel_py(&self) -> Dim {
         self.numel()
     }
 
     #[must_use]
     #[pyo3(name = "rank")]
-    pub fn rank_py(&self) -> usize {
+    pub fn rank_py(&self) -> Dim {
         self.rank()
     }
 
@@ -310,11 +309,7 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "ones", signature = (*shape, dtype=DType::F32))]
     pub fn ones_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Tensor {
-        let shape: Vec<usize> = shape
-            .into_iter()
-            .map(|d| d.extract::<usize>().expect("Shape must be positive integers"))
-            .collect();
-        return Tensor::ones(shape, dtype);
+        return Tensor::ones(to_sh(shape).unwrap(), dtype);
     }
 
     #[staticmethod]
@@ -349,7 +344,7 @@ impl Tensor {
     #[staticmethod]
     #[must_use]
     #[pyo3(name = "eye", signature = (n, dtype=DType::F32))]
-    pub fn eye_py(n: usize, dtype: DType) -> Tensor {
+    pub fn eye_py(n: Dim, dtype: DType) -> Tensor {
         return Tensor::eye(n, dtype);
     }
 
@@ -624,13 +619,13 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "unsqueeze")]
-    pub fn unsqueeze_py(&self, dim: isize) -> Result<Tensor, ZyxError> {
+    pub fn unsqueeze_py(&self, dim: i32) -> Result<Tensor, ZyxError> {
         self.unsqueeze(dim)
     }
 
     #[must_use]
     #[pyo3(name = "transpose")]
-    pub fn transpose_py(&self, dim0: isize, dim1: isize) -> Result<Tensor, ZyxError> {
+    pub fn transpose_py(&self, dim0: i32, dim1: i32) -> Result<Tensor, ZyxError> {
         self.transpose(dim0 as Axis, dim1 as Axis)
     }
 
@@ -729,7 +724,7 @@ impl Tensor {
     pub fn var_py(
         &self,
         axes: Option<&Bound<'_, PyList>>,
-        correction: usize,
+        correction: Dim,
         keepdim: bool,
         dtype: Option<DType>,
     ) -> Result<Tensor, ZyxError> {
@@ -1001,20 +996,18 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "pad_zeros")]
     pub fn pad_zeros_py(&self, padding: &Bound<'_, PyList>) -> Result<Tensor, ZyxError> {
-        let padding: Vec<(isize, isize)> = padding
+        let items: Vec<i64> = padding
             .into_iter()
-            .map(|d| {
-                d.extract::<(isize, isize)>()
-                    .expect("padding must be tuple of (isize, isize)")
-            })
+            .map(|d| d.extract().expect("padding must be integers"))
             .collect();
-        self.pad_zeros(padding)
+        let pairs: Vec<(i64, i64)> = items.chunks(2).map(|c| (c[0], c[1])).collect();
+        self.pad_zeros(pairs)
     }
 
     #[must_use]
     #[pyo3(name = "narrow")]
-    pub fn narrow_py(&self, axis: isize, start: usize, length: usize) -> Result<Tensor, ZyxError> {
-        self.narrow(axis as Axis, start, length)
+    pub fn narrow_py(&self, axis: Axis, start: Dim, length: Dim) -> Result<Tensor, ZyxError> {
+        self.narrow(axis, start, length)
     }
 
     #[must_use]
@@ -1081,28 +1074,28 @@ impl Tensor {
     }
 
     fn __getitem__(&self, idx: &Bound<'_, PyAny>) -> PyResult<Tensor> {
-        // Convert Python slice into Rust Range<isize>
-        fn slice_to_range(slice: &Bound<'_, PySlice>) -> PyResult<std::ops::Range<isize>> {
+        use crate::tensor::DimIndex;
+
+        fn slice_to_dimindex(slice: &Bound<'_, PySlice>) -> PyResult<DimIndex> {
             let indices = slice.indices(isize::MAX)?;
             if indices.step != 1 {
                 return Err(PyIndexError::new_err("Slice step != 1 is not supported"));
             }
-            Ok(indices.start..indices.stop)
+            Ok(DimIndex::Range { start: indices.start as i64, end: indices.stop as i64 })
         }
 
-        // Recursively parse index into Vec<Range<isize>>
-        fn index_to_ranges(idx: &Bound<'_, PyAny>) -> PyResult<Vec<std::ops::Range<isize>>> {
-            if let Ok(i) = idx.extract::<isize>() {
-                Ok(vec![i..i + 1])
+        fn index_to_dimindices(idx: &Bound<'_, PyAny>) -> PyResult<Vec<DimIndex>> {
+            if let Ok(i) = idx.extract::<i64>() {
+                Ok(vec![DimIndex::Index(i)])
             } else if let Ok(slice) = idx.downcast::<PySlice>() {
-                Ok(vec![slice_to_range(slice)?])
+                Ok(vec![slice_to_dimindex(slice)?])
             } else if let Ok(tuple) = idx.downcast::<PyTuple>() {
                 let mut ranges = Vec::with_capacity(tuple.len());
                 for item in tuple.iter() {
-                    if let Ok(i) = item.extract::<isize>() {
-                        ranges.push(i..i + 1);
+                    if let Ok(i) = item.extract::<i64>() {
+                        ranges.push(DimIndex::Index(i));
                     } else if let Ok(slice) = item.downcast::<PySlice>() {
-                        ranges.push(slice_to_range(slice)?);
+                        ranges.push(slice_to_dimindex(slice)?);
                     } else {
                         return Err(PyIndexError::new_err("Tuple elements must be int or slice"));
                     }
@@ -1112,7 +1105,7 @@ impl Tensor {
                 let mut ranges = Vec::with_capacity(list.len());
                 for item in list.iter() {
                     if let Ok(slice) = item.downcast::<PySlice>() {
-                        ranges.push(slice_to_range(slice)?);
+                        ranges.push(slice_to_dimindex(slice)?);
                     } else {
                         return Err(PyIndexError::new_err("List elements must be slices"));
                     }
@@ -1123,7 +1116,7 @@ impl Tensor {
             }
         }
 
-        let ranges = index_to_ranges(idx)?;
+        let ranges = index_to_dimindices(idx)?;
 
         self.slice(ranges).map_err(|e| PyIndexError::new_err(format!("{:?}", e)))
     }
@@ -1202,7 +1195,7 @@ impl Tensor {
     }
 }
 
-fn to_sh(shape: &Bound<'_, PyTuple>) -> Result<Vec<usize>, ZyxError> {
+fn to_sh(shape: &Bound<'_, PyTuple>) -> Result<Vec<Dim>, ZyxError> {
     if shape.len() == 1 {
         let first = shape.get_item(0).unwrap();
 
@@ -1213,7 +1206,7 @@ fn to_sh(shape: &Bound<'_, PyTuple>) -> Result<Vec<usize>, ZyxError> {
 
             for item in iter {
                 let val = item.unwrap().extract::<usize>().unwrap();
-                vec.push(val);
+                vec.push(Dim::try_from(val).map_err(|_| ZyxError::shape_error("dimension too large".into()))?);
             }
 
             return Ok(vec);
@@ -1221,7 +1214,10 @@ fn to_sh(shape: &Bound<'_, PyTuple>) -> Result<Vec<usize>, ZyxError> {
     }
 
     // Otherwise treat each argument as a usize directly
-    Ok(shape.as_slice().iter().map(|x| x.extract::<usize>().unwrap()).collect())
+    shape.as_slice().iter().map(|x| {
+        let val: usize = x.extract().unwrap();
+        Dim::try_from(val).map_err(|_| ZyxError::shape_error("dimension too large".into()))
+    }).collect()
 }
 
 fn to_ax(axes: &Bound<'_, PyTuple>) -> Vec<Axis> {
@@ -1244,30 +1240,30 @@ fn zyx_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     let buffer = PyBuffer::<T>::get(obj)?;
 
-    let shape = buffer.shape().to_vec();
-    let strides = buffer.strides().to_vec();
+    let shape: Vec<Dim> = buffer.shape().to_vec().into_iter().map(|s| Dim::try_from(s as usize).unwrap()).collect();
+    let strides: Vec<Dim> = buffer.strides().to_vec().into_iter().map(|s| Dim::try_from(s as usize).unwrap()).collect();
     let data = buffer.as_slice(obj.py()).unwrap();
-    let data2: Vec<T> = data.iter().map(|x| x.get()).collect();
-    println!("dtype={}, shape={shape:?}, strides={strides:?}, {data2:?}", T::dtype());
 
     let ndim = shape.len();
     assert_eq!(strides.len(), ndim);
     assert_eq!(shape.len(), ndim);
 
-    let total_len: usize = shape.iter().product();
-    let mut result = Vec::with_capacity(total_len);
+    let total_len: Dim = shape.iter().product();
+    let mut result = Vec::with_capacity(total_len as usize);
 
-    let mut indices = vec![0; ndim];
+    let mut indices = vec![0usize; ndim];
 
-    for _ in 0..total_len {
+    for _ in 0..total_len as usize {
         // Compute flat index in strided source
-        let mut offset_bytes: isize = 0;
-        for (i, &stride) in indices.iter().zip(strides.iter()) {
-            offset_bytes += (*i as isize) * stride;
+        let mut offset_bytes: i64 = 0;
+        for i in 0..ndim {
+            let idx = indices[i];
+            let s = strides[i];
+            offset_bytes += (idx as i64) * (s as i64);
         }
 
         // Convert byte offset into index into `data`
-        let element_size = std::mem::size_of::<T>() as isize;
+        let element_size = std::mem::size_of::<T>() as i64;
         let index = (offset_bytes / element_size) as usize;
 
         result.push(data[index].get());
@@ -1275,7 +1271,7 @@ fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) 
         // Advance indices (like an odometer)
         for d in (0..ndim).rev() {
             indices[d] += 1;
-            if indices[d] < shape[d] {
+            if indices[d] < shape[d] as usize {
                 break;
             }
             indices[d] = 0;

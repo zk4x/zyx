@@ -22,6 +22,9 @@ use std::iter::{once, repeat_n};
 use std::ops::{Bound, Mul, Neg, Not, Range, RangeBounds};
 use std::path::Path;
 
+pub use reduce_ops::ReduceOp;
+pub use index_ops::DimIndex;
+
 mod binary_ops;
 mod elementwise;
 mod index_ops;
