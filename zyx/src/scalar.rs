@@ -805,31 +805,30 @@ impl Scalar for f32 {
     }
 
     fn bitxor(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self ^ rhs
-        todo!()
+        let rhs_bits = rhs.to_bits();
+        f32::from_bits(self.to_bits() ^ rhs_bits)
     }
 
     fn bitor(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self | rhs
-        todo!()
+        let rhs_bits = rhs.to_bits();
+        f32::from_bits(self.to_bits() | rhs_bits)
     }
 
     fn bitand(self, rhs: Self) -> Self {
-        let _ = rhs;
-        //self & rhs
-        todo!()
+        let rhs_bits = rhs.to_bits();
+        f32::from_bits(self.to_bits() & rhs_bits)
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        let rhs_shift = (rhs.to_bits() & 0xFF) as u32;
+        let ix = (self.to_bits() as u64) << rhs_shift;
+        f32::from_bits(ix as u32)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        let rhs_shift = (rhs.to_bits() & 0xFF) as u32;
+        let ix = (self.to_bits() as u32) >> rhs_shift;
+        f32::from_bits(ix)
     }
 
     fn and(self, rhs: Self) -> bool {
