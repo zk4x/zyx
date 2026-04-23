@@ -560,6 +560,120 @@ impl Tensor {
     }
 
     #[must_use]
+    #[pyo3(name = "bitnot")]
+    pub fn bitnot_py(&self) -> Tensor {
+        return self.bitnot();
+    }
+
+    #[must_use]
+    #[pyo3(name = "ceil")]
+    pub fn ceil_py(&self) -> Tensor {
+        return self.ceil();
+    }
+
+    #[must_use]
+    #[pyo3(name = "erf")]
+    pub fn erf_py(&self) -> Tensor {
+        return self.erf();
+    }
+
+    #[must_use]
+    #[pyo3(name = "exp2")]
+    pub fn exp2_py(&self) -> Tensor {
+        return self.exp2();
+    }
+
+    #[must_use]
+    #[pyo3(name = "frac")]
+    pub fn frac_py(&self) -> Tensor {
+        return self.frac();
+    }
+
+    #[must_use]
+    #[pyo3(name = "isnan")]
+    pub fn isnan_py(&self) -> Tensor {
+        return self.isnan();
+    }
+
+    #[must_use]
+    #[pyo3(name = "isinf")]
+    pub fn isinf_py(&self) -> Tensor {
+        return self.isinf();
+    }
+
+    #[must_use]
+    #[pyo3(name = "isclose")]
+    pub fn isclose_py(&self, other: &Bound<'_, PyAny>, rtol: f64, atol: f64) -> Result<Tensor, ZyxError> {
+        if let Ok(other) = other.extract::<Tensor>() {
+            Ok(self.isclose(other, rtol, atol))
+        } else {
+            Err(PyTypeError::new_err("other must be a Tensor"))
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "log10")]
+    pub fn log10_py(&self) -> Tensor {
+        return self.log10();
+    }
+
+    #[must_use]
+    #[pyo3(name = "rad2deg")]
+    pub fn rad2deg_py(&self) -> Tensor {
+        return self.rad2deg();
+    }
+
+    #[must_use]
+    #[pyo3(name = "deg2rad")]
+    pub fn deg2rad_py(&self) -> Tensor {
+        return self.deg2rad();
+    }
+
+    #[must_use]
+    #[pyo3(name = "round")]
+    pub fn round_py(&self) -> Tensor {
+        return self.round();
+    }
+
+    #[must_use]
+    #[pyo3(name = "sign")]
+    pub fn sign_py(&self) -> Tensor {
+        return self.sign();
+    }
+
+    #[must_use]
+    #[pyo3(name = "square")]
+    pub fn square_py(&self) -> Tensor {
+        return self.square();
+    }
+
+    #[must_use]
+    #[pyo3(name = "trunc")]
+    pub fn trunc_py(&self) -> Tensor {
+        return self.trunc();
+    }
+
+    #[must_use]
+    #[pyo3(name = "logical_and")]
+    pub fn logical_and_py(&self, other: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(other) = other.extract::<Tensor>() {
+            Ok(self.logical_and(other))
+        } else {
+            Err(PyTypeError::new_err("other must be a Tensor"))
+        }
+    }
+
+    #[must_use]
+    #[pyo3(name = "logical_or")]
+    pub fn logical_or_py(&self, other: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(other) = other.extract::<Tensor>() {
+            Ok(self.logical_or(other))
+        } else {
+            Err(PyTypeError::new_err("other must be a Tensor"))
+        }
+    }
+
+    #[must_use]
     #[pyo3(name = "expand")]
     pub fn expand_py(&self, shape: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
         self.expand(to_sh(shape)?)
