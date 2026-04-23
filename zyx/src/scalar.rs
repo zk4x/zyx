@@ -997,11 +997,11 @@ impl Scalar for f64 {
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        f64::exp2(self)
     }
 
     fn log2(self) -> Self {
-        todo!()
+        self.log2()
     }
 
     fn relu(self) -> Self {
@@ -1257,8 +1257,7 @@ impl Scalar for i8 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        i32::pow(self, u32::try_from(rhs).unwrap()) as i8
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -1294,13 +1293,11 @@ impl Scalar for i8 {
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shl(rhs as u32)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shr(rhs as u32)
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -1456,8 +1453,7 @@ impl Scalar for i16 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        i32::pow(self, u32::try_from(rhs).unwrap()) as i16
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -1493,13 +1489,11 @@ impl Scalar for i16 {
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shl(rhs as u32)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shr(rhs as u32)
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -1685,13 +1679,11 @@ impl Scalar for i32 {
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shl(rhs as u32)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shr(rhs as u32)
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -1876,13 +1868,11 @@ impl Scalar for i64 {
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shl(rhs as u32)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shr(rhs as u32)
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -1912,23 +1902,19 @@ impl Scalar for i64 {
 
 impl Scalar for u8 {
     fn from_bf16(t: bf16) -> Self {
-        let _ = t;
-        todo!()
+        t.to_f32() as u32 as u8
     }
 
     fn from_f16(t: f16) -> Self {
-        let _ = t;
-        todo!()
+        t.to_f32() as u32 as u8
     }
 
     fn from_f32(t: f32) -> Self {
-        let _ = t;
-        todo!()
+        t as u32 as u8
     }
 
     fn from_f64(t: f64) -> Self {
-        let _ = t;
-        todo!()
+        t as u32 as u8
     }
 
     fn from_u8(t: u8) -> Self {
@@ -1989,31 +1975,35 @@ impl Scalar for u8 {
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self
     }
 
     fn neg(self) -> Self {
-        todo!()
+        self.wrapping_neg()
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        if self <= 31 {
+            2u32.pow(self as u32) as u8
+        } else {
+            255
+        }
     }
 
     fn log2(self) -> Self {
-        todo!()
+        self.ilog2() as u8
     }
 
     fn relu(self) -> Self {
-        todo!()
+        self
     }
 
     fn not(self) -> Self {
-        todo!()
+        if self == 0 { 1 } else { 0 }
     }
 
     fn nonzero(self) -> Self {
-        todo!()
+        if self == 0 { 0 } else { 1 }
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -2033,8 +2023,7 @@ impl Scalar for u8 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        i32::pow(self, u32::try_from(rhs).unwrap()) as u8
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2070,13 +2059,11 @@ impl Scalar for u8 {
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shl(rhs as u32)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shr(rhs as u32)
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -2106,23 +2093,19 @@ impl Scalar for u8 {
 
 impl Scalar for u16 {
     fn from_bf16(t: bf16) -> Self {
-        let _ = t;
-        todo!()
+        t.to_f32() as u32 as u16
     }
 
     fn from_f16(t: f16) -> Self {
-        let _ = t;
-        todo!()
+        t.to_f32() as u32 as u16
     }
 
     fn from_f32(t: f32) -> Self {
-        let _ = t;
-        todo!()
+        t as u32 as u16
     }
 
     fn from_f64(t: f64) -> Self {
-        let _ = t;
-        todo!()
+        t as u32 as u16
     }
 
     fn from_u8(t: u8) -> Self {
@@ -2183,31 +2166,35 @@ impl Scalar for u16 {
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self
     }
 
     fn neg(self) -> Self {
-        todo!()
+        self.wrapping_neg()
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        if self <= 31 {
+            2u32.pow(self as u32) as u16
+        } else {
+            65535
+        }
     }
 
     fn log2(self) -> Self {
-        todo!()
+        self.ilog2() as u16
     }
 
     fn relu(self) -> Self {
-        todo!()
+        self
     }
 
     fn not(self) -> Self {
-        todo!()
+        if self == 0 { 1 } else { 0 }
     }
 
     fn nonzero(self) -> Self {
-        todo!()
+        if self == 0 { 0 } else { 1 }
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -2227,8 +2214,7 @@ impl Scalar for u16 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        i32::pow(self, u32::try_from(rhs).unwrap()) as u16
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2264,13 +2250,11 @@ impl Scalar for u16 {
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shl(rhs as u32)
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self.wrapping_shr(rhs as u32)
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -2321,8 +2305,7 @@ impl Scalar for u16 {
 
 impl Scalar for u32 {
     fn from_bf16(t: bf16) -> Self {
-        let _ = t;
-        todo!()
+        t.to_f32() as u32
     }
 
     fn from_f16(t: f16) -> Self {
@@ -2395,15 +2378,19 @@ impl Scalar for u32 {
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self
     }
 
     fn neg(self) -> Self {
-        todo!()
+        self.wrapping_neg()
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        if self <= 31 {
+            2u32.pow(self)
+        } else {
+            u32::MAX
+        }
     }
 
     fn log2(self) -> Self {
@@ -2411,15 +2398,15 @@ impl Scalar for u32 {
     }
 
     fn relu(self) -> Self {
-        todo!()
+        self
     }
 
     fn not(self) -> Self {
-        todo!()
+        if self == 0 { 1 } else { 0 }
     }
 
     fn nonzero(self) -> Self {
-        todo!()
+        if self == 0 { 0 } else { 1 }
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -2439,8 +2426,7 @@ impl Scalar for u32 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        i32::pow(self, u32::try_from(rhs).unwrap()) as u32
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2531,8 +2517,7 @@ impl Scalar for u32 {
 
 impl Scalar for u64 {
     fn from_bf16(t: bf16) -> Self {
-        let _ = t;
-        todo!()
+        t.to_f32() as u64
     }
 
     fn from_f16(t: f16) -> Self {
@@ -2605,31 +2590,35 @@ impl Scalar for u64 {
     }
 
     fn abs(self) -> Self {
-        todo!()
+        self
     }
 
     fn neg(self) -> Self {
-        todo!()
+        self.wrapping_neg()
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        if self <= 63 {
+            2u64.pow(self)
+        } else {
+            u64::MAX
+        }
     }
 
     fn log2(self) -> Self {
-        todo!()
+        self.ilog2() as u64
     }
 
     fn relu(self) -> Self {
-        todo!()
+        self
     }
 
     fn not(self) -> Self {
-        todo!()
+        if self == 0 { 1 } else { 0 }
     }
 
     fn nonzero(self) -> Self {
-        todo!()
+        if self == 0 { 0 } else { 1 }
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -2649,8 +2638,7 @@ impl Scalar for u64 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        i64::pow(self as i64, u32::try_from(rhs).unwrap()) as u64
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2690,8 +2678,7 @@ impl Scalar for u64 {
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        self >> rhs
     }
 
     fn and(self, rhs: Self) -> bool {
@@ -2802,11 +2789,11 @@ impl Scalar for bool {
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn log2(self) -> Self {
-        todo!()
+        panic!()
     }
 
     fn relu(self) -> Self {
@@ -2814,11 +2801,11 @@ impl Scalar for bool {
     }
 
     fn not(self) -> Self {
-        todo!()
+        !self
     }
 
     fn nonzero(self) -> Self {
-        todo!()
+        self
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -2846,8 +2833,7 @@ impl Scalar for bool {
 
     fn mod_(self, rhs: Self) -> Self {
         let _ = rhs;
-        //self % rhs
-        todo!()
+        panic!()
     }
 
     fn cmplt(self, rhs: Self) -> Self {
@@ -2879,13 +2865,11 @@ impl Scalar for bool {
     }
 
     fn bitshiftleft(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        panic!()
     }
 
     fn bitshiftright(self, rhs: Self) -> Self {
-        let _ = rhs;
-        todo!()
+        panic!()
     }
 
     fn and(self, rhs: Self) -> bool {
