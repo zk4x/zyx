@@ -1221,23 +1221,23 @@ impl Scalar for i8 {
     }
 
     fn exp2(self) -> Self {
-        todo!()
+        2i32.pow(self as u32) as i8
     }
 
     fn log2(self) -> Self {
-        todo!()
+        f64::from(self).log2() as i8
     }
 
     fn relu(self) -> Self {
-        Ord::max(self, 0)
+        Scalar::max(self, 0)
     }
 
     fn not(self) -> Self {
-        todo!()
+        if self == 0 { 1 } else { 0 }
     }
 
     fn nonzero(self) -> Self {
-        todo!()
+        if self == 0 { 0 } else { 1 }
     }
 
     fn add(self, rhs: Self) -> Self {
