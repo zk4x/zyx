@@ -197,7 +197,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if true {
+        if false {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
@@ -209,10 +209,6 @@ impl Kernel {
         let n_added_per_step = config.n_added_per_step;
         let n_removed_per_step = config.n_removed_per_step;
         let n_total_opts = config.n_total_opts;
-
-        let n_threads = std::thread::available_parallelism().map_or(4, usize::from);
-
-        let pool = ThreadPool::new(n_threads);
 
         let mut items = Vec::new();
         let mut visited = Set::default();
@@ -247,73 +243,43 @@ impl Kernel {
 
         let mut rng = Rng::seed_from_u64(3_498_203_498);
         while items.len() < n_total_opts && !items.is_empty() {
-            let items_ptr: *const Vec<OptSeq> = &raw const items;
-            let visited_ptr: *const Set<u64> = &raw const visited;
+            let mut thread_kernel = kernel.clone();
+            let opt_seq = sample_best(&items, &mut rng).clone();
+            opt_seq.apply(&mut thread_kernel, dev_info_ref);
 
-            let jobs: Vec<_> = (0..n_threads)
-                .map(|thread_id| {
-                    let mut thread_kernel = kernel.clone();
+            let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel, dev_info_ref));
+            let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
+            let mult = n_added_per_step.min(total_configs);
 
-                    #[allow(trivial_casts)]
-                    let items_ref: &Vec<OptSeq> = unsafe { &*items_ptr };
-                    #[allow(trivial_casts)]
-                    let visited_ref: &Set<_> = unsafe { &*visited_ptr };
+            let mut added = 0;
+            for (opt_id, _) in avail_configs.iter().enumerate() {
+                let n_configs_to_try =
+                    ((avail_configs[opt_id].1 * mult) as f32 / total_configs as f32).ceil() as usize;
 
-                    move || {
-                        let mut local_items = Vec::new();
-                        let mut local_visited = Set::default();
+                for config_id in 0..n_configs_to_try {
+                    let mut opts = opt_seq.opts.clone();
+                    opts.push((opt_id, config_id));
 
-                        let mut rng = Rng::seed_from_u64(3_902_938_402_398_423 + thread_id as u64);
-
-                        let opt_seq = sample_best(items_ref, &mut rng);
-                        opt_seq.apply(&mut thread_kernel, dev_info_ref);
-
-                        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel, dev_info_ref));
-                        let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
-                        let mult = n_added_per_step.min(total_configs);
-
-                        for (opt_id, _) in avail_configs.iter().enumerate() {
-                            let n_configs_to_try =
-                                ((avail_configs[opt_id].1 * mult) as f32 / total_configs as f32).ceil() as usize;
-
-                            for config_id in 0..n_configs_to_try {
-                                let mut opts = opt_seq.opts.clone();
-                                opts.push((opt_id, config_id));
-
-                                let mut new_kernel = thread_kernel.clone();
-                                avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
-                                new_kernel.run_always_on_optimizations();
-                                let hash = new_kernel.get_hash();
-                                if visited_ref.contains(&hash) || local_visited.contains(&hash) {
-                                    continue;
-                                }
-                                let new_seq = OptSeq { opts, cost: new_kernel.get_cost(dev_info_ref) };
-                                local_visited.insert(hash);
-                                local_items.push(new_seq);
-                            }
-                        }
-
-                        (local_items, local_visited)
+                    let mut new_kernel = thread_kernel.clone();
+                    avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
+                    new_kernel.run_always_on_optimizations();
+                    let hash = new_kernel.get_hash();
+                    if visited.contains(&hash) {
+                        continue;
                     }
-                })
-                .collect();
-
-            let mut total_len = 0;
-            let results = pool.execute_batch(jobs);
-            for (local_items, local_visited) in results {
-                total_len += local_items.len();
-                items.extend(local_items);
-                visited.extend(local_visited);
+                    let new_seq = OptSeq { opts, cost: new_kernel.get_cost(dev_info_ref) };
+                    visited.insert(hash);
+                    items.push(new_seq);
+                    added += 1;
+                }
             }
 
-            if total_len == 0 {
+            if added == 0 {
                 break;
             }
 
             remove_worst(&mut items, n_removed_per_step, &mut rng);
         }
-
-        pool.shutdown();
 
         let mut launched_kernels = Set::default();
         let mut best_time = u64::MAX;
@@ -615,75 +581,4 @@ fn sample_best<'a>(items: &'a [OptSeq], rng: &mut Rng) -> &'a OptSeq {
     }
 
     &items[best_idx]
-}
-
-pub struct ThreadPool {
-    workers: Vec<thread::JoinHandle<()>>,
-    job_tx: mpsc::Sender<Box<dyn FnOnce() + Send>>,
-}
-
-impl ThreadPool {
-    pub fn new(n_threads: usize) -> Self {
-        let (job_tx, job_rx) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
-        let job_rx = Arc::new(Mutex::new(job_rx));
-
-        let mut workers = Vec::with_capacity(n_threads);
-
-        for _ in 0..n_threads {
-            let job_rx = Arc::clone(&job_rx);
-            let handle = thread::spawn(move || {
-                loop {
-                    let job = {
-                        let lock = job_rx.lock().unwrap();
-                        lock.recv()
-                    };
-                    match job {
-                        Ok(job) => job(),
-                        Err(_) => break, // channel closed → exit thread
-                    }
-                }
-            });
-            workers.push(handle);
-        }
-
-        Self { workers, job_tx }
-    }
-
-    /// Execute a batch of jobs and wait for them to finish
-    pub fn execute_batch<T: Send + 'static>(&self, jobs: Vec<impl FnOnce() -> T + Send + 'static>) -> Vec<T> {
-        let n_threads = self.workers.len();
-        assert_eq!(jobs.len(), n_threads, "jobs must equal n_threads");
-
-        let (res_tx, res_rx) = mpsc::channel();
-
-        for job in jobs {
-            let res_tx = res_tx.clone();
-            self.job_tx
-                .send(Box::new(move || {
-                    let res = job();
-                    let _ = res_tx.send(res);
-                }))
-                .unwrap();
-        }
-
-        let mut results = Vec::with_capacity(n_threads);
-        for _ in 0..n_threads {
-            results.push(res_rx.recv().unwrap());
-        }
-
-        results
-    }
-
-    /// Manually shutdown the pool by consuming it
-    pub fn shutdown(self) {
-        let ThreadPool { job_tx, workers } = self;
-
-        // Close the channel
-        drop(job_tx);
-
-        // Join all threads
-        for worker in workers {
-            let _ = worker.join();
-        }
-    }
 }
