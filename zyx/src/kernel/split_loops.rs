@@ -16,8 +16,7 @@ impl Kernel {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
         }
-        let max_threads = dev_info.max_local_threads
-            / self
+        let local_indices: Vec<_> = self
                 .ops
                 .values()
                 .filter_map(|op| {
@@ -27,7 +26,13 @@ impl Kernel {
                         None
                     }
                 })
-                .product::<u64>();
+                .collect();
+        let used_threads: u64 = local_indices.iter().copied().fold(1u64, |acc, x| acc.saturating_mul(x));
+        let max_threads = if local_indices.is_empty() {
+            dev_info.max_local_threads
+        } else {
+            dev_info.max_local_threads.saturating_div(used_threads.max(1))
+        };
         let mut op_id = self.head;
         let mut factors = Vec::new();
         let mut seen_axes = crate::Map::default();
