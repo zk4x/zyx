@@ -62,20 +62,25 @@ impl Optimization {
     pub fn apply(&self, kernel: &mut Kernel, config: usize) {
         match self {
             Optimization::ReassociateCommutative => {
+                #[cfg(feature = "time")]
+                let _timer = crate::Timer::new("ReassociateCommutative");
                 kernel.reassociate_commutative();
             }
             Optimization::UnrollLoops { factors } => {
+                #[cfg(feature = "time")]
+                let _timer = crate::Timer::new("UnrollLoops");
                 let factor = factors[config];
                 if (kernel.ops.len().0 as usize) < 500 {
                     kernel.unroll_loops(factor);
                 }
             }
             Optimization::SplitGlobalToLocal { factors } => {
+                #[cfg(feature = "time")]
+                let _timer = crate::Timer::new("SplitGlobalToLocal");
                 let (op_id, factor) = factors[config];
                 let Op::Index { len, scope, axis } = kernel.ops[op_id].op else { unreachable!() };
                 debug_assert_eq!(scope, Scope::Global);
                 let factor: Dim = factor;
-                //println!("Splitting global axis={axis} to factor={factor}");
                 kernel.split_dim(
                     op_id,
                     vec![
@@ -85,6 +90,8 @@ impl Optimization {
                 );
             }
             Optimization::Upcast { factors } => {
+                #[cfg(feature = "time")]
+                let _timer = crate::Timer::new("Upcast");
                 if factors.is_empty() {
                     return;
                 }
@@ -92,21 +99,31 @@ impl Optimization {
                 kernel.upcast(op_id, factor);
             }
             Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
+                #[cfg(feature = "time")]
+                let _timer = crate::Timer::new("RegisterTiling");
                 kernel.apply_register_tiling(reduce_splits, global_upcasts, config);
             }
             Optimization::UnrollConstantLoops => {
+                #[cfg(feature = "time")]
+                let _timer = crate::Timer::new("UnrollConstantLoops");
                 kernel.unroll_constant_loops();
             }
             Optimization::TiledReduce { factors } => {
+                #[cfg(feature = "time")]
+                let _timer = crate::Timer::new("TiledReduce");
                 let (op_id, factor, tree_branch) = factors[config];
                 kernel.tiled_reduce(op_id, factor, tree_branch);
             }
             Optimization::SplitLoop { factors } => {
+                #[cfg(feature = "time")]
+                let _timer = crate::Timer::new("SplitLoop");
                 let (op_id, factor) = factors[config];
                 let Op::Loop { len } = kernel.ops[op_id].op else { unreachable!() };
                 kernel.split_dim(op_id, vec![Op::Loop { len: len / factor }, Op::Loop { len: factor }]);
             }
             Optimization::Licm => {
+                #[cfg(feature = "time")]
+                let _timer = crate::Timer::new("Licm");
                 kernel.loop_invariant_code_motion();
             }
         }

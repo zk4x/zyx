@@ -160,14 +160,17 @@ const CYAN: &str = "\x1b[36m";
 const RESET: &str = "\x1b[0m";
 
 // Execution timer
-/*static ET: mutex::Mutex<std::collections::BTreeMap<String, (u128, u128)>> =
-    mutex::Mutex::new(std::collections::BTreeMap::new());
+#[cfg(feature = "time")]
+pub(crate) static ET: crate::mutex::Mutex<std::collections::BTreeMap<String, (u128, u128)>> =
+    crate::mutex::Mutex::new(std::collections::BTreeMap::new());
 
+#[cfg(feature = "time")]
 pub(crate) struct Timer {
     name: String,
     begin: std::time::Instant,
 }
 
+#[cfg(feature = "time")]
 impl Timer {
     pub(crate) fn new(name: &str) -> Timer {
         let name: String = name.into();
@@ -176,15 +179,15 @@ impl Timer {
     }
 }
 
+#[cfg(feature = "time")]
 impl Drop for Timer {
     fn drop(&mut self) {
         let mut lock = ET.lock();
         let x = lock.get_mut(&self.name).unwrap();
         x.0 += self.begin.elapsed().as_micros();
         x.1 += 1;
-        //println!("Timer took {}us", self.begin.elapsed().as_micros());
     }
-}*/
+}
 
 /*#[test]
 fn binary_cross_dependency1() -> Result<(), ZyxError> {

@@ -211,6 +211,14 @@ impl Runtime {
     /// This function deinitializes the whole runtime, deallocates all allocated memory and deallocates all caches
     /// It does not reset the rng and it does not change debug, search, training and `config_dir` fields
     fn deinitialize(&mut self) {
+        #[cfg(feature = "time")]
+        {
+            let lock = crate::ET.lock();
+            for (name, (total_us, count)) in lock.iter() {
+                let per_call = if *count > 0 { total_us / count } else { 0 };
+                println!("{}: {}us total, {}us/call ({} calls)", name, total_us, per_call, count);
+            }
+        }
         //println!("DEINIT runtime");
         // drop graph
         self.graph = Graph::new();
