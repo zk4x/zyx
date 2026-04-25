@@ -9,7 +9,7 @@ impl Kernel {
     pub fn opt_register_tiling(&self) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_register_tiling");
-        let candidates: Vec<u64> = vec![2, 4, 8, 16];
+        let candidates: Vec<u64> = vec![8, 16, 4, 2];
         let mut global_upcasts = Map::default();
         let mut reduce_factors = Map::default();
 

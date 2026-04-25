@@ -163,20 +163,20 @@ impl Kernel {
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
-        kernel.debug_colorless();
+
+        let dev_info_ptr: *const DeviceInfo = device.info();
+        let dev_info_ref = unsafe { &*dev_info_ptr };
 
         let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
-        if n_reg_tile > 0 {
-            reg_tile_opt.apply(&mut kernel, 2);
+        for cfg in 0..n_reg_tile.min(20) {
+            let mut test_kernel = kernel.clone();
+            reg_tile_opt.apply(&mut test_kernel, cfg);
+            test_kernel.run_always_on_optimizations();
+            println!("cfg={} cost={:?}", cfg, test_kernel.get_cost(dev_info_ref));
         }
-        kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
-        kernel.debug_colorless();
-
-        kernel.unroll_tree_reduce(OpId(23), 4);
-
-        kernel.debug_colorless();
-
+        if n_reg_tile > 0 {
+            reg_tile_opt.apply(&mut kernel, 10);
+        }
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
@@ -197,7 +197,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
@@ -366,6 +366,7 @@ impl Kernel {
             return Err(e);
         }
 
+        println!("BEST: {:?}", best_opt_seq);
         Ok((best_program, best_opt_seq))
     }
 
@@ -374,6 +375,7 @@ impl Kernel {
         let mut n_instructions = 0;
         let mut n_scoped_loads = [0u64, 0, 0];
         let mut n_scoped_stores = [0u64, 0, 0];
+        let mut n_barriers = 0u64;
 
         let mut gws = [1; 3];
         let mut lws = [1; 3];
@@ -425,7 +427,7 @@ impl Kernel {
                     n_instructions += loop_mult * cost;
                 }
                 Op::Barrier { .. } => {
-                    n_instructions += loop_mult * 5;
+                    n_barriers += loop_mult;
                 }
                 Op::If { .. } => {
                     n_instructions += loop_mult * 3;
@@ -463,6 +465,7 @@ impl Kernel {
             local_loads_per_thread,
             global_stores_per_thread,
             local_stores_per_thread,
+            n_barriers: n_barriers as u32,
         }
     }
 
@@ -504,6 +507,7 @@ pub struct Cost {
     local_loads_per_thread: u32,
     global_stores_per_thread: u32,
     local_stores_per_thread: u32,
+    n_barriers: u32,
 }
 
 impl PartialEq for Cost {
@@ -531,19 +535,20 @@ impl Eq for Cost {}
 impl Ord for Cost {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // Global memory accesses are most expensive, prioritize minimizing them
-        // Global stores are most critical (write bandwidth)
-        self.global_stores_per_thread
-            .cmp(&other.global_stores_per_thread)
-            // Then global loads
+        // Global work size first - smaller means better GPU utilization
+        self.global_ws
+            .cmp(&other.global_ws)
+            // Then local memory accesses (registers vs local memory)
+            .then(self.local_loads_per_thread.cmp(&other.local_loads_per_thread))
+            .then(self.local_stores_per_thread.cmp(&other.local_stores_per_thread))
+            // Then barriers
+            .then(self.n_barriers.cmp(&other.n_barriers))
+            // Global stores
+            .then(self.global_stores_per_thread.cmp(&other.global_stores_per_thread))
+            // Global loads
             .then(self.global_loads_per_thread.cmp(&other.global_loads_per_thread))
-            // Then total instructions + local memory accesses (local memory is ~10x more expensive)
-            .then(
-                (self.instructions_per_thread + self.local_loads_per_thread * 10 + self.local_stores_per_thread * 10).cmp(
-                    &(other.instructions_per_thread + other.local_loads_per_thread * 10 + other.local_stores_per_thread * 10),
-                ),
-            )
-            // Global work size - smaller is better (more GPU utilization), as tiebreaker
-            .then(self.global_ws.cmp(&other.global_ws))
+            // Then total instructions
+            .then(self.instructions_per_thread.cmp(&other.instructions_per_thread))
             // Fewer threads with more work per thread is slightly preferred (less overhead)
             .then(other.n_threads.cmp(&self.n_threads))
     }
