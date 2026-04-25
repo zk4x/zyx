@@ -16,7 +16,7 @@ impl Kernel {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
         }
-let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
+        let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         for op in self.ops.values() {
             if let Op::Index { scope: Scope::Local, axis, len } = op.op {
                 if let Some(&existing) = local_axis_sizes.get(&axis) {
@@ -32,6 +32,7 @@ let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
         } else {
             dev_info.max_local_threads / used_threads
         };
+        //println!("local_axis_sizes={local_axis_sizes:?}, remaining_threads={remaining_threads}, used_threads={used_threads}");
         let mut op_id = self.head;
         let mut factors = Vec::new();
         while !op_id.is_null() {

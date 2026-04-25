@@ -286,6 +286,7 @@ impl Kernel {
         let mut best_program = DeviceProgramId::NULL;
         let mut best_opt_seq = OptSeq { opts: Vec::new(), cost: Cost::default() };
         let mut i = n_launches;
+        let mut any_success = false;
         let mut last_error = None;
         while i > 0 {
             let opt_seq = sample_best(&items, &mut rng);
@@ -313,6 +314,7 @@ impl Kernel {
 
                 match kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes) {
                     Ok((program_id, time)) => {
+                        any_success = true;
                         if time < best_time {
                             best_program = program_id;
                             best_time = time;
@@ -328,8 +330,8 @@ impl Kernel {
             i -= 1;
         }
 
-        if let Some(e) = last_error {
-            return Err(e);
+        if !any_success {
+            return Err(last_error.unwrap());
         }
 
         println!("BEST: {:?}", best_opt_seq);

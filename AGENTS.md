@@ -184,15 +184,13 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 
 ### How Autotune Works
 
-The autotune system is simple:
+The autotune system explores optimization sequences by:
 1. Start with initial kernel and run always-on optimizations
 2. Apply ONE optimization variant and run always-on optimizations
 3. Hash the kernel and check if visited (duplicate detection)
 4. If not visited, launch kernel and record timing
 5. Repeat by combining with existing optimization sequences
-6. At the end, launch ONE final kernel configuration
-
-The key insight: **only one kernel is launched at the end**. The exploration phase just builds up optimization sequences without actually running them.
+6. Select the best configuration based on actual timing
 
 ### Debugging with apply_selected_optimizations
 
