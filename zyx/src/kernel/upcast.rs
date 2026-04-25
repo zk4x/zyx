@@ -12,6 +12,8 @@ use crate::{
 
 impl Kernel {
     pub fn opt_upcast(&self) -> (Optimization, usize) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_upcast");
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -32,6 +34,8 @@ impl Kernel {
     }
 
     pub fn upcast(&mut self, gidx_id: OpId, factor: u64) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("upcast");
         let Op::Index { len, scope, axis } = self.ops[gidx_id].op else { unreachable!() };
         debug_assert!(len.is_multiple_of(factor));
         debug_assert_eq!(scope, Scope::Global);

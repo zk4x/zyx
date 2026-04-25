@@ -7,6 +7,8 @@ use crate::kernel::{Kernel, Op, OpId, Scope};
 
 impl Kernel {
     pub fn opt_register_tiling(&self) -> (Optimization, usize) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_register_tiling");
         let candidates: Vec<u64> = vec![2, 4, 8, 16];
         let mut global_upcasts = Map::default();
         let mut reduce_factors = Map::default();

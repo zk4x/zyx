@@ -198,6 +198,8 @@ impl Kernel {
     /// }
     ///
     pub fn unroll_tree_reduce(&mut self, loop_id: OpId, factor: Dim) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("unroll_tree_reduce");
         let Op::Loop { len } = self.ops[loop_id].op else { return };
         if factor < 2 || !len.is_multiple_of(factor) {
             return;

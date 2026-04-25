@@ -9,6 +9,8 @@ use crate::{
 
 impl Kernel {
     pub fn opt_tiled_reduce(&self) -> (Optimization, usize) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a local index
         if self.ops.values().any(|node| match node.op {

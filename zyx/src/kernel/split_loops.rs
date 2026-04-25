@@ -10,6 +10,8 @@ use crate::{
 
 impl Kernel {
     pub fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_split_global_to_local");
         if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
@@ -53,6 +55,8 @@ impl Kernel {
     }
 
     pub fn opt_split_loop(&self) -> (Optimization, usize) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_split_loop");
         let candidates = vec![8, 16, 4, 2];
         let mut factors = Vec::new();
         let mut op_id = self.head;
