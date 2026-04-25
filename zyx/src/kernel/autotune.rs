@@ -542,6 +542,8 @@ impl Ord for Cost {
                     &(other.instructions_per_thread + other.local_loads_per_thread * 10 + other.local_stores_per_thread * 10),
                 ),
             )
+            // Global work size - smaller is better (more GPU utilization), as tiebreaker
+            .then(self.global_ws.cmp(&other.global_ws))
             // Fewer threads with more work per thread is slightly preferred (less overhead)
             .then(other.n_threads.cmp(&self.n_threads))
     }
