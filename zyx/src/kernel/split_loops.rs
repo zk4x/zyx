@@ -16,40 +16,32 @@ impl Kernel {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
         }
-        let local_indices: Vec<_> = self
-                .ops
-                .values()
-                .filter_map(|op| {
-                    if let Op::Index { len, scope: Scope::Local, .. } = op.op {
-                        Some(len)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-        let used_threads: u64 = local_indices.iter().copied().fold(1u64, |acc, x| acc.saturating_mul(x));
-        let max_threads = if local_indices.is_empty() {
+let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
+        for op in self.ops.values() {
+            if let Op::Index { scope: Scope::Local, axis, len } = op.op {
+                if let Some(&existing) = local_axis_sizes.get(&axis) {
+                    debug_assert_eq!(existing, len);
+                } else {
+                    local_axis_sizes.insert(axis, len);
+                }
+            }
+        }
+        let used_threads: u64 = local_axis_sizes.values().product::<u64>();
+        let remaining_threads = if local_axis_sizes.is_empty() {
             dev_info.max_local_threads
         } else {
-            dev_info.max_local_threads.saturating_div(used_threads.max(1))
+            dev_info.max_local_threads / used_threads
         };
         let mut op_id = self.head;
         let mut factors = Vec::new();
-        let mut seen_axes = crate::Map::default();
         while !op_id.is_null() {
             if let Op::Index { len, scope, axis } = self.ops[op_id].op {
                 let mut l_factors: Vec<u64> = vec![64, 32, 16, 8, 4, 2];
-                if scope == Scope::Global {
+                if scope == Scope::Global && !local_axis_sizes.contains_key(&axis) {
                     let max_per_axis = dev_info.max_local_work_dims[axis as usize] as u64;
-                    l_factors.retain(|&f| len.is_multiple_of(f) && f <= max_threads && f <= max_per_axis);
+                    l_factors.retain(|&f| len.is_multiple_of(f) && f <= remaining_threads && f <= max_per_axis);
                     for &f in &l_factors {
                         factors.push((op_id, f));
-                    }
-                    seen_axes.insert(axis, op_id);
-                }
-                if scope == Scope::Local {
-                    if let Some(global_id) = seen_axes.get(&axis) {
-                        factors.retain(|(op_id, _)| global_id != op_id);
                     }
                 }
             }
