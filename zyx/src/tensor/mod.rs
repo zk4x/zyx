@@ -23,9 +23,9 @@ use std::ops::{Bound, Mul, Neg, Not, Range, RangeBounds};
 use std::path::Path;
 
 #[cfg(feature = "py")]
-pub use reduce_ops::ReduceOp;
-#[cfg(feature = "py")]
 pub use index_ops::DimIndex;
+#[cfg(feature = "py")]
+pub use reduce_ops::ReduceOp;
 
 mod binary_ops;
 mod elementwise;

@@ -276,7 +276,7 @@ impl Kernel {
             Op::Cast { x, .. } => match self.ops[x].op {
                 Op::Binary { x, y, bop: BOp::Eq } => (x, y),
                 _ => return None,
-            }
+            },
             _ => return None,
         };
         let indices_id = if self.check_loop(x, loop_id) {

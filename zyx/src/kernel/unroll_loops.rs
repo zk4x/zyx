@@ -225,13 +225,15 @@ impl Kernel {
                 _ => {}
             }
             op_id = self.prev_op(op_id);
-        };
+        }
 
         // Find the store to acc
         let mut op_id = acc_id;
         let acc_init;
         loop {
-            if let Op::Store { dst, x, .. } = self.ops[op_id].op && dst == acc_id {
+            if let Op::Store { dst, x, .. } = self.ops[op_id].op
+                && dst == acc_id
+            {
                 acc_init = x;
                 break;
             }
@@ -279,16 +281,16 @@ impl Kernel {
         while op_id != endloop_id {
             let this_id = op_id;
             op_id = self.next_op(op_id);
-            if let Op::Load { src, index: _, vlen: 1 } = self.ops[this_id].op && src == acc_id {
+            if let Op::Load { src, index: _, vlen: 1 } = self.ops[this_id].op
+                && src == acc_id
+            {
                 // TODO debug assert index is const zero
-                map.insert(this_id, vec![acc_init; factor as usize- 1]);
-            } else if let Op::Store { dst, x, index, vlen: 1 } = self.ops[this_id].op && dst == acc_id {
+                map.insert(this_id, vec![acc_init; factor as usize - 1]);
+            } else if let Op::Store { dst, x, index, vlen: 1 } = self.ops[this_id].op
+                && dst == acc_id
+            {
                 // TODO debug assert index is const zero
-                let y = if let Some(mapping) = map.get(&x) {
-                    mapping[0]
-                } else {
-                    x
-                };
+                let y = if let Some(mapping) = map.get(&x) { mapping[0] } else { x };
                 let mut carry = this_id;
                 self.ops[this_id].op = Op::Binary { x, y, bop: BOp::Add };
                 for i in 1..factor - 1 {

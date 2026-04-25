@@ -163,8 +163,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        let (program_id, _) = kernel
-            .launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
+        let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
 
         Ok((program_id, OptSeq { opts: Vec::new(), cost: Cost::default() }))
     }
@@ -498,10 +497,11 @@ impl PartialEq for Cost {
             .cmp(&other.global_stores_per_thread)
             // Then global loads
             .then(self.global_loads_per_thread.cmp(&other.global_loads_per_thread))
-            // Then total instructions (local access counts as ~1 instruction)
+            // Then total instructions + local memory accesses (local memory is ~10x more expensive)
             .then(
-                (self.instructions_per_thread + self.local_loads_per_thread + self.local_stores_per_thread)
-                    .cmp(&(other.instructions_per_thread + other.local_loads_per_thread + other.local_stores_per_thread)),
+                (self.instructions_per_thread + self.local_loads_per_thread * 10 + self.local_stores_per_thread * 10).cmp(
+                    &(other.instructions_per_thread + other.local_loads_per_thread * 10 + other.local_stores_per_thread * 10),
+                ),
             )
             // Fewer threads with more work per thread is slightly preferred (less overhead)
             .then(other.n_threads.cmp(&self.n_threads))
@@ -519,10 +519,11 @@ impl Ord for Cost {
             .cmp(&other.global_stores_per_thread)
             // Then global loads
             .then(self.global_loads_per_thread.cmp(&other.global_loads_per_thread))
-            // Then total instructions (local access counts as ~1 instruction)
+            // Then total instructions + local memory accesses (local memory is ~10x more expensive)
             .then(
-                (self.instructions_per_thread + self.local_loads_per_thread + self.local_stores_per_thread)
-                    .cmp(&(other.instructions_per_thread + other.local_loads_per_thread + other.local_stores_per_thread)),
+                (self.instructions_per_thread + self.local_loads_per_thread * 10 + self.local_stores_per_thread * 10).cmp(
+                    &(other.instructions_per_thread + other.local_loads_per_thread * 10 + other.local_stores_per_thread * 10),
+                ),
             )
             // Fewer threads with more work per thread is slightly preferred (less overhead)
             .then(other.n_threads.cmp(&self.n_threads))

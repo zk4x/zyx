@@ -281,7 +281,7 @@ impl Scalar for bf16 {
         self.max(-self)
     }
 
-fn neg(self) -> Self {
+    fn neg(self) -> Self {
         -self
     }
 
@@ -1540,13 +1540,13 @@ impl Scalar for i16 {
 }
 
 impl Scalar for i32 {
-        fn from_bf16(t: bf16) -> Self {
-            t.to_f32() as i32
-        }
+    fn from_bf16(t: bf16) -> Self {
+        t.to_f32() as i32
+    }
 
-        fn from_f16(t: f16) -> Self {
-            t.to_f32() as i32
-        }
+    fn from_f16(t: f16) -> Self {
+        t.to_f32() as i32
+    }
 
     #[allow(clippy::cast_possible_truncation)]
     fn from_f32(t: f32) -> Self {
@@ -2001,11 +2001,7 @@ impl Scalar for u8 {
     }
 
     fn exp2(self) -> Self {
-        if self <= 31 {
-            2u32.pow(self as u32) as u8
-        } else {
-            255
-        }
+        if self <= 31 { 2u32.pow(self as u32) as u8 } else { 255 }
     }
 
     fn log2(self) -> Self {
@@ -2192,11 +2188,7 @@ impl Scalar for u16 {
     }
 
     fn exp2(self) -> Self {
-        if self <= 31 {
-            2u32.pow(self as u32) as u16
-        } else {
-            65535
-        }
+        if self <= 31 { 2u32.pow(self as u32) as u16 } else { 65535 }
     }
 
     fn log2(self) -> Self {
@@ -2404,11 +2396,7 @@ impl Scalar for u32 {
     }
 
     fn exp2(self) -> Self {
-        if self <= 31 {
-            2u32.pow(self)
-        } else {
-            u32::MAX
-        }
+        if self <= 31 { 2u32.pow(self) } else { u32::MAX }
     }
 
     fn log2(self) -> Self {
@@ -2616,11 +2604,7 @@ impl Scalar for u64 {
     }
 
     fn exp2(self) -> Self {
-        if self <= 63 {
-            2u64.pow(self as u32)
-        } else {
-            u64::MAX
-        }
+        if self <= 63 { 2u64.pow(self as u32) } else { u64::MAX }
     }
 
     fn log2(self) -> Self {

@@ -14,7 +14,18 @@ impl Kernel {
             let factors = Vec::new();
             return (Optimization::SplitLoop { factors }, 0);
         }
-        let max_threads = dev_info.max_local_threads/self.ops.values().filter_map(|op| if let Op::Index { len, scope: Scope::Local, .. } = op.op { Some(len) } else { None }).product::<u64>();
+        let max_threads = dev_info.max_local_threads
+            / self
+                .ops
+                .values()
+                .filter_map(|op| {
+                    if let Op::Index { len, scope: Scope::Local, .. } = op.op {
+                        Some(len)
+                    } else {
+                        None
+                    }
+                })
+                .product::<u64>();
         let mut op_id = self.head;
         let mut factors = Vec::new();
         let mut seen_axes = crate::Map::default();

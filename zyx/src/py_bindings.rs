@@ -527,28 +527,20 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "softmax")]
-    pub fn softmax_py(&self, axes: &Bound<'_, PyList>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = axes
-            .into_iter()
-            .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-            .collect();
-        self.softmax(axes)
+    pub fn softmax_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        self.softmax(to_ax(axes))
     }
 
     #[must_use]
     #[pyo3(name = "log_softmax")]
-    pub fn log_softmax_py(&self, axes: &Bound<'_, PyList>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = axes
-            .into_iter()
-            .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-            .collect();
-        self.ln_softmax(axes)
+    pub fn log_softmax_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        self.ln_softmax(to_ax(axes))
     }
 
     #[must_use]
     #[pyo3(name = "sum", signature = (dim=None, keepdim=false, dtype=None))]
-    pub fn sum_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+    pub fn sum_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
         if keepdim {
             self.reduce_impl::<true>(ReduceOp::Sum, axes, dtype, 1)
         } else {
@@ -558,8 +550,8 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "mean", signature = (dim=None, keepdim=false, dtype=None))]
-    pub fn mean_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+    pub fn mean_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
         if keepdim {
             self.reduce_impl::<true>(ReduceOp::Mean, axes, dtype, 1)
         } else {
@@ -569,9 +561,15 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "var", signature = (dim=None, keepdim=false, unbiased=true, dtype=None))]
-    pub fn var_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, unbiased: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+    pub fn var_py(
+        &self,
+        dim: Option<&Bound<'_, PyAny>>,
+        keepdim: bool,
+        unbiased: bool,
+        dtype: Option<DType>,
+    ) -> Result<Tensor, ZyxError> {
+        let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
         let correction = if unbiased { 1 } else { 0 };
-        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
         if keepdim {
             self.reduce_impl::<true>(ReduceOp::Var, axes, dtype, correction)
         } else {
@@ -581,9 +579,15 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "std", signature = (dim=None, keepdim=false, unbiased=true, dtype=None))]
-    pub fn std_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, unbiased: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+    pub fn std_py(
+        &self,
+        dim: Option<&Bound<'_, PyAny>>,
+        keepdim: bool,
+        unbiased: bool,
+        dtype: Option<DType>,
+    ) -> Result<Tensor, ZyxError> {
+        let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
         let correction = if unbiased { 1 } else { 0 };
-        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
         if keepdim {
             self.reduce_impl::<true>(ReduceOp::Std, axes, dtype, correction)
         } else {
@@ -593,8 +597,8 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "min", signature = (dim=None, keepdim=false))]
-    pub fn min_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+    pub fn min_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool) -> Result<Tensor, ZyxError> {
+        let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
         if keepdim {
             self.reduce_impl::<true>(ReduceOp::Min, axes, None, 1)
         } else {
@@ -604,8 +608,8 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "max", signature = (dim=None, keepdim=false))]
-    pub fn max_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+    pub fn max_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool) -> Result<Tensor, ZyxError> {
+        let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
         if keepdim {
             self.reduce_impl::<true>(ReduceOp::Max, axes, None, 1)
         } else {
@@ -615,8 +619,8 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "prod", signature = (dim=None, keepdim=false, dtype=None))]
-    pub fn prod_py(&self, dim: Option<&Bound<'_, PyList>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = dim.map(|d| d.into_iter().map(|x| x.extract::<Axis>().expect("dim must be integers")).collect()).unwrap_or_default();
+    pub fn prod_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
         if keepdim {
             self.reduce_impl::<true>(ReduceOp::Prod, axes, dtype, 1)
         } else {
@@ -1045,27 +1049,15 @@ impl Tensor {
 
     #[must_use]
     #[pyo3(name = "permute", signature = (*axes))]
-    pub fn permute_py(&self, axes: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<Axis> = axes
-            .into_iter()
-            .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-            .collect();
-        self.permute(axes)
+    pub fn permute_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        self.permute(to_ax(axes))
     }
 
     #[must_use]
     #[pyo3(name = "squeeze", signature = (axes=None))]
-    pub fn squeeze_py(&self, axes: Option<&Bound<'_, PyList>>) -> Tensor {
-        match axes {
-            Some(axes_list) => {
-                let axes: Vec<Axis> = axes_list
-                    .into_iter()
-                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-                    .collect();
-                self.squeeze(axes)
-            }
-            None => self.squeeze([]),
-        }
+    pub fn squeeze_py(&self, axes: Option<&Bound<'_, PyAny>>) -> Tensor {
+        let axes = axes.map(|a| to_ax(a)).unwrap_or_default();
+        self.squeeze(axes)
     }
 
     #[must_use]
@@ -1075,47 +1067,13 @@ impl Tensor {
     }
 
     #[must_use]
-    #[pyo3(name = "flatten")]
-    pub fn flatten_py(&self, start_dim: Axis, end_dim: Axis) -> Result<Tensor, ZyxError> {
-        self.flatten(start_dim..=end_dim)
-    }
-
-    #[must_use]
-    #[pyo3(name = "expand")]
-    pub fn expand_py(&self, shape: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
-        self.expand(to_sh(shape)?)
-    }
-
-    #[must_use]
-    #[pyo3(name = "t")]
-    pub fn t_py(&self) -> Tensor {
-        return self.t();
-    }
-
-    #[must_use]
-    #[pyo3(name = "to_le_bytes")]
-    pub fn to_le_bytes_py(&self) -> Result<Vec<u8>, ZyxError> {
-        self.to_le_bytes()
-    }
-
-    #[must_use]
-    #[pyo3(name = "to_string")]
-    pub fn to_string_py(&self) -> String {
-        self.to_string()
-    }
-
-    #[must_use]
-    #[pyo3(name = "product")]
-    pub fn product_py(&self, axes: Option<&Bound<'_, PyList>>) -> Result<Tensor, ZyxError> {
-        match axes {
-            Some(axes_list) => {
-                let axes: Vec<Axis> = axes_list
-                    .into_iter()
-                    .map(|d| d.extract::<Axis>().expect("axes must be integers"))
-                    .collect();
-                self.prod(axes)
-            }
-            None => Ok(self.prod_all()), // Reduce all dimensions
+    #[pyo3(name = "product", signature = (axes=None))]
+    pub fn product_py(&self, axes: Option<&Bound<'_, PyAny>>) -> Result<Tensor, ZyxError> {
+        let axes = axes.map(|a| to_ax(a)).unwrap_or_default();
+        if axes.is_empty() {
+            Ok(self.prod_all())
+        } else {
+            self.prod(axes)
         }
     }
 
@@ -1297,9 +1255,18 @@ impl Tensor {
         dilation: &Bound<'_, PyTuple>,
         padding: &Bound<'_, PyTuple>,
     ) -> Result<Tensor, ZyxError> {
-        let weight = weight.extract::<Tensor>().map_err(|e| ZyxError::DTypeError(format!("weight: {e}").into()))?;
+        let weight = weight
+            .extract::<Tensor>()
+            .map_err(|e| ZyxError::DTypeError(format!("weight: {e}").into()))?;
         let bias = bias.and_then(|b| b.extract::<Tensor>().ok());
-        self.conv(&weight, bias.as_ref(), groups, to_sh(stride)?, to_sh(dilation)?, to_sh(padding)?)
+        self.conv(
+            &weight,
+            bias.as_ref(),
+            groups,
+            to_sh(stride)?,
+            to_sh(dilation)?,
+            to_sh(padding)?,
+        )
     }
 }
 
@@ -1322,16 +1289,54 @@ fn to_sh(shape: &Bound<'_, PyTuple>) -> Result<Vec<Dim>, ZyxError> {
     }
 
     // Otherwise treat each argument as a usize directly
-    shape.as_slice().iter().map(|x| {
-        let val: usize = x.extract().unwrap();
-        Dim::try_from(val).map_err(|_| ZyxError::shape_error("dimension too large".into()))
-    }).collect()
+    shape
+        .as_slice()
+        .iter()
+        .map(|x| {
+            let val: usize = x.extract().unwrap();
+            Dim::try_from(val).map_err(|_| ZyxError::shape_error("dimension too large".into()))
+        })
+        .collect()
 }
 
-fn to_ax(axes: &Bound<'_, PyTuple>) -> Vec<Axis> {
-    axes.into_iter()
-        .map(|d| d.extract::<Axis>().expect("Shape must be positive integers"))
-        .collect()
+fn to_ax(axes: &Bound<'_, PyAny>) -> Vec<Axis> {
+    if axes.is_none() {
+        return vec![];
+    }
+    if let Ok(tuple) = axes.downcast::<PyTuple>() {
+        let mut result = Vec::with_capacity(tuple.len());
+        for item in tuple.iter() {
+            if let Ok(ax) = item.extract::<Axis>() {
+                result.push(ax);
+            } else if let Ok(nested) = item.downcast::<PyTuple>() {
+                for nested_item in nested.iter() {
+                    if let Ok(ax) = nested_item.extract::<Axis>() {
+                        result.push(ax);
+                    }
+                }
+            } else if let Ok(nested) = item.downcast::<PyList>() {
+                for nested_item in nested.iter() {
+                    if let Ok(ax) = nested_item.extract::<Axis>() {
+                        result.push(ax);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+    if let Ok(list) = axes.downcast::<PyList>() {
+        let mut result = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            if let Ok(ax) = item.extract::<Axis>() {
+                result.push(ax);
+            }
+        }
+        return result;
+    }
+    if let Ok(single) = axes.extract::<Axis>() {
+        return vec![single];
+    }
+    vec![]
 }
 
 /// A Python module implemented in Rust.
@@ -1348,8 +1353,18 @@ fn zyx_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     let buffer = PyBuffer::<T>::get(obj)?;
 
-    let shape: Vec<Dim> = buffer.shape().to_vec().into_iter().map(|s| Dim::try_from(s as usize).unwrap()).collect();
-    let strides: Vec<Dim> = buffer.strides().to_vec().into_iter().map(|s| Dim::try_from(s as usize).unwrap()).collect();
+    let shape: Vec<Dim> = buffer
+        .shape()
+        .to_vec()
+        .into_iter()
+        .map(|s| Dim::try_from(s as usize).unwrap())
+        .collect();
+    let strides: Vec<Dim> = buffer
+        .strides()
+        .to_vec()
+        .into_iter()
+        .map(|s| Dim::try_from(s as usize).unwrap())
+        .collect();
     let data = buffer.as_slice(obj.py()).unwrap();
 
     let ndim = shape.len();
