@@ -12,6 +12,7 @@ use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
+use std::collections::BTreeMap;
 use nanoserde::{DeBin, SerBin};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
@@ -42,8 +43,8 @@ pub enum Optimization {
         factors: Vec<(OpId, u64)>,
     },
     RegisterTiling {
-        reduce_splits: Map<OpId, Vec<u64>>,
-        global_upcasts: Map<OpId, Vec<u64>>,
+        reduce_splits: BTreeMap<OpId, Vec<u64>>,
+        global_upcasts: BTreeMap<OpId, Vec<u64>>,
     },
     UnrollConstantLoops,
     TiledReduce {

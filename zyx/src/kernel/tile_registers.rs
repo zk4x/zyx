@@ -2,16 +2,16 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use super::autotune::Optimization;
-use crate::Map;
 use crate::kernel::{Kernel, Op, OpId, Scope};
+use std::collections::BTreeMap;
 
 impl Kernel {
     pub fn opt_register_tiling(&self) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_register_tiling");
         let candidates: Vec<u64> = vec![8, 16, 4, 2];
-        let mut global_upcasts = Map::default();
-        let mut reduce_factors = Map::default();
+        let mut global_upcasts: BTreeMap<OpId, Vec<u64>> = BTreeMap::new();
+        let mut reduce_factors: BTreeMap<OpId, Vec<u64>> = BTreeMap::new();
 
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -61,8 +61,8 @@ impl Kernel {
 
     pub fn apply_register_tiling(
         &mut self,
-        reduce_splits: &Map<OpId, Vec<u64>>,
-        global_upcasts: &Map<OpId, Vec<u64>>,
+        reduce_splits: &BTreeMap<OpId, Vec<u64>>,
+        global_upcasts: &BTreeMap<OpId, Vec<u64>>,
         config: usize,
     ) {
         let n_global = global_upcasts.len();
@@ -76,31 +76,37 @@ impl Kernel {
         let mut remaining_global = config % n_global_options;
         let mut remaining_reduce = config / n_global_options;
 
-        for (&reduce_id, factors) in reduce_splits.iter() {
+        let mut reduce_indices: Vec<usize> = Vec::with_capacity(n_reduce);
+        for (_, factors) in reduce_splits.iter() {
             let n_options = factors.len();
             let factor_idx = remaining_reduce % n_options;
             remaining_reduce /= n_options;
-            let reduce_factor = factors[factor_idx];
-            self.unroll_tree_reduce(reduce_id, reduce_factor);
+            reduce_indices.push(factor_idx);
         }
 
-        let mut new_global_upcasts = Vec::new();
+        let mut global_indices: Vec<usize> = Vec::with_capacity(n_global);
         for (_, factors) in global_upcasts.iter() {
             let n_options = factors.len() + 1;
             let factor_idx = remaining_global % n_options;
             remaining_global /= n_options;
-
-            let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
-            new_global_upcasts.push(factor);
+            global_indices.push(factor_idx);
         }
 
         let mut idx = 0;
-        for (op_id, _) in global_upcasts.iter() {
-            let factor = new_global_upcasts[idx];
+        for (op_id, factors) in global_upcasts.iter() {
+            let factor_idx = global_indices[idx];
+            let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
             if factor > 1 {
                 self.upcast(*op_id, factor as u64);
             }
             idx += 1;
+        }
+
+        // Apply unroll AFTER upcast
+        for (i, (&reduce_id, factors)) in reduce_splits.iter().enumerate() {
+            let factor_idx = reduce_indices[i];
+            let reduce_factor = factors[factor_idx];
+            self.unroll_tree_reduce(reduce_id, reduce_factor);
         }
     }
 }
