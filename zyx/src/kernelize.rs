@@ -716,7 +716,7 @@ impl Runtime {
         );
 
         for &nid in order {
-            /*use crate::{RED, RESET};
+            use crate::{RED, RESET};
             println!(
                 "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
                 if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
@@ -724,7 +724,7 @@ impl Runtime {
                 self.graph[nid],
                 self.graph.dtype(nid),
                 self.graph.shape(nid)
-            );*/
+            );
             if kernelizer.is_virt_realized(nid) {
                 kernelizer.create_load_kernel(nid);
             } else {
