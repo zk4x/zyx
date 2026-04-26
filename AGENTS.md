@@ -218,36 +218,25 @@ if n_split > 0 {
 kernel.run_always_on_optimizations();
 ```
 
-### Known Optimization Issues
+### Available Optimizations
 
-| Optimization | Status | Notes |
-|--------------|--------|-------|
-| `opt_fuse_mad` | ✅ Working | Baseline |
-| `opt_unfuse_mad` | ✅ Working | Works with fuse_mad |
-| `opt_tiled_reduce` | ✅ Working | Skip when local index exists or multiple loops |
-| `opt_split_global_to_local` | ✅ Working | Must run before tiled_reduce creates local index |
-| `opt_split_loop` | ⚠️ Flaky | Fails in real autotune exploration, works in apply_selected |
-| `opt_reassociate_commutative` | ❌ Disabled | Buggy - breaks with licm |
-| `opt_upcast` | ❌ Disabled | Fails matmul_disk |
-| `opt_register_tiling` | ❌ Disabled | Fails gather |
-| `opt_unfuse_mad` (standalone) | ❌ Disabled | Fails reduce when alone |
-| `opt_unroll` | ❌ Disabled | Timeout/slow |
-| `opt_unroll_constant_loops` | ❌ Disabled | Timeout/slow |
-| `opt_licm` | ❌ Disabled | Conflicts with reassociate |
-
-### Current Working Set
+The autotune system uses 7 optimizations (defined in `zyx/src/kernel/autotune.rs`):
 
 ```rust
-const AVAILABLE_OPTIMIZATIONS: [fn(&Kernel) -> (Optimization, usize); 5] = [
-    Kernel::opt_split_global_to_local,
-    Kernel::opt_fuse_mad,
-    Kernel::opt_unfuse_mad,
-    Kernel::opt_split_loop,
-    Kernel::opt_tiled_reduce,
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+    Kernel::opt_reassociate_commutative,  // reassociate + group operations
+    Kernel::opt_split_global_to_local,   // parallelize reduce loops
+    Kernel::opt_upcast,                   // upcast for vectorization
+    Kernel::opt_register_tiling,         // tile for registers
+    Kernel::opt_tiled_reduce,             // tiled parallel reduction
+    Kernel::opt_split_loop,              // split large loops
+    Kernel::opt_licm,                     // loop-invariant code motion
 ];
 ```
 
-All of these work together and pass all tests.
+### Optimization Correctness (CRITICAL)
+
+Every optimization must produce correct IR that calculates the same result as the input. **No optimization is needed for tests to pass.** ALL tests must pass with ALL optimizations disabled, and ALL tests must pass no matter which sequence of optimizations (including empty) is applied. If any sequence breaks correctness, the optimization that produced invalid IR from valid code is BUGGY and must be fixed or disabled.
 
 ### Debugging Tips
 
