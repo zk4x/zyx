@@ -65,11 +65,11 @@ time = []
 
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.
-opt-level = 0 # Optimization level.
-debug = true  # Include debug info.
+opt-level = 1 # Optimization level.
+debug = false  # Include debug info.
 #split-debuginfo = '...'  # Debug info splitting behavior.
 strip = false            # Removes symbols or debuginfo.
-debug-assertions = true  # Enables debug assertions.
+debug-assertions = false  # Enables debug assertions.
 overflow-checks = true   # Enables runtime integer overflow checks.
 lto = false              # Sets link-time optimization.
 panic = 'unwind'         # The panic strategy.
