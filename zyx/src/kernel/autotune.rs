@@ -57,6 +57,61 @@ pub enum Optimization {
 }
 
 impl Optimization {
+    pub fn debug(&self, config: usize) {
+        match self {
+            Optimization::ReassociateCommutative => println!("ReassociateCommutative"),
+            Optimization::UnrollLoops { factors } => {
+                let factor = factors[config];
+                println!("unroll loop len={} by {}", factor, factor)
+            }
+            Optimization::SplitGlobalToLocal { factors } => {
+                let (op_id, factor) = factors[config];
+                println!("split global index {} by {}", op_id, factor)
+            }
+            Optimization::Upcast { factors } => {
+                let (op_id, factor) = factors[config];
+                println!("upcast axis {} by {}", op_id, factor)
+            }
+            Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
+                let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
+                let mut remaining_global = config % n_global_options;
+                let mut parts = Vec::new();
+                for (op_id, facs) in global_upcasts.iter() {
+                    let n_options = facs.len() + 1;
+                    let factor_idx = remaining_global % n_options;
+                    remaining_global /= n_options;
+                    if factor_idx < facs.len() {
+                        parts.push(format!("upcast axis {} by {}", op_id, facs[factor_idx]));
+                    }
+                }
+                let mut remaining_reduce = config / n_global_options;
+                for (op_id, facs) in reduce_splits.iter() {
+                    let n_options = facs.len() + 1;
+                    let factor_idx = remaining_reduce % n_options;
+                    remaining_reduce /= n_options;
+                    if factor_idx < facs.len() {
+                        parts.push(format!("unroll {} by {}", op_id, facs[factor_idx]));
+                    }
+                }
+                if parts.is_empty() {
+                    println!("register tiling (no-op)");
+                } else {
+                    println!("register tiling {}", parts.join(", "))
+                }
+            }
+            Optimization::UnrollConstantLoops => println!("UnrollConstantLoops"),
+            Optimization::TiledReduce { factors } => {
+                let (op_id, local, global) = factors[config];
+                println!("tiled reduce index {} local={}, global={}", op_id, local, global)
+            }
+            Optimization::SplitLoop { factors } => {
+                let (op_id, factor) = factors[config];
+                println!("split loop {} by {}", op_id, factor)
+            }
+            Optimization::Licm => println!("Licm"),
+        }
+    }
+
     /// Applies the optimization with the given config ID.
     /// Config IDs are ordered such that lower IDs use hardware-aligned factors
     /// (e.g., warp size 32 for CUDA, wavefront size 64 for AMD) which are likely to perform better.
@@ -286,10 +341,7 @@ impl Kernel {
 
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, dev_info_ref);
-                println!(
-                    "Running opt: {opt_id}, cfg={opt_cfg} -> {opt:?} -> {:?}",
-                    AVAILABLE_OPTIMIZATIONS[opt_id]
-                );
+                opt.debug(opt_cfg);
                 opt.apply(&mut kernel, opt_cfg);
             }
             kernel.run_always_on_optimizations();
@@ -326,7 +378,6 @@ impl Kernel {
             return Err(last_error.unwrap());
         }
 
-        println!("BEST: {:?}", best_opt_seq);
         Ok((best_program, best_opt_seq))
     }
 
