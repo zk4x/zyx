@@ -22,6 +22,8 @@ impl Kernel {
     }
 
     pub fn eliminate_zero_len_index(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("eliminate zero index");
         for node in self.ops.values_mut() {
             if let Op::Index { len, .. } = node.op {
                 if len == 1 {

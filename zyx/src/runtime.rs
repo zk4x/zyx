@@ -214,8 +214,11 @@ impl Runtime {
         #[cfg(feature = "time")]
         {
             let lock = crate::ET.lock();
-            for (name, (total_us, count)) in lock.iter() {
-                let per_call = if *count > 0 { total_us / count } else { 0 };
+            let mut timings: Vec<_> = lock.iter().map(|(name, &(total_us, count))| (name.clone(), total_us, count)).collect();
+            timings.sort_by(|a, b| b.1.cmp(&a.1));
+            println!("\n=== Timing Info (sorted by total time, descending) ===");
+            for (name, total_us, count) in timings {
+                let per_call = if count > 0 { total_us / count } else { 0 };
                 println!("{}: {}us total, {}us/call ({} calls)", name, total_us, per_call, count);
             }
         }

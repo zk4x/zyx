@@ -152,6 +152,8 @@ impl Kernel {
     }
 
     pub fn loop_invariant_code_motion(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("loop_invariant_code_motion");
         let mut endloop_is = Vec::new();
         let mut loop_id = self.tail;
         while !loop_id.is_null() {

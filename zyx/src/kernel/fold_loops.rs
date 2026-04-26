@@ -36,6 +36,9 @@ impl Kernel {
     /// Scans through operations looking for accumulating loops that can be simplified.
     /// Currently processes only one such loop per call (bails early after first match).
     pub fn simplify_accumulating_loop(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("simplify_accumulating_loop");
+
         let mut op_id = self.head;
         while !op_id.is_null() {
             if self.fold_loop(op_id) {

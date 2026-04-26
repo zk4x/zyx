@@ -11,6 +11,8 @@ use std::hash::BuildHasherDefault;
 impl Kernel {
     #[allow(clippy::match_same_arms)]
     pub fn constant_folding(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("constant folding");
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
@@ -178,6 +180,8 @@ impl Kernel {
 
     // Eliminates accs that are not stored into in loops
     pub fn fold_accs(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("fold_accs");
         // We have to do constant folding before folding accs to guarantee indices are constants
         self.constant_folding();
         // Check if a define exists without a loop that stores into that define
@@ -260,8 +264,10 @@ impl Kernel {
 
     // Loops that don't contain stores can be deleted
     pub fn delete_empty_loops(&mut self) {
-        let mut dead = Set::default();
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("delete_empty_loops");
 
+        let mut dead = Set::default();
         let mut defines_stack: Vec<Set<OpId>> = Vec::new();
         defines_stack.push(Set::default());
         let mut ops_stack: Vec<Set<OpId>> = Vec::new();
@@ -329,6 +335,9 @@ impl Kernel {
     }
 
     pub fn dead_code_elimination(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("dead_code_elimination");
+
         let mut params = Vec::new();
         let mut visited = Set::default();
         // We go backward from Stores and gather all needed ops, but we can't remove Loop and Define ops
@@ -365,6 +374,8 @@ impl Kernel {
     }
 
     pub fn common_subexpression_elimination(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("common_subexpression_elimination");
         let mut stack: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
         stack.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::default()));
 
@@ -446,6 +457,8 @@ impl Kernel {
     }
 
     pub fn move_constants_to_beginning(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("move_constants_to_beginning");
         let mut start = self.head;
         while let Op::Define { .. } = self.at(start) {
             start = self.next_op(start);

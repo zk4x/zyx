@@ -188,6 +188,8 @@ impl Optimization {
 
 impl Kernel {
     pub fn run_always_on_optimizations(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("always on optimizations");
         self.eliminate_zero_len_index();
         self.constant_folding();
         self.move_constants_to_beginning();
@@ -293,6 +295,11 @@ impl Kernel {
             let mut thread_kernel = kernel.clone();
             let opt_seq = sample_best(&items, &mut rng).clone();
             opt_seq.apply(&mut thread_kernel, dev_info_ref);
+            thread_kernel.run_always_on_optimizations();
+
+            if thread_kernel.ops.len().0 > 5000 {
+                continue;
+            }
 
             let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel, dev_info_ref));
             let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
@@ -309,7 +316,6 @@ impl Kernel {
 
                     let mut new_kernel = thread_kernel.clone();
                     avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
-                    new_kernel.run_always_on_optimizations();
                     let hash = new_kernel.get_hash();
                     if visited.contains(&hash) {
                         continue;

@@ -9,6 +9,9 @@ use crate::{
 
 impl Kernel {
     pub fn div_mod_simplification(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("div_mod_simplification");
+
         self.unfuse_mad();
 
         let bounds = self.compute_bounds();

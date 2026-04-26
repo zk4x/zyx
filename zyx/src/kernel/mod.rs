@@ -926,6 +926,9 @@ impl Kernel {
     }
 
     pub fn unfold_pows(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("unfold_pows");
+
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let &Op::Binary { x, y, bop } = self.at(op_id) {
