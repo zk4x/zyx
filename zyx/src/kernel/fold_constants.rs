@@ -427,20 +427,7 @@ impl Kernel {
                         }
                     }
 
-                    if remove_op {
-                        if let Some(&old_op_id) = remaps.get(&op_id) {
-                            let mut update_id = self.head;
-                            while !update_id.is_null() {
-                                for param in self.ops[update_id].op.parameters_mut() {
-                                    if *param == op_id {
-                                        *param = old_op_id;
-                                    }
-                                }
-                                update_id = self.next_op(update_id);
-                            }
-                        }
-                        self.remove_op(op_id);
-                    } else {
+                    if !remove_op {
                         for param in op.parameters_mut() {
                             if let Some(&new_id) = remaps.get(param) {
                                 *param = new_id;
