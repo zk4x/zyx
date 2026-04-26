@@ -460,6 +460,8 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
+        let register_estimate: u64 = 0;
+
         let global_ws = gws.iter().product::<Dim>() as u64;
         let n_threads = lws.iter().product::<Dim>() as u32;
         let instructions_per_thread = n_instructions as u32;
@@ -468,7 +470,25 @@ impl Kernel {
         let global_stores_per_thread = n_scoped_stores[0] as u32;
         let local_stores_per_thread = n_scoped_stores[1] as u32;
 
+        let total_loads = n_threads as u64 * global_ws * global_loads_per_thread as u64;
+        let total_stores = n_threads as u64 * global_ws * global_stores_per_thread as u64;
+        let total_instr = n_threads as u64 * global_ws * instructions_per_thread as u64;
+
+        let memory_score = ((total_loads + total_stores) as f64 / total_instr as f64).min(1.0);
+
+        let workgroup_score = 1.0 - (n_threads as f64 / dev_info.max_local_threads as f64).min(1.0);
+
+        let register_score = if register_estimate > dev_info.max_register_bytes {
+            0.95
+        } else {
+            0.05
+        };
+
+        let cost = ((memory_score + register_score + workgroup_score) * 1_000_000_000.0) as u64;
+
         Cost {
+            cost,
+            register_estimate,
             global_ws,
             n_threads,
             instructions_per_thread,
@@ -511,6 +531,8 @@ impl Kernel {
 
 #[derive(Debug, Default, Clone, Copy, Hash, DeBin, SerBin)]
 pub struct Cost {
+    cost: u64,
+    register_estimate: u32,
     global_ws: u64,
     n_threads: u32,
     instructions_per_thread: u32,
@@ -523,21 +545,7 @@ pub struct Cost {
 
 impl PartialEq for Cost {
     fn eq(&self, other: &Self) -> bool {
-        // Global memory accesses are most expensive, prioritize minimizing them
-        // Global stores are most critical (write bandwidth)
-        self.global_stores_per_thread
-            .cmp(&other.global_stores_per_thread)
-            // Then global loads
-            .then(self.global_loads_per_thread.cmp(&other.global_loads_per_thread))
-            // Then total instructions + local memory accesses (local memory is ~10x more expensive)
-            .then(
-                (self.instructions_per_thread + self.local_loads_per_thread * 10 + self.local_stores_per_thread * 10).cmp(
-                    &(other.instructions_per_thread + other.local_loads_per_thread * 10 + other.local_stores_per_thread * 10),
-                ),
-            )
-            // Fewer threads with more work per thread is slightly preferred (less overhead)
-            .then(other.n_threads.cmp(&self.n_threads))
-            == std::cmp::Ordering::Equal
+        self.cost == other.cost
     }
 }
 
@@ -545,23 +553,7 @@ impl Eq for Cost {}
 
 impl Ord for Cost {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        // Global memory accesses are most expensive, prioritize minimizing them
-        // Global work size first - smaller means better GPU utilization
-        self.global_ws
-            .cmp(&other.global_ws)
-            // Then local memory accesses (registers vs local memory)
-            .then(self.local_loads_per_thread.cmp(&other.local_loads_per_thread))
-            .then(self.local_stores_per_thread.cmp(&other.local_stores_per_thread))
-            // Then barriers
-            .then(self.n_barriers.cmp(&other.n_barriers))
-            // Global stores
-            .then(self.global_stores_per_thread.cmp(&other.global_stores_per_thread))
-            // Global loads
-            .then(self.global_loads_per_thread.cmp(&other.global_loads_per_thread))
-            // Then total instructions
-            .then(self.instructions_per_thread.cmp(&other.instructions_per_thread))
-            // Fewer threads with more work per thread is slightly preferred (less overhead)
-            .then(other.n_threads.cmp(&self.n_threads))
+        self.cost.cmp(&other.cost)
     }
 }
 
