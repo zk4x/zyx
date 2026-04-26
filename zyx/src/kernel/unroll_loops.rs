@@ -291,17 +291,18 @@ impl Kernel {
             } else if let Op::Store { dst, x, index, vlen: 1 } = self.ops[this_id].op
                 && dst == acc_id
             {
+                let Op::Binary { bop, .. } = self.ops[x].op else { unreachable!() };
                 // TODO debug assert index is const zero
                 let y = if let Some(mapping) = map.get(&x) { mapping[0] } else { x };
                 let mut carry = this_id;
-                self.ops[this_id].op = Op::Binary { x, y, bop: BOp::Add };
+                self.ops[this_id].op = Op::Binary { x, y, bop };
                 for i in 1..factor - 1 {
                     let x = if let Some(mapping) = map.get(&x) {
                         mapping[i as usize]
                     } else {
                         x
                     };
-                    carry = self.insert_before(op_id, Op::Binary { x, y: carry, bop: BOp::Add });
+                    carry = self.insert_before(op_id, Op::Binary { x, y: carry, bop });
                 }
                 self.insert_before(op_id, Op::Store { dst, x: carry, index, vlen: 1 });
             } else {
