@@ -217,6 +217,10 @@ self.verify();
 - Cost model uses heuristic initially, then actual execution time
 - Use kernel hashing to avoid duplicate exploration
 
+#### Optimization Correctness (CRITICAL)
+
+Every optimization must produce correct IR that calculates the same result as the input. **No optimization is needed for tests to pass.** ALL tests must pass with ALL optimizations disabled, and ALL tests must pass no matter which sequence of optimizations (including empty) is applied. If any sequence breaks correctness, the optimization that produced invalid IR from valid code is BUGGY and must be fixed or disabled.
+
 ## How zyx Works & What NOT to Do
 
 ### Architecture Overview
