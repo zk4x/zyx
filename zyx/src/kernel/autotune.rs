@@ -386,7 +386,7 @@ impl Kernel {
         let mut n_instructions = 0;
         let mut n_scoped_loads = [0u64, 0, 0];
         let mut n_scoped_stores = [0u64, 0, 0];
-        let mut n_barriers = 0u64;
+        let mut barriers_per_thread = 0u64;
 
         let mut gws = [1; 3];
         let mut lws = [1; 3];
@@ -438,7 +438,7 @@ impl Kernel {
                     n_instructions += loop_mult * cost;
                 }
                 Op::Barrier { .. } => {
-                    n_barriers += loop_mult;
+                    barriers_per_thread += loop_mult;
                 }
                 Op::If { .. } => {
                     n_instructions += loop_mult * 3;
@@ -462,19 +462,21 @@ impl Kernel {
 
         let register_estimate: u64 = 0;
 
-        let global_ws = gws.iter().product::<Dim>() as u64;
-        let n_threads = lws.iter().product::<Dim>() as u32;
-        let instructions_per_thread = n_instructions as u32;
-        let global_loads_per_thread = n_scoped_loads[0] as u32;
-        let local_loads_per_thread = n_scoped_loads[1] as u32;
-        let global_stores_per_thread = n_scoped_stores[0] as u32;
-        let local_stores_per_thread = n_scoped_stores[1] as u32;
+        let global_ws = gws.iter().product::<Dim>();
+        let n_threads = lws.iter().product::<Dim>();
+        let instructions_per_thread = n_instructions;
+        let global_loads_per_thread = n_scoped_loads[0];
+        let local_loads_per_thread = n_scoped_loads[1];
+        let global_stores_per_thread = n_scoped_stores[0];
+        let local_stores_per_thread = n_scoped_stores[1];
 
-        let total_loads = n_threads as u64 * global_ws * global_loads_per_thread as u64;
-        let total_stores = n_threads as u64 * global_ws * global_stores_per_thread as u64;
-        let total_instr = n_threads as u64 * global_ws * instructions_per_thread as u64;
+        let total_loads = n_threads * global_ws * global_loads_per_thread;
+        let total_stores = n_threads * global_ws * global_stores_per_thread;
+        let total_local = n_threads * global_ws * (local_loads_per_thread + local_stores_per_thread);
+        let total_instr = n_threads * global_ws * instructions_per_thread;
+        let total_barriers = n_threads * global_ws * barriers_per_thread;
 
-        let memory_score = ((total_loads + total_stores) as f64 / total_instr as f64).min(1.0);
+        let memory_score = ((total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64).min(1.0);
 
         let workgroup_score = 1.0 - (n_threads as f64 / dev_info.max_local_threads as f64).min(1.0);
 
@@ -486,18 +488,7 @@ impl Kernel {
 
         let cost = ((memory_score + register_score + workgroup_score) * 1_000_000_000.0) as u64;
 
-        Cost {
-            cost,
-            register_estimate,
-            global_ws,
-            n_threads,
-            instructions_per_thread,
-            global_loads_per_thread,
-            local_loads_per_thread,
-            global_stores_per_thread,
-            local_stores_per_thread,
-            n_barriers: n_barriers as u32,
-        }
+        Cost { cost }
     }
 
     pub fn get_hash(&self) -> u64 {
@@ -532,15 +523,6 @@ impl Kernel {
 #[derive(Debug, Default, Clone, Copy, Hash, DeBin, SerBin)]
 pub struct Cost {
     cost: u64,
-    register_estimate: u32,
-    global_ws: u64,
-    n_threads: u32,
-    instructions_per_thread: u32,
-    global_loads_per_thread: u32,
-    local_loads_per_thread: u32,
-    global_stores_per_thread: u32,
-    local_stores_per_thread: u32,
-    n_barriers: u32,
 }
 
 impl PartialEq for Cost {
@@ -584,7 +566,7 @@ fn remove_worst(items: &mut Vec<OptSeq>, mut n: usize, rng: &mut Rng) {
     }
     while n > 0 && !items.is_empty() {
         // Tournament among random samples biased toward high cost
-        const K: usize = 4; // number of candidates
+        const K: usize = 2; // number of candidates
         let mut worst_idx = rng.range::<u64>(0..items.len() as u64) as usize;
         let mut worst_cost = items[worst_idx].cost;
         for _ in 1..K {
@@ -603,7 +585,7 @@ fn remove_worst(items: &mut Vec<OptSeq>, mut n: usize, rng: &mut Rng) {
 }
 
 fn sample_best<'a>(items: &'a [OptSeq], rng: &mut Rng) -> &'a OptSeq {
-    const K: usize = 16;
+    const K: usize = 2;
     debug_assert!(!items.is_empty(), "sample_best called with empty items");
     let len = items.len();
     let mut best_idx = rng.range::<u64>(0..len as u64) as usize;
