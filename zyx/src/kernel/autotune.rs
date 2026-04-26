@@ -165,18 +165,12 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        /*let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
-        for cfg in 0..n_reg_tile.min(20) {
-            let mut test_kernel = kernel.clone();
-            reg_tile_opt.apply(&mut test_kernel, cfg);
-            test_kernel.run_always_on_optimizations();
-            println!("cfg={} cost={:?}", cfg, test_kernel.get_cost(device.info()));
-        }
+        let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
         if n_reg_tile > 0 {
             reg_tile_opt.apply(&mut kernel, 10);
         }
         kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();*/
+        kernel.run_always_on_optimizations();
 
         let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
 
@@ -195,7 +189,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 

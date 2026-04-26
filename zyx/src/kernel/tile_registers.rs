@@ -92,6 +92,14 @@ impl Kernel {
             global_indices.push(factor_idx);
         }
 
+        // Apply unroll FIRST
+        for (i, (&reduce_id, factors)) in reduce_splits.iter().enumerate() {
+            let factor_idx = reduce_indices[i];
+            let reduce_factor = factors[factor_idx];
+            self.unroll_tree_reduce(reduce_id, reduce_factor);
+        }
+
+        // Then apply upcast
         let mut idx = 0;
         for (op_id, factors) in global_upcasts.iter() {
             let factor_idx = global_indices[idx];
@@ -100,13 +108,6 @@ impl Kernel {
                 self.upcast(*op_id, factor as u64);
             }
             idx += 1;
-        }
-
-        // Apply unroll AFTER upcast
-        for (i, (&reduce_id, factors)) in reduce_splits.iter().enumerate() {
-            let factor_idx = reduce_indices[i];
-            let reduce_factor = factors[factor_idx];
-            self.unroll_tree_reduce(reduce_id, reduce_factor);
         }
     }
 }
