@@ -7,6 +7,7 @@ use crate::cache::Cache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{Graph, Node};
+use crate::compiled_graph::{CompactedGraph, CompiledGraph};
 use crate::kernel::{BOp, UOp};
 use crate::rng::Rng;
 use crate::scalar::Scalar;
@@ -59,7 +60,7 @@ pub struct Runtime {
     /// Are we in training mode?
     pub training: bool,
     // Cache for compiled graphs, maps compacted graph to compiled result.
-    //pub(crate) graph_cache: Map<CompactedGraph, CompiledGraph>,
+    pub(crate) graph_cache: Map<CompactedGraph, CompiledGraph>,
 }
 
 pub trait TempData: Send {
@@ -103,7 +104,7 @@ impl Runtime {
             constants: [Constant::I32(0); NUM_CONSTANTS],
             constants_len: 0,
             implicit_casts: true,
-            //graph_cache: Map::with_hasher(BuildHasherDefault::new()),
+            graph_cache: Map::with_hasher(BuildHasherDefault::new()),
         }
     }
 
@@ -636,7 +637,8 @@ impl Runtime {
             );
         }
 
-        self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        //self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
@@ -728,7 +730,8 @@ impl Runtime {
             );
         }
 
-        self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        //self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
