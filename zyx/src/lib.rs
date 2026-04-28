@@ -61,7 +61,7 @@
 use crate::runtime::Runtime;
 
 mod backend;
-mod cache;
+mod kernel_cache;
 mod dtype;
 mod error;
 mod graph;
@@ -79,7 +79,6 @@ mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 mod autograd;
 mod chasher;
-mod compiled_graph;
 mod kernelize;
 mod module;
 mod prog_bar;

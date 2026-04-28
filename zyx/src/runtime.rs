@@ -3,11 +3,11 @@
 
 //! Runtime handles tensor graph and connects tensors to device buffers.
 use crate::backend::{AutotuneConfig, BufferId, Config, Device, DeviceId, Event, MemoryPool, PoolBufferId, PoolId};
-use crate::cache::Cache;
+use crate::kernel_cache::KernelCache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
 use crate::graph::{Graph, Node};
-use crate::compiled_graph::{CompactedGraph, CompiledGraph};
+use crate::graph::compiled::{CachedGraph, CompiledGraph};
 use crate::kernel::{BOp, UOp};
 use crate::rng::Rng;
 use crate::scalar::Scalar;
@@ -37,7 +37,7 @@ pub struct Runtime {
     /// Global mapping from tensor ID to (`pool_index`, `buffer_id`).
     pub buffer_map: Map<TensorId, BufferId>,
     /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
-    pub cache: Cache,
+    pub kernel_cache: KernelCache,
     /// Zyx configuration directory path
     pub config_dir: Option<PathBuf>,
     /// Random number generator
@@ -59,8 +59,8 @@ pub struct Runtime {
     pub implicit_casts: bool,
     /// Are we in training mode?
     pub training: bool,
-    // Cache for compiled graphs, maps compacted graph to compiled result.
-    pub(crate) graph_cache: Map<CompactedGraph, CompiledGraph>,
+    // Cache for compiled kernels, maps kernels to compiled result.
+    pub(crate) graph_cache: Map<CachedGraph, CompiledGraph>,
 }
 
 pub trait TempData: Send {
@@ -96,7 +96,7 @@ impl Runtime {
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
             config_dir: None,
-            cache: Cache::new(),
+            kernel_cache: KernelCache::new(),
             training: false,
             autotune_config: AutotuneConfig::new(),
             debug: DebugMask(0),
@@ -197,7 +197,7 @@ impl Runtime {
                 let mut buf = Vec::new();
                 file.read_to_end(&mut buf).unwrap();
                 if let Ok(cache) = nanoserde::DeBin::deserialize_bin(&buf) {
-                    self.cache = cache;
+                    self.kernel_cache = cache;
                 }
             }
         }

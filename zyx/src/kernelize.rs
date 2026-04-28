@@ -6,7 +6,7 @@
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Device, DeviceId, PoolId},
-    cache::Cache,
+    kernel_cache::KernelCache,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
@@ -58,7 +58,7 @@ struct Kernelizer<'a> {
     temp_data: &'a mut Map<BufferId, Box<[u8]>>,
     buffer_map: &'a mut Map<TensorId, BufferId>,
     devices: &'a mut Slab<DeviceId, Device>,
-    cache: &'a mut Cache,
+    cache: &'a mut KernelCache,
     autotune_config: &'a AutotuneConfig,
     debug: DebugMask,
     n_launches: u32,
@@ -74,7 +74,7 @@ impl<'a> Kernelizer<'a> {
         temp_data: &'a mut Map<BufferId, Box<[u8]>>,
         buffer_map: &'a mut Map<TensorId, BufferId>,
         devices: &'a mut Slab<DeviceId, Device>,
-        cache: &'a mut Cache,
+        cache: &'a mut KernelCache,
         search_config: &'a AutotuneConfig,
         debug: DebugMask,
     ) -> Self {
@@ -710,7 +710,7 @@ impl Runtime {
             &mut self.temp_data,
             &mut self.buffer_map,
             &mut self.devices,
-            &mut self.cache,
+            &mut self.kernel_cache,
             &self.autotune_config,
             self.debug,
         );

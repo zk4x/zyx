@@ -518,7 +518,7 @@ impl Kernel {
         let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
         memory_pool.sync_events(vec![event])?;
         let nanos = begin.elapsed().as_nanos() as u64;
-        let perf = crate::cache::get_perf(flops, bytes_read, bytes_written, nanos);
+        let perf = crate::kernel_cache::get_perf(flops, bytes_read, bytes_written, nanos);
         if debug.perf() {
             println!("{perf}");
         }
