@@ -3,200 +3,378 @@
 
 //! E-graph based search for fusion strategies.
 //!
-//! The e-graph stores multiple equivalent implementations for each node.
-//! Each node can have both the original operations and fused kernels.
-//! Saturation adds fused variants without replacing existing ones.
-
-use std::collections::BTreeMap;
+//! The e-graph stores multiple equivalent implementations for each buffer.
+//! Each buffer can be produced by the original operation, a fused kernel,
+//! or a copy from another pool. Saturation adds fused variants without
+//! replacing existing ones.
 
 use crate::Map;
 use crate::DType;
 use crate::dtype::Constant;
-use crate::graph::Node;
-use crate::graph::compiled::{CachedGraph, CompiledGraph};
+use crate::graph::compiled::{BufferSlot, CachedGraph, CompiledGraph};
 use crate::kernel::{BOp, UOp};
 use crate::shape::{Dim, UAxis};
 use crate::slab::{Slab, SlabId};
 use crate::tensor::TensorId;
 
-#[derive(Debug)]
+/// Index into the e-nodes slab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ENodeId(u32);
+
+impl From<usize> for ENodeId {
+    fn from(value: usize) -> Self {
+        ENodeId(value as u32)
+    }
+}
+
+impl From<ENodeId> for usize {
+    fn from(value: ENodeId) -> Self {
+        value.0 as usize
+    }
+}
+
+impl SlabId for ENodeId {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+// SlabId impl for BufferSlot (defined in compiled.rs)
+impl From<usize> for BufferSlot {
+    fn from(value: usize) -> Self {
+        BufferSlot(value as u32)
+    }
+}
+
+impl From<BufferSlot> for usize {
+    fn from(value: BufferSlot) -> Self {
+        value.0 as usize
+    }
+}
+
+impl SlabId for BufferSlot {
+    const ZERO: Self = Self(0);
+    const NULL: Self = Self(u32::MAX);
+
+    fn inc(&mut self) {
+        self.0 += 1;
+    }
+}
+
+/// A single operation node in the e-graph. Can be a kernel or a memory operation.
 pub enum ENode {
-    Const {
-        value: Constant,
-    },
-    Leaf {
-        dtype: DType,
-    },
-    Expand {
-        x: TensorId,
-    },
-    Permute {
-        x: TensorId,
-    },
-    Reshape {
-        x: TensorId,
-    },
-    Pad {
-        x: TensorId,
-    },
-    Reduce {
-        x: TensorId,
-        rop: BOp,
-    },
-    Cast {
-        x: TensorId,
-        dtype: DType,
-    },
-    Unary {
-        x: TensorId,
-        uop: UOp,
-    },
-    Binary {
-        x: TensorId,
-        y: TensorId,
-        bop: BOp,
-    },
-    /// Fused operation with associated cost (e.g., fused kernel execution time)
-    Fused {
-        cost: u64,
-        kernel: FusedKernel,
-    },
+    Leaf { output: BufferSlot },
+    Const { output: BufferSlot, value: Constant },
+    Expand { input: BufferSlot, output: BufferSlot },
+    Permute { input: BufferSlot, output: BufferSlot, axes: Box<[UAxis]> },
+    Reshape { input: BufferSlot, output: BufferSlot },
+    Pad { input: BufferSlot, output: BufferSlot, padding: Box<[(i64, i64)]> },
+    Reduce { input: BufferSlot, output: BufferSlot, rop: BOp, axes: Box<[UAxis]> },
+    Cast { input: BufferSlot, output: BufferSlot },
+    Unary { input: BufferSlot, output: BufferSlot, uop: UOp },
+    Binary { x: BufferSlot, y: BufferSlot, output: BufferSlot, bop: BOp },
+    Copy { src: BufferSlot, dst: BufferSlot, cost: u64 },
+    Fused { inputs: Vec<BufferSlot>, outputs: Vec<BufferSlot>, cost: u64, op: Box<dyn FusedOp> },
 }
 
-#[derive(Debug, Clone)]
-pub enum FusedKernel {
-    MatMul { a: TensorId, b: TensorId },
+/// Trait for fused kernel operations.
+pub trait FusedOp {
+    /// Returns the estimated execution cost.
+    fn cost(&self) -> u64;
 }
 
-#[derive(Debug)]
+/// Fused matmul kernel (Reduce(Add) over Binary(Mul) with expands).
+pub struct MatMulOp {}
+
+impl FusedOp for MatMulOp {
+    fn cost(&self) -> u64 {
+        0
+    }
+}
+
+/// Metadata for a buffer slot.
+pub struct BufferSlotInfo {
+    /// Memory pool this buffer lives in.
+    pub pool: PoolId,
+    /// Tensor shape.
+    pub shape: Box<[Dim]>,
+    /// Data type.
+    pub dtype: DType,
+}
+
+/// The e-graph: a hypergraph of buffer producers and consumers.
+/// Each buffer can have multiple producers (original op, fused kernel, copy).
+/// Extraction selects the cheapest combination.
 pub struct EGraph {
-    pub nodes: Slab<TensorId, Vec<ENode>>,
-    pub shapes: BTreeMap<TensorId, Box<[Dim]>>,
-    pub paddings: BTreeMap<TensorId, Box<[(i64, i64)]>>,
-    pub axes: BTreeMap<TensorId, Box<[UAxis]>>,
+    /// All operation nodes (kernels and memory ops).
+    enodes: Slab<ENodeId, ENode>,
+    /// Buffer metadata indexed by BufferSlot.
+    buffers: Slab<BufferSlot, BufferSlotInfo>,
+    /// Which nodes produce each buffer?
+    producers: Map<BufferSlot, Vec<ENodeId>>,
+    /// Which nodes consume each buffer?
+    consumers: Map<BufferSlot, Vec<ENodeId>>,
 }
 
-/// Builds  egraph by enumerating all fusion and memory allocation possibilities.
-/// Evaluates each fused node time
-///
-/// Full implementation would include:
-/// - Multiple fusion rules (matmul, elementwise chains, reduce chains, etc.)
-/// - Cost computation for each variant combination
-/// - Path selection to minimize total execution time
+use crate::backend::PoolId;
+
+impl ENode {
+    /// Returns a list of input buffers.
+    pub fn inputs(&self) -> Vec<&BufferSlot> {
+        match self {
+            ENode::Leaf { .. } | ENode::Const { .. } => vec![],
+            ENode::Expand { input, .. }
+            | ENode::Permute { input, .. }
+            | ENode::Reshape { input, .. }
+            | ENode::Pad { input, .. }
+            | ENode::Reduce { input, .. }
+            | ENode::Cast { input, .. }
+            | ENode::Unary { input, .. }
+            | ENode::Copy { src: input, .. } => vec![input],
+            ENode::Binary { x, y, .. } => vec![x, y],
+            ENode::Fused { inputs, .. } => inputs.iter().collect(),
+        }
+    }
+
+    /// Returns a list of output buffers.
+    pub fn outputs(&self) -> Vec<&BufferSlot> {
+        match self {
+            ENode::Leaf { output }
+            | ENode::Const { output, .. }
+            | ENode::Expand { output, .. }
+            | ENode::Permute { output, .. }
+            | ENode::Reshape { output, .. }
+            | ENode::Pad { output, .. }
+            | ENode::Reduce { output, .. }
+            | ENode::Cast { output, .. }
+            | ENode::Unary { output, .. }
+            | ENode::Binary { output, .. }
+            | ENode::Copy { dst: output, .. } => vec![output],
+            ENode::Fused { outputs, .. } => outputs.iter().collect(),
+        }
+    }
+}
+
 impl EGraph {
+    /// Build e-graph from a cached graph. Each CachedGraph node becomes a BufferSlot
+    /// on the default pool (pool 1). Memory ops (Leaf, Copy) are added as needed.
     pub fn new(graph: &CachedGraph) -> EGraph {
-        let mut nodes = Slab::new();
-        for (_, node) in graph.nodes.iter().enumerate() {
+        let mut enodes = Slab::new();
+        let mut buffers = Slab::new();
+        let mut producers: Map<BufferSlot, Vec<ENodeId>> = Map::default();
+        let mut consumers: Map<BufferSlot, Vec<ENodeId>> = Map::default();
+
+        let default_pool = PoolId::from(1);
+
+        let buf_id_from_tensor_id = |tid: usize| BufferSlot::from(tid);
+
+        for (tid, node) in graph.nodes.iter().enumerate() {
+            let buf_slot = buf_id_from_tensor_id(tid);
+            let tensor_id = TensorId::from(tid);
+            let shape = graph.shapes.get(&tensor_id).cloned().unwrap_or_else(|| Box::new([1]));
+            let dtype = Self::infer_dtype(node, &graph.nodes, tid);
+
+            buffers.push(BufferSlotInfo { pool: default_pool, shape, dtype });
+
             let enode = match node {
-                Node::Const { value } => ENode::Const { value: *value },
-                Node::Leaf { dtype } => ENode::Leaf { dtype: *dtype },
-                Node::Expand { x } => ENode::Expand { x: *x },
-                Node::Permute { x } => ENode::Permute { x: *x },
-                Node::Reshape { x } => ENode::Reshape { x: *x },
-                Node::Pad { x } => ENode::Pad { x: *x },
-                Node::Reduce { x, rop } => ENode::Reduce { x: *x, rop: *rop },
-                Node::Cast { x, dtype } => ENode::Cast { x: *x, dtype: *dtype },
-                Node::Unary { x, uop } => ENode::Unary { x: *x, uop: *uop },
-                Node::Binary { x, y, bop } => ENode::Binary { x: *x, y: *y, bop: *bop },
-                Node::Custom(_) => todo!(),
+                crate::graph::Node::Leaf { .. } => ENode::Leaf { output: buf_slot },
+                crate::graph::Node::Const { value } => ENode::Const { output: buf_slot, value: *value },
+                crate::graph::Node::Expand { x } => ENode::Expand {
+                    input: buf_id_from_tensor_id((*x).into()),
+                    output: buf_slot,
+                },
+                crate::graph::Node::Permute { x } => ENode::Permute {
+                    input: buf_id_from_tensor_id((*x).into()),
+                    output: buf_slot,
+                    axes: graph.axes.get(&tensor_id).cloned().unwrap_or_else(|| Box::new([])),
+                },
+                crate::graph::Node::Reshape { x } => ENode::Reshape {
+                    input: buf_id_from_tensor_id((*x).into()),
+                    output: buf_slot,
+                },
+                crate::graph::Node::Pad { x } => ENode::Pad {
+                    input: buf_id_from_tensor_id((*x).into()),
+                    output: buf_slot,
+                    padding: graph.paddings.get(&tensor_id).cloned().unwrap_or_else(|| Box::new([])),
+                },
+                crate::graph::Node::Reduce { x, rop } => ENode::Reduce {
+                    input: buf_id_from_tensor_id((*x).into()),
+                    output: buf_slot,
+                    rop: *rop,
+                    axes: graph.axes.get(&tensor_id).cloned().unwrap_or_else(|| Box::new([])),
+                },
+                crate::graph::Node::Cast { x, .. } => ENode::Cast {
+                    input: buf_id_from_tensor_id((*x).into()),
+                    output: buf_slot,
+                },
+                crate::graph::Node::Unary { x, uop } => ENode::Unary {
+                    input: buf_id_from_tensor_id((*x).into()),
+                    output: buf_slot,
+                    uop: *uop,
+                },
+                crate::graph::Node::Binary { x, y, bop } => ENode::Binary {
+                    x: buf_id_from_tensor_id((*x).into()),
+                    y: buf_id_from_tensor_id((*y).into()),
+                    output: buf_slot,
+                    bop: *bop,
+                },
+                crate::graph::Node::Custom(_) => todo!(),
             };
-            nodes.push(vec![enode]);
-        }
 
-        for (id, enodes) in nodes.iter() {
-            println!("{id}: {enodes:?}");
-        }
+            let inputs_clone: Vec<BufferSlot> = enode.inputs().into_iter().copied().collect();
+            let outputs_clone: Vec<BufferSlot> = enode.outputs().into_iter().copied().collect();
 
-        EGraph { nodes, shapes: graph.shapes.clone(), paddings: graph.paddings.clone(), axes: graph.axes.clone() }
-    }
+            let enode_id = enodes.push(enode);
 
-    pub fn saturate(&mut self) {
-        self.one_dnn_fuse();
-    }
-
-    pub fn extract(mut self) -> CompiledGraph {
-        let mut cumulative_costs: Map<TensorId, u64> = Map::default();
-
-        for node_id in self.nodes.ids().collect::<Vec<_>>() {
-            let enodes = &self.nodes[node_id];
-            let mut best_idx = 0;
-            let mut best_cumulative = u64::MAX;
-
-            for (i, enode) in enodes.iter().enumerate() {
-                let own_cost = match enode {
-                    ENode::Fused { cost, .. } => *cost,
-                    _ => u64::MAX / 2,
-                };
-
-                let deps_cost = match enode {
-                    ENode::Const { .. } | ENode::Leaf { .. } => 0,
-                    ENode::Expand { x }
-                    | ENode::Permute { x }
-                    | ENode::Reshape { x }
-                    | ENode::Pad { x }
-                    | ENode::Cast { x, .. }
-                    | ENode::Unary { x, .. }
-                    | ENode::Reduce { x, .. } => *cumulative_costs.get(&x).unwrap_or(&0),
-                    ENode::Binary { x, y, .. } => {
-                        *cumulative_costs.get(&x).unwrap_or(&0) + *cumulative_costs.get(&y).unwrap_or(&0)
-                    }
-                    ENode::Fused { kernel, .. } => match kernel {
-                        FusedKernel::MatMul { a, b } => {
-                            *cumulative_costs.get(&a).unwrap_or(&0) + *cumulative_costs.get(&b).unwrap_or(&0)
-                        }
-                    },
-                };
-
-                let cumulative = own_cost + deps_cost;
-                if cumulative < best_cumulative {
-                    best_cumulative = cumulative;
-                    best_idx = i;
-                }
+            for &input in &inputs_clone {
+                consumers.entry(input).or_default().push(enode_id);
             }
-
-            cumulative_costs.insert(node_id, best_cumulative);
-
-            let enodes = self.nodes.get_mut(node_id).unwrap();
-            enodes.swap(0, best_idx);
-            enodes.truncate(1);
+            for &output in &outputs_clone {
+                producers.entry(output).or_default().push(enode_id);
+            }
         }
 
-        todo!()
+        EGraph { enodes, buffers, producers, consumers }
     }
 
-    pub fn one_dnn_fuse(&mut self) {
-        let mut new_nodes: Vec<(TensorId, ENode)> = Vec::new();
-        for (node_id, enodes) in self.nodes.iter() {
-            for enode in enodes {
-                let ENode::Reduce { x: red_input, rop: BOp::Add } = &enode else {
+    fn infer_dtype(node: &crate::graph::Node, nodes: &[crate::graph::Node], _idx: usize) -> DType {
+        match node {
+            crate::graph::Node::Leaf { dtype } => *dtype,
+            crate::graph::Node::Const { value } => value.dtype(),
+            crate::graph::Node::Cast { dtype, .. } => *dtype,
+            crate::graph::Node::Binary { bop, .. } if bop.returns_bool() => DType::Bool,
+            crate::graph::Node::Binary { .. }
+            | crate::graph::Node::Unary { .. }
+            | crate::graph::Node::Reduce { .. }
+            | crate::graph::Node::Expand { .. }
+            | crate::graph::Node::Permute { .. }
+            | crate::graph::Node::Reshape { .. }
+            | crate::graph::Node::Pad { .. } => {
+                let input_idx: usize = node.param1().into();
+                Self::infer_dtype(&nodes[input_idx], nodes, input_idx)
+            }
+            crate::graph::Node::Custom(_) => todo!(),
+        }
+    }
+
+    /// Apply fusion rules to saturate the e-graph with fused kernel alternatives.
+    pub fn saturate(&mut self) {
+        self.fuse_matmul();
+    }
+
+    /// Fuse Reduce(Add) over Binary(Mul, Expand, Expand) into a matmul kernel.
+    pub fn fuse_matmul(&mut self) {
+        let mut new_enodes: Vec<ENode> = Vec::new();
+
+        for (_enode_id, enode) in self.enodes.iter() {
+            let ENode::Reduce { input: red_input, rop: BOp::Add, output, axes: _ } = enode else {
+                continue;
+            };
+
+            let red_input = *red_input;
+            let Some(producers) = self.producers.get(&red_input) else {
+                continue;
+            };
+
+            for &bin_id in producers {
+                let bin = &self.enodes[bin_id];
+                let ENode::Binary { x, y, output: _, bop: BOp::Mul } = bin else {
                     continue;
                 };
-                let bin_enodes = &self.nodes[*red_input];
-                for bin_enode in bin_enodes {
-                    let ENode::Binary { x: x_input, y: y_input, bop: BOp::Mul } = &bin_enode else {
-                        continue;
-                    };
-                    let mut a = TensorId::NULL;
-                    let mut b = TensorId::NULL;
-                    for x_node in &self.nodes[*x_input] {
-                        if let ENode::Expand { x } = &x_node {
-                            a = *x;
-                        }
-                    }
-                    for y_node in &self.nodes[*y_input] {
-                        if let ENode::Expand { x } = &y_node {
-                            b = *x;
-                        }
-                    }
-                    if !a.is_null() && !b.is_null() {
-                        let new_enode = ENode::Fused { cost: 0, kernel: FusedKernel::MatMul { a, b } };
-                        new_nodes.push((node_id, new_enode));
-                    }
+
+                let x_input = *x;
+                let y_input = *y;
+
+                let x_is_expand = self.producers.get(&x_input).is_some_and(|prods| {
+                    prods.iter().any(|&id| matches!(self.enodes[id], ENode::Expand { .. }))
+                });
+                let y_is_expand = self.producers.get(&y_input).is_some_and(|prods| {
+                    prods.iter().any(|&id| matches!(self.enodes[id], ENode::Expand { .. }))
+                });
+
+                if !x_is_expand || !y_is_expand {
+                    continue;
                 }
+
+                let op = Box::new(MatMulOp {});
+                let cost = op.cost();
+                let fused = ENode::Fused {
+                    inputs: vec![x_input, y_input],
+                    outputs: vec![*output],
+                    cost,
+                    op,
+                };
+                new_enodes.push(fused);
             }
         }
-        for (node_id, new_enode) in new_nodes {
-            self.nodes[node_id].push(new_enode);
+
+        for enode in new_enodes {
+            let outputs_clone: Vec<BufferSlot> = enode.outputs().into_iter().copied().collect();
+            let enode_id = self.enodes.push(enode);
+            let new_enode = &self.enodes[enode_id];
+            for input in new_enode.inputs() {
+                self.consumers.entry(*input).or_default().push(enode_id);
+            }
+            for &output in &outputs_clone {
+                self.producers.entry(output).or_default().push(enode_id);
+            }
         }
+    }
+
+    /// Extract the cheapest combination of e-nodes and produce a CompiledGraph.
+    pub fn extract(self) -> CompiledGraph {
+        let mut cumulative_costs: Map<BufferSlot, u64> = Map::default();
+        let mut claimed: crate::Set<BufferSlot> = crate::Set::default();
+        let mut selected: Map<BufferSlot, ENodeId> = Map::default();
+
+        let slots: Vec<BufferSlot> = self.buffers.ids().collect();
+
+        for slot in slots {
+            if claimed.contains(&slot) {
+                continue;
+            }
+
+            let Some(producer_ids) = self.producers.get(&slot) else {
+                continue;
+            };
+
+            let mut best_id = None;
+            let mut best_cumulative = u64::MAX;
+
+            for &enode_id in producer_ids {
+                let enode = &self.enodes[enode_id];
+                let own_cost = match enode {
+                    ENode::Copy { cost, .. } | ENode::Fused { cost, .. } => *cost,
+                    _ => 0,
+                };
+
+                let inputs_cost: u64 = enode.inputs().into_iter().map(|s| *cumulative_costs.get(s).unwrap_or(&0)).sum();
+                let cumulative = own_cost + inputs_cost;
+
+                if cumulative < best_cumulative {
+                    best_cumulative = cumulative;
+                    best_id = Some(enode_id);
+                }
+            }
+
+            let Some(enode_id) = best_id else {
+                continue;
+            };
+
+            let enode = &self.enodes[enode_id];
+            for output in enode.outputs() {
+                claimed.insert(*output);
+                selected.insert(*output, enode_id);
+                cumulative_costs.insert(*output, best_cumulative);
+            }
+        }
+
+        // TODO: Validate schedule (check deps, memory limits)
+        // TODO: Convert selected plan to CompiledGraph
+
+        todo!()
     }
 }

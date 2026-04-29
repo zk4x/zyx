@@ -26,7 +26,7 @@ pub struct CompiledGraph {
 
 /// Index into CompiledGraph::buffer_slots, used instead of raw BufferId
 /// so the compiled graph is stable across runs with different buffer IDs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferSlot(pub u32);
 
 /// A single step in a compiled graph execution.
