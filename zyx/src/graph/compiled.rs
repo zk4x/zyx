@@ -4,16 +4,12 @@
 //! Compiled graph caching layer.
 
 use crate::{
-    DType, Map, Set, ZyxError,
-    backend::{BufferId, DeviceId, ProgramId},
+    Map, Set, ZyxError,
+    backend::{BufferId, DeviceId, PoolId, ProgramId},
     graph::{Node, search},
-    kernel::{Kernel, MoveOp, Op, OpId, OpNode},
-    kernelize::KMKernelId,
     runtime::Runtime,
     shape::{Dim, UAxis},
-    slab::{Slab, SlabId},
     tensor::TensorId,
-    view::View,
 };
 use std::collections::BTreeMap;
 use std::hash::BuildHasherDefault;
@@ -34,18 +30,18 @@ pub struct BufferSlot(pub u32);
 #[derive(Debug, Clone)]
 pub enum CompiledNode {
     Allocate {
-        pool: usize,
-        size: usize,
+        pool: PoolId,
+        size: Dim,
         slot: BufferSlot,
     },
     Deallocate {
-        pool: usize,
+        pool: PoolId,
         slot: BufferSlot,
     },
     CopyMemory {
-        src_pool: usize,
+        src_pool: PoolId,
         src_buffer: BufferSlot,
-        dst_pool: usize,
+        dst_pool: PoolId,
         dst_buffer: BufferSlot,
     },
     LaunchProgram {
