@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::Map;
 use crate::DType;
 use crate::dtype::Constant;
 use crate::graph::Node;
@@ -113,7 +114,53 @@ impl EGraph {
         self.one_dnn_fuse();
     }
 
-    pub fn extract(self) -> CompiledGraph {
+    pub fn extract(mut self) -> CompiledGraph {
+        let mut cumulative_costs: Map<TensorId, u64> = Map::default();
+
+        for node_id in self.nodes.ids().collect::<Vec<_>>() {
+            let enodes = &self.nodes[node_id];
+            let mut best_idx = 0;
+            let mut best_cumulative = u64::MAX;
+
+            for (i, enode) in enodes.iter().enumerate() {
+                let own_cost = match enode {
+                    ENode::Fused { cost, .. } => *cost,
+                    _ => u64::MAX / 2,
+                };
+
+                let deps_cost = match enode {
+                    ENode::Const { .. } | ENode::Leaf { .. } => 0,
+                    ENode::Expand { x }
+                    | ENode::Permute { x }
+                    | ENode::Reshape { x }
+                    | ENode::Pad { x }
+                    | ENode::Cast { x, .. }
+                    | ENode::Unary { x, .. }
+                    | ENode::Reduce { x, .. } => *cumulative_costs.get(&x).unwrap_or(&0),
+                    ENode::Binary { x, y, .. } => {
+                        *cumulative_costs.get(&x).unwrap_or(&0) + *cumulative_costs.get(&y).unwrap_or(&0)
+                    }
+                    ENode::Fused { kernel, .. } => match kernel {
+                        FusedKernel::MatMul { a, b } => {
+                            *cumulative_costs.get(&a).unwrap_or(&0) + *cumulative_costs.get(&b).unwrap_or(&0)
+                        }
+                    },
+                };
+
+                let cumulative = own_cost + deps_cost;
+                if cumulative < best_cumulative {
+                    best_cumulative = cumulative;
+                    best_idx = i;
+                }
+            }
+
+            cumulative_costs.insert(node_id, best_cumulative);
+
+            let enodes = self.nodes.get_mut(node_id).unwrap();
+            enodes.swap(0, best_idx);
+            enodes.truncate(1);
+        }
+
         todo!()
     }
 
