@@ -9,9 +9,12 @@
 //! replacing existing ones.
 
 use crate::Map;
+use crate::Set;
 use crate::DType;
+use crate::backend::PoolId;
 use crate::dtype::Constant;
 use crate::graph::compiled::{BufferSlot, CachedGraph, CompiledGraph};
+use crate::graph::Node;
 use crate::kernel::{BOp, UOp};
 use crate::shape::{Dim, UAxis};
 use crate::slab::{Slab, SlabId};
@@ -119,8 +122,6 @@ pub struct EGraph {
     consumers: Map<BufferSlot, Vec<ENodeId>>,
 }
 
-use crate::backend::PoolId;
-
 impl ENode {
     /// Returns a list of input buffers.
     pub fn inputs(&self) -> Vec<&BufferSlot> {
@@ -180,48 +181,48 @@ impl EGraph {
             buffers.push(BufferSlotInfo { pool: default_pool, shape, dtype });
 
             let enode = match node {
-                crate::graph::Node::Leaf { .. } => ENode::Leaf { output: buf_slot },
-                crate::graph::Node::Const { value } => ENode::Const { output: buf_slot, value: *value },
-                crate::graph::Node::Expand { x } => ENode::Expand {
+                Node::Leaf { .. } => ENode::Leaf { output: buf_slot },
+                Node::Const { value } => ENode::Const { output: buf_slot, value: *value },
+                Node::Expand { x } => ENode::Expand {
                     input: buf_id_from_tensor_id((*x).into()),
                     output: buf_slot,
                 },
-                crate::graph::Node::Permute { x } => ENode::Permute {
+                Node::Permute { x } => ENode::Permute {
                     input: buf_id_from_tensor_id((*x).into()),
                     output: buf_slot,
                     axes: graph.axes.get(&tensor_id).cloned().unwrap_or_else(|| Box::new([])),
                 },
-                crate::graph::Node::Reshape { x } => ENode::Reshape {
+                Node::Reshape { x } => ENode::Reshape {
                     input: buf_id_from_tensor_id((*x).into()),
                     output: buf_slot,
                 },
-                crate::graph::Node::Pad { x } => ENode::Pad {
+                Node::Pad { x } => ENode::Pad {
                     input: buf_id_from_tensor_id((*x).into()),
                     output: buf_slot,
                     padding: graph.paddings.get(&tensor_id).cloned().unwrap_or_else(|| Box::new([])),
                 },
-                crate::graph::Node::Reduce { x, rop } => ENode::Reduce {
+                Node::Reduce { x, rop } => ENode::Reduce {
                     input: buf_id_from_tensor_id((*x).into()),
                     output: buf_slot,
                     rop: *rop,
                     axes: graph.axes.get(&tensor_id).cloned().unwrap_or_else(|| Box::new([])),
                 },
-                crate::graph::Node::Cast { x, .. } => ENode::Cast {
+                Node::Cast { x, .. } => ENode::Cast {
                     input: buf_id_from_tensor_id((*x).into()),
                     output: buf_slot,
                 },
-                crate::graph::Node::Unary { x, uop } => ENode::Unary {
+                Node::Unary { x, uop } => ENode::Unary {
                     input: buf_id_from_tensor_id((*x).into()),
                     output: buf_slot,
                     uop: *uop,
                 },
-                crate::graph::Node::Binary { x, y, bop } => ENode::Binary {
+                Node::Binary { x, y, bop } => ENode::Binary {
                     x: buf_id_from_tensor_id((*x).into()),
                     y: buf_id_from_tensor_id((*y).into()),
                     output: buf_slot,
                     bop: *bop,
                 },
-                crate::graph::Node::Custom(_) => todo!(),
+                Node::Custom(_) => todo!(),
             };
 
             let inputs_clone: Vec<BufferSlot> = enode.inputs().into_iter().copied().collect();
