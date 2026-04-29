@@ -9,30 +9,16 @@
 
 use std::collections::BTreeMap;
 
+use crate::DType;
 use crate::dtype::Constant;
 use crate::graph::Node;
 use crate::kernel::{BOp, UOp};
 use crate::shape::{Dim, UAxis};
 use crate::slab::Slab;
 use crate::tensor::TensorId;
-use crate::DType;
 
 #[derive(Debug, Clone)]
-pub enum FusedKernel {
-    MatMul {
-        a: TensorId,
-        b: TensorId,
-    },
-}
-
-#[derive(Debug, Clone)]
-pub struct ENode {
-    pub cost: u64,
-    pub kind: ENodeKind,
-}
-
-#[derive(Debug, Clone)]
-pub enum ENodeKind {
+pub enum ENode {
     Const {
         value: Constant,
     },
@@ -68,7 +54,16 @@ pub enum ENodeKind {
         y: TensorId,
         bop: BOp,
     },
-    Fused(FusedKernel),
+    /// Fused operation with associated cost (e.g., fused kernel execution time)
+    Fused {
+        cost: u64,
+        kernel: FusedKernel,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum FusedKernel {
+    MatMul { a: TensorId, b: TensorId },
 }
 
 #[derive(Debug, Clone)]
@@ -79,40 +74,48 @@ pub struct EGraph {
     pub axes: BTreeMap<TensorId, Box<[UAxis]>>,
 }
 
-pub fn one_dnn_fuse(egraph: &mut Slab<TensorId, Vec<ENode>>, shapes: &BTreeMap<TensorId, Box<[Dim]>>, axes: &BTreeMap<TensorId, Box<[UAxis]>>) {
+pub fn one_dnn_fuse(
+    egraph: &mut Slab<TensorId, Vec<ENode>>,
+    shapes: &BTreeMap<TensorId, Box<[Dim]>>,
+    axes: &BTreeMap<TensorId, Box<[UAxis]>>,
+) {
     let mut new_nodes: Vec<(TensorId, ENode)> = Vec::new();
     for (node_id, enodes) in egraph.iter() {
         for enode in enodes {
-            let ENodeKind::Reduce { x: red_input, rop: BOp::Add } = &enode.kind else { continue; };
+            let ENode::Reduce { x: red_input, rop: BOp::Add } = &enode else {
+                continue;
+            };
             let bin_enodes = &egraph[*red_input];
             for bin_enode in bin_enodes {
-                let ENodeKind::Binary { x: x_input, y: y_input, bop: BOp::Mul } = &bin_enode.kind else { continue; };
+                let ENode::Binary { x: x_input, y: y_input, bop: BOp::Mul } = &bin_enode else {
+                    continue;
+                };
                 let x_enodes = &egraph[*x_input];
                 let y_enodes = &egraph[*y_input];
                 let mut x_has_expand = false;
                 let mut y_has_expand = false;
                 for x_node in x_enodes {
-                    let ENodeKind::Expand { .. } = &x_node.kind else { continue };
+                    let ENode::Expand { .. } = &x_node else { continue };
                     x_has_expand = true;
                 }
                 for y_node in y_enodes {
-                    let ENodeKind::Expand { .. } = &y_node.kind else { continue };
+                    let ENode::Expand { .. } = &y_node else { continue };
                     y_has_expand = true;
                 }
                 if x_has_expand && y_has_expand {
                     let mut a_src = TensorId::from(0);
                     let mut b_src = TensorId::from(0);
                     for x_node in x_enodes {
-                        if let ENodeKind::Expand { x } = &x_node.kind {
+                        if let ENode::Expand { x } = &x_node {
                             a_src = *x;
                         }
                     }
                     for y_node in y_enodes {
-                        if let ENodeKind::Expand { x } = &y_node.kind {
+                        if let ENode::Expand { x } = &y_node {
                             b_src = *x;
                         }
                     }
-                    let new_enode = ENode { cost: u64::MAX, kind: ENodeKind::Fused(FusedKernel::MatMul { a: a_src, b: b_src }) };
+                    let new_enode = ENode::Fused { cost: 0, kernel: FusedKernel::MatMul { a: a_src, b: b_src } };
                     new_nodes.push((node_id, new_enode));
                 }
             }
@@ -132,22 +135,19 @@ pub fn one_dnn_fuse(egraph: &mut Slab<TensorId, Vec<ENode>>, shapes: &BTreeMap<T
 /// - Path selection to minimize total execution time
 pub fn search(cached_graph: &crate::graph::compiled::CachedGraph) {
     let mut egraph: Slab<TensorId, Vec<ENode>> = Slab::new();
-    for (id, node) in cached_graph.nodes.iter().enumerate() {
-        let enode = ENode {
-            cost: u64::MAX,
-            kind: match node {
-                Node::Const { value } => ENodeKind::Const { value: *value },
-                Node::Leaf { dtype } => ENodeKind::Leaf { dtype: *dtype },
-                Node::Expand { x } => ENodeKind::Expand { x: *x },
-                Node::Permute { x } => ENodeKind::Permute { x: *x },
-                Node::Reshape { x } => ENodeKind::Reshape { x: *x },
-                Node::Pad { x } => ENodeKind::Pad { x: *x },
-                Node::Reduce { x, rop } => ENodeKind::Reduce { x: *x, rop: *rop },
-                Node::Cast { x, dtype } => ENodeKind::Cast { x: *x, dtype: *dtype },
-                Node::Unary { x, uop } => ENodeKind::Unary { x: *x, uop: *uop },
-                Node::Binary { x, y, bop } => ENodeKind::Binary { x: *x, y: *y, bop: *bop },
-                Node::Custom(_) => todo!(),
-            },
+    for (nid, node) in cached_graph.nodes.iter().enumerate() {
+        let enode = match node {
+            Node::Const { value } => ENode::Const { value: *value },
+            Node::Leaf { dtype } => ENode::Leaf { dtype: *dtype },
+            Node::Expand { x } => ENode::Expand { x: *x },
+            Node::Permute { x } => ENode::Permute { x: *x },
+            Node::Reshape { x } => ENode::Reshape { x: *x },
+            Node::Pad { x } => ENode::Pad { x: *x },
+            Node::Reduce { x, rop } => ENode::Reduce { x: *x, rop: *rop },
+            Node::Cast { x, dtype } => ENode::Cast { x: *x, dtype: *dtype },
+            Node::Unary { x, uop } => ENode::Unary { x: *x, uop: *uop },
+            Node::Binary { x, y, bop } => ENode::Binary { x: *x, y: *y, bop: *bop },
+            Node::Custom(_) => todo!(),
         };
         egraph.push(vec![enode]);
     }
