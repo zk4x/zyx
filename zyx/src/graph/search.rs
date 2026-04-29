@@ -14,7 +14,6 @@ use crate::graph::Node;
 use crate::kernel::{BOp, UOp};
 use crate::shape::{Dim, UAxis};
 use crate::slab::Slab;
-use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::DType;
 
@@ -124,6 +123,13 @@ pub fn one_dnn_fuse(egraph: &mut Slab<TensorId, Vec<ENode>>, shapes: &BTreeMap<T
     }
 }
 
+/// Builds  egraph by enumerating all fusion and memory allocation possibilities.
+/// Evaluates each fused node time
+///
+/// Full implementation would include:
+/// - Multiple fusion rules (matmul, elementwise chains, reduce chains, etc.)
+/// - Cost computation for each variant combination
+/// - Path selection to minimize total execution time
 pub fn search(cached_graph: &crate::graph::compiled::CachedGraph) {
     let mut egraph: Slab<TensorId, Vec<ENode>> = Slab::new();
     for (id, node) in cached_graph.nodes.iter().enumerate() {
