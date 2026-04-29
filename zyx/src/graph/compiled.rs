@@ -6,7 +6,7 @@
 use crate::{
     DType, Map, Set, ZyxError,
     backend::{BufferId, DeviceId, ProgramId},
-    graph::Node,
+    graph::{Node, search},
     kernel::{Kernel, MoveOp, Op, OpId, OpNode},
     kernelize::KMKernelId,
     runtime::Runtime,
@@ -80,7 +80,6 @@ impl Runtime {
         let mut id_map: Map<TensorId, TensorId> = Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
 
         for (i, &nid) in order.iter().enumerate() {
-            println!("{nid} -> {:?}", self.graph[nid]);
             let new_id = TensorId::from(i);
             let node = &self.graph[nid];
             let reindexed = if realized_nodes.contains(&nid) {
@@ -122,9 +121,12 @@ impl Runtime {
             }
         }
 
-        if let Some(_cached_graph) = self.graph_cache.get(&compacted) {
+        if let Some(cached_graph) = self.graph_cache.get(&compacted) {
+            // TODO: Execute cached_graph
             return Ok(());
         }
+
+        search::search(&compacted);
 
         let compacted_realized: Set<TensorId> = realized_nodes.iter().filter_map(|&tid| id_map.get(&tid).copied()).collect();
 
