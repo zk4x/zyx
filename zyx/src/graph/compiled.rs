@@ -6,7 +6,10 @@
 use crate::{
     Map, Set, ZyxError,
     backend::{BufferId, DeviceId, PoolId, ProgramId},
-    graph::{Node, search},
+    graph::{
+        Node,
+        search::{self, EGraph},
+    },
     runtime::Runtime,
     shape::{Dim, UAxis},
     tensor::TensorId,
@@ -61,7 +64,7 @@ pub struct CachedGraph {
 
 impl Runtime {
     /// Launch graph or store in cache for faster replay.
-    /// 
+    ///
     /// This function implements the following flow:
     /// 1. **Build compacted CachedGraph**: Create a minimal representation of the graph by
     ///    re-indexing all tensor IDs to 0..N and extracting shapes/paddings/axes. This compacted
@@ -133,15 +136,23 @@ impl Runtime {
             }
         }
 
-        if let Some(cached_graph) = self.graph_cache.get(&compacted) {
+        if let Some(compiled_graph) = self.graph_cache.get(&compacted) {
             // TODO: Execute cached_graph
             return Ok(());
         }
 
-        search::search(&compacted);
+        //let compacted_realized: Set<TensorId> = realized_nodes.iter().filter_map(|&tid| id_map.get(&tid).copied()).collect();
 
-        let compacted_realized: Set<TensorId> = realized_nodes.iter().filter_map(|&tid| id_map.get(&tid).copied()).collect();
+        let mut egraph = EGraph::new(&compacted);
+        egraph.saturate();
+        let compiled_graph = egraph.extract();
 
+        self.graph_cache.insert(compacted.clone(), compiled_graph);
+
+        if let Some(compiled_graph) = self.graph_cache.get(&compacted) {
+            // TODO: Execute cached_graph
+            return Ok(());
+        }
 
         Ok(())
     }
