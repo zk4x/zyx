@@ -377,49 +377,40 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("common_subexpression_elimination");
         let mut stack: Vec<Map<Op, OpId>> = Vec::with_capacity(10);
-        stack.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::default()));
+        stack.push(Map::with_capacity_and_hasher(20, BuildHasherDefault::default()));
 
-        let mut stored_locs: Vec<Map<OpId, bool>> = Vec::with_capacity(10);
-        stored_locs.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::default()));
+        let mut stored_stack: Vec<Set<OpId>> = Vec::with_capacity(10);
+        stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));
 
         let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
         let mut op_id = self.head;
         while !op_id.is_null() {
-            let temp = self.next_op(op_id);
             match &mut self.ops[op_id].op {
                 Op::Barrier { .. } | Op::Define { .. } => {} // skip define and barrier ops, these can not be deduplicated
                 Op::If { .. } | Op::Loop { .. } => {
-                    stack.push(Map::with_capacity_and_hasher(50, BuildHasherDefault::default()));
-                    stored_locs.push(Map::with_capacity_and_hasher(10, BuildHasherDefault::default()));
+                    stack.push(Map::with_capacity_and_hasher(20, BuildHasherDefault::default()));
+                    stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));
                 }
                 Op::EndIf | Op::EndLoop => {
                     stack.pop();
-                    stored_locs.pop();
+                    stored_stack.pop();
                 }
-                Op::Store { dst, .. } => {
-                    stored_locs.last_mut().unwrap().insert(*dst, true);
+                &mut Op::Store { dst, .. } => {
+                    stored_stack.last_mut().unwrap().insert(dst);
                 }
                 op => {
                     let mut remove_op = false;
-                    let op_key = op.clone();
 
                     // For Load ops, check if there's a store to the same src
                     let can_cse = if let Op::Load { src, .. } = op {
-                        let mut has_store = false;
-                        for stored in &stored_locs {
-                            if stored.get(src).is_some() {
-                                has_store = true;
-                                break;
-                            }
-                        }
-                        !has_store
+                        !stored_stack.iter().any(|x| x.contains(src))
                     } else {
                         true
                     };
 
                     if can_cse {
                         for loop_level in &stack {
-                            if let Some(&old_op_id) = loop_level.get(&op_key) {
+                            if let Some(&old_op_id) = loop_level.get(&op) {
                                 remaps.insert(op_id, old_op_id);
                                 remove_op = true;
                                 break;
@@ -433,11 +424,11 @@ impl Kernel {
                                 *param = new_id;
                             }
                         }
-                        stack.last_mut().unwrap().insert(op_key, op_id);
+                        stack.last_mut().unwrap().insert(op.clone(), op_id);
                     }
                 }
             }
-            op_id = temp;
+            op_id = self.next_op(op_id);
         }
 
         self.verify();

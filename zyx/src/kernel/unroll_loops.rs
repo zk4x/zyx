@@ -34,6 +34,31 @@ impl Kernel {
         self.verify();
     }
 
+    pub fn unroll_len1_loops(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("eliminate zero index");
+        let mut op_id = self.head;
+        let mut depth = 0;
+        let mut deleted = Vec::new();
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let Op::Loop { len, .. } = self.ops[op_id].op {
+                depth += 1;
+                if len == 1 {
+                    self.ops[op_id].op = Op::Const(Constant::idx(0));
+                    deleted.push(depth);
+                }
+            } else if let Op::EndLoop = self.ops[op_id].op {
+                if deleted.pop_if(|x| *x == depth).is_some() {
+                    self.remove_op(op_id);
+                }
+                depth -= 1;
+            }
+            op_id = next;
+        }
+        self.verify();
+    }
+
     pub fn unroll_loops(&mut self, unroll_dim: Dim) {
         let mut endloop_ids = Vec::new();
         let mut op_id = self.tail;

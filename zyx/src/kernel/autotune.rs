@@ -12,8 +12,8 @@ use crate::rng::Rng;
 use crate::shape::Dim;
 use crate::slab::SlabId;
 use crate::{DebugMask, Map, Set};
-use std::collections::BTreeMap;
 use nanoserde::{DeBin, SerBin};
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -191,15 +191,17 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("always on optimizations");
         self.eliminate_zero_len_index();
+        self.unroll_len1_loops();
         self.constant_folding();
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
-        self.common_subexpression_elimination();
         self.fold_accs();
         self.delete_empty_loops();
         self.unfold_pows();
         self.div_mod_simplification();
         self.simplify_accumulating_loop();
+        self.swap_commutative();
+        self.common_subexpression_elimination();
         self.dead_code_elimination();
     }
 
@@ -307,8 +309,7 @@ impl Kernel {
 
             let mut added = 0;
             for (opt_id, _) in avail_configs.iter().enumerate() {
-                let n_configs_to_try =
-                    ((avail_configs[opt_id].1 * mult) as f32 / total_configs as f32).ceil() as usize;
+                let n_configs_to_try = ((avail_configs[opt_id].1 * mult) as f32 / total_configs as f32).ceil() as usize;
 
                 for config_id in 0..n_configs_to_try {
                     let mut opts = opt_seq.opts.clone();
@@ -354,6 +355,8 @@ impl Kernel {
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.fuse_mad();
+            kernel.run_always_on_optimizations();
+            kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
 
@@ -482,7 +485,8 @@ impl Kernel {
         let total_instr = n_threads * global_ws * instructions_per_thread;
         let total_barriers = n_threads * global_ws * barriers_per_thread;
 
-        let memory_score = ((total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64).min(1.0);
+        let memory_score =
+            ((total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64).min(1.0);
 
         let workgroup_score = 1.0 - (n_threads as f64 / dev_info.max_local_threads as f64).min(1.0);
 

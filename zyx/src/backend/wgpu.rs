@@ -99,7 +99,7 @@ pub(super) fn initialize_device(
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: features,
-                required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 8, ..Default::default() },
+                required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 16, ..Default::default() },
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::Off,
@@ -565,11 +565,10 @@ impl WGPUDevice {
             lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
         );
 
-        let lws_filtered: Vec<u64> = lws.iter().copied().filter(|&x| x != 1).collect();
-        let workgroup_size = if lws_filtered.is_empty() {
+        let workgroup_size = if lws.is_empty() {
             "1".to_string()
         } else {
-            lws_filtered.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
         };
         let source = format!(
             "{pragma}{global_args}{workgroup_args}@compute @workgroup_size({workgroup_size}) fn {name}(
