@@ -139,6 +139,7 @@ pub struct EGraph {
 }
 
 /// Active zyx kernel during zyx_fuse.
+#[derive(Clone)]
 struct ActiveZyx {
     kernel: Kernel,
     visited: Map<BufferSlot, OpId>,
@@ -451,16 +452,10 @@ impl EGraph {
             // For each input buffer: check if it's an input to an existing Fused node
             for input_buf in &inputs {
                 if let Some(_fused_ids) = fused_inputs.get(input_buf) {
-                    // Clone each active kernel: one copy registers as Fused, other continues
-                    let mut kernels_to_clone = Vec::new();
-                    for (i, zk) in active_kernels.iter().enumerate() {
-                        kernels_to_clone.push((i, zk.clone()));
-                    }
-                    for (idx, clone) in kernels_to_clone {
-                        // Register clone as ENode::Fused
-                        clone.register_as_fused(&mut pending_zyx_nodes);
-                        // Remove from active (we'll replace with the continued one)
-                        // The original continues; clone is registered
+                    let to_clone: Vec<ActiveZyx> = active_kernels.iter().cloned().collect();
+                    for clone in to_clone {
+                        let mut c = clone;
+                        c.register_as_fused(&mut pending_zyx_nodes);
                     }
                 }
             }
@@ -725,6 +720,20 @@ impl ActiveZyx {
         self.visited.remove(&buf);
     }
 
+    fn create_load_kernel(&mut self, buf: BufferSlot, shape: &[Dim], dtype: DType) -> OpId {
+        let mut ops = Slab::with_capacity(100);
+        let op = Op::LoadView(Box::new((dtype, View::contiguous(shape))));
+        let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
+        self.kernel.outputs.push(Self::tid(buf));
+        self.kernel.loads.push(Self::tid(buf));
+        self.kernel.ops = ops;
+        self.kernel.head = op_id;
+        self.kernel.tail = op_id;
+        self.kernel.stores.clear();
+        self.visited.insert(buf, op_id);
+        op_id
+    }
+
     fn add_unary_op(&mut self, enode_id: ENodeId, input: BufferSlot, output: BufferSlot, uop: UOp) {
         let Some(&op_id) = self.visited.get(&input) else { return };
         let new_op_id = self.kernel.push_back(Op::Unary { x: op_id, uop });
@@ -747,14 +756,17 @@ impl ActiveZyx {
     }
 
     fn add_expand_op(&mut self, enode_id: ENodeId, input: BufferSlot, output: BufferSlot, shape: &[Dim], dtype: DType) {
-        let Some(&op_id) = self.visited.get(&input) else { return };
+        let Some(op_id) = self.visited.get(&input).copied() else { return };
+        let mut op_id = op_id;
         if self.kernel.contains_stores() || self.kernel.is_preceded_by_reduce(op_id) {
             self.add_store(input, dtype);
+            op_id = self.create_load_kernel(input, shape, dtype);
         }
         if self.kernel.outputs.len() > 1 {
             let reduce_dims_big = self.kernel.is_preceded_by_reduce(op_id);
             if reduce_dims_big {
                 self.add_store(input, dtype);
+                op_id = self.create_load_kernel(input, shape, dtype);
             }
         }
         let new_op_id = self.kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: shape.into() }) });
@@ -792,14 +804,17 @@ impl ActiveZyx {
     }
 
     fn add_reduce_op(&mut self, enode_id: ENodeId, input: BufferSlot, output: BufferSlot, rop: BOp, axes: &[UAxis], shape: &[Dim], dtype: DType) {
-        let Some(&mut op_id) = self.visited.get_mut(&input) else { return };
+        let Some(op_id) = self.visited.get(&input).copied() else { return };
+        let mut op_id = op_id;
         if self.kernel.contains_stores() {
             self.add_store(input, dtype);
+            op_id = self.create_load_kernel(input, shape, dtype);
         }
         if self.kernel.outputs.len() > 1 {
             let reduce_dims_big = self.kernel.is_preceded_by_reduce(op_id);
             if reduce_dims_big {
                 self.add_store(input, dtype);
+                op_id = self.create_load_kernel(input, shape, dtype);
             }
         }
         // Permute before reduce so that reduce axes are last
