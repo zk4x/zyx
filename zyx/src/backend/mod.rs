@@ -23,6 +23,7 @@ use crate::{
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
 use dummy::{DummyDevice, DummyMemoryPool};
+use host::{HostEvent, HostMemoryPool};
 use nanoserde::{DeBin, DeJson, SerBin};
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
 #[cfg(feature = "wgpu")]
@@ -32,6 +33,7 @@ mod cuda;
 mod disk;
 mod dummy;
 mod hip;
+mod host;
 mod opencl;
 /*#[cfg(feature = "vulkan")]
 mod vulkan;*/
@@ -205,6 +207,11 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
+    if let Err(err) = host::initialize_pool(memory_pools, debug_backends) {
+        if debug_backends {
+            println!("{err}");
+        }
+    }
     if let Err(err) = dummy::initialize_device(&device_config.dummy, memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
@@ -246,6 +253,7 @@ pub fn initialize_backends(
 pub enum Event {
     #[allow(unused)]
     Disk(disk::DiskEvent),
+    Host(host::HostEvent),
     CUDA(cuda::CUDAEvent),
     OpenCL(opencl::OpenCLEvent),
     HIP(hip::HIPEvent),
@@ -340,6 +348,7 @@ pub struct DeviceInfo {
 pub enum MemoryPool {
     Dummy(DummyMemoryPool),
     Disk(DiskMemoryPool),
+    Host(HostMemoryPool),
     CUDA(CUDAMemoryPool),
     OpenCL(OpenCLMemoryPool),
     HIP(HIPMemoryPool),
@@ -353,6 +362,7 @@ impl MemoryPool {
         match self {
             MemoryPool::Dummy(pool) => pool.deinitialize(),
             MemoryPool::Disk(pool) => pool.deinitialize(),
+            MemoryPool::Host(pool) => pool.deinitialize(),
             MemoryPool::CUDA(pool) => pool.deinitialize(),
             MemoryPool::OpenCL(pool) => pool.deinitialize(),
             MemoryPool::HIP(pool) => pool.deinitialize(),
@@ -372,6 +382,7 @@ impl MemoryPool {
         match self {
             MemoryPool::Dummy(pool) => pool.free_bytes(),
             MemoryPool::Disk(pool) => pool.free_bytes(),
+            MemoryPool::Host(pool) => pool.free_bytes(),
             MemoryPool::CUDA(pool) => pool.free_bytes(),
             MemoryPool::OpenCL(pool) => pool.free_bytes(),
             MemoryPool::HIP(pool) => pool.free_bytes(),
@@ -384,6 +395,7 @@ impl MemoryPool {
         match self {
             MemoryPool::Dummy(pool) => pool.allocate(bytes),
             MemoryPool::Disk(_) => todo!(),
+            MemoryPool::Host(pool) => pool.allocate(bytes),
             MemoryPool::CUDA(pool) => pool.allocate(bytes),
             MemoryPool::OpenCL(pool) => pool.allocate(bytes),
             MemoryPool::HIP(pool) => pool.allocate(bytes),
@@ -397,6 +409,7 @@ impl MemoryPool {
         match self {
             MemoryPool::Dummy(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::Disk(pool) => pool.deallocate(buffer_id, event_wait_list),
+            MemoryPool::Host(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::CUDA(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::HIP(pool) => pool.deallocate(buffer_id, event_wait_list),
@@ -416,6 +429,7 @@ impl MemoryPool {
         match self {
             MemoryPool::Dummy(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::Disk(_) => todo!(),
+            MemoryPool::Host(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::CUDA(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::HIP(pool) => pool.host_to_pool(src, dst, event_wait_list),
@@ -429,6 +443,7 @@ impl MemoryPool {
         match self {
             MemoryPool::Dummy(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::Disk(pool) => pool.pool_to_host(src, dst, event_wait_list),
+            MemoryPool::Host(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::CUDA(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::HIP(pool) => pool.pool_to_host(src, dst, event_wait_list),
@@ -442,6 +457,7 @@ impl MemoryPool {
         match self {
             MemoryPool::Dummy(pool) => pool.sync_events(events),
             MemoryPool::Disk(pool) => pool.sync_events(events),
+            MemoryPool::Host(pool) => pool.sync_events(events),
             MemoryPool::CUDA(pool) => pool.sync_events(events),
             MemoryPool::OpenCL(pool) => pool.sync_events(events),
             MemoryPool::HIP(pool) => pool.sync_events(events),
@@ -456,6 +472,7 @@ impl MemoryPool {
         match self {
             MemoryPool::Dummy(pool) => pool.release_events(events),
             MemoryPool::Disk(pool) => pool.release_events(events),
+            MemoryPool::Host(pool) => pool.release_events(events),
             MemoryPool::CUDA(pool) => pool.release_events(events),
             MemoryPool::OpenCL(pool) => pool.release_events(events),
             MemoryPool::HIP(pool) => pool.release_events(events),
