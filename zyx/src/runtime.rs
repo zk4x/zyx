@@ -290,10 +290,10 @@ impl Runtime {
     ) -> Result<TensorId, ZyxError> {
         let bytes = shape.iter().product::<Dim>() * Dim::from(dtype.bit_size() / 8);
         self.initialize_devices()?;
-        if let Some(disk) = self.pools[PoolId::ZERO].pool.disk_pool() {
+        if let Some(disk) = self.pools[PoolId::from(1)].pool.disk_pool() {
             let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
             let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
-            self.buffer_map.insert(id, BufferId { pool: PoolId::ZERO, buffer: buffer_id });
+            self.buffer_map.insert(id, BufferId { pool: PoolId::from(1), buffer: buffer_id });
             Ok(id)
         } else {
             Err(ZyxError::NoBackendAvailable)

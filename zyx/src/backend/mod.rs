@@ -202,12 +202,12 @@ pub fn initialize_backends(
     devices: &mut Slab<DeviceId, Device>,
     debug_backends: bool,
 ) -> Result<(), BackendError> {
-    if let Err(err) = disk::initialize_pool(memory_pools, debug_backends) {
+    if let Err(err) = host::initialize_pool(memory_pools, debug_backends) {
         if debug_backends {
             println!("{err}");
         }
     }
-    if let Err(err) = host::initialize_pool(memory_pools, debug_backends) {
+    if let Err(err) = disk::initialize_pool(memory_pools, debug_backends) {
         if debug_backends {
             println!("{err}");
         }
