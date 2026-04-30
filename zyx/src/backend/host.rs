@@ -4,7 +4,6 @@
 use super::{Event, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     error::{BackendError, ErrorStatus},
-    runtime::Pool,
     shape::Dim,
     slab::Slab,
 };
@@ -18,12 +17,12 @@ pub struct HostMemoryPool {
 #[derive(Debug, Clone)]
 pub struct HostEvent;
 
-pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, Pool>, debug_dev: bool) -> Result<(), BackendError> {
+pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
     if debug_dev {
         println!("Using host backend");
     }
     let pool = MemoryPool::Host(HostMemoryPool { free_bytes: 1024 * 1024 * 1024 * 64, buffers: Slab::new() });
-    memory_pools.push(Pool::new(pool));
+    memory_pools.push(pool);
     Ok(())
 }
 
@@ -46,6 +45,18 @@ impl HostMemoryPool {
         let buffer = vec![0u8; bytes].into_boxed_slice();
         let id = self.buffers.push(buffer);
         Ok((id, Event::Host(HostEvent)))
+    }
+
+    pub fn get_buffer(&self, buffer_id: PoolBufferId) -> Option<&[u8]> {
+        if self.buffers.contains_key(buffer_id) {
+            Some(&self.buffers[buffer_id])
+        } else {
+            None
+        }
+    }
+
+    pub fn get_buffer_mut(&mut self, buffer_id: PoolBufferId) -> Option<&mut [u8]> {
+        self.buffers.get_mut(buffer_id).map(|b| b.as_mut())
     }
 
     #[allow(clippy::needless_pass_by_value)]

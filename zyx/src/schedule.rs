@@ -3,9 +3,8 @@
 
 use crate::{
     Map, ZyxError,
-    backend::{BufferId, Device, DeviceId, PoolBufferId, PoolId},
+    backend::{BufferId, Device, DeviceId, Event, MemoryPool, PoolBufferId, PoolId},
     graph::Graph,
-    runtime::Pool,
     shape::Dim,
     slab::Slab,
     tensor::TensorId,
@@ -16,8 +15,8 @@ type ScheduleResult = Result<
     (
         DeviceId,
         PoolId,
-        Vec<crate::backend::Event>,
-        BTreeSet<PoolBufferId>,
+        Vec<Event>,
+        BTreeSet<BufferId>,
         Vec<PoolBufferId>,
     ),
     ZyxError,
@@ -28,7 +27,8 @@ pub fn schedule(
     stores: &[TensorId],
     graph: &Graph,
     devices: &Slab<DeviceId, Device>,
-    pools: &mut Slab<PoolId, Pool>,
+    pools: &mut Slab<PoolId, MemoryPool>,
+    events: &mut Map<BTreeSet<BufferId>, Event>,
     buffer_map: &mut Map<TensorId, BufferId>,
 ) -> ScheduleResult {
     let required_stores_memory: Dim = stores
@@ -41,7 +41,7 @@ pub fn schedule(
     let mut device_id = None;
     for dev_id in dev_ids {
         let pool_id = devices[dev_id].memory_pool_id();
-        let free_memory = pools[pool_id].pool.free_bytes();
+        let free_memory = pools[pool_id].free_bytes();
         let missing_loads_memory = loads
             .iter()
             .map(|tid| {
@@ -78,34 +78,36 @@ pub fn schedule(
             let mut byte_slice = vec![0u8; bytes as usize];
 
             let mut ev_wait = Vec::new();
-            for buffers in pools[old_pool_id].events.keys() {
-                if buffers.contains(&src) {
+            for buffers in events.keys() {
+                if buffers.contains(buf_id) {
                     let buffers = buffers.clone();
-                    let event = pools[old_pool_id].events.remove(&buffers).unwrap();
+                    let event = events.remove(&buffers).unwrap();
                     ev_wait.push(event);
                     break;
                 }
             }
-            pools[old_pool_id].pool.pool_to_host(src, &mut byte_slice, ev_wait)?;
+            pools[old_pool_id].pool_to_host(src, &mut byte_slice, ev_wait)?;
 
             buffer_map.remove(&tid);
             if !buffer_map.values().any(|b| b.buffer == src) {
-                pools[old_pool_id].pool.deallocate(src, vec![]);
+                pools[old_pool_id].deallocate(src, vec![]);
             }
 
-            let (dst, event) = pools[pool_id].pool.allocate(bytes)?;
-            let event = pools[pool_id].pool.host_to_pool(&byte_slice, dst, vec![event])?;
-            pools[pool_id].pool.sync_events(vec![event])?;
-            buffer_map.insert(tid, BufferId { pool: pool_id, buffer: dst });
+            let (dst, event) = pools[pool_id].allocate(bytes)?;
+            let dst_global = BufferId { pool: pool_id, buffer: dst };
+            let event = pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
+            pools[pool_id].sync_events(vec![event])?;
+            buffer_map.insert(tid, dst_global);
         }
     }
     let mut output_buffers = BTreeSet::new();
     for &tid in stores {
         let bytes = graph.shape(tid).iter().product::<Dim>() * Dim::from(graph.dtype(tid).bit_size() / 8);
-        let (buffer_id, event) = pools[pool_id].pool.allocate(bytes)?;
-        buffer_map.insert(tid, BufferId { pool: pool_id, buffer: buffer_id });
+        let (buffer_id, event) = pools[pool_id].allocate(bytes)?;
+        let global_id = BufferId { pool: pool_id, buffer: buffer_id };
+        buffer_map.insert(tid, global_id);
         event_wait_list.push(event);
-        output_buffers.insert(buffer_id);
+        output_buffers.insert(global_id);
     }
     let mut args = Vec::new();
     for tid in loads {

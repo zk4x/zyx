@@ -10,7 +10,6 @@ use std::{
 use super::{Event, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     error::{BackendError, ErrorStatus},
-    runtime::Pool,
     shape::Dim,
     slab::Slab,
 };
@@ -32,7 +31,7 @@ struct DiskBuffer {
 pub struct DiskEvent {}
 
 #[allow(clippy::unnecessary_wraps)]
-pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, Pool>, debug_dev: bool) -> Result<(), BackendError> {
+pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
     if debug_dev {
         println!("Using disk backend");
     }
@@ -40,7 +39,7 @@ pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, Pool>, debug_dev: 
         free_bytes: 0, // Non allocatable
         buffers: Slab::new(),
     });
-    memory_pools.push(Pool::new(pool));
+    memory_pools.push(pool);
     Ok(())
 }
 

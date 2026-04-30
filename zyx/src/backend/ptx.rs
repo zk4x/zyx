@@ -38,7 +38,7 @@ macro_rules! send_or_continue {
     };
 }
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Pool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
 
 /// CUDA configuration
 #[derive(Debug, Default, DeJson)]
@@ -143,7 +143,7 @@ unsafe impl Send for CUDACommand {}
 
 pub(super) fn initialize_device(
     config: &CUDAConfig,
-    memory_pools: &mut Slab<PoolId, Pool>,
+    memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
@@ -546,7 +546,7 @@ pub(super) fn initialize_device(
         });
 
         let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes });
-        memory_pools.push(Pool::new(pool));
+        memory_pools.push(pool);
 
         let mut dev = CUDADevice {
             tx,

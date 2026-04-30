@@ -7,7 +7,6 @@ use crate::{
     backend::{DeviceProgramId, PoolBufferId},
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope, UOp},
-    runtime::Pool,
     shape::Dim,
     slab::Slab,
 };
@@ -122,7 +121,7 @@ pub(super) fn initialize_device(
         queue: queue.clone(),
         buffers: Slab::new(),
     });
-    memory_pools.push(Pool::new(pool));
+    memory_pools.push(pool);
     let limits = device.limits();
     devices.push(Device::WGPU(WGPUDevice {
         device,

@@ -13,7 +13,7 @@ const VEC_COMPONENTS: [&str; 16] = [
     "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
 ];
 
-use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Pool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     DType, Map,
     dtype::Constant,
@@ -167,7 +167,7 @@ unsafe impl Send for OpenCLEvent {}
 
 pub(super) fn initialize_device(
     config: &OpenCLConfig,
-    memory_pools: &mut Slab<PoolId, Pool>,
+    memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
@@ -392,7 +392,7 @@ pub(super) fn initialize_device(
             clEnqueueWriteBuffer,
             clCreateBuffer,
         };
-        memory_pools.push(Pool::new(MemoryPool::OpenCL(pool)));
+        memory_pools.push(MemoryPool::OpenCL(pool));
         memory_pool_id += 1;
     }
     Ok(())

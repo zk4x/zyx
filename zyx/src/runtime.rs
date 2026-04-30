@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 //! Runtime handles tensor graph and connects tensors to device buffers.
-use crate::backend::{AutotuneConfig, BufferId, Config, Device, DeviceId, Event, MemoryPool, PoolBufferId, PoolId};
+use crate::backend::{AutotuneConfig, BufferId, Config, Device, DeviceId, Event, MemoryPool, PoolId};
 use crate::kernel_cache::KernelCache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
@@ -33,9 +33,11 @@ pub struct Runtime {
     /// Physical compute devices, each has their own program cache
     pub devices: Slab<DeviceId, Device>,
     /// Physical memory pools
-    pub pools: Slab<PoolId, Pool>,
+    pub pools: Slab<PoolId, MemoryPool>,
     /// Global mapping from tensor ID to (`pool_index`, `buffer_id`).
     pub buffer_map: Map<TensorId, BufferId>,
+    /// Global event tracking - all buffers with pending events
+    pub events: Map<BTreeSet<BufferId>, Event>,
     /// Kernel and optimizer cache, maps between unoptimized kernels and available/done optimizations and cached kernels
     pub kernel_cache: KernelCache,
     /// Zyx configuration directory path
@@ -69,19 +71,6 @@ pub trait TempData: Send {
     fn dtype(&self) -> DType;
 }
 
-#[derive(Debug)]
-pub struct Pool {
-    #[allow(clippy::struct_field_names)]
-    pub pool: MemoryPool,
-    pub events: Map<BTreeSet<PoolBufferId>, Event>,
-}
-
-impl Pool {
-    pub(crate) fn new(pool: MemoryPool) -> Self {
-        Self { pool, events: Map::with_capacity_and_hasher(100, BuildHasherDefault::default()) }
-    }
-}
-
 fn get_mut_buffer(buffer_map: &Map<TensorId, BufferId>, tensor_id: TensorId) -> Option<BufferId> {
     buffer_map.get(&tensor_id).copied()
 }
@@ -94,6 +83,7 @@ impl Runtime {
             devices: Slab::new(),
             pools: Slab::new(),
             buffer_map: Map::with_hasher(BuildHasherDefault::new()),
+            events: Map::with_hasher(BuildHasherDefault::new()),
             rng: Rng::seed_from_u64(42069),
             config_dir: None,
             kernel_cache: KernelCache::new(),
@@ -124,7 +114,7 @@ impl Runtime {
 
     pub(super) fn release(&mut self, x: TensorId) {
         let to_remove = self.graph.release(&[x]);
-        deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.events, &mut self.buffer_map, &mut self.temp_data);
         if self.graph.is_empty() && self.buffer_map.is_empty() {
             self.deinitialize();
         }
@@ -236,13 +226,11 @@ impl Runtime {
             dev.deinitialize();
         }
         // drop memory pools
-        while let Some(mp) = self.pools.pop() {
-            let Pool { mut pool, events, .. } = mp;
-            pool.release_events(events.into_values().collect());
+        while let Some(mut pool) = self.pools.pop() {
+            pool.release_events(self.events.values().cloned().collect());
             pool.deinitialize();
         }
         self.config_dir = None;
-        self.temp_data = Map::default();
         */
 
         // These variables are persistent:
@@ -290,7 +278,7 @@ impl Runtime {
     ) -> Result<TensorId, ZyxError> {
         let bytes = shape.iter().product::<Dim>() * Dim::from(dtype.bit_size() / 8);
         self.initialize_devices()?;
-        if let Some(disk) = self.pools[PoolId::from(1)].pool.disk_pool() {
+        if let Some(disk) = self.pools[PoolId::from(1)].disk_pool() {
             let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
             let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
             self.buffer_map.insert(id, BufferId { pool: PoolId::from(1), buffer: buffer_id });
@@ -330,7 +318,7 @@ impl Runtime {
         let mem_pools: Vec<PoolId> = self
             .pools
             .iter()
-            .filter_map(|(id, mp)| if mp.pool.free_bytes() > bytes { Some(id) } else { None })
+            .filter_map(|(id, mp)| if mp.free_bytes() > bytes { Some(id) } else { None })
             .collect();
         if mem_pools.is_empty() {
             return Err(ZyxError::AllocationError("no memory pool has been initialized.".into()));
@@ -345,18 +333,15 @@ impl Runtime {
                 memory_pool_id = mpid;
             }
         }
-        let (buffer_id, event) = self.pools[memory_pool_id].pool.allocate(bytes)?;
+        let (buffer_id, event) = self.pools[memory_pool_id].allocate(bytes)?;
         let global_id = BufferId { pool: memory_pool_id, buffer: buffer_id };
         self.temp_data.insert(global_id, data.read());
 
-        //println!("len = {}", self.temp_data[&global_id].len());
-
         let event = self.pools[memory_pool_id]
-            .pool
             .host_to_pool(&self.temp_data[&global_id], buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.buffer_map.insert(id, global_id);
-        self.pools[memory_pool_id].events.insert([buffer_id].into(), event);
+        self.events.insert(BTreeSet::from([global_id]), event);
         Ok(id)
     }
 
@@ -562,23 +547,17 @@ impl Runtime {
         }
 
         let buffer_id = get_mut_buffer(&self.buffer_map, x).unwrap();
-        let pool = &mut self.pools[buffer_id.pool];
-
-        Self::load_buffer(data, pool, buffer_id.buffer)
-    }
-
-    pub fn load_buffer<T: Scalar>(data: &mut [T], pool: &mut Pool, buffer_id: PoolBufferId) -> Result<(), ZyxError> {
         let byte_slice: &mut [u8] =
             unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len() * (T::bit_size() / 8) as usize) };
-        for buffers in pool.events.keys() {
+        for buffers in self.events.keys() {
             if buffers.contains(&buffer_id) {
-                let event = pool.events.remove(&buffers.clone()).unwrap();
-                //println!("Loading with event {event:?}");
-                pool.pool.pool_to_host(buffer_id, byte_slice, vec![event])?;
+                let buffers = buffers.clone();
+                let event = self.events.remove(&buffers).unwrap();
+                self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, vec![event])?;
                 return Ok(());
             }
         }
-        pool.pool.pool_to_host(buffer_id, byte_slice, Vec::new())?;
+        self.pools[buffer_id.pool].pool_to_host(buffer_id.buffer, byte_slice, Vec::new())?;
         Ok(())
     }
 
@@ -661,7 +640,7 @@ impl Runtime {
             }
         }
         let to_remove = self.graph.release(&to_release);
-        deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.events, &mut self.buffer_map, &mut self.temp_data);
 
         #[cfg(debug_assertions)]
         {
@@ -754,7 +733,7 @@ impl Runtime {
             }
         }
         let to_remove = self.graph.release(&to_release);
-        deallocate_tensors(&to_remove, &mut self.pools, &mut self.temp_data, &mut self.buffer_map);
+        deallocate_tensors(&to_remove, &mut self.pools, &mut self.events, &mut self.buffer_map, &mut self.temp_data);
 
         #[cfg(debug_assertions)]
         {
@@ -768,21 +747,20 @@ impl Runtime {
 
 pub fn deallocate_tensors(
     to_remove: &Set<TensorId>,
-    pools: &mut Slab<PoolId, Pool>,
-    temp_data: &mut Map<BufferId, Box<[u8]>>,
+    pools: &mut Slab<PoolId, MemoryPool>,
+    events: &mut Map<BTreeSet<BufferId>, Event>,
     buffer_map: &mut Map<TensorId, BufferId>,
+    temp_data: &mut Map<BufferId, Box<[u8]>>,
 ) {
     for tensor_id in to_remove {
         if let Some(buffer_id) = buffer_map.remove(tensor_id) {
             if !buffer_map.values().any(|&bid| bid == buffer_id) {
-                let pool_id = usize::from(buffer_id.pool);
-                let pool = &mut pools[PoolId::from(pool_id)];
-                let mut events = Vec::new();
-                if let Some(key) = pool.events.keys().find(|key| key.contains(&buffer_id.buffer)) {
-                    let event = pool.events.remove(&key.clone()).unwrap();
-                    events.push(event);
+                let mut event_wait = Vec::new();
+                if let Some(key) = events.keys().find(|key| key.contains(&buffer_id)).cloned() {
+                    let event = events.remove(&key).unwrap();
+                    event_wait.push(event);
                 }
-                pool.pool.deallocate(buffer_id.buffer, events);
+                pools[buffer_id.pool].deallocate(buffer_id.buffer, event_wait);
                 temp_data.remove(&buffer_id);
             }
         }

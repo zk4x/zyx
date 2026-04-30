@@ -5,18 +5,19 @@
 
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
-    backend::{AutotuneConfig, BufferId, Device, DeviceId, PoolId},
+    backend::{AutotuneConfig, BufferId, Device, DeviceId, Event, MemoryPool, PoolId},
     kernel_cache::KernelCache,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
-    runtime::{Pool, Runtime, deallocate_tensors},
+    runtime::{Runtime, deallocate_tensors},
     schedule::schedule,
     slab::{Slab, SlabId},
     tensor::TensorId,
     view::View,
 };
-use std::{collections::BTreeMap, hash::BuildHasherDefault};
+use std::collections::{BTreeMap, BTreeSet};
+use std::hash::BuildHasherDefault;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KMKernelId(u32);
@@ -54,9 +55,10 @@ struct Kernelizer<'a> {
     visited: Map<TensorId, (KMKernelId, OpId)>,
     rcs: Map<TensorId, u32>,
     graph: &'a Graph,
-    pools: &'a mut Slab<PoolId, Pool>,
-    temp_data: &'a mut Map<BufferId, Box<[u8]>>,
+    pools: &'a mut Slab<PoolId, MemoryPool>,
+    events: &'a mut Map<BTreeSet<BufferId>, Event>,
     buffer_map: &'a mut Map<TensorId, BufferId>,
+    temp_data: &'a mut Map<BufferId, Box<[u8]>>,
     devices: &'a mut Slab<DeviceId, Device>,
     cache: &'a mut KernelCache,
     autotune_config: &'a AutotuneConfig,
@@ -70,9 +72,10 @@ impl<'a> Kernelizer<'a> {
         to_eval: &'a Set<TensorId>,
         rcs: Map<TensorId, u32>,
         graph: &'a Graph,
-        pools: &'a mut Slab<PoolId, Pool>,
-        temp_data: &'a mut Map<BufferId, Box<[u8]>>,
+        pools: &'a mut Slab<PoolId, MemoryPool>,
+        events: &'a mut Map<BTreeSet<BufferId>, Event>,
         buffer_map: &'a mut Map<TensorId, BufferId>,
+        temp_data: &'a mut Map<BufferId, Box<[u8]>>,
         devices: &'a mut Slab<DeviceId, Device>,
         cache: &'a mut KernelCache,
         search_config: &'a AutotuneConfig,
@@ -81,7 +84,7 @@ impl<'a> Kernelizer<'a> {
         let mut must_keep_nodes = realized_nodes.clone();
         must_keep_nodes.extend(to_eval);
         Self {
-            // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
+            // Those node that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
             must_keep_nodes,
             virt_realized_nodes: realized_nodes.clone(),
             realized_nodes,
@@ -90,8 +93,9 @@ impl<'a> Kernelizer<'a> {
             rcs,
             graph,
             pools,
-            temp_data,
+            events,
             buffer_map,
+            temp_data,
             devices,
             cache,
             autotune_config: search_config,
@@ -552,7 +556,7 @@ impl<'a> Kernelizer<'a> {
                     to_remove.insert(tid);
                 }
             }
-            deallocate_tensors(&to_remove, self.pools, self.temp_data, self.buffer_map);
+            deallocate_tensors(&to_remove, self.pools, self.events, self.buffer_map, self.temp_data);
         }
         //println!("ADDED STORE for {x} x {xrc_rem}");
         Ok(())
@@ -576,13 +580,13 @@ impl<'a> Kernelizer<'a> {
             self.graph,
             self.devices,
             self.pools,
+            self.events,
             self.buffer_map,
         )?;
 
         /***** CACHE and OPTIMIZATION SEARCH *****/
 
         let device = &mut self.devices[dev_id];
-        // ...
         let pool = &mut self.pools[pool_id];
 
         let dev_info_id = self.cache.get_or_add_dev_info(device.info());
@@ -594,8 +598,8 @@ impl<'a> Kernelizer<'a> {
                 if self.debug.kmd() {
                     println!("Kernel launch from memory pool {pool_id:?} with args: {args:?}");
                 }
-                let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-                self.pools[pool_id].events.insert(output_buffers, event);
+                let event = device.launch(program_id, pool, &args, event_wait_list)?;
+                self.events.insert(output_buffers, event);
                 //println!("Elapsed during kernel launch {:?}", time_w.elapsed());
                 return Ok(());
             }
@@ -604,8 +608,8 @@ impl<'a> Kernelizer<'a> {
             if let Some(opt_seq) = self.cache.optimizations.get(&(kid, dev_info_id)) {
                 opt_seq.apply(&mut kernel, device.info());
                 let program_id = device.compile(&kernel, self.debug.asm())?;
-                let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-                self.pools[pool_id].events.insert(output_buffers, event);
+                let event = device.launch(program_id, pool, &args, event_wait_list)?;
+                self.events.insert(output_buffers, event);
                 return Ok(());
             }
         }
@@ -655,7 +659,7 @@ impl<'a> Kernelizer<'a> {
         let (program_id, opts) = kernel.autotune(
             &args,
             device,
-            &mut pool.pool,
+            pool,
             self.autotune_config,
             flop,
             read,
@@ -664,8 +668,8 @@ impl<'a> Kernelizer<'a> {
         )?;
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
-        let event = device.launch(program_id, &mut pool.pool, &args, event_wait_list)?;
-        self.pools[pool_id].events.insert(output_buffers, event);
+        let event = device.launch(program_id, pool, &args, event_wait_list)?;
+        self.events.insert(output_buffers, event);
 
         Ok(())
     }
@@ -707,8 +711,9 @@ impl Runtime {
             rcs,
             &self.graph,
             &mut self.pools,
-            &mut self.temp_data,
+            &mut self.events,
             &mut self.buffer_map,
+            &mut self.temp_data,
             &mut self.devices,
             &mut self.kernel_cache,
             &self.autotune_config,
@@ -804,7 +809,7 @@ impl Runtime {
                         to_remove.insert(tid);
                     }
                 }
-                deallocate_tensors(&to_remove, kernelizer.pools, kernelizer.temp_data, kernelizer.buffer_map);
+                deallocate_tensors(&to_remove, kernelizer.pools, kernelizer.events, kernelizer.buffer_map, kernelizer.temp_data);
             }
         }
 

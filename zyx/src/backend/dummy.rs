@@ -5,7 +5,6 @@ use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Po
 use crate::{
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
-    runtime::Pool,
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -31,7 +30,7 @@ pub struct DummyDevice {
 
 pub(super) fn initialize_device(
     config: &DummyConfig,
-    memory_pools: &mut Slab<PoolId, Pool>,
+    memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
@@ -42,7 +41,7 @@ pub(super) fn initialize_device(
         println!("Using dummy backend");
     }
     let pool = MemoryPool::Dummy(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
-    memory_pools.push(Pool::new(pool));
+    memory_pools.push(pool);
     devices.push(Device::Dummy(DummyDevice {
         device_info: DeviceInfo {
             compute: 20 * 1024 * 1024 * 1024 * 1024 * 1024,

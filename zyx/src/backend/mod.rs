@@ -16,7 +16,6 @@ use crate::{
     backend::hip::{HIPDevice, HIPMemoryPool},
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
-    runtime::Pool,
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -88,7 +87,7 @@ impl SlabId for DeviceProgramId {
     }
 }
 
-/// Pool identifier for use with `Slab<PoolId, Pool>`
+/// Pool identifier for use with `Slab<PoolId, MemoryPool>`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolId(u32);
 
@@ -198,7 +197,7 @@ impl From<libloading::Error> for BackendError {
 
 pub fn initialize_backends(
     device_config: &Config,
-    memory_pools: &mut Slab<PoolId, Pool>,
+    memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_backends: bool,
 ) -> Result<(), BackendError> {
@@ -376,6 +375,11 @@ impl MemoryPool {
             Self::Disk(disk) => Some(disk),
             _ => None,
         }
+    }
+
+    pub fn host_pool(&mut self) -> &mut HostMemoryPool {
+        let Self::Host(host) = self else { unreachable!() };
+        host
     }
 
     pub const fn free_bytes(&self) -> Dim {

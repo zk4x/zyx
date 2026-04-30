@@ -15,7 +15,6 @@ use crate::backend::{DeviceId, DeviceProgramId, Event, PoolBufferId, PoolId};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::Kernel;
-use crate::runtime::Pool;
 use crate::shape::Dim;
 use crate::slab::Slab;
 use libloading::Library;
@@ -119,7 +118,7 @@ unsafe impl Send for HIPEvent {}
 
 pub(super) fn initialize_device(
     config: &HIPConfig,
-    memory_pools: &mut Slab<PoolId, Pool>,
+    memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
@@ -251,7 +250,7 @@ pub(super) fn initialize_device(
             hipEventDestroy,
             hipCtxDestroy,
         };
-        memory_pools.push(Pool::new(MemoryPool::HIP(pool)));
+        memory_pools.push(MemoryPool::HIP(pool));
         let mut streams = Vec::new();
         for _ in 0..8 {
             let mut stream = ptr::null_mut();
