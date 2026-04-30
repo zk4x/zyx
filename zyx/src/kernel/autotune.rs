@@ -22,10 +22,10 @@ type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
 const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
-    |k, d| k.opt_split_global_to_local(d),
+    Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_upcast(k),
     |k, _| Kernel::opt_register_tiling(k),
-    |k, _| Kernel::opt_tiled_reduce(k),
+    Kernel::opt_tiled_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_licm(k),
 ];
@@ -66,7 +66,7 @@ impl Optimization {
             }
             Optimization::SplitGlobalToLocal { factors } => {
                 let (op_id, factor) = factors[config];
-                println!("split global index {} by {}", op_id, factor)
+                println!("split global index {} to local by {}", op_id, factor)
             }
             Optimization::Upcast { factors } => {
                 let (op_id, factor) = factors[config];
@@ -199,7 +199,7 @@ impl Kernel {
         self.delete_empty_loops();
         self.unfold_pows();
         self.div_mod_simplification();
-        self.simplify_accumulating_loop();
+        //self.simplify_accumulating_loop();
         self.swap_commutative();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
@@ -222,14 +222,60 @@ impl Kernel {
         let mut kernel = self.clone();
 
         kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
+        {
+            kernel.eliminate_zero_len_index();
+            kernel.unroll_len1_loops();
+            kernel.constant_folding();
+            kernel.move_constants_to_beginning();
+            kernel.loop_invariant_code_motion();
+            kernel.fold_accs();
+            kernel.delete_empty_loops();
+            kernel.unfold_pows();
+            kernel.div_mod_simplification();
+            kernel.simplify_accumulating_loop();
+            kernel.swap_commutative();
+            kernel.common_subexpression_elimination();
+            kernel.dead_code_elimination();
+        }
+        {
+            kernel.eliminate_zero_len_index();
+            kernel.unroll_len1_loops();
+            kernel.constant_folding();
+            kernel.move_constants_to_beginning();
+            kernel.loop_invariant_code_motion();
+            kernel.fold_accs();
+            kernel.delete_empty_loops();
+            kernel.unfold_pows();
+            kernel.div_mod_simplification();
+            kernel.simplify_accumulating_loop();
+            kernel.swap_commutative();
+            kernel.common_subexpression_elimination();
+            kernel.dead_code_elimination();
+        }
+        {
+            kernel.eliminate_zero_len_index();
+            kernel.unroll_len1_loops();
+            kernel.constant_folding();
+            kernel.move_constants_to_beginning();
+            kernel.loop_invariant_code_motion();
+            kernel.fold_accs();
+            kernel.delete_empty_loops();
+            kernel.unfold_pows();
+            kernel.div_mod_simplification();
+            kernel.simplify_accumulating_loop();
+            kernel.swap_commutative();
+            kernel.common_subexpression_elimination();
+            kernel.dead_code_elimination();
+        }
 
-        let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
+        /*let (reg_tile_opt, n_reg_tile) = kernel.opt_register_tiling();
         if n_reg_tile > 0 {
             reg_tile_opt.apply(&mut kernel, 10);
         }
         kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();*/
+
+        kernel.debug();
 
         let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
 
@@ -348,14 +394,13 @@ impl Kernel {
 
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, dev_info_ref);
-                opt.debug(opt_cfg);
+                //opt.debug(opt_cfg);
                 opt.apply(&mut kernel, opt_cfg);
             }
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.fuse_mad();
-            kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();

@@ -3,12 +3,13 @@
 
 use super::autotune::Optimization;
 use crate::{
+    backend::DeviceInfo,
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, Scope},
 };
 
 impl Kernel {
-    pub fn opt_tiled_reduce(&self) -> (Optimization, usize) {
+    pub fn opt_tiled_reduce(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
@@ -26,6 +27,23 @@ impl Kernel {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);
         }
 
+        let mut local_axis_sizes: crate::Map<u32, u64> = crate::Map::default();
+        for op in self.ops.values() {
+            if let Op::Index { scope: Scope::Local, axis, len } = op.op {
+                if let Some(&existing) = local_axis_sizes.get(&axis) {
+                    debug_assert_eq!(existing, len);
+                } else {
+                    local_axis_sizes.insert(axis, len);
+                }
+            }
+        }
+        let used_threads: u64 = local_axis_sizes.values().product::<u64>();
+        let remaining_threads = if local_axis_sizes.is_empty() {
+            dev_info.max_local_threads
+        } else {
+            dev_info.max_local_threads / used_threads
+        };
+
         let candidates = vec![32, 16, 8, 64, 128];
         let tree_branch_candidates = vec![2, 4];
         let mut factors = Vec::new();
@@ -34,7 +52,7 @@ impl Kernel {
             if let Op::Loop { len } = self.ops[op_id].op {
                 if len >= 256 {
                     for &factor in &candidates {
-                        if len.is_multiple_of(factor) && len / factor >= 4 {
+                        if len.is_multiple_of(factor) && len / factor >= 4 && remaining_threads >= factor {
                             for &tree_branch in &tree_branch_candidates {
                                 factors.push((op_id, factor, tree_branch));
                             }

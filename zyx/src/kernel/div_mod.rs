@@ -67,10 +67,10 @@ impl Kernel {
             }
         }
 
-        let Some(&(_, xu)) = bounds.get(&x) else { return };
+        /*let Some(&(_, xu)) = bounds.get(&x) else { return };
         if xu < divisor {
             self.ops[op_id].op = Op::Const(dtype.zero_constant());
-        }
+        }*/
     }
 
     fn simplify_mod(&mut self, op_id: OpId, x: OpId, divisor_const: OpId, _dtype: DType, bounds: &Map<OpId, (Dim, Dim)>) {
@@ -78,12 +78,12 @@ impl Kernel {
         let Some(divisor) = divisor.as_dim() else { return };
 
         // Pattern 1: x % divisor when 0 <= x < divisor -> x
-        if let Some(&(_, max_x)) = bounds.get(&x) {
+        /*if let Some(&(_, max_x)) = bounds.get(&x) {
             if max_x < divisor {
                 self.remap(op_id, x);
                 return;
             }
-        }
+        }*/
 
         if let Some((a, c, b)) = mul_add(self, x) {
             // Pattern 2: (a*c + b) % c -> b % c (because (a*c) % c = 0)
@@ -110,11 +110,11 @@ impl Kernel {
                         return;
                     }
                 }
-            }*/
+            }
             // Pattern 2d: (a*c + b) % d when d = c*k and max(a*c+b) < d -> b
             // Need: min_b == 0 AND max(a*c) + max_b < divisor
             // When max(a*c + b) < divisor, (a*c + b) % divisor = a*c + b, so if max < divisor -> result = b
-            /*if divisor > c && divisor.is_multiple_of(c) {
+            if divisor > c && divisor.is_multiple_of(c) {
                 if let Some(&(_min_a, max_a)) = bounds.get(&a)
                     && let Some(&(min_b, max_b)) = bounds.get(&b)
                 {
@@ -145,7 +145,7 @@ impl Kernel {
 
         // Pattern 4: (a * c) % divisor -> reduce c modulo divisor
         // Math: (a * c) % d = (a * (c % d)) % d
-        if let Op::Binary { x: a, y: c, bop: BOp::Mul } = self.ops[x].op {
+        /*if let Op::Binary { x: a, y: c, bop: BOp::Mul } = self.ops[x].op {
             if let Op::Const(y) = self.ops[c].op {
                 if let Some(c) = y.as_dim() {
                     let c_reduced = c % divisor;
@@ -177,7 +177,7 @@ impl Kernel {
                     }
                 }
             }
-        }
+        }*/
     }
 }
 
@@ -216,12 +216,3 @@ fn mad(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
     let cval = cst.as_dim()?;
     Some((*a, cval, *b))
 }
-
-/*fn mul_c(k: &Kernel, x: OpId) -> Option<(OpId, u64)> {
-    let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(x) else {
-        return None;
-    };
-    let Op::Const(cst) = k.at(*c) else { return None };
-    let Some(cval) = cst.as_dim() else { return None };
-    Some((*a, cval))
-}*/

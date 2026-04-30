@@ -403,7 +403,14 @@ impl Kernel {
 
                     // For Load ops, check if there's a store to the same src
                     let can_cse = if let Op::Load { src, .. } = op {
-                        !stored_stack.iter().any(|x| x.contains(src))
+                        if stored_stack.iter().rev().any(|x| x.contains(src)) {
+                            for x in stored_stack.iter_mut() {
+                                x.remove(src);
+                            }
+                            false
+                        } else {
+                            true
+                        }
                     } else {
                         true
                     };
