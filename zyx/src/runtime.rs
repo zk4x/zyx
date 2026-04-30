@@ -3,16 +3,16 @@
 
 //! Runtime handles tensor graph and connects tensors to device buffers.
 use crate::backend::{AutotuneConfig, BufferId, Config, Device, DeviceId, Event, MemoryPool, PoolId};
-use crate::kernel_cache::KernelCache;
 use crate::dtype::{Constant, DType};
 use crate::error::ZyxError;
-use crate::graph::{Graph, Node};
 use crate::graph::compiled::{CachedGraph, CompiledGraph};
+use crate::graph::{Graph, Node};
 use crate::kernel::{BOp, UOp};
+use crate::kernel_cache::KernelCache;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
 use crate::shape::{Dim, UAxis, permute, reduce};
-use crate::slab::{Slab, SlabId};
+use crate::slab::Slab;
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
 use nanoserde::DeJson;
@@ -62,6 +62,7 @@ pub struct Runtime {
     /// Are we in training mode?
     pub training: bool,
     // Cache for compiled kernels, maps kernels to compiled result.
+    #[allow(unused)]
     pub(crate) graph_cache: Map<CachedGraph, CompiledGraph>,
 }
 
@@ -114,7 +115,13 @@ impl Runtime {
 
     pub(super) fn release(&mut self, x: TensorId) {
         let to_remove = self.graph.release(&[x]);
-        deallocate_tensors(&to_remove, &mut self.pools, &mut self.events, &mut self.buffer_map, &mut self.temp_data);
+        deallocate_tensors(
+            &to_remove,
+            &mut self.pools,
+            &mut self.events,
+            &mut self.buffer_map,
+            &mut self.temp_data,
+        );
         if self.graph.is_empty() && self.buffer_map.is_empty() {
             self.deinitialize();
         }
@@ -205,7 +212,10 @@ impl Runtime {
         #[cfg(feature = "time")]
         {
             let lock = crate::ET.lock();
-            let mut timings: Vec<_> = lock.iter().map(|(name, &(total_us, count))| (name.clone(), total_us, count)).collect();
+            let mut timings: Vec<_> = lock
+                .iter()
+                .map(|(name, &(total_us, count))| (name.clone(), total_us, count))
+                .collect();
             timings.sort_by(|a, b| b.1.cmp(&a.1));
             println!("\n=== Timing Info (sorted by total time, descending) ===");
             for (name, total_us, count) in timings {
@@ -281,7 +291,8 @@ impl Runtime {
         if let Some(disk) = self.pools[PoolId::from(1)].disk_pool() {
             let buffer_id = disk.buffer_from_path(bytes, path, offset_bytes);
             let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
-            self.buffer_map.insert(id, BufferId { pool: PoolId::from(1), buffer: buffer_id });
+            self.buffer_map
+                .insert(id, BufferId { pool: PoolId::from(1), buffer: buffer_id });
             Ok(id)
         } else {
             Err(ZyxError::NoBackendAvailable)
@@ -337,8 +348,7 @@ impl Runtime {
         let global_id = BufferId { pool: memory_pool_id, buffer: buffer_id };
         self.temp_data.insert(global_id, data.read());
 
-        let event = self.pools[memory_pool_id]
-            .host_to_pool(&self.temp_data[&global_id], buffer_id, vec![event])?;
+        let event = self.pools[memory_pool_id].host_to_pool(&self.temp_data[&global_id], buffer_id, vec![event])?;
         let id = self.graph.push_wshape(Node::Leaf { dtype }, shape);
         self.buffer_map.insert(id, global_id);
         self.events.insert(BTreeSet::from([global_id]), event);
@@ -640,7 +650,13 @@ impl Runtime {
             }
         }
         let to_remove = self.graph.release(&to_release);
-        deallocate_tensors(&to_remove, &mut self.pools, &mut self.events, &mut self.buffer_map, &mut self.temp_data);
+        deallocate_tensors(
+            &to_remove,
+            &mut self.pools,
+            &mut self.events,
+            &mut self.buffer_map,
+            &mut self.temp_data,
+        );
 
         #[cfg(debug_assertions)]
         {
@@ -733,7 +749,13 @@ impl Runtime {
             }
         }
         let to_remove = self.graph.release(&to_release);
-        deallocate_tensors(&to_remove, &mut self.pools, &mut self.events, &mut self.buffer_map, &mut self.temp_data);
+        deallocate_tensors(
+            &to_remove,
+            &mut self.pools,
+            &mut self.events,
+            &mut self.buffer_map,
+            &mut self.temp_data,
+        );
 
         #[cfg(debug_assertions)]
         {

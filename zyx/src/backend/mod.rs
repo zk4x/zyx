@@ -22,7 +22,7 @@ use crate::{
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
 use dummy::{DummyDevice, DummyMemoryPool};
-use host::{HostEvent, HostMemoryPool};
+use host::HostMemoryPool;
 use nanoserde::{DeBin, DeJson, SerBin};
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
 #[cfg(feature = "wgpu")]
@@ -375,11 +375,6 @@ impl MemoryPool {
             Self::Disk(disk) => Some(disk),
             _ => None,
         }
-    }
-
-    pub fn host_pool(&mut self) -> &mut HostMemoryPool {
-        let Self::Host(host) = self else { unreachable!() };
-        host
     }
 
     pub const fn free_bytes(&self) -> Dim {

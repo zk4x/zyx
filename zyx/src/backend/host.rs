@@ -37,7 +37,9 @@ impl HostMemoryPool {
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
-        let bytes: usize = bytes.try_into().map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "allocation size too large".into() })?;
+        let bytes: usize = bytes
+            .try_into()
+            .map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "allocation size too large".into() })?;
         if self.free_bytes < bytes as Dim {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
         }
@@ -45,18 +47,6 @@ impl HostMemoryPool {
         let buffer = vec![0u8; bytes].into_boxed_slice();
         let id = self.buffers.push(buffer);
         Ok((id, Event::Host(HostEvent)))
-    }
-
-    pub fn get_buffer(&self, buffer_id: PoolBufferId) -> Option<&[u8]> {
-        if self.buffers.contains_key(buffer_id) {
-            Some(&self.buffers[buffer_id])
-        } else {
-            None
-        }
-    }
-
-    pub fn get_buffer_mut(&mut self, buffer_id: PoolBufferId) -> Option<&mut [u8]> {
-        self.buffers.get_mut(buffer_id).map(|b| b.as_mut())
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -72,7 +62,10 @@ impl HostMemoryPool {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let _ = event_wait_list;
-        let buffer = self.buffers.get_mut(dst).ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
+        let buffer = self
+            .buffers
+            .get_mut(dst)
+            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
         let len = src.len().min(buffer.len());
         buffer[..len].copy_from_slice(&src[..len]);
         Ok(Event::Host(HostEvent))

@@ -9,11 +9,11 @@ use zyx_nn::{CausalSelfAttention, Embedding, LayerNorm, Linear, Module};
 
 #[derive(Module)]
 struct GPTConfig {
-    block_size: usize,
-    vocab_size: usize,
-    n_layer: usize,
-    n_head: usize,
-    n_embd: usize,
+    block_size: u64,
+    vocab_size: u64,
+    n_layer: u64,
+    n_head: u64,
+    n_embd: u64,
     dropout: f32,
     bias: bool,
     dtype: DType,
@@ -135,7 +135,7 @@ impl GPT {
         Ok(gpt)
     }
 
-    fn get_num_params(&self, non_embedding: bool) -> usize {
+    fn get_num_params(&self, non_embedding: bool) -> u64 {
         let mut n_params = 0;
         for p in self.into_iter() {
             n_params += p.numel();

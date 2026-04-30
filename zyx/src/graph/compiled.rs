@@ -1,15 +1,13 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-//! Compiled graph caching layer.
+#![allow(unused)]
 
+//! Compiled graph caching layer.
 use crate::{
     Map, Set, ZyxError,
     backend::{BufferId, DeviceId, PoolId, ProgramId},
-    graph::{
-        Node,
-        search::{self, EGraph},
-    },
+    graph::{Node, search::EGraph},
     runtime::Runtime,
     shape::{Dim, UAxis},
     tensor::TensorId,

@@ -64,7 +64,7 @@ pub(super) struct WGPUProgram {
 
 pub(super) fn initialize_device(
     config: &WGPUConfig,
-    memory_pools: &mut Slab<PoolId, Pool>,
+    memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {

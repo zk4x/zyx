@@ -1,6 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+#![allow(unused)]
+
 //! E-graph based search for fusion strategies.
 //!
 //! The e-graph stores multiple equivalent implementations for each buffer.
@@ -8,13 +10,13 @@
 //! or a copy from another pool. Saturation adds fused variants without
 //! replacing existing ones.
 
+use crate::DType;
 use crate::Map;
 use crate::ZyxError;
-use crate::DType;
 use crate::backend::PoolId;
 use crate::dtype::Constant;
-use crate::graph::compiled::{BufferSlot, CachedGraph, CompiledGraph};
 use crate::graph::Node;
+use crate::graph::compiled::{BufferSlot, CachedGraph, CompiledGraph};
 use crate::kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, UOp};
 use crate::shape::{Dim, UAxis};
 use crate::slab::{Slab, SlabId};
@@ -70,18 +72,64 @@ impl SlabId for BufferSlot {
 
 /// A single operation node in the e-graph. Can be a kernel or a memory operation.
 pub enum ENode {
-    Leaf { output: BufferSlot },
-    Const { output: BufferSlot, value: Constant },
-    Expand { input: BufferSlot, output: BufferSlot },
-    Permute { input: BufferSlot, output: BufferSlot, axes: Box<[UAxis]> },
-    Reshape { input: BufferSlot, output: BufferSlot },
-    Pad { input: BufferSlot, output: BufferSlot, padding: Box<[(i64, i64)]> },
-    Reduce { input: BufferSlot, output: BufferSlot, rop: BOp, axes: Box<[UAxis]> },
-    Cast { input: BufferSlot, output: BufferSlot },
-    Unary { input: BufferSlot, output: BufferSlot, uop: UOp },
-    Binary { x: BufferSlot, y: BufferSlot, output: BufferSlot, bop: BOp },
-    Copy { src: BufferSlot, dst: BufferSlot, cost: u64 },
-    Fused { inputs: Vec<BufferSlot>, outputs: Vec<BufferSlot>, cost: u64, covered: Vec<ENodeId>, op: Box<dyn FusedOp> },
+    Leaf {
+        output: BufferSlot,
+    },
+    Const {
+        output: BufferSlot,
+        value: Constant,
+    },
+    Expand {
+        input: BufferSlot,
+        output: BufferSlot,
+    },
+    Permute {
+        input: BufferSlot,
+        output: BufferSlot,
+        axes: Box<[UAxis]>,
+    },
+    Reshape {
+        input: BufferSlot,
+        output: BufferSlot,
+    },
+    Pad {
+        input: BufferSlot,
+        output: BufferSlot,
+        padding: Box<[(i64, i64)]>,
+    },
+    Reduce {
+        input: BufferSlot,
+        output: BufferSlot,
+        rop: BOp,
+        axes: Box<[UAxis]>,
+    },
+    Cast {
+        input: BufferSlot,
+        output: BufferSlot,
+    },
+    Unary {
+        input: BufferSlot,
+        output: BufferSlot,
+        uop: UOp,
+    },
+    Binary {
+        x: BufferSlot,
+        y: BufferSlot,
+        output: BufferSlot,
+        bop: BOp,
+    },
+    Copy {
+        src: BufferSlot,
+        dst: BufferSlot,
+        cost: u64,
+    },
+    Fused {
+        inputs: Vec<BufferSlot>,
+        outputs: Vec<BufferSlot>,
+        cost: u64,
+        covered: Vec<ENodeId>,
+        op: Box<dyn FusedOp>,
+    },
 }
 
 /// Trait for fused kernel operations.
@@ -207,19 +255,13 @@ impl EGraph {
             let enode = match node {
                 Node::Leaf { .. } => ENode::Leaf { output: buf_slot },
                 Node::Const { value } => ENode::Const { output: buf_slot, value: *value },
-                Node::Expand { x } => ENode::Expand {
-                    input: buf_id_from_tensor_id((*x).into()),
-                    output: buf_slot,
-                },
+                Node::Expand { x } => ENode::Expand { input: buf_id_from_tensor_id((*x).into()), output: buf_slot },
                 Node::Permute { x } => ENode::Permute {
                     input: buf_id_from_tensor_id((*x).into()),
                     output: buf_slot,
                     axes: graph.axes.get(&tensor_id).cloned().unwrap_or_else(|| Box::new([])),
                 },
-                Node::Reshape { x } => ENode::Reshape {
-                    input: buf_id_from_tensor_id((*x).into()),
-                    output: buf_slot,
-                },
+                Node::Reshape { x } => ENode::Reshape { input: buf_id_from_tensor_id((*x).into()), output: buf_slot },
                 Node::Pad { x } => ENode::Pad {
                     input: buf_id_from_tensor_id((*x).into()),
                     output: buf_slot,
@@ -231,15 +273,8 @@ impl EGraph {
                     rop: *rop,
                     axes: graph.axes.get(&tensor_id).cloned().unwrap_or_else(|| Box::new([])),
                 },
-                Node::Cast { x, .. } => ENode::Cast {
-                    input: buf_id_from_tensor_id((*x).into()),
-                    output: buf_slot,
-                },
-                Node::Unary { x, uop } => ENode::Unary {
-                    input: buf_id_from_tensor_id((*x).into()),
-                    output: buf_slot,
-                    uop: *uop,
-                },
+                Node::Cast { x, .. } => ENode::Cast { input: buf_id_from_tensor_id((*x).into()), output: buf_slot },
+                Node::Unary { x, uop } => ENode::Unary { input: buf_id_from_tensor_id((*x).into()), output: buf_slot, uop: *uop },
                 Node::Binary { x, y, bop } => ENode::Binary {
                     x: buf_id_from_tensor_id((*x).into()),
                     y: buf_id_from_tensor_id((*y).into()),
@@ -324,12 +359,14 @@ impl EGraph {
                 let x_input = *x;
                 let y_input = *y;
 
-                let x_is_expand = self.producers.get(&x_input).is_some_and(|prods| {
-                    prods.iter().any(|&id| matches!(self.enodes[id], ENode::Expand { .. }))
-                });
-                let y_is_expand = self.producers.get(&y_input).is_some_and(|prods| {
-                    prods.iter().any(|&id| matches!(self.enodes[id], ENode::Expand { .. }))
-                });
+                let x_is_expand = self
+                    .producers
+                    .get(&x_input)
+                    .is_some_and(|prods| prods.iter().any(|&id| matches!(self.enodes[id], ENode::Expand { .. })));
+                let y_is_expand = self
+                    .producers
+                    .get(&y_input)
+                    .is_some_and(|prods| prods.iter().any(|&id| matches!(self.enodes[id], ENode::Expand { .. })));
 
                 if !x_is_expand || !y_is_expand {
                     continue;
@@ -365,13 +402,7 @@ impl EGraph {
                     }
                 }
 
-                let fused = ENode::Fused {
-                    inputs: vec![x_input, y_input],
-                    outputs: vec![*output],
-                    cost,
-                    covered,
-                    op,
-                };
+                let fused = ENode::Fused { inputs: vec![x_input, y_input], outputs: vec![*output], cost, covered, op };
                 new_enodes.push(fused);
             }
         }
@@ -442,7 +473,11 @@ impl EGraph {
 
         // Walk naive ENodes in creation order (CachedGraph order is topo-sorted)
         // Fused nodes are at the end — skip them
-        let naive_count = self.enodes.iter().take_while(|(_, e)| !matches!(e, ENode::Fused { .. })).count();
+        let naive_count = self
+            .enodes
+            .iter()
+            .take_while(|(_, e)| !matches!(e, ENode::Fused { .. }))
+            .count();
 
         for (_enode_id, enode) in self.enodes.iter().take(naive_count) {
             let enode_id = _enode_id;
@@ -631,7 +666,11 @@ impl EGraph {
                     _ => 0,
                 };
 
-                let inputs_cost: u64 = enode.inputs().into_iter().map(|s| *cumulative_costs.get(s).unwrap_or(&0)).sum();
+                let inputs_cost: u64 = enode
+                    .inputs()
+                    .into_iter()
+                    .map(|s| *cumulative_costs.get(s).unwrap_or(&0))
+                    .sum();
                 let cumulative = own_cost + inputs_cost;
 
                 if cumulative < best_cumulative {
@@ -664,14 +703,7 @@ impl EGraph {
 fn empty_kernel() -> Kernel {
     let mut ops = Slab::with_capacity(1);
     let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op: Op::Const(Constant::I32(0)) });
-    Kernel {
-        outputs: Vec::new(),
-        loads: Vec::new(),
-        stores: Vec::new(),
-        ops,
-        head: op_id,
-        tail: op_id,
-    }
+    Kernel { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), ops, head: op_id, tail: op_id }
 }
 
 impl ActiveZyx {
@@ -700,14 +732,8 @@ impl ActiveZyx {
         let mut ops = Slab::with_capacity(100);
         let op = Op::ConstView(Box::new((value, View::contiguous(shape))));
         let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
-        let kernel = Kernel {
-            outputs: vec![Self::tid(buf)],
-            loads: Vec::new(),
-            stores: Vec::new(),
-            ops,
-            head: op_id,
-            tail: op_id,
-        };
+        let kernel =
+            Kernel { outputs: vec![Self::tid(buf)], loads: Vec::new(), stores: Vec::new(), ops, head: op_id, tail: op_id };
         let mut visited: Map<BufferSlot, OpId> = Map::default();
         visited.insert(buf, op_id);
         Self { kernel, visited, covered: Vec::new() }
@@ -743,7 +769,14 @@ impl ActiveZyx {
         self.covered.push(enode_id);
     }
 
-    fn add_binary_op(&mut self, enode_id: ENodeId, x: BufferSlot, y: BufferSlot, output: BufferSlot, bop: BOp) -> Result<(), ZyxError> {
+    fn add_binary_op(
+        &mut self,
+        enode_id: ENodeId,
+        x: BufferSlot,
+        y: BufferSlot,
+        output: BufferSlot,
+        bop: BOp,
+    ) -> Result<(), ZyxError> {
         let Some(&op_id) = self.visited.get(&x) else { return Ok(()) };
         let Some(&op_idy) = self.visited.get(&y) else { return Ok(()) };
         let new_op_id = self.kernel.push_back(Op::Binary { x: op_id, y: op_idy, bop });
@@ -769,7 +802,9 @@ impl ActiveZyx {
                 op_id = self.create_load_kernel(input, shape, dtype);
             }
         }
-        let new_op_id = self.kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: shape.into() }) });
+        let new_op_id = self
+            .kernel
+            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Expand { shape: shape.into() }) });
         self.kernel.remove_first_output(Self::tid(input));
         self.kernel.outputs.push(Self::tid(output));
         self.visited.insert(output, new_op_id);
@@ -778,7 +813,9 @@ impl ActiveZyx {
 
     fn add_permute_op(&mut self, enode_id: ENodeId, input: BufferSlot, output: BufferSlot, axes: &[UAxis], shape: &[Dim]) {
         let Some(&op_id) = self.visited.get(&input) else { return };
-        let new_op_id = self.kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: shape.into() }) });
+        let new_op_id = self
+            .kernel
+            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: axes.into(), shape: shape.into() }) });
         self.kernel.remove_first_output(Self::tid(input));
         self.kernel.outputs.push(Self::tid(output));
         self.visited.insert(output, new_op_id);
@@ -787,7 +824,9 @@ impl ActiveZyx {
 
     fn add_reshape_op(&mut self, enode_id: ENodeId, input: BufferSlot, output: BufferSlot, shape: &[Dim]) {
         let Some(&op_id) = self.visited.get(&input) else { return };
-        let new_op_id = self.kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape.into() }) });
+        let new_op_id = self
+            .kernel
+            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Reshape { shape: shape.into() }) });
         self.kernel.remove_first_output(Self::tid(input));
         self.kernel.outputs.push(Self::tid(output));
         self.visited.insert(output, new_op_id);
@@ -796,14 +835,25 @@ impl ActiveZyx {
 
     fn add_pad_op(&mut self, enode_id: ENodeId, input: BufferSlot, output: BufferSlot, padding: &[(i64, i64)], shape: &[Dim]) {
         let Some(&op_id) = self.visited.get(&input) else { return };
-        let new_op_id = self.kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding: padding.into(), shape: shape.into() }) });
+        let new_op_id = self
+            .kernel
+            .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Pad { padding: padding.into(), shape: shape.into() }) });
         self.kernel.remove_first_output(Self::tid(input));
         self.kernel.outputs.push(Self::tid(output));
         self.visited.insert(output, new_op_id);
         self.covered.push(enode_id);
     }
 
-    fn add_reduce_op(&mut self, enode_id: ENodeId, input: BufferSlot, output: BufferSlot, rop: BOp, axes: &[UAxis], shape: &[Dim], dtype: DType) {
+    fn add_reduce_op(
+        &mut self,
+        enode_id: ENodeId,
+        input: BufferSlot,
+        output: BufferSlot,
+        rop: BOp,
+        axes: &[UAxis],
+        shape: &[Dim],
+        dtype: DType,
+    ) {
         let Some(op_id) = self.visited.get(&input).copied() else { return };
         let mut op_id = op_id;
         if self.kernel.contains_stores() {
@@ -833,7 +883,9 @@ impl ActiveZyx {
         permute_axes.extend_from_slice(axes);
         if !permute_axes.iter().copied().eq(0..permute_axes.len()) {
             let permuted_shape = crate::shape::permute(shape, &permute_axes);
-            op_id = self.kernel.push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape: permuted_shape }) });
+            op_id = self
+                .kernel
+                .push_back(Op::Move { x: op_id, mop: Box::new(MoveOp::Permute { axes: permute_axes, shape: permuted_shape }) });
             self.visited.insert(input, op_id);
         }
         let new_op_id = self.kernel.push_back(Op::Reduce { x: op_id, rop, n_axes: axes.len() });
@@ -841,7 +893,9 @@ impl ActiveZyx {
         self.kernel.outputs.push(Self::tid(output));
         // If all dims are reduced
         if shape.len() == axes.len() {
-            let _ = self.kernel.push_back(Op::Move { x: new_op_id, mop: Box::new(MoveOp::Reshape { shape: vec![1] }) });
+            let _ = self
+                .kernel
+                .push_back(Op::Move { x: new_op_id, mop: Box::new(MoveOp::Reshape { shape: vec![1] }) });
         }
         self.visited.insert(output, new_op_id);
         self.covered.push(enode_id);
@@ -861,7 +915,12 @@ impl ActiveZyx {
             return;
         }
         let inputs: Vec<BufferSlot> = self.kernel.loads.iter().map(|tid| BufferSlot::from(tid.0 as usize)).collect();
-        let outputs: Vec<BufferSlot> = self.kernel.outputs.iter().map(|tid| BufferSlot::from(tid.0 as usize)).collect();
+        let outputs: Vec<BufferSlot> = self
+            .kernel
+            .outputs
+            .iter()
+            .map(|tid| BufferSlot::from(tid.0 as usize))
+            .collect();
         if inputs.is_empty() || outputs.is_empty() {
             return;
         }
