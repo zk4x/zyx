@@ -199,7 +199,7 @@ impl Kernel {
         self.delete_empty_loops();
         self.unfold_pows();
         self.div_mod_simplification();
-        //self.simplify_accumulating_loop();
+        self.simplify_accumulating_loop();
         self.swap_commutative();
         self.common_subexpression_elimination();
         self.dead_code_elimination();

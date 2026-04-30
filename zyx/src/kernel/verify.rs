@@ -284,7 +284,7 @@ impl Kernel {
                         let range = match bop {
                             BOp::Add => (min_x.wrapping_add(min_y), max_x.wrapping_add(max_y)),
                             BOp::Sub => (min_x.wrapping_sub(min_y), max_x.wrapping_sub(max_y)),
-                            BOp::Mul => (min_x.wrapping_mul(max_y), max_x.wrapping_mul(min_y)),
+                            BOp::Mul => (min_x.wrapping_mul(min_y), max_x.wrapping_mul(max_y)),
                             BOp::Div | BOp::Mod if min_y == 0 || max_y == 0 => (0, Dim::MAX),
                             BOp::Div => (min_x / min_y, max_x / max_y),
                             BOp::Mod => (0, max_y - 1),
@@ -292,10 +292,22 @@ impl Kernel {
                             BOp::BitShiftRight => (min_x >> min_y, max_x >> max_y),
                             // Power: handle special cases 0^0=1, 0^k=0 (k>0), k^0=1 (k>0)
                             BOp::Pow => {
-                                let min_val = if min_y == 0 { 1 } else if min_x == 0 { 0 } else { min_x.pow(min_y as u32) };
-                                let max_val = if max_y == 0 { 1 } else if max_x == 0 { 0 } else { max_x.pow(max_y as u32) };
+                                let min_val = if min_y == 0 {
+                                    1
+                                } else if min_x == 0 {
+                                    0
+                                } else {
+                                    min_x.pow(min_y as u32)
+                                };
+                                let max_val = if max_y == 0 {
+                                    1
+                                } else if max_x == 0 {
+                                    0
+                                } else {
+                                    max_x.pow(max_y as u32)
+                                };
                                 (min_val, max_val)
-                            },
+                            }
                             BOp::Eq => {
                                 // x == y
                                 let always = (min_x == max_x) && (min_y == max_y) && (min_x == min_y);
@@ -330,34 +342,18 @@ impl Kernel {
                                 let upper = u64::from(always || maybe);
                                 (lower, upper)
                             }
-                            /*BOp::And => {
-                                // x & y
-                                let always = min_x == 1 && max_x == 1 && min_y == 1 && max_y == 1;
-                                let maybe = max_x >= 1 && max_y >= 1;
-                                let lower = u64::from(always);
-                                let upper = u64::from(always || maybe);
-                                (lower, upper)
-                            }
-                            BOp::Or => {
-                                // x | y
-                                let always = max_x == 1 && max_y == 1;
-                                let maybe = min_x == 1 || min_y == 1 || max_x == 1 || max_y == 1;
-                                let lower = Dim::from(always);
-                                let upper = Dim::from(always || maybe);
-                                (lower, upper)
-                            }*/
                             // Bitwise AND: true only if both are always 1; possible if both can be ≥1
                             BOp::And => {
                                 let always = (min_x == 1 && max_x == 1) && (min_y == 1 && max_y == 1);
                                 let maybe = (max_x >= 1) && (max_y >= 1);
                                 (u64::from(always), u64::from(always || maybe))
-                            },
+                            }
                             // Bitwise OR: true if either is always 1; possible if either can be 1
                             BOp::Or => {
                                 let always = (min_x == 1 && max_x == 1) || (min_y == 1 && max_y == 1);
                                 let maybe = (min_x == 1) || (min_y == 1) || (max_x == 1) || (max_y == 1);
                                 (Dim::from(always), Dim::from(always || maybe))
-                            },
+                            }
                             BOp::Max => (min_x.max(min_y), max_x.max(max_y)),
                             _ => unreachable!(),
                         };
