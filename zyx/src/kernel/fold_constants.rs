@@ -510,50 +510,13 @@ impl Kernel {
     }
 
     pub fn unfold_pows(&mut self) {
-        #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("unfold_pows");
-
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let &Op::Binary { x, y, bop } = self.at(op_id) {
                 if bop == BOp::Pow {
-                    // pow(x, y) = exp2(log2(max(abs(x), eps)) * y) * cos(π * y)
-                    // This handles x < 0 via cos(π*y) sign factor
-                    // and x = 0 via max(abs(x), eps) to avoid log2(0)
-                    
-                    // Step 1: abs(x) - handle negative bases
-                    let abs_x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Abs });
-                    
-                    // Step 2: eps = f32::MIN_POSITIVE (smallest positive normal number ≈ 1.175e-38)
-                    // log2(eps) ≈ -126, so eps^0 = exp2(-126 * 0) = 1, handling 0^0 = 1
-                    let eps = self.insert_before(op_id, Op::Const(Constant::F32(f32::MIN_POSITIVE.to_le_bytes())));
-                    
-                    // Step 3: max(abs_x, eps) to avoid log2(0) = -inf
-                    let max_x = self.insert_before(op_id, Op::Binary { x: abs_x, y: eps, bop: BOp::Max });
-                    
-                    // Step 4: log2(max_x)
-                    let log2_x = self.insert_before(op_id, Op::Unary { x: max_x, uop: UOp::Log2 });
-                    
-                    // Step 5: log2_x * y
-                    let mul = self.insert_before(op_id, Op::Binary { x: log2_x, y, bop: BOp::Mul });
-                    
-                    // Step 6: exp2(mul)
-                    let exp2_result = self.insert_before(op_id, Op::Unary { x: mul, uop: UOp::Exp2 });
-                    
-                    // Step 7: π constant
-                    let pi = self.insert_before(op_id, Op::Const(Constant::F32(std::f32::consts::PI.to_le_bytes())));
-                    
-                    // Step 8: π * y
-                    let pi_y = self.insert_before(op_id, Op::Binary { x: pi, y, bop: BOp::Mul });
-                    
-                    // Step 9: cos(π * y) gives sign: cos(π*even)=1, cos(π*odd)=-1
-                    let sign = self.insert_before(op_id, Op::Unary { x: pi_y, uop: UOp::Cos });
-                    
-                    // Step 10: final result with correct sign for negative x
-                    let result = self.insert_before(op_id, Op::Binary { x: exp2_result, y: sign, bop: BOp::Mul });
-                    
-                    // Remap original pow op to new result
-                    self.remap(op_id, result);
+                    let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
+                    let x = self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
+                    self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
                 }
             }
             op_id = self.next_op(op_id);
