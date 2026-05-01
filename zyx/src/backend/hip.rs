@@ -274,6 +274,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major > 7,
                 warp_size: 64,
+                supports_f64: major >= 7,
             },
             streams,
             programs: Slab::new(),

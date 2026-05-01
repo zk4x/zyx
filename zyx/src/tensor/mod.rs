@@ -222,6 +222,12 @@ impl Tensor {
         RT.lock().is_realized(self.id)
     }
 
+    /// Returns true if the GPU supports float64 (f64) operations.
+    #[must_use]
+    pub fn supports_f64() -> bool {
+        RT.lock().gpu_supports_f64()
+    }
+
     /// Returns a slice of the first N dimensions of this tensor.
     ///
     /// # Parameters

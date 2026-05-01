@@ -340,6 +340,8 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
     /// Warp size
     pub warp_size: u16,
+    /// Does this hardware support float64 (f64) operations?
+    pub supports_f64: bool,
 }
 
 #[allow(clippy::upper_case_acronyms)]
