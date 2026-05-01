@@ -52,6 +52,9 @@ fn grad_exp2() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_reciprocal_2() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Input tensor
     let x = Tensor::from([2.0, -1.0, 0.5]);
 
@@ -76,6 +79,9 @@ fn grad_reciprocal_2() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_floor() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     let x = Tensor::from([0.5, 1.5, -0.5, -1.5, 0.1, 0.9, -0.1, -0.9, 2.3, -2.3]);
     let tape = GradientTape::new();
     let y = x.floor();
@@ -87,6 +93,9 @@ fn grad_floor() -> Result<(), ZyxError> {
 
 #[test]
 fn grad_trunc() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     let x = Tensor::from([0.5, 1.5, -0.5, -1.5, 0.1, 0.9, -0.1, -0.9, 2.3, -2.3]);
     let tape = GradientTape::new();
     let y = x.trunc();

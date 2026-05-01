@@ -167,6 +167,9 @@ fn square_1() -> Result<(), ZyxError> {
 
 #[test]
 fn huber_loss_1() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Test basic huber loss functionality
     let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
     let targets = Tensor::from([1.0, 2.0, 3.0]); // Perfect match
@@ -208,6 +211,9 @@ fn huber_loss_3() -> Result<(), ZyxError> {
 
 #[test]
 fn huber_loss_4() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Test huber loss with different delta values
     let predictions = Tensor::from([1.0f32, 1.0, 1.0]);
     let targets = Tensor::from([2.0, 3.0, 4.0]);
@@ -341,6 +347,9 @@ fn ceil_3() -> Result<(), ZyxError> {
 
 #[test]
 fn smooth_l1_loss_1() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Test Smooth L1 loss with small differences (should use quadratic region)
     let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
     let targets = Tensor::from([1.1, 2.2, 2.9]); // Small differences < 1.0
@@ -356,6 +365,9 @@ fn smooth_l1_loss_1() -> Result<(), ZyxError> {
 
 #[test]
 fn smooth_l1_loss_2() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Test Smooth L1 loss with large differences (should use linear region)
     let predictions = Tensor::from([1.0f32, 2.0, 3.0]);
     let targets = Tensor::from([3.0, 5.0, 1.5]); // Large differences > 1.0
@@ -371,6 +383,9 @@ fn smooth_l1_loss_2() -> Result<(), ZyxError> {
 
 #[test]
 fn smooth_l1_loss_3() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Test Smooth L1 loss with mixed differences
     let predictions = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
     let targets = Tensor::from([1.5, 2.8, 1.2, 6.0]); // Mixed differences
@@ -388,6 +403,9 @@ fn smooth_l1_loss_3() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_1() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Test basic linear interpolation
     let input = Tensor::from([1.0f32, 2.0, 3.0]);
     let target = Tensor::from([2.0, 4.0, 6.0]);
@@ -401,6 +419,9 @@ fn interpolate_1() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_2() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Test interpolation with weight 0.0 (should return input)
     let input = Tensor::from([1.0f32, 2.0, 3.0]);
     let target = Tensor::from([10.0, 20.0, 30.0]);
@@ -414,6 +435,9 @@ fn interpolate_2() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_3() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Test interpolation with weight 1.0 (should return target)
     let input = Tensor::from([1.0f32, 2.0, 3.0]);
     let target = Tensor::from([10.0, 20.0, 30.0]);
@@ -427,6 +451,9 @@ fn interpolate_3() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_4() -> Result<(), ZyxError> {
+    if !Tensor::supports_f64() {
+        return Ok(());
+    }
     // Test interpolation with custom weight
     let input = Tensor::from([0.0f32, 0.0, 0.0]);
     let target = Tensor::from([100.0, 200.0, 300.0]);
