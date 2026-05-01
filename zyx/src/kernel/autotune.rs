@@ -62,15 +62,15 @@ impl Optimization {
             Optimization::ReassociateCommutative => println!("ReassociateCommutative"),
             Optimization::UnrollLoops { factors } => {
                 let factor = factors[config];
-                println!("unroll loop len={} by {}", factor, factor)
+                println!("unroll loop len={factor} by {factor}");
             }
             Optimization::SplitGlobalToLocal { factors } => {
                 let (op_id, factor) = factors[config];
-                println!("split global index {} to local by {}", op_id, factor)
+                println!("split global index {op_id} to local by {factor}");
             }
             Optimization::Upcast { factors } => {
                 let (op_id, factor) = factors[config];
-                println!("upcast axis {} by {}", op_id, factor)
+                println!("upcast axis {op_id} by {factor}");
             }
             Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
                 let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
@@ -96,17 +96,17 @@ impl Optimization {
                 if parts.is_empty() {
                     println!("register tiling (no-op)");
                 } else {
-                    println!("register tiling {}", parts.join(", "))
+                    println!("register tiling {}", parts.join(", "));
                 }
             }
             Optimization::UnrollConstantLoops => println!("UnrollConstantLoops"),
             Optimization::TiledReduce { factors } => {
                 let (op_id, local, global) = factors[config];
-                println!("tiled reduce index {} local={}, global={}", op_id, local, global)
+                println!("tiled reduce index {op_id} local={local}, global={global}");
             }
             Optimization::SplitLoop { factors } => {
                 let (op_id, factor) = factors[config];
-                println!("split loop {} by {}", op_id, factor)
+                println!("split loop {op_id} by {factor}");
             }
             Optimization::Licm => println!("Licm"),
         }

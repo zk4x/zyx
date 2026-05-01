@@ -48,7 +48,7 @@ impl Kernel {
                     self.ops[op_id].op = Op::Const(Constant::idx(0));
                     deleted.push(depth);
                 }
-            } else if let Op::EndLoop = self.ops[op_id].op {
+            } else if self.ops[op_id].op == Op::EndLoop {
                 if deleted.pop_if(|x| *x == depth).is_some() {
                     self.remove_op(op_id);
                 }

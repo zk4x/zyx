@@ -159,7 +159,7 @@ impl WGPUMemoryPool {
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         const ALIGN: Dim = wgpu::COPY_BUFFER_ALIGNMENT;
-        let bytes = (bytes + ALIGN - 1) / ALIGN * ALIGN;
+        let bytes = bytes.div_ceil(ALIGN) * ALIGN;
         if bytes > self.free_bytes {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "".into() });
         }

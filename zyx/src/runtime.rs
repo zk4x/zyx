@@ -216,11 +216,11 @@ impl Runtime {
                 .iter()
                 .map(|(name, &(total_us, count))| (name.clone(), total_us, count))
                 .collect();
-            timings.sort_by(|a, b| b.1.cmp(&a.1));
+            timings.sort_by_key(|a| std::cmp::Reverse(a.1));
             println!("\n=== Timing Info (sorted by total time, descending) ===");
             for (name, total_us, count) in timings {
-                let per_call = if count > 0 { total_us / count } else { 0 };
-                println!("{}: {}us total, {}us/call ({} calls)", name, total_us, per_call, count);
+                let per_call = total_us.checked_div(count).unwrap_or(0);
+                println!("{name}: {total_us}us total, {per_call}us/call ({count} calls)");
             }
         }
         //println!("DEINIT runtime");

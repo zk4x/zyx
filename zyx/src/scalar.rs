@@ -286,7 +286,7 @@ impl Scalar for bf16 {
     }
 
     fn exp2(self) -> Self {
-        bf16::from_f64(2.0_f64.powf(f64::from(self)))
+        bf16::from_f64(f64::from(self).exp2())
     }
 
     fn log2(self) -> Self {
@@ -294,15 +294,15 @@ impl Scalar for bf16 {
     }
 
     fn relu(self) -> Self {
-        self.max(bf16::ZERO)
+        Scalar::max(self, Self::ZERO)
     }
 
     fn not(self) -> Self {
-        bf16::from_f32(if f64::from(self) != 0.0 { 1.0 } else { 0.0 })
+        bf16::from_f32(if f64::from(self) == 0.0 { 0.0 } else { 1.0 })
     }
 
     fn nonzero(self) -> Self {
-        bf16::from_f32(if f64::from(self) != 0.0 { 1.0 } else { 0.0 })
+        bf16::from_f32(if f64::from(self) == 0.0 { 0.0 } else { 1.0 })
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -512,7 +512,7 @@ impl Scalar for f16 {
     }
 
     fn exp2(self) -> Self {
-        f16::from_f32(2.0_f32.powf(self.to_f32()))
+        f16::from_f32(self.to_f32().exp2())
     }
 
     fn log2(self) -> Self {
@@ -524,11 +524,11 @@ impl Scalar for f16 {
     }
 
     fn not(self) -> Self {
-        f16::from_f32(if f32::from(self) != 0.0 { 1.0 } else { 0.0 })
+        f16::from_f32(if f32::from(self) == 0.0 { 0.0 } else { 1.0 })
     }
 
     fn nonzero(self) -> Self {
-        f16::from_f32(if f32::from(self) != 0.0 { 1.0 } else { 0.0 })
+        f16::from_f32(if f32::from(self) == 0.0 { 0.0 } else { 1.0 })
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -1233,11 +1233,11 @@ impl Scalar for i8 {
     }
 
     fn not(self) -> Self {
-        if self == 0 { 1 } else { 0 }
+        i8::from(self == 0)
     }
 
     fn nonzero(self) -> Self {
-        if self == 0 { 0 } else { 1 }
+        i8::from(self != 0)
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -1438,11 +1438,11 @@ impl Scalar for i16 {
     }
 
     fn not(self) -> Self {
-        if self == 0 { 1 } else { 0 }
+        i16::from(self == 0)
     }
 
     fn nonzero(self) -> Self {
-        if self == 0 { 0 } else { 1 }
+        i16::from(self != 0)
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -1637,11 +1637,11 @@ impl Scalar for i32 {
     }
 
     fn not(self) -> Self {
-        if self == 0 { 1 } else { 0 }
+        i32::from(self == 0)
     }
 
     fn nonzero(self) -> Self {
-        if self == 0 { 0 } else { 1 }
+        i32::from(self != 0)
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -1826,11 +1826,11 @@ impl Scalar for i64 {
     }
 
     fn not(self) -> Self {
-        if self == 0 { 1 } else { 0 }
+        i64::from(self == 0)
     }
 
     fn nonzero(self) -> Self {
-        if self == 0 { 0 } else { 1 }
+        i64::from(self != 0)
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -2013,11 +2013,11 @@ impl Scalar for u8 {
     }
 
     fn not(self) -> Self {
-        if self == 0 { 1 } else { 0 }
+        u8::from(self == 0)
     }
 
     fn nonzero(self) -> Self {
-        if self == 0 { 0 } else { 1 }
+        u8::from(self != 0)
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -2037,7 +2037,7 @@ impl Scalar for u8 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        Self::pow(self, u32::try_from(rhs).unwrap())
+        Self::pow(self, u32::from(rhs))
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2200,11 +2200,11 @@ impl Scalar for u16 {
     }
 
     fn not(self) -> Self {
-        if self == 0 { 1 } else { 0 }
+        u16::from(self == 0)
     }
 
     fn nonzero(self) -> Self {
-        if self == 0 { 0 } else { 1 }
+        u16::from(self != 0)
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -2224,7 +2224,7 @@ impl Scalar for u16 {
     }
 
     fn pow(self, rhs: Self) -> Self {
-        Self::pow(self, u32::try_from(rhs).unwrap()) as u16
+        Self::pow(self, u32::from(rhs)) as u16
     }
 
     fn mod_(self, rhs: Self) -> Self {
@@ -2408,11 +2408,11 @@ impl Scalar for u32 {
     }
 
     fn not(self) -> Self {
-        if self == 0 { 1 } else { 0 }
+        u32::from(self == 0)
     }
 
     fn nonzero(self) -> Self {
-        if self == 0 { 0 } else { 1 }
+        u32::from(self != 0)
     }
 
     fn add(self, rhs: Self) -> Self {
@@ -2616,11 +2616,11 @@ impl Scalar for u64 {
     }
 
     fn not(self) -> Self {
-        if self == 0 { 1 } else { 0 }
+        u64::from(self == 0)
     }
 
     fn nonzero(self) -> Self {
-        if self == 0 { 0 } else { 1 }
+        u64::from(self != 0)
     }
 
     fn add(self, rhs: Self) -> Self {

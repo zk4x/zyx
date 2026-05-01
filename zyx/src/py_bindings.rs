@@ -3,8 +3,6 @@
 
 //! Python bindings for zyx
 
-#![allow(missing_docs)]
-
 use crate::DebugMask;
 use crate::shape::Dim;
 use crate::tensor::{Axis, DebugGuard, ReduceOp};
@@ -28,6 +26,8 @@ impl From<ZyxError> for PyErr {
 
 #[pymethods]
 impl GradientTape {
+    /// # Panics
+    /// Panics if sources are not List(Tensor).
     #[must_use]
     #[pyo3(name = "backward")]
     pub fn gradient_py(&self, x: &Tensor, sources: &Bound<'_, PyList>) -> Vec<Option<Tensor>> {
@@ -174,6 +174,11 @@ impl Tensor {
         })
     }
 
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    ///
+    /// # Panics
+    /// Panics if tensors are not List(Tensor).
     #[staticmethod]
     #[pyo3(name = "plot_dot_graph")]
     pub fn plot_dot_graph_py(tensors: &Bound<'_, PyList>, name: &str) -> Result<(), std::io::Error> {
@@ -184,12 +189,14 @@ impl Tensor {
         Tensor::plot_graph(&tensors, name)
     }
 
+    /// Set the random seed.
     #[staticmethod]
     #[pyo3(name = "manual_seed")]
     pub fn manual_seed_py(seed: u64) {
-        Tensor::manual_seed(seed)
+        Tensor::manual_seed(seed);
     }
 
+    /// Returns whether training mode is enabled.
     #[staticmethod]
     #[must_use]
     #[pyo3(name = "training")]
@@ -197,12 +204,18 @@ impl Tensor {
         return Tensor::training();
     }
 
+    /// Set training mode.
     #[staticmethod]
     #[pyo3(name = "set_training")]
     pub fn set_training_py(training: bool) {
         Tensor::set_training(training);
     }
 
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    ///
+    /// # Panics
+    /// Panics if tensors are not List(Tensor).
     #[staticmethod]
     #[pyo3(name = "realize")]
     pub fn realize_py(tensors: &Bound<'_, PyList>) -> Result<(), ZyxError> {
@@ -213,30 +226,35 @@ impl Tensor {
         Tensor::realize(&tensors)
     }
 
+    /// Returns the shape of the tensor.
     #[must_use]
     #[pyo3(name = "shape")]
     pub fn shape_py(&self) -> Vec<Dim> {
         self.shape()
     }
 
+    /// Returns the number of elements in the tensor.
     #[must_use]
     #[pyo3(name = "numel")]
     pub fn numel_py(&self) -> Dim {
         self.numel()
     }
 
+    /// Returns the rank (number of dimensions) of the tensor.
     #[must_use]
     #[pyo3(name = "rank")]
     pub fn rank_py(&self) -> Dim {
         self.rank()
     }
 
+    /// Returns the data type of the tensor.
     #[must_use]
     #[pyo3(name = "dtype")]
     pub fn dtype_py(&self) -> DType {
         self.dtype()
     }
 
+    /// Returns whether implicit casts are enabled.
     #[staticmethod]
     #[must_use]
     #[pyo3(name = "implicit_casts")]
@@ -244,19 +262,21 @@ impl Tensor {
         Tensor::implicit_casts()
     }
 
+    /// Set whether implicit casts are enabled.
     #[staticmethod]
-    #[must_use]
     #[pyo3(name = "set_implicit_casts")]
     pub fn set_implicit_casts_py(implicit_casts: bool) {
         Tensor::set_implicit_casts(implicit_casts);
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "detach")]
     pub fn detach_py(&self) -> Result<Tensor, ZyxError> {
         self.clone().detach()
     }
 
+    /// Returns a debug guard with the given debug mask.
     #[staticmethod]
     #[must_use]
     #[pyo3(name = "with_debug")]
@@ -264,21 +284,24 @@ impl Tensor {
         Tensor::with_debug(debug)
     }
 
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[staticmethod]
-    #[must_use]
     #[pyo3(name = "randn", signature = (*shape, dtype=DType::F32))]
     pub fn randn_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Result<Tensor, ZyxError> {
         Tensor::randn(to_sh(shape)?, dtype)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "multinomial")]
     pub fn multinomial_py(&self, num_samples: Dim, replacement: bool) -> Result<Tensor, ZyxError> {
         self.multinomial(num_samples, replacement)
     }
 
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[staticmethod]
-    #[must_use]
     #[pyo3(name = "rand", signature = (*shape, dtype=DType::F32))]
     pub fn rand_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Result<Tensor, ZyxError> {
         Tensor::rand(to_sh(shape)?, dtype)
@@ -298,6 +321,8 @@ impl Tensor {
         Tensor::kaiming_uniform(to_sh(shape)?, a)
     }*/
 
+    /// # Panics
+    /// Panics if shape conversion fails.
     #[staticmethod]
     #[must_use]
     #[pyo3(name = "zeros", signature = (*shape, dtype=DType::F32))]
@@ -305,6 +330,8 @@ impl Tensor {
         Tensor::zeros(to_sh(shape).unwrap(), dtype)
     }
 
+    /// # Panics
+    /// Panics if shape conversion fails.
     #[staticmethod]
     #[must_use]
     #[pyo3(name = "ones", signature = (*shape, dtype=DType::F32))]
@@ -312,6 +339,8 @@ impl Tensor {
         return Tensor::ones(to_sh(shape).unwrap(), dtype);
     }
 
+    /// # Panics
+    /// Panics if shape conversion fails.
     #[staticmethod]
     #[must_use]
     #[pyo3(name = "full", signature = (*shape, a))]
@@ -319,8 +348,9 @@ impl Tensor {
         Tensor::full(to_sh(shape).unwrap(), a)
     }
 
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[staticmethod]
-    #[must_use]
     #[pyo3(name = "zeros_like")]
     pub fn zeros_like_py(input: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(tensor) = input.extract::<Tensor>() {
@@ -330,8 +360,9 @@ impl Tensor {
         }
     }
 
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[staticmethod]
-    #[must_use]
     #[pyo3(name = "ones_like")]
     pub fn ones_like_py(input: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(tensor) = input.extract::<Tensor>() {
@@ -342,21 +373,24 @@ impl Tensor {
     }
 
     #[staticmethod]
+    /// Creates an identity matrix.
     #[must_use]
     #[pyo3(name = "eye", signature = (n, dtype=DType::F32))]
     pub fn eye_py(n: Dim, dtype: DType) -> Tensor {
         return Tensor::eye(n, dtype);
     }
 
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[staticmethod]
-    #[must_use]
     #[pyo3(name = "arange", signature = (start=0, stop=1, step=1))]
     pub fn arange_py(start: i64, stop: i64, step: i64) -> Result<Tensor, ZyxError> {
         Tensor::arange(start, stop, step)
     }
 
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[staticmethod]
-    #[must_use]
     #[pyo3(name = "from_vec")]
     pub fn from_vec_py(data: &Bound<'_, PyList>, shape: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
         let shape_vec = to_sh(shape)?;
@@ -369,43 +403,50 @@ impl Tensor {
         }
     }
 
+    /// Computes the absolute value element-wise.
     #[must_use]
     #[pyo3(name = "abs")]
     pub fn abs_py(&self) -> Tensor {
         return self.abs();
     }
 
+    /// Casts the tensor to the given data type.
     #[must_use]
     #[pyo3(name = "cast")]
     pub fn cast_py(&self, dtype: DType) -> Tensor {
         return self.cast(dtype);
     }
 
+    /// Computes the cosine element-wise.
     #[must_use]
     #[pyo3(name = "cos")]
     pub fn cos_py(&self) -> Tensor {
         return self.cos();
     }
 
+    /// Computes the hyperbolic cosine element-wise.
     #[must_use]
     #[pyo3(name = "cosh")]
     pub fn cosh_py(&self) -> Tensor {
         return self.cosh();
     }
 
+    /// Computes the exponential element-wise.
     #[must_use]
     #[pyo3(name = "exp")]
     pub fn exp_py(&self) -> Tensor {
         return self.exp();
     }
 
+    /// Computes the floor element-wise.
     #[must_use]
     #[pyo3(name = "floor")]
     pub fn floor_py(&self) -> Tensor {
         return self.floor();
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "log")]
     pub fn log_py(&self, base: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         if let Ok(base_tensor) = base.extract::<Tensor>() {
@@ -417,72 +458,85 @@ impl Tensor {
         }
     }
 
+    /// Computes the base-2 logarithm element-wise.
     #[must_use]
     #[pyo3(name = "log2")]
     pub fn log2_py(&self) -> Tensor {
         return self.log2();
     }
 
+    /// Computes the reciprocal element-wise.
     #[must_use]
     #[pyo3(name = "reciprocal")]
     pub fn reciprocal_py(&self) -> Tensor {
         return self.reciprocal();
     }
 
+    /// Applies the `ReLU` activation function element-wise.
     #[must_use]
     #[pyo3(name = "relu")]
     pub fn relu_py(&self) -> Tensor {
         return self.relu();
     }
 
+    /// Computes the reciprocal square root element-wise.
     #[must_use]
     #[pyo3(name = "rsqrt")]
     pub fn rsqrt_py(&self) -> Tensor {
         return self.rsqrt();
     }
 
+    /// Applies the sigmoid activation function element-wise.
     #[must_use]
     #[pyo3(name = "sigmoid")]
     pub fn sigmoid_py(&self) -> Tensor {
         return self.sigmoid();
     }
 
+    /// Computes the sine element-wise.
     #[must_use]
     #[pyo3(name = "sin")]
     pub fn sin_py(&self) -> Tensor {
         return self.sin();
     }
 
+    /// Computes the hyperbolic sine element-wise.
     #[must_use]
     #[pyo3(name = "sinh")]
     pub fn sinh_py(&self) -> Tensor {
         return self.sinh();
     }
 
+    /// Computes the square root element-wise.
     #[must_use]
     #[pyo3(name = "sqrt")]
     pub fn sqrt_py(&self) -> Tensor {
         return self.sqrt();
     }
 
+    /// Computes the tangent element-wise.
     #[must_use]
     #[pyo3(name = "tan")]
     pub fn tan_py(&self) -> Tensor {
         return self.tan();
     }
 
+    /// Computes the hyperbolic tangent element-wise.
     #[must_use]
     #[pyo3(name = "tanh")]
     pub fn tanh_py(&self) -> Tensor {
         return self.tanh();
     }
 
+    /// Applies the GELU activation function element-wise.
     #[must_use]
     #[pyo3(name = "gelu")]
     pub fn gelu_py(&self) -> Tensor {
         return self.gelu();
     }
 
+    /// # Panics
+    /// Panics if `neg_slope` is not numeric.
     #[must_use]
     #[pyo3(name = "leaky_relu")]
     pub fn leaky_relu_py(&self, neg_slope: &Bound<'_, PyAny>) -> Tensor {
@@ -495,13 +549,15 @@ impl Tensor {
         panic!("neg_slope must be numeric");
     }
 
+    /// Computes the natural logarithm element-wise.
     #[must_use]
     #[pyo3(name = "ln")]
     pub fn ln_py(&self) -> Tensor {
         return self.ln();
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "celu")]
     pub fn celu_py(&self, alpha: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         if let Ok(alpha_val) = alpha.extract::<f64>() {
@@ -513,7 +569,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "elu")]
     pub fn elu_py(&self, alpha: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         if let Ok(alpha_val) = alpha.extract::<f64>() {
@@ -525,19 +582,22 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "softmax")]
     pub fn softmax_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         self.softmax(to_ax(axes))
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "log_softmax")]
     pub fn log_softmax_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         self.ln_softmax(to_ax(axes))
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "sum", signature = (dim=None, keepdim=false, dtype=None))]
     pub fn sum_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
         let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
@@ -548,7 +608,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "mean", signature = (dim=None, keepdim=false, dtype=None))]
     pub fn mean_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
         let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
@@ -559,7 +620,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "var", signature = (dim=None, keepdim=false, unbiased=true, dtype=None))]
     pub fn var_py(
         &self,
@@ -569,7 +631,7 @@ impl Tensor {
         dtype: Option<DType>,
     ) -> Result<Tensor, ZyxError> {
         let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
-        let correction = if unbiased { 1 } else { 0 };
+        let correction = u64::from(unbiased);
         if keepdim {
             self.reduce_impl::<true>(ReduceOp::Var, axes, dtype, correction)
         } else {
@@ -577,7 +639,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "std", signature = (dim=None, keepdim=false, unbiased=true, dtype=None))]
     pub fn std_py(
         &self,
@@ -587,7 +650,7 @@ impl Tensor {
         dtype: Option<DType>,
     ) -> Result<Tensor, ZyxError> {
         let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
-        let correction = if unbiased { 1 } else { 0 };
+        let correction = u64::from(unbiased);
         if keepdim {
             self.reduce_impl::<true>(ReduceOp::Std, axes, dtype, correction)
         } else {
@@ -595,7 +658,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "min", signature = (dim=None, keepdim=false))]
     pub fn min_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool) -> Result<Tensor, ZyxError> {
         let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
@@ -606,7 +670,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "max", signature = (dim=None, keepdim=false))]
     pub fn max_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool) -> Result<Tensor, ZyxError> {
         let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
@@ -617,7 +682,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "prod", signature = (dim=None, keepdim=false, dtype=None))]
     pub fn prod_py(&self, dim: Option<&Bound<'_, PyAny>>, keepdim: bool, dtype: Option<DType>) -> Result<Tensor, ZyxError> {
         let axes = dim.map(|d| to_ax(d)).unwrap_or_default();
@@ -628,7 +694,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "softplus")]
     pub fn softplus_py(&self, beta: &Bound<'_, PyAny>, threshold: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         if let Ok(beta_val) = beta.extract::<f64>() {
@@ -642,85 +709,99 @@ impl Tensor {
         }
     }
 
+    /// Computes the bitwise NOT element-wise.
     #[must_use]
     #[pyo3(name = "bitnot")]
     pub fn bitnot_py(&self) -> Tensor {
         return self.bitnot();
     }
 
+    /// Computes the ceiling element-wise.
     #[must_use]
     #[pyo3(name = "ceil")]
     pub fn ceil_py(&self) -> Tensor {
         return self.ceil();
     }
 
+    /// Computes the error function element-wise.
     #[must_use]
     #[pyo3(name = "erf")]
     pub fn erf_py(&self) -> Tensor {
         return self.erf();
     }
 
+    /// Computes the fractional part element-wise.
     #[must_use]
     #[pyo3(name = "frac")]
     pub fn frac_py(&self) -> Tensor {
         return self.frac();
     }
 
+    /// Returns a boolean tensor indicating which elements are NaN.
     #[must_use]
     #[pyo3(name = "isnan")]
     pub fn isnan_py(&self) -> Tensor {
         return self.isnan();
     }
 
+    /// Returns a boolean tensor indicating which elements are infinity.
     #[must_use]
     #[pyo3(name = "isinf")]
     pub fn isinf_py(&self) -> Tensor {
         return self.isinf();
     }
 
+    /// Computes the base-10 logarithm element-wise.
     #[must_use]
     #[pyo3(name = "log10")]
     pub fn log10_py(&self) -> Tensor {
         return self.log10();
     }
 
+    /// Converts angles from radians to degrees element-wise.
     #[must_use]
     #[pyo3(name = "rad2deg")]
     pub fn rad2deg_py(&self) -> Tensor {
         return self.rad2deg();
     }
 
+    /// Converts angles from degrees to radians element-wise.
     #[must_use]
     #[pyo3(name = "deg2rad")]
     pub fn deg2rad_py(&self) -> Tensor {
         return self.deg2rad();
     }
 
+    /// Rounds to the nearest integer element-wise.
     #[must_use]
     #[pyo3(name = "round")]
     pub fn round_py(&self) -> Tensor {
         return self.round();
     }
 
+    /// Returns the sign of each element.
     #[must_use]
     #[pyo3(name = "sign")]
     pub fn sign_py(&self) -> Tensor {
         return self.sign();
     }
 
+    /// Computes the square element-wise.
     #[must_use]
     #[pyo3(name = "square")]
     pub fn square_py(&self) -> Tensor {
         return self.square();
     }
 
+    /// Computes the truncated integer element-wise.
     #[must_use]
     #[pyo3(name = "trunc")]
     pub fn trunc_py(&self) -> Tensor {
         return self.trunc();
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "isclose")]
     pub fn isclose_py(&self, other: &Bound<'_, PyAny>, rtol: f64, atol: f64) -> Result<Tensor, ZyxError> {
         if let Ok(other) = other.extract::<Tensor>() {
@@ -731,30 +812,35 @@ impl Tensor {
     }
 
     // Missing unary operations
+    /// Applies the Mish activation function element-wise.
     #[must_use]
     #[pyo3(name = "mish")]
     pub fn mish_py(&self) -> Tensor {
         self.mish()
     }
 
+    /// Applies the `QuickGELU` activation function element-wise.
     #[must_use]
     #[pyo3(name = "quick_gelu")]
     pub fn quick_gelu_py(&self) -> Tensor {
         self.quick_gelu()
     }
 
+    /// Applies the SELU activation function element-wise.
     #[must_use]
     #[pyo3(name = "selu")]
     pub fn selu_py(&self) -> Tensor {
         self.selu()
     }
 
+    /// Applies the hard sigmoid activation function element-wise.
     #[must_use]
     #[pyo3(name = "hard_sigmoid")]
     pub fn hard_sigmoid_py(&self) -> Tensor {
         self.hard_sigmoid()
     }
 
+    /// Applies the Swish activation function element-wise.
     #[must_use]
     #[pyo3(name = "swish")]
     pub fn swish_py(&self) -> Tensor {
@@ -762,7 +848,8 @@ impl Tensor {
     }
 
     // Missing comparison operations
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "cmplt")]
     pub fn cmplt_py(&self, rhs: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
@@ -774,7 +861,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "cmpgt")]
     pub fn cmpgt_py(&self, rhs: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
@@ -786,7 +874,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "maximum")]
     pub fn maximum_py(&self, rhs: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
@@ -798,7 +887,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "minimum")]
     pub fn minimum_py(&self, rhs: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
@@ -810,7 +900,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "equal")]
     pub fn equal_py(&self, rhs: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
@@ -823,7 +914,8 @@ impl Tensor {
     }
 
     // Missing utility operations
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "clamp")]
     pub fn clamp_py(&self, min: &Bound<'_, PyAny>, max: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(min_tensor) = min.extract::<Self>() {
@@ -847,7 +939,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "pow")]
     pub fn pow_py(&self, exponent: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(exponent_tensor) = exponent.extract::<Self>() {
@@ -859,7 +952,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "logical_and")]
     pub fn logical_and_py(&self, rhs: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
@@ -871,7 +965,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "logical_or")]
     pub fn logical_or_py(&self, rhs: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
@@ -883,13 +978,15 @@ impl Tensor {
         }
     }
 
+    /// Returns the indices of non-zero elements.
     #[must_use]
     #[pyo3(name = "nonzero")]
     pub fn nonzero_py(&self) -> Tensor {
         self.nonzero()
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "where_")]
     pub fn where_py(&self, if_true: &Bound<'_, PyAny>, if_false: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(true_tensor) = if_true.extract::<Self>() {
@@ -913,7 +1010,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "l1_loss")]
     pub fn l1_loss_py(&self, target: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(target_tensor) = target.extract::<Self>() {
@@ -925,7 +1023,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "mse_loss")]
     pub fn mse_loss_py(&self, target: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(target_tensor) = target.extract::<Self>() {
@@ -937,7 +1036,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "cosine_similarity")]
     pub fn cosine_similarity_py(&self, rhs: &Bound<'_, PyAny>, eps: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs_tensor) = rhs.extract::<Self>() {
@@ -961,13 +1061,18 @@ impl Tensor {
         }
     }
 
+    /// Returns the diagonal of the tensor.
     #[must_use]
     #[pyo3(name = "diagonal")]
     pub fn diagonal_py(&self) -> Tensor {
         self.diagonal()
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    ///
+    /// # Panics
+    /// Panics if padding elements are not integers.
     #[pyo3(name = "pad_zeros")]
     pub fn pad_zeros_py(&self, padding: &Bound<'_, PyList>) -> Result<Tensor, ZyxError> {
         let items: Vec<i64> = padding
@@ -978,7 +1083,11 @@ impl Tensor {
         self.pad_zeros(pairs)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    ///
+    /// # Panics
+    /// Panics if padding elements are not integers.
     #[pyo3(name = "pad")]
     pub fn pad_py(&self, padding: &Bound<'_, PyList>, value: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         let items: Vec<i64> = padding
@@ -995,25 +1104,29 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "narrow")]
     pub fn narrow_py(&self, axis: Axis, start: Dim, length: Dim) -> Result<Tensor, ZyxError> {
         self.narrow(axis, start, length)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "split")]
     pub fn split_py(&self, sizes: &Bound<'_, PyTuple>, axis: isize) -> Result<Vec<Tensor>, ZyxError> {
         self.split(to_sh(sizes)?, axis)
     }
 
+    /// Converts the tensor to a one-hot representation.
     #[must_use]
     #[pyo3(name = "one_hot")]
     pub fn one_hot_py(&self, num_classes: Dim) -> Tensor {
         self.one_hot(num_classes)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "masked_fill")]
     pub fn masked_fill_py(&self, mask: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(mask_tensor) = mask.extract::<Self>() {
@@ -1029,30 +1142,35 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "repeat")]
     pub fn repeat_py(&self, repeats: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
         self.repeat(to_sh(repeats)?)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "reshape", signature = (*shape))]
     pub fn reshape_py(&self, shape: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
         self.reshape(to_sh(shape)?)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "transpose")]
     pub fn transpose_py(&self, dim0: Axis, dim1: Axis) -> Result<Tensor, ZyxError> {
         self.transpose(dim0, dim1)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "permute", signature = (*axes))]
     pub fn permute_py(&self, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         self.permute(to_ax(axes))
     }
 
+    /// Removes dimensions of size 1.
     #[must_use]
     #[pyo3(name = "squeeze", signature = (axes=None))]
     pub fn squeeze_py(&self, axes: Option<&Bound<'_, PyAny>>) -> Tensor {
@@ -1060,13 +1178,15 @@ impl Tensor {
         self.squeeze(axes)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "unsqueeze")]
     pub fn unsqueeze_py(&self, dim: Axis) -> Result<Tensor, ZyxError> {
         self.unsqueeze(dim)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "product", signature = (axes=None))]
     pub fn product_py(&self, axes: Option<&Bound<'_, PyAny>>) -> Result<Tensor, ZyxError> {
         let axes = axes.map(|a| to_ax(a)).unwrap_or_default();
@@ -1130,10 +1250,11 @@ impl Tensor {
 
         let ranges = index_to_dimindices(idx)?;
 
-        self.slice(ranges).map_err(|e| PyIndexError::new_err(format!("{:?}", e)))
+        self.slice(ranges).map_err(|e| PyIndexError::new_err(format!("{e:?}")))
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "dot")]
     fn dot_py(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
@@ -1143,7 +1264,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "matmul")]
     fn matmul_py(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
@@ -1153,7 +1275,6 @@ impl Tensor {
         }
     }
 
-    #[must_use]
     fn __matmul__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
             self.dot(rhs)
@@ -1162,7 +1283,6 @@ impl Tensor {
         }
     }
 
-    #[must_use]
     fn __add__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
             Ok(self + rhs)
@@ -1173,7 +1293,6 @@ impl Tensor {
         }
     }
 
-    #[must_use]
     fn __sub__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
             Ok(self - rhs)
@@ -1184,7 +1303,6 @@ impl Tensor {
         }
     }
 
-    #[must_use]
     fn __mul__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
             Ok(self * rhs)
@@ -1195,7 +1313,6 @@ impl Tensor {
         }
     }
 
-    #[must_use]
     fn __div__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(rhs) = rhs.extract::<Self>() {
             Ok(self / rhs)
@@ -1206,25 +1323,29 @@ impl Tensor {
         }
     }
 
+    /// Returns the index of the maximum value.
     #[must_use]
     #[pyo3(name = "argmax")]
     pub fn argmax_py(&self) -> Tensor {
         self.argmax()
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "argmax_axis")]
     pub fn argmax_axis_py(&self, axis: Axis) -> Result<Tensor, ZyxError> {
         self.argmax_axis(axis)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "one_hot_along_dim")]
     pub fn one_hot_along_dim_py(&self, num_classes: Dim, dim: Axis) -> Result<Tensor, ZyxError> {
         self.one_hot_along_dim(num_classes, dim)
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "gather")]
     pub fn gather_py(&self, axis: Axis, indices: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(indices) = indices.extract::<Self>() {
@@ -1234,7 +1355,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "index_select")]
     pub fn index_select_py(&self, dim: Axis, index: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(index) = index.extract::<Self>() {
@@ -1244,7 +1366,8 @@ impl Tensor {
         }
     }
 
-    #[must_use]
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "conv")]
     pub fn conv_py(
         &self,

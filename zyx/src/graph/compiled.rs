@@ -22,7 +22,7 @@ pub struct CompiledGraph {
     pub buffer_slots: Vec<BufferId>,
 }
 
-/// Index into CompiledGraph::buffer_slots, used instead of raw BufferId
+/// Index into [`CompiledGraph::buffer_slots`], used instead of raw [`BufferId`]
 /// so the compiled graph is stable across runs with different buffer IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferSlot(pub u32);
@@ -64,25 +64,26 @@ impl Runtime {
     /// Launch graph or store in cache for faster replay.
     ///
     /// This function implements the following flow:
-    /// 1. **Build compacted CachedGraph**: Create a minimal representation of the graph by
+    /// 1. **Build compacted [`CachedGraph`]**: Create a minimal representation of the graph by
     ///    re-indexing all tensor IDs to 0..N and extracting shapes/paddings/axes. This compacted
     ///    form is used as the hash key for cache lookup.
-    /// 2. **Cache hit**: If `CachedGraph` exists in `graph_cache`, execute its `CompiledGraph.nodes`
+    /// 2. **Cache hit**: If [`CachedGraph`] exists in `graph_cache`, execute its `CompiledGraph.nodes`
     ///    which contains an optimized sequence of Allocate/CopyMemory/LaunchProgram/Deallocate ops.
     /// 3. **Cache miss**: If not found, call `search::search(&compacted)` to:
-    ///    - Build an EGraph from the CachedGraph nodes
+    ///    - Build an [`EGraph`] from the [`CachedGraph`] nodes
     ///    - Enumerate all fusion strategies by add ing fused variants (matmul, elementwise, reduce chains)
     ///    - Compute and compare costs for each variant combination
     ///    - Select the fastest execution path and convert to `CompiledGraph`
     ///    - Store `(egraph, compiled_graph)` in cache for future reuse
     /// 4. **Execute**: After either cache hit or miss, perform necessary memory operations (allocate,
     ///    copy, deallocate buffers) before launching programs.
+    #[allow(clippy::unnecessary_wraps)]
     pub(crate) fn launch_or_store_graph_with_order(
         &mut self,
-        rcs: Map<TensorId, u32>,
-        realized_nodes: Set<TensorId>,
+        _rcs: &Map<TensorId, u32>,
+        realized_nodes: &Set<TensorId>,
         order: &[TensorId],
-        to_eval: &Set<TensorId>,
+        _to_eval: &Set<TensorId>,
     ) -> Result<(), ZyxError> {
         let mut compacted = CachedGraph {
             nodes: Vec::with_capacity(order.len()),

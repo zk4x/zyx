@@ -17,6 +17,7 @@ pub struct HostMemoryPool {
 #[derive(Debug, Clone)]
 pub struct HostEvent;
 
+#[allow(clippy::unnecessary_wraps)]
 pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
     if debug_dev {
         println!("Using host backend");
@@ -73,6 +74,7 @@ impl HostMemoryPool {
 
     #[allow(clippy::needless_pass_by_value)]
     #[allow(clippy::needless_pass_by_ref_mut)]
+    #[allow(clippy::unnecessary_wraps)]
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         let _ = event_wait_list;
         let buffer = &self.buffers[src];

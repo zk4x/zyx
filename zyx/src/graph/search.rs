@@ -147,8 +147,8 @@ impl FusedOp for MatMulOp {
     }
 }
 
-/// Zyx fused kernel — wraps a full `Kernel` IR.
-/// (Note: Kernel uses TensorId internally; it will later be switched to BufferSlot.)
+/// Zyx fused kernel — wraps a full [`Kernel`] IR.
+/// (Note: [`Kernel`] uses [`TensorId`] internally; it will later be switched to [`BufferSlot`].)
 pub struct ZyxOp {
     kernel: Kernel,
     covered: Vec<ENodeId>,
@@ -176,7 +176,7 @@ pub struct BufferSlotInfo {
 pub struct EGraph {
     /// All operation nodes (kernels and memory ops).
     enodes: Slab<ENodeId, ENode>,
-    /// Buffer metadata indexed by BufferSlot.
+    /// Buffer metadata indexed by [`BufferSlot`].
     buffers: Slab<BufferSlot, BufferSlotInfo>,
     /// Which nodes produce each buffer?
     producers: Map<BufferSlot, Vec<ENodeId>>,
@@ -186,7 +186,7 @@ pub struct EGraph {
     pub rcs: Map<BufferSlot, u32>,
 }
 
-/// Active zyx kernel during zyx_fuse.
+/// Active zyx kernel during `zyx_fuse`.
 #[derive(Clone)]
 struct ActiveZyx {
     kernel: Kernel,
@@ -232,7 +232,7 @@ impl ENode {
 }
 
 impl EGraph {
-    /// Build e-graph from a cached graph. Each CachedGraph node becomes a BufferSlot
+    /// Build e-graph from a cached graph. Each [`CachedGraph`] node becomes a [`BufferSlot`]
     /// on the default pool (pool 1). Memory ops (Leaf, Copy) are added as needed.
     pub fn new(graph: &CachedGraph) -> EGraph {
         let mut enodes = Slab::new();
@@ -312,9 +312,8 @@ impl EGraph {
 
     fn infer_dtype(node: &crate::graph::Node, nodes: &[crate::graph::Node], _idx: usize) -> DType {
         match node {
-            crate::graph::Node::Leaf { dtype } => *dtype,
+            crate::graph::Node::Leaf { dtype } | crate::graph::Node::Cast { dtype, .. } => *dtype,
             crate::graph::Node::Const { value } => value.dtype(),
-            crate::graph::Node::Cast { dtype, .. } => *dtype,
             crate::graph::Node::Binary { bop, .. } if bop.returns_bool() => DType::Bool,
             crate::graph::Node::Binary { .. }
             | crate::graph::Node::Unary { .. }
@@ -420,25 +419,25 @@ impl EGraph {
         }
     }
 
-    /// Fill gaps left by specialized fusion kernels (oneDNN, cuDNN, ROCm, etc.).
+    /// Fill gaps left by specialized fusion kernels (oneDNN, cuDNN, `ROCm`, etc.).
     ///
-    /// Walks naive ENodes in topological order, accumulating ops into zyx kernels
-    /// following the same fusion logic as kernelize.rs. All kernelizer logic is
-    /// copied here and adapted to work with BufferSlot/ENodeId instead of TensorId.
-    /// (Note: Kernel will later be switched to use BufferSlot instead of TensorId.)
+    /// Walks naive [`ENodes`] in topological order, accumulating ops into zyx kernels
+    /// following the same fusion logic as `kernelize.rs`. All kernelizer logic is
+    /// copied here and adapted to work with [`BufferSlot`]/[`ENodeId`] instead of [`TensorId`].
+    /// (Note: [`Kernel`] will later be switched to use [`BufferSlot`] instead of [`TensorId`].)
     ///
     /// Algorithm:
-    /// 1. Walk naive ENodes in order, fusing into active zyx kernels.
-    /// 2. When a buffer that is an INPUT to an existing Fused node is encountered:
+    /// 1. Walk naive [`ENodes`] in order, fusing into active zyx kernels.
+    /// 2. When a buffer that is an INPUT to an existing [`Fused`] node is encountered:
     ///    - Clone each active zyx kernel
-    ///    - One copy registers as ENode::Fused (gap kernel for that fusion's inputs)
+    ///    - One copy registers as [`ENode::Fused`] (gap kernel for that fusion's inputs)
     ///    - The other copy continues accumulating
-    /// 3. When a buffer that is an OUTPUT of an existing Fused node is encountered:
-    ///    - Start a new zyx kernel with just LoadView
-    /// 4. When zyx would need to store (contains_stores, is_preceded_by_reduce,
+    /// 3. When a buffer that is an OUTPUT of an existing [`Fused`] node is encountered:
+    ///    - Start a new zyx kernel with just [`LoadView`]
+    /// 4. When zyx would need to store ([`contains_stores`], [`is_preceded_by_reduce`],
     ///    multiple outputs), clone the kernel and call store on one so that
     ///    its outputs can be used as inputs to the fused kernel — exactly as
-    ///    kernelize.rs does.
+    ///    `kernelize.rs` does.
     ///
     /// This keeps the number of generated kernels low while ensuring all nodes
     /// get at least one producer. No deletion is needed — zyx-only graph is
@@ -447,8 +446,6 @@ impl EGraph {
         // Build maps: BufferSlot → Vec<ENodeId> for fused inputs and outputs
         let mut fused_inputs: Map<BufferSlot, Vec<ENodeId>> = Map::default();
         let mut fused_outputs: Map<BufferSlot, Vec<ENodeId>> = Map::default();
-        let mut fused_enode_inputs: Map<ENodeId, Vec<BufferSlot>> = Map::default();
-        let mut fused_enode_outputs: Map<ENodeId, Vec<BufferSlot>> = Map::default();
         for (enode_id, enode) in self.enodes.iter() {
             let ENode::Fused { .. } = enode else {
                 continue;
@@ -461,8 +458,6 @@ impl EGraph {
             for output in &outputs {
                 fused_outputs.entry(*output).or_default().push(enode_id);
             }
-            fused_enode_inputs.insert(enode_id, inputs);
-            fused_enode_outputs.insert(enode_id, outputs);
         }
 
         // Active zyx kernels
@@ -479,15 +474,14 @@ impl EGraph {
             .take_while(|(_, e)| !matches!(e, ENode::Fused { .. }))
             .count();
 
-        for (_enode_id, enode) in self.enodes.iter().take(naive_count) {
-            let enode_id = _enode_id;
+        for (enode_id, enode) in self.enodes.iter().take(naive_count) {
             let inputs: Vec<BufferSlot> = enode.inputs().into_iter().copied().collect();
             let outputs: Vec<BufferSlot> = enode.outputs().into_iter().copied().collect();
 
             // For each input buffer: check if it's an input to an existing Fused node
             for input_buf in &inputs {
                 if let Some(_fused_ids) = fused_inputs.get(input_buf) {
-                    let to_clone: Vec<ActiveZyx> = active_kernels.iter().cloned().collect();
+                    let to_clone: Vec<ActiveZyx> = active_kernels.clone();
                     for clone in to_clone {
                         let mut c = clone;
                         c.register_as_fused(&mut pending_zyx_nodes);
@@ -639,11 +633,10 @@ impl EGraph {
         }
     }
 
-    /// Extract the cheapest combination of e-nodes and produce a CompiledGraph.
+    /// Extract the cheapest combination of e-nodes and produce a [`CompiledGraph`].
     pub fn extract(self) -> CompiledGraph {
         let mut cumulative_costs: Map<BufferSlot, u64> = Map::default();
         let mut claimed: crate::Set<BufferSlot> = crate::Set::default();
-        let mut selected: Map<BufferSlot, ENodeId> = Map::default();
 
         let slots: Vec<BufferSlot> = self.buffers.ids().collect();
 
@@ -686,7 +679,6 @@ impl EGraph {
             let enode = &self.enodes[enode_id];
             for output in enode.outputs() {
                 claimed.insert(*output);
-                selected.insert(*output, enode_id);
                 cumulative_costs.insert(*output, best_cumulative);
             }
         }
@@ -769,6 +761,7 @@ impl ActiveZyx {
         self.covered.push(enode_id);
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn add_binary_op(
         &mut self,
         enode_id: ENodeId,
@@ -855,18 +848,23 @@ impl ActiveZyx {
         dtype: DType,
     ) {
         let Some(op_id) = self.visited.get(&input).copied() else { return };
-        let mut op_id = op_id;
-        if self.kernel.contains_stores() {
+        let op_id = if self.kernel.contains_stores() {
             self.add_store(input, dtype);
-            op_id = self.create_load_kernel(input, shape, dtype);
-        }
-        if self.kernel.outputs.len() > 1 {
+            self.create_load_kernel(input, shape, dtype)
+        } else {
+            op_id
+        };
+        let mut op_id = if self.kernel.outputs.len() > 1 {
             let reduce_dims_big = self.kernel.is_preceded_by_reduce(op_id);
             if reduce_dims_big {
                 self.add_store(input, dtype);
-                op_id = self.create_load_kernel(input, shape, dtype);
+                self.create_load_kernel(input, shape, dtype)
+            } else {
+                op_id
             }
-        }
+        } else {
+            op_id
+        };
         // Permute before reduce so that reduce axes are last
         let n = shape.len();
         let mut permute_axes = Vec::with_capacity(n);

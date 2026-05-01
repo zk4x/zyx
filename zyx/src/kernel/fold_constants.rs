@@ -292,10 +292,10 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, .. } => {
-                    for i in 0..defines_stack.len() - 1 {
-                        if defines_stack[i].contains(dst) {
-                            for j in i + 1..delete_stack.len() {
-                                delete_stack[j] = false;
+                    for (i, defines_set) in defines_stack.iter().enumerate().take(defines_stack.len() - 1) {
+                        if defines_set.contains(dst) {
+                            for delete_flag in delete_stack.iter_mut().skip(i + 1) {
+                                *delete_flag = false;
                             }
                             break;
                         }
@@ -417,7 +417,7 @@ impl Kernel {
 
                     if can_cse {
                         for loop_level in &stack {
-                            if let Some(&old_op_id) = loop_level.get(&op) {
+                            if let Some(&old_op_id) = loop_level.get(op) {
                                 remaps.insert(op_id, old_op_id);
                                 remove_op = true;
                                 break;
@@ -491,15 +491,13 @@ impl Kernel {
                 let a_val: Option<i64> = match ca {
                     Constant::U32(x) => Some(*x as i64),
                     Constant::I32(x) => Some(*x as i64),
-                    Constant::U64(x) => Some(i64::from_le_bytes(*x)),
-                    Constant::I64(x) => Some(i64::from_le_bytes(*x)),
+                    Constant::U64(x) | Constant::I64(x) => Some(i64::from_le_bytes(*x)),
                     _ => None,
                 };
                 let b_val: Option<i64> = match cb {
                     Constant::U32(x) => Some(*x as i64),
                     Constant::I32(x) => Some(*x as i64),
-                    Constant::U64(x) => Some(i64::from_le_bytes(*x)),
-                    Constant::I64(x) => Some(i64::from_le_bytes(*x)),
+                    Constant::U64(x) | Constant::I64(x) => Some(i64::from_le_bytes(*x)),
                     _ => None,
                 };
                 match (a_val, b_val) {

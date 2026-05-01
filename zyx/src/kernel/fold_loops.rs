@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-//! ## Loop Folding (fold_loops.rs)
+//! ## Loop Folding (`fold_loops.rs`)
 //!
 //! This module optimizes loops that iteratively accumulate values into a closed-form
 //! computation. The classic pattern this transforms is:
@@ -18,7 +18,7 @@
 //! ```
 //!
 //! This is essentially computing something like `sum(f(0) + f(1) + ... + f(n-1))` or
-//! `arange(0, n, 1).sum()`. The fold_loops optimization detects this pattern and replaces
+//! `arange(0, n, 1).sum()`. The `fold_loops` optimization detects this pattern and replaces
 //! it with a direct closed-form computation instead of iterating.
 //!
 //! The transformation works by:
@@ -52,7 +52,7 @@ impl Kernel {
 
     /// Attempts to fold a specific accumulating loop starting at the given define.
     ///
-    /// This is the main pattern matcher for fold_loops. It looks for:
+    /// This is the main pattern matcher for `fold_loops`. It looks for:
     ///
     /// 1. A register define with length 1 (the accumulator variable)
     /// 2. An initial store to index 0 (the init value)
@@ -204,7 +204,7 @@ impl Kernel {
         Some((accumulated_value_id, load2_id))
     }
 
-    /// Detects and replaces the index_select/gather loop pattern.
+    /// Detects and replaces the `index_select`/`gather` loop pattern.
     ///
     /// Pattern:
     /// ```c
@@ -312,7 +312,7 @@ impl Kernel {
     ///
     /// The arithmetic formula generated is:
     ///   result = (gidx + offset) * step
-    /// Where offset = loop_len - c - 1 (for summing 0..n-1, this is n-1)
+    /// Where `offset` = `loop_len` - `c` - 1 (for summing `0..n-1`, this is `n-1`)
     /// And step is the multiplication factor if the value is like `i*i` (step=1) or `2*i` (step=2)
     ///
     /// Returns true if closed-form was applied, false if the pattern can't be simplified.
@@ -374,12 +374,12 @@ impl Kernel {
     /// - An addition with the loop index
     /// - A comparison gt with a threshold
     ///
-    /// Returns (a, b, c, mul_const, gidx) where the pattern being accumulated is:
-    ///   a * (loop_idx + b) * mul_const < c
-    /// Or for simple sum-of-index case: loop_idx < n
+    /// Returns (a, b, c, `mul_const`, gidx) where the pattern being accumulated is:
+    ///   `a * (loop_idx + b) * mul_const < c`
+    /// Or for simple sum-of-index case: `loop_idx < n`
     ///
     /// For example, if accumulating `i` (the loop index directly):
-    ///   a=1, b=1, c=n, mul_const=1, gidx is the loop index variable
+    ///   a=1, b=1, c=n, `mul_const`=1, gidx is the loop index variable
     fn trace_to_linear_comparison(&self, accumulated_value_id: OpId, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
         if let Op::Index { scope: Scope::Global, .. } = self.at(accumulated_value_id) {
             return None;
@@ -430,7 +430,7 @@ impl Kernel {
     /// This is the innermost pattern we expect: a Binary with Cmpgt where one operand
     /// is the loop index plus/minus a constant, and the other is a constant threshold.
     ///
-    /// Example: `gidx + 1 > n` returns (1, 1, n, mul_const, gidx)
+    /// Example: `gidx + 1 > n` returns (1, 1, n, `mul_const`, gidx)
     fn trace_cmpgt(&self, op_id: OpId, mul_const: u64, loop_id: OpId) -> Option<(u64, u64, u64, u64, OpId)> {
         if let Op::Binary { x, y, bop: BOp::Cmpgt } = self.at(op_id) {
             let c = if let Op::Const(threshold) = self.at(*y) {
@@ -463,7 +463,7 @@ impl Kernel {
     /// Checks if the operation represents accumulation based on the loop condition.
     ///
     /// This detects whether the accumulated value comes from a comparison with the loop index.
-    /// The pattern is typically: something * (loop_idx < threshold ? 1 : 0)
+    /// The pattern is typically: something * (`loop_idx` < threshold ? 1 : 0)
     /// Which means "add 1 if condition is true, else add 0" - i.e., conditionally accumulate.
     ///
     /// We verify this by walking through Cast and Mul operations until we find a Cmpgt.
