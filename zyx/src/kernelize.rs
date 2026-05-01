@@ -591,8 +591,7 @@ impl<'a> Kernelizer<'a> {
 
         let dev_info_id = self.cache.get_or_add_dev_info(device.info());
 
-        // Launch if it is in cache
-        if let Some(&kid) = self.cache.kernels.get(&kernel) {
+        let kernel_id = if let Some(&kid) = self.cache.kernels.get(&kernel) {
             // If it has been compiled for the device
             if let Some(&program_id) = self.cache.programs.get(&(kid, dev_id)) {
                 if self.debug.kmd() {
@@ -600,7 +599,6 @@ impl<'a> Kernelizer<'a> {
                 }
                 let event = device.launch(program_id, pool, &args, event_wait_list)?;
                 self.events.insert(output_buffers, event);
-                //println!("Elapsed during kernel launch {:?}", time_w.elapsed());
                 return Ok(());
             }
 
@@ -612,10 +610,13 @@ impl<'a> Kernelizer<'a> {
                 self.events.insert(output_buffers, event);
                 return Ok(());
             }
-        }
 
-        // If it is not in cache, we just get new empty kernel id where we insert the kernel
-        let kernel_id = self.cache.insert_kernel(kernel.clone());
+            // Kernel is in cache but not compiled/optimized for this device; use existing id
+            kid
+        } else {
+            // Not in cache, insert it
+            self.cache.insert_kernel(kernel.clone())
+        };
 
         if self.debug.sched() {
             kernel.debug();
