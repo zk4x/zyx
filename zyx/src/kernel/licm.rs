@@ -6,15 +6,11 @@ use crate::kernel::{Kernel, Op, OpId};
 use crate::{Map, Set};
 
 impl Kernel {
-    pub fn opt_licm(_: &Kernel) -> (Optimization, usize) {
-        #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("opt_licm");
+    pub const fn opt_licm(_: &Kernel) -> (Optimization, usize) {
         (Optimization::Licm, 1)
     }
 
-    pub fn opt_reassociate_commutative(_: &Kernel) -> (Optimization, usize) {
-        #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("opt_reassociate_commutative");
+    pub const fn opt_reassociate_commutative(_: &Kernel) -> (Optimization, usize) {
         (Optimization::ReassociateCommutative, 1)
     }
 

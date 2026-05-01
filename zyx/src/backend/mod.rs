@@ -342,7 +342,7 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
     /// Warp size
     pub warp_size: u16,
-    /// Bitmask of supported DTypes (bit index = DType as u16)
+    /// Bitmask of supported `DTypes` (bit index = `DType` as u16)
     pub supported_dtypes: u32,
 }
 

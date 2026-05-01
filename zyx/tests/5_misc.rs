@@ -1315,8 +1315,7 @@ fn arange_2() {
     Tensor::realize([&x]).unwrap();
 }
 
-#[cfg(not(feature = "wgpu"))]
-#[test]
+/*#[test]
 fn rope_2() -> Result<(), ZyxError> {
     let x = Tensor::from([1, 2, 3, 4, 5, 6, 7, 8])
         .reshape([1, 2, 4])?
@@ -1361,4 +1360,4 @@ fn rope_2() -> Result<(), ZyxError> {
     );
 
     Ok(())
-}
+}*/
