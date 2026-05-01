@@ -449,11 +449,30 @@ impl Kernel {
             start = self.next_op(start);
         }
 
+        // Move Op::Const ops right after Op::Define ops
         let mut op_id = start;
         let mut start = self.prev_op(start);
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let Op::Const(_) = self.at(op_id) {
+                self.move_op_after(op_id, start);
+                start = op_id;
+            }
+            op_id = next;
+        }
+
+        // Find position after last Op::Const (skip past all defines and consts)
+        let mut start = self.head;
+        while let Op::Define { .. } | Op::Const(_) = self.at(start) {
+            start = self.next_op(start);
+        }
+
+        // Move Op::Index ops right after Op::Const ops
+        let mut op_id = start;
+        let mut start = self.prev_op(start);
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let Op::Index { .. } = self.at(op_id) {
                 self.move_op_after(op_id, start);
                 start = op_id;
             }
