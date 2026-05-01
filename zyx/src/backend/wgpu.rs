@@ -131,6 +131,9 @@ pub(super) fn initialize_device(
     if features.contains(wgpu::Features::SHADER_F16) {
         supported_dtypes |= 1 << DType::F16 as u32;
     }
+    if features.contains(wgpu::Features::SHADER_INT64) {
+        supported_dtypes |= 1 << DType::I64 as u32;
+    }
     devices.push(Device::WGPU(WGPUDevice {
         device,
         adapter: wgpu_adapter,

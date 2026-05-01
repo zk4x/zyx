@@ -5,6 +5,9 @@ use zyx::{DType, Tensor, ZyxError};
 
 #[test]
 fn b_arange() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::I64) {
+        return Ok(());
+    }
     let x = Tensor::arange(0i64, 10000, 1i64)?;
     let result: Vec<i64> = x.try_into()?;
     for (i, &val) in result.iter().enumerate() {
@@ -446,6 +449,9 @@ fn cumsum_large_tensor() -> Result<(), ZyxError> {
 
 #[test]
 fn arange_large_range() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::I64) {
+        return Ok(());
+    }
     let x = Tensor::arange(0i64, 1000, 1i64)?;
     assert_eq!(x.shape(), [1000]);
     let result: Vec<i64> = x.try_into()?;

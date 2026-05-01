@@ -441,6 +441,9 @@ fn pad_zeros() -> Result<(), ZyxError> {
 
 #[test]
 fn one_hot() -> Result<(), ZyxError> {
+    if !Tensor::supports(DType::I64) {
+        return Ok(());
+    }
     let x = Tensor::from([2, 3, 4]);
     let y = x.one_hot(4);
     assert_eq!(y, [[0, 0, 1, 0], [0, 0, 0, 1], [0, 0, 0, 0]]);
