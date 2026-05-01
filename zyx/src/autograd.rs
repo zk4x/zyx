@@ -381,6 +381,26 @@ impl Runtime {
                             self.release(temp);
                             insert_or_add_grad(self, &mut grads, x, grad);
                         }
+                        UOp::Abs => {
+                            // Gradient of abs(x) is sign(x) = (x > 0) - (x < 0)
+                            let dtype = self.dtype(x);
+                            let zero = self.graph.push(Node::Const { value: Constant::new(0).cast(dtype) });
+                            let one = self.graph.push(Node::Const { value: Constant::new(1).cast(dtype) });
+                            let neg_one = self.graph.push(Node::Const { value: Constant::new(-1).cast(dtype) });
+                            let is_positive = self.binary(x, zero, BOp::Cmpgt);
+                            let is_negative = self.binary(x, zero, BOp::Cmplt);
+                            let sign_pos = self.binary(is_positive, one, BOp::Mul);
+                            let sign_neg = self.binary(is_negative, neg_one, BOp::Mul);
+                            self.release(zero);
+                            self.release(one);
+                            self.release(neg_one);
+                            let sign = self.binary(sign_pos, sign_neg, BOp::Add);
+                            self.release(sign_pos);
+                            self.release(sign_neg);
+                            let grad_abs = self.binary(grad, sign, BOp::Mul);
+                            self.release(sign);
+                            insert_or_add_grad(self, &mut grads, x, grad_abs);
+                        }
                     }
                 }
                 Node::Reshape { x, .. } => {

@@ -64,6 +64,7 @@ pub enum UOp {
     Cos,
     Floor,
     Trunc,
+    Abs,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]

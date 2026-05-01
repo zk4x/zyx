@@ -472,6 +472,7 @@ impl WGPUDevice {
                         UOp::Cos => writeln!(source, "{indent}let r{op_id} = cos(r{x});").unwrap(),
                         UOp::Floor => writeln!(source, "{indent}let r{op_id} = floor(r{x});").unwrap(),
                         UOp::Trunc => writeln!(source, "{indent}let r{op_id} = trunc(r{x});").unwrap(),
+                        UOp::Abs => writeln!(source, "{indent}let r{op_id} = abs(r{x});").unwrap(),
                     }
                 }
                 &Op::Binary { x, y, bop } => {
