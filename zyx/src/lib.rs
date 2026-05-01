@@ -47,7 +47,7 @@
 #![allow(clippy::single_char_lifetime_names)]
 #![allow(clippy::many_single_char_names)]
 #![allow(clippy::unnested_or_patterns)]
-#![forbid(clippy::cargo)]
+//#![forbid(clippy::cargo)] // wgpu does not pass this
 #![allow(clippy::option_if_let_else)]
 #![allow(clippy::fallible_impl_from)]
 #![allow(clippy::too_many_arguments)]
@@ -97,7 +97,7 @@ pub use tensor::Tensor;
 static RT: mutex::Mutex<Runtime> = mutex::Mutex::new(Runtime::new());
 
 /// Bitflags for debugging
-#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[cfg_attr(feature = "py", pyo3::pyclass(from_py_object))]
 #[derive(Debug, Clone, Copy)]
 pub struct DebugMask(u32);
 

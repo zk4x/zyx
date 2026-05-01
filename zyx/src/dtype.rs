@@ -15,7 +15,7 @@ use nanoserde::{DeBin, SerBin};
 use std::fmt::{Debug, Display};
 
 /// Represents the data type used for operations.
-#[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
+#[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int, from_py_object))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum DType {
     /// 16 bit bfloat data type.

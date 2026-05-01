@@ -87,7 +87,7 @@ impl Display for TensorId {
 /// This works for initialization from arrays, vectors or scalars. Arrays can be nested.
 ///
 /// For initialization from various random distributions, check respective associated methods.
-#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[cfg_attr(feature = "py", pyo3::pyclass(from_py_object))]
 pub struct Tensor {
     pub(super) id: TensorId,
 }

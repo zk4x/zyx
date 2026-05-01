@@ -73,7 +73,13 @@ pub(super) fn initialize_device(
     }
 
     let power_preference = PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: wgpu::Backends::all(), ..Default::default() });
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        flags: wgpu::InstanceFlags::empty(),
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds { for_resource_creation: None, for_device_loss: None },
+        backend_options: wgpu::BackendOptions::from_env_or_default(),
+        display: None,
+    });
 
     if debug_dev {
         println!("WGPU Requesting device with {power_preference:#?} power preference");
@@ -658,7 +664,7 @@ impl WGPUDevice {
         layouts.push(set_layout);
         sets.push(set);
         // Compute pipeline bindings
-        let group_layouts = layouts.iter().collect::<Vec<_>>();
+        let group_layouts = layouts.iter().map(Some).collect::<Vec<_>>();
         let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &group_layouts,

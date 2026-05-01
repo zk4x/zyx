@@ -1219,24 +1219,24 @@ impl Tensor {
         fn index_to_dimindices(idx: &Bound<'_, PyAny>) -> PyResult<Vec<DimIndex>> {
             if let Ok(i) = idx.extract::<i64>() {
                 Ok(vec![DimIndex::Index(i)])
-            } else if let Ok(slice) = idx.downcast::<PySlice>() {
+            } else if let Ok(slice) = idx.cast::<PySlice>() {
                 Ok(vec![slice_to_dimindex(slice)?])
-            } else if let Ok(tuple) = idx.downcast::<PyTuple>() {
+            } else if let Ok(tuple) = idx.cast::<PyTuple>() {
                 let mut ranges = Vec::with_capacity(tuple.len());
                 for item in tuple.iter() {
                     if let Ok(i) = item.extract::<i64>() {
                         ranges.push(DimIndex::Index(i));
-                    } else if let Ok(slice) = item.downcast::<PySlice>() {
+                    } else if let Ok(slice) = item.cast::<PySlice>() {
                         ranges.push(slice_to_dimindex(slice)?);
                     } else {
                         return Err(PyIndexError::new_err("Tuple elements must be int or slice"));
                     }
                 }
                 Ok(ranges)
-            } else if let Ok(list) = idx.downcast::<PyList>() {
+            } else if let Ok(list) = idx.cast::<PyList>() {
                 let mut ranges = Vec::with_capacity(list.len());
                 for item in list.iter() {
-                    if let Ok(slice) = item.downcast::<PySlice>() {
+                    if let Ok(slice) = item.cast::<PySlice>() {
                         ranges.push(slice_to_dimindex(slice)?);
                     } else {
                         return Err(PyIndexError::new_err("List elements must be slices"));
@@ -1426,18 +1426,18 @@ fn to_ax(axes: &Bound<'_, PyAny>) -> Vec<Axis> {
     if axes.is_none() {
         return vec![];
     }
-    if let Ok(tuple) = axes.downcast::<PyTuple>() {
+    if let Ok(tuple) = axes.cast::<PyTuple>() {
         let mut result = Vec::with_capacity(tuple.len());
         for item in tuple.iter() {
             if let Ok(ax) = item.extract::<Axis>() {
                 result.push(ax);
-            } else if let Ok(nested) = item.downcast::<PyTuple>() {
+            } else if let Ok(nested) = item.cast::<PyTuple>() {
                 for nested_item in nested.iter() {
                     if let Ok(ax) = nested_item.extract::<Axis>() {
                         result.push(ax);
                     }
                 }
-            } else if let Ok(nested) = item.downcast::<PyList>() {
+            } else if let Ok(nested) = item.cast::<PyList>() {
                 for nested_item in nested.iter() {
                     if let Ok(ax) = nested_item.extract::<Axis>() {
                         result.push(ax);
@@ -1447,7 +1447,7 @@ fn to_ax(axes: &Bound<'_, PyAny>) -> Vec<Axis> {
         }
         return result;
     }
-    if let Ok(list) = axes.downcast::<PyList>() {
+    if let Ok(list) = axes.cast::<PyList>() {
         let mut result = Vec::with_capacity(list.len());
         for item in list.iter() {
             if let Ok(ax) = item.extract::<Axis>() {
