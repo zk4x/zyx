@@ -925,25 +925,6 @@ impl Kernel {
         required
     }
 
-    pub fn unfold_pows(&mut self) {
-        #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("unfold_pows");
-
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let &Op::Binary { x, y, bop } = self.at(op_id) {
-                if bop == BOp::Pow {
-                    let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
-                    let x = self.insert_before(op_id, Op::Binary { x, y, bop: BOp::Mul });
-                    self.ops[op_id].op = Op::Unary { x, uop: UOp::Exp2 };
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        self.verify();
-    }
-
     pub fn get_global_indices(&self) -> std::collections::BTreeMap<u32, OpId> {
         let mut indices = std::collections::BTreeMap::new();
         for (op_id, op_node) in self.ops.iter() {
