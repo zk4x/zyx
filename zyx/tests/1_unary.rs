@@ -167,7 +167,7 @@ fn square_1() -> Result<(), ZyxError> {
 
 #[test]
 fn huber_loss_1() -> Result<(), ZyxError> {
-    if !Tensor::supports_f64() {
+    if !Tensor::supports(DType::F64) {
         return Ok(());
     }
     // Test basic huber loss functionality
@@ -211,7 +211,7 @@ fn huber_loss_3() -> Result<(), ZyxError> {
 
 #[test]
 fn huber_loss_4() -> Result<(), ZyxError> {
-    if !Tensor::supports_f64() {
+    if !Tensor::supports(DType::F64) {
         return Ok(());
     }
     // Test huber loss with different delta values
@@ -347,7 +347,7 @@ fn ceil_3() -> Result<(), ZyxError> {
 
 #[test]
 fn smooth_l1_loss_1() -> Result<(), ZyxError> {
-    if !Tensor::supports_f64() {
+    if !Tensor::supports(DType::F64) {
         return Ok(());
     }
     // Test Smooth L1 loss with small differences (should use quadratic region)
@@ -365,7 +365,7 @@ fn smooth_l1_loss_1() -> Result<(), ZyxError> {
 
 #[test]
 fn smooth_l1_loss_2() -> Result<(), ZyxError> {
-    if !Tensor::supports_f64() {
+    if !Tensor::supports(DType::F64) {
         return Ok(());
     }
     // Test Smooth L1 loss with large differences (should use linear region)
@@ -383,7 +383,7 @@ fn smooth_l1_loss_2() -> Result<(), ZyxError> {
 
 #[test]
 fn smooth_l1_loss_3() -> Result<(), ZyxError> {
-    if !Tensor::supports_f64() {
+    if !Tensor::supports(DType::F64) {
         return Ok(());
     }
     // Test Smooth L1 loss with mixed differences
@@ -403,7 +403,7 @@ fn smooth_l1_loss_3() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_1() -> Result<(), ZyxError> {
-    if !Tensor::supports_f64() {
+    if !Tensor::supports(DType::F64) {
         return Ok(());
     }
     // Test basic linear interpolation
@@ -419,7 +419,7 @@ fn interpolate_1() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_2() -> Result<(), ZyxError> {
-    if !Tensor::supports_f64() {
+    if !Tensor::supports(DType::F64) {
         return Ok(());
     }
     // Test interpolation with weight 0.0 (should return input)
@@ -435,7 +435,7 @@ fn interpolate_2() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_3() -> Result<(), ZyxError> {
-    if !Tensor::supports_f64() {
+    if !Tensor::supports(DType::F64) {
         return Ok(());
     }
     // Test interpolation with weight 1.0 (should return target)
@@ -451,7 +451,7 @@ fn interpolate_3() -> Result<(), ZyxError> {
 
 #[test]
 fn interpolate_4() -> Result<(), ZyxError> {
-    if !Tensor::supports_f64() {
+    if !Tensor::supports(DType::F64) {
         return Ok(());
     }
     // Test interpolation with custom weight

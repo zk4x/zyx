@@ -53,7 +53,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 32,
-            supports_f64: true,
+            supported_dtypes: u32::MAX,
         },
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
     }));

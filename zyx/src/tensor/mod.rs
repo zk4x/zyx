@@ -222,10 +222,10 @@ impl Tensor {
         RT.lock().is_realized(self.id)
     }
 
-    /// Returns true if the GPU supports float64 (f64) operations.
+    /// Returns true if the device supports the given dtype.
     #[must_use]
-    pub fn supports_f64() -> bool {
-        RT.lock().gpu_supports_f64()
+    pub fn supports(dtype: DType) -> bool {
+        RT.lock().supports_dtype(dtype)
     }
 
     /// Returns a slice of the first N dimensions of this tensor.

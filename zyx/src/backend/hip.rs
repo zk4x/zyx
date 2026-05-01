@@ -262,6 +262,10 @@ pub(super) fn initialize_device(
             }
             streams.push(HIPStream { stream, load: 0 });
         }
+        let mut supported_dtypes = u32::MAX;
+        if major < 7 {
+            supported_dtypes &= !(1 << DType::F64 as u32);
+        }
         let dev = HIPDevice {
             device,
             dev_info: DeviceInfo {
@@ -274,7 +278,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major > 7,
                 warp_size: 64,
-                supports_f64: major >= 7,
+                supported_dtypes,
             },
             streams,
             programs: Slab::new(),

@@ -561,7 +561,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major > 7,
                 warp_size: 32,
-                supports_f64: true,
+                supported_dtypes: u32::MAX,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
@@ -592,7 +592,7 @@ pub(super) fn initialize_device(
             preferred_vector_size: 16,
             tensor_cores: major > 7,
             warp_size: 32,
-            supports_f64: true,
+            supported_dtypes: u32::MAX,
         };
         devices.push(Device::CUDA(dev));
     }

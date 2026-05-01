@@ -103,9 +103,9 @@ impl Runtime {
         self.buffer_map.contains_key(&x)
     }
 
-    /// Returns true if any GPU supports float64 (f64) operations.
-    pub fn gpu_supports_f64(&self) -> bool {
-        self.devices.iter().any(|(_, d)| d.info().supports_f64)
+    /// Returns true if any device supports the given dtype.
+    pub fn supports_dtype(&self, dtype: DType) -> bool {
+        self.devices.iter().any(|(_, d)| d.info().supports_dtype(dtype))
     }
 
     pub fn debug_graph(&self) {

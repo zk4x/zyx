@@ -14,6 +14,7 @@
 
 use crate::{
     backend::hip::{HIPDevice, HIPMemoryPool},
+    dtype::DType,
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
     shape::Dim,
@@ -340,8 +341,15 @@ pub struct DeviceInfo {
     pub tensor_cores: bool,
     /// Warp size
     pub warp_size: u16,
-    /// Does this hardware support float64 (f64) operations?
-    pub supports_f64: bool,
+    /// Bitmask of supported DTypes (bit index = DType as u16)
+    pub supported_dtypes: u32,
+}
+
+impl DeviceInfo {
+    /// Check if a dtype is supported by this device
+    pub fn supports_dtype(&self, dtype: DType) -> bool {
+        self.supported_dtypes & (1 << dtype as u32) != 0
+    }
 }
 
 #[allow(clippy::upper_case_acronyms)]

@@ -123,7 +123,14 @@ pub(super) fn initialize_device(
     });
     memory_pools.push(pool);
     let limits = device.limits();
-    let supports_f64 = wgpu_adapter.features().contains(wgpu::Features::SHADER_F64);
+    let features = wgpu_adapter.features();
+    let mut supported_dtypes = 0;
+    if features.contains(wgpu::Features::SHADER_F64) {
+        supported_dtypes |= 1 << DType::F64 as u32;
+    }
+    if features.contains(wgpu::Features::SHADER_F16) {
+        supported_dtypes |= 1 << DType::F16 as u32;
+    }
     devices.push(Device::WGPU(WGPUDevice {
         device,
         adapter: wgpu_adapter,
@@ -141,7 +148,7 @@ pub(super) fn initialize_device(
             max_register_bytes: 1024,
             tensor_cores: false,
             warp_size: 32,
-            supports_f64,
+            supported_dtypes,
         },
         memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
         programs: Slab::new(),
