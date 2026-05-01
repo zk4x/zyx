@@ -9,7 +9,8 @@ fn grad_relu_1() -> Result<(), ZyxError> {
     let x = Tensor::from([3, 0, -1]);
     let _tape = GradientTape::new();
     let z = x.relu();
-    println!("{z}");
+    assert_eq!(z, [3, 0, 0]);
+    //println!("{z}");
     Ok(())
 }
 
@@ -185,7 +186,7 @@ fn grad_cos_2() -> Result<(), ZyxError> {
     let z = x.cos();
     let mut grads = tape.gradient(&z, [&x]);
     let x_grad = grads.pop().unwrap().unwrap();
-    println!("{x_grad:.10}");
+    //println!("{x_grad:.10}");
     assert_eq!(x_grad, [-0.1411200017f32, -0.9092974067, 0.7568024993]);
     Ok(())
 }
@@ -429,10 +430,10 @@ fn grad_t6() -> Result<(), ZyxError> {
     // Zyx allows for arbitrary differentiation
     let b_grad = tape.gradient_persistent(&z, [&b])[0].clone().unwrap();
     //panic!();
-    println!("{b_grad}");
+    //println!("{b_grad}");
     // Also higher order derivatives
-    let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
-    println!("{bb_grad}");
+    let _bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
+    //println!("{bb_grad}");
 
     Ok(())
 }

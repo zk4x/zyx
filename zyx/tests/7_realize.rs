@@ -11,18 +11,18 @@ fn t01() -> Result<(), ZyxError> {
         let y = x.exp2();
         x = y.log2();
 
-        println!("x rc = {}", x.ref_count());
-        println!("y rc = {}", y.ref_count());
+        //println!("x rc = {}", x.ref_count());
+        //println!("y rc = {}", y.ref_count());
 
-        Tensor::debug_graph();
+        //Tensor::debug_graph();
         Tensor::realize([&x])?;
-        Tensor::debug_graph();
+        //Tensor::debug_graph();
 
-        println!("x rc = {}", x.ref_count());
-        println!("y rc = {}", y.ref_count());
+        //println!("x rc = {}", x.ref_count());
+        //println!("y rc = {}", y.ref_count());
     }
 
-    Tensor::debug_graph();
+    //Tensor::debug_graph();
 
     Ok(())
 }

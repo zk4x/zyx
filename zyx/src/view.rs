@@ -596,7 +596,7 @@ fn view_reshape_2() {
     let mut view = View::contiguous(&[512, 368]);
     view.permute(&[1, 0]);
     view.reshape(0..2, &[1, 368, 512]);
-    println!("{view}");
+    //println!("{view}");
     debug_assert_eq!(view.0.len(), 1);
     debug_assert_eq!(view.shape(), [1, 368, 512]);
     debug_assert_eq!(view.strides(), [0, 1, 368]);
