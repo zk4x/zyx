@@ -1238,12 +1238,22 @@ impl OpenCLDevice {
             .expect("What a huge amount of registers"),*/
             tensor_cores: false,
             warp_size: 0,
-            supported_dtypes: if self.get_device_data(CL_DEVICE_EXTENSIONS).is_ok_and(|data| {
-                String::from_utf8_lossy(&data).contains("cl_khr_fp64")
-            }) {
-                u32::MAX
-            } else {
-                u32::MAX & !(1 << DType::F64 as u32)
+            supported_dtypes: {
+                let mut mask = 0u32;
+                let extensions = self
+                    .get_device_data(CL_DEVICE_EXTENSIONS)
+                    .ok()
+                    .map(|d| String::from_utf8_lossy(&d).into_owned())
+                    .unwrap_or_default();
+
+                if extensions.contains("cl_khr_fp64") {
+                    mask |= 1u32 << (DType::F64 as u32);
+                }
+                if extensions.contains("cl_khr_fp16") {
+                    mask |= 1u32 << (DType::F16 as u32);
+                }
+
+                mask
             },
         };
         Ok(())

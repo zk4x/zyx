@@ -104,7 +104,10 @@ impl Runtime {
     }
 
     /// Returns true if any device supports the given dtype.
-    pub fn supports_dtype(&self, dtype: DType) -> bool {
+    pub fn supports_dtype(&mut self, dtype: DType) -> bool {
+        if self.initialize_devices().is_err() {
+            return false;
+        }
         self.devices.iter().any(|(_, d)| d.info().supports_dtype(dtype))
     }
 

@@ -1603,8 +1603,8 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let arr = Tensor::from([1.0, 2.0]);
-    /// assert_eq!(arr.pow(2.0)?, [1.0, 4.0]);
+    /// let arr = Tensor::from([1.0f32, 2.0]);
+    /// assert_eq!(arr.pow(2.0f32)?, [1.0f32, 4.0]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     ///
@@ -1889,10 +1889,10 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let self_tensor = Tensor::from([1.0, 2.0, 3.0]);
-    /// let target_tensor = Tensor::from([2.0, 3.0, 4.0]);
+    /// let self_tensor = Tensor::from([1.0f32, 2.0, 3.0]);
+    /// let target_tensor = Tensor::from([2.0f32, 3.0, 4.0]);
     ///
-    /// assert_eq!(self_tensor.l1_loss(target_tensor), [1.0, 1.0, 1.0]);
+    /// assert_eq!(self_tensor.l1_loss(target_tensor), [1.0f32, 1.0, 1.0]);
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
     #[must_use]
@@ -1915,10 +1915,10 @@ impl Tensor {
     /// ```
     /// use zyx::Tensor;
     ///
-    /// let input = Tensor::from([2.0, 3.0]);
-    /// let target = Tensor::from([4.0, 5.0]);
+    /// let input = Tensor::from([2.0f32, 3.0]);
+    /// let target = Tensor::from([4.0f32, 5.0]);
     ///
-    /// assert_eq!(input.mse_loss(target).unwrap(), 4.0);
+    /// assert_eq!(input.mse_loss(target).unwrap(), 4.0f32);
     /// ```
     ///
     /// # Errors

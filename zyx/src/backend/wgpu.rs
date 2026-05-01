@@ -126,14 +126,15 @@ pub(super) fn initialize_device(
     let features = wgpu_adapter.features();
     let mut supported_dtypes = 0;
     if features.contains(wgpu::Features::SHADER_F64) {
-        supported_dtypes |= 1 << DType::F64 as u32;
+        supported_dtypes |= 1 << (DType::F64 as u32);
     }
     if features.contains(wgpu::Features::SHADER_F16) {
-        supported_dtypes |= 1 << DType::F16 as u32;
+        supported_dtypes |= 1 << (DType::F16 as u32);
     }
     if features.contains(wgpu::Features::SHADER_INT64) {
-        supported_dtypes |= 1 << DType::I64 as u32;
+        supported_dtypes |= 1 << (DType::I64 as u32);
     }
+    println!("Supported dtypes: {supported_dtypes:?}");
     devices.push(Device::WGPU(WGPUDevice {
         device,
         adapter: wgpu_adapter,
