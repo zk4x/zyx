@@ -35,13 +35,6 @@ fn main() -> Result<(), ZyxError> {
     let test_x = train_dataset["test_images"].clone().reshape([10000, 784])?;
     let test_y = train_dataset["test_labels"].clone();
 
-    Tensor::realize_all()?;
-
-    let x_mean = train_x.mean_all().item::<f32>();
-    let x_max = train_x.max_all().item::<f32>();
-    let x_min = train_x.min_all().item::<f32>();
-    println!("train_x mean={:.6}, max={:.6}, min={:.6}", x_mean, x_max, x_min);
-
     let batch_size = 128;
     let n_train = train_x.shape()[0] as u64;
 
@@ -58,7 +51,7 @@ fn main() -> Result<(), ZyxError> {
     Tensor::realize_all()?;
 
     println!("Training...");
-    for step in 0..200usize {
+    for step in 0..7000usize {
         Tensor::set_training(true);
         let tape = GradientTape::new();
         let samples = Tensor::uniform(batch_size, 0..n_train)?;
@@ -72,7 +65,7 @@ fn main() -> Result<(), ZyxError> {
         optim.update(&mut net, grads);
         Tensor::realize(net.iter().chain(optim.iter()).chain([&loss]))?;
 
-        if step % 20 == 0 {
+        if step.is_multiple_of(100) {
             Tensor::set_training(false);
             let acc = net
                 .forward(&test_x)
