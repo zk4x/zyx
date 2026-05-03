@@ -66,7 +66,7 @@ mod graph;
 mod kernel;
 mod mutex;
 #[cfg(feature = "py")]
-mod py_bindings;
+pub mod py_bindings;
 mod rng;
 mod runtime;
 mod scalar;

@@ -6,6 +6,7 @@ use zyx_derive::Module;
 
 /// RMS norm layer
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct RMSNorm {
     /// weight, scale
     pub scale: Tensor,

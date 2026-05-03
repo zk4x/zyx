@@ -6,6 +6,7 @@ use zyx_derive::Module;
 
 /// Embedding layer
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Embedding {
     /// Vocabulary size
     pub vocab_size: u64,

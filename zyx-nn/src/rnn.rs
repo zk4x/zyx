@@ -35,6 +35,7 @@ use zyx_derive::Module;
 /// let h_next = rnn.forward(&x, &h).unwrap();
 /// ```
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct RNNCell {
     /// the learnable input-hidden weights, of shape (hidden_size, input_size)
     pub weight_ih: Tensor,

@@ -1,0 +1,17 @@
+[package]
+name = "zyx-py"
+version = "0.15.0"
+edition = "2021"
+authors = ["zk4x"]
+description = "Zyx Python bindings"
+publish = false
+
+[lib]
+name = "zyx"
+crate-type = ["cdylib"]
+
+[dependencies]
+zyx = { path = "../zyx", features = ["py"] }
+zyx-optim = { path = "../zyx-optim", features = ["py"] }
+zyx-nn = { path = "../zyx-nn", features = ["py"] }
+pyo3 = { version = "0.28.3", features = ["extension-module", "auto-initialize"] }

@@ -6,6 +6,7 @@ use zyx_derive::Module;
 
 /// # Adaptive momentum estimation optimizer
 #[derive(Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Adam {
     /// learning rate (default: 1e-3)
     pub learning_rate: f32,

@@ -18,3 +18,13 @@ maintenance = { status = "experimental" }
 [dependencies]
 zyx = { version = "*", path = "../zyx" }
 zyx-derive = { version = "*", path = "../zyx-derive" }
+
+[dependencies.pyo3]
+version = "0.28.3"
+optional = true
+
+[features]
+py = ["dep:pyo3", "zyx/py"]
+
+[lib]
+crate-type = ["lib"]

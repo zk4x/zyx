@@ -238,7 +238,7 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
-    println!("YO {:?}", devices[DeviceId::from(0)].info().supported_dtypes);
+    //println!("YO {:?}", devices[DeviceId::from(0)].info().supported_dtypes);
 
     if devices.is_empty() || memory_pools.is_empty() {
         return Err(BackendError {

@@ -7,6 +7,7 @@ use zyx_derive::Module;
 
 /// RMSProp optimizer for adaptive learning rate training.
 #[derive(Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct RMSprop {
     /// Step size multiplier
     pub learning_rate: f32,

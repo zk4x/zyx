@@ -35,6 +35,7 @@ use zyx_derive::Module;
 /// let (h_next, c_next) = lstm.forward(&x, &h, &c).unwrap();
 /// ```
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct LSTMCell {
     // weights for input and hidden
     w_ih: Tensor,         // (4 * hidden_size, input_size)

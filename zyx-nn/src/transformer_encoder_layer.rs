@@ -11,6 +11,7 @@ use zyx_derive::Module;
 /// mechanism followed by a position-wise feedforward network. Layer normalization can be applied
 /// either before ("pre-norm") or after ("post-norm") the attention and feedforward sub-layers.
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct TransformerEncoderLayer {
     /// - `self_attn`: The multi-head self-attention module.
     pub self_attn: MultiheadAttention,

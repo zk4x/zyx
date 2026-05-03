@@ -70,3 +70,8 @@ pub use transformer_decoder_layer::TransformerDecoderLayer;
 // fn(impl Into<Tensor>) -> Tensor
 //mod activation;
 //pub use activation::Activation;
+
+#[cfg(feature = "py")]
+mod py_bindings;
+#[cfg(feature = "py")]
+pub use py_bindings::register_nn;

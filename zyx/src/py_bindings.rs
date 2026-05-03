@@ -14,7 +14,7 @@ use pyo3::types::PySlice;
 use pyo3::{
     Bound, PyAny, PyErr, PyResult,
     exceptions::{PyOSError, PyTypeError},
-    pymethods, pymodule,
+    pymethods,
     types::{PyAnyMethods, PyIterator, PyList, PyModule, PyModuleMethods, PyTuple},
 };
 
@@ -26,6 +26,12 @@ impl From<ZyxError> for PyErr {
 
 #[pymethods]
 impl GradientTape {
+    /// Creates a new gradient tape.
+    #[new]
+    pub fn py_new() -> Self {
+        GradientTape::new()
+    }
+
     /// # Panics
     /// Panics if sources are not List(Tensor).
     #[must_use]
@@ -35,7 +41,6 @@ impl GradientTape {
             .into_iter()
             .map(|d| d.extract::<Tensor>().expect("sources must be List(Tensor)"))
             .collect();
-        // In python, we cannot drop the tape ...
         self.gradient_persistent(x, &sources)
     }
 }
@@ -386,21 +391,6 @@ impl Tensor {
     #[pyo3(name = "arange", signature = (start=0, stop=1, step=1))]
     pub fn arange_py(start: i64, stop: i64, step: i64) -> Result<Tensor, ZyxError> {
         Tensor::arange(start, stop, step)
-    }
-
-    /// # Errors
-    /// Returns a `ZyxError` if the operation fails.
-    #[staticmethod]
-    #[pyo3(name = "from_vec")]
-    pub fn from_vec_py(data: &Bound<'_, PyList>, shape: &Bound<'_, PyTuple>) -> Result<Tensor, ZyxError> {
-        let shape_vec = to_sh(shape)?;
-        if let Ok(data_vec) = data.extract::<Vec<f64>>() {
-            Ok(Tensor::from_vec(data_vec, shape_vec)?)
-        } else if let Ok(data_vec) = data.extract::<Vec<i64>>() {
-            Ok(Tensor::from_vec(data_vec, shape_vec)?)
-        } else {
-            Err(ZyxError::DTypeError("data must be Vec<f64> or Vec<i64>".into()))
-        }
     }
 
     /// Computes the absolute value element-wise.
@@ -1337,6 +1327,32 @@ impl Tensor {
         self.argmax_axis(axis)
     }
 
+    /// Extracts a scalar value from a single-element tensor.
+    #[must_use]
+    #[pyo3(name = "item")]
+    pub fn item_py(&self) -> f64 {
+        self.item::<f64>() as f64
+    }
+
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    #[pyo3(name = "cross_entropy")]
+    pub fn cross_entropy_py(&self, target: &Bound<'_, PyAny>, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(target_tensor) = target.extract::<Tensor>() {
+            self.cross_entropy(target_tensor, to_ax(axes))
+        } else {
+            Err(ZyxError::DTypeError("target must be a Tensor".into()))
+        }
+    }
+
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    #[staticmethod]
+    #[pyo3(name = "uniform")]
+    pub fn uniform_py(size: Dim, from: Dim, to: Dim) -> Result<Tensor, ZyxError> {
+        Tensor::uniform(size, from..to)
+    }
+
     /// # Errors
     /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "one_hot_along_dim")]
@@ -1462,15 +1478,19 @@ fn to_ax(axes: &Bound<'_, PyAny>) -> Vec<Axis> {
     vec![]
 }
 
-/// A Python module implemented in Rust.
-#[pymodule]
-#[pyo3(name = "zyx")]
-fn zyx_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<Tensor>()?;
-    m.add_class::<DType>()?;
-    m.add_class::<GradientTape>()?;
-    //m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
-    Ok(())
+/// Re-export helper for zyx-py to register Tensor class.
+pub fn register_tensor(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<Tensor>()
+}
+
+/// Re-export helper for zyx-py to register DType class.
+pub fn register_dtype(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<DType>()
+}
+
+/// Re-export helper for zyx-py to register GradientTape class.
+pub fn register_gradient_tape(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<GradientTape>()
 }
 
 fn from_numpy<T: crate::Scalar + pyo3::buffer::Element>(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {

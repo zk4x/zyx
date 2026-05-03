@@ -7,6 +7,7 @@ use zyx_derive::Module;
 
 /// Causal self attention
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct CausalSelfAttention {
     c_attn: Linear,
     c_proj: Linear,

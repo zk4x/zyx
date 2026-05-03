@@ -12,6 +12,7 @@ use crate::Linear;
 /// supporting all core features including key/value projections, bias vectors,
 /// dropout, and optional shape/batch layout controls.
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct MultiheadAttention {
     /// - `embed_dim`: Total dimension of the model (i.e. output embedding size).
     pub embed_dim: u64,

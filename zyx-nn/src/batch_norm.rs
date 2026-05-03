@@ -9,6 +9,7 @@ use zyx_derive::Module;
 /// By default this module has learnable affine parameters,
 /// set weight and bias to None to remove them.
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct BatchNorm {
     /// a value added to the denominator for numerical stability. Default: 1e-5
     pub eps: f32,

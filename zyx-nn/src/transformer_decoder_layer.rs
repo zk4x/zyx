@@ -16,6 +16,7 @@ use zyx_derive::Module;
 /// The behavior of the layer can be adjusted using `norm_first` (pre-norm vs post-norm),
 /// dropout rate, and activation function.
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct TransformerDecoderLayer {
     self_attention: MultiheadAttention,
     cross_attention: MultiheadAttention,

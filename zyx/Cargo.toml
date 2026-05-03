@@ -38,7 +38,7 @@ wgpu = { version = "29.0.1", default-features = false, features = ["wgsl", "vulk
 pollster = { version = "0.4.0", default-features = false, optional = true } # MIT or Apache 2.0
 
 # Pyo3 is used only for python bindings
-pyo3 = { version = "0.28.3", optional = true, features = ["extension-module", "auto-initialize"] } # MIT or Apache 2.0
+pyo3 = { version = "0.28.3", optional = true, features = ["extension-module", "auto-initialize", "generate-import-lib"] } # MIT or Apache 2.0
 
 # Vulkano, will be later removed, once we sort out direct vulkan bindings
 #vulkano = { version = "*", optional = true }
@@ -47,7 +47,7 @@ pyo3 = { version = "0.28.3", optional = true, features = ["extension-module", "a
 matrixmultiply = "0.3"
 
 [lib]
-crate-type = ["lib"] #, "cdylib"]
+crate-type = ["lib"]
 
 [features]
 default = [

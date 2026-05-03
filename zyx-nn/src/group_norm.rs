@@ -6,6 +6,7 @@ use zyx_derive::Module;
 
 /// Group normalization
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct GroupNorm {
     /// number of groups
     pub num_groups: u64,

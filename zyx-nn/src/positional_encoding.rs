@@ -12,6 +12,7 @@ use zyx_derive::Module;
 ///
 /// It supports both `f32` and `f64` types and applies dropout after adding the encodings.
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct PositionalEncoding {
     /// Precomputed positional encodings of shape `[max_len, d_model]`.
     pe: Tensor,

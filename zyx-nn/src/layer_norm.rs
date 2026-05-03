@@ -9,6 +9,7 @@ use zyx_derive::Module;
 /// Layer Normalization normalizes the inputs across the specified dimensions (typically the last N dimensions)
 /// for each example independently. It optionally supports learnable scale (`weight`) and bias (`bias_tensor`) parameters.
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct LayerNorm {
     normalized_shape: Vec<u64>,
     eps: f64,

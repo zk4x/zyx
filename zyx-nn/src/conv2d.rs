@@ -8,6 +8,7 @@ use zyx_derive::Module;
 ///
 /// See: https://pytorch.org/docs/stable/generated/torch.nn.Conv2d
 #[derive(Debug, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct Conv2d {
     stride: Vec<u64>,
     dilation: Vec<u64>,
