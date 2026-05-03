@@ -6,7 +6,7 @@ use zyx_derive::Module;
 
 /// Linear layer
 #[derive(Debug, Module)]
-#[cfg_attr(feature = "py", pyo3::pyclass(get_all))]
+#[cfg_attr(feature = "py", pyo3::pyclass(get_all, set_all))]
 pub struct Linear {
     /// weight
     pub weight: Tensor,

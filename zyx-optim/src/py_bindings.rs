@@ -6,8 +6,39 @@
 use crate::{Adam, AdamW, RMSprop, SGD};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use pyo3::Bound;
 use zyx::Tensor;
+
+fn do_update(
+    model: &Bound<'_, PyAny>,
+    grads_list: &Bound<'_, PyList>,
+    update_fn: impl FnOnce(&mut Vec<Tensor>, Vec<Option<Tensor>>),
+    py: Python<'_>,
+) -> PyResult<()> {
+    let params_obj = model.call_method0("get_params")?;
+    let params_list = params_obj.cast::<PyList>().unwrap();
+    let params: Vec<Tensor> = params_list
+        .iter()
+        .map(|t| t.extract::<Tensor>().expect("params must be list of Tensor"))
+        .collect();
+    let grads: Vec<Option<Tensor>> = grads_list
+        .iter()
+        .map(|t| {
+            if t.is_none() {
+                None
+            } else {
+                Some(t.extract::<Tensor>().expect("gradients must be list of Tensor or None"))
+            }
+        })
+        .collect();
+    let mut params_mut = params;
+    update_fn(&mut params_mut, grads);
+    let new_list = PyList::empty(py);
+    for p in params_mut {
+        new_list.append(p)?;
+    }
+    model.call_method1("set_params", (new_list,))?;
+    Ok(())
+}
 
 /// Python bindings for SGD optimizer.
 #[pymethods]
@@ -34,25 +65,11 @@ impl SGD {
         }
     }
 
-    /// Update parameters using computed gradients.
+    /// Update model parameters using computed gradients.
     #[pyo3(name = "update")]
-    fn update_py(&mut self, parameters: &Bound<'_, PyList>, gradients: &Bound<'_, PyList>) {
-        let params: Vec<Tensor> = parameters
-            .into_iter()
-            .map(|t| t.extract::<Tensor>().expect("parameters must be list of Tensor"))
-            .collect();
-        let grads: Vec<Option<Tensor>> = gradients
-            .into_iter()
-            .map(|t| {
-                if t.is_none() {
-                    None
-                } else {
-                    Some(t.extract::<Tensor>().expect("gradients must be list of Tensor or None"))
-                }
-            })
-            .collect();
-        let mut params_mut: Vec<Tensor> = params;
-        self.update(&mut params_mut, grads);
+    fn update_py(&mut self, model: &Bound<'_, PyAny>, gradients: &Bound<'_, PyList>, py: Python<'_>) -> PyResult<()> {
+        let s = self;
+        do_update(model, gradients, |p, g| SGD::update(s, p.iter_mut(), g.into_iter()), py)
     }
 }
 
@@ -82,25 +99,11 @@ impl Adam {
         }
     }
 
-    /// Update parameters using computed gradients.
+    /// Update model parameters using computed gradients.
     #[pyo3(name = "update")]
-    fn update_py(&mut self, parameters: &Bound<'_, PyList>, gradients: &Bound<'_, PyList>) {
-        let params: Vec<Tensor> = parameters
-            .into_iter()
-            .map(|t| t.extract::<Tensor>().expect("parameters must be list of Tensor"))
-            .collect();
-        let grads: Vec<Option<Tensor>> = gradients
-            .into_iter()
-            .map(|t| {
-                if t.is_none() {
-                    None
-                } else {
-                    Some(t.extract::<Tensor>().expect("gradients must be list of Tensor or None"))
-                }
-            })
-            .collect();
-        let mut params_mut: Vec<Tensor> = params;
-        self.update(&mut params_mut, grads);
+    fn update_py<'py>(&mut self, model: &Bound<'py, PyAny>, gradients: &Bound<'py, PyList>, py: Python<'py>) -> PyResult<()> {
+        let s = self;
+        do_update(model, gradients, |p, g| Adam::update(s, p.iter_mut(), g.into_iter()), py)
     }
 }
 
@@ -130,25 +133,11 @@ impl AdamW {
         }
     }
 
-    /// Update parameters using computed gradients.
+    /// Update model parameters using computed gradients.
     #[pyo3(name = "update")]
-    fn update_py(&mut self, parameters: &Bound<'_, PyList>, gradients: &Bound<'_, PyList>) {
-        let params: Vec<Tensor> = parameters
-            .into_iter()
-            .map(|t| t.extract::<Tensor>().expect("parameters must be list of Tensor"))
-            .collect();
-        let grads: Vec<Option<Tensor>> = gradients
-            .into_iter()
-            .map(|t| {
-                if t.is_none() {
-                    None
-                } else {
-                    Some(t.extract::<Tensor>().expect("gradients must be list of Tensor or None"))
-                }
-            })
-            .collect();
-        let mut params_mut: Vec<Tensor> = params;
-        self.update(&mut params_mut, grads);
+    fn update_py<'py>(&mut self, model: &Bound<'py, PyAny>, gradients: &Bound<'py, PyList>, py: Python<'py>) -> PyResult<()> {
+        let s = self;
+        do_update(model, gradients, |p, g| AdamW::update(s, p.iter_mut(), g.into_iter()), py)
     }
 }
 
@@ -176,25 +165,11 @@ impl RMSprop {
         opt
     }
 
-    /// Update parameters using computed gradients.
+    /// Update model parameters using computed gradients.
     #[pyo3(name = "update")]
-    fn update_py(&mut self, parameters: &Bound<'_, PyList>, gradients: &Bound<'_, PyList>) {
-        let params: Vec<Tensor> = parameters
-            .into_iter()
-            .map(|t| t.extract::<Tensor>().expect("parameters must be list of Tensor"))
-            .collect();
-        let grads: Vec<Option<Tensor>> = gradients
-            .into_iter()
-            .map(|t| {
-                if t.is_none() {
-                    None
-                } else {
-                    Some(t.extract::<Tensor>().expect("gradients must be list of Tensor or None"))
-                }
-            })
-            .collect();
-        let mut params_mut: Vec<Tensor> = params;
-        self.update(&mut params_mut, grads);
+    fn update_py<'py>(&mut self, model: &Bound<'py, PyAny>, gradients: &Bound<'py, PyList>, py: Python<'py>) -> PyResult<()> {
+        let s = self;
+        do_update(model, gradients, |p, g| RMSprop::update(s, p.iter_mut(), g.into_iter()), py)
     }
 }
 

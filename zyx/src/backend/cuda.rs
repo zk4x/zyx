@@ -374,7 +374,7 @@ pub(super) fn initialize_device(
 
             let mut buffers: Slab<PoolBufferId, CUDABuffer> = Slab::new();
             let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
-            let mut free_bytes: u64 = 0;
+            let mut free_bytes: u64 = free_bytes as Dim;
 
             // Worker loop
             'work_thread_loop: while let Ok(cmd) = rx.recv() {
