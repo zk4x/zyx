@@ -412,6 +412,14 @@ impl Tensor {
         RT.lock().realize_all()
     }
 
+    /// Realizes this single tensor.
+    ///
+    /// # Errors
+    /// Returns device error if the tensor cannot be realized.
+    pub fn realize_self(&self) -> Result<(), ZyxError> {
+        Self::realize([self])
+    }
+
     /// Item
     #[allow(clippy::missing_panics_doc)]
     pub fn item<T: Scalar>(&self) -> T {

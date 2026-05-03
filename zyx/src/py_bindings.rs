@@ -35,7 +35,7 @@ impl GradientTape {
     /// # Panics
     /// Panics if sources are not List(Tensor).
     #[must_use]
-    #[pyo3(name = "backward")]
+    #[pyo3(name = "gradient")]
     pub fn gradient_py(&self, x: &Tensor, sources: &Bound<'_, PyList>) -> Vec<Option<Tensor>> {
         let sources: Vec<Tensor> = sources
             .into_iter()
@@ -222,13 +222,22 @@ impl Tensor {
     /// # Panics
     /// Panics if tensors are not List(Tensor).
     #[staticmethod]
-    #[pyo3(name = "realize")]
+    #[pyo3(name = "realize_multi")]
     pub fn realize_py(tensors: &Bound<'_, PyList>) -> Result<(), ZyxError> {
         let tensors: Vec<Tensor> = tensors
             .into_iter()
             .map(|d| d.extract::<Tensor>().expect("tensors must be List(Tensor)"))
             .collect();
         Tensor::realize(&tensors)
+    }
+
+    /// Realizes this single tensor, computing its data on the device.
+    ///
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    #[pyo3(name = "realize")]
+    pub fn realize_self_py(&self) -> Result<(), ZyxError> {
+        Tensor::realize([self])
     }
 
     /// Returns the shape of the tensor.
@@ -391,6 +400,14 @@ impl Tensor {
     #[pyo3(name = "arange", signature = (start=0, stop=1, step=1))]
     pub fn arange_py(start: i64, stop: i64, step: i64) -> Result<Tensor, ZyxError> {
         Tensor::arange(start, stop, step)
+    }
+
+    /// # Errors
+    /// Returns a `ZyxError` if the operation fails.
+    #[staticmethod]
+    #[pyo3(name = "realize_all")]
+    pub fn realize_all_py() -> Result<(), ZyxError> {
+        Tensor::realize_all()
     }
 
     /// Computes the absolute value element-wise.
