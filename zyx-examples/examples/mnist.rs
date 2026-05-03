@@ -6,32 +6,6 @@ use zyx::{DType, GradientTape, Module, Tensor, ZyxError};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
-// Convolutional mnist
-/*#[derive(Module)]
-struct MnistNet {
-    l1: Conv2d,
-    l2: Conv2d,
-    l3: Linear,
-}
-
-impl MnistNet {
-    fn new(dtype: DType) -> Result<Self, ZyxError> {
-        Ok(Self {
-            l1: zyx_nn::Conv2d::new(1, 32, [3, 3], 1, 0, 1, 1, true, dtype)?,
-            l2: zyx_nn::Conv2d::new(32, 64, [3, 3], 1, 0, 1, 1, true, dtype)?,
-            l3: Linear::new(1600, 10, true, dtype)?,
-        })
-    }
-
-    fn forward(&self, x: &Tensor) -> Tensor {
-        //let x = x.reshape([0, 784]).unwrap();
-        let x = self.l1.forward(x).unwrap().relu().max_pool([2, 2], [2, 2], 1, [(0, 0)], false, false).unwrap();
-        let x = self.l2.forward(x).unwrap().relu().max_pool([2, 2], [2, 2], 1, [(0, 0)], false, false).unwrap();
-        self.l3.forward(&x).unwrap()
-    }
-}*/
-
-// With linear
 #[derive(Module)]
 struct MnistNet {
     l1: Linear,
@@ -47,7 +21,6 @@ impl MnistNet {
     }
 
     fn forward(&self, x: &Tensor) -> Tensor {
-        //println!("{:?}", x.shape());
         let x = x.reshape([0, 784]).unwrap();
         let x = self.l1.forward(x).unwrap().relu();
         self.l2.forward(&x).unwrap()
@@ -57,53 +30,49 @@ impl MnistNet {
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
     let train_dataset: HashMap<String, Tensor> = Tensor::load("data/mnist_dataset.safetensors")?;
-    let train_x = (train_dataset["train_images"].clone().cast(DType::F32) / 255).reshape([60000, 784])?;
+    let train_x = train_dataset["train_images"].clone().reshape([60000, 784])?;
     let train_y = train_dataset["train_labels"].clone();
-    let test_x = train_dataset["test_images"].clone().cast(DType::F32) / 255;
+    let test_x = train_dataset["test_images"].clone().reshape([10000, 784])?;
     let test_y = train_dataset["test_labels"].clone();
+
+    Tensor::realize_all()?;
+
+    let x_mean = train_x.mean_all().item::<f32>();
+    let x_max = train_x.max_all().item::<f32>();
+    let x_min = train_x.min_all().item::<f32>();
+    println!("train_x mean={:.6}, max={:.6}, min={:.6}", x_mean, x_max, x_min);
 
     let batch_size = 128;
     let n_train = train_x.shape()[0] as u64;
 
     let mut net = MnistNet::new(DType::F32)?;
-    //net.save("models/mnist.safetensors")?;
-
-    //let mut state_dict = Tensor::load("models/mnist.safetensors")?;
-    //net.set_params(&mut state_dict);
 
     let mut optim = SGD {
         learning_rate: 0.01,
-        momentum: 0.6,
-        nesterov: false,
+        momentum: 0.9,
         ..Default::default()
     };
 
-    println!(
-        "train_x {:?}, train_y {:?}",
-        train_x.shape(),
-        train_y.shape()
-    );
+    println!("train_x {:?}, train_y {:?}", train_x.shape(), train_y.shape());
 
     Tensor::realize_all()?;
 
     println!("Training...");
-    for step in 0..70usize {
+    for step in 0..200usize {
         Tensor::set_training(true);
         let tape = GradientTape::new();
-        let samples = Tensor::uniform(batch_size, 0..n_train)?; // [128]
-        let x = train_x.index_select(0, &samples)?; // x shape: [batch_size, 784]
-        let y = train_y.index_select(0, &samples)?; // y shape: [batch_size]
-
-        //Tensor::realize([&x, &y])?;
-        //println!("Index time above <");
+        let samples = Tensor::uniform(batch_size, 0..n_train)?;
+        let x = train_x.index_select(0, &samples)?;
+        let y = train_y.index_select(0, &samples)?;
 
         let logits = net.forward(&x);
         let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
-        let grads = tape.gradient(&loss, &net);
+        let grads: Vec<_> = tape.gradient(&loss, &net);
+
         optim.update(&mut net, grads);
         Tensor::realize(net.iter().chain(optim.iter()).chain([&loss]))?;
 
-        if step.is_multiple_of(10) {
+        if step % 20 == 0 {
             Tensor::set_training(false);
             let acc = net
                 .forward(&test_x)
@@ -113,14 +82,12 @@ fn main() -> Result<(), ZyxError> {
                 .mean_all()
                 .item::<f32>();
             println!(
-                "step {step}, loss {}, acc {:.2}%",
+                "step {step}, loss {:.6}, acc {:.2}%",
                 loss.item::<f32>(),
                 acc * 100.
-            )
+            );
         }
     }
-
-    // TODO Evaluation Loop
 
     Ok(())
 }
