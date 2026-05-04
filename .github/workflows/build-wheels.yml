@@ -50,7 +50,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi
-      url: https://pypi.org/p/zyx
+      url: https://pypi.org/p/zyx-py
     permissions:
       id-token: write  # For trusted publishing (OIDC)
     steps:

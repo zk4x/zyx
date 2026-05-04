@@ -1,14 +1,16 @@
 # zyx - Python Bindings
 
-[![PyPI version](https://badge.fury.io/py/zyx.svg)](https://pypi.org/project/zyx/)
+[![PyPI version](https://badge.fury.io/py/zyx-py.svg)](https://pypi.org/project/zyx-py/)
 [![License: LGPL 3.0](https://img.shields.io/badge/License-LGPL%203.0-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
 
 **zyx** is a high-performance machine learning library for Python, powered by Rust. It features **lazy evaluation**, **automatic kernel fusion**, and **multi-backend support** (CPU, GPU via OpenCL/CUDA/WebGPU).
 
+> **Note:** Install with `pip install zyx-py`, then import as `import zyx`
+
 ## Installation
 
 ```bash
-pip install zyx
+pip install zyx-py
 ```
 
 Requirements:
@@ -333,6 +335,7 @@ LGPL-3.0-only - see LICENSE file for details.
 
 ## Links
 
+- **PyPI**: https://pypi.org/project/zyx-py/
 - **GitHub**: https://github.com/zk4x/zyx
 - **Documentation**: https://docs.rs/zyx (Rust API)
 - **Book**: https://zk4x.github.io/zyx/

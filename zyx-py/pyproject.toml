@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "zyx"
+name = "zyx-py"
 description = "High-performance machine learning library with lazy evaluation and automatic kernel fusion"
 readme = "README.md"
 requires-python = ">=3.8"
