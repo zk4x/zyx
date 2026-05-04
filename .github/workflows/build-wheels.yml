@@ -3,55 +3,95 @@ name: Build and Publish Wheels
 on:
   push:
     tags:
-      - 'v*'  # Push events matching v*, e.g., v0.15.1
-  workflow_dispatch:  # Allow manual trigger
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
-  build-wheels:
-    name: Build wheels on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  linux:
+    name: Build wheels on Linux - Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.8", "3.9", "3.10", "3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
         with:
-          python-version: '3.x'
+          maturin-version: "1.13.1"
+          command: build
+          args: --release --out dist -i python${{ matrix.python }}
+          manylinux: auto
 
-      - name: Install cibuildwheel
-        run: python -m pip install cibuildwheel==2.21.3
-
-      - name: Build wheels
-        run: python -m cibuildwheel --output-dir wheelhouse zyx-py/
-        env:
-          CIBW_BUILD: "cp38-* cp39-* cp310-* cp311-* cp312-*"
-          CIBW_SKIP: "*-win32 *-manylinux_i686 *-musllinux_*"
-          CIBW_BEFORE_BUILD: python -m pip install "maturin>=1.5,<2.0"
-          CIBW_BUILD_VERBOSITY: 1
-
-      - name: Upload wheels as artifacts
+      - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}
-          path: ./wheelhouse/*.whl
+          name: wheels-linux-py${{ matrix.python }}
+          path: zyx-py/dist/*.whl
+
+  windows:
+    name: Build wheels on Windows - Python ${{ matrix.python }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: "1.13.1"
+          command: build
+          args: --release --out dist
+          python-version: ${{ matrix.python }}
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-py${{ matrix.python }}
+          path: zyx-py/dist/*.whl
+
+  macos:
+    name: Build wheels on macOS - Python ${{ matrix.python }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: "1.13.1"
+          command: build
+          args: --release --out dist
+          python-version: ${{ matrix.python }}
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-py${{ matrix.python }}
+          path: zyx-py/dist/*.whl
 
   publish-pypi:
     name: Publish to PyPI
-    needs: build-wheels
+    needs: [linux, windows, macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi
       url: https://pypi.org/p/zyx-py
     permissions:
-      id-token: write  # For trusted publishing (OIDC)
+      id-token: write
     steps:
       - name: Download all wheels
         uses: actions/download-artifact@v4
