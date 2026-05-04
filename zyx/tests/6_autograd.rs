@@ -759,24 +759,88 @@ fn grad_cmpgt_source() {
 
     let x = Tensor::from([1.0f32, 2.0, 3.0]);
     let th = Tensor::from([2.0f32]);
-    
+
     // spike is output of cmpgt - non-differentiable
     let spike = x.cmpgt(&th).unwrap();
-    
+
     // Use spike in a differentiable operation
     let spike_f32 = spike.cast(DType::F32);
     let w = Tensor::from([1.0f32, 1.0, 1.0]);
     let out = spike_f32 * w.clone();
     let loss = out.sum_all();
-    
+
     // Request gradient w.r.t. x (INPUT to cmpgt - non-differentiable)
     // Since cmpgt is non-differentiable, gradient should be None
     let d_x = tape.gradient_persistent(&loss, &[x]);
     assert!(d_x[0].is_none(), "Gradient through cmpgt (w.r.t. input) should be None");
-    
+
     // Also request gradient w.r.t. w (should work - differentiable path)
     let d_w = tape.gradient_persistent(&loss, &[w.clone()]);
     assert!(d_w[0].is_some(), "Gradient of w should exist");
-    
+
+    drop(tape);
+}
+
+#[test]
+fn grad8() {
+    let tape = GradientTape::new();
+
+    let x = Tensor::from([[1.0f32, 2.0, 3.0, 4.0]]);
+    let w1 = Tensor::from([[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]);
+    let b1 = Tensor::from([0.0f32, 0.0]);
+
+    let v_pre1 = x.matmul(&w1).unwrap() + b1.clone();
+    let th = Tensor::from([1.0f32]);
+    let spike1 = v_pre1.cmpgt(&th).unwrap().cast(DType::F32);
+
+    let w2 = Tensor::from([[1.0f32, 2.0, 3.0], [4.0, 5.0, 6.0]]);
+    let b2 = Tensor::from([0.0f32, 0.0, 0.0]);
+
+    let v_pre2 = spike1.matmul(&w2).unwrap() + b2.clone();
+    let spike2 = v_pre2.cmpgt(&th).unwrap().cast(DType::F32);
+
+    let w3 = Tensor::from([[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0]]);
+    let b3 = Tensor::from([0.0f32, 0.0]);
+
+    let out = spike2.matmul(&w3).unwrap() + b3.clone();
+    let loss = out.sum_all();
+
+    let d_w3 = tape.gradient_persistent(&loss, &[w3.clone()])[0].clone().unwrap();
+    let d_b3 = tape.gradient_persistent(&loss, &[b3])[0].clone().unwrap();
+
+    let sigma_t = Tensor::from([0.5f32]);
+    let neg_one = Tensor::from([-1.0f32]);
+    let oma_t = Tensor::from([0.1f32]);
+
+    let diff2 = v_pre2 - th.clone();
+    let abs_diff2 = diff2.abs();
+    let surr2 = sigma_t.clone() * (neg_one.clone() * sigma_t.clone() * abs_diff2).exp();
+    let d_v2_pre = Tensor::from([[0.5f32, 0.5, 0.5]]);
+    let d_pre2 = oma_t.clone() * d_v2_pre;
+
+    let d_w2_acc = spike1.transpose(0, 1).unwrap().matmul(&d_pre2).unwrap();
+    let d_b2_acc = d_pre2.sum([0]).unwrap();
+    let d_spike1 = d_pre2.matmul(&w2.transpose(0, 1).unwrap()).unwrap();
+
+    let diff1 = v_pre1 - th;
+    let abs_diff1 = diff1.abs();
+    let surr1 = sigma_t.clone() * (neg_one.clone() * sigma_t.clone() * abs_diff1).exp();
+    let d_v1_pre = d_spike1 * surr1;
+    let d_pre1 = oma_t * d_v1_pre;
+
+    let d_w1_acc = x.transpose(0, 1).unwrap().matmul(&d_pre1).unwrap();
+    let d_b1_acc = d_pre1.sum([0]).unwrap();
+
+    println!("d_w3 shape: {:?}", d_w3.shape());
+    println!("d_b3 shape: {:?}", d_b3.shape());
+    println!("d_w2_acc shape: {:?}", d_w2_acc.shape());
+    println!("d_b2_acc shape: {:?}", d_b2_acc.shape());
+    println!("d_w1_acc shape: {:?}", d_w1_acc.shape());
+    println!("d_b1_acc shape: {:?}", d_b1_acc.shape());
+
+    Tensor::realize_all().unwrap();
+
+    println!("All tensors realized successfully");
+
     drop(tape);
 }
