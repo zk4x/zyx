@@ -711,3 +711,42 @@ fn grad_maximum() -> Result<(), ZyxError> {
     assert_eq!(x_grad, expected);
     Ok(())
 }
+
+#[test]
+fn grad7() {
+    let tape = GradientTape::new();
+
+    let x = Tensor::from([[1.0f32, 2.0, 3.0, 4.0]]);
+    let w1 = Tensor::from([[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]]);
+    let b1 = Tensor::from([0.0f32, 0.0]);
+
+    let v_pre1 = x.matmul(&w1).unwrap() + b1;
+    let th = Tensor::from([1.0f32]);
+    let spike1 = v_pre1.cmpgt(&th).unwrap().cast(DType::F32);
+
+    let w2 = Tensor::from([[1.0f32, 2.0, 3.0], [4.0, 5.0, 6.0]]);
+    let b2 = Tensor::from([0.0f32, 0.0, 0.0]);
+
+    let v_pre2 = spike1.matmul(&w2).unwrap() + b2;
+    let spike2 = v_pre2.cmpgt(&th).unwrap().cast(DType::F32);
+
+    let w3 = Tensor::from([[1.0f32, 2.0], [3.0, 4.0], [5.0, 6.0]]);
+    let b3 = Tensor::from([0.0f32, 0.0]);
+
+    let out = spike2.matmul(&w3).unwrap() + b3;
+    let loss = out.sum_all();
+
+    // First call: gradient of loss wrt w3
+    let d_w3 = tape.gradient_persistent(&loss, &[w3.clone()]);
+    println!("d_w3: {:?}", d_w3);
+
+    // Second call: gradient of loss wrt spike2
+    let d_spike2 = tape.gradient_persistent(&loss, &[spike2.clone()]);
+    println!("d_spike2: {:?}", d_spike2);
+
+    // Third call: gradient of loss wrt spike1 - this is where the crash happens
+    let d_spike1 = tape.gradient_persistent(&loss, &[spike1.clone()]);
+    println!("d_spike1: {:?}", d_spike1);
+
+    drop(tape);
+}
