@@ -59,11 +59,11 @@
 use crate::runtime::Runtime;
 
 mod backend;
-mod kernel_cache;
 mod dtype;
 mod error;
 mod graph;
 mod kernel;
+mod kernel_cache;
 mod mutex;
 #[cfg(feature = "py")]
 pub mod py_bindings;

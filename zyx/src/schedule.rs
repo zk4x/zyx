@@ -11,16 +11,7 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
-type ScheduleResult = Result<
-    (
-        DeviceId,
-        PoolId,
-        Vec<Event>,
-        BTreeSet<BufferId>,
-        Vec<PoolBufferId>,
-    ),
-    ZyxError,
->;
+type ScheduleResult = Result<(DeviceId, PoolId, Vec<Event>, BTreeSet<BufferId>, Vec<PoolBufferId>), ZyxError>;
 
 pub fn schedule(
     loads: &[TensorId],

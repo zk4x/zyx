@@ -6,10 +6,10 @@
 use crate::{
     DType, DebugMask, Map, Set, ZyxError,
     backend::{AutotuneConfig, BufferId, Device, DeviceId, Event, MemoryPool, PoolId},
-    kernel_cache::KernelCache,
     dtype::Constant,
     graph::{Graph, Node},
     kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
+    kernel_cache::KernelCache,
     runtime::{Runtime, deallocate_tensors},
     schedule::schedule,
     slab::{Slab, SlabId},
@@ -657,16 +657,7 @@ impl<'a> Kernelizer<'a> {
         //kernel.run_always_on_optimizations();
         //kernel.debug();
 
-        let (program_id, opts) = kernel.autotune(
-            &args,
-            device,
-            pool,
-            self.autotune_config,
-            flop,
-            read,
-            write,
-            self.debug,
-        )?;
+        let (program_id, opts) = kernel.autotune(&args, device, pool, self.autotune_config, flop, read, write, self.debug)?;
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
         let event = device.launch(program_id, pool, &args, event_wait_list)?;
@@ -813,7 +804,13 @@ impl Runtime {
                         to_remove.insert(tid);
                     }
                 }
-                deallocate_tensors(&to_remove, kernelizer.pools, kernelizer.events, kernelizer.buffer_map, kernelizer.temp_data);
+                deallocate_tensors(
+                    &to_remove,
+                    kernelizer.pools,
+                    kernelizer.events,
+                    kernelizer.buffer_map,
+                    kernelizer.temp_data,
+                );
             }
         }
 
