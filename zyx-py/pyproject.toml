@@ -4,13 +4,31 @@ build-backend = "maturin"
 
 [project]
 name = "zyx"
-requires-python = ">=3.5"
+description = "High-performance machine learning library with lazy evaluation and automatic kernel fusion"
+readme = "README.md"
+requires-python = ">=3.8"
+dynamic = ["version"]
+authors = [
+    {name = "zk4x"},
+]
+license = {text = "LGPL-3.0-only"}
+keywords = ["machine-learning", "tensor", "gpu", "autograd", "neural-network", "deep-learning"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/zk4x/zyx"
+Repository = "https://github.com/zk4x/zyx"
+Documentation = "https://docs.rs/zyx"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

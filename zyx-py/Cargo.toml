@@ -1,6 +1,6 @@
 [package]
 name = "zyx-py"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2021"
 authors = ["zk4x"]
 description = "Zyx Python bindings"
