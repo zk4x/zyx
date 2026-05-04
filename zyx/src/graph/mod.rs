@@ -254,8 +254,28 @@ impl Graph {
         let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         while let Some(nid) = params.pop() {
             rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert_with(|| {
-                //if !sources.contains(&nid)
-                //&& !matches!(self.nodes[nid].1, Node::Binary { bop: BOp::Cmplt, .. })
+                if !sources.contains(&nid)
+                    && matches!(
+                        self.nodes[nid].1,
+                        Node::Binary {
+                            bop: BOp::Cmpgt
+                                | BOp::Cmplt
+                                | BOp::Eq
+                                | BOp::NotEq
+                                | BOp::Or
+                                | BOp::And
+                                | BOp::BitAnd
+                                | BOp::BitOr
+                                | BOp::BitXor
+                                | BOp::BitShiftLeft
+                                | BOp::BitShiftRight,
+                            ..
+                        }
+                    )
+                {
+                    // Non-differentiable ops: don't trace further
+                    return 1;
+                }
                 if tape.contains(&nid) {
                     params.extend(self.nodes[nid].1.parameters());
                 }
