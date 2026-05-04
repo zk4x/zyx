@@ -1,6 +1,6 @@
 [package]
 name = "zyx"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2024"
 authors = ["zk4x"]
 description = "Zyx machine learning library"
@@ -8,7 +8,7 @@ documentation = "https://docs.rs/zyx"
 readme = "README.md"
 homepage = "https://github.com/zk4x/zyx"
 repository = "https://github.com/zk4x/zyx"
-license = "GPL-2.0-only"
+license = "LGPL-3.0-only"
 keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "science"]
 include = [

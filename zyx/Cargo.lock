@@ -1360,7 +1360,7 @@ dependencies = [
 
 [[package]]
 name = "zyx"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "half 1.8.3",
  "libloading 0.9.0",
