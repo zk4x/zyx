@@ -683,9 +683,12 @@ impl Runtime {
         }
 
         let mut rcs: Map<TensorId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
-        for (_, node) in self.graph.nodes.values() {
-            for nid in node.parameters() {
-                rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+        for (id, node) in self.graph.nodes.iter() {
+            // Skip parameters of realized nodes - they won't be traversed in order algorithm
+            if !realized_nodes.contains(&id) {
+                for nid in node.1.parameters() {
+                    rcs.entry(nid).and_modify(|rc| *rc += 1).or_insert(1);
+                }
             }
         }
 
