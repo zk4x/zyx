@@ -11,7 +11,7 @@ name = "zyx"
 crate-type = ["cdylib"]
 
 [dependencies]
-zyx = { path = "../zyx", features = ["py"] }
+zyx = { path = "../zyx", features = ["py", "wgpu"] }
 zyx-optim = { path = "../zyx-optim", features = ["py"] }
 zyx-nn = { path = "../zyx-nn", features = ["py"] }
 pyo3 = { version = "0.28.3", features = ["extension-module", "auto-initialize"] }

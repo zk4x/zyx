@@ -1326,7 +1326,27 @@ impl Tensor {
         } else if let Ok(rhs) = rhs.extract::<f64>() {
             Ok(self / rhs)
         } else {
-            return Err(ZyxError::DTypeError("unsupported rhs for add".into()));
+            return Err(ZyxError::DTypeError("unsupported rhs for div".into()));
+        }
+    }
+
+    fn __truediv__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        if let Ok(rhs) = rhs.extract::<Self>() {
+            Ok(self / rhs)
+        } else if let Ok(rhs) = rhs.extract::<f64>() {
+            Ok(self / rhs)
+        } else {
+            return Err(ZyxError::DTypeError("unsupported rhs for truediv".into()));
+        }
+    }
+
+    fn __pow__(&self, rhs: &Bound<PyAny>, _modulo: Option<&Bound<PyAny>>) -> Result<Tensor, ZyxError> {
+        if let Ok(rhs) = rhs.extract::<Self>() {
+            self.pow(rhs)
+        } else if let Ok(rhs) = rhs.extract::<f64>() {
+            self.pow(Tensor::from(rhs))
+        } else {
+            Err(ZyxError::DTypeError("unsupported rhs for pow".into()))
         }
     }
 
