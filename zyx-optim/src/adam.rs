@@ -63,6 +63,8 @@ impl Adam {
             "Number of parameters != number of gradients."
         );*/
 
+        self.t += 1;
+
         for (i, (param, grad)) in parameters.into_iter().zip(gradients).enumerate() {
             let Some(mut grad) = grad else {
                 if self.m.len() <= i {
@@ -92,15 +94,12 @@ impl Adam {
                 } else {
                     self.vm.push(vh);
                 }
-                // Cast since learning_rate is f32, but parameters can have different precision.
-                // Is it better to always work with original dtype?
-                *param = (&*param - mh / ((self.vm[i].sqrt() + self.eps) * self.learning_rate))
+                *param = (&*param - self.learning_rate * mh / (self.vm[i].sqrt() + self.eps))
                     .cast(param.dtype());
             } else {
-                *param = (&*param - mh / ((vh.sqrt() + self.eps) * self.learning_rate))
+                *param = (&*param - self.learning_rate * mh / (vh.sqrt() + self.eps))
                     .cast(param.dtype());
             }
         }
-        self.t += 1;
     }
 }

@@ -48,60 +48,50 @@ impl GradientTape {
 #[pymethods]
 impl Tensor {
     #[new]
-    fn new(py_obj: &Bound<'_, PyAny>) -> PyResult<Self> {
-        if let Ok(tensor) = from_numpy::<f32>(py_obj) {
-            return Ok(tensor);
-        }
-        if let Ok(tensor) = from_numpy::<f64>(py_obj) {
-            return Ok(tensor);
-        }
-        if let Ok(tensor) = from_numpy::<i8>(py_obj) {
-            return Ok(tensor);
-        }
-        if let Ok(tensor) = from_numpy::<i16>(py_obj) {
-            return Ok(tensor);
-        }
-        if let Ok(tensor) = from_numpy::<i32>(py_obj) {
-            return Ok(tensor);
-        }
-        if let Ok(tensor) = from_numpy::<i64>(py_obj) {
-            return Ok(tensor);
-        }
-        if let Ok(tensor) = from_numpy::<u8>(py_obj) {
-            return Ok(tensor);
-        }
-        if let Ok(tensor) = from_numpy::<u16>(py_obj) {
-            return Ok(tensor);
-        }
-        if let Ok(tensor) = from_numpy::<u32>(py_obj) {
-            return Ok(tensor);
-        }
-        if let Ok(tensor) = from_numpy::<u64>(py_obj) {
-            return Ok(tensor);
-        }
+    #[pyo3(signature = (py_obj, dtype=None))]
+    fn new(py_obj: &Bound<'_, PyAny>, dtype: Option<DType>) -> PyResult<Self> {
+        let tensor = if let Ok(tensor) = from_numpy::<f32>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(tensor) = from_numpy::<f64>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(tensor) = from_numpy::<i8>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(tensor) = from_numpy::<i16>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(tensor) = from_numpy::<i32>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(tensor) = from_numpy::<i64>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(tensor) = from_numpy::<u8>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(tensor) = from_numpy::<u16>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(tensor) = from_numpy::<u32>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(tensor) = from_numpy::<u64>(py_obj) {
+            Ok(tensor)
+        } else if let Ok(val) = py_obj.extract::<i64>() {
+            Ok(Tensor::from(val))
+        } else if let Ok(val) = py_obj.extract::<f64>() {
+            Ok(Tensor::from(val))
+        } else if let Ok(vec) = py_obj.extract::<Vec<i64>>() {
+            Ok(Tensor::from(vec))
+        } else if let Ok(vec) = py_obj.extract::<Vec<f64>>() {
+            Ok(Tensor::from(vec))
+        } else if let Ok(mat) = py_obj.extract::<Vec<Vec<i64>>>() {
+            Ok(Tensor::from(mat))
+        } else if let Ok(mat) = py_obj.extract::<Vec<Vec<f64>>>() {
+            Ok(Tensor::from(mat))
+        } else {
+            Err(PyTypeError::new_err("Unsupported input type for Tensor"))
+        }?;
 
-        if let Ok(val) = py_obj.extract::<i64>() {
-            return Ok(Tensor::from(val));
+        if let Some(target_dtype) = dtype {
+            if tensor.dtype() != target_dtype {
+                return Ok(tensor.cast(target_dtype));
+            }
         }
-        if let Ok(val) = py_obj.extract::<f64>() {
-            return Ok(Tensor::from(val));
-        }
-
-        if let Ok(vec) = py_obj.extract::<Vec<i64>>() {
-            return Ok(Tensor::from(vec));
-        }
-        if let Ok(vec) = py_obj.extract::<Vec<f64>>() {
-            return Ok(Tensor::from(vec));
-        }
-
-        if let Ok(mat) = py_obj.extract::<Vec<Vec<i64>>>() {
-            return Ok(Tensor::from(mat));
-        }
-        if let Ok(mat) = py_obj.extract::<Vec<Vec<f64>>>() {
-            return Ok(Tensor::from(mat));
-        }
-
-        Err(PyTypeError::new_err("Unsupported input type for Tensor"))
+        Ok(tensor)
     }
 
     fn numpy<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -1168,6 +1158,13 @@ impl Tensor {
     #[pyo3(name = "transpose")]
     pub fn transpose_py(&self, dim0: Axis, dim1: Axis) -> Result<Tensor, ZyxError> {
         self.transpose(dim0, dim1)
+    }
+
+    /// Transposes the last two dimensions (convenience alias).
+    #[must_use]
+    #[pyo3(name = "t")]
+    pub fn t_py(&self) -> Tensor {
+        self.t()
     }
 
     /// # Errors
