@@ -750,3 +750,33 @@ fn grad7() {
 
     drop(tape);
 }
+
+#[test]
+fn grad_cmpgt_source() {
+    // Test gradient when source is INPUT to cmpgt (non-differentiable op)
+    // d_loss/dx should be None because cmpgt is non-differentiable
+    let tape = GradientTape::new();
+
+    let x = Tensor::from([1.0f32, 2.0, 3.0]);
+    let th = Tensor::from([2.0f32]);
+    
+    // spike is output of cmpgt - non-differentiable
+    let spike = x.cmpgt(&th).unwrap();
+    
+    // Use spike in a differentiable operation
+    let spike_f32 = spike.cast(DType::F32);
+    let w = Tensor::from([1.0f32, 1.0, 1.0]);
+    let out = spike_f32 * w.clone();
+    let loss = out.sum_all();
+    
+    // Request gradient w.r.t. x (INPUT to cmpgt - non-differentiable)
+    // Since cmpgt is non-differentiable, gradient should be None
+    let d_x = tape.gradient_persistent(&loss, &[x]);
+    assert!(d_x[0].is_none(), "Gradient through cmpgt (w.r.t. input) should be None");
+    
+    // Also request gradient w.r.t. w (should work - differentiable path)
+    let d_w = tape.gradient_persistent(&loss, &[w.clone()]);
+    assert!(d_w[0].is_some(), "Gradient of w should exist");
+    
+    drop(tape);
+}
