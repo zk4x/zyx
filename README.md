@@ -39,9 +39,10 @@ zyx-derive = { path = "zyx-derive" }
 ```
 
 ```rust
-use zyx::{DType, GradientTape, Tensor};
-use zyx_nn::{Linear, LayerNorm, Module, MultiheadAttention};
+use zyx::{DType, GradientTape, Module, Tensor};
+use zyx_nn::{Linear, LayerNorm, MultiheadAttention};
 use zyx_optim::AdamW;
+use zyx_derive::Module;
 
 #[derive(Module)]
 struct TransformerBlock {
@@ -72,14 +73,20 @@ impl TransformerBlock {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    let mut model = TransformerBlock::new(512, 8, DType::F32)?;
+fn main() -> Result<(), zyx::ZyxError> {
+    let mut model = TransformerBlock::new(64, 4, DType::F32)?;
     let mut optim = AdamW::default();
-    let x = Tensor::randn([4, 128, 512], DType::F32)?;
+    let x = Tensor::randn([2, 8, 64], DType::F32)?;
+
     let tape = GradientTape::new();
     let out = model.forward(&x)?;
     let grads = tape.gradient(&out, &model);
-    optim.update(&mut model, grads);
+
+    // Update parameters with gradients
+    optim.update(model.iter_mut(), grads);
+
+    // Realize model to trigger computation (zyx uses lazy evaluation)
+    model.realize()?;
     Ok(())
 }
 ```

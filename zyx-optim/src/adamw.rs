@@ -54,6 +54,7 @@ impl AdamW {
         gradients: impl IntoIterator<Item = Option<Tensor>>,
     ) {
         use zyx::Scalar;
+        self.t += 1;
         for (i, (param, grad)) in parameters.into_iter().zip(gradients).enumerate() {
             let Some(grad) = grad else {
                 // Initialize moment estimates for new params (lazy)
@@ -105,6 +106,5 @@ impl AdamW {
                 *param = &*param * (1.0 - self.learning_rate * self.weight_decay);
             }
         }
-        self.t += 1;
     }
 }

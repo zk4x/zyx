@@ -61,9 +61,15 @@ name = "rnn"
 path = "examples/rnn.rs"
 
 [[example]]
+name = "readme_test"
+path = "examples/readme_test.rs"
+required-features = ["readme-example"]
+
+[[example]]
 name = "phi"
 path = "examples/phi.rs"
 required-features = ["phi-example"]
 
 [features]
+readme-example = []
 phi-example = ["serde", "tokenizers", "clap", "rand", "csv", "half"]
