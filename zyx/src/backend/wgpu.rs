@@ -105,7 +105,7 @@ pub(super) fn initialize_device(
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: features,
-                required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 16, ..Default::default() },
+                required_limits: adapter.limits(),
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::default(),
                 trace: wgpu::Trace::Off,

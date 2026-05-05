@@ -1,6 +1,6 @@
 [package]
 name = "zyx-test"
-version = "0.2.0"
+version = "0.15.2"
 edition.workspace = true
 authors = ["zk4x"]
 description = "Zyx testing binary"

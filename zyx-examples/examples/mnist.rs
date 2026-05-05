@@ -30,10 +30,10 @@ impl MnistNet {
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
     let train_dataset: HashMap<String, Tensor> = Tensor::load("data/mnist_dataset.safetensors")?;
-    let train_x = train_dataset["train_images"].clone().reshape([60000, 784])?;
-    let train_y = train_dataset["train_labels"].clone();
-    let _test_x = train_dataset["test_images"].clone().reshape([10000, 784])?;
-    let _test_y = train_dataset["test_labels"].clone();
+    let train_x = train_dataset["train_x"].clone().reshape([60000, 784])?;
+    let train_y = train_dataset["train_y"].clone();
+    let _test_x = train_dataset["test_x"].clone().reshape([10000, 784])?;
+    let _test_y = train_dataset["test_y"].clone();
 
     let batch_size = 128;
     let n_train = train_x.shape()[0] as u64;

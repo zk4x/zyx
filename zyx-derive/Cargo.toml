@@ -1,6 +1,6 @@
 [package]
 name = "zyx-derive"
-version = "0.2.0"
+version = "0.15.2"
 edition = "2021"
 authors = ["zk4x"]
 description = "Zyx procedural macros"

@@ -1,6 +1,6 @@
 [package]
 name = "zyx"
-version = "0.15.1"
+version = "0.15.2"
 edition = "2024"
 authors = ["zk4x"]
 description = "Zyx machine learning library"

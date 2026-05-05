@@ -24,9 +24,9 @@ test_dataset = torchvision.datasets.MNIST(
 )
 
 # Convert to numpy arrays
-train_x = np.array([img.numpy() * 255 for img, _ in train_dataset]).astype(np.uint8)
+train_x = np.array([img.numpy() for img, _ in train_dataset]).astype(np.float32)
 train_y = np.array([label for _, label in train_dataset]).astype(np.int64)
-test_x = np.array([img.numpy() * 255 for img, _ in test_dataset]).astype(np.uint8)
+test_x = np.array([img.numpy() for img, _ in test_dataset]).astype(np.float32)
 test_y = np.array([label for _, label in test_dataset]).astype(np.int64)
 
 print(f"train_x shape: {train_x.shape}")
