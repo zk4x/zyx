@@ -41,12 +41,12 @@ debug = 0
 #debug = 0
 
 [dependencies]
-zyx = { version = "*", path = "../zyx", features = [] }
+zyx = { version = "*", path = "../zyx", features = ["wgpu"] }
 zyx-nn = { version = "*", path = "../zyx-nn" }
 zyx-optim = { version = "*", path = "../zyx-optim" }
 
 serde = { version = "*", optional=true }
-tokenizers = { version = "0.21.2", optional=true }
+tokenizers = { version = "*", optional=true }
 clap = { version = "*", features = ["derive"], optional=true }
 rand = { version = "*", optional=true }
 csv = { version = "*", optional=true }
@@ -63,7 +63,6 @@ path = "examples/rnn.rs"
 [[example]]
 name = "readme_test"
 path = "examples/readme_test.rs"
-required-features = ["readme-example"]
 
 [[example]]
 name = "phi"
@@ -71,5 +70,4 @@ path = "examples/phi.rs"
 required-features = ["phi-example"]
 
 [features]
-readme-example = []
 phi-example = ["serde", "tokenizers", "clap", "rand", "csv", "half"]
