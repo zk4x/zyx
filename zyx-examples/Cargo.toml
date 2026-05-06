@@ -57,6 +57,10 @@ name = "mnist"
 path = "examples/mnist.rs"
 
 [[example]]
+name = "mnist_snn"
+path = "examples/mnist_snn.rs"
+
+[[example]]
 name = "rnn"
 path = "examples/rnn.rs"
 
