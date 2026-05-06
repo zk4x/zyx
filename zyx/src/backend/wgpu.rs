@@ -398,7 +398,9 @@ impl WGPUDevice {
         let mut global_args = String::new();
         let mut workgroup_args = String::new();
         let mut max_p = 0;
-        for (op_id, op) in kernel.iter_unordered() {
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            let op = kernel.at(op_id);
             if let &Op::Define { dtype, scope, ro, len } = op {
                 if scope == Scope::Global {
                     writeln!(
@@ -415,6 +417,7 @@ impl WGPUDevice {
                     writeln!(workgroup_args, "var<workgroup> p{op_id}: array<{}, {len}>;", dtype.wgsl()).unwrap();
                 }
             }
+            op_id = kernel.next_op(op_id);
         }
 
         let mut dtypes: Map<OpId, DType> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
