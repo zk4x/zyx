@@ -41,7 +41,7 @@ debug = 0
 #debug = 0
 
 [dependencies]
-zyx = { version = "*", path = "../zyx", features = ["wgpu"] }
+zyx = { version = "*", path = "../zyx", features = [] }
 zyx-nn = { version = "*", path = "../zyx-nn" }
 zyx-optim = { version = "*", path = "../zyx-optim" }
 
@@ -67,6 +67,14 @@ path = "examples/rnn.rs"
 [[example]]
 name = "readme_test"
 path = "examples/readme_test.rs"
+
+[[example]]
+name = "test_compare"
+path = "examples/test_compare.rs"
+
+[[example]]
+name = "debug_snn"
+path = "examples/debug_snn.rs"
 
 [[example]]
 name = "phi"

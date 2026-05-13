@@ -79,6 +79,7 @@ Follow the same conventions as the root AGENTS.md:
 - License header required
 - All public items need docs
 - Strict clippy enforcement
+- **No helpers**: Extract-platform-specific code inline with `#[cfg]`. Never create helper functions that wrap platform differences.
 
 ## Testing
 

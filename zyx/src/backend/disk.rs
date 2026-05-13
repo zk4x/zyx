@@ -1,9 +1,13 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+#[cfg(unix)]
+use std::os::unix::fs::FileExt;
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
 use std::{
     fs::File,
-    os::unix::fs::FileExt,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -74,8 +78,23 @@ impl DiskMemoryPool {
         let _ = event_wait_list;
         let buffer = &self.buffers[src];
         let f = File::open(&buffer.path).unwrap();
-        f.read_exact_at(dst, buffer.offset_bytes)
-            .map_err(|err| BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("{err}").into() })
+        #[cfg(unix)]
+        let result = f.read_exact_at(dst, buffer.offset_bytes);
+        #[cfg(windows)]
+        let result = (|| -> io::Result<()> {
+            let mut off = buffer.offset_bytes;
+            let mut remaining = dst;
+            while !remaining.is_empty() {
+                let n = f.seek_read(remaining, off)?;
+                if n == 0 {
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"));
+                }
+                remaining = &mut remaining[n..];
+                off += n as u64;
+            }
+            Ok(())
+        })();
+        result.map_err(|err| BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("{err}").into() })
     }
 
     #[allow(clippy::needless_pass_by_value)]

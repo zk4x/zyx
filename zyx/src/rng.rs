@@ -167,14 +167,14 @@ impl Rng {
 
             DType::U8 | DType::U16 | DType::U32 | DType::U64 => {
                 let mut start: u64 = match range.start_bound() {
-                    std::ops::Bound::Included(start) => *start,
-                    std::ops::Bound::Excluded(start) => start.add(T::one()),
+                    std::ops::Bound::Included(s) => *s,
+                    std::ops::Bound::Excluded(s) => s.add(T::one()),
                     std::ops::Bound::Unbounded => T::min_value(),
                 }
                 .cast();
                 let mut end: u64 = match range.end_bound() {
-                    std::ops::Bound::Included(end) => end.add(T::one()),
-                    std::ops::Bound::Excluded(end) => *end,
+                    std::ops::Bound::Included(e) => e.add(T::one()),
+                    std::ops::Bound::Excluded(e) => *e,
                     std::ops::Bound::Unbounded => T::max_value(),
                 }
                 .cast();
@@ -185,12 +185,29 @@ impl Rng {
                     return start.cast();
                 }
                 let x = self.next_u64();
-                //(x * (end - start) + start).cast()
                 (x % (end - start) + start).cast()
             }
 
             DType::I8 | DType::I16 | DType::I32 | DType::I64 => {
-                todo!()
+                let mut s_val: i64 = match range.start_bound() {
+                    std::ops::Bound::Included(s) => (*s).cast(),
+                    std::ops::Bound::Excluded(s) => (*s).add(T::one()).cast(),
+                    std::ops::Bound::Unbounded => i64::MIN,
+                };
+                let mut e_val: i64 = match range.end_bound() {
+                    std::ops::Bound::Included(e) => (*e).add(T::one()).cast(),
+                    std::ops::Bound::Excluded(e) => (*e).cast(),
+                    std::ops::Bound::Unbounded => i64::MAX,
+                };
+                if e_val < s_val {
+                    (s_val, e_val) = (e_val, s_val);
+                }
+                if s_val == e_val {
+                    return s_val.cast();
+                }
+                let range_size = (e_val - s_val) as u64;
+                let x = self.next_u64();
+                ((x % range_size) as i64 + s_val).cast()
             }
 
             DType::Bool => todo!(),

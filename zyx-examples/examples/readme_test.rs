@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use zyx::{DType, GradientTape, Module, Tensor};
-use zyx_nn::{Linear, LayerNorm, Module, MultiheadAttention};
+use zyx_nn::{LayerNorm, Linear, Module, MultiheadAttention};
 use zyx_optim::AdamW;
 
 #[derive(Module)]
@@ -17,7 +17,9 @@ struct TransformerBlock {
 impl TransformerBlock {
     fn new(dim: u64, num_heads: u64, dtype: DType) -> Result<Self, zyx::ZyxError> {
         Ok(Self {
-            attn: MultiheadAttention::new(dim, num_heads, 0.0, true, false, false, None, None, true, dtype)?,
+            attn: MultiheadAttention::new(
+                dim, num_heads, 0.0, true, false, false, None, None, true, dtype,
+            )?,
             mlp: Linear::new(dim, dim * 4, true, dtype)?,
             mlp2: Linear::new(dim * 4, dim, true, dtype)?,
             norm1: LayerNorm::new([dim], 1e-5, true, true, dtype)?,
@@ -26,7 +28,10 @@ impl TransformerBlock {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor, zyx::ZyxError> {
-        let attn_out = self.attn.forward(x, x, x, None::<Tensor>, false, None::<Tensor>, true, false)?.0;
+        let attn_out = self
+            .attn
+            .forward(x, x, x, None::<Tensor>, false, None::<Tensor>, true, false)?
+            .0;
         let x = self.norm1.forward(&(x + attn_out))?;
         let mlp_out = self.mlp.forward(&x)?.gelu();
         let mlp_out = self.mlp2.forward(&mlp_out)?;

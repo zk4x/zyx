@@ -687,6 +687,17 @@ impl Tensor {
         Ok((Tensor::rand(shape, DType::F32)? * high.sub(low) + low).cast(T::dtype()))
     }
 
+    /// Create tensor of discrete uniform integers in range [low, high).
+    /// # Errors
+    /// Returns device error if the device fails to allocate memory for tensor.
+    pub fn randint<T: Scalar>(shape: impl IntoShape, low: T, high: T) -> Result<Tensor, ZyxError> {
+        let shape: Vec<Dim> = shape.into_shape().collect();
+        let n = shape.iter().product();
+        let mut rt = RT.lock();
+        let data: Vec<T> = (0..n).map(|_| rt.rng.range(low..high)).collect();
+        Ok(Tensor { id: rt.new_tensor(shape, data)? })
+    }
+
     /// Create tensor sampled from kaiming uniform distribution.
     /// # Errors
     /// Returns device error if the device fails to allocate memory for tensor.

@@ -213,6 +213,7 @@ fn train() -> Result<(), ZyxError> {
     let test_x = dataset["test_x"].clone().reshape([10000, 784])?;
     let test_y = dataset["test_y"].clone();
 
+    Tensor::manual_seed(0);
     let mut model = Snn::new(30, 100.0, 1.0)?;
     let mut optimizer = Adam {
         learning_rate: 3e-3,
@@ -230,7 +231,7 @@ fn train() -> Result<(), ZyxError> {
     Tensor::realize_all()?;
 
     for step in 0..total_steps {
-        let indices = Tensor::uniform(batch_size, 0..n_train)?;
+        let indices = Tensor::randint::<i64>(batch_size, 0, n_train as i64)?;
 
         let x = train_x.index_select(0, &indices)?;
         let y = train_y.index_select(0, &indices)?;

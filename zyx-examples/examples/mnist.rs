@@ -46,7 +46,11 @@ fn main() -> Result<(), ZyxError> {
         ..Default::default()
     };
 
-    println!("train_x {:?}, train_y {:?}", train_x.shape(), train_y.shape());
+    println!(
+        "train_x {:?}, train_y {:?}",
+        train_x.shape(),
+        train_y.shape()
+    );
 
     Tensor::realize_all()?;
 
@@ -75,7 +79,12 @@ fn main() -> Result<(), ZyxError> {
         }
 
         if step.is_multiple_of(500) && step > 0 {
-            println!("step {}, loss {:.6}, step_time {:.1}ms", step, loss.item::<f32>(), elapsed_ms);
+            println!(
+                "step {}, loss {:.6}, step_time {:.1}ms",
+                step,
+                loss.item::<f32>(),
+                elapsed_ms
+            );
         }
     }
 
