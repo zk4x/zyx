@@ -15,7 +15,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx = { path = "../zyx" }
+zyx = { version = "0.15.3", path = "../zyx" }
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
