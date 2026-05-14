@@ -7,7 +7,6 @@ use std::os::unix::fs::FileExt;
 use std::os::windows::fs::FileExt;
 use std::{
     fs::File,
-    io,
     path::{Path, PathBuf},
 };
 

@@ -20,11 +20,11 @@ use std::thread;
 
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 6] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_upcast(k),
-    |k, _| Kernel::opt_register_tiling(k),
+    //|k, _| Kernel::opt_register_tiling(k),
     Kernel::opt_tiled_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_licm(k),
