@@ -812,9 +812,9 @@ fn grad8() {
     let neg_one = Tensor::from([-1.0f32]);
     let oma_t = Tensor::from([0.1f32]);
 
-    let diff2 = v_pre2 - th.clone();
-    let abs_diff2 = diff2.abs();
-    let surr2 = sigma_t.clone() * (neg_one.clone() * sigma_t.clone() * abs_diff2).exp();
+    //let diff2 = v_pre2 - th.clone();
+    //let abs_diff2 = diff2.abs();
+    //let surr2 = sigma_t.clone() * (neg_one.clone() * sigma_t.clone() * abs_diff2).exp();
     let d_v2_pre = Tensor::from([[0.5f32, 0.5, 0.5]]);
     let d_pre2 = oma_t.clone() * d_v2_pre;
 
