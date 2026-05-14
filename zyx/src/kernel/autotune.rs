@@ -232,10 +232,13 @@ impl Kernel {
         let (opt, _) = kernel.opt_upcast();
         opt.apply(&mut kernel, 5);
 
-        kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
+        //kernel.run_always_on_optimizations();
+        //kernel.run_always_on_optimizations();
+        kernel.dead_code_elimination();
 
-        kernel.debug();
+        self.verify();
+
+        kernel.debug_colorless();
 
         let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
 
@@ -254,7 +257,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if true {
+        if false {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
@@ -354,7 +357,7 @@ impl Kernel {
 
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, dev_info_ref);
-                opt.debug(opt_cfg);
+                //opt.debug(opt_cfg);
                 opt.apply(&mut kernel, opt_cfg);
             }
             kernel.run_always_on_optimizations();

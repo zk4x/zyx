@@ -75,13 +75,18 @@ fn t05() -> Result<(), ZyxError> {
     let x = Tensor::rand([2048, 320], DType::F32)?;
     let xdata: Vec<f32> = x.clone().try_into()?;
     let y = Tensor::rand([2048, 1], DType::F32)?;
-    let ydata: Vec<f32> = y.clone().try_into()?;
-    let x = (x - &y * 1.4f32) / y;
+    let ydata: Vec<f32> = y.clone().expand([2048, 320])?.try_into()?;
+    let x = (x - y.expand([2048, 320])? * 1.4f32) / y.expand([2048, 320])?;
     let xvec: Vec<f32> = x.try_into()?;
 
+    let mut i = 0;
     for ((x0, x1), x2) in xdata.into_iter().zip(ydata).zip(xvec) {
         let z = (x0 - x1 * 1.4f32) / x1;
-        assert!(z.is_equal(x2));
+        if !z.is_equal(x2) {
+            println!("{z} != {x2} at idx={i}");
+            panic!();
+        }
+        i += 1;
     }
 
     Ok(())

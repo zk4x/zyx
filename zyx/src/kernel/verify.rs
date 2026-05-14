@@ -25,6 +25,9 @@ impl Kernel {
             }
         };
 
+        let mut gids = Set::default();
+        let mut lids = Set::default();
+
         let mut defines = Map::default();
 
         let mut op_id = self.head;
@@ -139,7 +142,25 @@ impl Kernel {
                     check(op_id, index, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Index { .. } => {
+                Op::Index { axis, scope, .. } => {
+                    match scope {
+                        super::Scope::Global => {
+                            if !gids.insert(axis) {
+                                println!("index={op_id} is using global axis={axis} for the second time");
+                                self.debug_colorless();
+                                panic!();
+                            }
+                        }
+                        super::Scope::Local => {
+                            if !lids.insert(axis) {
+                                println!("index={op_id} is using local axis={axis} for the second time");
+                                self.debug_colorless();
+                                panic!();
+                            }
+                        }
+                        super::Scope::Register => unreachable!(),
+                    }
+
                     dtypes.insert(op_id, IDX_T);
                 }
                 Op::Loop { .. } => {

@@ -104,7 +104,7 @@ impl Kernel {
                     self.ops[op_id].op = Op::Define { dtype, scope: Scope::Register, ro, len: len * factor };
                     acc_defines.insert(op_id);
                 }
-                Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier { .. } => {}
+                Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier { .. } => {}
                 Op::Store { dst, x, index, vlen } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
