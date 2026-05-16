@@ -37,7 +37,7 @@
 - **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops.
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
 - **Explicit Gradient Tape** — you control what is recorded via `GradientTape`; no need for `torch.no_grad()` semantics.
-- **Arbitrary‑Order Differentiation** — the graph supports 2nd, 3rd, and higher‑order gradients natively.
+- **Higher-Order Gradients** — graph architecture supports arbitrary-order gradients (experimental, forward-mode autograd planned)
 - **Lazy Disk Loading** — large datasets or models load from disk in parallel with computation.
 - **Parallel Pipelining** — work distributes across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion.
 - **Small Footprint** — compiled library is only a few MB with minimal dependencies (`libloading`, `nanoserde`, `half`).
@@ -245,16 +245,16 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 
 | Feature | zyx | PyTorch | TensorFlow | JAX |
 |---------|-----|---------|------------|-----|
-| **Execution Model** | Lazy with eager realize | Eager by default | Eager by default | Functional + XLA |
+| **Execution Model** | Lazy with explicit realization | Eager by default | Eager by default | Functional + XLA |
 | **Memory Usage** | 16 bytes/tensor overhead | ~800KB+ for graphs | High memory overhead | Low overhead |
 | **Gradient Recording** | Explicit `GradientTape` | Implicit, requires `no_grad()` | Implicit, tf.function | Explicit + jit |
 | **Tensor Mutability** | Immutable (no in-place errors) | Mutable (risk of back-prop failures) | Mutable | Immutable |
 | **Kernel Fusion** | Automatic, cross-backend | Manual (torch.jit) | Manual (XLA) | Manual (XLA) |
-| **Higher-order Gradients** | Arbitrary order natively | Supported but complex | Supported | Supported |
+| **Higher-order Gradients** | Experimental (graph-based, forward-mode planned) | Supported but complex | Supported | Supported |
 | **Disk I/O** | Lazy loading parallel to compute | Typically blocking | Blocking | Blocking |
 | **Device Pipelining** | Built-in heterogeneous pipelining | Manual `to(device)` calls | Manual device placement | Manual device placement |
 | **Compilation** | Runtime kernel compilation | Pre-compiled + jit | Pre-compiled | Just-in-time |
-| **Binary Size** | Small (Python) | 500MB+ | 500MB+ | Medium |
+| **Binary Size** | Small (Python) | 500MB+ | 500MB+ | Small |
 
 ### Key Advantages
 - **Unified Architecture**: Single graph for both autograd and lazy execution
