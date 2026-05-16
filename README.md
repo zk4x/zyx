@@ -229,17 +229,6 @@ Tensor → Lazy Graph → Kernel IR → Backend Code (PTX, OpenCL, WGSL, etc.)
 
 The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel configurations (loop tiling, MAD fusion, vectorization) before execution.
 
-## Performance
-
-### Key Performance Advantages
-- **Kernel Fusion**: Multiple operations compile into single GPU kernels
-- **Lazy Evaluation**: Eliminates temporary allocations and enables better optimization
-- **Auto-tuning**: Automatically finds optimal kernel configurations
-
-### Memory Usage
-- **zyx**: ~160KB for 10,000 virtual tensors + shape metadata
-- Note: Actual memory usage depends on tensor sizes and operations
-
 ### Why zyx is Different
 
 | Feature | zyx | PyTorch | TensorFlow | JAX |
