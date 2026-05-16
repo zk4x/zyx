@@ -42,7 +42,7 @@
 //! `dma_alloc_coherent` without an IOMMU draws from system memory, not
 //! from device GDDR6.
 
-use super::{Event, MemoryPool, PoolBufferId, PoolId};
+use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     error::{BackendError, ErrorStatus},
     shape::Dim,
@@ -233,7 +233,11 @@ pub struct TTMemoryPool {
 #[derive(Debug, Clone)]
 pub struct TTEvent;
 
-pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
+pub(super) fn initialize_device(
+    memory_pools: &mut Slab<PoolId, MemoryPool>,
+    devices: &mut Slab<DeviceId, Device>,
+    debug_dev: bool,
+) -> Result<(), BackendError> {
     let device_file = File::options()
         .read(true)
         .write(true)
@@ -276,6 +280,7 @@ pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug
         println!("Tenstorrent: max_dma_buf_size_log2={}", info.max_dma_buf_size_log2);
     }
 
+    let pool_id = memory_pools.len();
     let pool = MemoryPool::TT(TTMemoryPool {
         device_file: Some(device_file),
         total_bytes,
@@ -284,6 +289,22 @@ pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug
         buffers: Slab::new(),
     });
     memory_pools.push(pool);
+
+    devices.push(Device::TT(TTDevice {
+        device_info: DeviceInfo {
+            compute: 200_000_000_000_000, // ~200 TFLOPS FP32
+            max_global_work_dims: vec![Dim::from(u32::MAX); 3],
+            max_local_threads: 1024,
+            max_local_work_dims: vec![1, 1024, 1],
+            preferred_vector_size: 16,
+            local_mem_size: 2_500_000,   // 2.5 MB L1 per Tensix core
+            max_register_bytes: 128,
+            tensor_cores: true,
+            warp_size: 1,                // Tensix has no SIMT warps
+            supported_dtypes: u32::MAX,  // all dtypes supported
+        },
+        memory_pool_id: pool_id,
+    }));
     Ok(())
 }
 
@@ -431,10 +452,73 @@ impl TTMemoryPool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Device
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct TTDevice {
+    device_info: DeviceInfo,
+    memory_pool_id: PoolId,
+}
+
+impl TTDevice {
+    pub const fn deinitialize(&mut self) {}
+
+    pub const fn info(&self) -> &DeviceInfo {
+        &self.device_info
+    }
+
+    pub const fn memory_pool_id(&self) -> PoolId {
+        self.memory_pool_id
+    }
+
+    pub const fn free_compute(&self) -> u128 {
+        self.device_info.compute
+    }
+
+    pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
+        let _ = self;
+        let _ = kernel;
+        let _ = debug_asm;
+        Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: "Tenstorrent kernel compilation not yet implemented".into(),
+        })
+    }
+
+    pub fn release(&mut self, program_id: DeviceProgramId) {
+        let _ = self;
+        let _ = program_id;
+    }
+
+    pub fn launch(
+        &mut self,
+        program_id: DeviceProgramId,
+        memory_pool: &mut TTMemoryPool,
+        args: &[PoolBufferId],
+        event_wait_list: Vec<Event>,
+    ) -> Result<Event, BackendError> {
+        let _ = self;
+        let _ = program_id;
+        let _ = memory_pool;
+        let _ = args;
+        let _ = event_wait_list;
+        Err(BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: "Tenstorrent kernel launch not yet implemented".into(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::slab::SlabId;
+
+    fn init(pools: &mut Slab<PoolId, MemoryPool>, devices: &mut Slab<DeviceId, Device>) -> Result<(), BackendError> {
+        initialize_device(pools, devices, false)
+    }
 
     fn get_pool(pools: &mut Slab<PoolId, MemoryPool>) -> &mut TTMemoryPool {
         match &mut pools[PoolId::ZERO] {
@@ -456,7 +540,8 @@ mod tests {
     #[test]
     fn init_alloc_h2p_p2h_dealloc() {
         let mut pools = Slab::<PoolId, MemoryPool>::new();
-        let result = initialize_pool(&mut pools, false);
+        let mut devices = Slab::new();
+        let result = init(&mut pools, &mut devices);
         if result.is_err() {
             eprintln!("no TT device, skipping hardware test");
             return;
@@ -481,7 +566,8 @@ mod tests {
     #[test]
     fn multi_buffer_alloc_dealloc() {
         let mut pools = Slab::<PoolId, MemoryPool>::new();
-        let result = initialize_pool(&mut pools, false);
+        let mut devices = Slab::new();
+        let result = init(&mut pools, &mut devices);
         if result.is_err() {
             eprintln!("no TT device, skipping hardware test");
             return;
@@ -491,7 +577,7 @@ mod tests {
         let initial_free = pool.free_bytes;
 
         let mut bufs = Vec::new();
-        for i in 0..4 {
+        for _ in 0..4 {
             let (id, _ev) = pool.allocate(4096).expect("allocate 4K");
             bufs.push(id);
         }
@@ -524,7 +610,8 @@ mod tests {
     #[test]
     fn large_buffer_roundtrip() {
         let mut pools = Slab::<PoolId, MemoryPool>::new();
-        let result = initialize_pool(&mut pools, false);
+        let mut devices = Slab::new();
+        let result = init(&mut pools, &mut devices);
         if result.is_err() {
             eprintln!("no TT device, skipping hardware test");
             return;
@@ -551,7 +638,8 @@ mod tests {
         // buf_index is u8, so after 256 allocations it wraps.
         // Each buf needs its own fd (1-fd-per-buf), so there's no index collision.
         let mut pools = Slab::<PoolId, MemoryPool>::new();
-        let result = initialize_pool(&mut pools, false);
+        let mut devices = Slab::new();
+        let result = init(&mut pools, &mut devices);
         if result.is_err() {
             eprintln!("no TT device, skipping hardware test");
             return;

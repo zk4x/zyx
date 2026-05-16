@@ -27,7 +27,7 @@ use host::HostMemoryPool;
 use nanoserde::{DeBin, DeJson, SerBin};
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
 #[cfg(feature = "tenstorrent")]
-use tenstorrent::TTMemoryPool;
+use tenstorrent::{TTDevice, TTMemoryPool};
 #[cfg(feature = "wgpu")]
 use wgpu::{WGPUDevice, WGPUMemoryPool};
 
@@ -237,7 +237,7 @@ pub fn initialize_backends(
         }
     }
     #[cfg(feature = "tenstorrent")]
-    if let Err(err) = tenstorrent::initialize_pool(memory_pools, debug_backends) {
+    if let Err(err) = tenstorrent::initialize_device(memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
         }
@@ -535,6 +535,8 @@ pub enum Device {
     CUDA(CUDADevice),
     OpenCL(OpenCLDevice),
     HIP(HIPDevice),
+    #[cfg(feature = "tenstorrent")]
+    TT(TTDevice),
     #[cfg(feature = "wgpu")]
     WGPU(WGPUDevice),
 }
@@ -547,6 +549,8 @@ impl Device {
             Device::CUDA(dev) => dev.deinitialize(),
             Device::OpenCL(dev) => dev.deinitialize(),
             Device::HIP(dev) => dev.deinitialize(),
+            #[cfg(feature = "tenstorrent")]
+            Device::TT(dev) => dev.deinitialize(),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.deinitialize(),
         }
@@ -558,6 +562,8 @@ impl Device {
             Device::CUDA(dev) => dev.info(),
             Device::OpenCL(dev) => dev.info(),
             Device::HIP(dev) => dev.info(),
+            #[cfg(feature = "tenstorrent")]
+            Device::TT(dev) => dev.info(),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.info(),
         }
@@ -569,6 +575,8 @@ impl Device {
             Device::CUDA(dev) => dev.memory_pool_id(),
             Device::OpenCL(dev) => dev.memory_pool_id(),
             Device::HIP(dev) => dev.memory_pool_id(),
+            #[cfg(feature = "tenstorrent")]
+            Device::TT(dev) => dev.memory_pool_id(),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.memory_pool_id(),
         }
@@ -583,6 +591,8 @@ impl Device {
             Device::CUDA(dev) => dev.free_compute(),
             Device::OpenCL(dev) => dev.free_compute(),
             Device::HIP(dev) => dev.free_compute(),
+            #[cfg(feature = "tenstorrent")]
+            Device::TT(dev) => dev.free_compute(),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.free_compute(),
         }
@@ -594,6 +604,8 @@ impl Device {
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
             Device::OpenCL(dev) => dev.compile(kernel, debug_asm),
             Device::HIP(dev) => dev.compile(kernel, debug_asm),
+            #[cfg(feature = "tenstorrent")]
+            Device::TT(dev) => dev.compile(kernel, debug_asm),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.compile(kernel, debug_asm),
         }
@@ -605,6 +617,8 @@ impl Device {
             Device::CUDA(dev) => dev.release(program_id),
             Device::OpenCL(dev) => dev.release(program_id),
             Device::HIP(dev) => dev.release(program_id),
+            #[cfg(feature = "tenstorrent")]
+            Device::TT(dev) => dev.release(program_id),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.release(program_id),
         }
@@ -632,6 +646,11 @@ impl Device {
             }
             Device::HIP(dev) => {
                 let MemoryPool::HIP(pool) = memory_pool else { unreachable!() };
+                dev.launch(program_id, pool, args, event_wait_list)
+            }
+            #[cfg(feature = "tenstorrent")]
+            Device::TT(dev) => {
+                let MemoryPool::TT(pool) = memory_pool else { unreachable!() };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             #[cfg(feature = "wgpu")]
