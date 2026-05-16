@@ -53,7 +53,7 @@ crate-type = ["lib"]
 
 [features]
 default = [
-    "tenstorrent",
+    #"tenstorrent",
     #"wgpu",
     #"py",
     #"time"
