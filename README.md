@@ -96,7 +96,7 @@ zyx-nn = { path = "zyx-nn" }
 zyx-optim = { path = "zyx-optim" }
 ```
 
-### Hello World
+## Hello World
 
 ```rust
 use zyx::{Tensor, DType};
