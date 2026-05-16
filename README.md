@@ -67,8 +67,8 @@ pip install git+https://github.com/zk4x/zyx.git#subdirectory=zyx-py
 import zyx as torch
 
 # Same PyTorch API but with zyx's performance benefits
-x = torch.randn([2, 3])
-y = torch.uniform([2, 3], -1, 1)
+x = torch.randn(2, 3)
+y = torch.uniform(2, 3, -1, 1)
 z = torch.relu(x) + torch.tanh(y)
 print(z.shape)
 
