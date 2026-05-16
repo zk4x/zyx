@@ -237,7 +237,7 @@ pub fn initialize_backends(
         }
     }
     #[cfg(feature = "tenstorrent")]
-    if let Err(err) = tenstorrent::initialize_device(memory_pools, devices, debug_backends) {
+    if let Err(err) = tenstorrent::initialize_device(&device_config.tenstorrent, memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
         }
@@ -326,9 +326,7 @@ pub struct Config {
     /// `OpenCL` configuration
     pub opencl: opencl::OpenCLConfig,
     /// Tenstorrent configuration
-    #[allow(unused)]
     #[cfg(feature = "tenstorrent")]
-    #[nserde(default)]
     pub tenstorrent: tenstorrent::TTConfig,
     // Vulkan configuration
     //#[cfg(feature = "vulkan")]

@@ -175,8 +175,9 @@ fn dram_size_for_subsystem_id(subsystem_id: u16) -> Result<Dim, BackendError> {
 
 #[derive(Default, Debug, DeJson)]
 pub struct TTConfig {
-    #[allow(unused)]
-    enabled: bool,
+    /// If set to None, then it will automatically use all Tenstorrent devices,
+    /// otherwise it uses only selected devices
+    device_ids: Option<Vec<i32>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,10 +235,20 @@ pub struct TTMemoryPool {
 pub struct TTEvent;
 
 pub(super) fn initialize_device(
+    config: &TTConfig,
     memory_pools: &mut Slab<PoolId, MemoryPool>,
     devices: &mut Slab<DeviceId, Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
+    if let Some(device_ids) = &config.device_ids
+        && device_ids.is_empty()
+    {
+        if debug_dev {
+            println!("Tenstorrent won't be used, as it was configured out");
+        }
+        return Ok(());
+    }
+
     let device_file = File::options()
         .read(true)
         .write(true)
@@ -290,6 +301,7 @@ pub(super) fn initialize_device(
     });
     memory_pools.push(pool);
 
+    let _device_id = devices.len();
     devices.push(Device::TT(TTDevice {
         device_info: DeviceInfo {
             compute: 200_000_000_000_000, // ~200 TFLOPS FP32
@@ -297,11 +309,11 @@ pub(super) fn initialize_device(
             max_local_threads: 1024,
             max_local_work_dims: vec![1, 1024, 1],
             preferred_vector_size: 16,
-            local_mem_size: 2_500_000,   // 2.5 MB L1 per Tensix core
+            local_mem_size: 2_500_000, // 2.5 MB L1 per Tensix core
             max_register_bytes: 128,
             tensor_cores: true,
-            warp_size: 1,                // Tensix has no SIMT warps
-            supported_dtypes: u32::MAX,  // all dtypes supported
+            warp_size: 1,               // Tensix has no SIMT warps
+            supported_dtypes: u32::MAX, // all dtypes supported
         },
         memory_pool_id: pool_id,
     }));
@@ -504,10 +516,7 @@ impl TTDevice {
         let _ = memory_pool;
         let _ = args;
         let _ = event_wait_list;
-        Err(BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: "Tenstorrent kernel launch not yet implemented".into(),
-        })
+        Err(BackendError { status: ErrorStatus::KernelLaunch, context: "Tenstorrent kernel launch not yet implemented".into() })
     }
 }
 
@@ -517,7 +526,7 @@ mod tests {
     use crate::slab::SlabId;
 
     fn init(pools: &mut Slab<PoolId, MemoryPool>, devices: &mut Slab<DeviceId, Device>) -> Result<(), BackendError> {
-        initialize_device(pools, devices, false)
+        initialize_device(&TTConfig::default(), pools, devices, false)
     }
 
     fn get_pool(pools: &mut Slab<PoolId, MemoryPool>) -> &mut TTMemoryPool {
