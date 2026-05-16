@@ -28,22 +28,21 @@
 
 **zyx** is a complete machine learning stack in a single project — an ML library and compiler that goes from assembly all the way to neural networks. It provides a unified computation graph that powers both automatic differentiation and lazy execution with kernel fusion optimization. **zyx has a stable API** with performance under active optimization.
 
-## Key Features
+## Features
 
 - **Unified Graph** — autograd and laziness share the same graph, enabling seamless kernel fusion across all operations.
 - **Lazy Evaluation** — operations accumulate until `realize()` triggers execution, reducing temporary allocations.
 - **Kernel Fusion** — tensor operations compile into single optimized kernels (CUDA, OpenCL, WebGPU, etc.).
-- **Cross‑Platform Backends** — native support for OpenCL (CPU/GPU via POCL), WebGPU, CUDA/ROCm, and more.
+- **Cross‑Platform Backends** — native support for OpenCL (CPU via POCL, GPU via native OpenCL drivers), WebGPU, CUDA/ROCm, and more.
 - **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops.
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
 - **Explicit Gradient Tape** — you control what is recorded via `GradientTape`; no need for `torch.no_grad()` semantics.
-- **Higher-Order Gradients** — graph architecture supports arbitrary-order gradients (experimental, forward-mode autograd planned)
+- **Higher-Order Gradients** — experimental (graph-based, forward-mode autograd planned)
 - **Lazy Disk Loading** — large datasets or models load from disk in parallel with computation.
 - **Parallel Pipelining** — work distributes across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion.
 - **Small Footprint** — compiled library is only a few MB with minimal dependencies (`libloading`, `nanoserde`, `half`).
-- **🐍 Python Bindings** — Complete PyTorch replacement with broader device support than PyTorch itself.
 
-## 🚀 Python Bindings
+## 🐍 Python Bindings
 
 **zyx** offers Python bindings with full PyTorch API compatibility. The Python wheel supports multiple backends:
 
@@ -298,7 +297,7 @@ Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md) fo
 
 ### Quick Links
 
-- [Examples](zyx-examples/) - MNIST, NanoGPT, RNN implementations
+- [Examples](zyx-examples/) - MNIST, RNN implementations
 - [Issues](https://github.com/zk4x/zyx/issues) - Bug reports and feature requests
 
 ## Quick Reference
