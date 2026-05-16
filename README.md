@@ -1,8 +1,27 @@
 # zyx
 
-## Overview
+[![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
+[![docs.rs](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
+[![build status](https://github.com/zk4x/zyx/actions/workflows/rust.yml/badge.svg)](https://github.com/zk4x/zyx/actions/workflows/rust.yml)
+[![license](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://github.com/zk4x/zyx/blob/main/LICENSE)
+[![maintenance](https://img.shields.io/badge/maintenance-experimental-yellow.svg)](https://github.com/zk4x/zyx)
 
-**zyx** is a Rust‑based machine‑learning library focused on **kernel fusion**, **lazy evaluation**, and **minimal overhead**. It provides a unified computation graph that powers both automatic differentiation and lazy execution. **zyx is experimental** — performance is still under active optimization and it is not production‑ready.
+## Table of Contents
+
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Crates](#crates)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Hello World](#hello-world)
+- [Basic Neural Network](#basic-neural-network)
+- [Advanced Examples](#advanced-examples)
+- [Architecture](#architecture)
+- [Why zyx is Different](#why-zyx-is-different)
+- [Backends](#backends)
+- [Documentation](#documentation)
+- [Status & License](#status--license)
+- [Contributing](#contributing)
 
 ## Key Features
 
@@ -30,6 +49,8 @@
 
 ## Quick Start
 
+### Installation
+
 ```toml
 [dependencies]
 zyx = { path = "zyx" }
@@ -37,6 +58,80 @@ zyx-nn = { path = "zyx-nn" }
 zyx-optim = { path = "zyx-optim" }
 zyx-derive = { path = "zyx-derive" }
 ```
+
+### Hello World
+
+```rust
+use zyx::{Tensor, DType};
+
+fn main() -> Result<(), zyx::ZyxError> {
+    // Create tensors
+    let x = Tensor::randn([2, 3], DType::F32)?;
+    let y = Tensor::uniform([2, 3], -1f32..1f32)?;
+    
+    // Perform operations (lazy evaluation)
+    let z = x.relu()? + y.tanh()?;
+    
+    // Realize computation
+    let result = z.realize()?;
+    
+    println!("Result shape: {:?}", result.shape());
+    Ok(())
+}
+```
+
+## Basic Neural Network
+
+```rust
+use zyx::{Tensor, DType, GradientTape};
+use zyx_nn::{Linear, Module};
+use zyx_optim::SGD;
+
+#[derive(Module)]
+struct SimpleNet {
+    linear1: Linear,
+    linear2: Linear,
+}
+
+impl SimpleNet {
+    fn new(dtype: DType) -> Result<Self, zyx::ZyxError> {
+        Ok(Self {
+            linear1: Linear::new(784, 128, true, dtype)?,
+            linear2: Linear::new(128, 10, true, dtype)?,
+        })
+    }
+    
+    fn forward(&self, x: &Tensor) -> Tensor {
+        let x = self.linear1.forward(x).unwrap().relu();
+        self.linear2.forward(&x).unwrap()
+    }
+}
+
+fn main() -> Result<(), zyx::ZyxError> {
+    let mut model = SimpleNet::new(DType::F32)?;
+    let mut optim = SGD::default();
+    let x = Tensor::randn([64, 784], DType::F32)?;
+    let target = Tensor::randn([64, 10], DType::F32)?;
+    
+    for epoch in 0..10 {
+        let tape = GradientTape::new();
+        let output = model.forward(&x);
+        let loss = output.mse_loss(&target)?;
+        
+        let grads = tape.gradient(&loss, &model);
+        optim.update(&mut model, grads);
+        
+        // Realize to trigger computation
+        Tensor::realize_all()?;
+        
+        println!("Epoch {}: Loss = {:.4}", epoch, loss.item::<f32>()?);
+    }
+    
+    Ok(())
+}
+```
+
+## Advanced Examples
 
 ```rust
 use zyx::{DType, GradientTape, Module, Tensor};
@@ -109,16 +204,61 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 | Disk I/O | Lazy loading parallel to compute | Typically blocking |
 | Device pipelining | Built‑in heterogeneous pipelining | Manual `to(device)` calls |
 
+## Backends
+
+- [x] **CUDA** - NVIDIA GPU acceleration
+- [x] **OpenCL** - Cross-platform CPU/GPU via POCL
+- [x] **WebGPU (WGPU)** - Modern web and native GPU support
+- [ ] **ROCm** - AMD GPU support (planned)
+
+Please see [DEVICE_CONFIG.md](zyx/DEVICE_CONFIG.md) for detailed information on hardware configuration.
+
 ## Documentation
 
-- **Book**: https://zk4x.github.io/zyx/
-- **API Reference**: https://docs.rs/zyx
+- **📚 Book**: [https://zk4x.github.io/zyx/](https://zk4x.github.io/zyx/) - Comprehensive guide
+- **📖 API Reference**: [https://docs.rs/zyx](https://docs.rs/zyx) - Complete API documentation
+- **💬 Community**: Join our [Discord](https://discord.gg/zyx) for discussions and support
 
 ## Status & License
 
 - **Status**: Experimental — API is stabilizing, performance under active optimization
-- **License**: LGPL‑3.0‑only (all crates)
+- **License**: LGPL-3.0-only (all crates)
+- **Rust Version**: Requires latest stable Rust
+- **Platforms**: Linux (primary), macOS, Windows (experimental)
 
 ## Contributing
 
 Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### How to Help
+
+- 🐛 **Find bugs**: correctness is our top priority
+- 📝 **Write tests**: integration tests are always appreciated
+- 📚 **Improve documentation**: typo fixes and better docs
+- ⚡ **Add optimizations**: significant performance improvements (>10%)
+- 🔌 **Add backends**: CUDA, ROCm, Metal, Vulkan support
+- 🎯 **Implement features**: new tensor operations, layers
+
+### Quick Links
+
+- [Examples](zyx-examples/) - MNIST, NanoGPT, RNN implementations
+- [Issues](https://github.com/zk4x/zyx/issues) - Bug reports and feature requests
+- [Discussions](https://github.com/zk4x/zyx/discussions) - Community discussions
+- [Discord](https://discord.gg/zyx) - Real-time chat support
+
+---
+
+<div align="center">
+<a href="https://github.com/zk4x/zyx">
+    <img src="https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png" width="20" height="20">
+    Star us on GitHub
+</a> | 
+<a href="https://discord.gg/zyx">
+    <img src="https://simpleicons.org/icons/discord.svg" width="20" height="20">
+    Join Discord
+</a> | 
+<a href="https://docs.rs/zyx">
+    <img src="https://simpleicons.org/icons/rust.svg" width="20" height="20">
+    API Docs
+</a>
+</div>
