@@ -367,39 +367,7 @@ result = x.relu() * y
 grads = tape.gradient(result, [x, y])
 ```
 
-## Troubleshooting
-
-### Common Issues
-
-**Build Failures**
-```bash
-# Missing CUDA/OpenCL runtime
-export ZYX_BACKEND=opencl  # or cuda
-cargo build
-
-# Backend not found
-# Ensure libcuda.so, libOpenCL.so are in LD_LIBRARY_PATH
-```
-
-**Performance Issues**
-```bash
-# Enable debug output to see backend configuration
-ZYX_DEBUG=1 python your_script.py
-
-# Check which backend is being used
-ZYX_DEBUG=2 python your_script.py
-```
-
-**Memory Issues**
-```bash
-# Realize tensors to free memory
-zyx.realize_all()  # Python
-Tensor::realize_all()  # Rust
-
-# Use smaller batch sizes for memory-constrained devices
-```
-
-### Debug Options
+## Debug Options
 
 | Value | Flag | Description |
 |-------|------|-------------|
