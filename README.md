@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 [![docs.rs](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
-[![build status](https://github.com/zk4x/zyx/workflows/rust/badge.svg)](https://github.com/zk4x/zyx/actions/workflows/rust.yml)
+[![build status](https://github.com/zk4x/zyx/workflows/ci/badge.svg)](https://github.com/zk4x/zyx/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://github.com/zk4x/zyx/blob/main/LICENSE)
 [![maintenance](https://img.shields.io/badge/maintenance-active-green.svg)](https://github.com/zk4x/zyx)
 
@@ -277,7 +277,7 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 ## Backends
 
 - [x] **CUDA** - NVIDIA GPU acceleration  
-- [x] **OpenCL** - Cross-platform support via POCL (CPU acceleration through LLVM)
+- [x] **OpenCL** - Cross-platform support (CPU via POCL, GPU via native OpenCL drivers)
 - [x] **WebGPU (WGPU)** - Modern web and native GPU support
 - [ ] **ROCm** - AMD GPU support (planned)
 
