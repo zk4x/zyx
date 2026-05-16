@@ -106,27 +106,6 @@ except Exception as e:
     # Handle device errors (e.g., reduce batch size, use smaller tensors)
 ```
 
-#### Common Runtime Errors
-```python
-import zyx
-
-# Shape errors occur during operation execution
-x = zyx.Tensor.randn(2, 3)
-y = zyx.Tensor.randn(4, 5)  # Different shape
-
-try:
-    result = x + y  # Error: cannot broadcast [2,3] with [4,5]
-except Exception as e:
-    print(f"Shape error: {e}")
-
-# Device errors may occur during realization
-try:
-    large_tensor = zyx.Tensor.randn(10000, 10000)
-    result = large_tensor.realize()  # May fail due to memory constraints
-except Exception as e:
-    print(f"Device error: {e}")
-```
-
 ## Crates
 
 | Crate | Description |
