@@ -13,7 +13,6 @@
 - [Python Bindings](#python-bindings)
 - [Key Features](#key-features)
 - [Crates](#crates)
-- [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Hello World](#hello-world)
 - [Basic Neural Network](#basic-neural-network)
@@ -68,44 +67,6 @@ result = x.relu() * y
 grads = tape.gradient(result, [x, y])
 ```
 
-### Error Handling
-
-zyx provides clear error messages for common issues:
-
-#### Shape Mismatch Errors
-```python
-import zyx
-
-# This will fail - incompatible shapes for matrix multiplication
-x = zyx.Tensor.randn(2, 5)
-y = zyx.Tensor.randn(17, 8)  # Error: 2x5 @ 17x8 is invalid
-
-try:
-    result = x @ y
-except Exception as e:
-    print(f"Shape error: {e}")
-
-# Correct approach - ensure compatible shapes
-x = zyx.Tensor.randn(2, 5)
-y = zyx.Tensor.randn(5, 8)  # Valid: 2x5 @ 5x8 = 2x8
-result = x @ y
-```
-
-#### Device Errors
-```python
-import zyx
-
-# Operations may succeed initially but fail during realization
-x = zyx.Tensor.randn(1000, 1000)  # Large tensor
-y = x @ x  # Operation builds in graph
-
-try:
-    result = y.realize()  # May fail if device runs out of memory
-except Exception as e:
-    print(f"Device error during realization: {e}")
-    # Handle device errors (e.g., reduce batch size, use smaller tensors)
-```
-
 ## Crates
 
 | Crate | Description |
@@ -113,8 +74,6 @@ except Exception as e:
 | `zyx` | Core tensor library with lazy graph and autodiff |
 | `zyx-nn` | Neural network layers (Linear, Conv2d, Attention, etc.) and `#[derive(Module)]` |
 | `zyx-optim` | Optimizers (SGD, Adam, AdamW, RMSprop) |
-
-## Quick Start
 
 ## Installation
 
@@ -379,6 +338,44 @@ transposed = x.t()
 tape = zyx.GradientTape()
 result = x.relu() * y
 grads = tape.gradient(result, [x, y])
+```
+
+### Error Handling
+
+zyx provides clear error messages for common issues:
+
+#### Shape Mismatch Errors
+```python
+import zyx
+
+# This will fail - incompatible shapes for matrix multiplication
+x = zyx.Tensor.randn(2, 5)
+y = zyx.Tensor.randn(17, 8)  # Error: 2x5 @ 17x8 is invalid
+
+try:
+    result = x @ y
+except Exception as e:
+    print(f"Shape error: {e}")
+
+# Correct approach - ensure compatible shapes
+x = zyx.Tensor.randn(2, 5)
+y = zyx.Tensor.randn(5, 8)  # Valid: 2x5 @ 5x8 = 2x8
+result = x @ y
+```
+
+#### Device Errors
+```python
+import zyx
+
+# Operations may succeed initially but fail during realization
+x = zyx.Tensor.randn(1000, 1000)  # Large tensor
+y = x @ x  # Operation builds in graph
+
+try:
+    result = y.realize()  # May fail if device runs out of memory
+except Exception as e:
+    print(f"Device error during realization: {e}")
+    # Handle device errors (e.g., reduce batch size, use smaller tensors)
 ```
 
 ## Debug Options
