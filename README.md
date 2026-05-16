@@ -68,6 +68,57 @@ result = x.relu() * y
 grads = tape.gradient(result, [x, y])
 ```
 
+### Error Handling
+
+zyx provides clear error messages for common issues:
+
+#### Shape Mismatch Errors
+```python
+import zyx
+
+# This will fail - incompatible shapes for matrix multiplication
+x = zyx.Tensor.randn(2, 5)
+y = zyx.Tensor.randn(17, 8)  # Error: 2x5 @ 17x8 is invalid
+
+# Correct approach - ensure compatible shapes
+x = zyx.Tensor.randn(2, 5)
+y = zyx.Tensor.randn(5, 8)  # Valid: 2x5 @ 5x8 = 2x8
+result = x @ y
+```
+
+#### Device Errors
+```python
+import zyx
+
+# Operations may succeed initially but fail during realization
+x = zyx.Tensor.randn(1000, 1000)  # Large tensor
+y = x @ x  # Operation builds in graph
+
+try:
+    result = y.realize()  # May fail if device runs out of memory
+except Exception as e:
+    print(f"Device error during realization: {e}")
+    # Handle device errors (e.g., reduce batch size, use smaller tensors)
+```
+
+#### Type Mismatch Errors
+```python
+import zyx
+
+# This will fail - incompatible data types
+x = zyx.Tensor.randn(2, 3, dtype=zyx.DType.F32)
+y = zyx.Tensor.randint(0, 10, (2, 3), dtype=zyx.DType.I32)  # Integer tensor
+
+# Operations may fail due to type incompatibility
+try:
+    result = x + y  # Error: cannot add F32 + I32 without explicit cast
+except Exception as e:
+    print(f"Type error: {e}")
+    # Fix: ensure compatible types or cast explicitly
+    y = y.cast(zyx.DType.F32)  # Cast to compatible type
+    result = x + y
+```
+
 ## Crates
 
 | Crate | Description |
