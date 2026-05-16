@@ -41,11 +41,11 @@
 - **Lazy Disk Loading** — large datasets or models load from disk in parallel with computation.
 - **Parallel Pipelining** — work distributes across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion.
 - **Small Footprint** — compiled library is only a few MB with minimal dependencies (`libloading`, `nanoserde`, `half`).
-- **🐍 Python Bindings** — Complete PyTorch replacement in 4MB wheel with broader device support than PyTorch itself.
+- **🐍 Python Bindings** — Complete PyTorch replacement with broader device support than PyTorch itself.
 
 ## 🚀 Python Bindings
 
-**zyx** offers a complete PyTorch replacement with Python bindings in just **4MB**! The Python wheel supports more devices than PyTorch itself:
+**zyx** offers Python bindings with full PyTorch API compatibility. The Python wheel supports multiple backends:
 
 ### Installation
 ```bash
@@ -59,8 +59,7 @@ pip install git+https://github.com/zk4x/zyx.git#subdirectory=zyx-py
 ### Key Features
 - **API Compatibility**: Drop-in replacement for PyTorch
 - **Broader Device Support**: Works on more hardware than PyTorch
-- **Performance**: 6-7x faster for most operations
-- **Small Footprint**: Only 4MB vs PyTorch's 500MB+
+- **Small Footprint**: Lightweight wheel with minimal dependencies
 
 ### Basic Usage
 ```python
@@ -233,25 +232,14 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 
 ## Performance
 
-### Benchmarks vs PyTorch
-| Operation | zyx | PyTorch | Speedup |
-|-----------|-----|---------|---------|
-| Matrix Multiply (1024×1024) | 2.3ms | 15.7ms | 6.8× |
-| Conv2d (64×64, 3×3) | 1.8ms | 12.4ms | 6.9× |
-| Element-wise ReLU (1M elements) | 0.5ms | 3.2ms | 6.4× |
-| Reduce Operations | 0.8ms | 5.1ms | 6.4× |
-
-*Results measured on NVIDIA RTX 3080, averaged over 1000 runs*
-
 ### Key Performance Advantages
 - **Kernel Fusion**: Multiple operations compile into single GPU kernels
 - **Lazy Evaluation**: Eliminates temporary allocations and enables better optimization
-- **Memory Efficiency**: Only 16 bytes per tensor overhead
 - **Auto-tuning**: Automatically finds optimal kernel configurations
 
 ### Memory Usage
 - **zyx**: ~160KB for 10,000 virtual tensors + shape metadata
-- **PyTorch**: ~800KB+ for equivalent graph due to eager execution
+- Note: Actual memory usage depends on tensor sizes and operations
 
 ### Why zyx is Different
 
@@ -266,7 +254,7 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 | **Disk I/O** | Lazy loading parallel to compute | Typically blocking | Blocking | Blocking |
 | **Device Pipelining** | Built-in heterogeneous pipelining | Manual `to(device)` calls | Manual device placement | Manual device placement |
 | **Compilation** | Runtime kernel compilation | Pre-compiled + jit | Pre-compiled | Just-in-time |
-| **Binary Size** | ~4MB (Python) | 500MB+ | 500MB+ | Medium |
+| **Binary Size** | Small (Python) | 500MB+ | 500MB+ | Medium |
 
 ### Key Advantages
 - **Unified Architecture**: Single graph for both autograd and lazy execution
