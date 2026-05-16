@@ -23,7 +23,7 @@ maintenance = { status = "experimental" }
 [dependencies]
 # Good, well written minimal dependencies
 # libc is used by tenstorrent backend for mmap/munmap
-libc = { version = "0.2", default-features = false }
+libc = { version = "0.2", default-features = false, optional = true }
 # libloading is used to access cuda, opencl and hsa runtimes
 libloading = { version = "0.9.0", default-features = false, features = ["std"] } # ISC
 # nanoserde is used to read backend config
@@ -53,10 +53,14 @@ crate-type = ["lib"]
 
 [features]
 default = [
+    "tenstorrent",
     #"wgpu",
     #"py",
     #"time"
 ]
+
+# Enables tenstorrent backend (Blackhole)
+tenstorrent = ["dep:libc"]
 
 # Enables wgpu backend
 wgpu = ["dep:wgpu", "dep:pollster"]
