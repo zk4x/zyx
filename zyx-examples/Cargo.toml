@@ -1,6 +1,6 @@
 [package]
 name = "zyx-examples"
-version = "0.15.2"
+version = "0.15.4"
 edition = "2021"
 authors = ["zk4x"]
 description = "Zyx examples"

@@ -1,6 +1,6 @@
 [package]
 name = "zyx-onnx"
-version = "0.15.2"
+version = "0.15.4"
 edition = "2021"
 
 [dependencies]

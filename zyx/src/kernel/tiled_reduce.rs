@@ -13,10 +13,10 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
-        // Don't apply tiled reduce if there's already a local index
+        // Don't apply tiled reduce if there's already a barrier or local index
         if self.ops.values().any(|node| match node.op {
             Op::Barrier { .. } => true,
-            //Op::Index { scope: Scope::Local, .. } => true,
+            Op::Index { scope: Scope::Local, .. } => true,
             _ => false,
         }) {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);

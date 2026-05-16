@@ -1,6 +1,6 @@
 [package]
 name = "zyx-derive"
-version = "0.15.3"
+version = "0.15.4"
 edition = "2021"
 authors = ["zk4x"]
 description = "Zyx procedural macros"
@@ -15,7 +15,7 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx = { version = "0.15.3", path = "../zyx" }
+zyx = { version = "0.15.4", path = "../zyx" }
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"

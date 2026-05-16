@@ -1,6 +1,6 @@
 [package]
 name = "zyx-nn"
-version = "0.15.3"
+version = "0.15.4"
 edition = "2021"
 authors = ["zk4x"]
 description = "Zyx nn modules"
@@ -16,8 +16,8 @@ categories = ["computer-vision", "science"]
 maintenance = { status = "experimental" }
 
 [dependencies]
-zyx = { version = "0.15.3", path = "../zyx" }
-zyx-derive = { version = "0.15.3", path = "../zyx-derive" }
+zyx = { version = "0.15.4", path = "../zyx" }
+zyx-derive = { version = "0.15.4", path = "../zyx-derive" }
 
 [dependencies.pyo3]
 version = "0.28.3"
