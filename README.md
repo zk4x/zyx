@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 [![docs.rs](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
-[![build status](https://github.com/zk4x/zyx/workflows/ci/badge.svg)](https://github.com/zk4x/zyx/actions/workflows/ci.yml)
+[![build status](https://github.com/zk4x/zyx/workflows/build-wheels/badge.svg)](https://github.com/zk4x/zyx/actions/workflows/build-wheels.yml)
 [![license](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://github.com/zk4x/zyx/blob/main/LICENSE)
 [![maintenance](https://img.shields.io/badge/maintenance-active-green.svg)](https://github.com/zk4x/zyx)
 
@@ -238,7 +238,6 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 | **Gradient Recording** | Explicit `GradientTape` | Implicit, requires `no_grad()` | Implicit, tf.function | Explicit + jit |
 | **Tensor Mutability** | Immutable (no in-place errors) | Mutable (risk of back-prop failures) | Mutable | Immutable |
 | **Kernel Fusion** | Automatic, cross-backend | Manual (torch.jit) | Manual (XLA) | Manual (XLA) |
-| **Higher-order Gradients** | Experimental (graph-based, forward-mode planned) | Supported but complex | Supported | Supported |
 | **Disk I/O** | Lazy loading parallel to compute | Typically blocking | Blocking | Blocking |
 | **Device Pipelining** | Built-in heterogeneous pipelining | Manual `to(device)` calls | Manual device placement | Manual device placement |
 | **Compilation** | Runtime kernel compilation | Pre-compiled + jit | Pre-compiled | Just-in-time |
