@@ -26,6 +26,7 @@ use dummy::{DummyDevice, DummyMemoryPool};
 use host::HostMemoryPool;
 use nanoserde::{DeBin, DeJson, SerBin};
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
+use tenstorrent::TenstorrentMemoryPool;
 #[cfg(feature = "wgpu")]
 use wgpu::{WGPUDevice, WGPUMemoryPool};
 
@@ -35,6 +36,7 @@ mod dummy;
 mod hip;
 mod host;
 mod opencl;
+mod tenstorrent;
 /*#[cfg(feature = "vulkan")]
 mod vulkan;*/
 #[cfg(feature = "wgpu")]
@@ -232,6 +234,11 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
+    if let Err(err) = tenstorrent::initialize_pool(memory_pools, debug_backends) {
+        if debug_backends {
+            println!("{err}");
+        }
+    }
     #[cfg(feature = "wgpu")]
     if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends) {
         if debug_backends {
@@ -258,6 +265,7 @@ pub enum Event {
     CUDA(cuda::CUDAEvent),
     OpenCL(opencl::OpenCLEvent),
     HIP(hip::HIPEvent),
+    Tenstorrent(tenstorrent::TenstorrentEvent),
     #[cfg(feature = "wgpu")]
     WGPU(wgpu::WGPUEvent),
 }
@@ -313,6 +321,9 @@ pub struct Config {
     pub hip: hip::HIPConfig,
     /// `OpenCL` configuration
     pub opencl: opencl::OpenCLConfig,
+    /// Tenstorrent configuration
+    #[allow(unused)]
+    pub tenstorrent: tenstorrent::TenstorrentConfig,
     // Vulkan configuration
     //#[cfg(feature = "vulkan")]
     //pub vulkan: vulkan::VulkanConfig,
@@ -364,6 +375,7 @@ pub enum MemoryPool {
     CUDA(CUDAMemoryPool),
     OpenCL(OpenCLMemoryPool),
     HIP(HIPMemoryPool),
+    Tenstorrent(TenstorrentMemoryPool),
     #[cfg(feature = "wgpu")]
     WGPU(WGPUMemoryPool),
 }
@@ -378,6 +390,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.deinitialize(),
             MemoryPool::OpenCL(pool) => pool.deinitialize(),
             MemoryPool::HIP(pool) => pool.deinitialize(),
+            MemoryPool::Tenstorrent(pool) => pool.deinitialize(),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.deinitialize(),
         }
@@ -398,6 +411,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.free_bytes(),
             MemoryPool::OpenCL(pool) => pool.free_bytes(),
             MemoryPool::HIP(pool) => pool.free_bytes(),
+            MemoryPool::Tenstorrent(pool) => pool.free_bytes(),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.free_bytes(),
         }
@@ -411,6 +425,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.allocate(bytes),
             MemoryPool::OpenCL(pool) => pool.allocate(bytes),
             MemoryPool::HIP(pool) => pool.allocate(bytes),
+            MemoryPool::Tenstorrent(pool) => pool.allocate(bytes),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.allocate(bytes),
         }
@@ -425,6 +440,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::HIP(pool) => pool.deallocate(buffer_id, event_wait_list),
+            MemoryPool::Tenstorrent(pool) => pool.deallocate(buffer_id, event_wait_list),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.deallocate(buffer_id, event_wait_list),
         }
@@ -445,6 +461,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.host_to_pool(src, dst, event_wait_list),
             MemoryPool::HIP(pool) => pool.host_to_pool(src, dst, event_wait_list),
+            MemoryPool::Tenstorrent(pool) => pool.host_to_pool(src, dst, event_wait_list),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.host_to_pool(src, dst, event_wait_list),
         }
@@ -459,6 +476,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::OpenCL(pool) => pool.pool_to_host(src, dst, event_wait_list),
             MemoryPool::HIP(pool) => pool.pool_to_host(src, dst, event_wait_list),
+            MemoryPool::Tenstorrent(pool) => pool.pool_to_host(src, dst, event_wait_list),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.pool_to_host(src, dst, event_wait_list),
         }
@@ -473,6 +491,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.sync_events(events),
             MemoryPool::OpenCL(pool) => pool.sync_events(events),
             MemoryPool::HIP(pool) => pool.sync_events(events),
+            MemoryPool::Tenstorrent(pool) => pool.sync_events(events),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.sync_events(events),
         }
@@ -488,6 +507,7 @@ impl MemoryPool {
             MemoryPool::CUDA(pool) => pool.release_events(events),
             MemoryPool::OpenCL(pool) => pool.release_events(events),
             MemoryPool::HIP(pool) => pool.release_events(events),
+            MemoryPool::Tenstorrent(pool) => pool.release_events(events),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.release_events(events),
         }

@@ -48,7 +48,7 @@ pub struct Runtime {
     pub autotune_config: AutotuneConfig,
     /// Debug mask
     pub debug: DebugMask,
-    /// Temporary storage
+    /// Temporary storage - TODO remove in favor of host.rs
     pub temp_data: Map<BufferId, Box<[u8]>>,
     /// Cache for constants
     constants: [Constant; NUM_CONSTANTS],

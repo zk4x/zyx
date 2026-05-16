@@ -165,4 +165,210 @@
 //!
 //! The `supported_dtypes` bitmask should expose everything tt-metal can handle.
 
-// TODO: tenstorrent backend implementation
+use super::{Event, MemoryPool, PoolBufferId, PoolId};
+use crate::{
+    error::{BackendError, ErrorStatus},
+    shape::Dim,
+    slab::Slab,
+};
+use nanoserde::DeJson;
+
+#[derive(Default, Debug, DeJson)]
+pub struct TenstorrentConfig {
+    #[allow(unused)]
+    enabled: bool,
+}
+
+#[derive(Debug)]
+pub struct TenstorrentMemoryPool {
+    free_bytes: Dim,
+    buffers: Slab<PoolBufferId, Box<[u8]>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TenstorrentEvent;
+
+#[allow(clippy::unnecessary_wraps)]
+pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
+    if debug_dev {
+        println!("Using tenstorrent backend");
+    }
+    let pool = MemoryPool::Tenstorrent(TenstorrentMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
+    memory_pools.push(pool);
+    Ok(())
+}
+
+impl TenstorrentMemoryPool {
+    pub const fn deinitialize(&mut self) {}
+
+    pub const fn free_bytes(&self) -> Dim {
+        self.free_bytes
+    }
+
+    pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
+        let bytes: usize = bytes
+            .try_into()
+            .map_err(|_| BackendError { status: ErrorStatus::MemoryAllocation, context: "allocation size too large".into() })?;
+        if self.free_bytes < bytes as Dim {
+            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "OOM".into() });
+        }
+        self.free_bytes -= bytes as Dim;
+        let buffer = vec![0u8; bytes].into_boxed_slice();
+        let id = self.buffers.push(buffer);
+        Ok((id, Event::Tenstorrent(TenstorrentEvent)))
+    }
+
+    pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
+        let _ = event_wait_list;
+        if self.buffers.contains_key(buffer_id) {
+            let buffer = unsafe { self.buffers.remove_and_return(buffer_id) };
+            self.free_bytes += buffer.len() as Dim;
+        }
+    }
+
+    pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
+        let _ = event_wait_list;
+        let buffer = self
+            .buffers
+            .get_mut(dst)
+            .ok_or_else(|| BackendError { status: ErrorStatus::MemoryCopyH2P, context: "invalid buffer id".into() })?;
+        let len = src.len().min(buffer.len());
+        buffer[..len].copy_from_slice(&src[..len]);
+        Ok(Event::Tenstorrent(TenstorrentEvent))
+    }
+
+    pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
+        let _ = event_wait_list;
+        let buffer = &self.buffers[src];
+        let len = dst.len().min(buffer.len());
+        dst[..len].copy_from_slice(&buffer[..len]);
+        Ok(())
+    }
+
+    pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        let _ = self;
+        let _ = events;
+        Ok(())
+    }
+
+    pub fn release_events(&mut self, events: Vec<Event>) {
+        let _ = self;
+        let _ = events;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_pool(free_bytes: Dim) -> TenstorrentMemoryPool {
+        TenstorrentMemoryPool { free_bytes, buffers: Slab::new() }
+    }
+
+    #[test]
+    fn allocate_deallocate_roundtrip() -> Result<(), BackendError> {
+        let mut pool = new_pool(4096);
+        let initial = pool.free_bytes();
+
+        let (id, event) = pool.allocate(1024)?;
+        assert!(pool.buffers.contains_key(id));
+        assert_eq!(pool.free_bytes(), initial - 1024);
+
+        pool.deallocate(id, vec![event]);
+        assert!(!pool.buffers.contains_key(id));
+        assert_eq!(pool.free_bytes(), initial);
+        Ok(())
+    }
+
+    #[test]
+    fn host_to_pool_and_back() -> Result<(), BackendError> {
+        let mut pool = new_pool(4096);
+        let (id, alloc_ev) = pool.allocate(8)?;
+
+        let src: Vec<u8> = vec![0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78, 0x90];
+        pool.host_to_pool(&src, id, vec![alloc_ev])?;
+
+        let mut dst = vec![0u8; 8];
+        pool.pool_to_host(id, &mut dst, vec![])?;
+        assert_eq!(dst, src);
+        Ok(())
+    }
+
+    #[test]
+    fn partial_copy_from_host() -> Result<(), BackendError> {
+        let mut pool = new_pool(4096);
+        let (id, alloc_ev) = pool.allocate(4)?;
+
+        let src = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
+        pool.host_to_pool(&src, id, vec![alloc_ev])?;
+
+        let mut dst = vec![0u8; 8];
+        pool.pool_to_host(id, &mut dst, vec![])?;
+        assert_eq!(dst[..4], [0xAA, 0xBB, 0xCC, 0xDD]);
+        Ok(())
+    }
+
+    #[test]
+    fn oom_on_allocate() {
+        let mut pool = new_pool(16);
+        let result = pool.allocate(32);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deallocate_nonexistent_buffer() {
+        let mut pool = new_pool(4096);
+        let initial = pool.free_bytes();
+        pool.deallocate(PoolBufferId::from(999), vec![]);
+        assert_eq!(pool.free_bytes(), initial);
+    }
+
+    #[test]
+    fn host_to_pool_invalid_buffer() {
+        let mut pool = new_pool(4096);
+        let result = pool.host_to_pool(&[1, 2, 3], PoolBufferId::from(42), vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn multiple_allocations() -> Result<(), BackendError> {
+        let mut pool = new_pool(4096);
+        let (id1, ev1) = pool.allocate(128)?;
+        let (id2, ev2) = pool.allocate(256)?;
+        let (id3, ev3) = pool.allocate(64)?;
+
+        assert!(pool.buffers.contains_key(id1));
+        assert!(pool.buffers.contains_key(id2));
+        assert!(pool.buffers.contains_key(id3));
+
+        pool.deallocate(id1, vec![ev1]);
+        assert!(!pool.buffers.contains_key(id1));
+
+        pool.deallocate(id2, vec![ev2]);
+        assert!(!pool.buffers.contains_key(id2));
+
+        pool.deallocate(id3, vec![ev3]);
+        assert!(!pool.buffers.contains_key(id3));
+
+        assert_eq!(pool.free_bytes(), 4096);
+        Ok(())
+    }
+
+    #[test]
+    fn sync_and_release_events() {
+        let mut pool = new_pool(4096);
+        let ev = Event::Tenstorrent(TenstorrentEvent);
+        assert!(pool.sync_events(vec![ev.clone()]).is_ok());
+        pool.release_events(vec![ev]);
+    }
+
+    #[test]
+    fn initialize_pool_creates_pool() {
+        let mut pools = Slab::<PoolId, MemoryPool>::new();
+
+        let result = initialize_pool(&mut pools, false);
+        assert!(result.is_ok());
+        assert!(!pools.is_empty());
+        assert_eq!(pools.len(), 1.into());
+    }
+}
