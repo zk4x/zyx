@@ -67,30 +67,15 @@ pip install git+https://github.com/zk4x/zyx.git#subdirectory=zyx-py
 import zyx as torch
 
 # Same PyTorch API but with zyx's performance benefits
-x = torch.randn(2, 3)
-y = torch.uniform(2, 3, -1, 1)
-z = torch.relu(x) + torch.tanh(y)
+x = torch.Tensor.randn(2, 3)
+y = torch.Tensor.uniform_(2, 3, from_=-1.0, to_=1.0)  # Note: zyx uses from_/to_ parameters
+z = x.relu() + y.tanh()
 print(z.shape)
 
-# Full neural network support
-import zyx.nn as nn
-import zyx.optim as optim
-
-model = nn.Sequential(
-    nn.Linear(784, 128),
-    nn.ReLU(),
-    nn.Linear(128, 10)
-)
-optimizer = optim.Adam(model.parameters())
-
-# Training loop
-for epoch in range(10):
-    optimizer.zero_grad()
-    output = model(x)
-    loss = nn.MSELoss()(output, target)
-    loss.backward()
-    optimizer.step()
-    print(f"Epoch {epoch}: Loss = {loss.item():.4f}")
+# Basic autograd example
+tape = torch.GradientTape()
+result = x.relu() * y
+grads = tape.gradient(result, [x, y])
 ```
 
 ## Crates
@@ -361,24 +346,24 @@ let grads = tape.gradient(&result, &[x, y]);
 import zyx as torch
 
 # Creation
-x = torch.randn(2, 3)
-y = torch.zeros(4, 4)
-z = torch.tensor([[1, 2], [3, 4]])
+x = torch.Tensor.randn(2, 3)
+y = torch.Tensor.randn(2, 3)  # Same shape for element-wise operations
+z = torch.Tensor([[1, 2], [3, 4]])
 
 # Operations
-sum = x + y
-product = x * y
-relu = torch.relu(x)
-matmul = torch.matmul(x, y)
+sum = x + y  # Same shape required
+product = x * y  # Same shape required
+relu = x.relu()
+matmul = x @ torch.Tensor.randn(3, 2)  # Matrix multiplication, requires compatible shapes
 
 # Shape manipulation
 reshaped = x.reshape(6, 1)
 sliced = x[0:2, 0:2]
-transposed = x.T
+transposed = x.t()
 
 # Autograd
-with torch.GradientTape() as tape:
-    result = torch.relu(x) * y
+tape = torch.GradientTape()
+result = x.relu() * y
 grads = tape.gradient(result, [x, y])
 ```
 

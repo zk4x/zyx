@@ -311,19 +311,52 @@ impl Tensor {
         Tensor::rand(to_sh(shape)?, dtype)
     }
 
-    /*#[staticmethod]
-    #[must_use]
-    #[pyo3(name = "uniform_", signature = (*shape, dtype=DType::F32))]
-    pub fn uniform_py(shape: &Bound<'_, PyTuple>, from, to) -> Result<Tensor, ZyxError> {
-        Tensor::uniform(to_sh(shape)?, from..to)
-    }
-
+    /// Create a tensor with random values from a uniform distribution
+    /// Similar to torch.rand but with uniform distribution
     #[staticmethod]
     #[must_use]
-    #[pyo3(name = "kaiming_uniform", signature = (*shape, dtype=DType::F32))]
-    pub fn kaiming_uniform_py(shape: &Bound<'_, PyTuple>, a) -> Result<Tensor, ZyxError> {
-        Tensor::kaiming_uniform(to_sh(shape)?, a)
-    }*/
+    #[pyo3(name = "uniform", signature = (*shape, dtype=DType::F32))]
+    pub fn uniform_py(shape: &Bound<'_, PyTuple>, dtype: DType) -> Result<Tensor, ZyxError> {
+        Tensor::rand(to_sh(shape)?, dtype)
+    }
+
+    /// Create a tensor with values from a uniform distribution in specified range
+    /// 
+    /// Generates a tensor with random values drawn from a uniform distribution [from_, to_].
+    /// The implementation uses Tensor.rand() to generate values in [0, 1) and then scales them
+    /// to the specified range.
+    /// 
+    /// # Arguments
+    /// * `shape` - Variable number of shape dimensions (positive integers)
+    /// * `from_` - Lower bound of the uniform distribution (default: -1.0)
+    /// * `to_` - Upper bound of the uniform distribution (default: 1.0)
+    /// * `dtype` - Data type of the output tensor (default: DType::F32)
+    /// 
+    /// # Returns
+    /// A new tensor with shape specified by `shape` and values uniformly distributed
+    /// in the range [from_, to_].
+    /// 
+    /// # Panics
+    /// Panics if shape arguments are not positive integers.
+    /// 
+    /// # Examples
+    /// ```
+    /// // Create a 2x3 tensor with values in [-1, 1]
+    /// let tensor = Tensor::uniform_(2, 3, from_=-1.0, to_=1.0);
+    /// 
+    /// // Create a 1x1 tensor with values in [0, 10]
+    /// let tensor = Tensor::uniform_(1, 1, from_=0.0, to_=10.0);
+    /// ```
+    #[staticmethod]
+    #[must_use]
+    #[pyo3(name = "uniform_", signature = (*shape, from_=-1.0, to_=1.0, dtype=DType::F32))]
+    pub fn uniform_py_with_range(shape: &Bound<'_, PyTuple>, from_: f32, to_: f32, dtype: DType) -> Result<Tensor, ZyxError> {
+        // Create tensor with uniform distribution (0,1) then scale to desired range
+        let tensor = Tensor::rand(to_sh(shape)?, dtype)?;
+        let range = to_ - from_;
+        let scaled = tensor * range + from_;
+        Ok(scaled)
+    }
 
     /// # Panics
     /// Panics if shape conversion fails.
@@ -1379,13 +1412,7 @@ impl Tensor {
         }
     }
 
-    /// # Errors
-    /// Returns a `ZyxError` if the operation fails.
-    #[staticmethod]
-    #[pyo3(name = "uniform")]
-    pub fn uniform_py(size: Dim, from: Dim, to: Dim) -> Result<Tensor, ZyxError> {
-        Tensor::uniform(size, from..to)
-    }
+
 
     /// # Errors
     /// Returns a `ZyxError` if the operation fails.
