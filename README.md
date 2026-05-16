@@ -64,16 +64,16 @@ pip install git+https://github.com/zk4x/zyx.git#subdirectory=zyx-py
 
 ### Basic Usage
 ```python
-import zyx as torch
+import zyx
 
-# Same PyTorch API but with zyx's performance benefits
-x = torch.Tensor.randn(2, 3)
-y = torch.Tensor.uniform_(2, 3, from_=-1.0, to_=1.0)  # Note: zyx uses from_/to_ parameters
+# Same PyTorch-like API but with zyx's performance benefits
+x = zyx.Tensor.randn(2, 3)
+y = zyx.Tensor.uniform_(2, 3, from_=-1.0, to_=1.0)  # Note: zyx uses from_/to_ parameters
 z = x.relu() + y.tanh()
 print(z.shape)
 
 # Basic autograd example
-tape = torch.GradientTape()
+tape = zyx.GradientTape()
 result = x.relu() * y
 grads = tape.gradient(result, [x, y])
 ```
@@ -343,18 +343,18 @@ let grads = tape.gradient(&result, &[x, y]);
 ### Python Quick Reference
 
 ```python
-import zyx as torch
+import zyx
 
 # Creation
-x = torch.Tensor.randn(2, 3)
-y = torch.Tensor.randn(2, 3)  # Same shape for element-wise operations
-z = torch.Tensor([[1, 2], [3, 4]])
+x = zyx.Tensor.randn(2, 3)
+y = zyx.Tensor.randn(2, 3)  # Same shape for element-wise operations
+z = zyx.Tensor([[1, 2], [3, 4]])
 
 # Operations
 sum = x + y  # Same shape required
 product = x * y  # Same shape required
 relu = x.relu()
-matmul = x @ torch.Tensor.randn(3, 2)  # Matrix multiplication, requires compatible shapes
+matmul = x @ zyx.Tensor.randn(3, 2)  # Matrix multiplication, requires compatible shapes
 
 # Shape manipulation
 reshaped = x.reshape(6, 1)
@@ -362,7 +362,7 @@ sliced = x[0:2, 0:2]
 transposed = x.t()
 
 # Autograd
-tape = torch.GradientTape()
+tape = zyx.GradientTape()
 result = x.relu() * y
 grads = tape.gradient(result, [x, y])
 ```
