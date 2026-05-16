@@ -234,7 +234,6 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 | Feature | zyx | PyTorch | TensorFlow | JAX |
 |---------|-----|---------|------------|-----|
 | **Execution Model** | Lazy with explicit realization | Eager by default | Eager by default | Functional + XLA |
-| **Memory Usage** | 16 bytes/tensor overhead | ~800KB+ for graphs | High memory overhead | Low overhead |
 | **Gradient Recording** | Explicit `GradientTape` | Implicit, requires `no_grad()` | Implicit, tf.function | Explicit + jit |
 | **Tensor Mutability** | Immutable (no in-place errors) | Mutable (risk of back-prop failures) | Mutable | Immutable |
 | **Kernel Fusion** | Automatic, cross-backend | Manual (torch.jit) | Manual (XLA) | Manual (XLA) |
