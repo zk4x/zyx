@@ -47,15 +47,6 @@
 
 **zyx** offers Python bindings with full PyTorch API compatibility. The Python wheel supports multiple backends:
 
-### Installation
-```bash
-# Install from PyPI
-pip install zyx-py
-
-# Or install from source for development
-pip install git+https://github.com/zk4x/zyx.git#subdirectory=zyx-py
-```
-
 ### Key Features
 - **API Compatibility**: Drop-in replacement for PyTorch
 - **Broader Device Support**: Works on more hardware than PyTorch
@@ -87,13 +78,23 @@ grads = tape.gradient(result, [x, y])
 
 ## Quick Start
 
-### Installation
+## Installation
 
-```toml
-[dependencies]
-zyx = { path = "zyx" }
-zyx-nn = { path = "zyx-nn" }
-zyx-optim = { path = "zyx-optim" }
+### Python Installation
+
+```bash
+# Install from PyPI
+pip install zyx-py
+
+# Or install from source for development
+pip install git+https://github.com/zk4x/zyx.git#subdirectory=zyx-py
+```
+
+### Rust Installation
+
+```bash
+# Install from crates.io
+cargo add zyx zyx-nn zyx-optim
 ```
 
 ## Hello World
