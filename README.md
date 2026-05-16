@@ -240,7 +240,7 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 | **Disk I/O** | Lazy loading parallel to compute | Typically blocking | Blocking | Blocking |
 | **Device Pipelining** | Built-in heterogeneous pipelining | Manual `to(device)` calls | Manual device placement | Manual device placement |
 | **Compilation** | Runtime kernel compilation | Pre-compiled + jit | Pre-compiled | Just-in-time |
-| **Wheel Size** | ~4MB (Python, includes CUDA) | hundreds of MB |  |  |
+| **Wheel Size** | ~4MB (includes CUDA) | hundreds of MB |  |  |
 
 ### Key Advantages
 - **Unified Architecture**: Single graph for both autograd and lazy execution
