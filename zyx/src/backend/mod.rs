@@ -323,6 +323,7 @@ pub struct Config {
     pub opencl: opencl::OpenCLConfig,
     /// Tenstorrent configuration
     #[allow(unused)]
+    #[nserde(default)]
     pub tenstorrent: tenstorrent::TenstorrentConfig,
     // Vulkan configuration
     //#[cfg(feature = "vulkan")]
