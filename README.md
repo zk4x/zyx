@@ -35,13 +35,13 @@
 - **Unified Graph** — autograd and laziness share the same graph, enabling seamless kernel fusion across all operations.
 - **Lazy Evaluation** — operations accumulate until `realize()` triggers execution, reducing temporary allocations.
 - **Kernel Fusion** — tensor operations compile into single optimized kernels (CUDA, OpenCL, WebGPU, etc.).
-- **Cross‑Platform Backends** — native support for OpenCL (CPU via POCL, GPU via native OpenCL drivers), WebGPU, CUDA/ROCm, and more.
+- **Cross‑Platform Backends** — native support for OpenCL (CPU via POCL, GPU via native OpenCL drivers), WebGPU, CUDA, and more.
 - **Full Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops.
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
 - **Explicit Gradient Tape** — you control what is recorded via `GradientTape`; no need for `torch.no_grad()` semantics.
 - **Higher-Order Gradients** — experimental (graph-based, forward-mode autograd planned)
-- **Lazy Disk Loading** — large datasets or models load from disk in parallel with computation.
-- **Parallel Pipelining** — work distributes across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion.
+- **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed, via the runtime scheduler.
+- **Parallel Pipelining** — kernels allocate across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion via the runtime scheduler.
 - **Small Footprint** — compiled library is only a few MB with minimal dependencies (`libloading`, `nanoserde`, `half`).
 
 ## 🐍 Python Bindings
@@ -224,11 +224,14 @@ fn main() -> Result<(), zyx::ZyxError> {
 
 ## Architecture
 
-```
-Tensor → Lazy Graph → Kernel IR → Backend Code (PTX, OpenCL, WGSL, etc.)
+```mermaid
+flowchart LR
+    A["Tensor Graph"] --> B["Fusion and Device Schedule Search"]
+    B --> C["Device Specific Kernel IR"]
+    C --> D["Backend Code / Assembly"]
 ```
 
-The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel configurations (loop tiling, MAD fusion, vectorization) before execution.
+Tensor operations build a lazy computation graph. During realization, the graph is analyzed for fusion opportunities and the optimal execution schedule is searched. The fused operations are lowered to a device-specific intermediate representation, then compiled to native code (PTX, OpenCL C, WGSL, etc.) for the target backend.
 
 ## Why zyx is Different
 
@@ -369,6 +372,24 @@ except Exception as e:
 x = zyx.Tensor.randn(2, 5)
 y = zyx.Tensor.randn(5, 8)  # Valid: 2x5 @ 5x8 = 2x8
 result = x @ y
+```
+
+```rust
+use zyx::Tensor;
+
+let x = Tensor::randn([2, 5], DType::F32)?;
+let y = Tensor::randn([17, 8], DType::F32)?;
+
+// This returns an error - incompatible shapes for matrix multiplication
+match x.dot(&y) {
+    Ok(_) => unreachable!(),
+    Err(e) => println!("Shape error: {e}"),
+}
+
+// Correct approach
+let x = Tensor::randn([2, 5], DType::F32)?;
+let y = Tensor::randn([5, 8], DType::F32)?;
+let result = x.dot(&y)?;
 ```
 
 #### Device Errors
