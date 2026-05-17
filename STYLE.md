@@ -29,13 +29,27 @@ Don't write "clean code." Write debuggable code — understandable code.
 
 Always duplicate. Design the user API and write a list of requirements. Then write the simplest code that makes that API work. If you need similar code in different places, copy it. Once the program passes integration tests, remove the duplication by adding abstraction. The resulting abstraction will be much less likely to need a refactor.
 
-Ideal abstractions make new features additive (complexity scales linearly) but their effects multiplicative (capabilities scale exponentially). In zyx, adding a backend implements all ops and optimizations for it. Adding a dtype adds it to all backends and all ops. This is the goal — but don't force it. Duplicate first, then let the right abstraction emerge.
+### Additive features (orthogonality)
+
+The goal of good abstractions is **orthogonality** — features compose without interfering. Complexity scales linearly while capabilities scale exponentially.
+
+Most libraries get this wrong. In PyTorch, features are **multiplicative**: adding a dtype means writing new kernels for every op on every backend. That is `num_dtypes × num_ops × num_backends` — each new feature multiplies the work.
+
+In zyx, features are **orthogonal**: adding a dtype adds it to all backends and all ops automatically. Adding a backend implements all ops for it. Adding an op adds it to all backends and all dtypes. That is `num_dtype + num_ops + num_backends`.
+
+This is the goal — but don't force the abstraction upfront. Duplicate first, then let the right abstraction emerge.
 
 ### Cut the trash out
 
 Don't get slowed down by the language. Rust doesn't implement Hash, Eq, or Ord for floats — use ordered-float and accept the bad syntax. Lifetimes are rarely needed — use globals or Arc. The orphan rule makes traits painful — use procedural style like you are writing C.
 
 If the language does not support your approach, fake it till you make it.
+
+### Functional programming is borderline useless for this kind of work
+
+There is a consensus that software complexity comes from state. Functional programming only allows mutation by passing variables to functions and returning new ones. This is theoretically nice, but functional languages are inherently slow and borderline useless for systems work because of this. All software can be written in FP, but without persistent state and mutations it gets annoying to write. Most software is shorter and clearer when written procedurally.
+
+What matters is making state transparent, not eliminating it.
 
 ## State Management
 
@@ -45,9 +59,13 @@ Avoid `Rc<RefCell<T>>` and `&RefCell<T>` in structs. Variables should be mutated
 
 All state should be stored in as few places as possible, ideally one, and easily accessible for debugging. In zyx, everything is in the runtime — the whole state can be inspected at any point. Functions operate on this state and have no side effects beyond changing it.
 
-Prefer a small number of stateful structs with well-defined APIs. Store collections of objects inside those structs (SOA over AOS) for performance and debuggability. Structs should be written with debugging in mind — their representation should be human readable.
+OOP pushes many small structs instead of one big one. This makes debugging and state management harder — memory leaks become difficult to spot because state is scattered across tiny classes everywhere. In zyx, memory leaks are found by simply logging the size of each field in the runtime struct: size of the graph, number of compiled programs, and such.
 
-If all programs stored their whole state in a single struct, they would be transparent. Memory leaks in zyx are found by logging the size of each field in the runtime struct.
+A small number of stateful structs with well-defined APIs is the goal. Store collections of objects inside those structs (SOA over AOS) for performance and debuggability. Structs should be written with debugging in mind — their representation should be human readable.
+
+There is no point drawing a UML diagram of a single struct — just read its declaration and fields. Since programmers do not like drawing UML and there is no way to guarantee a diagram matches the code, write code so that UML diagrams are not needed to understand the program.
+
+A related language design problem: many functions take `self` which grants access to the whole struct even if they only need part of it. Languages could let functions limit their access to specific fields. In the meantime, don't over-split your structs to work around this — that causes more problems than it solves.
 
 ## Code Organization
 
