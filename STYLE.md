@@ -1,220 +1,90 @@
-# These are notes on style used in zyx and possibly general coding practices
+# Style Guide
 
-## On virtual tables
+## Contents
 
-Don't use dyn, or virtual tables, use enums instead. If there is necessity to work with function pointers, then pass those function pointers around directly. Dyn can be used extremely carefully in rust to avoid macro hell.
+- [Philosophy](#philosophy)
+- [State Management](#state-management)
+- [Code Organization](#code-organization)
+- [Data Structures](#data-structures)
+- [API Design](#api-design)
+- [Hardware](#hardware)
+- [Conventions](#conventions)
+- [Metrics](#metrics)
 
-## On Arc, Rc
+## Philosophy
 
-Don't use it unless really necessary. When using one big singleton struct it is not needed. Zyx is forced to use it in wgpu backend.
+### Simplicity
 
-## Mutable state
+Simplicity is the ultimate goal. The best metric is usefulness divided by lines of code. Lines of code matter only if the code is readable — short unreadable code is no good.
 
-Single mutable global state variable is OK, if there is lot of handles that point to it. In zyx tensors
-share single mutable graph, for example in ECS this could be Entities sharing single world struct. This works
-well with destructors for reference counting and such.
+### Explicit over implicit
 
-Avoid Rc<RefCell<T>>, &RefCell<T> and such things in structs as much as possible. Variables should be mutated
-from single place, not from dozen structs. This helps prevent logic bugs.
+Use explicit return to make code more readable. The rule of thumb: if you are not sure what is going on, make the code more explicit until you know without thinking. If the code makes perfect sense and feels too verbose, make it more implicit.
 
-## Simplicity
+### Debuggable over clean
 
-Simplicity is the ultimate goal, probably the best metric is usefulness of program divided by number of lines
-of code. Lines of code however matter only if the code is readable. Short unreadable code is no good.
+Don't write "clean code." Write debuggable code — understandable code.
 
-## Inheritance
+### Duplicate first, abstract later
 
-Inheritance is bad. Do not use it at all.
+Always duplicate. Design the user API and write a list of requirements. Then write the simplest code that makes that API work. If you need similar code in different places, copy it. Once the program passes integration tests, remove the duplication by adding abstraction. The resulting abstraction will be much less likely to need a refactor.
 
-## Asserts
+Ideal abstractions make new features additive (complexity scales linearly) but their effects multiplicative (capabilities scale exponentially). In zyx, adding a backend implements all ops and optimizations for it. Adding a dtype adds it to all backends and all ops. This is the goal — but don't force it. Duplicate first, then let the right abstraction emerge.
 
-Use debug asserts everywhere to check the code. Anytime some invariant should hold, put in an assert.
-This goes for maximum size of numbers, maximum memory usage and any limits that are put on the program.
+### Cut the trash out
 
-## Code should make sense
+Don't get slowed down by the language. Rust doesn't implement Hash, Eq, or Ord for floats — use ordered-float and accept the bad syntax. Lifetimes are rarely needed — use globals or Arc. The orphan rule makes traits painful — use procedural style like you are writing C.
 
-Always use documentation, even when documenting obvious things. Documentation is much easier to remove than to add.
-Code that seems obvious to the person writing it is not obvious to the person reading it. In general most functions
-longer than five lines should have comments. In general it is a good ratio of 1 line of comments per 5 lines of code,
-that is ~20% percent should be comments, but more like 50% in complex code and algorithms. Comments can be gradually
-updated to be more concise as the code gets more concise.
+If the language does not support your approach, fake it till you make it.
 
-## Explicit over implicit
+## State Management
 
-Use explicit return keyword to make code more readable. Some operations can be implicit, like casting.
-The rule of thumb is: If I am not sure what is going on, I need to make the code more explicit until I know what is
-going on without thinking about it. This applies to every programmer in the team. If anyone in the team does not
-understand the code, make it more explicit. The code should intuitivelly make sense. If it does not, make it more explicit.
-If the code makes perfect sense and feels too verbose, do not be afraid to make it more implicit.
+Single mutable global state is fine when there are many handles pointing to it. In zyx, tensors share a single mutable graph. This works well with destructors for reference counting.
 
-## Cut the trash out
+Avoid `Rc<RefCell<T>>` and `&RefCell<T>` in structs. Variables should be mutated from one place, not from a dozen structs. This prevents logic bugs.
 
-Try to not get slowed down by the inferiority of your language. For example Rust does not implement Hash, Eq or Ord
-for floats. Use ordered float crate and accept everything bad about it (horrible syntax, slower performance).
-Another example is lifetimes. Try to use lifetimes very rarely, do not go into complex lifetime annotations,
-use global variables or Rc/Arc. Another example is orphan rule, do to not use traits if possible. Use procedural
-programming like if you are writing c.
+All state should be stored in as few places as possible, ideally one, and easily accessible for debugging. In zyx, everything is in the runtime — the whole state can be inspected at any point. Functions operate on this state and have no side effects beyond changing it.
 
-## Prefer functionality over niche performance gains when picking datastructres
+Prefer a small number of stateful structs with well-defined APIs. Store collections of objects inside those structs (SOA over AOS) for performance and debuggability. Structs should be written with debugging in mind — their representation should be human readable.
 
-Use Vec instead of Box<[]> even on immutable data structures. Box<[]> simply isn't flexible enough. Box<[]> can not
-be created from parallel iterator. Many other libraries will return Vec<> and converting that to Box<[]> is expensive.
-Use Vec and accept that it takes 24 bytes instead of 16 bytes (on 64 bit machines). Similarly Mutex is often
-much more useful than RefCell. It depends on the usecase, but if you really need the performance, use UnsafeCell.
-If you don't and you may want to make the code multithreaded, use Mutex. Use RefCell only if the performance
-is good enough and you are 100% certain you won't ever make it multithreaded.
-These kinds of optimizations are nicer in zig than in rust.
+If all programs stored their whole state in a single struct, they would be transparent. Memory leaks in zyx are found by logging the size of each field in the runtime struct.
 
-## Functions should exist only if called in two or more places
+## Code Organization
 
-Creating new functions should be done when there is code that is duplicated in two places. Otherwise put everything
-into one function, no matter how long it is. In other words, function should not exist if it is called only in one place.
-To make long functions understandable, use code blocks.
+Keep modules around 1000 LOC. More is hard to track, less means code is split across too many files. Do not split the project into too many short files — short files grow, large files get refactored. Add files only when truly necessary.
 
-## Memory
+Functions should only exist if called in two or more places. Otherwise put everything in one function, no matter how long. Use code blocks to make long functions understandable.
 
-Use arenas to group allocations for high performance code. For low performance code use whatever is easiest
-to type.
+Define requirements first, then data structures, then application logic. Core data structures should map inputs to outputs as directly as possible — minimal intermediate values. Programs can only scale in preplanned directions (zyx is a tensor library, it will never be a GUI library). Primary requirements must be set in stone from the start.
 
-## API design
+## Data Structures
 
-The default way to do things should be the way that is shortest to write and many parameters can be implicit.
-Later add options for more explicitness. The underlying code should be however written in such a way, that API
-for high performance usage can be easily added. This is top down approach in API design. First write high level
-API that is succint and later add more detailed API for high performance users.
+- **Vec over Box\<\[\]\>**: Vec is flexible, can be created from parallel iterators, and the extra 8 bytes is not worth the pain.
+- **Mutex over RefCell**: Mutex works with multithreading. Use RefCell only when you are 100% certain you won't ever make it multithreaded. If you truly need the performance, use UnsafeCell.
+- **Enums over dyn**: Don't use virtual tables. Use enums instead. If you need function pointers, pass them directly. Dyn can be used carefully to avoid macro hell.
+- **Avoid Arc/Rc**: Not needed when using one big singleton struct. Zyx only uses Arc in the wgpu backend out of necessity.
+- **Arenas**: Use arenas to group allocations for hot paths. For cold paths use whatever is easiest to type.
 
-## Interfacing with hardware
+## API Design
 
-Interfaces to hardware should be done in very specific places. In zyx each backend is fully interfaced with in single
-file. Putting function calls through FFI to different files would make it very messy. This is important rule and makes
-refactoring fast (keeps the code flexible under changing requirements). This rule seems obvious and intuitive.
-It is usually uphold in the first draft of the file structure of the project, but in later stages it is often
-carelessly broken. This is the reason why many projects are hard to get working with different hardware even though
-the hardware fullfills virtually the same role as the hardware the software was written for in the first place.
+The default way to do things should be the shortest to write, with many parameters implicit. Later add options for more explicitness. The underlying code should be written so that a high-performance API can be easily added on top. This is top-down API design: first the succinct high-level API, then the detailed API for power users.
 
-## On state
+## Hardware
 
-There is a consensus that the complexity of software comes from existence of state. Functional programming only
-allows for mutation by passing variables to functions and returning new variables. This is a nice property,
-but functional languages are inherently slow and borderline useless due to this. Highly complex optimizations
-can be applied to make functional languages as fast as procedural/oop languages. All software in the world
-can also be written in functional programming languages, but without persistent state and mutations it gets
-annoying to write. Most software is shorter (as in LOC) when it is written in procedural/oop way. What I advocate
-for is transparent stateful programming. That is all state should be stored in very few places, ideally in one place
-and should be easily accessible for debugging. Functions operate on this state and they do not have side effects
-except for changing the state. In zyx, everything is stored in runtime, so the whole state of zyx can be debugged
-at any point and all functions do local contained calculations. Nodes are added to graph by calling function
-on runtime. Backpropagation adds necessary nodes to graph and nothing else. Realization evaluates required tensors
-and nothing else. Realization has multiple steps where it creates kernels, schedules them to devices and compiles
-kernels first to ir and then to assembly, but in the end there is only program stored on device and all intermediate
-state (such as IRKernel and VOps) is deleted. One improvement for programming languages could be a simpler way
-to document which state is changed by each function. For example many functions take self as argument, which gives
-them access to the whole struct even if they only need to access part of it. It would be nice if each function could
-limit it's access only to certain fields of struct. OOP tries to push many small structs instead of one big one.
-This makes debugging and state management difficult. Instead it makes memory leaks hard to spot. Memory leaks in zyx
-can be simply found by logging the size of each field in runtime struct. That is size of the graph, number of compiled
-programs and such (FFI can cause memory leaks which are hardest to spot, so we limit FFI to single file per each backend).
+Interface with hardware in very specific places. In zyx, each backend is fully interfaced in a single file. Putting FFI calls across multiple files is messy and makes refactoring slow. This rule is usually upheld in the first draft but carelessly broken later — which is why many projects are hard to port.
 
-So the approach should be small number of statefull structs with well defined APIs. Collections of objects should be
-preferrably stored in those structs (preffer SOA instead of AOS) both for performance, but mainly for ease of debugging.
+## Conventions
 
-Structs themeselves should be written with debugging in mind. The representation of state should be human readable.
+- **Asserts**: Use debug asserts everywhere. Any time an invariant should hold, assert it. This includes maximum sizes, memory limits, and any program constraints.
+- **Documentation**: Document everything, even obvious things. Documentation is easier to remove than to add. Aim for ~20% comments (50% in complex code). Update comments as code gets more concise.
+- **Inheritance**: Don't use it.
+- **Returns**: Use explicit return keyword.
 
-Basically there is no point in drawing UML diagram of single struct. Read the declaration of the struct and it's
-fields. Since programmers do not like drawing UML diagrams and there is almost no way to guarantee that UML diagram
-is accurate representation of the code (other than automatically generating UML diagrams from code), it is better
-to write code in such a way that UML diagrams are not needed to understand the whole program.
+## Metrics
 
-If all programs stored their whole state in single struct, they would be very transparent. As a side effect this makes
-maintaining software and dealing with changing requirements surprisingly easy.
+Good measurements for code:
 
-## Clean code
-
-Don't write clean code, rather write debuggable == understandable code.
-
-## Abstractions
-
-Don't use abstractions. Simply duplicate code. Once most of the stuff works abstractions come automatically by removing
-duplicate code. So refactor and remove duplicate code, thus adding good enough abstractions.
-
-## Duplication
-
-Always duplicate. This is extremely powerfull. Typical approach involves doing software design where we decide on the right
-abstractions, then implementation and the product should be done. But after implementation it turns out the current
-abstraction is wrong, so there comes a refactor. Better approach is to design the user API and write a list
-of requirements. Afterwards write the simplest code that makes that user API work. Do not add abstraction
-or classes. If you need to use similar code in different places, duplicate it. Copy it. Once the program passes
-some integration tests, remove the duplication by adding abstraction. The resulting abstraction will be
-much less likely to need a refactor.
-
-## Multiplication
-
-Code deduplication and solving the more general case is amazing, because we easily increase feature set and general
-capabilities of the library with multiplicative effect. For example in zyx adding a backend implements all ops for this
-backend and all kernels are automatically optimized for that backend. All backends get all of those optimizations.
-Similarly adding a new dtype adds this to all backends and all ops. Adding a new op adds it to all backends and all dtypes
-and so on.
-
-This is what programmers mean when they talk about ideal abstractions. Ideal abstractions are about making new features
-additive (the complexity of the program should scale linearly), but effects being multiplicative (capabiliries of the program
-should scale exponentially).
-
-For example in operating systems if everything is a file, including networking, then improving file throughput should improve
-network throughput. However this is mostly not the case, so the abstraction is badly implemented. However I am not saying
-that the fact that network is handled differently from disk is wrong. There is a trade-off. Ideal abstraction takes more time
-to implement in the first place, while scales batter later on. Less ideal abstraction can be implemented quickly, but it
-does not scale very well. This is why I think the best of both worlds is duplication. Implement minimal product with as little
-abstraction as possible, duplicate everything and once some basic integration tests pass, then introduce ideal abstraction
-by simply deduplicating your code.
-
-## Requirements
-
-The important part of project is precise specification of it's requirements. The idea that programs should be able to adapt
-to changing requirements is false. Programs can only scale in preplanned direction. For example zyx is a machine learning
-library, but it is a tensor library. It can eventually do most of linear algebra, but it can not pivot into being
-a GUI library. Some requirements can change, but the primary requirements must remain set in stone since the beginning
-and this is why we should think thoroughly about those initial requirements.
-
-Once we have our requirements, we write down basic data structures that we will need. Try to add as little intermediate
-values as possible. Inputs should map to outputs as directly as possible. That is the only way to keep the program small.
-When we have our core data structures defined, there is only so many ways how to write algorithms/application logic
-that connects them together. Application logic takes the most time to do, some algorithms can be pretty complex,
-but at the same time it should be straightforward. The program should not significantly change at this point.
-
-## Fake it till you make it
-
-Use the best approach you want to use and then fake it till you make if the programming language does not support your way.
-This is especially true for Rust, since it wants to impose it's way on users, but in order to be compatible with other
-languages, you have to make compromises.
-
-## Code creep
-
-Do not split the project into too many short files. If there are short files, they tend to grow larger. If there
-are few large files, they tend to be refactored thoroughly to make them smaller. So add files only if truly
-necessary. This way you can keep the complexity small.
-
-## Understandability
-
-Every project should be understandable by a newbie in a few hours of reading it's source code. If there are too many files,
-then it is not possible. Also adding internal project documentation, for example docs in the beginning of each file
-explaining what that file does is very usefull.
-
-## What is a good code?
-
-Good code is code that is not too rigid. That is if I introduce a change, it's not going to require changes in many different
-parts of the code base. Good code enables localized changes and localized bug fixes. One of the ways to go in direction
-of good code is to make communication boundaries between module as succint as possible. Simply do not pass much stuff
-between modules. Modules should be about 1000 loc. More than that is hard to track, but also less than that
-is hard to track, because code will be split between too many files.
-
-## Simplicity
-
-There are many measurements, good ones are for example:
-1. Readability - how long it takes to understand 100 lines of code.
-2. Number of lines of code
-3. Fragility - how many other lines of code need to be changed in response to change in one line of code
-4. Call stack depth - at least limit it to max 20 functions deep per module, 5 functions deep is average
-
-## Why does it take so much to write code?
-
-As this document has been quite long, I'll be brief on this one. IDK...
+1. **Readability** — how long it takes to understand 100 lines of code.
+2. **Lines of code** — usefulness divided by LOC.
+3. **Fragility** — how many other lines need to change in response to a change in one line.
+4. **Call stack depth** — max 20 functions deep per module, 5 is average.
