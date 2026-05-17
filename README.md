@@ -269,7 +269,7 @@ Please see [DEVICE_CONFIG.md](zyx/DEVICE_CONFIG.md) for detailed information on 
 
 ## Contributing
 
-Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for guidelines.
+Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md), [STYLE.md](STYLE.md), and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for guidelines.
 
 ### How to Help
 
