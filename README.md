@@ -244,6 +244,7 @@ Tensor operations build a lazy computation graph. During realization, the graph 
 | **Disk I/O** | Lazy loading parallel to compute | Typically blocking | Blocking | Blocking |
 | **Device Pipelining** | Built-in heterogeneous pipelining | Manual `to(device)` calls | Manual device placement | Manual device placement |
 | **Compilation** | Runtime kernel compilation | Pre-compiled + jit | Pre-compiled | Just-in-time |
+| **Import Time** | ~1ms | ~2s |  |  |
 | **Wheel Size** | ~4MB (includes CUDA) | hundreds of MB |  |  |
 
 ## Backends
