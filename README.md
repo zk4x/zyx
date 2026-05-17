@@ -10,8 +10,8 @@
 ## Table of Contents
 
 - [Overview](#overview)
-- [Python Bindings](#python-bindings)
-- [Key Features](#key-features)
+- [Features](#features)
+- [🐍 Python Bindings](#python-bindings)
 - [Crates](#crates)
 - [Installation](#installation)
 - [Hello World](#hello-world)
@@ -23,10 +23,12 @@
 - [Documentation](#documentation)
 - [Status & License](#status--license)
 - [Contributing](#contributing)
+- [Debug Options](#debug-options)
+- [Quick Reference](#quick-reference)
 
 ## Overview
 
-**zyx** is a complete machine learning stack in a single project — an ML library and compiler that goes from assembly all the way to neural networks. It provides a unified computation graph that powers both automatic differentiation and lazy execution with kernel fusion optimization. **zyx has a stable API** with performance under active optimization.
+**zyx** is a complete ML library and compiler that goes from assembly all the way to neural networks. It has a stable API with performance under active optimization.
 
 ## Features
 
@@ -44,24 +46,18 @@
 
 ## 🐍 Python Bindings
 
-**zyx** offers Python bindings with full PyTorch API compatibility. The Python wheel supports multiple backends:
-
-### Key Features
-- **API Compatibility**: Drop-in replacement for PyTorch
-- **Broader Device Support**: Works on more hardware than PyTorch
-- **Small Footprint**: Lightweight wheel with minimal dependencies
+**zyx** offers Python bindings with full PyTorch API compatibility and multiple backend support:
 
 ### Basic Usage
 ```python
 import zyx
 
-# Same PyTorch-like API but with zyx's performance benefits
 x = zyx.Tensor.randn(2, 3)
-y = zyx.Tensor.uniform_(2, 3, from_=-1.0, to_=1.0)  # Note: zyx uses from_/to_ parameters
+y = zyx.Tensor.uniform_(2, 3, from_=-1.0, to_=1.0)
 z = x.relu() + y.tanh()
-print(z.shape)
+print(z.shape())
 
-# Basic autograd example
+# Autograd example
 tape = zyx.GradientTape()
 result = x.relu() * y
 grads = tape.gradient(result, [x, y])
@@ -96,6 +92,8 @@ cargo add zyx zyx-nn zyx-optim
 
 ## Hello World
 
+Create tensors, apply operations, and trigger computation with `realize()`:
+
 ```rust
 use zyx::{Tensor, DType};
 
@@ -116,6 +114,8 @@ fn main() -> Result<(), zyx::ZyxError> {
 ```
 
 ## Basic Neural Network
+
+A training loop with a two-layer network, using `GradientTape` for autograd and `SGD` for optimization:
 
 ```rust
 use zyx::{Tensor, DType, GradientTape};
@@ -167,6 +167,8 @@ fn main() -> Result<(), zyx::ZyxError> {
 ```
 
 ## Advanced Examples
+
+A Transformer block with multi-head attention, layer normalization, and AdamW optimization:
 
 ```rust
 use zyx::{DType, GradientTape, Module, Tensor};
@@ -228,7 +230,7 @@ Tensor → Lazy Graph → Kernel IR → Backend Code (PTX, OpenCL, WGSL, etc.)
 
 The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel configurations (loop tiling, MAD fusion, vectorization) before execution.
 
-### Why zyx is Different
+## Why zyx is Different
 
 | Feature | zyx | PyTorch | TensorFlow | JAX |
 |---------|-----|---------|------------|-----|
@@ -240,12 +242,6 @@ The autotune system in `zyx/src/kernel/autotune.rs` searches for optimal kernel 
 | **Device Pipelining** | Built-in heterogeneous pipelining | Manual `to(device)` calls | Manual device placement | Manual device placement |
 | **Compilation** | Runtime kernel compilation | Pre-compiled + jit | Pre-compiled | Just-in-time |
 | **Wheel Size** | ~4MB (includes CUDA) | hundreds of MB |  |  |
-
-### Key Advantages
-- **Unified Architecture**: Single graph for both autograd and lazy execution
-- **Zero Abstraction Overhead**: Direct compilation to GPU kernels
-- **Predictable Memory Usage**: No hidden allocations or memory leaks
-- **Cross-Platform Consistency**: Same API across all backends
 
 ## Backends
 
@@ -285,6 +281,18 @@ Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md) fo
 
 - [Examples](zyx-examples/) - MNIST, RNN implementations
 - [Issues](https://github.com/zk4x/zyx/issues) - Bug reports and feature requests
+
+## Debug Options
+
+| Value | Flag | Description |
+|-------|------|-------------|
+| 1 | dev | Print hardware devices and configuration |
+| 2 | perf | Print graph execution characteristics |
+| 4 | sched | Print kernels created by scheduler |
+| 8 | ir | Print kernels in intermediate representation |
+| 16 | asm | Print native assembly/code (OpenCL, WGSL, etc.) |
+
+Example: `ZYX_DEBUG=16 cargo test --features wgpu relu_1`
 
 ## Quick Reference
 
@@ -377,18 +385,6 @@ except Exception as e:
     print(f"Device error during realization: {e}")
     # Handle device errors (e.g., reduce batch size, use smaller tensors)
 ```
-
-## Debug Options
-
-| Value | Flag | Description |
-|-------|------|-------------|
-| 1 | dev | Print hardware devices and configuration |
-| 2 | perf | Print graph execution characteristics |
-| 4 | sched | Print kernels created by scheduler |
-| 8 | ir | Print kernels in intermediate representation |
-| 16 | asm | Print native assembly/code (OpenCL, WGSL, etc.) |
-
-Example: `ZYX_DEBUG=16 cargo test --features wgpu relu_1`
 
 ---
 
