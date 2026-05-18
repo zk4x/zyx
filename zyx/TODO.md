@@ -186,6 +186,6 @@
   - [x] reduction ops: sum, mean, var, std, min, max, prod (with dim, keepdim, dtype, unbiased)
   - [x] shape ops: reshape, transpose, permute, squeeze, unsqueeze, flatten, expand, t
   - [x] linear algebra: matmul, dot
-  - [x] nn ops: softmax, log_softmax, cross_entropy
-  - [ ] indexing: slice, index_select, gather, scatter
+  - [x] nn ops: softmax, log_softmax, cross_entropy, conv2d
+  - [ ] indexing: scatter
   - [x] gather, index_select, one_hot, argmax, argmax_axis, conv
