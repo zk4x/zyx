@@ -92,6 +92,8 @@ pub(super) fn initialize_device(
                 mask |= 1u32 << (DType::I32 as u32);
                 mask |= 1u32 << (DType::I64 as u32);
                 mask |= 1u32 << (DType::Bool as u32);
+                mask |= 1u32 << (DType::F16 as u32);
+                mask |= 1u32 << (DType::BF16 as u32);
                 mask
             },
         },
@@ -229,7 +231,8 @@ impl CDevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
-        // Collect global defines for casting from args
+        // Collect global defines for casting from args and track F16/BF16 buffers
+        let mut f16_buffers: Set<OpId> = Set::with_capacity_and_hasher(8, BuildHasherDefault::new());
         let mut global_cast = String::new();
         let mut index: usize = 0;
         let mut op_id = kernel.head;
@@ -237,8 +240,13 @@ impl CDevice {
             let op = kernel.at(op_id);
             if let &Op::Define { dtype, scope, .. } = op {
                 if scope == Scope::Global {
-                    let ct = dtype.c_type();
-                    _ = writeln!(global_cast, "  {ct}* p{op_id} = ({ct}*)args[{index}];");
+                    if matches!(dtype, DType::F16 | DType::BF16) {
+                        f16_buffers.insert(op_id);
+                        _ = writeln!(global_cast, "  unsigned short* p{op_id} = (unsigned short*)args[{index}];");
+                    } else {
+                        let ct = dtype.c_type();
+                        _ = writeln!(global_cast, "  {ct}* p{op_id} = ({ct}*)args[{index}];");
+                    }
                     index += 1;
                 }
             } else {
@@ -340,6 +348,9 @@ impl CDevice {
                 &Op::Index { len, scope, .. } => {
                     match scope {
                         Scope::Global | Scope::Local => {
+                            if index_loop_depth == 0 && scope == Scope::Global && gws[0] > 1 {
+                                _ = writeln!(source, "{indent}#pragma omp parallel for");
+                            }
                             _ = writeln!(
                                 source,
                                 "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
@@ -377,24 +388,48 @@ impl CDevice {
                         let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
-                        if vlen > 1 {
-                            for i in 0..vlen {
-                                _ = writeln!(source, "{indent}r{reg}.s{i} = p{src}[{idx} + {i}];");
+                        if f16_buffers.contains(&src) {
+                            let is_bf16 = matches!(kernel.at(src), Op::Define { dtype: DType::BF16, .. });
+                            let conv = if is_bf16 { "bf16tof32" } else { "f16tof32" };
+                            if vlen > 1 {
+                                for i in 0..vlen {
+                                    _ = writeln!(source, "{indent}r{reg}.s{i} = {conv}(p{src}[{idx} + {i}]);");
+                                }
+                            } else {
+                                _ = writeln!(source, "{indent}r{reg} = {conv}(p{src}[{idx}]);");
                             }
                         } else {
-                            _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                            if vlen > 1 {
+                                for i in 0..vlen {
+                                    _ = writeln!(source, "{indent}r{reg}.s{i} = p{src}[{idx} + {i}];");
+                                }
+                            } else {
+                                _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                            }
                         }
                     }
                 }
                 &Op::Store { dst, x: src, index, vlen } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    if vlen > 1 {
-                        for i in 0..vlen {
-                            _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.s{i};");
+                    if f16_buffers.contains(&dst) {
+                        let is_bf16 = matches!(kernel.at(dst), Op::Define { dtype: DType::BF16, .. });
+                        let conv = if is_bf16 { "f32tobf16" } else { "f32tof16" };
+                        if vlen > 1 {
+                            for i in 0..vlen {
+                                _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {conv}({x}.s{i});");
+                            }
+                        } else {
+                            _ = writeln!(source, "{indent}p{dst}[{idx}] = {conv}({x});");
                         }
                     } else {
-                        _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                        if vlen > 1 {
+                            for i in 0..vlen {
+                                _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.s{i};");
+                            }
+                        } else {
+                            _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                        }
                     }
                 }
                 &Op::Cast { x, dtype } => {
@@ -558,8 +593,55 @@ impl CDevice {
         let c_path = tmp_dir.join(format!("{name}.c"));
         let so_path = tmp_dir.join(format!("{name}.so"));
 
+        // Add conversion helpers if F16/BF16 buffers are used
+        let f16_helpers = if f16_buffers.is_empty() {
+            String::new()
+        } else {
+            r##"static inline float f16tof32(unsigned short h) {
+  unsigned int sign = (unsigned int)(h & 0x8000) << 16;
+  unsigned int mantissa = (unsigned int)(h & 0x03FF);
+  unsigned int exp = (unsigned int)((h >> 10) & 0x1F);
+  unsigned int f;
+  if (exp == 0) {
+    if (mantissa == 0) { f = sign; }
+    else {
+      int e = -1; unsigned int m = mantissa;
+      while ((m & 0x0400) == 0) { m <<= 1; e--; }
+      f = sign | ((127 + e) << 23) | ((m & 0x03FF) << 13);
+    }
+  } else if (exp == 31) {
+    f = sign | 0x7F800000 | (mantissa << 13);
+  } else {
+    f = sign | ((exp + 112) << 23) | (mantissa << 13);
+  }
+  float r; memcpy(&r, &f, sizeof(r)); return r;
+}
+static inline unsigned short f32tof16(float v) {
+  unsigned int f; memcpy(&f, &v, sizeof(f));
+  unsigned int sign = (f >> 16) & 0x8000;
+  unsigned int exp = (f >> 23) & 0xFF;
+  unsigned int mantissa = f & 0x007FFFFF;
+  unsigned short h;
+  if (exp == 0) { h = (unsigned short)sign; }
+  else if (exp == 255) { h = (unsigned short)(sign | 0x7C00 | (mantissa >> 13)); }
+  else {
+    int new_exp = (int)exp - 127 + 15;
+    if (new_exp >= 31) { h = (unsigned short)(sign | 0x7C00); }
+    else if (new_exp <= 0) { h = (unsigned short)sign; }
+    else { h = (unsigned short)(sign | (new_exp << 10) | (mantissa >> 13)); }
+  }
+  return h;
+}
+static inline float bf16tof32(unsigned short h) {
+  unsigned int b = (unsigned int)h << 16; float r; memcpy(&r, &b, sizeof(r)); return r;
+}
+static inline unsigned short f32tobf16(float v) {
+  unsigned int b; memcpy(&b, &v, sizeof(b)); return (unsigned short)(b >> 16);
+}
+"##.to_string()
+        };
         // Add #include for math functions
-        let full_source = format!("#include <math.h>\n#include <stdint.h>\n{source}");
+        let full_source = format!("#include <math.h>\n#include <stdint.h>\n#include <string.h>\n#include <omp.h>\n{f16_helpers}{source}");
         std::fs::write(&c_path, &full_source).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to write C source: {e}").into(),
@@ -568,32 +650,58 @@ impl CDevice {
         // Try clang-11, clang, gcc, cc in order
         let compilers = ["clang-11", "clang", "gcc", "cc"];
         let compiler = compilers.iter().find(|c| Command::new(c).arg("--version").output().is_ok()).copied().unwrap_or("cc");
+        let is_clang = compiler.contains("clang");
 
-        let output = Command::new(compiler)
-            .args([
-                "-shared",
-                "-O2",
-                "-fPIC",
-                "-o",
-            ])
-            .arg(&so_path)
-            .arg(&c_path)
-            .arg("-lm")
-            .output()
-            .map_err(|e| BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("Failed to run compiler '{compiler}': {e}. Is a C compiler installed?").into(),
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if debug_asm {
-                println!("Compiler stderr:\n{stderr}");
+        // Try compiling with OpenMP first (best-effort parallelism)
+        let has_openmp = gws[0] > 1;
+        let openmp_success = if has_openmp {
+            let openmp_flag = if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" };
+            let output = Command::new(compiler)
+                .args(["-shared", "-O2", "-fPIC", "-o"])
+                .arg(&so_path)
+                .arg(&c_path)
+                .arg("-lm")
+                .arg(openmp_flag)
+                .output();
+            match output {
+                Ok(o) if o.status.success() => true,
+                _ => false,
             }
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("Compiler '{compiler}' compilation failed:\n{stderr}").into(),
-            });
+        } else {
+            false
+        };
+
+        if !openmp_success {
+            // Fall back to sequential: strip OpenMP pragma and include, recompile without -fopenmp
+            if has_openmp {
+                let seq_source = full_source
+                    .replace("#pragma omp parallel for\n", "")
+                    .replace("#include <omp.h>\n", "");
+                std::fs::write(&c_path, &seq_source).map_err(|e| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("Failed to write C source: {e}").into(),
+                })?;
+            }
+            let output = Command::new(compiler)
+                .args(["-shared", "-O2", "-fPIC", "-o"])
+                .arg(&so_path)
+                .arg(&c_path)
+                .arg("-lm")
+                .output()
+                .map_err(|e| BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("Failed to run compiler '{compiler}': {e}. Is a C compiler installed?").into(),
+                })?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if debug_asm {
+                    println!("Compiler stderr:\n{stderr}");
+                }
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("Compiler '{compiler}' compilation failed:\n{stderr}").into(),
+                });
+            }
         }
 
         // Load the shared library
