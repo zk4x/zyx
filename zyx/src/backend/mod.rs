@@ -373,7 +373,6 @@ pub struct DeviceInfo {
 impl DeviceInfo {
     /// Check if a dtype is supported by this device
     pub fn supports_dtype(&self, dtype: DType) -> bool {
-        println!("supports_dtype={dtype}, supported_dtypes={:?}", self.supported_dtypes);
         let bit = 1u32 << (dtype as u32);
         (self.supported_dtypes & bit) != 0
     }
