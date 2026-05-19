@@ -250,6 +250,7 @@ Tensor operations build a lazy computation graph. During realization, the graph 
 
 ## Backends
 
+- [x] **C** - CPU backend via C codegen (clang/gcc)
 - [x] **CUDA** - NVIDIA GPU acceleration  
 - [x] **OpenCL** - Cross-platform support (CPU via POCL, GPU via native OpenCL drivers)
 - [x] **WebGPU (WGPU)** - Modern web and native GPU support
