@@ -59,6 +59,9 @@ default = [
     #"time"
 ]
 
+# Enables C/Clang CPU backend
+c = []
+
 # Enables tenstorrent backend (Blackhole)
 tenstorrent = ["dep:libc"]
 

@@ -20,6 +20,8 @@ use crate::{
     shape::Dim,
     slab::{Slab, SlabId},
 };
+#[cfg(feature = "c")]
+use c::CDevice;
 use cuda::{CUDADevice, CUDAMemoryPool};
 use disk::DiskMemoryPool;
 use dummy::{DummyDevice, DummyMemoryPool};
@@ -31,6 +33,8 @@ use tenstorrent::{TTDevice, TTMemoryPool};
 #[cfg(feature = "wgpu")]
 use wgpu::{WGPUDevice, WGPUMemoryPool};
 
+#[cfg(feature = "c")]
+mod c;
 mod cuda;
 mod disk;
 mod dummy;
@@ -221,6 +225,12 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
+    #[cfg(feature = "c")]
+    if let Err(err) = c::initialize_device(&device_config.c, memory_pools, devices, debug_backends) {
+        if debug_backends {
+            println!("{err}");
+        }
+    }
     if let Err(err) = cuda::initialize_device(&device_config.cuda, memory_pools, devices, debug_backends) {
         if debug_backends {
             println!("{err}");
@@ -317,6 +327,9 @@ impl AutotuneConfig {
 pub struct Config {
     /// Kernel autotune configuration
     pub autotune: AutotuneConfig,
+    /// C/Clang backend configuration
+    #[cfg(feature = "c")]
+    pub c: c::CConfig,
     /// Configuration of dummy device for testing
     pub dummy: dummy::DummyConfig,
     /// CUDA configuration
@@ -529,6 +542,8 @@ impl MemoryPool {
 
 #[derive(Debug)]
 pub enum Device {
+    #[cfg(feature = "c")]
+    C(CDevice),
     Dummy(DummyDevice),
     CUDA(CUDADevice),
     OpenCL(OpenCLDevice),
@@ -543,6 +558,8 @@ impl Device {
     #[allow(unused)]
     pub const fn deinitialize(&mut self) {
         match self {
+            #[cfg(feature = "c")]
+            Device::C(dev) => dev.deinitialize(),
             Device::Dummy(dev) => dev.deinitialize(),
             Device::CUDA(dev) => dev.deinitialize(),
             Device::OpenCL(dev) => dev.deinitialize(),
@@ -556,6 +573,8 @@ impl Device {
 
     pub const fn info(&self) -> &DeviceInfo {
         match self {
+            #[cfg(feature = "c")]
+            Device::C(dev) => dev.info(),
             Device::Dummy(dev) => dev.info(),
             Device::CUDA(dev) => dev.info(),
             Device::OpenCL(dev) => dev.info(),
@@ -569,6 +588,8 @@ impl Device {
 
     pub const fn memory_pool_id(&self) -> PoolId {
         match self {
+            #[cfg(feature = "c")]
+            Device::C(dev) => dev.memory_pool_id(),
             Device::Dummy(dev) => dev.memory_pool_id(),
             Device::CUDA(dev) => dev.memory_pool_id(),
             Device::OpenCL(dev) => dev.memory_pool_id(),
@@ -585,6 +606,8 @@ impl Device {
     /// so that we spread the laod across all available devices appropriatelly.
     pub const fn free_compute(&self) -> u128 {
         match self {
+            #[cfg(feature = "c")]
+            Device::C(dev) => dev.free_compute(),
             Device::Dummy(dev) => dev.free_compute(),
             Device::CUDA(dev) => dev.free_compute(),
             Device::OpenCL(dev) => dev.free_compute(),
@@ -598,6 +621,8 @@ impl Device {
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         match self {
+            #[cfg(feature = "c")]
+            Device::C(dev) => dev.compile(kernel, debug_asm),
             Device::Dummy(dev) => dev.compile(kernel, debug_asm),
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
             Device::OpenCL(dev) => dev.compile(kernel, debug_asm),
@@ -611,6 +636,8 @@ impl Device {
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
         match self {
+            #[cfg(feature = "c")]
+            Device::C(dev) => dev.release(program_id),
             Device::Dummy(dev) => dev.release(program_id),
             Device::CUDA(dev) => dev.release(program_id),
             Device::OpenCL(dev) => dev.release(program_id),
@@ -630,6 +657,11 @@ impl Device {
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         match self {
+            #[cfg(feature = "c")]
+            Device::C(dev) => {
+                let MemoryPool::Host(pool) = memory_pool else { unreachable!() };
+                dev.launch(program_id, pool, args, event_wait_list)
+            }
             Device::Dummy(dev) => {
                 let MemoryPool::Dummy(pool) = memory_pool else { unreachable!() };
                 dev.launch(program_id, pool, args, event_wait_list)
