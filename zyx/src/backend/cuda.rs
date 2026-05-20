@@ -215,17 +215,23 @@ pub(super) fn initialize_device(
     };
 
     let mut include_path: Option<PathBuf> = None;
-    let roots = [PathBuf::from("/usr"), PathBuf::from("/opt")];
-    let mut stack: Vec<PathBuf> = roots.to_vec();
-    'a: while let Some(dir) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.file_name().is_some_and(|f| f == "cuda_fp16.h") {
-                    include_path = path.parent().map(PathBuf::from);
-                    break 'a;
+    // Prefer the system CUDA toolkit include path (compatible with the installed nvrtc).
+    let system_include = PathBuf::from("/usr/include/cuda_fp16.h");
+    if system_include.exists() {
+        include_path = Some(PathBuf::from("/usr/include"));
+    } else {
+        let roots = [PathBuf::from("/usr"), PathBuf::from("/opt")];
+        let mut stack: Vec<PathBuf> = roots.to_vec();
+        'a: while let Some(dir) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.file_name().is_some_and(|f| f == "cuda_fp16.h") {
+                        include_path = path.parent().map(PathBuf::from);
+                        break 'a;
+                    }
                 }
             }
         }
@@ -1677,7 +1683,6 @@ impl CUDADevice {
         ];
 
         if let Some(path) = &self.include_path {
-            //println!("path = {}", path.display());
             let path = format!("--include-path={}", path.display());
             opts.push(path);
         }

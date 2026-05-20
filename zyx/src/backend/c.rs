@@ -681,7 +681,7 @@ static inline unsigned short f32tobf16(float v) {
         let openmp_success = if has_openmp {
             let openmp_flag = if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" };
             let output = Command::new(compiler)
-                .args(["-shared", "-O2", "-fPIC", "-o"])
+                .args(["-shared", "-O3", "-ffast-math", "-fPIC", "-o"])
                 .arg(&so_path)
                 .arg(&c_path)
                 .arg("-lm")
@@ -707,7 +707,7 @@ static inline unsigned short f32tobf16(float v) {
                 })?;
             }
             let output = Command::new(compiler)
-                .args(["-shared", "-O2", "-fPIC", "-o"])
+                .args(["-shared", "-O3", "-ffast-math", "-fPIC", "-o"])
                 .arg(&so_path)
                 .arg(&c_path)
                 .arg("-lm")
