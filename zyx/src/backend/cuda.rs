@@ -616,6 +616,15 @@ pub(super) fn initialize_device(
         let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes: free_bytes as u64 });
         memory_pools.push(pool);
 
+        let mut supported_dtypes = u32::MAX;
+        // F16 (half) requires CC 5.3+ for cuda_fp16.h
+        if major < 5 || (major == 5 && minor < 3) {
+            supported_dtypes &= !(1 << DType::F16 as u32);
+        }
+        // BF16 requires CC 7.5+ for cuda_bf16.h
+        if major < 7 || (major == 7 && minor < 5) {
+            supported_dtypes &= !(1 << DType::BF16 as u32);
+        }
         let mut dev = CUDADevice {
             tx,
             device,
@@ -629,7 +638,7 @@ pub(super) fn initialize_device(
                 preferred_vector_size: 16,
                 tensor_cores: major > 7,
                 warp_size: 32,
-                supported_dtypes: u32::MAX,
+                supported_dtypes,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
@@ -661,7 +670,7 @@ pub(super) fn initialize_device(
             preferred_vector_size: 16,
             tensor_cores: major > 7,
             warp_size: 32,
-            supported_dtypes: u32::MAX,
+            supported_dtypes,
         };
         devices.push(Device::CUDA(dev));
     }
@@ -997,7 +1006,7 @@ enum CUdevice_attribute {
 impl DType {
     pub(super) const fn cu(&self) -> &str {
         match self {
-            Self::BF16 => "bfloat16",
+            Self::BF16 => "__nv_bfloat16",
             Self::F16 => "half",
             Self::F32 => "float",
             Self::F64 => "double",
@@ -1022,7 +1031,10 @@ impl Constant {
             if s.contains('.') { s.to_string() } else { format!("{s}.0") }
         }
         match self {
-            &Self::BF16(x) => format!("{}f", half::bf16::from_le_bytes(x)),
+            &Self::BF16(x) => {
+                let val: f32 = half::bf16::from_le_bytes(x).into();
+                format!("__float2bfloat16({}f)", format_precise(val, 9))
+            }
             &Self::F16(x) => {
                 //format!("__float2half({:.6})", half::f16::from_le_bytes(x)
                 let bits: u16 = half::f16::from_le_bytes(x).to_bits();
@@ -1437,7 +1449,11 @@ impl CUDADevice {
                         rcs[&op_id],
                         loop_id,
                     );
-                    _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
+                    if dtype == DType::BF16 {
+                        _ = writeln!(source, "{indent}r{reg} = __float2bfloat16((float){x_var});");
+                    } else {
+                        _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
+                    }
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
@@ -1613,6 +1629,9 @@ impl CUDADevice {
         if dtypes.values().any(|&x| x.0 == DType::F16) {
             pragma += "#include <cuda_fp16.h>\n";
             pragma += "struct __align__(8) half4 { half x, y, z, w; };\n";
+        }
+        if dtypes.values().any(|&x| x.0 == DType::BF16) {
+            pragma += "#include <cuda_bf16.h>\n";
         }
 
         let mut name = format!(
