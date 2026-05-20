@@ -276,7 +276,7 @@ pub(super) fn initialize_device(
                 local_mem_size: 0,
                 max_register_bytes: 96,
                 preferred_vector_size: 16,
-                tensor_cores: major > 7,
+                tensor_cores: major >= 7,
                 warp_size: 64,
                 supported_dtypes,
             },
@@ -317,7 +317,7 @@ pub(super) fn initialize_device(
             .unwrap(),
             max_register_bytes: 96,
             preferred_vector_size: 16,
-            tensor_cores: major > 7,
+            tensor_cores: major >= 7,
             warp_size: Dim::try_from(dev.get(
                 HIPdevice_attribute::hipDeviceAttributeWarpSize,
                 hipDeviceGetAttribute,

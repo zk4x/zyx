@@ -636,7 +636,7 @@ pub(super) fn initialize_device(
                 local_mem_size: 0,
                 max_register_bytes: 96,
                 preferred_vector_size: 16,
-                tensor_cores: major > 7,
+                tensor_cores: major >= 7,
                 warp_size: 32,
                 supported_dtypes,
             },
@@ -644,6 +644,14 @@ pub(super) fn initialize_device(
             compute_capability: [major, minor],
             include_path: include_path.clone(),
         };
+        let max_regs_per_block: i32 = dev.get(
+            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK,
+            cuDeviceGetAttribute,
+        )?;
+        let max_threads_per_block: i32 = dev.get(
+            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+            cuDeviceGetAttribute,
+        )?;
         dev.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024, // TODO run a kernel to get an estimate
             max_global_work_dims: vec![
@@ -651,11 +659,7 @@ pub(super) fn initialize_device(
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
             ],
-            max_local_threads: Dim::try_from(dev.get(
-                CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
-                cuDeviceGetAttribute,
-            )?)
-            .unwrap(),
+            max_local_threads: Dim::try_from(max_threads_per_block).unwrap(),
             max_local_work_dims: vec![
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, cuDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
@@ -666,9 +670,9 @@ pub(super) fn initialize_device(
                 cuDeviceGetAttribute,
             )?)
             .unwrap(),
-            max_register_bytes: 96,
+            max_register_bytes: (max_regs_per_block as u64 / max_threads_per_block as u64).min(255) * 4,
             preferred_vector_size: 16,
-            tensor_cores: major > 7,
+            tensor_cores: major >= 7,
             warp_size: 32,
             supported_dtypes,
         };
@@ -1649,9 +1653,9 @@ impl CUDADevice {
         }
 
         let cudartc_paths = [
-            "/lib/x86_64-linux-gnu/libnvrtc.so",
+            "/usr/local/cuda/lib64/libnvrtc.so",
             "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
-            "/usr/lib64/x86_64-linux/lib/libnvrtc.so",
+            "/lib/x86_64-linux-gnu/libnvrtc.so",
             "/usr/lib/libnvrtc.so",
             "/usr/lib64/libnvrtc.so",
         ];

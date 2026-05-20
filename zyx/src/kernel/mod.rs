@@ -756,6 +756,28 @@ impl Kernel {
         Vec::new()
     }
 
+    pub fn work_sizes(&self) -> (Vec<Dim>, Vec<Dim>) {
+        let mut gws = Vec::new();
+        let mut lws = Vec::new();
+        for node in self.ops.values() {
+            if let Op::Index { len, scope, axis } = node.op {
+                let a = axis as usize;
+                match scope {
+                    Scope::Global => {
+                        while gws.len() <= a { gws.push(1); }
+                        gws[a] = len;
+                    }
+                    Scope::Local => {
+                        while lws.len() <= a { lws.push(1); }
+                        lws[a] = len;
+                    }
+                    Scope::Register => {}
+                }
+            }
+        }
+        (gws, lws)
+    }
+
     #[allow(unused)]
     pub fn is_reshape_contiguous(&self, range: std::ops::Range<UAxis>, shape: &[Dim]) -> bool {
         self.ops.values().all(|node| match &node.op {

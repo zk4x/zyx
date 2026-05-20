@@ -339,7 +339,11 @@ impl Kernel {
             }
 
             if added == 0 {
-                break;
+                // Seed exhausted — remove it so we try another
+                if let Some(pos) = items.iter().position(|s| s == &opt_seq) {
+                    items.swap_remove(pos);
+                }
+                continue;
             }
 
             remove_worst(&mut items, n_removed_per_step, &mut rng);
@@ -349,22 +353,28 @@ impl Kernel {
         let mut best_time = u64::MAX;
         let mut best_program = DeviceProgramId::NULL;
         let mut best_opt_seq = OptSeq { opts: Vec::new(), cost: Cost::default() };
-        let mut i = n_launches;
         let mut any_success = false;
         let mut last_error = None;
-        while i > 0 {
-            let opt_seq = sample_best(&items, &mut rng);
+        // Sort items by cost and benchmark the cheapest ones
+        items.sort_by_key(|s| s.cost);
+        for opt_seq in items.iter().take(n_launches) {
             let mut kernel = kernel.clone();
 
+            println!("launch (cost: {}, n_opts: {}):", opt_seq.cost.cost, opt_seq.opts.len());
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, dev_info_ref);
-                //opt.debug(opt_cfg);
+                print!("  ");
+                opt.debug(opt_cfg);
                 opt.apply(&mut kernel, opt_cfg);
             }
+            let (gws, lws) = kernel.work_sizes();
+            println!("    -> gws={:?} lws={:?}", gws, lws);
+
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.fuse_mad();
+            //kernel.fuse_mma(dev_info_ref); // WMMA fusion is not yet correct
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
@@ -377,6 +387,8 @@ impl Kernel {
                 match kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes) {
                     Ok((program_id, time)) => {
                         any_success = true;
+                        let perf_line = crate::kernel_cache::get_perf(flop, read_bytes, write_bytes, time);
+                        println!("  -> {time} ns  {perf_line}");
                         if time < best_time {
                             best_program = program_id;
                             best_time = time;
@@ -388,8 +400,6 @@ impl Kernel {
                     }
                 }
             }
-
-            i -= 1;
         }
 
         if !any_success {

@@ -264,8 +264,6 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
-        let register_estimate = peak_reg_bytes;
-
         let global_ws = gws.iter().product::<u64>();
         let n_threads = lws.iter().product::<u64>();
         let instructions_per_thread = n_instructions;
@@ -281,17 +279,9 @@ impl Kernel {
         let total_barriers = n_threads * global_ws * barriers_per_thread;
 
         let memory_score =
-            ((total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64).min(1.0);
+            (total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64;
 
-        let workgroup_score = 1.0 - (n_threads as f64 / dev_info.max_local_threads as f64).min(1.0);
-
-        let register_score = if register_estimate > dev_info.max_register_bytes {
-            0.95
-        } else {
-            0.05
-        };
-
-        let cost = ((memory_score + register_score + workgroup_score) * 1_000_000_000.0) as u64;
+        let cost = (memory_score * 1_000_000_000.0) as u64;
 
         Cost { cost }
     }

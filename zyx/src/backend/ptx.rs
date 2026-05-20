@@ -559,7 +559,7 @@ pub(super) fn initialize_device(
                 local_mem_size: 0,
                 max_register_bytes: 96,
                 preferred_vector_size: 16,
-                tensor_cores: major > 7,
+                tensor_cores: major >= 7,
                 warp_size: 32,
                 supported_dtypes: u32::MAX,
             },
@@ -590,7 +590,7 @@ pub(super) fn initialize_device(
             .unwrap(),
             max_register_bytes: 96,
             preferred_vector_size: 16,
-            tensor_cores: major > 7,
+            tensor_cores: major >= 7,
             warp_size: 32,
             supported_dtypes: u32::MAX,
         };
