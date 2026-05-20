@@ -376,7 +376,9 @@ impl Kernel {
                                 (Dim::from(always), Dim::from(always || maybe))
                             }
                             BOp::Max => (min_x.max(min_y), max_x.max(max_y)),
-                            _ => unreachable!(),
+                            BOp::BitAnd => (0, max_x.min(max_y)),
+                            BOp::BitOr => (min_x | min_y, max_x | max_y),
+                            BOp::BitXor => (0, max_x.max(max_y)),
                         };
                         b.insert(op_id, range);
                     }

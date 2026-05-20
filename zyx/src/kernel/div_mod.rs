@@ -38,6 +38,7 @@ impl Kernel {
             op_id = next;
         }
 
+        self.dead_code_elimination();
         self.verify();
     }
 
@@ -93,6 +94,12 @@ impl Kernel {
             // Since c == divisor: result = b % divisor
             if c == divisor {
                 self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
+                // Pattern 1 on result: if b < divisor, b % divisor = b
+                if let Some(&(_, max_b)) = bounds.get(&b) {
+                    if max_b < divisor {
+                        self.remap(op_id, b);
+                    }
+                }
                 return;
             }
             // Pattern 2b: (a*c + b) % d when c % d == 1 -> (a + b) % d
@@ -100,6 +107,14 @@ impl Kernel {
             if c % divisor == 1 {
                 let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
                 self.ops[op_id].op = Op::Binary { x: a_plus_b, y: divisor_const, bop: BOp::Mod };
+                // Pattern 1 on result: if max(a) + max(b) < divisor, (a+b) % divisor = a+b
+                if let Some(&(_, max_a)) = bounds.get(&a)
+                    && let Some(&(_, max_b)) = bounds.get(&b)
+                {
+                    if max_a.saturating_add(max_b) < divisor {
+                        self.remap(op_id, a_plus_b);
+                    }
+                }
                 return;
             }
             // Pattern 2c: (a*c + b) % d when max(a*c + b) < d -> b % d
@@ -109,6 +124,10 @@ impl Kernel {
                 if let Some(&(min_b, max_b)) = bounds.get(&b) {
                     if min_b == 0 && max_a_c.saturating_add(max_b) < divisor {
                         self.ops[op_id].op = Op::Binary { x: b, y: divisor_const, bop: BOp::Mod };
+                        // Pattern 1 on result: if b < divisor, b % divisor = b
+                        if max_b < divisor {
+                            self.remap(op_id, b);
+                        }
                         return;
                     }
                 }
