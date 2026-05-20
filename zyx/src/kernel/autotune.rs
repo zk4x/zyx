@@ -311,7 +311,7 @@ impl Kernel {
                     opts.push((opt_id, config_id));
 
                     let mut new_kernel = thread_kernel.clone();
-                    avail_configs[opt_id].0.debug(config_id);
+                    //avail_configs[opt_id].0.debug(config_id);
                     avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
                     let hash = new_kernel.get_hash();
                     if visited.contains(&hash) {

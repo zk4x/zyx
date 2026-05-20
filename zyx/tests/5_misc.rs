@@ -817,6 +817,7 @@ fn eye1() {
 #[allow(unused)]
 #[test]
 fn bench_mm1() -> Result<(), ZyxError> {
+    println!("RANDOM PRINT STATEMENT");
     const N: usize = 1024;
     let dtype = zyx::DType::F32;
     let x = Tensor::rand([N as u64, N as u64], dtype)?;
