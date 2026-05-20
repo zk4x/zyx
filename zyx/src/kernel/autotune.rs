@@ -7,6 +7,7 @@
 
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
 use crate::error::BackendError;
+use crate::kernel::cost::Cost;
 use crate::kernel::{Kernel, Op, OpId, Scope};
 use crate::rng::Rng;
 use crate::shape::Dim;
@@ -398,117 +399,6 @@ impl Kernel {
         Ok((best_program, best_opt_seq))
     }
 
-    pub fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {
-        // TODO add measuring bank conflicts
-        let mut n_instructions = 0;
-        let mut n_scoped_loads = [0u64, 0, 0];
-        let mut n_scoped_stores = [0u64, 0, 0];
-        let mut barriers_per_thread = 0u64;
-
-        let mut gws = [1; 3];
-        let mut lws = [1; 3];
-        let mut loop_mult = 1;
-        let mut latest_loop_lengths = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            match self.ops[op_id].op {
-                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
-                    n_instructions += loop_mult;
-                }
-                #[allow(clippy::match_same_arms)]
-                Op::Const(_) | Op::Define { .. } => {}
-                Op::Load { src, vlen, .. } => {
-                    n_instructions += loop_mult;
-                    let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
-                    match scope {
-                        Scope::Global => n_scoped_loads[0] += loop_mult * u64::from(vlen),
-                        Scope::Local => n_scoped_loads[1] += loop_mult * u64::from(vlen),
-                        Scope::Register => n_scoped_loads[2] += loop_mult * u64::from(vlen),
-                    }
-                }
-                Op::Store { dst, vlen, .. } => {
-                    n_instructions += loop_mult * 3;
-                    let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
-                    match scope {
-                        Scope::Global => n_scoped_stores[0] += loop_mult * u64::from(vlen),
-                        Scope::Local => n_scoped_stores[1] += loop_mult * u64::from(vlen),
-                        Scope::Register => n_scoped_stores[2] += loop_mult * u64::from(vlen),
-                    }
-                }
-                Op::Index { len, scope, axis } => match scope {
-                    Scope::Global => gws[axis as usize] = len,
-                    Scope::Local => lws[axis as usize] = len,
-                    Scope::Register => todo!(),
-                },
-                Op::Loop { len } => {
-                    n_instructions += loop_mult * 3;
-                    loop_mult *= len as u64;
-                    latest_loop_lengths.push(len as u64);
-                }
-                Op::EndLoop => {
-                    loop_mult /= latest_loop_lengths.pop().unwrap();
-                }
-                Op::Wmma { dims, .. } => {
-                    let (m, n, k) = dims.decompose_mnk();
-                    let warp = u64::from(dev_info.warp_size);
-                    let cost = (m * n * k) as u64 / warp;
-                    n_instructions += loop_mult * cost;
-                }
-                Op::Barrier { .. } => {
-                    barriers_per_thread += loop_mult;
-                }
-                Op::If { .. } => {
-                    n_instructions += loop_mult * 3;
-                }
-                Op::EndIf => {}
-                Op::Devectorize { .. } => {
-                    todo!()
-                }
-                Op::Vectorize { .. } => {
-                    // TODO multiply all ops that are vectorized by the vectorization factor
-                    todo!()
-                }
-                Op::ConstView(_) => todo!(),
-                Op::LoadView(_) => todo!(),
-                Op::StoreView { .. } => todo!(),
-                Op::Move { .. } => todo!(),
-                Op::Reduce { .. } => todo!(),
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        let register_estimate: u64 = 0;
-
-        let global_ws = gws.iter().product::<Dim>();
-        let n_threads = lws.iter().product::<Dim>();
-        let instructions_per_thread = n_instructions;
-        let global_loads_per_thread = n_scoped_loads[0];
-        let local_loads_per_thread = n_scoped_loads[1];
-        let global_stores_per_thread = n_scoped_stores[0];
-        let local_stores_per_thread = n_scoped_stores[1];
-
-        let total_loads = n_threads * global_ws * global_loads_per_thread;
-        let total_stores = n_threads * global_ws * global_stores_per_thread;
-        let total_local = n_threads * global_ws * (local_loads_per_thread + local_stores_per_thread);
-        let total_instr = n_threads * global_ws * instructions_per_thread;
-        let total_barriers = n_threads * global_ws * barriers_per_thread;
-
-        let memory_score =
-            ((total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64).min(1.0);
-
-        let workgroup_score = 1.0 - (n_threads as f64 / dev_info.max_local_threads as f64).min(1.0);
-
-        let register_score = if register_estimate > dev_info.max_register_bytes {
-            0.95
-        } else {
-            0.05
-        };
-
-        let cost = ((memory_score + register_score + workgroup_score) * 1_000_000_000.0) as u64;
-
-        Cost { cost }
-    }
-
     pub fn get_hash(&self) -> u64 {
         use sha2::Digest;
         struct H(sha2::Sha256);
@@ -546,31 +436,6 @@ impl Kernel {
             println!("{perf}");
         }
         Ok((program_id, nanos))
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, Hash, DeBin, SerBin)]
-pub struct Cost {
-    cost: u64,
-}
-
-impl PartialEq for Cost {
-    fn eq(&self, other: &Self) -> bool {
-        self.cost == other.cost
-    }
-}
-
-impl Eq for Cost {}
-
-impl Ord for Cost {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.cost.cmp(&other.cost)
-    }
-}
-
-impl PartialOrd for Cost {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
     }
 }
 
