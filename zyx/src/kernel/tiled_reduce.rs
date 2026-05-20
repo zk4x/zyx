@@ -79,6 +79,8 @@ impl Kernel {
     }
 
     pub fn tiled_reduce(&mut self, loop_start: OpId, factor: u64, tree_branch: u64) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("tiled_reduce");
         let loop_len = if let Op::Loop { len } = self.at(loop_start) {
             *len
         } else {

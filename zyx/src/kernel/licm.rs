@@ -58,6 +58,8 @@ impl Kernel {
     }
 
     pub fn reassociate_commutative(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("reassociate_commutative");
         let mut loop_dep: Map<OpId, usize> = Map::default();
         let mut loop_depth = 0;
         let mut op_id = self.head;

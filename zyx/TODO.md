@@ -112,7 +112,8 @@
   - [x] loop unrolling
     - [x] in optimizer
     - [x] in kernel
-  - [ ] potentially integrate optimizer into kernel
+  - [ ] coalesced loads (lidx vs const offset swap in upcast)
+  - [x] potentially integrate optimizer into kernel
   - [ ] improve unfold_pows
     - [ ] specialized case for integers
     - [ ] specialized case for constants
@@ -187,5 +188,5 @@
   - [x] shape ops: reshape, transpose, permute, squeeze, unsqueeze, flatten, expand, t
   - [x] linear algebra: matmul, dot
   - [x] nn ops: softmax, log_softmax, cross_entropy
-  - [ ] indexing: slice, index_select, gather, scatter
+  - [x] indexing: slice, index_select, gather, scatter
   - [x] gather, index_select, one_hot, argmax, argmax_axis, conv

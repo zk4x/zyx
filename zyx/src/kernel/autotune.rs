@@ -119,15 +119,11 @@ impl Optimization {
     pub fn apply(&self, kernel: &mut Kernel, config: usize) {
         match self {
             Optimization::ReassociateCommutative => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("ReassociateCommutative");
                 kernel.reassociate_commutative();
             }
             Optimization::UnrollLoops { factors } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("UnrollLoops");
                 let factor = factors[config];
-                if (kernel.ops.len().0 as usize) < 500 {
+                if (kernel.ops.len().0 as usize) < 5000 {
                     kernel.unroll_loops(factor);
                 }
             }
@@ -147,8 +143,6 @@ impl Optimization {
                 );
             }
             Optimization::Upcast { factors } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("Upcast");
                 if factors.is_empty() {
                     return;
                 }
@@ -156,31 +150,21 @@ impl Optimization {
                 kernel.upcast(op_id, factor);
             }
             Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("RegisterTiling");
                 kernel.apply_register_tiling(reduce_splits, global_upcasts, config);
             }
             Optimization::UnrollConstantLoops => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("UnrollConstantLoops");
                 kernel.unroll_constant_loops();
             }
             Optimization::TiledReduce { factors } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("TiledReduce");
                 let (op_id, factor, tree_branch) = factors[config];
                 kernel.tiled_reduce(op_id, factor, tree_branch);
             }
             Optimization::SplitLoop { factors } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("SplitLoop");
                 let (op_id, factor) = factors[config];
                 let Op::Loop { len } = kernel.ops[op_id].op else { unreachable!() };
                 kernel.split_dim(op_id, vec![Op::Loop { len: len / factor }, Op::Loop { len: factor }]);
             }
             Optimization::Licm => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("Licm");
                 kernel.loop_invariant_code_motion();
             }
         }
@@ -304,15 +288,15 @@ impl Kernel {
 
         let mut rng = Rng::seed_from_u64(3_498_203_498);
         let mut exhausted = Set::default();
-        while items.len() < n_total_opts && !items.is_empty() {
+        let mut i = 0;
+        while i < n_total_opts && !items.is_empty() {
+            i += 1;
             let mut thread_kernel = kernel.clone();
             let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else { break };
             opt_seq.apply(&mut thread_kernel, dev_info_ref);
             thread_kernel.run_always_on_optimizations();
 
-            if thread_kernel.ops.len().0 > 5000 {
-                continue;
-            }
+            //println!("Next opt {i}, kernel size: {:?}", thread_kernel.ops.len());
 
             let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel, dev_info_ref));
             let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
@@ -327,6 +311,7 @@ impl Kernel {
                     opts.push((opt_id, config_id));
 
                     let mut new_kernel = thread_kernel.clone();
+                    avail_configs[opt_id].0.debug(config_id);
                     avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
                     let hash = new_kernel.get_hash();
                     if visited.contains(&hash) {
@@ -334,6 +319,11 @@ impl Kernel {
                     }
                     let new_seq = OptSeq { opts, cost: new_kernel.get_cost(dev_info_ref) };
                     visited.insert(hash);
+
+                    if new_kernel.ops.len().0 > 10000 {
+                        exhausted.insert(new_seq.clone());
+                    }
+
                     items.push(new_seq);
                     added += 1;
                 }
@@ -341,7 +331,8 @@ impl Kernel {
 
             if added == 0 {
                 // Seed can't be optimized further
-                exhausted.insert(opt_seq);
+                //exhausted.insert(opt_seq);
+                break;
             }
 
             remove_worst(&mut items, n_removed_per_step, &mut rng);
@@ -366,7 +357,6 @@ impl Kernel {
                 opt.apply(&mut kernel, opt_cfg);
             }
             let (gws, lws) = kernel.work_sizes();
-            println!("    -> gws={:?} lws={:?}", gws, lws);
 
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();

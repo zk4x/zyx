@@ -77,6 +77,8 @@ impl Kernel {
     /// Splits dim (index or loop) into multiple indices or loops
     /// Returns the `OpId`s of the created split operations in the order they were provided
     pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) -> Vec<OpId> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("split_dim");
         let is_loop = matches!(self.ops[dim_id].op, Op::Loop { .. });
 
         #[cfg(debug_assertions)]
