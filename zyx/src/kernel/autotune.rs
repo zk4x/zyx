@@ -303,10 +303,10 @@ impl Kernel {
         }
 
         let mut rng = Rng::seed_from_u64(3_498_203_498);
-        let mut exhausted = Vec::new();
+        let mut exhausted = Set::default();
         while items.len() < n_total_opts && !items.is_empty() {
             let mut thread_kernel = kernel.clone();
-            let opt_seq = sample_best(&items, &mut rng).clone();
+            let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else { break };
             opt_seq.apply(&mut thread_kernel, dev_info_ref);
             thread_kernel.run_always_on_optimizations();
 
@@ -340,17 +340,12 @@ impl Kernel {
             }
 
             if added == 0 {
-                // Seed can't be extended further — move to exhausted for benchmarking
-                if let Some(pos) = items.iter().position(|s| s == &opt_seq) {
-                    exhausted.push(items.swap_remove(pos));
-                }
-                continue;
+                // Seed can't be optimized further
+                exhausted.insert(opt_seq);
             }
 
             remove_worst(&mut items, n_removed_per_step, &mut rng);
         }
-        // Restore exhausted seeds so they're included in benchmarking
-        items.extend(exhausted);
 
         let mut launched_kernels = Set::default();
         let mut best_time = u64::MAX;
@@ -494,20 +489,28 @@ fn remove_worst(items: &mut Vec<OptSeq>, mut n: usize, rng: &mut Rng) {
     }
 }
 
-fn sample_best<'a>(items: &'a [OptSeq], rng: &mut Rng) -> &'a OptSeq {
-    const K: usize = 2;
-    debug_assert!(!items.is_empty(), "sample_best called with empty items");
-    let len = items.len();
-    let mut best_idx = rng.range::<u64>(0..len as u64) as usize;
-    let mut best_cost = items[best_idx].cost;
-    for _ in 1..K {
-        let i = rng.range::<u64>(0..len as u64) as usize;
-        let cost = items[i].cost;
-        if cost < best_cost {
-            best_idx = i;
-            best_cost = cost;
+fn sample_best<'a>(items: &'a [OptSeq], exhausted: &Set<OptSeq>, rng: &mut Rng) -> Option<&'a OptSeq> {
+    for _ in 0..5 {
+        const K: usize = 2;
+        debug_assert!(!items.is_empty(), "sample_best called with empty items");
+        let len = items.len();
+        let mut best_idx = rng.range::<u64>(0..len as u64) as usize;
+        let mut best_cost = items[best_idx].cost;
+        for _ in 1..K {
+            let i = rng.range::<u64>(0..len as u64) as usize;
+            let cost = items[i].cost;
+            if cost < best_cost {
+                best_idx = i;
+                best_cost = cost;
+            }
         }
+
+        if exhausted.contains(&items[best_idx]) {
+            continue;
+        }
+
+        return Some(&items[best_idx]);
     }
 
-    &items[best_idx]
+    None
 }
