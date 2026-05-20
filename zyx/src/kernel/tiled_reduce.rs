@@ -1,6 +1,18 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Tiled parallel reduction for large single-dimension reduction kernels.
+//!
+//! This optimization targets kernels that contain a **single large loop reducing
+//! into one register accumulator** — e.g., `for i in 0..32000 { sum += data[i] }`.
+//! It parallelizes the reduction across threads by splitting the loop iterations,
+//! storing partial sums in shared memory, and doing a tree-reduce to produce the
+//! final scalar result.
+//!
+//! **This is NOT a matmul optimization.** Applying it to a matmul kernel
+//! would make performance worse than a naive matmul. It is designed for
+//! standalone reduction ops (e.g. `Tensor::sum` over a large axis).
+
 use super::autotune::Optimization;
 use crate::{
     backend::DeviceInfo,
