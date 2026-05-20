@@ -6,7 +6,7 @@
 #![allow(clippy::derived_hash_with_manual_eq)]
 
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
-use crate::error::BackendError;
+use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::cost::Cost;
 use crate::kernel::{Kernel, Op, OpId, Scope};
 use crate::rng::Rng;
@@ -303,6 +303,7 @@ impl Kernel {
         }
 
         let mut rng = Rng::seed_from_u64(3_498_203_498);
+        let mut exhausted = Vec::new();
         while items.len() < n_total_opts && !items.is_empty() {
             let mut thread_kernel = kernel.clone();
             let opt_seq = sample_best(&items, &mut rng).clone();
@@ -339,15 +340,17 @@ impl Kernel {
             }
 
             if added == 0 {
-                // Seed exhausted — remove it so we try another
+                // Seed can't be extended further — move to exhausted for benchmarking
                 if let Some(pos) = items.iter().position(|s| s == &opt_seq) {
-                    items.swap_remove(pos);
+                    exhausted.push(items.swap_remove(pos));
                 }
                 continue;
             }
 
             remove_worst(&mut items, n_removed_per_step, &mut rng);
         }
+        // Restore exhausted seeds so they're included in benchmarking
+        items.extend(exhausted);
 
         let mut launched_kernels = Set::default();
         let mut best_time = u64::MAX;
@@ -403,7 +406,10 @@ impl Kernel {
         }
 
         if !any_success {
-            return Err(last_error.unwrap());
+            return Err(last_error.unwrap_or(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "No successful kernel launches.".into(),
+            }));
         }
 
         Ok((best_program, best_opt_seq))
