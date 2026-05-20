@@ -24,8 +24,8 @@ use std::{
     ffi::CString,
     fmt::Write,
     hash::BuildHasherDefault,
+    path::PathBuf,
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 #[derive(Debug, Default, DeJson)]
@@ -124,6 +124,34 @@ impl CDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
+        // --- Phase 0: Compute kernel hash and check disk cache ---
+        let hash = kernel.get_hash();
+        let name = format!("k_{hash:016x}");
+
+        let cache_dir = std::env::var_os("XDG_CONFIG_HOME")
+            .and_then(|p| {
+                let p = PathBuf::from(p);
+                if p.is_absolute() { Some(p) } else { None }
+            })
+            .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
+            .map(|p| p.join("zyx/cache/c"));
+
+        if let Some(ref cache_dir) = cache_dir {
+            let cached_so = cache_dir.join(format!("{hash:016x}.so"));
+            if cached_so.is_file() {
+                if debug_asm {
+                    println!("Loading cached kernel {name} from {:?}", cached_so);
+                }
+                if let Ok(lib) = unsafe { Library::new(&cached_so) } {
+                    let program_id = self.programs.push(CProgram { lib, name });
+                    return Ok(program_id);
+                }
+                if debug_asm {
+                    println!("Failed to load cached kernel, recompiling...");
+                }
+            }
+        }
+
         // --- Phase 1: collect global args, gws/lws ---
         let mut gws = vec![1u64; 3];
         let mut op_id = kernel.head;
@@ -254,10 +282,6 @@ impl CDevice {
             }
             op_id = kernel.next_op(op_id);
         }
-
-        // Build unique kernel name using a monotonically increasing counter
-        static NEXT_KERNEL_ID: AtomicU64 = AtomicU64::new(0);
-        let name = format!("k_{}", NEXT_KERNEL_ID.fetch_add(1, Ordering::Relaxed));
 
         // Emit function header with void** args
         _ = writeln!(source, "void {name}(void** args, unsigned long nargs) {{");
@@ -702,6 +726,13 @@ static inline unsigned short f32tobf16(float v) {
                     context: format!("Compiler '{compiler}' compilation failed:\n{stderr}").into(),
                 });
             }
+        }
+
+        // Cache the compiled .so for future runs
+        if let Some(ref cache_dir) = cache_dir {
+            let _ = std::fs::create_dir_all(cache_dir);
+            let cached_so = cache_dir.join(format!("{hash:016x}.so"));
+            let _ = std::fs::copy(&so_path, &cached_so);
         }
 
         // Load the shared library
