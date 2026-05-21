@@ -124,6 +124,7 @@ impl Kernel {
                     let (op1, op2) = match uop {
                         UOp::Neg => ("-", ""),
                         UOp::BitNot => ("~", ""),
+                        UOp::Exp => ("exp(", ")"),
                         UOp::Exp2 => ("exp2(", ")"),
                         UOp::Log2 => ("log2(", ")"),
                         UOp::Reciprocal => ("1/", ""),
@@ -387,6 +388,7 @@ impl Kernel {
                     let (op1, op2) = match uop {
                         UOp::Neg => ("-", ""),
                         UOp::BitNot => ("~", ""),
+                        UOp::Exp => ("exp(", ")"),
                         UOp::Exp2 => ("exp2(", ")"),
                         UOp::Log2 => ("log2(", ")"),
                         UOp::Reciprocal => ("1/", ""),

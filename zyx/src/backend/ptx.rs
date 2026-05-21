@@ -1200,6 +1200,7 @@ impl Compiler {
         match uop {
             UOp::Neg => "neg",
             UOp::BitNot => "not",
+            UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching PTX backend"),
             UOp::Exp2 => "ex2.approx",
             UOp::Log2 => "lg2.approx",
             UOp::Reciprocal => "rcp.approx",

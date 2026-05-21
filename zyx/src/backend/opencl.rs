@@ -855,6 +855,7 @@ impl OpenCLDevice {
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
+                        UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching OpenCL backend"),
                         UOp::Exp2 => {
                             if dtype.0 == DType::F16 {
                                 _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");

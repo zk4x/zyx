@@ -57,6 +57,7 @@ pub enum Scope {
 pub enum UOp {
     Neg,
     BitNot,
+    Exp,
     Exp2,
     Log2,
     Reciprocal,

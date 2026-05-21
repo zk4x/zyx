@@ -465,6 +465,7 @@ impl CDevice {
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
+                        UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching C backend"),
                         UOp::Exp2 => _ = writeln!(source, "{indent}r{reg} = exp2({x});"),
                         UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
                         UOp::Reciprocal => {

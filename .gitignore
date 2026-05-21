@@ -13,7 +13,6 @@ zyx-examples/data
 zyx-examples/models
 zyx-examples/venv
 generated/
-zyx-tt-runtime/zyx-tt-runtime
 docs/*
 zyx/Cargo.lock
 zyx/tests/__temp_test.rs

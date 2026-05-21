@@ -472,6 +472,7 @@ impl WGPUDevice {
                             todo!();
                         }
                         UOp::Neg => writeln!(source, "{indent}let r{op_id} = -r{x};").unwrap(),
+                        UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching WGPU backend"),
                         UOp::Exp2 => {
                             //writeln!(source, "{indent}printf(\"%d\\n\", r{reg});").unwrap();
                             writeln!(source, "{indent}let r{op_id} = exp2(r{x});").unwrap();
