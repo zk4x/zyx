@@ -3,31 +3,317 @@
 
 //! Tenstorrent backend for zyx.
 //!
-//! This backend compiles zyx kernel IR to tt-metal compute kernels that
-//! execute on Tensix RISC-V cores. It uses the low-level C++ kernel API
-//! (compute_kernel_api.h), not the high-level ttnn op API.
+//! # Architecture Overview
 //!
-//! # Architecture
+//! The Tenstorrent backend compiles zyx kernel IR into tt-metal kernels that
+//! execute on Tensix RISC-V cores. It uses the low-level compute kernel API
+//! (`compute_kernel_api.h`), NOT the high-level ttnn op API.
 //!
-//! Each Tensix core runs 5 RISC-V processors in parallel:
-//! - **BRISC** (boot RISC): data movement master, runs the reader kernel
-//! - **NCRISC** (NOC RISC): data movement, runs the writer kernel
-//! - **TRISC0/1/2** (triplicated compute RISC): unpack, math, pack pipeline
+//! ## Three-Process Model
 //!
-//! A single zyx kernel is compiled to three coordinated tt-metal kernels:
-//! 1. **Reader kernel** (BRISC): reads tiles from DRAM into circular buffers (CBs)
-//!    via `noc_async_read`. Each input tensor gets a CB.
-//! 2. **Compute kernel** (TRISC0/1/2): operates on tiles in DST register file.
-//! 3. **Writer kernel** (NCRISC): reads output tiles from CB and writes to DRAM
-//!    via `noc_async_write`.
+//! ```text
+//! ┌─────────────────────────────────────────────────────────┐
+//! │              Rust Process (zyx)                         │
+//! │  ┌───────────────┐    ┌──────────────────────────────┐  │
+//! │  │  TTMemoryPool  │    │         TTDevice             │  │
+//! │  │  - alloc/free  │    │  - compile() → hash +        │  │
+//! │  │  DMA buffers   │    │    generate_compute_kernel() │  │
+//! │  │  - noc_address │    │  - launch() → args + IPC     │  │
+//! │  │  - mmap ptr    │    │  - deinitialize() → exit     │  │
+//! │  └──────┬─────────┘    └─────────┬────────────────────┘  │
+//! │         │                        │                        │
+//! │         │ noc_address(u64)       │ JSON stdin/stdout      │
+//! │         │ buffer_size(u64)       │ {cmd,hash,n_tiles,     │
+//! │         ▼                        │  src_noc,dst_noc}      │
+//! │  ┌──────────────────────────────────────────────┐         │
+//! │  │         RuntimeProcess                       │         │
+//! │  │  - spawns C++ binary as child                │         │
+//! │  │  - BufWriter<ChildStdin>  → send JSON lines  │         │
+//! │  │  - BufReader<ChildStdout> ← recv JSON lines  │         │
+//! │  │  - try_wait() on recv to detect dead child   │         │
+//! │  │    (equiv to CUDA channel disconnect detect) │         │
+//! │  └──────────────────────┬───────────────────────┘         │
+//! └─────────────────────────┼─────────────────────────────────┘
+//!                           │ pipe
+//! ┌─────────────────────────┼─────────────────────────────────┐
+//! │              C++ Process (zyx-tt-runtime)                 │
+//! │  ┌──────────────────────────────────────────────────┐     │
+//! │  │                  main.cpp                         │     │
+//! │  │  JSON IPC loop:                                   │     │
+//! │  │  "init"  → tt_device.open() → return "ok"         │     │
+//! │  │  "run"   → reader.cpp + compute.cpp + writer.cpp  │     │
+//! │  │            SetRuntimeArgs(src_noc,dst_noc,n_tiles)│     │
+//! │  │            tt_device.run() → return "ok"          │     │
+//! │  │  "exit"  → return "bye"                           │     │
+//! │  └──────────────────────┬───────────────────────────┘     │
+//! │                         │                                  │
+//! │                         ▼                                  │
+//! │  ┌──────────────────────────────────────────────────┐     │
+//! │  │            tt-metal library calls                 │     │
+//! │  │  - Device::create(0)                              │     │
+//! │  │  - Program::create()                              │     │
+//! │  │  - CreateKernel(reader.cpp, BRISC)                │     │
+//! │  │  - CreateKernel(compute.cpp, TRISC)               │     │
+//! │  │  - CreateKernel(writer.cpp, NCRISC)               │     │
+//! │  │  - SetRuntimeArgs(reader, {src_noc, n_tiles})     │     │
+//! │  │  - SetRuntimeArgs(compute, {n_tiles})             │     │
+//! │  │  - SetRuntimeArgs(writer, {dst_noc, n_tiles})     │     │
+//! │  │  - EnqueueProgram(device, program, queue)         │     │
+//! │  └──────────────────────┬───────────────────────────┘     │
+//! └─────────────────────────┼─────────────────────────────────┘
+//!                           │ MMIO + PCIe
+//!                           ▼
+//! ┌─────────────────────────────────────────────────────────┐
+//! │             Blackhole ASIC (Tensix Array)                │
+//! │  ┌──────────────────────────────────────────────────┐   │
+//! │  │  Tensix Core (1 of 1408)                         │   │
+//! │  │  ┌─────────┐ ┌──────────┐ ┌──────────┐           │   │
+//! │  │  │ BRISC   │ │ TRISC0   │ │ TRISC1   │           │   │
+//! │  │  │ reader  │ │ unpack   │ │ math     │           │   │
+//! │  │  │ noc_async│ │ copy_tile│ │ sfpu_op  │           │   │
+//! │  │  │ _read   │ │          │ │ pack_tile│           │   │
+//! │  │  ├─────────┤ ├──────────┤ ├──────────┤           │   │
+//! │  │  │ NCRISC  │ │ TRISC2   │ │ DST Regs │           │   │
+//! │  │  │ writer  │ │ pack     │ │ (4 tiles)│           │   │
+//! │  │  │ noc_async│ └──────────┘ └──────────┘           │   │
+//! │  │  │ _write  │                                       │   │
+//! │  │  └─────────┘                                       │   │
+//! │  └──────────────────────────────────────────────────┘   │
+//! │                                                          │
+//! │  GDDR6 (via NOC): 28-64 GB, 1 TB/s bandwidth            │
+//! │  L1 per core: 2.5 MB                                    │
+//! └─────────────────────────────────────────────────────────┘
+//! ```
 //!
-//! # Memory Model
+//! ## Key Design Decisions
 //!
-//! - **DRAM** (global memory): accessed via NOC by reader/writer kernels.
-//! - **L1** (local memory): circular buffers for tile data between kernels.
-//! - **DST registers**: 4 tile slots on the math processor.
+//! ### No Data Over IPC
 //!
-//! # Hardware access
+//! Zero tensor data crosses the JSON pipe. Rust allocates DMA buffers via
+//! `TENSTORRENT_IOCTL_ALLOCATE_DMA_BUF`, which returns a **NOC address** —
+//! a physical address the Tensix NOC can DMA from/to. The NOC address is
+//! passed to the C++ runtime as a `u64` and set as a runtime argument on
+//! reader/writer kernels via `SetRuntimeArgs`. The flow:
+//!
+//! ```text
+//! 1. Rust allocates DMA buf  → gets noc_address + mmap ptr
+//! 2. Rust writes test data   → memcpy into mmap (CPU → GDDR6)
+//! 3. Rust sends "run" IPC    → {src_noc, dst_noc, n_tiles}
+//! 4. C++ calls SetRuntimeArgs(reader, {src_noc, n_tiles})
+//! 5. C++ calls SetRuntimeArgs(writer, {dst_noc, n_tiles})
+//! 6. EnqueueProgram → Tensix runs:
+//!    reader: noc_async_read(src_noc → CB)
+//!    compute: SFPU op on tile in DST regs
+//!    writer: noc_async_write(CB → dst_noc)
+//! 7. Rust reads result       → memcpy from mmap (GDDR6 → CPU)
+//! ```
+//!
+//! ### Runtime Process Lifecycle
+//!
+//! - **Spawned lazily**: first `compile()` call spawns the C++ child, not during
+//!   `initialize_device()`. This avoids keeping a child process alive when the
+//!   TT backend is configured but unused.
+//! - **One process per device**: each `TTDevice` gets its own `RuntimeProcess`.
+//! - **Tear-down**: `TTDevice::deinitialize()` sends `{"cmd":"exit"}`, waits for
+//!   `"bye"`, then `child.wait()`.
+//! - **Crash detection**: `recv()` calls `child.try_wait()` before reading stdout.
+//!   If the child has exited (e.g., segfault in tt-metal), returns error immediately
+//!   instead of blocking forever on a dead pipe.
+//!
+//! ### Tiling Convention
+//!
+//! Tiling is handled by IR optimization passes, NOT by the backend. A tile is
+//! 32×32 bfloat16 = 1024 elements = 2048 bytes. The backend computes
+//! `n_tiles = ceil(buffer_size / 2048)` from the DMA buffer size. IR passes
+//! ensure `vlen=1024` before the kernel reaches the TT backend.
+//!
+//! ## Tensix Processor Roles
+//!
+//! Each Tensix core runs 5 RISC-V processors in parallel, coordinated by
+//! circular buffers (CBs) in L1 memory:
+//!
+//! | Processor | Role | Kernel | CB Direction |
+//! |-----------|------|--------|-------------|
+//! | **BRISC** | Data movement master | Reader | DRAM → CB c_0..c_15 |
+//! | **NCRISC** | NOC data movement | Writer | CB c_16..c_31 → DRAM |
+//! | **TRISC0** | Unpack | unpack tiles from CB → DST regs | CB → DST |
+//! | **TRISC1** | Math | execute SFPU ops on DST regs | DST → DST |
+//! | **TRISC2** | Pack | pack DST regs → output CB | DST → CB |
+//!
+//! ## Kernel Pipeline
+//!
+//! ```text
+//!                  ┌──────────┐
+//!                  │  DRAM    │
+//!                  │  GDDR6   │
+//!                  └────┬─────┘
+//!                       │ noc_async_read
+//!                       ▼
+//!                 ┌───────────┐
+//!                 │  CB c_0   │  ← reader kernel (BRISC)
+//!                 │  (input)  │
+//!                 └─────┬─────┘
+//!                       │ copy_tile
+//!                       ▼
+//!                 ┌───────────┐
+//!                 │ DST REGS  │  ← compute kernel (TRISCs)
+//!                 │ (4 tiles) │     SFPU: exp, recip, neg, etc.
+//!                 └─────┬─────┘
+//!                       │ pack_tile
+//!                       ▼
+//!                 ┌───────────┐
+//!                 │  CB c_16  │  ← writer kernel (NCRISC)
+//!                 │  (output) │
+//!                 └─────┬─────┘
+//!                       │ noc_async_write
+//!                       ▼
+//!                  ┌──────────┐
+//!                  │  DRAM    │
+//!                  │  GDDR6   │
+//!                  └──────────┘
+//! ```
+//!
+//! ## Memory Model
+//!
+//! ### DMA Buffers (GDDR6)
+//!
+//! Memory is allocated as DMA buffers via ioctl on `/dev/tenstorrent/N`:
+//!
+//! ```rust,ignore
+//! struct TTAllocateDmaBufOut {
+//!     physical_address: u64,   // physical addr for PCIe BAR mmap
+//!     mapping_offset: u64,     // offset for mmap(fd, offset=mapping_offset)
+//!     size: u32,               // actual allocated size (≥ requested, page-aligned)
+//!     noc_address: u64,        // NOC addr for Tensix DMA (reader/writer kernels)
+//! }
+//! ```
+//!
+//! - **`mmap`**: CPU accesses GDDR6 via `mmap(fd, PROT_READ|PROT_WRITE, MAP_SHARED,
+//!   offset=mapping_offset)`. The returned pointer is used for `host_to_pool`/`pool_to_host`
+//!   (memcpy).
+//! - **`noc_address`**: Reader/writer kernels use this via `noc_async_read(noc_addr, ...)`
+//!   and `noc_async_write(noc_addr, ...)`. This is the physical NOC address on the
+//!   Blackhole mesh network.
+//! - **`flags=1`**: The ioctl `flags` field must be set to 1 to make the buffer
+//!   NOC-accessible. With `flags=0`, the buffer is only accessible via CPU mmap.
+//! - **Buffer lifecycle**: One fd per buffer. The kernel driver's `FREE_DMA_BUF`
+//!   ioctl returns `-EINVAL`, so deallocation happens by closing the fd (the kernel
+//!   frees GDDR6 on fd close).
+//!
+//! ### Circular Buffers (L1)
+//!
+//! L1-resident circular buffers connect the three kernels on each Tensix core.
+//! The naming convention uses `tt::CBIndex`:
+//!
+//! | CB Index | Content | Reader/Writer |
+//! |----------|---------|---------------|
+//! | `c_0` | Input tile (from DRAM) | Reader writes, TRISC0 reads |
+//! | `c_16` | Output tile (to DRAM) | TRISC2 writes, Writer reads |
+//!
+//! ### DST Register File
+//!
+//! The math processor has 4 tile slots in the DST register file. Compute kernels:
+//! 1. `tile_regs_acquire()` — lock DST
+//! 2. `copy_tile(cb, 0, 0)` — copy tile from CB to DST slot 0
+//! 3. `sfpu_op(0)` — apply SFPU unary to DST slot 0
+//! 4. `tile_regs_commit()` — unlock DST
+//! 5. `tile_regs_wait()` — wait for commit
+//! 6. `pack_tile(0, cb_out)` — pack DST slot 0 → output CB
+//! 7. `tile_regs_release()` — release
+//!
+//! ## Compute Kernel Code Generation
+//!
+//! `generate_compute_kernel()` walks the zyx kernel IR starting from `kernel.head`,
+//! looking for the first `Op::Unary`. It maps the `UOp` variant to an SFPU function
+//! via `uop_to_sfpu()` and emits a fixed tile-loop template:
+//!
+//! ```cpp
+//! #include "api/compute/eltwise_unary/<op>.h"
+//!
+//! void kernel_main() {
+//!     uint32_t n_tiles = get_arg_val<uint32_t>(0);
+//!     unary_op_init_common(tt::CBIndex::c_0, tt::CBIndex::c_16);
+//!     <init_fn>();
+//!     for (uint32_t i = 0; i < n_tiles; i++) {
+//!         tile_regs_acquire();
+//!         cb_wait_front(tt::CBIndex::c_0, 1);
+//!         copy_tile(tt::CBIndex::c_0, 0, 0);
+//!         <tile_fn>(0);
+//!         cb_pop_front(tt::CBIndex::c_0, 1);
+//!         tile_regs_commit();
+//!         tile_regs_wait();
+//!         cb_reserve_back(tt::CBIndex::c_16, 1);
+//!         pack_tile(0, tt::CBIndex::c_16);
+//!         cb_push_back(tt::CBIndex::c_16, 1);
+//!         tile_regs_release();
+//!     }
+//! }
+//! ```
+//!
+//! ### SFPU Op Mapping
+//!
+//! | `UOp` | Include | Init | Tile function |
+//! |-------|---------|------|---------------|
+//! | `Exp2` | `exp.h` | `exp_tile_init` | `exp_tile` |
+//! | `Reciprocal` | `recip.h` | `recip_tile_init` | `recip_tile` |
+//! | `Sqrt` | `sqrt.h` | `sqrt_tile_init` | `sqrt_tile` |
+//! | `Sin` | `trigonometry.h` | `sin_tile_init` | `sin_tile` |
+//! | `Cos` | `trigonometry.h` | `cos_tile_init` | `cos_tile` |
+//! | `Neg` | `negative.h` | `negative_tile_init` | `negative_tile` |
+//! | `Floor` | `rounding.h` | `floor_tile_init` | `floor_tile` |
+//! | `Trunc` | `rounding.h` | `trunc_tile_init` | `trunc_tile` |
+//!
+//! Unsupported ops return `BackendError` — the user is expected to add IR
+//! optimization passes that convert unsupported ops (e.g., `Exp2` → `Exp` +
+//! multiply) before the kernel reaches the backend.
+//!
+//! ### Cache Directory
+//!
+//! Generated compute kernels are cached to disk so they survive process restarts.
+//! The cache directory follows XDG convention:
+//!
+//! ```text
+//! $XDG_CONFIG_HOME/zyx/cache/tt/<hash>.cpp
+//! # falls back to:
+//! $HOME/.config/zyx/cache/tt/<hash>.cpp
+//! # falls back to:
+//! /tmp/zyx-tt-cache/<hash>.cpp
+//! ```
+//!
+//! The `<hash>` is `format!("{:016x}", kernel.get_hash())` — 16 hex chars from
+//! the zyx kernel IR hash. Both Rust and C++ compute the same cache path.
+//!
+//! ## IPC Protocol
+//!
+//! JSON lines over stdin/stdout. No external JSON library — Rust uses `format!()`,
+//! C++ uses manual string parsing.
+//!
+//! ### Commands
+//!
+//! **`init`**:
+//! ```json
+//! {"cmd":"init","kernel_dir":"/path/to/kernels"}
+//! → {"status":"ok"}
+//! ```
+//!
+//! **`run`**:
+//! ```json
+//! {"cmd":"run","hash":"<16-hex>","n_tiles":<u32>,"src_noc":<u64>,"dst_noc":<u64>}
+//! → {"status":"ok"}
+//! ```
+//!
+//! **`exit`**:
+//! ```json
+//! {"cmd":"exit"}
+//! → {"status":"ok","msg":"bye"}
+//! ```
+//!
+//! ### Error Response
+//! ```json
+//! {"status":"error","msg":"<description>"}
+//! ```
+//!
+//! ## Hardware Access
 //!
 //! The Tenstorrent backend communicates with the device through the kernel
 //! driver (`/dev/tenstorrent/N`). Memory is allocated as DMA buffers via
