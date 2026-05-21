@@ -321,29 +321,29 @@ impl Tensor {
     }
 
     /// Create a tensor with values from a uniform distribution in specified range
-    /// 
+    ///
     /// Generates a tensor with random values drawn from a uniform distribution [from_, to_].
     /// The implementation uses Tensor.rand() to generate values in [0, 1) and then scales them
     /// to the specified range.
-    /// 
+    ///
     /// # Arguments
     /// * `shape` - Variable number of shape dimensions (positive integers)
     /// * `from_` - Lower bound of the uniform distribution (default: -1.0)
     /// * `to_` - Upper bound of the uniform distribution (default: 1.0)
     /// * `dtype` - Data type of the output tensor (default: DType::F32)
-    /// 
+    ///
     /// # Returns
     /// A new tensor with shape specified by `shape` and values uniformly distributed
     /// in the range [from_, to_].
-    /// 
+    ///
     /// # Panics
     /// Panics if shape arguments are not positive integers.
-    /// 
+    ///
     /// # Examples
     /// ```
     /// // Create a 2x3 tensor with values in [-1, 1]
     /// let tensor = Tensor::uniform_(2, 3, from_=-1.0, to_=1.0);
-    /// 
+    ///
     /// // Create a 1x1 tensor with values in [0, 10]
     /// let tensor = Tensor::uniform_(1, 1, from_=0.0, to_=10.0);
     /// ```
@@ -1411,8 +1411,6 @@ impl Tensor {
             Err(ZyxError::DTypeError("target must be a Tensor".into()))
         }
     }
-
-
 
     /// # Errors
     /// Returns a `ZyxError` if the operation fails.

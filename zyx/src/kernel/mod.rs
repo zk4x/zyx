@@ -764,11 +764,15 @@ impl Kernel {
                 let a = axis as usize;
                 match scope {
                     Scope::Global => {
-                        while gws.len() <= a { gws.push(1); }
+                        while gws.len() <= a {
+                            gws.push(1);
+                        }
                         gws[a] = len;
                     }
                     Scope::Local => {
-                        while lws.len() <= a { lws.push(1); }
+                        while lws.len() <= a {
+                            lws.push(1);
+                        }
                         lws[a] = len;
                     }
                     Scope::Register => {}

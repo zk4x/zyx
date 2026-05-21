@@ -4,23 +4,22 @@
 // Long-lived C++ runtime process for zyx Tenstorrent backend.
 // Reads JSON commands from stdin, executes kernels on tt-metal hardware,
 // writes JSON responses to stdout.
+//
+// NOC addresses for input/output buffers are passed in the run command
+// (allocated by the Rust side via ioctl). The reader kernel copies from
+// src NOC DRAM → circular buffer, compute kernel applies SFPU op,
+// writer kernel copies from circular buffer → dst NOC DRAM.
+// No data crosses the IPC channel — only NOC addresses as uint64 values.
 
-#include <bit>
-#include <cmath>
 #include <cstdint>
 #include <cstdlib>
-#include <cstdio>
-#include <cstring>
 #include <iostream>
-#include <random>
-#include <sstream>
 #include <string>
 #include <vector>
 
 #include <tt-metalium/bfloat16.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/distributed.hpp>
-#include <tt-metalium/tensor_accessor_args.hpp>
 
 using namespace std;
 using namespace tt;
@@ -29,28 +28,6 @@ using namespace tt::tt_metal::distributed;
 
 constexpr uint32_t TILE_ELEMS = tt::constants::TILE_WIDTH * tt::constants::TILE_HEIGHT; // 1024
 constexpr uint32_t TILE_BYTES = sizeof(bfloat16) * TILE_ELEMS;                           // 2048
-
-// ---------------------------------------------------------------------------
-// bfloat16 raw-bit helpers (the class only exposes float conversion)
-// ---------------------------------------------------------------------------
-
-static bfloat16 bf16_from_raw(uint16_t raw) {
-    uint32_t tmp = (uint32_t)raw << 16;
-    float f;
-    memcpy(&f, &tmp, sizeof(f));
-    return bfloat16(f);
-}
-
-static uint16_t bf16_to_raw(bfloat16 v) {
-    float f = (float)v;
-    uint32_t tmp;
-    memcpy(&tmp, &f, sizeof(tmp));
-    return (uint16_t)(tmp >> 16);
-}
-
-// ---------------------------------------------------------------------------
-// Minimal JSON helpers (no external dependency)
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Cache directory resolution (XDG convention, like zyx C backend)
@@ -67,6 +44,10 @@ static string default_cache_dir() {
     }
     return "";
 }
+
+// ---------------------------------------------------------------------------
+// Minimal JSON helpers (no external dependency)
+// ---------------------------------------------------------------------------
 
 static string trim(string s) {
     auto f = s.find_first_not_of(" \t\r\n");
@@ -99,24 +80,15 @@ static uint32_t extract_u32(const string& json, const string& key) {
     return (uint32_t)stoul(json.substr(start), &end);
 }
 
-static vector<bfloat16> hex_to_bf16(const string& hex) {
-    vector<bfloat16> out;
-    for (size_t i = 0; i + 3 < hex.size(); i += 4) {
-        auto sub = hex.substr(i, 4);
-        uint16_t val = (uint16_t)stoul(sub, nullptr, 16);
-        out.push_back(bf16_from_raw(val));
-    }
-    return out;
-}
-
-static string bf16_to_hex(const vector<bfloat16>& v) {
-    string out;
-    for (auto& x : v) {
-        char buf[5];
-        snprintf(buf, sizeof(buf), "%04x", bf16_to_raw(x));
-        out += buf;
-    }
-    return out;
+static uint64_t extract_u64(const string& json, const string& key) {
+    auto k = json.find("\"" + key + "\"");
+    if (k == string::npos) return 0;
+    auto sep = json.find(':', k);
+    if (sep == string::npos) return 0;
+    auto start = json.find_first_of("0123456789", sep);
+    if (start == string::npos) return 0;
+    size_t end = 0;
+    return stoull(json.substr(start), &end);
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +142,8 @@ int main() {
 
             string hash = extract_str(line, "hash");
             uint32_t n_tiles = extract_u32(line, "n_tiles");
-            string input_hex = extract_str(line, "input");
+            uint64_t src_noc = extract_u64(line, "src_noc");
+            uint64_t dst_noc = extract_u64(line, "dst_noc");
 
             if (hash.empty()) {
                 cout << R"({"status":"error","msg":"missing hash"})" << endl;
@@ -191,7 +164,7 @@ int main() {
                     CircularBufferConfig(2 * TILE_BYTES, {{CBIndex::c_16, DataFormat::Float16_b}})
                         .set_page_size(CBIndex::c_16, TILE_BYTES));
 
-                // Reader kernel (static)
+                // Reader kernel (static) — reads from src_noc DRAM → CB
                 string reader_path = kernel_dir + "/reader.cpp";
                 vector<uint32_t> empty_args;
                 KernelHandle reader_id = CreateKernel(program, reader_path, core,
@@ -200,7 +173,7 @@ int main() {
                         .noc = NOC::RISCV_1_default,
                         .compile_args = empty_args});
 
-                // Writer kernel (static)
+                // Writer kernel (static) — writes from CB → dst_noc DRAM
                 string writer_path = kernel_dir + "/writer.cpp";
                 KernelHandle writer_id = CreateKernel(program, writer_path, core,
                     DataMovementConfig{
@@ -215,35 +188,19 @@ int main() {
                         .math_fidelity = MathFidelity::HiFi4,
                         .math_approx_mode = false});
 
-                // --- Allocate DRAM buffers via tt-metal ---
-                auto mk_buf = [&](uint32_t sz) {
-                    return MeshBuffer::create(
-                        ReplicatedBufferConfig{.size = sz},
-                        DeviceLocalBufferConfig{
-                            .page_size = TILE_BYTES,
-                            .buffer_type = BufferType::DRAM},
-                        mesh_device.get());
-                };
-                auto src_buf = mk_buf(TILE_BYTES * n_tiles);
-                auto dst_buf = mk_buf(TILE_BYTES * n_tiles);
-
-                // --- Write input data to device ---
-                vector<bfloat16> src_vec;
-                if (!input_hex.empty()) {
-                    src_vec = hex_to_bf16(input_hex);
-                } else {
-                    mt19937 rng(random_device{}());
-                    uniform_real_distribution<float> dist(0.f, 1.0f);
-                    src_vec.resize(n_tiles * TILE_ELEMS);
-                    for (auto& v : src_vec) v = bfloat16(dist(rng));
-                }
-                src_vec.resize(n_tiles * TILE_ELEMS, bfloat16(0.0f));
-                EnqueueWriteMeshBuffer(*cq, src_buf, src_vec, false);
-
                 // --- Set runtime args ---
+                // Reader: (src_noc_low, src_noc_high, n_tiles)
+                SetRuntimeArgs(program, reader_id, core, {
+                    (uint32_t)(src_noc & 0xFFFFFFFF),
+                    (uint32_t)(src_noc >> 32),
+                    n_tiles});
+                // Writer: (dst_noc_low, dst_noc_high, n_tiles)
+                SetRuntimeArgs(program, writer_id, core, {
+                    (uint32_t)(dst_noc & 0xFFFFFFFF),
+                    (uint32_t)(dst_noc >> 32),
+                    n_tiles});
+                // Compute: (n_tiles)
                 SetRuntimeArgs(program, compute_id, core, {n_tiles});
-                SetRuntimeArgs(program, reader_id, core, {(uint32_t)src_buf->address(), n_tiles});
-                SetRuntimeArgs(program, writer_id, core, {(uint32_t)dst_buf->address(), n_tiles});
 
                 // --- Enqueue and run ---
                 MeshWorkload workload;
@@ -252,27 +209,7 @@ int main() {
                 EnqueueMeshWorkload(*cq, workload, false);
                 Finish(*cq);
 
-                // --- Read output ---
-                vector<bfloat16> result;
-                EnqueueReadMeshBuffer(*cq, result, dst_buf, true);
-
-                // --- Verify and respond ---
-                bool pass = true;
-                for (uint32_t i = 0; i < src_vec.size(); i++) {
-                    float expected = exp2((float)src_vec[i]);
-                    float actual = (float)result[i];
-                    if (fabs(expected - actual) > 5e-2f) {
-                        pass = false;
-                        if (i < 10) {
-                            cerr << "MISMATCH[" << i << "]: exp2(" << (float)src_vec[i] << ") = "
-                                 << expected << " (got " << actual << ")" << endl;
-                        }
-                    }
-                }
-
-                string out_hex = bf16_to_hex(result);
-                cout << R"({"status":")" << (pass ? "ok" : "mismatch")
-                     << R"(","output":")" << out_hex << R"("})" << endl;
+                cout << R"({"status":"ok"})" << endl;
 
             } catch (const exception& e) {
                 cerr << "run error: " << e.what() << endl;

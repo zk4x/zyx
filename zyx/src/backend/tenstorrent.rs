@@ -45,13 +45,18 @@
 use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, Kernel, MemoryPool, PoolBufferId, PoolId};
 use crate::{
     error::{BackendError, ErrorStatus},
+    kernel::{Op, UOp},
     shape::Dim,
     slab::Slab,
 };
 use nanoserde::DeJson;
 use std::{
+    fs,
     fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
     os::unix::io::AsRawFd,
+    path::PathBuf,
+    process::{Child, ChildStdin, ChildStdout, Command},
     ptr,
     sync::atomic::{AtomicU8, Ordering},
 };
@@ -301,6 +306,23 @@ pub(super) fn initialize_device(
     });
     memory_pools.push(pool);
 
+    // Compute cache dir from XDG convention
+    let cache_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .and_then(|p| {
+            let p = PathBuf::from(p);
+            if p.is_absolute() { Some(p) } else { None }
+        })
+        .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
+        .map(|p| p.join("zyx/cache/tt"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/zyx-tt-cache"));
+
+    // Kernel dir: relative to the runtime binary
+    let runtime_path = PathBuf::from(std::env::var("HOME").unwrap_or_default() + "/Dev/rust/zyx/zyx-tt-runtime/zyx-tt-runtime");
+    let kernel_dir = runtime_path
+        .parent()
+        .map(|p| p.join("kernels"))
+        .unwrap_or_else(|| PathBuf::from("kernels"));
+
     let _device_id = devices.len();
     devices.push(Device::TT(TTDevice {
         device_info: DeviceInfo {
@@ -316,6 +338,10 @@ pub(super) fn initialize_device(
             supported_dtypes: u32::MAX, // all dtypes supported
         },
         memory_pool_id: pool_id,
+        runtime: None,
+        kernel_dir,
+        cache_dir,
+        programs: Slab::new(),
     }));
     Ok(())
 }
@@ -366,7 +392,7 @@ impl TTMemoryPool {
             inn: TTAllocateDmaBufIn {
                 requested_size: page_aligned,
                 buf_index,
-                flags: 0, // no NOC DMA — CPU mmap only
+                flags: 1, // NOC DMA enabled — device reader/writer kernels access this buffer via NOC
                 reserved0: [0; 2],
                 reserved1: [0; 2],
             },
@@ -462,6 +488,147 @@ impl TTMemoryPool {
         let _ = self;
         let _ = events;
     }
+
+    pub fn noc_address(&self, buffer_id: PoolBufferId) -> Result<u64, BackendError> {
+        if self.buffers.contains_key(buffer_id) {
+            Ok(self.buffers[buffer_id].noc_address)
+        } else {
+            Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
+        }
+    }
+
+    pub fn buffer_size(&self, buffer_id: PoolBufferId) -> Result<u64, BackendError> {
+        if self.buffers.contains_key(buffer_id) {
+            Ok(self.buffers[buffer_id].size as u64)
+        } else {
+            Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "invalid buffer id".into() })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime process management (JSON IPC over stdin/stdout)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct RuntimeProcess {
+    stdin: BufWriter<ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+    child: Child,
+}
+
+impl RuntimeProcess {
+    fn new(runtime_path: &str, kernel_dir: &str) -> Result<Self, BackendError> {
+        let mut child = Command::new(runtime_path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+            .map_err(|e| BackendError {
+                status: ErrorStatus::Initialization,
+                context: format!("spawn tt-runtime {runtime_path}: {e}").into(),
+            })?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "tt-runtime: no stdin".into() })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "tt-runtime: no stdout".into() })?;
+
+        let mut rt = RuntimeProcess { stdin: BufWriter::new(stdin), stdout: BufReader::new(stdout), child };
+
+        // Send init
+        let init_json = format!(r#"{{"cmd":"init","kernel_dir":"{kernel_dir}"}}"#);
+        rt.send(&init_json)?;
+        let resp = rt.recv()?;
+        if resp.contains("\"error\"") {
+            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            return Err(BackendError {
+                status: ErrorStatus::Initialization,
+                context: format!("tt-runtime init error: {msg}").into(),
+            });
+        }
+        Ok(rt)
+    }
+
+    fn send(&mut self, json: &str) -> Result<(), BackendError> {
+        self.stdin
+            .write_all(json.as_bytes())
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime write: {e}").into() })?;
+        self.stdin.write_all(b"\n").map_err(|e| BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("tt-runtime write nl: {e}").into(),
+        })?;
+        self.stdin
+            .flush()
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime flush: {e}").into() })?;
+        Ok(())
+    }
+
+    fn recv(&mut self) -> Result<String, BackendError> {
+        // Check if child is still alive (equivalent to CUDA channel disconnect detection)
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelLaunch,
+                    context: format!("tt-runtime exited unexpectedly (status {status})").into(),
+                });
+            }
+            Err(e) => {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelLaunch,
+                    context: format!("tt-runtime wait error: {e}").into(),
+                });
+            }
+            Ok(None) => {} // still running
+        }
+        let mut line = String::new();
+        self.stdout
+            .read_line(&mut line)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime read: {e}").into() })?;
+        Ok(line.trim().to_string())
+    }
+
+    fn run(&mut self, hash: &str, n_tiles: u32, src_noc: u64, dst_noc: u64) -> Result<(), BackendError> {
+        let cmd = format!(r#"{{"cmd":"run","hash":"{hash}","n_tiles":{n_tiles},"src_noc":{src_noc},"dst_noc":{dst_noc}}}"#);
+        self.send(&cmd)?;
+        let resp = self.recv()?;
+        if resp.contains("\"error\"") {
+            let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("tt-runtime run error: {msg}").into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn exit(&mut self) -> Result<(), BackendError> {
+        self.send(r#"{"cmd":"exit"}"#)?;
+        let _ = self.recv(); // "bye"
+        self.child.wait().ok();
+        Ok(())
+    }
+}
+
+fn extract_json_str(json: &str, key: &str) -> Option<String> {
+    let k = json.find(&format!("\"{key}\""))?;
+    let after_colon = &json[k + key.len() + 4..]; // skip past "key":
+    let start = after_colon.find('"')? + 1;
+    let end = after_colon[start..].find('"')?;
+    Some(after_colon[start..start + end].to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Compiled program tracking
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct TTProgram {
+    hash: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -472,10 +639,18 @@ impl TTMemoryPool {
 pub struct TTDevice {
     device_info: DeviceInfo,
     memory_pool_id: PoolId,
+    runtime: Option<RuntimeProcess>,
+    kernel_dir: PathBuf,
+    cache_dir: PathBuf,
+    programs: Slab<DeviceProgramId, TTProgram>,
 }
 
 impl TTDevice {
-    pub const fn deinitialize(&mut self) {}
+    pub fn deinitialize(&mut self) {
+        if let Some(mut rt) = self.runtime.take() {
+            let _ = rt.exit();
+        }
+    }
 
     pub const fn info(&self) -> &DeviceInfo {
         &self.device_info
@@ -490,18 +665,50 @@ impl TTDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let _ = self;
-        let _ = kernel;
-        let _ = debug_asm;
-        Err(BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: "Tenstorrent kernel compilation not yet implemented".into(),
-        })
+        let hash = format!("{:016x}", kernel.get_hash());
+
+        // Spawn runtime on first use
+        if self.runtime.is_none() {
+            let kernel_dir = self.kernel_dir.to_string_lossy().to_string();
+            let runtime_path = std::env::var("HOME").unwrap_or_default() + "/Dev/rust/zyx/zyx-tt-runtime/zyx-tt-runtime";
+            match RuntimeProcess::new(&runtime_path, &kernel_dir) {
+                Ok(rt) => self.runtime = Some(rt),
+                Err(e) => {
+                    if debug_asm {
+                        eprintln!("tt-runtime: {e}");
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        // Check disk cache
+        let compute_path = self.cache_dir.join(format!("{hash}.cpp"));
+        if !compute_path.exists() {
+            if debug_asm {
+                eprintln!("TT compile: generating {hash}.cpp");
+            }
+            let source = generate_compute_kernel(kernel)?;
+            fs::create_dir_all(&self.cache_dir).map_err(|e| BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("create cache dir: {e}").into(),
+            })?;
+            fs::write(&compute_path, &source).map_err(|e| BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("write {hash}.cpp: {e}").into(),
+            })?;
+        } else if debug_asm {
+            eprintln!("TT compile: using cached {hash}.cpp");
+        }
+
+        let prog_id = self.programs.push(TTProgram { hash });
+        Ok(prog_id)
     }
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
-        let _ = self;
-        let _ = program_id;
+        if self.programs.contains_key(program_id) {
+            unsafe { self.programs.remove_and_return(program_id) };
+        }
     }
 
     pub fn launch(
@@ -511,18 +718,153 @@ impl TTDevice {
         args: &[PoolBufferId],
         event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        let _ = self;
-        let _ = program_id;
-        let _ = memory_pool;
-        let _ = args;
         let _ = event_wait_list;
-        Err(BackendError { status: ErrorStatus::KernelLaunch, context: "Tenstorrent kernel launch not yet implemented".into() })
+        let prog = if self.programs.contains_key(program_id) {
+            &self.programs[program_id]
+        } else {
+            return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "invalid program id".into() });
+        };
+
+        let rt = self
+            .runtime
+            .as_mut()
+            .ok_or_else(|| BackendError { status: ErrorStatus::KernelLaunch, context: "runtime not initialized".into() })?;
+
+        // args: first half are inputs, second half are outputs
+        // The scheduler convention is: loads first, then stores
+        let n_inputs = args.len() / 2;
+        if n_inputs == 0 || args.len() < 2 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelLaunch,
+                context: format!("expected at least 2 buffers, got {}", args.len()).into(),
+            });
+        }
+
+        // Use first input buffer and first output buffer
+        let src_buf = args[0];
+        let dst_buf = args[n_inputs];
+
+        let src_noc = memory_pool
+            .noc_address(src_buf)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src noc address: {e}").into() })?;
+        let dst_noc = memory_pool
+            .noc_address(dst_buf)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("dst noc address: {e}").into() })?;
+
+        // Count tiles from buffer size (round up to tile boundary)
+        let src_bytes = memory_pool
+            .buffer_size(src_buf)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("src buffer size: {e}").into() })?;
+        let tile_bytes: u64 = 2048; // TILE_ELEMS * sizeof(bfloat16) = 1024 * 2
+        let n_tiles = ((src_bytes + tile_bytes - 1) / tile_bytes) as u32;
+        if n_tiles == 0 {
+            return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "empty buffer".into() });
+        }
+
+        rt.run(&prog.hash, n_tiles, src_noc, dst_noc)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("runtime run: {e}").into() })?;
+
+        Ok(Event::TT(TTEvent))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Compute kernel code generation
+// ---------------------------------------------------------------------------
+
+struct SfpuInfo {
+    header: &'static str,
+    init_fn: &'static str,
+    tile_fn: &'static str,
+}
+
+fn uop_to_sfpu(uop: UOp) -> Result<SfpuInfo, BackendError> {
+    match uop {
+        UOp::Exp2 => Ok(SfpuInfo { header: "api/compute/eltwise_unary/exp.h", init_fn: "exp_tile_init", tile_fn: "exp_tile" }),
+        UOp::Reciprocal => {
+            Ok(SfpuInfo { header: "api/compute/eltwise_unary/recip.h", init_fn: "recip_tile_init", tile_fn: "recip_tile" })
+        }
+        UOp::Sqrt => Ok(SfpuInfo { header: "api/compute/eltwise_unary/sqrt.h", init_fn: "sqrt_tile_init", tile_fn: "sqrt_tile" }),
+        UOp::Sin => {
+            Ok(SfpuInfo { header: "api/compute/eltwise_unary/trigonometry.h", init_fn: "sin_tile_init", tile_fn: "sin_tile" })
+        }
+        UOp::Cos => {
+            Ok(SfpuInfo { header: "api/compute/eltwise_unary/trigonometry.h", init_fn: "cos_tile_init", tile_fn: "cos_tile" })
+        }
+        UOp::Neg => Ok(SfpuInfo {
+            header: "api/compute/eltwise_unary/negative.h",
+            init_fn: "negative_tile_init",
+            tile_fn: "negative_tile",
+        }),
+        UOp::Floor => {
+            Ok(SfpuInfo { header: "api/compute/eltwise_unary/rounding.h", init_fn: "floor_tile_init", tile_fn: "floor_tile" })
+        }
+        UOp::Trunc => {
+            Ok(SfpuInfo { header: "api/compute/eltwise_unary/rounding.h", init_fn: "trunc_tile_init", tile_fn: "trunc_tile" })
+        }
+        _ => Err(BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("unsupported unary op {uop:?} for Tenstorrent (add an IR optimization pass)").into(),
+        }),
+    }
+}
+
+fn generate_compute_kernel(kernel: &Kernel) -> Result<String, BackendError> {
+    // Walk the IR to find the first supported unary op
+    let mut uop = None;
+    let mut op_id = kernel.head;
+    while !op_id.is_null() {
+        match kernel.at(op_id) {
+            Op::Unary { uop: op, .. } => {
+                uop = Some(*op);
+                break;
+            }
+            _ => {}
+        }
+        op_id = kernel.next_op(op_id);
+    }
+
+    let sfpu = uop_to_sfpu(uop.ok_or_else(|| BackendError {
+        status: ErrorStatus::KernelCompilation,
+        context: "no unary op found in kernel".into(),
+    })?)?;
+
+    Ok(format!(
+        r#"#include <cstdint>
+#include "api/compute/cb_api.h"
+#include "api/compute/tile_move_copy.h"
+#include "api/compute/eltwise_unary/eltwise_unary.h"
+#include "{header}"
+
+void kernel_main() {{
+    uint32_t n_tiles = get_arg_val<uint32_t>(0);
+    unary_op_init_common(tt::CBIndex::c_0, tt::CBIndex::c_16);
+    {init_fn}();
+    for (uint32_t i = 0; i < n_tiles; i++) {{
+        tile_regs_acquire();
+        cb_wait_front(tt::CBIndex::c_0, 1);
+        copy_tile(tt::CBIndex::c_0, 0, 0);
+        {tile_fn}(0);
+        cb_pop_front(tt::CBIndex::c_0, 1);
+        tile_regs_commit();
+        tile_regs_wait();
+        cb_reserve_back(tt::CBIndex::c_16, 1);
+        pack_tile(0, tt::CBIndex::c_16);
+        cb_push_back(tt::CBIndex::c_16, 1);
+        tile_regs_release();
+    }}
+}}
+"#,
+        header = sfpu.header,
+        init_fn = sfpu.init_fn,
+        tile_fn = sfpu.tile_fn,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::{OpId, OpNode};
     use crate::slab::SlabId;
 
     fn init(pools: &mut Slab<PoolId, MemoryPool>, devices: &mut Slab<DeviceId, Device>) -> Result<(), BackendError> {
@@ -640,6 +982,19 @@ mod tests {
         assert_eq!(dst, src, "1 MB roundtrip mismatch");
 
         pool.deallocate(buf_id, vec![]);
+    }
+
+    #[test]
+    fn neg_compute_kernel_codegen() {
+        let mut ops = Slab::<OpId, OpNode>::new();
+        let unary = Op::Unary { x: OpId::NULL, uop: UOp::Neg };
+        let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op: unary });
+        let kernel = Kernel { outputs: vec![], loads: vec![], stores: vec![], ops, head: op_id, tail: op_id };
+
+        let code = generate_compute_kernel(&kernel).expect("codegen for Neg");
+        assert!(code.contains("negative.h"), "should include negative.h header");
+        assert!(code.contains("negative_tile_init"), "should call negative_tile_init");
+        assert!(code.contains("negative_tile"), "should call negative_tile");
     }
 
     #[test]

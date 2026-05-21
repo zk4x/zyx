@@ -20,13 +20,7 @@ use crate::{
 };
 use libloading::{Library, Symbol};
 use nanoserde::DeJson;
-use std::{
-    ffi::CString,
-    fmt::Write,
-    hash::BuildHasherDefault,
-    path::PathBuf,
-    process::Command,
-};
+use std::{ffi::CString, fmt::Write, hash::BuildHasherDefault, path::PathBuf, process::Command};
 
 #[derive(Debug, Default, DeJson)]
 pub struct CConfig {
@@ -104,8 +98,7 @@ pub(super) fn initialize_device(
 }
 
 impl CDevice {
-    pub const fn deinitialize(&mut self) {
-    }
+    pub const fn deinitialize(&mut self) {}
 
     pub const fn info(&self) -> &DeviceInfo {
         &self.device_info
@@ -391,7 +384,10 @@ impl CDevice {
                 }
                 &Op::Loop { len, .. } => {
                     indices.insert(op_id, loop_id);
-                    _ = writeln!(source, "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{");
+                    _ = writeln!(
+                        source,
+                        "{indent}for (unsigned int idx{loop_id} = 0; idx{loop_id} < {len}; ++idx{loop_id}) {{"
+                    );
                     indent += "  ";
                     loop_id += 1;
                 }
@@ -662,10 +658,12 @@ static inline float bf16tof32(unsigned short h) {
 static inline unsigned short f32tobf16(float v) {
   unsigned int b; memcpy(&b, &v, sizeof(b)); return (unsigned short)(b >> 16);
 }
-"##.to_string()
+"##
+            .to_string()
         };
         // Add #include for math functions
-        let full_source = format!("#include <math.h>\n#include <stdint.h>\n#include <string.h>\n#include <omp.h>\n{f16_helpers}{source}");
+        let full_source =
+            format!("#include <math.h>\n#include <stdint.h>\n#include <string.h>\n#include <omp.h>\n{f16_helpers}{source}");
         std::fs::write(&c_path, &full_source).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to write C source: {e}").into(),
@@ -673,7 +671,11 @@ static inline unsigned short f32tobf16(float v) {
 
         // Try clang-11, clang, gcc, cc in order
         let compilers = ["clang-11", "clang", "gcc", "cc"];
-        let compiler = compilers.iter().find(|c| Command::new(c).arg("--version").output().is_ok()).copied().unwrap_or("cc");
+        let compiler = compilers
+            .iter()
+            .find(|c| Command::new(c).arg("--version").output().is_ok())
+            .copied()
+            .unwrap_or("cc");
         let is_clang = compiler.contains("clang");
 
         // Try compiling with OpenMP first (best-effort parallelism)

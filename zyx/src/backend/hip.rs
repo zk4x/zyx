@@ -318,13 +318,10 @@ pub(super) fn initialize_device(
             max_register_bytes: 96,
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
-            warp_size: Dim::try_from(dev.get(
-                HIPdevice_attribute::hipDeviceAttributeWarpSize,
-                hipDeviceGetAttribute,
-            )?)
-            .unwrap()
-            .try_into()
-            .unwrap(),
+            warp_size: Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeWarpSize, hipDeviceGetAttribute)?)
+                .unwrap()
+                .try_into()
+                .unwrap(),
             supported_dtypes,
         };
         devices.push(Device::HIP(dev));

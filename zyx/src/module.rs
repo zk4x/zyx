@@ -316,7 +316,7 @@ impl Tensor {
                                 f.read_exact(&mut buf)?;
                                 GGUFMetadataValue::Float32(f32::from_le_bytes(buf))
                             }
-                             7 => {
+                            7 => {
                                 let mut buf = [0; 1];
                                 f.read_exact(&mut buf)?;
                                 GGUFMetadataValue::Bool(buf[0] != 0)
@@ -327,8 +327,9 @@ impl Tensor {
                                 let item_len = u64::from_le_bytes(item_len);
                                 let mut item_bytes = vec![0u8; usize::try_from(item_len).unwrap()];
                                 f.read_exact(&mut item_bytes)?;
-                                let item = String::from_utf8(item_bytes)
-                                    .map_err(|e| ZyxError::parse_error(format!("GGUF array element string is not valid UTF-8: {e}").into()))?;
+                                let item = String::from_utf8(item_bytes).map_err(|e| {
+                                    ZyxError::parse_error(format!("GGUF array element string is not valid UTF-8: {e}").into())
+                                })?;
                                 GGUFMetadataValue::String(item)
                             }
                             10 => {

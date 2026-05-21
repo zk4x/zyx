@@ -550,7 +550,7 @@ pub enum Device {
 
 impl Device {
     #[allow(unused)]
-    pub const fn deinitialize(&mut self) {
+    pub fn deinitialize(&mut self) {
         match self {
             Device::C(dev) => dev.deinitialize(),
             Device::Dummy(dev) => dev.deinitialize(),

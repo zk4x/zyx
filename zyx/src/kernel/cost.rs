@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use crate::{
+    DType, Map,
     backend::DeviceInfo,
     kernel::{Kernel, Op, OpId, Scope},
-    DType, Map,
 };
 use nanoserde::{DeBin, SerBin};
 
@@ -135,15 +135,21 @@ impl Kernel {
             // Register allocation: allocate if this op produces a value
             let produces = match op {
                 Op::Define { scope, .. } if *scope == Scope::Register => true,
-                Op::Load { .. } | Op::Cast { .. } | Op::Unary { .. }
-                | Op::Binary { .. } | Op::Mad { .. }
-                | Op::Vectorize { .. } | Op::Wmma { .. } => true,
+                Op::Load { .. }
+                | Op::Cast { .. }
+                | Op::Unary { .. }
+                | Op::Binary { .. }
+                | Op::Mad { .. }
+                | Op::Vectorize { .. }
+                | Op::Wmma { .. } => true,
                 _ => false,
             };
             if produces {
                 if let Some(&rc) = rcs.get(&op_id) {
                     let dtype = dtypes[&op_id];
-                    let idx = reg_slots.iter().position(|(r, dt)| *r == 0 && *dt == dtype)
+                    let idx = reg_slots
+                        .iter()
+                        .position(|(r, dt)| *r == 0 && *dt == dtype)
                         .unwrap_or_else(|| {
                             let i = reg_slots.len();
                             reg_slots.push((0, dtype));
@@ -157,39 +163,99 @@ impl Kernel {
             // Decrement RC for each operand
             match op {
                 &Op::Load { index, .. } => {
-                    if let Some(&idx) = reg_map.get(&index) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
+                    if let Some(&idx) = reg_map.get(&index) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
                 }
                 &Op::Store { x, index, .. } => {
-                    if let Some(&idx) = reg_map.get(&x) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
-                    if let Some(&idx) = reg_map.get(&index) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
+                    if let Some(&idx) = reg_map.get(&x) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
+                    if let Some(&idx) = reg_map.get(&index) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
                 }
                 &Op::Cast { x, .. } => {
-                    if let Some(&idx) = reg_map.get(&x) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
+                    if let Some(&idx) = reg_map.get(&x) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
                 }
                 &Op::Unary { x, .. } => {
-                    if let Some(&idx) = reg_map.get(&x) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
+                    if let Some(&idx) = reg_map.get(&x) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
                 }
                 &Op::Binary { x, y, .. } => {
-                    if let Some(&idx) = reg_map.get(&x) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
-                    if let Some(&idx) = reg_map.get(&y) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
+                    if let Some(&idx) = reg_map.get(&x) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
+                    if let Some(&idx) = reg_map.get(&y) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
                 }
                 &Op::Mad { x, y, z } => {
-                    if let Some(&idx) = reg_map.get(&x) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
-                    if let Some(&idx) = reg_map.get(&y) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
-                    if let Some(&idx) = reg_map.get(&z) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
+                    if let Some(&idx) = reg_map.get(&x) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
+                    if let Some(&idx) = reg_map.get(&y) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
+                    if let Some(&idx) = reg_map.get(&z) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
                 }
                 Op::Vectorize { ops } => {
                     for &x in ops.iter() {
-                        if let Some(&idx) = reg_map.get(&x) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
+                        if let Some(&idx) = reg_map.get(&x) {
+                            if reg_slots[idx].0 > 0 {
+                                reg_slots[idx].0 -= 1;
+                            }
+                        }
                     }
                 }
                 &Op::Wmma { a, b, c, .. } => {
-                    if let Some(&idx) = reg_map.get(&a) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
-                    if let Some(&idx) = reg_map.get(&b) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
-                    if let Some(&idx) = reg_map.get(&c) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
+                    if let Some(&idx) = reg_map.get(&a) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
+                    if let Some(&idx) = reg_map.get(&b) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
+                    if let Some(&idx) = reg_map.get(&c) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
                 }
                 &Op::If { condition } => {
-                    if let Some(&idx) = reg_map.get(&condition) { if reg_slots[idx].0 > 0 { reg_slots[idx].0 -= 1; } }
+                    if let Some(&idx) = reg_map.get(&condition) {
+                        if reg_slots[idx].0 > 0 {
+                            reg_slots[idx].0 -= 1;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -254,7 +320,9 @@ impl Kernel {
             }
 
             // Track peak register bytes
-            let bytes: u64 = reg_slots.iter().filter(|(r, _)| *r > 0)
+            let bytes: u64 = reg_slots
+                .iter()
+                .filter(|(r, _)| *r > 0)
                 .map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * u64::from(dt.1))
                 .sum();
             if bytes > peak_reg_bytes {
@@ -278,8 +346,7 @@ impl Kernel {
         let total_instr = n_threads * global_ws * instructions_per_thread;
         let total_barriers = n_threads * global_ws * barriers_per_thread;
 
-        let memory_score =
-            (total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64;
+        let memory_score = (total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64;
 
         let cost = (memory_score * 1_000_000_000.0) as u64;
 
