@@ -23,12 +23,9 @@ fn main() {
     let lib_dir = build_dir.join("lib");
 
     // Find the spdlog CPM cache directory for bundled fmt headers
-    let cpm_spdlog = std::path::PathBuf::from(&tt_metal_root)
-        .join(".cpmcache")
-        .join("spdlog");
-    let cpm_include = std::fs::read_dir(&cpm_spdlog)
-        .ok()
-        .and_then(|mut it| it.find_map(|e| {
+    let cpm_spdlog = std::path::PathBuf::from(&tt_metal_root).join(".cpmcache").join("spdlog");
+    let cpm_include = std::fs::read_dir(&cpm_spdlog).ok().and_then(|mut it| {
+        it.find_map(|e| {
             let e = e.ok()?;
             let path = e.path();
             if path.is_dir() && path.file_name().and_then(|s| s.to_str()).map_or(false, |s| s.len() == 40) {
@@ -36,7 +33,8 @@ fn main() {
             } else {
                 None
             }
-        }));
+        })
+    });
 
     let mut cmd = std::process::Command::new("g++");
     cmd.arg("-std=c++20").arg("-Wall").arg("-Wextra").arg("-O3");
@@ -51,20 +49,23 @@ fn main() {
         cmd.arg(format!("-I{}", p.display()));
     }
 
-    // Compile-time default for TT_METAL_ROOT (used by main.cpp for setenv)
+    // Compile-time default for TT_METAL_ROOT (used by runtime.cpp for setenv)
     cmd.arg(format!("-DTT_METAL_ROOT_DEFAULT=\"{tt_metal_root}\""));
 
     // Source file
     let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("backend")
-        .join("tenstorrent")
-        .join("src");
-    cmd.arg(src_dir.join("main.cpp"));
+        .join("tenstorrent");
+    cmd.arg(src_dir.join("runtime.cpp"));
 
     // Link flags
     cmd.arg(format!("-L{}", lib_dir.display()));
-    cmd.arg("-ltt_metal").arg("-ltt-umd").arg("-ltt_stl").arg("-lfmt").arg("-lspdlog");
+    cmd.arg("-ltt_metal")
+        .arg("-ltt-umd")
+        .arg("-ltt_stl")
+        .arg("-lfmt")
+        .arg("-lspdlog");
     cmd.arg(format!("-Wl,-rpath,{}", lib_dir.display()));
 
     // Output
@@ -88,7 +89,7 @@ fn main() {
     println!("cargo:rustc-env=ZYX_TT_KERNEL_DIR={}", kernel_dir.display());
 
     // Rerun if C++ sources change
-    println!("cargo:rerun-if-changed={}", src_dir.join("main.cpp").display());
+    println!("cargo:rerun-if-changed={}", src_dir.join("runtime.cpp").display());
     for entry in std::fs::read_dir(&kernel_dir).unwrap() {
         if let Ok(e) = entry {
             println!("cargo:rerun-if-changed={}", e.path().display());

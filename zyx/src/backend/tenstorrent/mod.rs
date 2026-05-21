@@ -38,7 +38,7 @@
 //! ┌─────────────────────────┼─────────────────────────────────┐
 //! │              C++ Process (zyx-tt-runtime)                 │
 //! │  ┌──────────────────────────────────────────────────┐     │
-//! │  │                  main.cpp                         │     │
+//! │  │                  runtime.cpp                         │     │
 //! │  │  JSON IPC loop:                                   │     │
 //! │  │  "init"  → tt_device.open() → return "ok"         │     │
 //! │  │  "run"   → reader.cpp + compute.cpp + writer.cpp  │     │
@@ -340,13 +340,11 @@ use std::{
     fs,
     fs::File,
     io::{BufRead, BufReader, BufWriter, Write},
-    os::unix::io::{AsRawFd, RawFd},
-    os::unix::net::UnixStream,
+    os::unix::io::AsRawFd,
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command},
     ptr,
     sync::atomic::{AtomicU8, Ordering},
-    time::Duration,
 };
 
 // ---------------------------------------------------------------------------
@@ -876,7 +874,7 @@ impl RuntimeProcess {
             Ok(None) => {} // still running
         }
 
-        let fd = self.stdout.as_raw_fd();
+        let fd = std::os::unix::io::AsRawFd::as_raw_fd(self.stdout.get_mut());
         let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
 
         let timeout_ms = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
@@ -951,10 +949,6 @@ impl RuntimeProcess {
             status: ErrorStatus::KernelLaunch,
             context: format!("tt-runtime read timeout after {}ms", timeout_ms).into(),
         })
-    }
-
-    fn recv(&mut self) -> Result<String, BackendError> {
-        self.recv_with_timeout(self.timeout_ms)
     }
 
     fn run(&mut self, hash: &str, n_tiles: u32, src_noc: u64, dst_noc: u64) -> Result<(), BackendError> {
