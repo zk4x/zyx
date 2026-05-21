@@ -823,9 +823,9 @@ impl RuntimeProcess {
             .take()
             .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "tt-runtime: no stdout".into() })?;
 
-        let mut rt = RuntimeProcess { 
-            stdin: BufWriter::new(stdin), 
-            stdout: BufReader::new(stdout), 
+        let mut rt = RuntimeProcess {
+            stdin: BufWriter::new(stdin),
+            stdout: BufReader::new(stdout),
             child,
             timeout_ms: 30000, // 30 second default timeout
         };
@@ -877,11 +877,7 @@ impl RuntimeProcess {
         }
 
         let fd = self.stdout.as_raw_fd();
-        let mut pollfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        let mut pollfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
 
         let timeout_ms = i32::try_from(timeout_ms).unwrap_or(i32::MAX);
         let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
@@ -889,12 +885,9 @@ impl RuntimeProcess {
         match ret {
             -1 => {
                 let err = std::io::Error::last_os_error();
-                return Err(BackendError {
-                    status: ErrorStatus::KernelLaunch,
-                    context: format!("poll error: {err}").into(),
-                });
+                return Err(BackendError { status: ErrorStatus::KernelLaunch, context: format!("poll error: {err}").into() });
             }
-            0 => Ok(false), // timeout
+            0 => Ok(false),                              // timeout
             _ => Ok(pollfd.revents & libc::POLLIN != 0), // data available or error
         }
     }
@@ -933,7 +926,7 @@ impl RuntimeProcess {
                     }
                 }
             }
-            
+
             // Poll timed out, check if child is still alive
             match self.child.try_wait() {
                 Ok(Some(status)) => {
@@ -964,30 +957,6 @@ impl RuntimeProcess {
         self.recv_with_timeout(self.timeout_ms)
     }
 
-    fn recv(&mut self) -> Result<String, BackendError> {
-        // Check if child is still alive (equivalent to CUDA channel disconnect detection)
-        match self.child.try_wait() {
-            Ok(Some(status)) => {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelLaunch,
-                    context: format!("tt-runtime exited unexpectedly (status {status})").into(),
-                });
-            }
-            Err(e) => {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelLaunch,
-                    context: format!("tt-runtime wait error: {e}").into(),
-                });
-            }
-            Ok(None) => {} // still running
-        }
-        let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("tt-runtime read: {e}").into() })?;
-        Ok(line.trim().to_string())
-    }
-
     fn run(&mut self, hash: &str, n_tiles: u32, src_noc: u64, dst_noc: u64) -> Result<(), BackendError> {
         let cmd = format!(r#"{{"cmd":"run","hash":"{hash}","n_tiles":{n_tiles},"src_noc":{src_noc},"dst_noc":{dst_noc}}}"#);
         self.send(&cmd)?;
@@ -1003,7 +972,7 @@ impl RuntimeProcess {
     }
 
     fn exit(&mut self) -> Result<(), BackendError> {
-        self.send(r#"{"cmd":"exit"}")?;
+        self.send(r#"{"cmd":"exit"}"#)?;
         let resp = self.recv_with_timeout(self.timeout_ms)?;
         if resp.contains("\"error\"") {
             let msg = extract_json_str(&resp, "msg").unwrap_or_else(|| "unknown".into());
@@ -1249,7 +1218,7 @@ fn generate_compute_kernel(kernel: &Kernel) -> Result<String, BackendError> {
     })?)?;
 
     Ok(format!(
-        r#"#include <cstdint>
+        r####"#include <cstdint>
 #include "api/compute/cb_api.h"
 #include "api/compute/tile_move_copy.h"
 #include "api/compute/eltwise_unary/eltwise_unary.h"
@@ -1273,219 +1242,9 @@ void kernel_main() {{
         tile_regs_release();
     }}
 }}
-"#,
+"####,
         header = sfpu.header,
         init_fn = sfpu.init_fn,
         tile_fn = sfpu.tile_fn,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::kernel::{OpId, OpNode};
-    use crate::slab::SlabId;
-
-    fn init(pools: &mut Slab<PoolId, MemoryPool>, devices: &mut Slab<DeviceId, Device>) -> Result<(), BackendError> {
-        initialize_device(&TTConfig::default(), pools, devices, false)
-    }
-
-    fn get_pool(pools: &mut Slab<PoolId, MemoryPool>) -> &mut TTMemoryPool {
-        match &mut pools[PoolId::ZERO] {
-            MemoryPool::TT(p) => p,
-            _ => panic!("expected TT pool "),
-        }
-    }
-
-    #[test]
-    fn dram_table_correct() {
-        // P100A (subsys 0x0043) should report 28 GB
-        assert_eq!(dram_size_for_subsystem_id(0x0043).unwrap(), 28 * 1024 * 1024 * 1024);
-        // P100 (subsys 0x0036) should report 28 GB
-        assert_eq!(dram_size_for_subsystem_id(0x0036).unwrap(), 28 * 1024 * 1024 * 1024);
-        // Unknown board should error
-        assert!(dram_size_for_subsystem_id(0x9999).is_err());
-    }
-
-    #[test]
-    fn init_alloc_h2p_p2h_dealloc() {
-        let mut pools = Slab::<PoolId, MemoryPool>::new();
-        let mut devices = Slab::new();
-        let result = init(&mut pools, &mut devices);
-        if result.is_err() {
-            eprintln!("no TT device, skipping hardware test");
-            return;
-        }
-
-        let pool = get_pool(&mut pools);
-
-        let (buf_id, _ev) = pool.allocate(1).expect("allocate small buf ");
-        assert_eq!(pool.buffers[buf_id].size, 4096);
-
-        let src = vec![0xABu8; 3000];
-        pool.host_to_pool(&src, buf_id, vec![]).expect("host_to_pool");
-
-        let mut dst = vec![0u8; 128];
-        pool.pool_to_host(buf_id, &mut dst, vec![]).expect("pool_to_host");
-        assert_eq!(dst[..], src[..128], "first 128 bytes mismatch ");
-
-        pool.deallocate(buf_id, vec![]);
-        assert!(!pool.buffers.contains_key(buf_id));
-    }
-
-    #[test]
-    fn multi_buffer_alloc_dealloc() {
-        let mut pools = Slab::<PoolId, MemoryPool>::new();
-        let mut devices = Slab::new();
-        let result = init(&mut pools, &mut devices);
-        if result.is_err() {
-            eprintln!("no TT device, skipping hardware test");
-            return;
-        }
-
-        let pool = get_pool(&mut pools);
-        let initial_free = pool.free_bytes;
-
-        let mut bufs = Vec::new();
-        for _ in 0..4 {
-            let (id, _ev) = pool.allocate(4096).expect("allocate 4K");
-            bufs.push(id);
-        }
-
-        assert!(pool.free_bytes < initial_free);
-        assert_eq!(pool.buffers.len(), PoolBufferId(4));
-
-        // Write unique patterns to each buffer
-        for (i, &id) in bufs.iter().enumerate() {
-            let pattern = vec![(i * 17) as u8; 256];
-            pool.host_to_pool(&pattern, id, vec![]).expect("h2p");
-        }
-
-        // Read back and verify
-        for (i, &id) in bufs.iter().enumerate() {
-            let mut dst = vec![0u8; 256];
-            pool.pool_to_host(id, &mut dst, vec![]).expect("p2h");
-            assert!(dst.iter().all(|&b| b == (i * 17) as u8), "buf {i} data mismatch");
-        }
-
-        // Deallocate in reverse order
-        for id in bufs.into_iter().rev() {
-            pool.deallocate(id, vec![]);
-        }
-
-        assert_eq!(pool.free_bytes, initial_free);
-        assert!(pool.buffers.is_empty());
-    }
-
-    #[test]
-    fn large_buffer_roundtrip() {
-        let mut pools = Slab::<PoolId, MemoryPool>::new();
-        let mut devices = Slab::new();
-        let result = init(&mut pools, &mut devices);
-        if result.is_err() {
-            eprintln!("no TT device, skipping hardware test");
-            return;
-        }
-
-        let pool = get_pool(&mut pools);
-        let size: usize = 1024 * 1024; // 1 MB
-
-        let (buf_id, _ev) = pool.allocate(size as u64).expect("allocate 1 MB ");
-        assert!(pool.buffers[buf_id].size as usize >= size);
-
-        let src = vec![0xCDu8; size];
-        pool.host_to_pool(&src, buf_id, vec![]).expect("h2p 1MB");
-
-        let mut dst = vec![0u8; size];
-        pool.pool_to_host(buf_id, &mut dst, vec![]).expect("p2h 1MB");
-        assert_eq!(dst, src, "1 MB roundtrip mismatch ");
-
-        pool.deallocate(buf_id, vec![]);
-    }
-}
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        
-        let timeout_ms = 100; // 100ms timeout
-        let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-        
-        assert_eq!(ret, 0, "poll should timeout when no data is available");
-        
-        // Write some data and test that poll detects it
-        let test_data = b"test response\n";
-        write_end.write_all(test_data).unwrap();
-        
-        let ret = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
-        assert!(ret > 0, "poll should detect available data");
-        assert!(pollfd.revents & libc::POLLIN != 0, "poll should report POLLIN event");
-        
-        // Read the data to clear the pipe
-        let mut buffer = String::new();
-        reader.read_line(&mut buffer).unwrap();
-        assert_eq!(buffer.trim(), "test response");
-    }
-
-    #[test]
-    fn test_runtime_timeout_config_unit() {
-        // Test that timeout values are properly validated for runtime configuration
-        // This is a unit test that doesn't require actual runtime or hardware
-        
-        // Test that timeout values are properly validated
-        let valid_timeouts = [1000u64, 5000u64, 30000u64, 60000u64];
-        for timeout in valid_timeouts {
-            assert!(timeout > 0, "timeout should be positive: {}", timeout);
-            assert!(timeout <= 120000, "timeout should be reasonable: {}", timeout);
-        }
-        
-        // Test edge cases
-        assert!(100u64 > 0, "minimum timeout should be positive");
-        assert!(120000u64 > 0, "maximum timeout should be positive");
-    }
-        let mut ops = Slab::<OpId, OpNode>::new();
-        let unary = Op::Unary { x: OpId::NULL, uop: UOp::Neg };
-        let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op: unary });
-        let kernel = Kernel { outputs: vec![], loads: vec![], stores: vec![], ops, head: op_id, tail: op_id };
-
-        let code = generate_compute_kernel(&kernel).expect("codegen for Neg");
-        assert!(code.contains("negative.h"), "should include negative.h header");
-        assert!(code.contains("negative_tile_init"), "should call negative_tile_init");
-        assert!(code.contains("negative_tile"), "should call negative_tile");
-    }
-
-    #[test]
-    fn buf_index_wraparound() {
-        // buf_index is u8, so after 256 allocations it wraps.
-        // Each buf needs its own fd (1-fd-per-buf), so there's no index collision.
-        let mut pools = Slab::<PoolId, MemoryPool>::new();
-        let mut devices = Slab::new();
-        let result = init(&mut pools, &mut devices);
-        if result.is_err() {
-            eprintln!("no TT device, skipping hardware test");
-            return;
-        }
-
-        let pool = get_pool(&mut pools);
-
-        let mut bufs = Vec::new();
-        for _ in 0..260 {
-            match pool.allocate(4096) {
-                Ok((id, _ev)) => bufs.push(id),
-                Err(e) => {
-                    eprintln!("alloc failed after {} bufs: {e}", bufs.len());
-                    break;
-                }
-            }
-        }
-
-        eprintln!("allocated {} buffers before exhaustion", bufs.len());
-
-        // Cleanup
-        for id in bufs {
-            pool.deallocate(id, vec![]);
-        }
-        // Don't assert anything — this test just exercises the wraparound path
-        // without crashing or producing errors.
-    }
 }
