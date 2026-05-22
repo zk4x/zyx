@@ -208,6 +208,10 @@ impl Kernel {
 
         kernel.run_always_on_optimizations();
 
+        if !device.info().has_native_exp2 {
+            kernel.exp2_to_exp();
+        }
+
         let (opt, _) = kernel.opt_split_global_to_local(device.info());
         opt.apply(&mut kernel, 1);
         let (opt, _) = kernel.opt_upcast();
@@ -263,6 +267,10 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
+
+        if !device.info().has_native_exp2 {
+            kernel.exp2_to_exp();
+        }
 
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel, dev_info_ref));
         let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();

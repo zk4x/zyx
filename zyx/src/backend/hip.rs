@@ -279,6 +279,7 @@ pub(super) fn initialize_device(
                 tensor_cores: major >= 7,
                 warp_size: 64,
                 supported_dtypes,
+                has_native_exp2: true,
             },
             streams,
             programs: Slab::new(),
@@ -323,6 +324,7 @@ pub(super) fn initialize_device(
                 .try_into()
                 .unwrap(),
             supported_dtypes,
+            has_native_exp2: true,
         };
         devices.push(Device::HIP(dev));
         //queues,

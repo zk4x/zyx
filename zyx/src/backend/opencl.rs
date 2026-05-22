@@ -1237,6 +1237,7 @@ impl OpenCLDevice {
                 self.get_device_data(CL_DEVICE_MAX_PRIVATE_MEMORY_SIZE).unwrap().try_into().unwrap(),
             ))
             .expect("What a huge amount of registers"),*/
+            has_native_exp2: true,
             tensor_cores: false,
             warp_size: 0,
             supported_dtypes: {

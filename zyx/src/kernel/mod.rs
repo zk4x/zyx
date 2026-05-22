@@ -18,6 +18,7 @@ pub mod cost;
 pub mod custom;
 mod debug;
 mod div_mod;
+mod exp2_to_exp;
 mod fold_constants;
 mod fold_loops;
 mod fuse;

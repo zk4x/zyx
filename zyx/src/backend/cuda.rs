@@ -639,6 +639,7 @@ pub(super) fn initialize_device(
                 tensor_cores: major >= 7,
                 warp_size: 32,
                 supported_dtypes,
+                has_native_exp2: true,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
@@ -675,6 +676,7 @@ pub(super) fn initialize_device(
             tensor_cores: major >= 7,
             warp_size: 32,
             supported_dtypes,
+            has_native_exp2: true,
         };
         devices.push(Device::CUDA(dev));
     }

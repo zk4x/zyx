@@ -618,6 +618,7 @@ pub(super) fn initialize_device(
             tensor_cores: true,
             warp_size: 1,               // Tensix has no SIMT warps
             supported_dtypes: u32::MAX, // all dtypes supported
+            has_native_exp2: false,
         },
         memory_pool_id: pool_id,
         runtime: None,

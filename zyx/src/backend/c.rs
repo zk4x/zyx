@@ -90,6 +90,7 @@ pub(super) fn initialize_device(
                 mask |= 1u32 << (DType::BF16 as u32);
                 mask
             },
+            has_native_exp2: true,
         },
         memory_pool_id: pool_id,
         programs: Slab::new(),

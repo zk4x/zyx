@@ -368,6 +368,8 @@ pub struct DeviceInfo {
     pub warp_size: u16,
     /// Bitmask of supported `DTypes` (bit index = `DType` as u16)
     pub supported_dtypes: u32,
+    /// Whether the device has a native exp2 instruction
+    pub has_native_exp2: bool,
 }
 
 impl DeviceInfo {
