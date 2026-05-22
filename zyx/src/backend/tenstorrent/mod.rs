@@ -801,7 +801,7 @@ struct RuntimeProcess {
 }
 
 impl RuntimeProcess {
-    fn new(runtime_path: &str, kernel_dir: &str) -> Result<Self, BackendError> {
+    fn new(runtime_path: &str, kernel_dir: &str, cache_dir: &str) -> Result<Self, BackendError> {
         let mut child = Command::new(runtime_path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -829,7 +829,7 @@ impl RuntimeProcess {
         };
 
         // Send init
-        let init_json = format!(r#"{{"cmd":"init","kernel_dir":"{kernel_dir}"}}"#);
+        let init_json = format!(r#"{{"cmd":"init","kernel_dir":"{kernel_dir}","cache_dir":"{cache_dir}"}}"#);
         rt.send(&init_json)?;
         let resp = rt.recv_with_timeout(rt.timeout_ms)?;
         if resp.contains("\"error\"") {
@@ -1042,8 +1042,9 @@ impl TTDevice {
         // Spawn runtime on first use
         if self.runtime.is_none() {
             let kernel_dir = self.kernel_dir.to_string_lossy().to_string();
+            let cache_dir = self.cache_dir.to_string_lossy().to_string();
             let runtime_path = env!("ZYX_TT_RUNTIME_PATH");
-            match RuntimeProcess::new(runtime_path, &kernel_dir) {
+            match RuntimeProcess::new(runtime_path, &kernel_dir, &cache_dir) {
                 Ok(rt) => self.runtime = Some(rt),
                 Err(e) => {
                     if debug_asm {
