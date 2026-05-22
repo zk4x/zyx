@@ -98,11 +98,8 @@ static uint64_t extract_u64(const string& json, const string& key) {
 int main() {
     // Self-configure TT_METAL_ROOT from compile-time default (set by build.rs)
     // so no environment variable is needed at runtime.
-    if (!getenv("TT_METAL_ROOT")) {
-        setenv("TT_METAL_ROOT", TT_METAL_ROOT_DEFAULT, 0);
-    }
-    if (!getenv("TT_METAL_RUNTIME_ROOT_ENV_VAR")) {
-        return 0;
+    if (!getenv("TT_METAL_RUNTIME_ROOT")) {
+        setenv("TT_METAL_RUNTIME_ROOT", TT_METAL_ROOT_DEFAULT, 0);
     }
 
     ios::sync_with_stdio(false);
