@@ -37,7 +37,7 @@ impl Kernel {
     pub fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {
         // First pass: compute reference counts and dtypes for register estimation
         let mut rcs: Map<OpId, u32> = Map::default();
-        let mut dtypes: Map<OpId, (DType, u8)> = Map::default();
+        let mut dtypes: Map<OpId, (DType, u16)> = Map::default();
         {
             let mut op_id = self.head;
             while !op_id.is_null() {
@@ -51,7 +51,7 @@ impl Kernel {
                     | Op::Reduce { .. } => unreachable!(),
                     Op::Vectorize { ops } => {
                         let dtype = dtypes[&ops[0]];
-                        dtypes.insert(op_id, (dtype.0, ops.len() as u8));
+                        dtypes.insert(op_id, (dtype.0, ops.len() as u16));
                         for &x in ops.iter() {
                             *rcs.entry(x).or_insert(0) += 1;
                         }
@@ -124,7 +124,7 @@ impl Kernel {
         let mut loop_mult = 1u64;
         let mut latest_loop_lengths: Vec<u64> = Vec::new();
 
-        let mut reg_slots: Vec<(u32, (DType, u8))> = Vec::new(); // (rc, dtype)
+        let mut reg_slots: Vec<(u32, (DType, u16))> = Vec::new(); // (rc, dtype)
         let mut reg_map: Map<OpId, usize> = Map::default();
         let mut peak_reg_bytes = 0u64;
 

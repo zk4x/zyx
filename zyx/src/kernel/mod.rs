@@ -162,12 +162,12 @@ pub enum Op {
         dst: OpId,
         x: OpId,
         index: OpId,
-        vlen: u8,
+        vlen: u16,
     },
     Load {
         src: OpId,
         index: OpId,
-        vlen: u8,
+        vlen: u16,
     },
     Index {
         len: Dim,
