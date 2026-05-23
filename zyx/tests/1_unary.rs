@@ -45,6 +45,16 @@ fn exp2() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn ln() -> Result<(), ZyxError> {
+    let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
+    let zdata: Vec<f32> = Tensor::from(data).ln().try_into()?;
+    for (x, y) in data.iter().zip(zdata) {
+        assert!(x.ln().is_equal(y));
+    }
+    Ok(())
+}
+
+#[test]
 fn log2() -> Result<(), ZyxError> {
     let data: [f32; 10] = [-3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657];
     let zdata: Vec<f32> = Tensor::from(data).log2().try_into()?;
