@@ -468,6 +468,7 @@ impl CDevice {
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
                         UOp::Exp => _ = writeln!(source, "{indent}r{reg} = exp({x});"),
                         UOp::Exp2 => _ = writeln!(source, "{indent}r{reg} = exp2({x});"),
+                        UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
                         UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
                         UOp::Reciprocal => {
                             _ = writeln!(source, "{indent}r{reg} = {}/{x};", dtype.0.one_constant().c_code());

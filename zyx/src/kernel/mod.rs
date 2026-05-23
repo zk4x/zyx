@@ -20,6 +20,7 @@ mod debug;
 mod div_mod;
 mod exp2_to_exp;
 mod fold_constants;
+mod log2_to_ln;
 mod fold_loops;
 mod fuse;
 mod licm;
@@ -60,6 +61,7 @@ pub enum UOp {
     BitNot,
     Exp,
     Exp2,
+    Ln,
     Log2,
     Reciprocal,
     Sqrt,

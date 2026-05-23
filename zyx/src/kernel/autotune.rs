@@ -210,6 +210,7 @@ impl Kernel {
 
         if !device.info().has_native_exp2 {
             kernel.exp2_to_exp();
+            kernel.log2_to_ln();
         }
 
         let (opt, _) = kernel.opt_split_global_to_local(device.info());
@@ -270,6 +271,7 @@ impl Kernel {
 
         if !device.info().has_native_exp2 {
             kernel.exp2_to_exp();
+            kernel.log2_to_ln();
         }
 
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel, dev_info_ref));

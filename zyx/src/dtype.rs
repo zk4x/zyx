@@ -509,6 +509,7 @@ impl Constant {
                 UOp::Neg => x.neg(),
                 UOp::Exp2 => x.exp2(),
                 UOp::Log2 => x.log2(),
+                UOp::Ln => unreachable!(),
             }
         }
         fn unary_func_float<T: Float>(x: T, uop: UOp) -> T {
@@ -525,6 +526,7 @@ impl Constant {
                 UOp::Exp => x.exp(),
                 UOp::Exp2 => x.exp2(),
                 UOp::Log2 => x.log2(),
+                UOp::Ln => x.ln(),
             }
         }
         match self {

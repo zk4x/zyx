@@ -201,6 +201,9 @@ pub trait Float: Scalar {
     /// Natural exponent e^x
     #[must_use]
     fn exp(self) -> Self;
+    /// Natural logarithm
+    #[must_use]
+    fn ln(self) -> Self;
 }
 
 impl Scalar for bf16 {
@@ -430,6 +433,10 @@ impl Float for bf16 {
 
     fn exp(self) -> Self {
         bf16::from_f32(self.to_f32().exp())
+    }
+
+    fn ln(self) -> Self {
+        bf16::from_f32(self.to_f32().ln())
     }
 }
 
@@ -665,6 +672,10 @@ impl Float for f16 {
 
     fn exp(self) -> Self {
         f16::from_f32(self.to_f32().exp())
+    }
+
+    fn ln(self) -> Self {
+        f16::from_f32(self.to_f32().ln())
     }
 }
 
@@ -925,6 +936,10 @@ impl Float for f32 {
     fn exp(self) -> Self {
         f32::exp(self)
     }
+
+    fn ln(self) -> Self {
+        f32::ln(self)
+    }
 }
 
 impl Scalar for f64 {
@@ -1148,6 +1163,10 @@ impl Float for f64 {
 
     fn exp(self) -> Self {
         f64::exp(self)
+    }
+
+    fn ln(self) -> Self {
+        f64::ln(self)
     }
 }
 

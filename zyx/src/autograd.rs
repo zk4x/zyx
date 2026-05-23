@@ -394,6 +394,11 @@ impl Runtime {
                             self.release(temp);
                             insert_or_add_grad(self, &mut grads, x, grad);
                         }
+                        UOp::Ln => {
+                            // grad_ln(x) = grad / x
+                            let grad_x = self.binary(grad, x, BOp::Div);
+                            insert_or_add_grad(self, &mut grads, x, grad_x);
+                        }
                         UOp::Abs => {
                             // Gradient of abs(x) is sign(x) = (x > 0) - (x < 0)
                             let dtype = self.dtype(x);
