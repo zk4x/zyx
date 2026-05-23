@@ -21,7 +21,7 @@ use std::thread;
 
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_upcast(k),
@@ -29,6 +29,7 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
     Kernel::opt_tiled_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_licm(k),
+    |k, _| Kernel::opt_pad_index(k),
 ];
 
 #[derive(Debug)]
@@ -55,6 +56,9 @@ pub enum Optimization {
         factors: Vec<(OpId, u64)>,
     },
     Licm,
+    PadIndex {
+        factors: Vec<(OpId, Dim)>,
+    },
 }
 
 impl Optimization {
@@ -110,6 +114,10 @@ impl Optimization {
                 println!("split loop {op_id} by {factor}");
             }
             Optimization::Licm => println!("Licm"),
+            Optimization::PadIndex { factors } => {
+                let (op_id, _) = factors[config];
+                println!("pad index {op_id} by 1024, cfg_opt={config}");
+            }
         }
     }
 
@@ -167,6 +175,17 @@ impl Optimization {
             Optimization::Licm => {
                 kernel.loop_invariant_code_motion();
             }
+            Optimization::PadIndex { factors } => {
+                if factors.is_empty() {
+                    return;
+                }
+                let (gidx_id, pad_to) = factors[config];
+                let Op::Index { len: current_len, .. } = kernel.ops[gidx_id].op else { unreachable!() };
+                let pad_len = (pad_to - current_len % pad_to) % pad_to;
+                if pad_len > 0 {
+                    kernel.pad_index(gidx_id, current_len, pad_len, crate::dtype::Constant::idx(0));
+                }
+            }
         }
     }
 }
@@ -213,17 +232,10 @@ impl Kernel {
             kernel.log2_to_ln();
         }
 
-        let (opt, _) = kernel.opt_split_global_to_local(device.info());
-        opt.apply(&mut kernel, 1);
-        let (opt, _) = kernel.opt_upcast();
-        opt.apply(&mut kernel, 3);
-        let (opt, _) = kernel.opt_split_global_to_local(device.info());
-        opt.apply(&mut kernel, 1);
-        let (opt, _) = kernel.opt_upcast();
-        opt.apply(&mut kernel, 5);
-
-        //kernel.run_always_on_optimizations();
-        //kernel.run_always_on_optimizations();
+        let (opt, _) = kernel.opt_pad_index();
+        opt.apply(&mut kernel, 0);
+        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
         kernel.dead_code_elimination();
 
         self.verify();
@@ -247,7 +259,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
