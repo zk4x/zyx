@@ -75,7 +75,7 @@ impl Kernel {
         while !op_id.is_null() {
             if let Op::Index { len, scope: Scope::Global, .. } = self.ops[op_id].op {
                 if len % 32 != 0 {
-                    factors.push((op_id, 32 - (len % 32)));
+                    factors.push((op_id, 32));
                 }
             }
             op_id = self.next_op(op_id);
