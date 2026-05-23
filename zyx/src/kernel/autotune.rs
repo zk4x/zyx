@@ -234,6 +234,8 @@ impl Kernel {
 
         let (opt, _) = kernel.opt_pad_index();
         opt.apply(&mut kernel, 0);
+        let (opt2, _) = kernel.opt_pad_index();
+        opt2.apply(&mut kernel, 0);
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.dead_code_elimination();

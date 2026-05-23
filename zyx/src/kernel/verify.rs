@@ -240,12 +240,15 @@ impl Kernel {
         let bounds = self.compute_bounds();
         let mut defines = Map::default();
         let mut op_id = self.head;
+        let mut if_depth = 0;
         while !op_id.is_null() {
             match *self.at(op_id) {
+                Op::If { .. } => if_depth += 1,
+                Op::EndIf => if_depth -= 1,
                 Op::Define { len, .. } => {
                     defines.insert(op_id, len);
                 }
-                Op::Load { src, index, .. } => {
+                Op::Load { src, index, .. } if if_depth == 0 => {
                     if let Some(&idx_range) = bounds.get(&index) {
                         if idx_range.1 > defines[&src] - 1 {
                             if !self.is_masked_index(index, &bounds) {
@@ -258,7 +261,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, index, .. } => {
+                Op::Store { dst, index, .. } if if_depth == 0 => {
                     if let Some(&idx_range) = bounds.get(&index) {
                         if idx_range.1 > defines[&dst] - 1 {
                             if !self.is_masked_index(index, &bounds) {
