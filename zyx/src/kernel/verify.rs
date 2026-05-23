@@ -1,11 +1,15 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+use std::ops::RangeInclusive;
+
 use crate::{
     DType, Map, Set,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId},
+    kernel::{BOp, IDX_T, Kernel, Op, OpId, UOp},
     shape::Dim,
 };
+
+type VarMap = Map<OpId, (Dim, Dim)>;
 
 impl Kernel {
     pub fn verify(&self) {
@@ -206,7 +210,6 @@ impl Kernel {
     }
 
     pub fn check_oob(&self) {
-        let bounds = self.compute_bounds();
         let mut defines = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -215,23 +218,25 @@ impl Kernel {
                     defines.insert(op_id, len);
                 }
                 Op::Load { src, index, .. } => {
-                    if let Some(&idx_range) = bounds.get(&index) {
-                        if idx_range.1 >= defines[&src] {
+                    let idx_range = self.get_bounds(index);
+                    if let Some(range) = idx_range {
+                        if *range.end() >= defines[&src] {
                             self.debug_colorless();
                             panic!(
                                 "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                                op_id, idx_range, defines[&src]
+                                op_id, range, defines[&src]
                             );
                         }
                     }
                 }
                 Op::Store { dst, index, .. } => {
-                    if let Some(&idx_range) = bounds.get(&index) {
-                        if idx_range.1 > defines[&dst] {
+                    let idx_range = self.get_bounds(index);
+                    if let Some(range) = idx_range {
+                        if *range.start() > defines[&dst] + 1 {
                             self.debug_colorless();
                             panic!(
                                 "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                                op_id, idx_range, defines[&dst]
+                                op_id, range, defines[&dst]
                             );
                         }
                     }
@@ -241,7 +246,9 @@ impl Kernel {
             op_id = self.ops[op_id].next;
         }
     }
+}
 
+impl Kernel {
     #[allow(clippy::match_same_arms)]
     pub fn compute_bounds(&self) -> Map<OpId, (Dim, Dim)> {
         let mut bounds: Map<OpId, (Dim, Dim)> = Map::default();
@@ -515,5 +522,11 @@ impl Kernel {
             }
             _ => {}
         }
+    }
+}
+
+impl Kernel {
+    fn get_bounds(&self, op_id: OpId) -> Option<RangeInclusive<Dim>> {
+        None
     }
 }
