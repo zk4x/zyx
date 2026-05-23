@@ -240,15 +240,12 @@ impl Kernel {
         let bounds = self.compute_bounds();
         let mut defines = Map::default();
         let mut op_id = self.head;
-        let mut if_depth = 0;
         while !op_id.is_null() {
             match *self.at(op_id) {
-                Op::If { .. } => if_depth += 1,
-                Op::EndIf => if_depth -= 1,
                 Op::Define { len, .. } => {
                     defines.insert(op_id, len);
                 }
-                Op::Load { src, index, .. } if if_depth == 0 => {
+                Op::Load { src, index, .. } => {
                     if let Some(&idx_range) = bounds.get(&index) {
                         if idx_range.1 > defines[&src] - 1 {
                             if !self.is_masked_index(index, &bounds) {
@@ -261,7 +258,7 @@ impl Kernel {
                         }
                     }
                 }
-                Op::Store { dst, index, .. } if if_depth == 0 => {
+                Op::Store { dst, index, .. } => {
                     if let Some(&idx_range) = bounds.get(&index) {
                         if idx_range.1 > defines[&dst] - 1 {
                             if !self.is_masked_index(index, &bounds) {
@@ -300,6 +297,7 @@ impl Kernel {
                 }
                 Op::If { condition } => {
                     let mut prev = bounds_stack.last().unwrap().clone();
+                    let mut skip_rederive = Set::default();
                     let mut params = Vec::new();
                     params.push(condition);
                     while let Some(param) = params.pop() {
@@ -309,7 +307,11 @@ impl Kernel {
                                     if let Some((yl, yu)) = prev.get(y) {
                                         if yl == yu {
                                             if let Some((_xl, _xu)) = prev.get(x) {
-                                                prev.insert(*x, (*yl, *yu));
+                                                let x_id = *x;
+                                                let yl = *yl;
+                                                let yu = *yu;
+                                                prev.insert(x_id, (yl, yu));
+                                                self.backward_constrain(x_id, yl, yu, &mut prev, &mut skip_rederive);
                                             }
                                         }
                                     }
@@ -318,7 +320,14 @@ impl Kernel {
                                     if let Some((yl, yu)) = prev.get(y) {
                                         if yl == yu {
                                             if let Some((xl, _xu)) = prev.get(x) {
-                                                prev.insert(*x, (*xl, yl.saturating_sub(1)));
+                                                let x_id = *x;
+                                                let xl = *xl;
+                                                let new_upper = yl.saturating_sub(1);
+                                                prev.insert(x_id, (xl, new_upper));
+                                                // Don't add x_id to skip_rederive — the re-derive will
+                                                // recompute it from the backward-constrained operands
+                                                // correctly (and possibly tighter).
+                                                self.backward_constrain(x_id, xl, new_upper, &mut prev, &mut skip_rederive);
                                             }
                                         }
                                     }
@@ -331,10 +340,13 @@ impl Kernel {
                     // Re-derive bounds for all ops up to this point in case any depend
                     // on the newly constrained variables (e.g. pad_index wraps a store in
                     // Op::If but the store index was computed before the If and used the
-                    // unconstrained range).
+                    // unconstrained range).  Skip variables that were just hand-constrained
+                    // — re-derive would overwrite them using stale operand bounds.
                     let mut scan = self.head;
                     while scan != op_id {
-                        self.rederive_bounds(&mut prev, scan);
+                        if !skip_rederive.contains(&scan) {
+                            self.rederive_bounds(&mut prev, scan);
+                        }
                         scan = self.ops[scan].next;
                     }
                     bounds_stack.push(prev);
@@ -378,6 +390,70 @@ impl Kernel {
             op_id = self.ops[op_id].next;
         }
         bounds
+    }
+
+    /// Propagate constraint backward from v to its operands (one level, no recursion).
+    /// When v is constrained to (new_lower, new_upper) and v = f(operand, constant),
+    /// the operand's upper bound can be narrowed accordingly.
+    fn backward_constrain(
+        &self,
+        v: OpId,
+        _new_lower: Dim,
+        new_upper: Dim,
+        prev: &mut Map<OpId, (Dim, Dim)>,
+        skip_rederive: &mut Set<OpId>,
+    ) {
+        match &self.ops[v].op {
+            Op::Binary { x, y, bop: BOp::Mul } => {
+                let xc = prev.get(x).filter(|(l, u)| l == u).copied();
+                let yc = prev.get(y).filter(|(l, u)| l == u).copied();
+                let operand_k = match (xc, yc) {
+                    (None, Some((k, _))) => Some((*x, k)),
+                    (Some((k, _)), None) => Some((*y, k)),
+                    _ => None,
+                };
+                if let Some((operand, k)) = operand_k {
+                    if k > 0 {
+                        let upper = new_upper / k;
+                        if let Some(&(ol, ou)) = prev.get(&operand) {
+                            if upper < ou {
+                                prev.insert(operand, (ol, upper));
+                                skip_rederive.insert(operand);
+                            }
+                        }
+                    }
+                }
+            }
+            Op::Binary { x, y, bop: BOp::Add } => {
+                let xc = prev.get(x).filter(|(l, u)| l == u).copied();
+                let yc = prev.get(y).filter(|(l, u)| l == u).copied();
+                let operand_k = match (xc, yc) {
+                    (None, Some((k, _))) => Some((*x, k)),
+                    (Some((k, _)), None) => Some((*y, k)),
+                    _ => None,
+                };
+                if let Some((operand, k)) = operand_k {
+                    if new_upper >= k {
+                        let upper = new_upper - k;
+                        if let Some(&(ol, ou)) = prev.get(&operand) {
+                            if upper < ou {
+                                prev.insert(operand, (ol, upper));
+                                skip_rederive.insert(operand);
+                            }
+                        }
+                    }
+                }
+            }
+            Op::Cast { x, .. } => {
+                if let Some(&(cl, cu)) = prev.get(x) {
+                    if new_upper < cu {
+                        prev.insert(*x, (cl, new_upper));
+                        skip_rederive.insert(*x);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     fn rederive_bounds(&self, prev: &mut Map<OpId, (Dim, Dim)>, op_id: OpId) {
