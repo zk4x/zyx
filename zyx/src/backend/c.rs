@@ -282,7 +282,6 @@ impl CDevice {
         _ = writeln!(source, "  (void)nargs;");
         // Emit pointer casts from args array
         _ = write!(source, "{global_cast}");
-        indent += "  ";
 
         // Emit all Register/Local defines (may appear anywhere in the IR,
         // not just at the beginning — e.g. after Global defines and Index ops)

@@ -5,11 +5,9 @@ use std::ops::RangeInclusive;
 
 use crate::{
     DType, Map, Set,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, UOp},
+    kernel::{BOp, IDX_T, Kernel, Op, OpId},
     shape::Dim,
 };
-
-type VarMap = Map<OpId, (Dim, Dim)>;
 
 impl Kernel {
     pub fn verify(&self) {
