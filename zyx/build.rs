@@ -68,18 +68,20 @@ fn main() {
         .arg("-lspdlog");
     cmd.arg(format!("-Wl,-rpath,{}", lib_dir.display()));
 
-    // Output
-    let out_dir = std::env::var("OUT_DIR").unwrap();
-    let binary = std::path::Path::new(&out_dir).join("zyx-tt-runtime");
-    cmd.arg("-o").arg(&binary);
+    // Output to config dir
+    let config_base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|p| p.starts_with('/'))
+        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.config")))
+        .unwrap_or_else(|| "/tmp".to_string());
+    let runtime_path = std::path::Path::new(&config_base).join("zyx/zyx-tt-runtime");
+    std::fs::create_dir_all(runtime_path.parent().unwrap()).ok();
+    cmd.arg("-o").arg(&runtime_path);
 
     let status = cmd.status().unwrap_or_else(|e| {
         panic!("failed to invoke g++: {e}");
     });
     assert!(status.success(), "g++ build failed");
-
-    // Emit env vars for the Rust code
-    println!("cargo:rustc-env=ZYX_TT_RUNTIME_PATH={}", binary.display());
 
     let kernel_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")

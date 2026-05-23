@@ -592,15 +592,25 @@ pub(super) fn initialize_device(
     });
     memory_pools.push(pool);
 
-    // Compute cache dir from XDG convention
-    let cache_dir = std::env::var_os("XDG_CONFIG_HOME")
+    // Compute config dir from XDG convention (same as cache_dir but without /cache/tt)
+    let config_base = std::env::var_os("XDG_CONFIG_HOME")
         .and_then(|p| {
             let p = PathBuf::from(p);
             if p.is_absolute() { Some(p) } else { None }
         })
         .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
-        .map(|p| p.join("zyx/cache/tt"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/zyx-tt-cache"));
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+
+    let cache_dir = config_base.join("zyx/cache/tt");
+
+    // The runtime binary must be installed at the config dir by build.rs
+    let runtime_path = config_base.join("zyx/zyx-tt-runtime");
+    if !runtime_path.exists() {
+        return Err(BackendError {
+            status: ErrorStatus::Initialization,
+            context: format!("runtime not found at {}. Rebuild with TT_METAL_ROOT set.", runtime_path.display()).into(),
+        });
+    }
 
     // Paths provided by build.rs
     let kernel_dir = PathBuf::from(env!("ZYX_TT_KERNEL_DIR"));
@@ -624,6 +634,7 @@ pub(super) fn initialize_device(
         runtime: None,
         kernel_dir,
         cache_dir,
+        runtime_path,
         programs: Slab::new(),
     }));
     Ok(())
@@ -1013,6 +1024,7 @@ pub struct TTDevice {
     runtime: Option<RuntimeProcess>,
     kernel_dir: PathBuf,
     cache_dir: PathBuf,
+    runtime_path: PathBuf,
     programs: Slab<DeviceProgramId, TTProgram>,
 }
 
@@ -1044,8 +1056,8 @@ impl TTDevice {
         if self.runtime.is_none() {
             let kernel_dir = self.kernel_dir.to_string_lossy().to_string();
             let cache_dir = self.cache_dir.to_string_lossy().to_string();
-            let runtime_path = env!("ZYX_TT_RUNTIME_PATH");
-            match RuntimeProcess::new(runtime_path, &kernel_dir, &cache_dir) {
+            let runtime_path = self.runtime_path.to_string_lossy().to_string();
+            match RuntimeProcess::new(&runtime_path, &kernel_dir, &cache_dir) {
                 Ok(rt) => self.runtime = Some(rt),
                 Err(e) => {
                     if debug_asm {
