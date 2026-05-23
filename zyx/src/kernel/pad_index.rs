@@ -52,7 +52,7 @@ impl Kernel {
                     };
                     if let Some(buf_len) = buf_len {
                         let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
-                        let cond = self.insert_before(op_id, Op::Binary { x: store_idx, y: clen, bop: BOp::Cmplt });
+                        let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
                         let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
                         let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
                         let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
