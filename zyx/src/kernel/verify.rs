@@ -205,39 +205,6 @@ impl Kernel {
         self.check_oob();
     }
 
-    fn is_masked_index(&self, index: OpId) -> bool {
-        let mut stack = vec![index];
-        let mut visited = Set::default();
-        while let Some(id) = stack.pop() {
-            if !visited.insert(id) {
-                continue;
-            }
-            if let Op::Cast { x, dtype: IDX_T } = self.ops[id].op {
-                if let Op::Binary { bop, .. } = self.ops[x].op {
-                    if bop.returns_bool() {
-                        return true;
-                    }
-                }
-            }
-            match self.ops[id].op {
-                Op::Binary { x, y, .. } => {
-                    stack.push(x);
-                    stack.push(y);
-                }
-                Op::Mad { x, y, z } => {
-                    stack.push(x);
-                    stack.push(y);
-                    stack.push(z);
-                }
-                Op::Cast { x, .. } => {
-                    stack.push(x);
-                }
-                _ => {}
-            }
-        }
-        false
-    }
-
     pub fn check_oob(&self) {
         let bounds = self.compute_bounds();
         let mut defines = Map::default();
@@ -249,7 +216,7 @@ impl Kernel {
                 }
                 Op::Load { src, index, .. } => {
                     if let Some(&idx_range) = bounds.get(&index) {
-                        if idx_range.1 >= defines[&src] && !self.is_masked_index(index) {
+                        if idx_range.1 >= defines[&src] {
                             self.debug_colorless();
                             panic!(
                                 "OOB detected in op {}: index {:?} exceeds buffer length {:?}",

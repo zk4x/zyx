@@ -43,12 +43,24 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
 
-            // Guard stores: skip OOB stores entirely
-            if let Op::Store { index: store_idx, .. } = self.ops[op_id].op.clone() {
+            // Redirect OOB stores to trash element at index `limit`
+            if let Op::Store { dst, x, index: store_idx, vlen } = self.ops[op_id].op.clone() {
                 if self.depends_on(store_idx, gidx_id, &mut Set::default()) {
-                    let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
-                    self.insert_before(op_id, Op::If { condition: cond });
-                    self.insert_after(op_id, Op::EndIf);
+                    let buf_len = match &self.ops[dst].op {
+                        Op::Define { len, scope: Scope::Global, .. } => Some(*len),
+                        _ => None,
+                    };
+                    if let Some(buf_len) = buf_len {
+                        let clen = self.insert_before(op_id, Op::Const(Constant::idx(buf_len)));
+                        let cond = self.insert_before(op_id, Op::Binary { x: store_idx, y: clen, bop: BOp::Cmplt });
+                        let cast_cond = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
+                        let one = self.insert_before(op_id, Op::Const(Constant::idx(1)));
+                        let not_cond = self.insert_before(op_id, Op::Binary { x: one, y: cast_cond, bop: BOp::Sub });
+                        let idx_term = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_cond, bop: BOp::Mul });
+                        let lim_term = self.insert_before(op_id, Op::Binary { x: clen, y: not_cond, bop: BOp::Mul });
+                        let safe_idx = self.insert_before(op_id, Op::Binary { x: idx_term, y: lim_term, bop: BOp::Add });
+                        self.ops[op_id].op = Op::Store { dst, x, index: safe_idx, vlen };
+                    }
                 }
             }
 

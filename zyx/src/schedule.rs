@@ -66,6 +66,7 @@ pub fn schedule(
             let old_pool_id = buf_id.pool;
             let src = buf_id.buffer;
             let bytes = graph.shape(tid).iter().product::<Dim>() * Dim::from(graph.dtype(tid).bit_size() / 8);
+            let alloc_bytes = bytes + Dim::from(graph.dtype(tid).bit_size() / 8); // +1 element for trash slot
             let mut byte_slice = vec![0u8; bytes as usize];
 
             let mut ev_wait = Vec::new();
@@ -84,7 +85,7 @@ pub fn schedule(
                 pools[old_pool_id].deallocate(src, vec![]);
             }
 
-            let (dst, event) = pools[pool_id].allocate(bytes)?;
+            let (dst, event) = pools[pool_id].allocate(alloc_bytes)?;
             let dst_global = BufferId { pool: pool_id, buffer: dst };
             let event = pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
             pools[pool_id].sync_events(vec![event])?;
@@ -94,7 +95,8 @@ pub fn schedule(
     let mut output_buffers = BTreeSet::new();
     for &tid in stores {
         let bytes = graph.shape(tid).iter().product::<Dim>() * Dim::from(graph.dtype(tid).bit_size() / 8);
-        let (buffer_id, event) = pools[pool_id].allocate(bytes)?;
+        let alloc_bytes = bytes + Dim::from(graph.dtype(tid).bit_size() / 8); // +1 element for trash slot
+        let (buffer_id, event) = pools[pool_id].allocate(alloc_bytes)?;
         let global_id = BufferId { pool: pool_id, buffer: buffer_id };
         buffer_map.insert(tid, global_id);
         event_wait_list.push(event);
