@@ -90,7 +90,7 @@ pub(super) fn initialize_device(
                 mask |= 1u32 << (DType::BF16 as u32);
                 mask
             },
-            has_native_exp2: true,
+            has_native_exp2: false,
         },
         memory_pool_id: pool_id,
         programs: Slab::new(),
@@ -466,7 +466,7 @@ impl CDevice {
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                        UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching C backend"),
+                        UOp::Exp => _ = writeln!(source, "{indent}r{reg} = exp({x});"),
                         UOp::Exp2 => _ = writeln!(source, "{indent}r{reg} = exp2({x});"),
                         UOp::Log2 => _ = writeln!(source, "{indent}r{reg} = log2({x});"),
                         UOp::Reciprocal => {
