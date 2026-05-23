@@ -11,20 +11,19 @@ use crate::{
 use super::autotune::Optimization;
 
 impl Kernel {
-    /// Pads a global index by the given length, guarding out-of-range loads.
+    /// Pads a global index to the next multiple of `tile_size`, guarding out-of-range loads
+    /// and skipping out-of-range stores.
     ///
     /// This extends `Op::Index { len: current_len, .. }` to `len: current_len + pad_len`
-    /// and inserts guards around every `Op::Load` whose index depends on `gidx_id`.
-    /// For threads whose coordinate ≥ `current_len`, the loaded value is replaced
-    /// with `pad_value` and the memory access is redirected to element 0 (safe).
+    /// so the grid covers full tiles.  OOB reads are redirected to element 0 (safe).
+    /// OOB stores are wrapped in `Op::If { .. }` / `Op::EndIf` and skipped entirely.
     ///
-    /// This is useful for tiling: when a tensor size isn't a multiple of the tile
-    /// size, pad the index so the grid covers full tiles, and padded positions
-    /// read the pad value (typically zero, or the neutral element for reductions).
+    /// Useful for tiling: when a tensor dimension isn't a multiple of the tile size,
+    /// pad the index so the grid covers full tiles, and OOB threads compute garbage
+    /// but never write it to memory.
     ///
     /// # Panics
     /// - If `gidx_id` is not an `Op::Index` node.
-    /// - If a load's source is not an `Op::Define` (internal consistency).
     pub fn pad_index(&mut self, gidx_id: OpId, current_len: Dim, pad_len: Dim, _pad_value: Constant) {
         if pad_len == 0 {
             return;
@@ -44,16 +43,12 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
 
-            // Guard stores: redirect OOB writes to element 0 (safe, and the
-            // result matches since OOB threads read element 0 as input)
+            // Guard stores: skip OOB stores entirely
             if let Op::Store { index: store_idx, .. } = self.ops[op_id].op.clone() {
                 if self.depends_on(store_idx, gidx_id, &mut Set::default()) {
                     let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
-                    let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });
-                    let safe_idx = self.insert_before(op_id, Op::Binary { x: store_idx, y: cast_idx, bop: BOp::Mul });
-                    if let Op::Store { index, .. } = &mut self.ops[op_id].op {
-                        *index = safe_idx;
-                    }
+                    self.insert_before(op_id, Op::If { condition: cond });
+                    self.insert_after(op_id, Op::EndIf);
                 }
             }
 
@@ -79,8 +74,8 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Index { len, scope: Scope::Global, .. } = self.ops[op_id].op {
-                if len % 1024 != 0 {
-                    factors.push((op_id, 1024));
+                if len % 32 != 0 {
+                    factors.push((op_id, 32 - (len % 32)));
                 }
             }
             op_id = self.next_op(op_id);

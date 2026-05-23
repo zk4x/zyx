@@ -425,6 +425,15 @@ impl Kernel {
                         }
                         params.extend(self.ops[param].op.parameters());
                     }
+                    // Re-derive bounds for all ops up to this point in case any depend
+                    // on the newly constrained variables (e.g. pad_index wraps a store in
+                    // Op::If but the store index was computed before the If and used the
+                    // unconstrained range).
+                    let mut scan = self.head;
+                    while scan != op_id {
+                        self.rederive_bounds(&mut prev, scan);
+                        scan = self.ops[scan].next;
+                    }
                     bounds_stack.push(prev);
                 }
                 Op::EndIf => {
@@ -452,14 +461,115 @@ impl Kernel {
                 }
                 _ => {}
             }
-            // Merge current scope bounds into the global bounds map
-            if let Some(scope_bounds) = bounds_stack.last() {
-                for (&k, &v) in scope_bounds {
-                    bounds.insert(k, v);
+            // Merge current scope bounds into the global bounds map.
+            // Skip at EndIf — parent scope entries are stale inside the If body
+            // and would overwrite the refined bounds that were already merged
+            // from the If scope during body processing.
+            if !matches!(*self.at(op_id), Op::EndIf) {
+                if let Some(scope_bounds) = bounds_stack.last() {
+                    for (&k, &v) in scope_bounds {
+                        bounds.insert(k, v);
+                    }
                 }
             }
             op_id = self.ops[op_id].next;
         }
         bounds
+    }
+
+    fn rederive_bounds(&self, prev: &mut Map<OpId, (Dim, Dim)>, op_id: OpId) {
+        match *self.at(op_id) {
+            Op::Cast { x, .. } => {
+                if let Some(&b) = prev.get(&x) {
+                    prev.insert(op_id, b);
+                }
+            }
+            Op::Binary { x, y, bop } => {
+                let Some(&(min_x, max_x)) = prev.get(&x) else { return };
+                let Some(&(min_y, max_y)) = prev.get(&y) else { return };
+                let range = match bop {
+                    BOp::Add => (min_x.wrapping_add(min_y), max_x.wrapping_add(max_y)),
+                    BOp::Sub => (min_x.wrapping_sub(min_y), max_x.wrapping_sub(max_y)),
+                    BOp::Mul => (min_x.wrapping_mul(min_y), max_x.wrapping_mul(max_y)),
+                    BOp::Div | BOp::Mod if min_y == 0 || max_y == 0 => (0, Dim::MAX),
+                    BOp::Div => (min_x / min_y, max_x / max_y),
+                    BOp::Mod => (0, max_y - 1),
+                    BOp::BitShiftLeft => (min_x << min_y, max_x << max_y),
+                    BOp::BitShiftRight => (min_x >> min_y, max_x >> max_y),
+                    BOp::Pow => {
+                        let min_val = if min_y == 0 {
+                            1
+                        } else if min_x == 0 {
+                            0
+                        } else {
+                            min_x.pow(min_y as u32)
+                        };
+                        let max_val = if max_y == 0 {
+                            1
+                        } else if max_x == 0 {
+                            0
+                        } else {
+                            max_x.pow(max_y as u32)
+                        };
+                        (min_val, max_val)
+                    }
+                    BOp::Eq => {
+                        let always = (min_x == max_x) && (min_y == max_y) && (min_x == min_y);
+                        let maybe = !(max_x < min_y || max_y < min_x || always);
+                        let lower = u64::from(always);
+                        let upper = u64::from(always || maybe);
+                        (lower, upper)
+                    }
+                    BOp::NotEq => {
+                        let always = max_x < min_y || max_y < min_x;
+                        let maybe = !(always || min_x == max_x && min_y == max_y && min_x == min_y);
+                        let lower = u64::from(always);
+                        let upper = u64::from(always || maybe);
+                        (lower, upper)
+                    }
+                    BOp::Cmpgt => {
+                        let always = min_x > max_y;
+                        let never = max_x <= min_y;
+                        let maybe = !always && !never;
+                        let lower = u64::from(always);
+                        let upper = u64::from(always || maybe);
+                        (lower, upper)
+                    }
+                    BOp::Cmplt => {
+                        let always = max_x < min_y;
+                        let never = max_y <= min_x;
+                        let maybe = !always && !never;
+                        let lower = u64::from(always);
+                        let upper = u64::from(always || maybe);
+                        (lower, upper)
+                    }
+                    BOp::And => {
+                        let always = (min_x == 1 && max_x == 1) && (min_y == 1 && max_y == 1);
+                        let maybe = (max_x >= 1) && (max_y >= 1);
+                        (u64::from(always), u64::from(always || maybe))
+                    }
+                    BOp::Or => {
+                        let always = (min_x == 1 && max_x == 1) || (min_y == 1 && max_y == 1);
+                        let maybe = (min_x == 1) || (min_y == 1) || (max_x == 1) || (max_y == 1);
+                        (Dim::from(always), Dim::from(always || maybe))
+                    }
+                    BOp::Max => (min_x.max(min_y), max_x.max(max_y)),
+                    BOp::BitAnd => (0, max_x.min(max_y)),
+                    BOp::BitOr => (min_x | min_y, max_x | max_y),
+                    BOp::BitXor => (0, max_x.max(max_y)),
+                };
+                prev.insert(op_id, range);
+            }
+            Op::Mad { x, y, z } => {
+                let Some(&(xl, xu)) = prev.get(&x) else { return };
+                let Some(&(yl, yu)) = prev.get(&y) else { return };
+                let Some(&(zl, zu)) = prev.get(&z) else { return };
+                prev.insert(
+                    op_id,
+                    (xl.wrapping_mul(yl).wrapping_add(zl), xu.wrapping_mul(yu).wrapping_add(zu)),
+                );
+            }
+            _ => {}
+        }
     }
 }

@@ -116,7 +116,7 @@ impl Optimization {
             Optimization::Licm => println!("Licm"),
             Optimization::PadIndex { factors } => {
                 let (op_id, _) = factors[config];
-                println!("pad index {op_id} by 1024, cfg_opt={config}");
+                println!("pad index {op_id} by 32, cfg_opt={config}");
             }
         }
     }
