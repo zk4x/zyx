@@ -205,16 +205,18 @@ impl Kernel {
         self.check_oob();
     }
 
-    pub fn is_masked_index(&self, index: OpId, bounds: &Map<OpId, (Dim, Dim)>) -> bool {
+    fn is_masked_index(&self, index: OpId) -> bool {
         let mut stack = vec![index];
         let mut visited = Set::default();
         while let Some(id) = stack.pop() {
             if !visited.insert(id) {
                 continue;
             }
-            if let Some(&(l, u)) = bounds.get(&id) {
-                if l == 0 && u == 1 {
-                    return true;
+            if let Op::Cast { x, dtype: IDX_T } = self.ops[id].op {
+                if let Op::Binary { bop, .. } = self.ops[x].op {
+                    if bop.returns_bool() {
+                        return true;
+                    }
                 }
             }
             match self.ops[id].op {
@@ -247,27 +249,23 @@ impl Kernel {
                 }
                 Op::Load { src, index, .. } => {
                     if let Some(&idx_range) = bounds.get(&index) {
-                        if idx_range.1 > defines[&src] - 1 {
-                            if !self.is_masked_index(index, &bounds) {
-                                self.debug_colorless();
-                                panic!(
-                                    "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                                    op_id, idx_range, defines[&src]
-                                );
-                            }
+                        if idx_range.1 >= defines[&src] && !self.is_masked_index(index) {
+                            self.debug_colorless();
+                            panic!(
+                                "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
+                                op_id, idx_range, defines[&src]
+                            );
                         }
                     }
                 }
                 Op::Store { dst, index, .. } => {
                     if let Some(&idx_range) = bounds.get(&index) {
-                        if idx_range.1 > defines[&dst] - 1 {
-                            if !self.is_masked_index(index, &bounds) {
-                                self.debug_colorless();
-                                panic!(
-                                    "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
-                                    op_id, idx_range, defines[&dst]
-                                );
-                            }
+                        if idx_range.1 > defines[&dst] {
+                            self.debug_colorless();
+                            panic!(
+                                "OOB detected in op {}: index {:?} exceeds buffer length {:?}",
+                                op_id, idx_range, defines[&dst]
+                            );
                         }
                     }
                 }
@@ -468,7 +466,7 @@ impl Kernel {
                 let Some(&(min_y, max_y)) = prev.get(&y) else { return };
                 let range = match bop {
                     BOp::Add => (min_x.wrapping_add(min_y), max_x.wrapping_add(max_y)),
-                    BOp::Sub => (min_x.wrapping_sub(min_y), max_x.wrapping_sub(max_y)),
+                    BOp::Sub => (min_x.wrapping_sub(max_y), max_x.wrapping_sub(min_y)),
                     BOp::Mul => (min_x.wrapping_mul(min_y), max_x.wrapping_mul(max_y)),
                     BOp::Div | BOp::Mod if min_y == 0 || max_y == 0 => (0, Dim::MAX),
                     BOp::Div => (min_x / min_y, max_x / max_y),
