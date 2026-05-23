@@ -26,6 +26,7 @@ mod fuse;
 mod licm;
 mod merge_loops;
 mod mma;
+mod pad_index;
 mod split_loops;
 mod tile_registers;
 mod tiled_reduce;
