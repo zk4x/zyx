@@ -66,7 +66,7 @@
 //! ┌─────────────────────────────────────────────────────────┐
 //! │             Blackhole ASIC (Tensix Array)                │
 //! │  ┌──────────────────────────────────────────────────┐   │
-//! │  │  Tensix Core (1 of 1408)                         │   │
+//! │  │  Tensix Core (1 of 120)                          │   │
 //! │  │  ┌─────────┐ ┌──────────┐ ┌──────────┐           │   │
 //! │  │  │ BRISC   │ │ TRISC0   │ │ TRISC1   │           │   │
 //! │  │  │ reader  │ │ unpack   │ │ math     │           │   │
@@ -81,7 +81,7 @@
 //! │  └──────────────────────────────────────────────────┘   │
 //! │                                                          │
 //! │  GDDR6 (via NOC): 28-64 GB, 1 TB/s bandwidth            │
-//! │  L1 per core: 2.5 MB                                    │
+//! │  L1 per core: 1.5 MB                                    │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -628,7 +628,7 @@ pub(super) fn initialize_device(
             max_local_threads: 1024,
             max_local_work_dims: vec![1, 1024, 1],
             preferred_vector_size: 16,
-            local_mem_size: 2_500_000, // 2.5 MB L1 per Tensix core
+            local_mem_size: 1_500_000, // 1.5 MB L1 per Tensix core
             max_register_bytes: 128,
             tensor_cores: true,
             warp_size: 1,               // Tensix has no SIMT warps
