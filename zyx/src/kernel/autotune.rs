@@ -251,21 +251,10 @@ impl Kernel {
         let mut kernel = self.clone();
 
         kernel.run_always_on_optimizations();
-
-        if !device.info().has_native_exp2 {
-            kernel.exp2_to_exp();
-            kernel.log2_to_ln();
-        }
-
-        // Pad all global indices to multiple of 32
-        let (pad_opt, _) = kernel.opt_pad_index();
-        pad_opt.apply(&mut kernel, 0);
-        let (pad_opt2, _) = kernel.opt_pad_index();
-        pad_opt2.apply(&mut kernel, 0);
         kernel.run_always_on_optimizations();
 
         // Collect global indices BEFORE splitting
-        let gidx_ids: Vec<(OpId, Dim, u32)> = kernel
+        /*let gidx_ids: Vec<(OpId, Dim, u32)> = kernel
             .ops
             .iter()
             .filter_map(|(id, node)| {
@@ -296,49 +285,25 @@ impl Kernel {
                     );
                 }
             }
-        }
+        }*/
         kernel.run_always_on_optimizations();
-        kernel.dead_code_elimination();
 
         // Register tiling
         let (rt_opt, _) = kernel.opt_register_tiling();
-        let rt_config = 10; // 4x4 (upcast both gidx by 4, reduce unroll by 8)
+        let rt_config = 468; // 2x2 (upcast both gidx by 2, reduce unroll by 2)
         eprintln!("=== Register tiling config: {} ===", rt_config);
+        /*for i in 0..500 {
+            println!("Config i={i}");
+            rt_opt.debug(i);
+        }*/
         rt_opt.debug(rt_config);
-        //rt_opt.apply(&mut kernel, rt_config);
+        rt_opt.apply(&mut kernel, rt_config);
+
         kernel.run_always_on_optimizations();
-        kernel.dead_code_elimination();
+        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
 
-        kernel.tile_local();
-        kernel.eliminate_zero_len_index();
-        kernel.unroll_len1_loops();
-        kernel.constant_folding();
-        kernel.move_constants_to_beginning();
-        kernel.loop_invariant_code_motion();
-        kernel.fold_accs();
-        kernel.delete_empty_loops();
-        kernel.unfold_pows();
-        kernel.div_mod_simplification();
-        kernel.simplify_accumulating_loop();
-        kernel.swap_commutative();
-        kernel.common_subexpression_elimination();
-        kernel.dead_code_elimination();
-
-        eprintln!("\n=== BEFORE instruction_schedule ===");
         kernel.debug_colorless();
-        kernel.dead_code_elimination();
-        kernel.dead_code_elimination();
-        eprintln!("=== END BEFORE ===");
-
-        kernel.instruction_schedule();
-
-        eprintln!("\n=== AFTER instruction_schedule ===");
-        kernel.debug_colorless();
-        kernel.dead_code_elimination();
-        kernel.dead_code_elimination();
-        eprintln!("=== END AFTER ===");
-
-        kernel.dead_code_elimination();
 
         let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
 
