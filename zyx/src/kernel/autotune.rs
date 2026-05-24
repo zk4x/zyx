@@ -281,9 +281,10 @@ impl Kernel {
         // Split each global index by 32
         for (gidx_id, len, axis) in &gidx_ids {
             if *len >= 32 && *len % 32 == 0 {
-                let has_local = kernel.ops.values().any(|n| {
-                    matches!(n.op, Op::Index { scope: Scope::Local, axis: a, .. } if a == *axis)
-                });
+                let has_local = kernel
+                    .ops
+                    .values()
+                    .any(|n| matches!(n.op, Op::Index { scope: Scope::Local, axis: a, .. } if a == *axis));
                 if !has_local {
                     eprintln!("=== Split gidx axis={} len={} by 32 ===", axis, len);
                     kernel.split_dim(
@@ -304,16 +305,40 @@ impl Kernel {
         let rt_config = 10; // 4x4 (upcast both gidx by 4, reduce unroll by 8)
         eprintln!("=== Register tiling config: {} ===", rt_config);
         rt_opt.debug(rt_config);
-        rt_opt.apply(&mut kernel, rt_config);
+        //rt_opt.apply(&mut kernel, rt_config);
         kernel.run_always_on_optimizations();
         kernel.dead_code_elimination();
 
         kernel.tile_local();
+        kernel.eliminate_zero_len_index();
+        kernel.unroll_len1_loops();
+        kernel.constant_folding();
+        kernel.move_constants_to_beginning();
+        kernel.loop_invariant_code_motion();
+        kernel.fold_accs();
+        kernel.delete_empty_loops();
+        kernel.unfold_pows();
+        kernel.div_mod_simplification();
+        kernel.simplify_accumulating_loop();
+        kernel.swap_commutative();
+        kernel.common_subexpression_elimination();
         kernel.dead_code_elimination();
 
-        eprintln!("\n=== KERNEL IR ===");
+        eprintln!("\n=== BEFORE instruction_schedule ===");
         kernel.debug_colorless();
-        eprintln!("=== END KERNEL IR ===");
+        kernel.dead_code_elimination();
+        kernel.dead_code_elimination();
+        eprintln!("=== END BEFORE ===");
+
+        kernel.instruction_schedule();
+
+        eprintln!("\n=== AFTER instruction_schedule ===");
+        kernel.debug_colorless();
+        kernel.dead_code_elimination();
+        kernel.dead_code_elimination();
+        eprintln!("=== END AFTER ===");
+
+        kernel.dead_code_elimination();
 
         let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
 

@@ -170,7 +170,12 @@ impl Kernel {
 
                     if !matches!(
                         op,
-                        Op::Store { .. } | Op::Load { .. } | Op::Loop { .. } | Op::EndLoop | Op::Define { .. }
+                        Op::Store { .. }
+                            | Op::Load { .. }
+                            | Op::Loop { .. }
+                            | Op::EndLoop
+                            | Op::Define { .. }
+                            | Op::Barrier { .. }
                     ) && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
                     {
                         self.move_op_before(op_id, loop_id);

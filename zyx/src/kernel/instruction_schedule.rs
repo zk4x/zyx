@@ -18,9 +18,7 @@ impl Kernel {
                 Op::Define { .. } => insert_after = op_id,
                 Op::Const(_) | Op::Index { .. } | Op::Loop { .. } => {
                     index_ops.insert(op_id);
-                    if !insert_after.is_null() && insert_after != op_id
-                        && !matches!(self.ops[op_id].op, Op::Loop { .. })
-                    {
+                    if !insert_after.is_null() && insert_after != op_id && !matches!(self.ops[op_id].op, Op::Loop { .. }) {
                         self.move_op_after(op_id, insert_after);
                     }
                     insert_after = op_id;
@@ -31,7 +29,7 @@ impl Kernel {
                         insert_after = op_id;
                     }
                 }
-                Op::EndLoop | Op::EndIf => {
+                Op::Barrier { .. } | Op::Store { .. } | Op::EndLoop | Op::EndIf => {
                     insert_after = op_id;
                 }
                 _ => {
