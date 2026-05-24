@@ -22,6 +22,7 @@ mod exp2_to_exp;
 mod fold_constants;
 mod fold_loops;
 mod fuse;
+mod instruction_schedule;
 mod licm;
 mod log2_to_ln;
 mod merge_loops;

@@ -230,6 +230,7 @@ impl Kernel {
         self.simplify_accumulating_loop();
         self.swap_commutative();
         self.common_subexpression_elimination();
+        self.instruction_schedule();
         self.dead_code_elimination();
     }
 
@@ -256,17 +257,60 @@ impl Kernel {
             kernel.log2_to_ln();
         }
 
-        let (opt, _) = kernel.opt_pad_index();
-        opt.apply(&mut kernel, 0);
-        let (opt2, _) = kernel.opt_pad_index();
-        opt2.apply(&mut kernel, 0);
+        // Pad all global indices to multiple of 32
+        let (pad_opt, _) = kernel.opt_pad_index();
+        pad_opt.apply(&mut kernel, 0);
+        let (pad_opt2, _) = kernel.opt_pad_index();
+        pad_opt2.apply(&mut kernel, 0);
         kernel.run_always_on_optimizations();
+
+        // Collect global indices BEFORE splitting
+        let gidx_ids: Vec<(OpId, Dim, u32)> = kernel
+            .ops
+            .iter()
+            .filter_map(|(id, node)| {
+                if let Op::Index { len, scope: Scope::Global, axis } = node.op {
+                    Some((id, len, axis))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        eprintln!("=== Global indices: {:?} ===", gidx_ids);
+
+        // Split each global index by 32
+        for (gidx_id, len, axis) in &gidx_ids {
+            if *len >= 32 && *len % 32 == 0 {
+                let has_local = kernel.ops.values().any(|n| {
+                    matches!(n.op, Op::Index { scope: Scope::Local, axis: a, .. } if a == *axis)
+                });
+                if !has_local {
+                    eprintln!("=== Split gidx axis={} len={} by 32 ===", axis, len);
+                    kernel.split_dim(
+                        *gidx_id,
+                        vec![
+                            Op::Index { len: *len / 32, scope: Scope::Global, axis: *axis },
+                            Op::Index { len: 32, scope: Scope::Local, axis: *axis },
+                        ],
+                    );
+                }
+            }
+        }
         kernel.run_always_on_optimizations();
         kernel.dead_code_elimination();
 
-        self.verify();
+        // Register tiling
+        let (rt_opt, _) = kernel.opt_register_tiling();
+        let rt_config = 10; // 4x4 (upcast both gidx by 4, reduce unroll by 8)
+        eprintln!("=== Register tiling config: {} ===", rt_config);
+        rt_opt.debug(rt_config);
+        rt_opt.apply(&mut kernel, rt_config);
+        kernel.run_always_on_optimizations();
+        kernel.dead_code_elimination();
 
+        eprintln!("\n=== KERNEL IR ===");
         kernel.debug_colorless();
+        eprintln!("=== END KERNEL IR ===");
 
         let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
 
@@ -285,7 +329,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
