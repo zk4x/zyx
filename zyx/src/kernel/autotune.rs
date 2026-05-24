@@ -308,6 +308,10 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.dead_code_elimination();
 
+        kernel.tile_local();
+        kernel.run_always_on_optimizations();
+        kernel.dead_code_elimination();
+
         eprintln!("\n=== KERNEL IR ===");
         kernel.debug_colorless();
         eprintln!("=== END KERNEL IR ===");

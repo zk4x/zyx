@@ -1548,7 +1548,11 @@ fn query_device_info(
         ]);
         max_local_work_dims[i] = max_dim_size as Dim;
     }
-    let mlt = 256;
+    let mlt = if let Ok(data) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_MAX_WORK_GROUP_SIZE) {
+        usize::from_ne_bytes(data.try_into().unwrap_or_default())
+    } else {
+        256
+    };
     *dev_info = DeviceInfo {
         compute: 1024 * 1024 * 1024,
         max_global_work_dims: vec![100_000; max_work_item_dims],
@@ -1728,7 +1732,7 @@ const CL_DEVICE_GLOBAL_MEM_SIZE: cl_uint = 0x101F; // 4127
 const CL_DEVICE_LOCAL_MEM_SIZE: cl_uint = 0x1023; // 4131
 //const CL_DEVICE_MAX_MEM_ALLOC_SIZE: cl_uint = 0x1010; // 4112
 //const CL_DEVICE_MIN_DATA_TYPE_ALIGN_SIZE: cl_uint = 0x101A; // 4122
-//const CL_DEVICE_MAX_WORK_GROUP_SIZE: cl_uint = 0x1004; // 4100
+const CL_DEVICE_MAX_WORK_GROUP_SIZE: cl_uint = 0x1004; // 4100
 const CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS: cl_uint = 0x1003; // 4099
 //const CL_DEVICE_MAX_PRIVATE_MEMORY_SIZE: cl_uint = 0x1160; // 4448
 const CL_DEVICE_MAX_WORK_ITEM_SIZES: cl_uint = 0x1005; // 4101
