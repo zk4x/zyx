@@ -35,6 +35,11 @@ pub struct Runtime {
     /// Physical memory pools
     pub pools: Slab<PoolId, MemoryPool>,
     /// Global mapping from tensor ID to (`pool_index`, `buffer_id`).
+    /// Future: pair with `layout_map: Map<TensorId, Layout>` to track data
+    /// layout (RowMajor vs TileMajor for Tenstorrent, Sharded for multi-device).
+    /// The scheduler converts layouts during cross-device data migration when
+    /// `source_layout != dest_layout`. Backends declare their native layout
+    /// via `DeviceInfo::native_layout`.
     pub buffer_map: Map<TensorId, BufferId>,
     /// Global event tracking - all buffers with pending events
     pub events: Map<BTreeSet<BufferId>, Event>,
