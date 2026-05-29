@@ -334,7 +334,13 @@ impl Kernel {
 
         let memory_score = (total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64;
 
-        let cost = (memory_score * 1_000_000_000.0) as u64;
+        // Penalize underutilized workgroups: single-thread workgroups can't fill a warp/wavefront,
+        // causing severe inefficiency (~98% idle compute) and risking GPU watchdog timeouts.
+        // Backends without SIMT parallelism (CPU, TensTorrent) set warp_size to 0 or 1.
+        let warp_size = u64::from(dev_info.warp_size).max(1);
+        let occupancy_penalty = (warp_size as f64 / n_threads.max(1) as f64).clamp(1.0, warp_size as f64);
+
+        let cost = (memory_score * 1_000_000_000.0 * occupancy_penalty) as u64;
 
         Cost { cost }
     }

@@ -172,7 +172,7 @@ pub(super) fn initialize_device(
         && device_ids.is_empty()
     {
         if debug_dev {
-            println!("CUDA won't be used, as it was configured out");
+            println!("CUDA: configured out");
         }
         return Ok(());
     }
@@ -316,9 +316,9 @@ pub(super) fn initialize_device(
         .collect();
     if debug_dev && !device_ids.is_empty() {
         println!(
-            "Using CUDA driver, driver version: {}.{} on devices:",
-            driver_version / 1000,
-            (driver_version - (driver_version / 1000 * 1000)) / 10
+                "CUDA: driver version {}.{} on devices:",
+                driver_version / 1000,
+                (driver_version - (driver_version / 1000 * 1000)) / 10
         );
     }
 
@@ -341,7 +341,7 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("{:?}, compute capability: {major}.{minor}", unsafe {
+            println!("CUDA:   {:?}, compute: {major}.{minor}", unsafe {
                 std::ffi::CStr::from_ptr(device_name.as_ptr())
             });
         }

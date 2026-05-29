@@ -52,7 +52,7 @@ pub(super) fn initialize_device(
         return Err(BackendError { status: ErrorStatus::Initialization, context: "C backend configured out.".into() });
     }
     if debug_dev {
-        println!("Using C/Clang backend");
+        println!("C/Clang: initialized");
     }
     // C backend reuses HostMemoryPool — doesn't create its own pool
     // Just register the device with the host pool

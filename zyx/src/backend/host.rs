@@ -20,7 +20,7 @@ pub struct HostEvent;
 #[allow(clippy::unnecessary_wraps)]
 pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
     if debug_dev {
-        println!("Using host backend");
+        println!("Host: initialized");
     }
     let pool = MemoryPool::Host(HostMemoryPool { free_bytes: 1024 * 1024 * 1024 * 64, buffers: Slab::new() });
     memory_pools.push(pool);

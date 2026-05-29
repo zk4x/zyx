@@ -198,9 +198,9 @@ pub(super) fn initialize_device(
     }
     if debug_dev {
         println!(
-            "Using HIP runtime, driver version: {}.{} on devices:",
-            driver_version / 1000,
-            (driver_version - (driver_version / 1000 * 1000)) / 10
+                "HIP: driver version {}.{} on devices:",
+                driver_version / 1000,
+                (driver_version - (driver_version / 1000 * 1000)) / 10
         );
     }
 
@@ -220,7 +220,7 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("{:?}, compute capability: {major}.{minor}", unsafe {
+            println!("HIP:   {:?}, compute: {major}.{minor}", unsafe {
                 std::ffi::CStr::from_ptr(device_name.as_ptr())
             });
         }

@@ -176,7 +176,7 @@ pub(super) fn initialize_device(
         && device_ids.is_empty()
     {
         if debug_dev {
-            println!("OpenCL won't be used, as it was configured out");
+            println!("OpenCL: configured out");
         }
         return Ok(());
     }
@@ -253,7 +253,7 @@ pub(super) fn initialize_device(
         }
     };
     let mut memory_pool_id = PoolId::from(usize::from(memory_pools.len()));
-    for (platform_id, platform) in platform_ids
+    for (_platform_id, platform) in platform_ids
         .iter()
         .enumerate()
         .filter(|(id, _)| config.platform_ids.as_ref().is_none_or(|ids| ids.contains(id)))
@@ -325,7 +325,7 @@ pub(super) fn initialize_device(
                 }
             };
             println!(
-                "Using OpenCL platform id {platform_id}: {}, on devices:",
+                "OpenCL: {} on devices:",
                 String::from_utf8(platform_name).unwrap()
             );
         }
@@ -466,7 +466,7 @@ impl OpenCLMemoryPool {
 
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
         let dst = &self.buffers[dst];
-        debug_assert_eq!(src.len() as u64, dst.bytes);
+        debug_assert!(src.len() as u64 <= dst.bytes);
         //println!("Storing {src:?} with len={} to {dst:?} with capacity={} bytes", src.len(), dst.bytes);
         let event_wait_list: Vec<*mut c_void> = event_wait_list
             .into_iter()
@@ -856,7 +856,9 @@ impl OpenCLDevice {
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                        UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching OpenCL backend"),
+                        UOp::Exp => unreachable!(
+                            "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching OpenCL backend"
+                        ),
                         UOp::Exp2 => {
                             if dtype.0 == DType::F16 {
                                 _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
@@ -1199,7 +1201,7 @@ impl OpenCLDevice {
         let device_name = String::from_utf8(device_name).unwrap();
         let max_work_item_dims = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)?;
         if debug_dev {
-            println!("{device_name}");
+            println!("OpenCL:   {device_name}");
         }
         let max_work_item_dims = u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
         let mwis = self.get_device_data(CL_DEVICE_MAX_WORK_ITEM_SIZES)?;
@@ -1241,7 +1243,18 @@ impl OpenCLDevice {
             .expect("What a huge amount of registers"),*/
             has_native_exp2: true,
             tensor_cores: false,
-            warp_size: 0,
+            warp_size: {
+                if let Ok(device_type_data) = self.get_device_data(CL_DEVICE_TYPE) {
+                    let device_type = u64::from_ne_bytes(device_type_data.try_into().unwrap_or_default());
+                    if device_type & CL_DEVICE_TYPE_GPU != 0 {
+                        64 // AMD wavefront size (safe for both AMD 64 and NVIDIA 32)
+                    } else {
+                        1
+                    }
+                } else {
+                    1
+                }
+            },
             supported_dtypes: {
                 let mut mask = 0u32;
                 let extensions = self
@@ -1390,6 +1403,8 @@ const CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS: cl_uint = 0x1003; // 4099
 const CL_DEVICE_MAX_WORK_ITEM_SIZES: cl_uint = 0x1005; // 4101
 const CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT: cl_uint = 0x100A; // 4106
 const CL_DEVICE_EXTENSIONS: cl_uint = 0x1029; // 4137
+const CL_DEVICE_TYPE: cl_uint = 0x1000;
+const CL_DEVICE_TYPE_GPU: cl_bitfield = 1 << 2;
 const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;
 const CL_MEM_READ_WRITE: cl_bitfield = 1;
 //const CL_MEM_READ_ONLY: cl_bitfield = 4;

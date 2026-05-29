@@ -83,7 +83,7 @@ pub(super) fn initialize_device(
     });
 
     if debug_dev {
-        println!("WGPU Requesting device with {power_preference:#?} power preference");
+        println!("WGPU: requesting device with {power_preference:#?} power preference");
     }
 
     let (wgpu_adapter, wgpu_device, wgpu_queue, info) = async {
@@ -118,7 +118,7 @@ pub(super) fn initialize_device(
     .block_on();
 
     if debug_dev {
-        println!("Using {} ({}) - {:#?}.", info.name, info.device, info.backend);
+        println!("WGPU: {} ({}) — {:#?}", info.name, info.device, info.backend);
     }
     let device = Arc::new(wgpu_device);
     let queue = Arc::new(wgpu_queue);

@@ -536,7 +536,7 @@ pub(super) fn initialize_device(
         && device_ids.is_empty()
     {
         if debug_dev {
-            println!("Tenstorrent won't be used, as it was configured out");
+            println!("Tenstorrent: configured out");
         }
         return Ok(());
     }

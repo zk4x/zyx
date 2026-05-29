@@ -39,7 +39,7 @@ pub(super) fn initialize_device(
         return Err(BackendError { status: ErrorStatus::Initialization, context: "Dummy backend configured out.".into() });
     }
     if debug_dev {
-        println!("Using dummy backend");
+        println!("Dummy: initialized");
     }
     let pool = MemoryPool::Dummy(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
     memory_pools.push(pool);

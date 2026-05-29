@@ -36,7 +36,7 @@ pub struct DiskEvent {}
 #[allow(clippy::unnecessary_wraps)]
 pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
     if debug_dev {
-        println!("Using disk backend");
+        println!("Disk: initialized");
     }
     let pool = MemoryPool::Disk(DiskMemoryPool {
         free_bytes: 0, // Non allocatable

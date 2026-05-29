@@ -90,7 +90,7 @@ pub(super) fn initialize_devices(
         .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(&(*id as i32))))
         .collect();
     if debug_dev && !device_ids.is_empty() {
-        println!("Using Vulkan backend API version {} on devices:", api_version);
+        println!("Vulkan: API version {} on devices:", api_version);
     }
 
     // TODO apply this as filter on physical_devices
@@ -106,7 +106,7 @@ pub(super) fn initialize_devices(
             .map(|i| (p, i as u32))
     }) {
         if debug_dev {
-            println!("{}", phys_device.properties().device_name);
+            println!("Vulkan:   {}", phys_device.properties().device_name);
         }
         let (device, queues) = vulkano::device::Device::new(
             phys_device,
