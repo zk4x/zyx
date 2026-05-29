@@ -10,6 +10,45 @@ use crate::{
     kernel::{BOp, Kernel, Op, OpId, Scope},
 };
 
+// ## Coalesced local+upcast access
+//
+// After `opt_split_global_to_local` and `upcast` splits axis 0 (M) and `opt_upcast`
+// vectorizes, the address expression for the fine M-dimension is:
+//
+// ```text
+// addr = gidx0 * TILE + lidx0 * V + i      (i = 0..V-1)
+// ```
+//
+// where `lidx0 = threadIdx.x` and `V` is the vector width (e.g. 8).
+//
+// **Problem:** Consecutive threads (lidx0 = 0, 1, 2, ...) access elements
+// spaced `V` apart (stride V).  A warp of 32 threads at stride 8 needs
+// ~32× more cache line transactions than stride 1.
+//
+// **Fix:** Swap the multiplier `V` from `lidx0` to the upcast constant `i`:
+//
+// ```text
+// addr = gidx0 * TILE + lidx0 + i * V
+// ```
+//
+// Now consecutive threads access consecutive elements (stride 1) while
+// each thread still covers `V` elements (spaced `V` apart within each
+// thread's own access stream).  Per-step coalescing goes from 1 util/32 B
+// to 8 utils/32 B.
+//
+// ### IR pattern
+//
+// The expression tree is nested — the `Mul(lidx, V)` and `Const(i)` are
+// typically at different depths:
+//
+// ```text
+// Add(Add(Mul(gidx, TILE), Mul(lidx, V)), Const(i))
+// ```
+//
+// This pass searches for any `Add` where one subtree contains `Mul(lidx, V)`
+// and the other is `Const(i)` with `i < V`.  The `Mul(lidx, V)` subtree is
+// then rewritten to just `lidx`, and `Const(i)` becomes `Mul(Const(i), V)`.
+
 impl Kernel {
     pub fn opt_upcast(&self) -> (Optimization, usize) {
         #[cfg(feature = "time")]

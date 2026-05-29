@@ -6,7 +6,8 @@
 #![allow(clippy::derived_hash_with_manual_eq)]
 
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
-use crate::error::BackendError;
+use crate::error::{BackendError, ErrorStatus};
+use crate::kernel::cost::Cost;
 use crate::kernel::{Kernel, Op, OpId, Scope};
 use crate::rng::Rng;
 use crate::shape::Dim;
@@ -20,7 +21,7 @@ use std::thread;
 
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_upcast(k),
@@ -28,6 +29,7 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
     Kernel::opt_tiled_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_licm(k),
+    |k, _| Kernel::opt_pad_index(k),
 ];
 
 #[derive(Debug)]
@@ -54,6 +56,9 @@ pub enum Optimization {
         factors: Vec<(OpId, u64)>,
     },
     Licm,
+    PadIndex {
+        factors: Vec<(OpId, Dim)>,
+    },
 }
 
 impl Optimization {
@@ -109,6 +114,10 @@ impl Optimization {
                 println!("split loop {op_id} by {factor}");
             }
             Optimization::Licm => println!("Licm"),
+            Optimization::PadIndex { factors } => {
+                let (op_id, _) = factors[config];
+                println!("pad index {op_id} by 32, cfg_opt={config}");
+            }
         }
     }
 
@@ -118,15 +127,11 @@ impl Optimization {
     pub fn apply(&self, kernel: &mut Kernel, config: usize) {
         match self {
             Optimization::ReassociateCommutative => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("ReassociateCommutative");
                 kernel.reassociate_commutative();
             }
             Optimization::UnrollLoops { factors } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("UnrollLoops");
                 let factor = factors[config];
-                if (kernel.ops.len().0 as usize) < 500 {
+                if (kernel.ops.len().0 as usize) < 5000 {
                     kernel.unroll_loops(factor);
                 }
             }
@@ -146,8 +151,6 @@ impl Optimization {
                 );
             }
             Optimization::Upcast { factors } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("Upcast");
                 if factors.is_empty() {
                     return;
                 }
@@ -155,32 +158,33 @@ impl Optimization {
                 kernel.upcast(op_id, factor);
             }
             Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("RegisterTiling");
                 kernel.apply_register_tiling(reduce_splits, global_upcasts, config);
             }
             Optimization::UnrollConstantLoops => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("UnrollConstantLoops");
                 kernel.unroll_constant_loops();
             }
             Optimization::TiledReduce { factors } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("TiledReduce");
                 let (op_id, factor, tree_branch) = factors[config];
                 kernel.tiled_reduce(op_id, factor, tree_branch);
             }
             Optimization::SplitLoop { factors } => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("SplitLoop");
                 let (op_id, factor) = factors[config];
                 let Op::Loop { len } = kernel.ops[op_id].op else { unreachable!() };
                 kernel.split_dim(op_id, vec![Op::Loop { len: len / factor }, Op::Loop { len: factor }]);
             }
             Optimization::Licm => {
-                #[cfg(feature = "time")]
-                let _timer = crate::Timer::new("Licm");
                 kernel.loop_invariant_code_motion();
+            }
+            Optimization::PadIndex { factors } => {
+                if factors.is_empty() {
+                    return;
+                }
+                let (gidx_id, pad_to) = factors[config];
+                let Op::Index { len: current_len, .. } = kernel.ops[gidx_id].op else { unreachable!() };
+                let pad_len = (pad_to - current_len % pad_to) % pad_to;
+                if pad_len > 0 {
+                    kernel.pad_index(gidx_id, current_len, pad_len, crate::dtype::Constant::idx(0));
+                }
             }
         }
     }
@@ -223,17 +227,17 @@ impl Kernel {
 
         kernel.run_always_on_optimizations();
 
-        let (opt, _) = kernel.opt_split_global_to_local(device.info());
-        opt.apply(&mut kernel, 1);
-        let (opt, _) = kernel.opt_upcast();
-        opt.apply(&mut kernel, 3);
-        let (opt, _) = kernel.opt_split_global_to_local(device.info());
-        opt.apply(&mut kernel, 1);
-        let (opt, _) = kernel.opt_upcast();
-        opt.apply(&mut kernel, 5);
+        if !device.info().has_native_exp2 {
+            kernel.exp2_to_exp();
+            kernel.log2_to_ln();
+        }
 
-        //kernel.run_always_on_optimizations();
-        //kernel.run_always_on_optimizations();
+        let (opt, _) = kernel.opt_pad_index();
+        opt.apply(&mut kernel, 0);
+        let (opt2, _) = kernel.opt_pad_index();
+        opt2.apply(&mut kernel, 0);
+        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
         kernel.dead_code_elimination();
 
         self.verify();
@@ -279,6 +283,11 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
+        if !device.info().has_native_exp2 {
+            kernel.exp2_to_exp();
+            kernel.log2_to_ln();
+        }
+
         let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel, dev_info_ref));
         let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
         let mult = n_seeds.min(total_configs);
@@ -302,15 +311,16 @@ impl Kernel {
         }
 
         let mut rng = Rng::seed_from_u64(3_498_203_498);
-        while items.len() < n_total_opts && !items.is_empty() {
+        let mut exhausted = Set::default();
+        let mut i = 0;
+        while i < n_total_opts && !items.is_empty() {
+            i += 1;
             let mut thread_kernel = kernel.clone();
-            let opt_seq = sample_best(&items, &mut rng).clone();
+            let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else { break };
             opt_seq.apply(&mut thread_kernel, dev_info_ref);
             thread_kernel.run_always_on_optimizations();
 
-            if thread_kernel.ops.len().0 > 5000 {
-                continue;
-            }
+            //println!("Next opt {i}, kernel size: {:?}", thread_kernel.ops.len());
 
             let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel, dev_info_ref));
             let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
@@ -325,6 +335,7 @@ impl Kernel {
                     opts.push((opt_id, config_id));
 
                     let mut new_kernel = thread_kernel.clone();
+                    //avail_configs[opt_id].0.debug(config_id);
                     avail_configs[opt_id].0.apply(&mut new_kernel, config_id);
                     let hash = new_kernel.get_hash();
                     if visited.contains(&hash) {
@@ -332,12 +343,19 @@ impl Kernel {
                     }
                     let new_seq = OptSeq { opts, cost: new_kernel.get_cost(dev_info_ref) };
                     visited.insert(hash);
+
+                    if new_kernel.ops.len().0 > 10000 {
+                        exhausted.insert(new_seq.clone());
+                    }
+
                     items.push(new_seq);
                     added += 1;
                 }
             }
 
             if added == 0 {
+                // Seed can't be optimized further
+                //exhausted.insert(opt_seq);
                 break;
             }
 
@@ -348,22 +366,27 @@ impl Kernel {
         let mut best_time = u64::MAX;
         let mut best_program = DeviceProgramId::NULL;
         let mut best_opt_seq = OptSeq { opts: Vec::new(), cost: Cost::default() };
-        let mut i = n_launches;
         let mut any_success = false;
         let mut last_error = None;
-        while i > 0 {
-            let opt_seq = sample_best(&items, &mut rng);
+        // Sort items by cost and benchmark the cheapest ones
+        items.sort_by_key(|s| s.cost);
+        for opt_seq in items.iter().take(n_launches) {
             let mut kernel = kernel.clone();
 
+            println!("launch (cost: {}, n_opts: {}):", opt_seq.cost.cost, opt_seq.opts.len());
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, dev_info_ref);
-                //opt.debug(opt_cfg);
+                print!("  ");
+                opt.debug(opt_cfg);
                 opt.apply(&mut kernel, opt_cfg);
             }
+            let (gws, lws) = kernel.work_sizes();
+
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.fuse_mad();
+            //kernel.fuse_mma(dev_info_ref); // WMMA fusion is not yet correct
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
             kernel.run_always_on_optimizations();
@@ -376,6 +399,8 @@ impl Kernel {
                 match kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes) {
                     Ok((program_id, time)) => {
                         any_success = true;
+                        let perf_line = crate::kernel_cache::get_perf(flop, read_bytes, write_bytes, time);
+                        println!("  -> {time} ns  {perf_line}");
                         if time < best_time {
                             best_program = program_id;
                             best_time = time;
@@ -387,130 +412,31 @@ impl Kernel {
                     }
                 }
             }
-
-            i -= 1;
         }
 
         if !any_success {
-            return Err(last_error.unwrap());
+            return Err(last_error.unwrap_or(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "No successful kernel launches.".into(),
+            }));
         }
 
         Ok((best_program, best_opt_seq))
     }
 
-    pub fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {
-        // TODO add measuring bank conflicts
-        let mut n_instructions = 0;
-        let mut n_scoped_loads = [0u64, 0, 0];
-        let mut n_scoped_stores = [0u64, 0, 0];
-        let mut barriers_per_thread = 0u64;
-
-        let mut gws = [1; 3];
-        let mut lws = [1; 3];
-        let mut loop_mult = 1;
-        let mut latest_loop_lengths = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            match self.ops[op_id].op {
-                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
-                    n_instructions += loop_mult;
-                }
-                #[allow(clippy::match_same_arms)]
-                Op::Const(_) | Op::Define { .. } => {}
-                Op::Load { src, vlen, .. } => {
-                    n_instructions += loop_mult;
-                    let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
-                    match scope {
-                        Scope::Global => n_scoped_loads[0] += loop_mult * u64::from(vlen),
-                        Scope::Local => n_scoped_loads[1] += loop_mult * u64::from(vlen),
-                        Scope::Register => n_scoped_loads[2] += loop_mult * u64::from(vlen),
-                    }
-                }
-                Op::Store { dst, vlen, .. } => {
-                    n_instructions += loop_mult * 3;
-                    let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
-                    match scope {
-                        Scope::Global => n_scoped_stores[0] += loop_mult * u64::from(vlen),
-                        Scope::Local => n_scoped_stores[1] += loop_mult * u64::from(vlen),
-                        Scope::Register => n_scoped_stores[2] += loop_mult * u64::from(vlen),
-                    }
-                }
-                Op::Index { len, scope, axis } => match scope {
-                    Scope::Global => gws[axis as usize] = len,
-                    Scope::Local => lws[axis as usize] = len,
-                    Scope::Register => todo!(),
-                },
-                Op::Loop { len } => {
-                    n_instructions += loop_mult * 3;
-                    loop_mult *= len as u64;
-                    latest_loop_lengths.push(len as u64);
-                }
-                Op::EndLoop => {
-                    loop_mult /= latest_loop_lengths.pop().unwrap();
-                }
-                Op::Wmma { dims, .. } => {
-                    let (m, n, k) = dims.decompose_mnk();
-                    let warp = u64::from(dev_info.warp_size);
-                    let cost = (m * n * k) as u64 / warp;
-                    n_instructions += loop_mult * cost;
-                }
-                Op::Barrier { .. } => {
-                    barriers_per_thread += loop_mult;
-                }
-                Op::If { .. } => {
-                    n_instructions += loop_mult * 3;
-                }
-                Op::EndIf => {}
-                Op::Devectorize { .. } => {
-                    todo!()
-                }
-                Op::Vectorize { .. } => {
-                    // TODO multiply all ops that are vectorized by the vectorization factor
-                    todo!()
-                }
-                Op::ConstView(_) => todo!(),
-                Op::LoadView(_) => todo!(),
-                Op::StoreView { .. } => todo!(),
-                Op::Move { .. } => todo!(),
-                Op::Reduce { .. } => todo!(),
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        let register_estimate: u64 = 0;
-
-        let global_ws = gws.iter().product::<Dim>();
-        let n_threads = lws.iter().product::<Dim>();
-        let instructions_per_thread = n_instructions;
-        let global_loads_per_thread = n_scoped_loads[0];
-        let local_loads_per_thread = n_scoped_loads[1];
-        let global_stores_per_thread = n_scoped_stores[0];
-        let local_stores_per_thread = n_scoped_stores[1];
-
-        let total_loads = n_threads * global_ws * global_loads_per_thread;
-        let total_stores = n_threads * global_ws * global_stores_per_thread;
-        let total_local = n_threads * global_ws * (local_loads_per_thread + local_stores_per_thread);
-        let total_instr = n_threads * global_ws * instructions_per_thread;
-        let total_barriers = n_threads * global_ws * barriers_per_thread;
-
-        let memory_score =
-            ((total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64 / total_instr as f64).min(1.0);
-
-        let workgroup_score = 1.0 - (n_threads as f64 / dev_info.max_local_threads as f64).min(1.0);
-
-        let register_score = if register_estimate > dev_info.max_register_bytes {
-            0.95
-        } else {
-            0.05
-        };
-
-        let cost = ((memory_score + register_score + workgroup_score) * 1_000_000_000.0) as u64;
-
-        Cost { cost }
-    }
-
     pub fn get_hash(&self) -> u64 {
-        let mut hasher = crate::chasher::CHasher::default();
+        use sha2::Digest;
+        struct H(sha2::Sha256);
+        impl std::hash::Hasher for H {
+            fn finish(&self) -> u64 {
+                let hash = self.0.clone().finalize();
+                u64::from_le_bytes(hash[..8].try_into().unwrap())
+            }
+            fn write(&mut self, bytes: &[u8]) {
+                self.0.update(bytes);
+            }
+        }
+        let mut hasher = H(sha2::Sha256::new());
         self.hash(&mut hasher);
         hasher.finish()
     }
@@ -535,31 +461,6 @@ impl Kernel {
             println!("{perf}");
         }
         Ok((program_id, nanos))
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, Hash, DeBin, SerBin)]
-pub struct Cost {
-    cost: u64,
-}
-
-impl PartialEq for Cost {
-    fn eq(&self, other: &Self) -> bool {
-        self.cost == other.cost
-    }
-}
-
-impl Eq for Cost {}
-
-impl Ord for Cost {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.cost.cmp(&other.cost)
-    }
-}
-
-impl PartialOrd for Cost {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
     }
 }
 
@@ -602,20 +503,28 @@ fn remove_worst(items: &mut Vec<OptSeq>, mut n: usize, rng: &mut Rng) {
     }
 }
 
-fn sample_best<'a>(items: &'a [OptSeq], rng: &mut Rng) -> &'a OptSeq {
-    const K: usize = 2;
-    debug_assert!(!items.is_empty(), "sample_best called with empty items");
-    let len = items.len();
-    let mut best_idx = rng.range::<u64>(0..len as u64) as usize;
-    let mut best_cost = items[best_idx].cost;
-    for _ in 1..K {
-        let i = rng.range::<u64>(0..len as u64) as usize;
-        let cost = items[i].cost;
-        if cost < best_cost {
-            best_idx = i;
-            best_cost = cost;
+fn sample_best<'a>(items: &'a [OptSeq], exhausted: &Set<OptSeq>, rng: &mut Rng) -> Option<&'a OptSeq> {
+    for _ in 0..5 {
+        const K: usize = 2;
+        debug_assert!(!items.is_empty(), "sample_best called with empty items");
+        let len = items.len();
+        let mut best_idx = rng.range::<u64>(0..len as u64) as usize;
+        let mut best_cost = items[best_idx].cost;
+        for _ in 1..K {
+            let i = rng.range::<u64>(0..len as u64) as usize;
+            let cost = items[i].cost;
+            if cost < best_cost {
+                best_idx = i;
+                best_cost = cost;
+            }
         }
+
+        if exhausted.contains(&items[best_idx]) {
+            continue;
+        }
+
+        return Some(&items[best_idx]);
     }
 
-    &items[best_idx]
+    None
 }

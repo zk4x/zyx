@@ -148,8 +148,8 @@ pub(super) fn initialize_device(
         *unsafe { hip.get(b"hipDeviceComputeCapability\0") }.unwrap();
     let hipDeviceTotalMem: unsafe extern "C" fn(*mut usize, HIPdevice) -> HIPStatus =
         *unsafe { hip.get(b"hipDeviceTotalMem\0") }.unwrap();
-    //let hipDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, HIPdevice_attribute, HIPdevice) -> HIPStatus =
-    //*unsafe { hip.get(b"hipDeviceGetAttribute\0") }.unwrap();
+    let hipDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, HIPdevice_attribute, HIPdevice) -> HIPStatus =
+        *unsafe { hip.get(b"hipDeviceGetAttribute\0") }.unwrap();
     let hipCtxCreate: unsafe extern "C" fn(*mut HIPcontext, c_uint, HIPdevice) -> HIPStatus =
         *unsafe { hip.get(b"hipCtxCreate\0") }.unwrap();
     let hipMemAlloc = *unsafe { hip.get(b"hipMalloc\0") }.unwrap();
@@ -256,7 +256,7 @@ pub(super) fn initialize_device(
             let mut stream = ptr::null_mut();
             if let Err(err) = unsafe { hipStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
                 if debug_dev {
-                    println!("Device with id {dev_id} requested, but cuda stream initialization failed. {err:?}");
+                    println!("Device with id {dev_id} requested, but hip stream initialization failed. {err:?}");
                 }
                 continue;
             }
@@ -266,7 +266,7 @@ pub(super) fn initialize_device(
         if major < 7 {
             supported_dtypes &= !(1 << DType::F64 as u32);
         }
-        let dev = HIPDevice {
+        let mut dev = HIPDevice {
             device,
             dev_info: DeviceInfo {
                 compute: 1024 * 1024 * 1024 * 1024,
@@ -276,9 +276,10 @@ pub(super) fn initialize_device(
                 local_mem_size: 0,
                 max_register_bytes: 96,
                 preferred_vector_size: 16,
-                tensor_cores: major > 7,
+                tensor_cores: major >= 7,
                 warp_size: 64,
                 supported_dtypes,
+                has_native_exp2: true,
             },
             streams,
             programs: Slab::new(),
@@ -292,6 +293,38 @@ pub(super) fn initialize_device(
             hipEventCreate,
             hipEventRecord,
             hipStreamWaitEvent,
+        };
+        dev.dev_info = DeviceInfo {
+            compute: 1024 * 1024 * 1024 * 1024,
+            max_global_work_dims: vec![
+                Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxGridDimX, hipDeviceGetAttribute)?).unwrap(),
+                Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxGridDimY, hipDeviceGetAttribute)?).unwrap(),
+                Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxGridDimZ, hipDeviceGetAttribute)?).unwrap(),
+            ],
+            max_local_threads: Dim::try_from(dev.get(
+                HIPdevice_attribute::hipDeviceAttributeMaxThreadsPerBlock,
+                hipDeviceGetAttribute,
+            )?)
+            .unwrap(),
+            max_local_work_dims: vec![
+                Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimX, hipDeviceGetAttribute)?).unwrap(),
+                Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimY, hipDeviceGetAttribute)?).unwrap(),
+                Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeMaxBlockDimZ, hipDeviceGetAttribute)?).unwrap(),
+            ],
+            local_mem_size: Dim::try_from(dev.get(
+                HIPdevice_attribute::hipDeviceAttributeMaxSharedMemoryPerBlock,
+                hipDeviceGetAttribute,
+            )?)
+            .unwrap(),
+            max_register_bytes: 96,
+            preferred_vector_size: 16,
+            tensor_cores: major >= 7,
+            warp_size: Dim::try_from(dev.get(HIPdevice_attribute::hipDeviceAttributeWarpSize, hipDeviceGetAttribute)?)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            supported_dtypes,
+            has_native_exp2: true,
         };
         devices.push(Device::HIP(dev));
         //queues,
@@ -324,6 +357,7 @@ impl HIPMemoryPool {
         debug_assert!(!self.stream.is_null());
         //unsafe { (self.cuMemAllocAsync)(&mut ptr, bytes, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         unsafe { (self.hipMemAlloc)(&raw mut ptr, bytes as usize) }.check(ErrorStatus::MemoryAllocation)?;
+        assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
         unsafe { (self.hipEventRecord)(event, self.stream) }.check(ErrorStatus::MemoryAllocation)?;
         self.free_bytes = self.free_bytes.checked_sub(bytes).unwrap();
         Ok((self.buffers.push(HIPBuffer { ptr, bytes }), Event::HIP(HIPEvent { event })))
@@ -441,8 +475,10 @@ impl HIPDevice {
     fn next_stream(&mut self) -> Result<usize, BackendError> {
         let mut id = self.streams.iter().enumerate().min_by_key(|(_, s)| s.load).unwrap().0;
         if self.streams[id].load > 20 {
-            unsafe { (self.hipStreamSynchronize)(self.streams[id].stream) }.check(ErrorStatus::KernelSync)?;
-            self.streams[id].load = 0;
+            let sync = unsafe { (self.hipStreamSynchronize)(self.streams[id].stream) }.check(ErrorStatus::KernelSync);
+            if sync.is_ok() {
+                self.streams[id].load = 0;
+            }
             id = self.streams.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
         }
         Ok(id)
@@ -679,6 +715,16 @@ impl HIPDevice {
     pub const fn free_compute(&self) -> u128 {
         self.dev_info.compute
     }
+
+    fn get(
+        &mut self,
+        attr: HIPdevice_attribute,
+        hipDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, HIPdevice_attribute, HIPdevice) -> HIPStatus,
+    ) -> Result<c_int, BackendError> {
+        let mut v = 0;
+        unsafe { hipDeviceGetAttribute(&raw mut v, attr, self.device) }.check(ErrorStatus::DeviceQuery)?;
+        Ok(v)
+    }
 }
 
 impl HIPStatus {
@@ -711,13 +757,27 @@ impl DType {
     }
 }
 
+#[repr(u32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum HIPdevice_attribute {
+    hipDeviceAttributeMaxThreadsPerBlock = 1,
+    hipDeviceAttributeMaxBlockDimX = 2,
+    hipDeviceAttributeMaxBlockDimY = 3,
+    hipDeviceAttributeMaxBlockDimZ = 4,
+    hipDeviceAttributeMaxGridDimX = 5,
+    hipDeviceAttributeMaxGridDimY = 6,
+    hipDeviceAttributeMaxGridDimZ = 7,
+    hipDeviceAttributeMaxSharedMemoryPerBlock = 8,
+    hipDeviceAttributeWarpSize = 10,
+}
+
 impl Constant {
     fn hip(self) -> String {
         match self {
             Self::BF16(x) => format!("{}f", half::bf16::from_le_bytes(x)),
             Self::F16(x) => format!("{}f", half::f16::from_le_bytes(x)),
             Self::F32(x) => format!("{}f", f32::from_le_bytes(x)),
-            Self::F64(x) => format!("{}f", f64::from_le_bytes(x)),
+            Self::F64(x) => format!("{}", f64::from_le_bytes(x)),
             Self::U8(x) => format!("{x}"),
             Self::I8(x) => format!("{x}"),
             Self::I16(x) => format!("{x}"),
@@ -751,11 +811,6 @@ struct HIPfunc_st {
     _unused: [u8; 0],
 }
 type HIPfunction = *mut HIPfunc_st;
-#[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum HIPdevice_attribute {
-    HIP_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK = 1,
-}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 struct HIPstream_st {

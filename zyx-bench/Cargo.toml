@@ -1,0 +1,9 @@
+[package]
+name = "zyx-bench"
+version = "0.1.0"
+edition = "2021"
+description = "Benchmarks for zyx ML library"
+license = "LGPL-3.0-only"
+
+[dependencies]
+zyx = { path = "../zyx" }

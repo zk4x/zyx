@@ -559,9 +559,10 @@ pub(super) fn initialize_device(
                 local_mem_size: 0,
                 max_register_bytes: 96,
                 preferred_vector_size: 16,
-                tensor_cores: major > 7,
+                tensor_cores: major >= 7,
                 warp_size: 32,
                 supported_dtypes: u32::MAX,
+                has_native_exp2: true,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
@@ -590,9 +591,10 @@ pub(super) fn initialize_device(
             .unwrap(),
             max_register_bytes: 96,
             preferred_vector_size: 16,
-            tensor_cores: major > 7,
+            tensor_cores: major >= 7,
             warp_size: 32,
             supported_dtypes: u32::MAX,
+            has_native_exp2: true,
         };
         devices.push(Device::CUDA(dev));
     }
@@ -1200,6 +1202,7 @@ impl Compiler {
         match uop {
             UOp::Neg => "neg",
             UOp::BitNot => "not",
+            UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching PTX backend"),
             UOp::Exp2 => "ex2.approx",
             UOp::Log2 => "lg2.approx",
             UOp::Reciprocal => "rcp.approx",

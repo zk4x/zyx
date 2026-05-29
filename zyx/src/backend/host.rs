@@ -99,4 +99,9 @@ impl HostMemoryPool {
         let _ = self;
         let _ = events;
     }
+
+    /// Get a mutable raw pointer to a buffer's data (used by C backend)
+    pub fn buffer_ptr(&mut self, id: PoolBufferId) -> Option<*mut u8> {
+        self.buffers.get_mut(id).map(|b| b.as_mut_ptr())
+    }
 }

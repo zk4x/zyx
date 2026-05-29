@@ -84,6 +84,7 @@ pub enum GGUFMetadataValue {
     Int32(i32),
     Uint64(u64),
     Int64(i64),
+    Float32(f32),
     Float64(f64),
     Bool(bool),
     String(String),
@@ -185,8 +186,9 @@ impl Tensor {
                 format!("Unknown GGUF magic: {magic:?}. Please check your file.").into(),
             ));
         }
-        let mut version = [0; 4];
-        f.read_exact(&mut version)?;
+        let mut version_bytes = [0; 4];
+        f.read_exact(&mut version_bytes)?;
+        let version = u32::from_le_bytes(version_bytes);
         //println!("File size is {} bytes", f.metadata()?.len());
         let mut tensor_count = [0u8; 8];
         f.read_exact(&mut tensor_count)?;
@@ -202,30 +204,171 @@ impl Tensor {
             let mut metadata_key_len = [0; 8];
             f.read_exact(&mut metadata_key_len)?;
             let metadata_key_len = u64::from_le_bytes(metadata_key_len);
-            let mut metadata_key = String::with_capacity(usize::try_from(metadata_key_len).unwrap());
-            f.read_exact(unsafe { metadata_key.as_bytes_mut() })?;
+            let mut metadata_key_bytes = vec![0u8; usize::try_from(metadata_key_len).unwrap()];
+            f.read_exact(&mut metadata_key_bytes)?;
+            let metadata_key = String::from_utf8(metadata_key_bytes)
+                .map_err(|e| ZyxError::parse_error(format!("GGUF metadata key is not valid UTF-8: {e}").into()))?;
 
-            // Then metadata value type.
+            // Then metadata value type (u32 in GGUF v3, u8 in v1/v2).
             // Then we the value itself.
-            let mut metadata_value_type = [0; 1];
-            f.read_exact(&mut metadata_value_type)?;
-            let metadata_value_type = u8::from_le_bytes(metadata_value_type);
+            let metadata_value_type = if version >= 3 {
+                let mut buf = [0; 4];
+                f.read_exact(&mut buf)?;
+                u32::from_le_bytes(buf)
+            } else {
+                let mut buf = [0; 1];
+                f.read_exact(&mut buf)?;
+                u32::from(u8::from_le_bytes(buf))
+            };
             let metadata_value = match metadata_value_type {
-                // uint8
                 0 => {
                     let mut buf = [0; 1];
                     f.read_exact(&mut buf)?;
-                    let v = u8::from_le_bytes(buf);
-                    GGUFMetadataValue::Uint8(v)
+                    GGUFMetadataValue::Uint8(u8::from_le_bytes(buf))
                 }
-                // int8
                 1 => {
                     let mut buf = [0; 1];
                     f.read_exact(&mut buf)?;
-                    let v = i8::from_le_bytes(buf);
-                    GGUFMetadataValue::Int8(v)
+                    GGUFMetadataValue::Int8(i8::from_le_bytes(buf))
                 }
-                x => todo!("{x}"),
+                2 => {
+                    let mut buf = [0; 2];
+                    f.read_exact(&mut buf)?;
+                    GGUFMetadataValue::Uint16(u16::from_le_bytes(buf))
+                }
+                3 => {
+                    let mut buf = [0; 2];
+                    f.read_exact(&mut buf)?;
+                    GGUFMetadataValue::Int16(i16::from_le_bytes(buf))
+                }
+                4 => {
+                    let mut buf = [0; 4];
+                    f.read_exact(&mut buf)?;
+                    GGUFMetadataValue::Uint32(u32::from_le_bytes(buf))
+                }
+                5 => {
+                    let mut buf = [0; 4];
+                    f.read_exact(&mut buf)?;
+                    GGUFMetadataValue::Int32(i32::from_le_bytes(buf))
+                }
+                6 => {
+                    let mut buf = [0; 4];
+                    f.read_exact(&mut buf)?;
+                    GGUFMetadataValue::Float32(f32::from_le_bytes(buf))
+                }
+                7 => {
+                    let mut buf = [0; 1];
+                    f.read_exact(&mut buf)?;
+                    GGUFMetadataValue::Bool(buf[0] != 0)
+                }
+                8 => {
+                    let mut str_len = [0; 8];
+                    f.read_exact(&mut str_len)?;
+                    let str_len = u64::from_le_bytes(str_len);
+                    let mut s_bytes = vec![0u8; usize::try_from(str_len).unwrap()];
+                    f.read_exact(&mut s_bytes)?;
+                    let s = String::from_utf8(s_bytes)
+                        .map_err(|e| ZyxError::parse_error(format!("GGUF metadata string is not valid UTF-8: {e}").into()))?;
+                    GGUFMetadataValue::String(s)
+                }
+                9 => {
+                    let mut arr_type_buf = [0; 4];
+                    f.read_exact(&mut arr_type_buf)?;
+                    let elem_type = u32::from_le_bytes(arr_type_buf);
+                    let mut arr_len_buf = [0; 8];
+                    f.read_exact(&mut arr_len_buf)?;
+                    let arr_len = u64::from_le_bytes(arr_len_buf);
+                    let mut items = Vec::with_capacity(usize::try_from(arr_len).unwrap());
+                    for _ in 0..arr_len {
+                        let item = match elem_type {
+                            0 => {
+                                let mut buf = [0; 1];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Uint8(u8::from_le_bytes(buf))
+                            }
+                            1 => {
+                                let mut buf = [0; 1];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Int8(i8::from_le_bytes(buf))
+                            }
+                            2 => {
+                                let mut buf = [0; 2];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Uint16(u16::from_le_bytes(buf))
+                            }
+                            3 => {
+                                let mut buf = [0; 2];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Int16(i16::from_le_bytes(buf))
+                            }
+                            4 => {
+                                let mut buf = [0; 4];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Uint32(u32::from_le_bytes(buf))
+                            }
+                            5 => {
+                                let mut buf = [0; 4];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Int32(i32::from_le_bytes(buf))
+                            }
+                            6 => {
+                                let mut buf = [0; 4];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Float32(f32::from_le_bytes(buf))
+                            }
+                            7 => {
+                                let mut buf = [0; 1];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Bool(buf[0] != 0)
+                            }
+                            8 => {
+                                let mut item_len = [0; 8];
+                                f.read_exact(&mut item_len)?;
+                                let item_len = u64::from_le_bytes(item_len);
+                                let mut item_bytes = vec![0u8; usize::try_from(item_len).unwrap()];
+                                f.read_exact(&mut item_bytes)?;
+                                let item = String::from_utf8(item_bytes).map_err(|e| {
+                                    ZyxError::parse_error(format!("GGUF array element string is not valid UTF-8: {e}").into())
+                                })?;
+                                GGUFMetadataValue::String(item)
+                            }
+                            10 => {
+                                let mut buf = [0; 8];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Uint64(u64::from_le_bytes(buf))
+                            }
+                            11 => {
+                                let mut buf = [0; 8];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Int64(i64::from_le_bytes(buf))
+                            }
+                            12 => {
+                                let mut buf = [0; 8];
+                                f.read_exact(&mut buf)?;
+                                GGUFMetadataValue::Float64(f64::from_le_bytes(buf))
+                            }
+                            x => todo!("GGUF array element type {x} not supported"),
+                        };
+                        items.push(item);
+                    }
+                    GGUFMetadataValue::Array(items.into_boxed_slice())
+                }
+                10 => {
+                    let mut buf = [0; 8];
+                    f.read_exact(&mut buf)?;
+                    GGUFMetadataValue::Uint64(u64::from_le_bytes(buf))
+                }
+                11 => {
+                    let mut buf = [0; 8];
+                    f.read_exact(&mut buf)?;
+                    GGUFMetadataValue::Int64(i64::from_le_bytes(buf))
+                }
+                12 => {
+                    let mut buf = [0; 8];
+                    f.read_exact(&mut buf)?;
+                    GGUFMetadataValue::Float64(f64::from_le_bytes(buf))
+                }
+                x => todo!("GGUF metadata type {x} not supported"),
             };
             metadata.insert(metadata_key, metadata_value);
         }
@@ -237,8 +380,10 @@ impl Tensor {
             let mut tensor_name_len = [0; 8];
             f.read_exact(&mut tensor_name_len)?;
             let tensor_name_len = u64::from_le_bytes(tensor_name_len);
-            let mut tensor_name = String::with_capacity(usize::try_from(tensor_name_len).unwrap());
-            f.read_exact(unsafe { tensor_name.as_bytes_mut() })?;
+            let mut tensor_name_bytes = vec![0u8; usize::try_from(tensor_name_len).unwrap()];
+            f.read_exact(&mut tensor_name_bytes)?;
+            let tensor_name = String::from_utf8(tensor_name_bytes)
+                .map_err(|e| ZyxError::parse_error(format!("GGUF tensor name is not valid UTF-8: {e}").into()))?;
 
             // rank (number of dimensions)
             let mut rank = [0; 4];

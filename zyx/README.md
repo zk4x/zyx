@@ -139,6 +139,10 @@ There are minimal exceptions to this rule, such as binary ops, which will panic 
 2. Hardware support
 3. Performance
 
+### Dtype Contract
+
+Backends advertise supported dtypes via `supported_dtypes` mask. zyx will never implicitly downcast (e.g., F32→F16) when a backend lacks support — the operation fails explicitly. Implicit upcasting (e.g., F16→F32) is permitted when the backend does not natively support the narrower type — correctness is guaranteed.
+
 ## Rust version
 
 Zyx currently only supports latest stable version of rust. Zyx also requires std,

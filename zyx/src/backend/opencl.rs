@@ -615,8 +615,8 @@ impl OpenCLDevice {
         fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<((DType, u8), u32, u8)>,
-            dtype: (DType, u8),
+            registers: &mut Vec<((DType, u16), u32, u8)>,
+            dtype: (DType, u16),
             rc: u32,
             current_loop_level: u8,
         ) -> usize {
@@ -643,7 +643,7 @@ impl OpenCLDevice {
             constants: &Map<OpId, Constant>,
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
-            registers: &mut [((DType, u8), u32, u8)],
+            registers: &mut [((DType, u16), u32, u8)],
             loop_level: u8,
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
@@ -706,7 +706,7 @@ impl OpenCLDevice {
         global_args.push('\n');
 
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, u8)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut dtypes: Map<OpId, (DType, u16)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         // first we will calculate those reference counts.
         let mut op_id = kernel.head;
@@ -723,7 +723,7 @@ impl OpenCLDevice {
                     dtypes.insert(op_id, (dtype, 1));
                 }
                 &Op::Load { src, index, vlen: len } => {
-                    dtypes.insert(op_id, (dtypes[&src].0, len as u8));
+                    dtypes.insert(op_id, (dtypes[&src].0, len as u16));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
                 &Op::Store { dst, x: src, index, vlen } => {
@@ -753,7 +753,7 @@ impl OpenCLDevice {
                 }
                 Op::Vectorize { ops } => {
                     let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, (dtype.0, ops.len() as u8));
+                    dtypes.insert(op_id, (dtype.0, ops.len() as u16));
                     for &x in ops {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
@@ -777,7 +777,7 @@ impl OpenCLDevice {
         }
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, u8), u32, u8)> = Vec::new();
+        let mut registers: Vec<((DType, u16), u32, u8)> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -855,6 +855,7 @@ impl OpenCLDevice {
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
+                        UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching OpenCL backend"),
                         UOp::Exp2 => {
                             if dtype.0 == DType::F16 {
                                 _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
@@ -872,6 +873,7 @@ impl OpenCLDevice {
                         UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
                         UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
                         UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
+                        UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
                         UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabs({x});"),
                     }
                 }
@@ -1236,6 +1238,7 @@ impl OpenCLDevice {
                 self.get_device_data(CL_DEVICE_MAX_PRIVATE_MEMORY_SIZE).unwrap().try_into().unwrap(),
             ))
             .expect("What a huge amount of registers"),*/
+            has_native_exp2: true,
             tensor_cores: false,
             warp_size: 0,
             supported_dtypes: {

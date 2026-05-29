@@ -38,7 +38,6 @@ impl Kernel {
     pub fn simplify_accumulating_loop(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("simplify_accumulating_loop");
-
         let mut op_id = self.head;
         while !op_id.is_null() {
             if self.fold_loop(op_id) {
@@ -46,7 +45,6 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-
         self.verify();
     }
 
@@ -229,7 +227,9 @@ impl Kernel {
         after_loop_load_id: OpId,
     ) -> bool {
         // accumulated value must be a binary multiply (mask * source)
-        let &Op::Binary { x, y, bop: BOp::Mul } = self.at(accumulated_value_id) else {
+        // Peel through Cast ops to find the Mul (e.g., f32(mask * source))
+        let mul_id = self.peel_casts(accumulated_value_id);
+        let &Op::Binary { x, y, bop: BOp::Mul } = self.at(mul_id) else {
             return false;
         };
 
@@ -272,14 +272,20 @@ impl Kernel {
         true
     }
 
+    /// Peel through consecutive Cast ops to find the inner op
+    fn peel_casts(&self, mut op_id: OpId) -> OpId {
+        loop {
+            match self.ops[op_id].op {
+                Op::Cast { x, .. } => op_id = x,
+                _ => return op_id,
+            }
+        }
+    }
+
     /// Find the equality op
     fn get_indices(&self, mask_id: OpId, loop_id: OpId) -> Option<OpId> {
-        let (x, y) = match self.ops[mask_id].op {
+        let (x, y) = match self.ops[self.peel_casts(mask_id)].op {
             Op::Binary { x, y, bop: BOp::Eq } => (x, y),
-            Op::Cast { x, .. } => match self.ops[x].op {
-                Op::Binary { x, y, bop: BOp::Eq } => (x, y),
-                _ => return None,
-            },
             _ => return None,
         };
         let indices_id = if self.check_loop(x, loop_id) {
@@ -289,18 +295,12 @@ impl Kernel {
         } else {
             return None;
         };
-        //println!("Found indices");
         Some(indices_id)
     }
 
-    /// Returns all ops to the loop from the mask, the last op is the loop
+    /// Check if op_id traces back to loop_id through Casts
     fn check_loop(&self, op_id: OpId, loop_id: OpId) -> bool {
-        let Op::Cast { x, .. } = self.ops[op_id].op else { return false };
-        if x != loop_id {
-            return false;
-        }
-        //println!("Found loop");
-        true
+        self.peel_casts(op_id) == loop_id
     }
 
     /// Replaces a loop with closed-form arithmetic if possible.

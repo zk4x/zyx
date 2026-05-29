@@ -94,7 +94,7 @@ impl Kernel {
                             }
                             let vload = self.insert_before(
                                 loads[0].0,
-                                Op::Load { src: loads[0].1, index: base_index, vlen: loads.len() as u8 },
+                                Op::Load { src: loads[0].1, index: base_index, vlen: loads.len() as u16 },
                             );
                             for (idx, load) in loads.iter().enumerate() {
                                 self.ops[load.0].op = Op::Devectorize { vec: vload, idx };

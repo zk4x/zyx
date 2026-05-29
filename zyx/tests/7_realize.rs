@@ -275,3 +275,31 @@ fn trunc_1() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn embedding_test() -> Result<(), ZyxError> {
+    // Embedding: one_hot * weight summed over vocab_size dimension
+    let weight = Tensor::from([[1f32, 2f32], [3f32, 4f32], [5f32, 6f32]]);
+    let input = Tensor::from([0u32, 1u32]);
+
+    let b_size = 1u64;
+    let s = 2u64;
+    let vocab_size = 3u64;
+    let embed_size = 2u64;
+
+    let idx = input
+        .cast(DType::F32)
+        .reshape([b_size, s, 1u64, 1u64])?
+        .expand([b_size, s, vocab_size, 1u64])?;
+    let arange = Tensor::arange(0, vocab_size as i64, 1)?
+        .reshape([1u64, 1u64, vocab_size, 1u64])?
+        .cast(DType::F32)
+        .expand([b_size, s, vocab_size, 1u64])?;
+    let w = weight
+        .reshape([1u64, 1u64, vocab_size, embed_size])?
+        .expand([b_size, s, vocab_size, embed_size])?;
+    let one_hot = arange.equal(&idx)?.cast(DType::F32);
+    let result = (one_hot * w).sum([2])?;
+    result.realize_one()?;
+    Ok(())
+}

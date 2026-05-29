@@ -315,6 +315,13 @@ impl Runtime {
                     #[allow(clippy::match_same_arms)]
                     match uop {
                         UOp::BitNot => todo!(),
+                        UOp::Exp => {
+                            // grad_x = grad * exp(x)
+                            let exp_x = self.unary(x, UOp::Exp);
+                            let grad_x = self.binary(grad, exp_x, BOp::Mul);
+                            self.release(exp_x);
+                            insert_or_add_grad(self, &mut grads, x, grad_x);
+                        }
                         UOp::Reciprocal => {
                             // -1/(x*x)
                             let x_2_inv = self.binary(nid, nid, BOp::Mul);
@@ -386,6 +393,11 @@ impl Runtime {
                             let grad = self.expand(temp, self.shape(x).into()).unwrap();
                             self.release(temp);
                             insert_or_add_grad(self, &mut grads, x, grad);
+                        }
+                        UOp::Ln => {
+                            // grad_ln(x) = grad / x
+                            let grad_x = self.binary(grad, x, BOp::Div);
+                            insert_or_add_grad(self, &mut grads, x, grad_x);
                         }
                         UOp::Abs => {
                             // Gradient of abs(x) is sign(x) = (x > 0) - (x < 0)

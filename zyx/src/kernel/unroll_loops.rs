@@ -60,6 +60,8 @@ impl Kernel {
     }
 
     pub fn unroll_loops(&mut self, unroll_dim: Dim) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("unroll_loops");
         let mut endloop_ids = Vec::new();
         let mut op_id = self.tail;
         while !op_id.is_null() {
@@ -102,6 +104,8 @@ impl Kernel {
     }
 
     pub fn unroll_constant_loops(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("unroll_constant_loops");
         let mut endloop_ids = Vec::new();
         let mut op_id = self.tail;
         let mut constant_loops = vec![true];

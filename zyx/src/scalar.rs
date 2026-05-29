@@ -198,6 +198,12 @@ pub trait Float: Scalar {
     /// Truncate towards zero
     #[must_use]
     fn trunc(self) -> Self;
+    /// Natural exponent e^x
+    #[must_use]
+    fn exp(self) -> Self;
+    /// Natural logarithm
+    #[must_use]
+    fn ln(self) -> Self;
 }
 
 impl Scalar for bf16 {
@@ -423,6 +429,14 @@ impl Float for bf16 {
 
     fn trunc(self) -> Self {
         bf16::from_f32(self.to_f32().trunc())
+    }
+
+    fn exp(self) -> Self {
+        bf16::from_f32(self.to_f32().exp())
+    }
+
+    fn ln(self) -> Self {
+        bf16::from_f32(self.to_f32().ln())
     }
 }
 
@@ -654,6 +668,14 @@ impl Float for f16 {
 
     fn trunc(self) -> Self {
         f16::from_f32(self.to_f32().trunc())
+    }
+
+    fn exp(self) -> Self {
+        f16::from_f32(self.to_f32().exp())
+    }
+
+    fn ln(self) -> Self {
+        f16::from_f32(self.to_f32().ln())
     }
 }
 
@@ -910,6 +932,14 @@ impl Float for f32 {
     fn trunc(self) -> Self {
         f32::trunc(self)
     }
+
+    fn exp(self) -> Self {
+        f32::exp(self)
+    }
+
+    fn ln(self) -> Self {
+        f32::ln(self)
+    }
 }
 
 impl Scalar for f64 {
@@ -1129,6 +1159,14 @@ impl Float for f64 {
 
     fn trunc(self) -> Self {
         self.trunc()
+    }
+
+    fn exp(self) -> Self {
+        f64::exp(self)
+    }
+
+    fn ln(self) -> Self {
+        f64::ln(self)
     }
 }
 

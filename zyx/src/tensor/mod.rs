@@ -416,7 +416,7 @@ impl Tensor {
     ///
     /// # Errors
     /// Returns device error if the tensor cannot be realized.
-    pub fn realize_self(&self) -> Result<(), ZyxError> {
+    pub fn realize_one(&self) -> Result<(), ZyxError> {
         Self::realize([self])
     }
 

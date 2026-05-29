@@ -106,12 +106,12 @@ impl Kernel {
                             let y = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
                             self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitShiftRight };
                         }
-                        BOp::Mod if cy.is_zero() => panic!("Modulo by constant zero"),
                         BOp::Mod if cy.is_zero() && cy.dtype() == IDX_T => {
                             let shift = Constant::binary(cy, Constant::idx(1), BOp::Sub);
                             let y = self.insert_before(op_id, Op::Const(shift));
                             self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitAnd };
                         }
+                        BOp::Mod if cy.is_zero() => panic!("Modulo by constant zero"),
                         // Consecutive modulo by constant, pick smallest constant
                         BOp::Mod if cy.dtype() == IDX_T => {
                             if let Op::Binary { bop, x: xi, y: yi } = self.ops[x].op {

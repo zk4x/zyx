@@ -333,11 +333,12 @@ impl Runtime {
             }
         }
         self.initialize_devices()?;
+        let alloc_bytes = bytes + Dim::from(dtype.bit_size() / 8); // +1 element for trash slot
         // Put it into memory pool with fastest device out of memory pools with enough free capacity
         let mem_pools: Vec<PoolId> = self
             .pools
             .iter()
-            .filter_map(|(id, mp)| if mp.free_bytes() > bytes { Some(id) } else { None })
+            .filter_map(|(id, mp)| if mp.free_bytes() > alloc_bytes { Some(id) } else { None })
             .collect();
         if mem_pools.is_empty() {
             return Err(ZyxError::AllocationError("no memory pool has been initialized.".into()));
@@ -352,7 +353,7 @@ impl Runtime {
                 memory_pool_id = mpid;
             }
         }
-        let (buffer_id, event) = self.pools[memory_pool_id].allocate(bytes)?;
+        let (buffer_id, event) = self.pools[memory_pool_id].allocate(alloc_bytes)?;
         let global_id = BufferId { pool: memory_pool_id, buffer: buffer_id };
         self.temp_data.insert(global_id, data.read());
 
@@ -634,8 +635,8 @@ impl Runtime {
             );
         }
 
-        self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
-        //self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        //self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        self.launch_or_store_graph_with_order(&rcs, &realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
@@ -737,7 +738,7 @@ impl Runtime {
         }
 
         self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
-        //self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        //self.launch_or_store_graph_with_order(&rcs, &realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();

@@ -40,6 +40,7 @@
 - **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
 - **Explicit Gradient Tape** — you control what is recorded via `GradientTape`; no need for `torch.no_grad()` semantics.
 - **Higher-Order Gradients** — experimental (graph-based, forward-mode autograd planned)
+- **No Implicit Downcasting** — if a backend doesn't support a dtype, zyx will never silently downcast (e.g., F32→F16). Upcasting (e.g., F16→F32) is allowed when the backend does not natively support the narrower type — correctness is guaranteed.
 - **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed, via the runtime scheduler.
 - **Parallel Pipelining** — kernels allocate across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion via the runtime scheduler.
 - **Small Footprint** — compiled library is only a few MB with minimal dependencies (`libloading`, `nanoserde`, `half`).
@@ -249,6 +250,7 @@ Tensor operations build a lazy computation graph. During realization, the graph 
 
 ## Backends
 
+- [x] **C** - CPU backend via C codegen (clang/gcc)
 - [x] **CUDA** - NVIDIA GPU acceleration  
 - [x] **OpenCL** - Cross-platform support (CPU via POCL, GPU via native OpenCL drivers)
 - [x] **WebGPU (WGPU)** - Modern web and native GPU support

@@ -12,6 +12,7 @@ zyx-examples/phi1_5-tokenizer.json
 zyx-examples/data
 zyx-examples/models
 zyx-examples/venv
+generated/
 docs/*
 zyx/Cargo.lock
 zyx/tests/__temp_test.rs

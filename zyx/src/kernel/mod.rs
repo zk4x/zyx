@@ -14,15 +14,19 @@ use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
 
 pub mod autotune;
+pub mod cost;
 pub mod custom;
 mod debug;
 mod div_mod;
+mod exp2_to_exp;
 mod fold_constants;
+mod log2_to_ln;
 mod fold_loops;
 mod fuse;
 mod licm;
 mod merge_loops;
 mod mma;
+mod pad_index;
 mod split_loops;
 mod tile_registers;
 mod tiled_reduce;
@@ -56,7 +60,9 @@ pub enum Scope {
 pub enum UOp {
     Neg,
     BitNot,
+    Exp,
     Exp2,
+    Ln,
     Log2,
     Reciprocal,
     Sqrt,
@@ -160,12 +166,12 @@ pub enum Op {
         dst: OpId,
         x: OpId,
         index: OpId,
-        vlen: u8,
+        vlen: u16,
     },
     Load {
         src: OpId,
         index: OpId,
-        vlen: u8,
+        vlen: u16,
     },
     Index {
         len: Dim,
@@ -753,6 +759,32 @@ impl Kernel {
             op_id = self.prev_op(op_id);
         }
         Vec::new()
+    }
+
+    pub fn work_sizes(&self) -> (Vec<Dim>, Vec<Dim>) {
+        let mut gws = Vec::new();
+        let mut lws = Vec::new();
+        for node in self.ops.values() {
+            if let Op::Index { len, scope, axis } = node.op {
+                let a = axis as usize;
+                match scope {
+                    Scope::Global => {
+                        while gws.len() <= a {
+                            gws.push(1);
+                        }
+                        gws[a] = len;
+                    }
+                    Scope::Local => {
+                        while lws.len() <= a {
+                            lws.push(1);
+                        }
+                        lws[a] = len;
+                    }
+                    Scope::Register => {}
+                }
+            }
+        }
+        (gws, lws)
     }
 
     #[allow(unused)]

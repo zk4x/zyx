@@ -215,17 +215,23 @@ pub(super) fn initialize_device(
     };
 
     let mut include_path: Option<PathBuf> = None;
-    let roots = [PathBuf::from("/usr"), PathBuf::from("/opt")];
-    let mut stack: Vec<PathBuf> = roots.to_vec();
-    'a: while let Some(dir) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.file_name().is_some_and(|f| f == "cuda_fp16.h") {
-                    include_path = path.parent().map(PathBuf::from);
-                    break 'a;
+    // Prefer the system CUDA toolkit include path (compatible with the installed nvrtc).
+    let system_include = PathBuf::from("/usr/include/cuda_fp16.h");
+    if system_include.exists() {
+        include_path = Some(PathBuf::from("/usr/include"));
+    } else {
+        let roots = [PathBuf::from("/usr"), PathBuf::from("/opt")];
+        let mut stack: Vec<PathBuf> = roots.to_vec();
+        'a: while let Some(dir) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.file_name().is_some_and(|f| f == "cuda_fp16.h") {
+                        include_path = path.parent().map(PathBuf::from);
+                        break 'a;
+                    }
                 }
             }
         }
@@ -610,6 +616,15 @@ pub(super) fn initialize_device(
         let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes: free_bytes as u64 });
         memory_pools.push(pool);
 
+        let mut supported_dtypes = u32::MAX;
+        // F16 (half) requires CC 5.3+ for cuda_fp16.h
+        if major < 5 || (major == 5 && minor < 3) {
+            supported_dtypes &= !(1 << DType::F16 as u32);
+        }
+        // BF16 requires CC 7.5+ for cuda_bf16.h
+        if major < 7 || (major == 7 && minor < 5) {
+            supported_dtypes &= !(1 << DType::BF16 as u32);
+        }
         let mut dev = CUDADevice {
             tx,
             device,
@@ -621,14 +636,23 @@ pub(super) fn initialize_device(
                 local_mem_size: 0,
                 max_register_bytes: 96,
                 preferred_vector_size: 16,
-                tensor_cores: major > 7,
+                tensor_cores: major >= 7,
                 warp_size: 32,
-                supported_dtypes: u32::MAX,
+                supported_dtypes,
+                has_native_exp2: true,
             },
             memory_pool_id: PoolId::from(usize::from(memory_pools.len()) - 1),
             compute_capability: [major, minor],
             include_path: include_path.clone(),
         };
+        let max_regs_per_block: i32 = dev.get(
+            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK,
+            cuDeviceGetAttribute,
+        )?;
+        let max_threads_per_block: i32 = dev.get(
+            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+            cuDeviceGetAttribute,
+        )?;
         dev.dev_info = DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024, // TODO run a kernel to get an estimate
             max_global_work_dims: vec![
@@ -636,11 +660,7 @@ pub(super) fn initialize_device(
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
             ],
-            max_local_threads: Dim::try_from(dev.get(
-                CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
-                cuDeviceGetAttribute,
-            )?)
-            .unwrap(),
+            max_local_threads: Dim::try_from(max_threads_per_block).unwrap(),
             max_local_work_dims: vec![
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, cuDeviceGetAttribute)?).unwrap(),
                 Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
@@ -651,11 +671,12 @@ pub(super) fn initialize_device(
                 cuDeviceGetAttribute,
             )?)
             .unwrap(),
-            max_register_bytes: 96,
+            max_register_bytes: (max_regs_per_block as u64 / max_threads_per_block as u64).min(255) * 4,
             preferred_vector_size: 16,
-            tensor_cores: major > 7,
+            tensor_cores: major >= 7,
             warp_size: 32,
-            supported_dtypes: u32::MAX,
+            supported_dtypes,
+            has_native_exp2: true,
         };
         devices.push(Device::CUDA(dev));
     }
@@ -991,7 +1012,7 @@ enum CUdevice_attribute {
 impl DType {
     pub(super) const fn cu(&self) -> &str {
         match self {
-            Self::BF16 => "bfloat16",
+            Self::BF16 => "__nv_bfloat16",
             Self::F16 => "half",
             Self::F32 => "float",
             Self::F64 => "double",
@@ -1016,7 +1037,10 @@ impl Constant {
             if s.contains('.') { s.to_string() } else { format!("{s}.0") }
         }
         match self {
-            &Self::BF16(x) => format!("{}f", half::bf16::from_le_bytes(x)),
+            &Self::BF16(x) => {
+                let val: f32 = half::bf16::from_le_bytes(x).into();
+                format!("__float2bfloat16({}f)", format_precise(val, 9))
+            }
             &Self::F16(x) => {
                 //format!("__float2half({:.6})", half::f16::from_le_bytes(x)
                 let bits: u16 = half::f16::from_le_bytes(x).to_bits();
@@ -1153,8 +1177,8 @@ impl CUDADevice {
         fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<((DType, u8), u32, u8)>,
-            dtype: (DType, u8),
+            registers: &mut Vec<((DType, u16), u32, u8)>,
+            dtype: (DType, u16),
             rc: u32,
             current_loop_level: u8,
         ) -> usize {
@@ -1181,7 +1205,7 @@ impl CUDADevice {
             constants: &Map<OpId, Constant>,
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
-            registers: &mut [((DType, u8), u32, u8)],
+            registers: &mut [((DType, u16), u32, u8)],
             loop_level: u8,
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
@@ -1239,7 +1263,7 @@ impl CUDADevice {
         global_args.push('\n');
 
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, u8)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut dtypes: Map<OpId, (DType, u16)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         // first we will calculate those reference counts.
         let mut op_id = kernel.head;
@@ -1256,7 +1280,7 @@ impl CUDADevice {
                 }
                 Op::Vectorize { ops } => {
                     let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, (dtype.0, ops.len() as u8));
+                    dtypes.insert(op_id, (dtype.0, ops.len() as u16));
                     for &x in ops {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
@@ -1325,7 +1349,7 @@ impl CUDADevice {
         }
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, u8), u32, u8)> = Vec::new();
+        let mut registers: Vec<((DType, u16), u32, u8)> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -1431,7 +1455,11 @@ impl CUDADevice {
                         rcs[&op_id],
                         loop_id,
                     );
-                    _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
+                    if dtype == DType::BF16 {
+                        _ = writeln!(source, "{indent}r{reg} = __float2bfloat16((float){x_var});");
+                    } else {
+                        _ = writeln!(source, "{indent}r{reg} = ({}){x_var};", dtype.cu());
+                    }
                 }
                 &Op::Unary { x, uop } => {
                     let dtype = dtypes[&x];
@@ -1440,6 +1468,7 @@ impl CUDADevice {
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
+                        UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching CUDA backend"),
                         UOp::Exp2 => {
                             if dtype.0 == DType::F16 {
                                 _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
@@ -1457,6 +1486,7 @@ impl CUDADevice {
                         UOp::Cos => _ = writeln!(source, "{indent}r{reg} = cos({x});"),
                         UOp::Floor => _ = writeln!(source, "{indent}r{reg} = floor({x});"),
                         UOp::Trunc => _ = writeln!(source, "{indent}r{reg} = trunc({x});"),
+                        UOp::Ln => _ = writeln!(source, "{indent}r{reg} = log({x});"),
                         UOp::Abs => _ = writeln!(source, "{indent}r{reg} = fabsf({x});"),
                     }
                 }
@@ -1608,6 +1638,9 @@ impl CUDADevice {
             pragma += "#include <cuda_fp16.h>\n";
             pragma += "struct __align__(8) half4 { half x, y, z, w; };\n";
         }
+        if dtypes.values().any(|&x| x.0 == DType::BF16) {
+            pragma += "#include <cuda_bf16.h>\n";
+        }
 
         let mut name = format!(
             "k_{}__{}",
@@ -1624,9 +1657,9 @@ impl CUDADevice {
         }
 
         let cudartc_paths = [
-            "/lib/x86_64-linux-gnu/libnvrtc.so",
+            "/usr/local/cuda/lib64/libnvrtc.so",
             "/usr/local/cuda/targets/x86_64-linux/lib/libnvrtc.so",
-            "/usr/lib64/x86_64-linux/lib/libnvrtc.so",
+            "/lib/x86_64-linux-gnu/libnvrtc.so",
             "/usr/lib/libnvrtc.so",
             "/usr/lib64/libnvrtc.so",
         ];
@@ -1677,7 +1710,6 @@ impl CUDADevice {
         ];
 
         if let Some(path) = &self.include_path {
-            //println!("path = {}", path.display());
             let path = format!("--include-path={}", path.display());
             opts.push(path);
         }
