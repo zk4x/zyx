@@ -326,22 +326,23 @@ impl Kernel {
         let global_stores_per_thread = n_scoped_stores[0];
         let local_stores_per_thread = n_scoped_stores[1];
 
-        let total_loads = n_threads * global_ws * global_loads_per_thread;
-        let total_stores = n_threads * global_ws * global_stores_per_thread;
-        let total_local = n_threads * global_ws * (local_loads_per_thread + local_stores_per_thread);
-        let total_barriers = n_threads * global_ws * barriers_per_thread;
-        let total_instr = n_threads * global_ws * n_instructions;
+        // Execution time is determined by per-thread work (latency), not total work
+        // across all threads. Threads within a workgroup execute in SIMD fashion,
+        // so the cost is dominated by the slowest thread, not the sum of all threads.
+        // - Global memory: scales with global_ws (number of workgroups), not n_threads.
+        //   More threads reduce each thread's share of the work without changing total
+        //   data volume, lowering latency via parallelism.
+        // - Local/barrier: these are per-workgroup overhead, scale with n_threads.
+        let per_thread_loads = global_ws * global_loads_per_thread;
+        let per_thread_stores = global_ws * global_stores_per_thread;
+        let per_thread_instr = global_ws * n_instructions;
+        let workgroup_local = n_threads * global_ws * (local_loads_per_thread + local_stores_per_thread);
+        let workgroup_barriers = n_threads * global_ws * barriers_per_thread;
 
-        let memory_score = (total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64;
-        let alu_score = total_instr as f64;
+        let memory_score = (per_thread_loads * 10 + per_thread_stores * 10 + workgroup_local + workgroup_barriers * 20) as f64;
+        let alu_score = per_thread_instr as f64;
 
-        // Penalize underutilized workgroups: single-thread workgroups can't fill a warp/wavefront,
-        // causing severe inefficiency (~98% idle compute) and risking GPU watchdog timeouts.
-        // Backends without SIMT parallelism (CPU, TensTorrent) set warp_size to 0 or 1.
-        let warp_size = u64::from(dev_info.warp_size).max(1);
-        let occupancy_penalty = (warp_size as f64 / n_threads.max(1) as f64).clamp(1.0, warp_size as f64);
-
-        let cost = ((memory_score + alu_score * 0.1) * occupancy_penalty) as u64;
+        let cost = (memory_score + alu_score * 0.1) as u64;
 
         Cost { cost }
     }

@@ -370,7 +370,31 @@ impl Kernel {
         let mut last_error = None;
         // Sort items by cost and benchmark the cheapest ones
         items.sort_by_key(|s| s.cost);
-        for opt_seq in items.iter().take(n_launches) {
+
+        // Ensure diversity: force-include the cheapest seed from each opt type
+        // so we don't miss fast outliers like single-thread split_loop
+        let mut launch_indices: Vec<usize> = Vec::new();
+        let mut selected: Set<usize> = Set::default();
+        for opt_type in 0..AVAILABLE_OPTIMIZATIONS.len() {
+            if let Some(idx) = items.iter().position(|s| !s.opts.is_empty() && s.opts[0].0 == opt_type) {
+                if selected.insert(idx) {
+                    launch_indices.push(idx);
+                }
+            }
+        }
+        // Fill remaining slots from cheapest overall
+        for (idx, _) in items.iter().enumerate() {
+            if launch_indices.len() >= n_launches {
+                break;
+            }
+            if selected.insert(idx) {
+                launch_indices.push(idx);
+            }
+        }
+        launch_indices.sort();
+
+        for &idx in launch_indices.iter() {
+            let opt_seq = &items[idx];
             let mut kernel = kernel.clone();
 
             println!("launch (cost: {}, n_opts: {}):", opt_seq.cost.cost, opt_seq.opts.len());

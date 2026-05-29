@@ -119,6 +119,17 @@ fn sum_warp_reduce_large() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn sum_reduce_32k() -> Result<(), ZyxError> {
+    // 32K element reduce to verify tiled_reduce is selected for large workloads
+    // Shape [8, 4096]: 4096 = 32K / 8
+    let x = Tensor::from(vec![1i32; 32768]);
+    let x = x.reshape([8, 4096])?;
+    let x0 = x.sum([-1])?;
+    assert_eq!(x0, vec![4096i32; 8]);
+    Ok(())
+}
+
+#[test]
 fn sum_reduce_last_dim_3d() -> Result<(), ZyxError> {
     // 3D tensor with large reduction over last dimension
     // Shape: [4, 8, 512] -> reduce last dim -> [4, 8]
