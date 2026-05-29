@@ -415,7 +415,7 @@ impl Kernel {
         }
 
         if !any_success {
-            return Err(last_error.unwrap_or(BackendError {
+            return Err(last_error.unwrap_or_else(|| BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: "No successful kernel launches.".into(),
             }));

@@ -473,7 +473,7 @@ impl HIPDevice {
         // TODO
     }
 
-    fn next_stream(&mut self) -> Result<usize, BackendError> {
+    fn next_stream(&mut self) -> usize {
         let mut id = self.streams.iter().enumerate().min_by_key(|(_, s)| s.load).unwrap().0;
         if self.streams[id].load > 20 {
             let sync = unsafe { (self.hipStreamSynchronize)(self.streams[id].stream) }.check(ErrorStatus::KernelSync);
@@ -482,7 +482,7 @@ impl HIPDevice {
             }
             id = self.streams.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
         }
-        Ok(id)
+        id
     }
 
     pub(super) const fn info(&self) -> &DeviceInfo {
@@ -659,7 +659,7 @@ impl HIPDevice {
         args: &[PoolBufferId],
         mut event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
-        let stream_id = self.next_stream()?;
+        let stream_id = self.next_stream();
         let program = &self.programs[program_id];
 
         //println!("CUDA launch program id: {program_id}, gws: {:?}, lws: {:?}", program.global_work_size, program.local_work_size);

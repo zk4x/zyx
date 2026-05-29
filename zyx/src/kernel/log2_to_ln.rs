@@ -7,7 +7,7 @@ use crate::{
 };
 use half::{bf16, f16};
 
-const LN_2: f64 = 0.693_147_180_559_945_3;
+const LN_2: f64 = std::f64::consts::LN_2;
 
 fn constant_is_ln_2(c: &Constant) -> bool {
     let val = match *c {
@@ -32,11 +32,7 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             if let &Op::Binary { x: left, y: right, bop: BOp::Mul } = self.at(op_id) {
-                let (log2_op, const_op) = match (self.at(left), self.at(right)) {
-                    (&Op::Unary { x: input, uop: UOp::Log2 }, c) => (input, c),
-                    (c, &Op::Unary { x: input, uop: UOp::Log2 }) => (input, c),
-                    _ => { op_id = next; continue; }
-                };
+                let ((&Op::Unary { x: log2_op, uop: UOp::Log2 }, const_op) | (const_op, &Op::Unary { x: log2_op, uop: UOp::Log2 })) = (self.at(left), self.at(right)) else { op_id = next; continue; };
                 if let &Op::Const(c) = const_op {
                     if constant_is_ln_2(&c) {
                         self.ops[op_id].op = Op::Unary { x: log2_op, uop: UOp::Ln };

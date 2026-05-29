@@ -8,18 +8,10 @@ use crate::{
 };
 use nanoserde::{DeBin, SerBin};
 
-#[derive(Debug, Default, Clone, Copy, Hash, DeBin, SerBin)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, DeBin, SerBin)]
 pub struct Cost {
     pub cost: u64,
 }
-
-impl PartialEq for Cost {
-    fn eq(&self, other: &Self) -> bool {
-        self.cost == other.cost
-    }
-}
-
-impl Eq for Cost {}
 
 impl Ord for Cost {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
@@ -29,7 +21,7 @@ impl Ord for Cost {
 
 impl PartialOrd for Cost {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        Some(self.cost.cmp(&other.cost))
+        Some(self.cmp(other))
     }
 }
 
@@ -181,14 +173,7 @@ impl Kernel {
                         }
                     }
                 }
-                &Op::Cast { x, .. } => {
-                    if let Some(&idx) = reg_map.get(&x) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                }
-                &Op::Unary { x, .. } => {
+                &Op::Cast { x, .. } | &Op::Unary { x, .. } => {
                     if let Some(&idx) = reg_map.get(&x) {
                         if reg_slots[idx].0 > 0 {
                             reg_slots[idx].0 -= 1;
@@ -265,7 +250,16 @@ impl Kernel {
                 Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
                     n_instructions += loop_mult;
                 }
-                Op::Const(_) | Op::Define { .. } => {}
+                Op::Const(_)
+                | Op::Define { .. }
+                | Op::EndIf
+                | Op::Devectorize { .. }
+                | Op::Vectorize { .. }
+                | Op::ConstView(_)
+                | Op::LoadView(_)
+                | Op::StoreView { .. }
+                | Op::Move { .. }
+                | Op::Reduce { .. } => {}
                 &Op::Load { src, vlen, .. } => {
                     n_instructions += loop_mult;
                     let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
@@ -300,7 +294,7 @@ impl Kernel {
                 &Op::Wmma { dims, .. } => {
                     let (m, n, k) = dims.decompose_mnk();
                     let warp = u64::from(dev_info.warp_size);
-                    let cost = (u64::from(m) * u64::from(n) * u64::from(k)) / warp;
+                    let cost = (m * n * k) / warp;
                     n_instructions += loop_mult * cost;
                 }
                 Op::Barrier { .. } => {
@@ -309,14 +303,6 @@ impl Kernel {
                 Op::If { .. } => {
                     n_instructions += loop_mult * 3;
                 }
-                Op::EndIf
-                | Op::Devectorize { .. }
-                | Op::Vectorize { .. }
-                | Op::ConstView(_)
-                | Op::LoadView(_)
-                | Op::StoreView { .. }
-                | Op::Move { .. }
-                | Op::Reduce { .. } => {}
             }
 
             // Track peak register bytes

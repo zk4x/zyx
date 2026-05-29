@@ -28,7 +28,7 @@ fn main() {
         it.find_map(|e| {
             let e = e.ok()?;
             let path = e.path();
-            if path.is_dir() && path.file_name().and_then(|s| s.to_str()).map_or(false, |s| s.len() == 40) {
+            if path.is_dir() && path.file_name().and_then(|s| s.to_str()).is_some_and(|s| s.len() == 40) {
                 Some(path.join("include"))
             } else {
                 None
@@ -92,9 +92,7 @@ fn main() {
 
     // Rerun if C++ sources change
     println!("cargo:rerun-if-changed={}", src_dir.join("runtime.cpp").display());
-    for entry in std::fs::read_dir(&kernel_dir).unwrap() {
-        if let Ok(e) = entry {
-            println!("cargo:rerun-if-changed={}", e.path().display());
-        }
+    for e in std::fs::read_dir(&kernel_dir).unwrap().flatten() {
+        println!("cargo:rerun-if-changed={}", e.path().display());
     }
 }

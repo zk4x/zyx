@@ -376,7 +376,7 @@ pub struct DeviceInfo {
 
 impl DeviceInfo {
     /// Check if a dtype is supported by this device
-    pub fn supports_dtype(&self, dtype: DType) -> bool {
+    pub const fn supports_dtype(&self, dtype: DType) -> bool {
         let bit = 1u32 << (dtype as u32);
         (self.supported_dtypes & bit) != 0
     }
@@ -421,7 +421,7 @@ impl MemoryPool {
         }
     }
 
-    pub fn free_bytes(&self) -> Dim {
+    pub const fn free_bytes(&self) -> Dim {
         match self {
             MemoryPool::Dummy(pool) => pool.free_bytes(),
             MemoryPool::Disk(pool) => pool.free_bytes(),
@@ -554,7 +554,7 @@ pub enum Device {
 
 impl Device {
     #[allow(unused)]
-    pub fn deinitialize(&mut self) {
+    pub const fn deinitialize(&mut self) {
         match self {
             Device::C(dev) => dev.deinitialize(),
             Device::Dummy(dev) => dev.deinitialize(),

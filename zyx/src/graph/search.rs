@@ -30,9 +30,9 @@ impl From<usize> for NodeId {
     }
 }
 
-impl Into<usize> for NodeId {
-    fn into(self) -> usize {
-        self.0 as usize
+impl From<NodeId> for usize {
+    fn from(val: NodeId) -> Self {
+        val.0 as usize
     }
 }
 

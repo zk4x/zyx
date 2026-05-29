@@ -284,10 +284,7 @@ impl Kernel {
 
     /// Find the equality op
     fn get_indices(&self, mask_id: OpId, loop_id: OpId) -> Option<OpId> {
-        let (x, y) = match self.ops[self.peel_casts(mask_id)].op {
-            Op::Binary { x, y, bop: BOp::Eq } => (x, y),
-            _ => return None,
-        };
+        let Op::Binary { x, y, bop: BOp::Eq } = self.ops[self.peel_casts(mask_id)].op else { return None };
         let indices_id = if self.check_loop(x, loop_id) {
             y
         } else if self.check_loop(y, loop_id) {
@@ -298,7 +295,7 @@ impl Kernel {
         Some(indices_id)
     }
 
-    /// Check if op_id traces back to loop_id through Casts
+    /// Check if `op_id` traces back to `loop_id` through Casts
     fn check_loop(&self, op_id: OpId, loop_id: OpId) -> bool {
         self.peel_casts(op_id) == loop_id
     }

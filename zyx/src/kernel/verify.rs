@@ -216,7 +216,7 @@ impl Kernel {
                     defines.insert(op_id, len);
                 }
                 Op::Load { src, index, .. } => {
-                    let idx_range = self.get_bounds(index);
+                    let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range {
                         if *range.end() >= defines[&src] {
                             self.debug_colorless();
@@ -228,7 +228,7 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, index, .. } => {
-                    let idx_range = self.get_bounds(index);
+                    let idx_range = Self::get_bounds(index);
                     if let Some(range) = idx_range {
                         if *range.start() > defines[&dst] + 1 {
                             self.debug_colorless();
@@ -363,7 +363,7 @@ impl Kernel {
     }
 
     /// Propagate constraint backward from v to its operands (one level, no recursion).
-    /// When v is constrained to (new_lower, new_upper) and v = f(operand, constant),
+    /// When v is constrained to (`new_lower`, `new_upper`) and v = f(operand, constant),
     /// the operand's upper bound can be narrowed accordingly.
     fn backward_constrain(
         &self,
@@ -383,8 +383,7 @@ impl Kernel {
                     _ => None,
                 };
                 if let Some((operand, k)) = operand_k {
-                    if k > 0 {
-                        let upper = new_upper / k;
+                    if let Some(upper) = new_upper.checked_div(k) {
                         if let Some(&(ol, ou)) = prev.get(&operand) {
                             if upper < ou {
                                 prev.insert(operand, (ol, upper));
@@ -524,7 +523,7 @@ impl Kernel {
 }
 
 impl Kernel {
-    fn get_bounds(&self, op_id: OpId) -> Option<RangeInclusive<Dim>> {
+    const fn get_bounds(_op_id: OpId) -> Option<RangeInclusive<Dim>> {
         None
     }
 }

@@ -7,7 +7,7 @@ use crate::{
 };
 use half::{bf16, f16};
 
-const LOG2_E: f64 = 1.442_695_040_888_963_4;
+const LOG2_E: f64 = std::f64::consts::LOG2_E;
 
 fn constant_is_log2_e(c: &Constant) -> bool {
     let val = match *c {

@@ -135,7 +135,7 @@ impl CDevice {
             let cached_so = cache_dir.join(format!("{hash:016x}.so"));
             if cached_so.is_file() {
                 if debug_asm {
-                    println!("Loading cached kernel {name} from {:?}", cached_so);
+                    println!("Loading cached kernel {name} from {}", cached_so.display());
                 }
                 if let Ok(lib) = unsafe { Library::new(&cached_so) } {
                     let program_id = self.programs.push(CProgram { lib, name });
@@ -148,13 +148,13 @@ impl CDevice {
         }
 
         // --- Phase 1: collect global args, gws/lws ---
-        let mut gws = vec![1u64; 3];
+        let mut gws = [1u64; 3];
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             let op = kernel.at(op_id);
             if let &Op::Index { len: dim, scope, axis } = op {
                 if scope == Scope::Global {
-                    gws[axis as usize] = dim.max(1u64.into()).into();
+                    gws[axis as usize] = dim.max(1u64);
                 }
             }
             op_id = kernel.next_op(op_id);
@@ -219,14 +219,11 @@ impl CDevice {
                     *rcs.entry(y).or_insert(0) += 1;
                     *rcs.entry(z).or_insert(0) += 1;
                 }
-                Op::Index { .. } | Op::Loop { .. } => {
+                Op::Index { .. } | Op::Loop { .. } | Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {
                     dtypes.insert(op_id, (DType::U32, 1));
                 }
                 &Op::If { condition } => {
                     *rcs.entry(condition).or_insert(0) += 1;
-                }
-                Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {
-                    dtypes.insert(op_id, (DType::U32, 1));
                 }
             }
             op_id = kernel.next_op(op_id);
@@ -303,51 +300,6 @@ impl CDevice {
             op_id = kernel.next_op(op_id);
         }
 
-        // --- New reg / get_var helpers (same as OpenCL) ---
-        fn new_reg(
-            op_id: OpId,
-            reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<((DType, u16), u32, u8)>,
-            dtype: (DType, u16),
-            rc: u32,
-            current_loop_level: u8,
-        ) -> usize {
-            for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
-                if *nrc == 0 && *dt == dtype && current_loop_level <= *loop_level {
-                    reg_map.insert(op_id, i);
-                    *nrc = rc;
-                    *loop_level = current_loop_level;
-                    return i;
-                }
-            }
-            let i = registers.len();
-            registers.push((dtype, rc, current_loop_level));
-            reg_map.insert(op_id, i);
-            i
-        }
-
-        fn get_var(
-            op_id: OpId,
-            constants: &Map<OpId, Constant>,
-            indices: &Map<OpId, u8>,
-            reg_map: &Map<OpId, usize>,
-            registers: &mut [((DType, u16), u32, u8)],
-            loop_level: u8,
-        ) -> String {
-            if let Some(c) = constants.get(&op_id) {
-                c.c_code()
-            } else if let Some(&id) = indices.get(&op_id) {
-                format!("idx{id}")
-            } else if let Some(&reg) = reg_map.get(&op_id) {
-                if registers[reg].2 == loop_level {
-                    registers[reg].1 -= 1;
-                }
-                format!("r{reg}")
-            } else {
-                unreachable!()
-            }
-        }
-
         // --- Process all ops in order ---
         // For Index (Global/Local): emit for-loop header
         // For Index (Register): emit idx = 0 declaration
@@ -360,9 +312,6 @@ impl CDevice {
         while !op_id.is_null() {
             let op = kernel.at(op_id);
             match op {
-                Op::Define { .. } => {
-                    // Already handled above
-                }
                 &Op::Index { len, scope, .. } => {
                     match scope {
                         Scope::Global | Scope::Local => {
@@ -419,14 +368,12 @@ impl CDevice {
                             } else {
                                 _ = writeln!(source, "{indent}r{reg} = {conv}(p{src}[{idx}]);");
                             }
-                        } else {
-                            if vlen > 1 {
-                                for i in 0..vlen {
-                                    _ = writeln!(source, "{indent}r{reg}.s{i} = p{src}[{idx} + {i}];");
-                                }
-                            } else {
-                                _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                        } else if vlen > 1 {
+                            for i in 0..vlen {
+                                _ = writeln!(source, "{indent}r{reg}.s{i} = p{src}[{idx} + {i}];");
                             }
+                        } else {
+                            _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
                         }
                     }
                 }
@@ -443,14 +390,12 @@ impl CDevice {
                         } else {
                             _ = writeln!(source, "{indent}p{dst}[{idx}] = {conv}({x});");
                         }
-                    } else {
-                        if vlen > 1 {
-                            for i in 0..vlen {
-                                _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.s{i};");
-                            }
-                        } else {
-                            _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                    } else if vlen > 1 {
+                        for i in 0..vlen {
+                            _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.s{i};");
                         }
+                    } else {
+                        _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
                     }
                 }
                 &Op::Cast { x, dtype } => {
@@ -542,9 +487,7 @@ impl CDevice {
                     }
                     _ = writeln!(source, "{indent}}}");
                 }
-                Op::Barrier { .. } => {
-                    // No-op on sequential CPU
-                }
+                Op::Define { .. } | Op::Barrier { .. } => {}
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
                     unreachable!()
                 }
@@ -602,7 +545,7 @@ impl CDevice {
         if let Some(pos) = source.find("{\n") {
             source.insert_str(pos + 2, &reg_str);
         } else {
-            _ = writeln!(source, "{}", reg_str);
+            _ = writeln!(source, "{reg_str}");
         }
 
         if debug_asm {
@@ -620,7 +563,7 @@ impl CDevice {
         let f16_helpers = if f16_buffers.is_empty() {
             String::new()
         } else {
-            r##"static inline float f16tof32(unsigned short h) {
+            r"static inline float f16tof32(unsigned short h) {
   unsigned int sign = (unsigned int)(h & 0x8000) << 16;
   unsigned int mantissa = (unsigned int)(h & 0x03FF);
   unsigned int exp = (unsigned int)((h >> 10) & 0x1F);
@@ -661,7 +604,7 @@ static inline float bf16tof32(unsigned short h) {
 static inline unsigned short f32tobf16(float v) {
   unsigned int b; memcpy(&b, &v, sizeof(b)); return (unsigned short)(b >> 16);
 }
-"##
+"
             .to_string()
         };
         // Add #include for math functions
@@ -692,10 +635,7 @@ static inline unsigned short f32tobf16(float v) {
                 .arg("-lm")
                 .arg(openmp_flag)
                 .output();
-            match output {
-                Ok(o) if o.status.success() => true,
-                _ => false,
-            }
+            matches!(output, Ok(o) if o.status.success())
         } else {
             false
         };
@@ -750,6 +690,7 @@ static inline unsigned short f32tobf16(float v) {
         Ok(program_id)
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
@@ -778,7 +719,7 @@ static inline unsigned short f32tobf16(float v) {
                     status: ErrorStatus::KernelCompilation,
                     context: format!("Failed to find kernel symbol: {e}").into(),
                 })?;
-            let ptrs_raw: Vec<*mut std::ffi::c_void> = ptrs.iter().map(|p| *p as *mut std::ffi::c_void).collect();
+            let ptrs_raw: Vec<*mut std::ffi::c_void> = ptrs.iter().map(|p| (*p).cast::<std::ffi::c_void>()).collect();
             func(ptrs_raw.as_ptr(), ptrs_raw.len());
         }
 
@@ -786,14 +727,59 @@ static inline unsigned short f32tobf16(float v) {
     }
 }
 
+// --- New reg / get_var helpers ---
+
+fn new_reg(
+    op_id: OpId,
+    reg_map: &mut Map<OpId, usize>,
+    registers: &mut Vec<((DType, u16), u32, u8)>,
+    dtype: (DType, u16),
+    rc: u32,
+    current_loop_level: u8,
+) -> usize {
+    for (i, (dt, nrc, loop_level)) in registers.iter_mut().enumerate() {
+        if *nrc == 0 && *dt == dtype && current_loop_level <= *loop_level {
+            reg_map.insert(op_id, i);
+            *nrc = rc;
+            *loop_level = current_loop_level;
+            return i;
+        }
+    }
+    let i = registers.len();
+    registers.push((dtype, rc, current_loop_level));
+    reg_map.insert(op_id, i);
+    i
+}
+
+fn get_var(
+    op_id: OpId,
+    constants: &Map<OpId, Constant>,
+    indices: &Map<OpId, u8>,
+    reg_map: &Map<OpId, usize>,
+    registers: &mut [((DType, u16), u32, u8)],
+    loop_level: u8,
+) -> String {
+    if let Some(c) = constants.get(&op_id) {
+        c.c_code()
+    } else if let Some(&id) = indices.get(&op_id) {
+        format!("idx{id}")
+    } else if let Some(&reg) = reg_map.get(&op_id) {
+        if registers[reg].2 == loop_level {
+            registers[reg].1 -= 1;
+        }
+        format!("r{reg}")
+    } else {
+        unreachable!()
+    }
+}
+
 // --- C type codegen helpers ---
 
 impl DType {
-    fn c_type(self) -> &'static str {
+    const fn c_type(self) -> &'static str {
         match self {
-            Self::F32 => "float",
             Self::F64 => "double",
-            Self::U8 => "unsigned char",
+            Self::U8 | Self::Bool => "unsigned char",
             Self::U16 => "unsigned short",
             Self::U32 => "unsigned int",
             Self::U64 => "unsigned long",
@@ -801,8 +787,7 @@ impl DType {
             Self::I16 => "short",
             Self::I32 => "int",
             Self::I64 => "long",
-            Self::Bool => "unsigned char",
-            Self::F16 | Self::BF16 => "float", // fallback to float
+            Self::F32 | Self::F16 | Self::BF16 => "float", // fallback to float
         }
     }
 }
