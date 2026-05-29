@@ -5,7 +5,7 @@
 
 //! Compiled graph caching layer.
 use crate::{
-    Map, Set, ZyxError,
+    DType, Map, Set, ZyxError,
     backend::{BufferId, DeviceId, PoolId, ProgramId},
     graph::{Node, search::EGraph},
     runtime::Runtime,
@@ -55,9 +55,41 @@ pub enum CompiledNode {
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct CachedGraph {
     pub nodes: Vec<Node>,
-    pub shapes: BTreeMap<TensorId, Box<[Dim]>>,
-    pub paddings: BTreeMap<TensorId, Box<[(i64, i64)]>>,
-    pub axes: BTreeMap<TensorId, Box<[UAxis]>>,
+    pub shapes: BTreeMap<usize, Box<[Dim]>>,
+    pub paddings: BTreeMap<usize, Box<[(i64, i64)]>>,
+    pub axes: BTreeMap<usize, Box<[UAxis]>>,
+}
+
+impl CachedGraph {
+    pub(super) fn shape(&self, mut tensor_id: usize) -> &[Dim] {
+        for _ in 0..1_000_000 {
+            if let Some(shape) = self.shapes.get(&tensor_id) {
+                //println!("Found shape {shape:?} for tensor {tensor_id}");
+                return shape;
+            } else if let Node::Const { .. } = self.nodes[tensor_id] {
+                return &[1];
+            }
+            //println!("Getting params of id: {tensor_id}, {:?}", self.nodes[tensor_id].1);
+            tensor_id = self.nodes[tensor_id].param1().into();
+        }
+        panic!("Shape of {tensor_id:?} could not be found. This is internal bug.")
+    }
+
+    pub(super) fn dtype(&self, mut tensor_id: usize) -> DType {
+        for _ in 0..100_000 {
+            match self.nodes[tensor_id] {
+                Node::Const { value } => return value.dtype(),
+                Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
+                Node::Binary { bop, .. } if bop.returns_bool() => {
+                    return DType::Bool;
+                }
+                _ => {
+                    tensor_id = self.nodes[tensor_id].parameters().next().unwrap().into();
+                }
+            }
+        }
+        panic!("DType of {tensor_id:?} could not be found. This is internal bug.")
+    }
 }
 
 impl Runtime {
@@ -91,10 +123,9 @@ impl Runtime {
             paddings: BTreeMap::new(),
             axes: BTreeMap::new(),
         };
-        let mut id_map: Map<TensorId, TensorId> = Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
+        let mut id_map: Map<TensorId, usize> = Map::with_capacity_and_hasher(order.len(), BuildHasherDefault::new());
 
-        for (i, &nid) in order.iter().enumerate() {
-            let new_id = TensorId::from(i);
+        for (new_id, &nid) in order.iter().enumerate() {
             let node = &self.graph[nid];
             let reindexed = if realized_nodes.contains(&nid) {
                 Node::Leaf { dtype: self.graph.dtype(nid) }
@@ -102,14 +133,14 @@ impl Runtime {
                 match node {
                     Node::Const { value } => Node::Const { value: *value },
                     Node::Leaf { dtype } => Node::Leaf { dtype: *dtype },
-                    Node::Expand { x } => Node::Expand { x: id_map[x] },
-                    Node::Permute { x } => Node::Permute { x: id_map[x] },
-                    Node::Reshape { x } => Node::Reshape { x: id_map[x] },
-                    Node::Pad { x } => Node::Pad { x: id_map[x] },
-                    Node::Reduce { x, rop } => Node::Reduce { x: id_map[x], rop: *rop },
-                    Node::Cast { x, dtype } => Node::Cast { x: id_map[x], dtype: *dtype },
-                    Node::Unary { x, uop } => Node::Unary { x: id_map[x], uop: *uop },
-                    Node::Binary { x, y, bop } => Node::Binary { x: id_map[x], y: id_map[y], bop: *bop },
+                    Node::Expand { x } => Node::Expand { x: id_map[x].into() },
+                    Node::Permute { x } => Node::Permute { x: id_map[x].into() },
+                    Node::Reshape { x } => Node::Reshape { x: id_map[x].into() },
+                    Node::Pad { x } => Node::Pad { x: id_map[x].into() },
+                    Node::Reduce { x, rop } => Node::Reduce { x: id_map[x].into(), rop: *rop },
+                    Node::Cast { x, dtype } => Node::Cast { x: id_map[x].into(), dtype: *dtype },
+                    Node::Unary { x, uop } => Node::Unary { x: id_map[x].into(), uop: *uop },
+                    Node::Binary { x, y, bop } => Node::Binary { x: id_map[x].into(), y: id_map[y].into(), bop: *bop },
                     Node::Custom { .. } => todo!(),
                 }
             };

@@ -635,8 +635,8 @@ impl Runtime {
             );
         }
 
-        self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
-        //self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        //self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        self.launch_or_store_graph_with_order(&rcs, &realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
@@ -738,7 +738,7 @@ impl Runtime {
         }
 
         self.realize_with_order(rcs, realized_nodes, &order, &to_eval)?;
-        //self.launch_or_store_graph_with_order(rcs, realized_nodes, &order, &to_eval)?;
+        //self.launch_or_store_graph_with_order(&rcs, &realized_nodes, &order, &to_eval)?;
 
         // Delete all unnecessary nodes no longer needed after realization
         let mut to_release = Vec::new();
