@@ -480,7 +480,7 @@ impl WGPUDevice {
                             //writeln!(source, "{indent}printf(\"%d\\n\", r{reg});").unwrap();
                             writeln!(source, "{indent}let r{op_id} = exp2(r{x});").unwrap();
                         }
-                        UOp::Exp => unreachable!(
+                        UOp::Ln => unreachable!(
                             "internal bug: UOp::Ln should be converted to Log2 + mul by ln2(e) by IR pass before reaching WGPU backend"
                         ),
                         UOp::Log2 => writeln!(source, "{indent}let r{op_id} = log2(r{x});").unwrap(),
