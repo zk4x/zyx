@@ -137,7 +137,6 @@ impl EGraph {
                 self.nodes.push(ENode::Fused(Box::new(fused_op)));
             }
         }
-        todo!()
     }
 
     pub fn extract(self) -> CompiledGraph {
