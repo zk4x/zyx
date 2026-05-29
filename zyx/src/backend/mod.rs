@@ -283,6 +283,7 @@ pub enum Event {
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(DeJson, Debug)]
+#[nserde(default)]
 pub struct AutotuneConfig {
     #[allow(unused)]
     /// Should the autotuned kernel be stored to disk?
@@ -321,6 +322,7 @@ impl AutotuneConfig {
 /// Device configuration
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 #[derive(DeJson, Debug, Default)]
+#[nserde(default)]
 pub struct Config {
     /// Kernel autotune configuration
     pub autotune: AutotuneConfig,

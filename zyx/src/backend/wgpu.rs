@@ -19,6 +19,7 @@ use wgpu::{
 };
 
 #[derive(DeJson, Debug)]
+#[nserde(default)]
 pub struct WGPUConfig {
     enabled: bool,
 }

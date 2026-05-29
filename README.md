@@ -23,6 +23,7 @@
 - [Documentation](#documentation)
 - [Status & License](#status--license)
 - [Contributing](#contributing)
+- [Configuration](#configuration)
 - [Debug Options](#debug-options)
 - [Quick Reference](#quick-reference)
 
@@ -256,7 +257,7 @@ Tensor operations build a lazy computation graph. During realization, the graph 
 - [x] **WebGPU (WGPU)** - Modern web and native GPU support
 - [ ] **ROCm** - AMD GPU support (planned)
 
-Please see [DEVICE_CONFIG.md](zyx/DEVICE_CONFIG.md) for detailed information on hardware configuration.
+Please see [CONFIG.md](zyx/CONFIG.md) for detailed information on hardware configuration.
 
 ## Documentation
 
@@ -287,6 +288,10 @@ Contributions are welcome! Please read the [CONTRIBUTING.md](CONTRIBUTING.md), [
 
 - [Examples](zyx-examples/) - MNIST, RNN implementations
 - [Issues](https://github.com/zk4x/zyx/issues) - Bug reports and feature requests
+
+## Configuration
+
+See [CONFIG.md](zyx/CONFIG.md) for details on hardware device selection, autotune settings, and backend configuration.
 
 ## Debug Options
 

@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 #[derive(Debug, Default, DeJson)]
 #[allow(clippy::question_mark)]
+#[nserde(default)]
 pub struct HIPConfig {
     device_ids: Option<Vec<i32>>,
 }

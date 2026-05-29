@@ -23,6 +23,7 @@ use nanoserde::DeJson;
 use std::{ffi::CString, fmt::Write, hash::BuildHasherDefault, path::PathBuf, process::Command};
 
 #[derive(Debug, Default, DeJson)]
+#[nserde(default)]
 pub struct CConfig {
     /// Enable this backend
     pub enabled: bool,

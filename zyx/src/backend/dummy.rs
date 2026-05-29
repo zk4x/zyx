@@ -12,6 +12,7 @@ use nanoserde::DeJson;
 use std::ptr;
 
 #[derive(Default, Debug, DeJson)]
+#[nserde(default)]
 pub struct DummyConfig {
     enabled: bool,
 }

@@ -61,6 +61,7 @@ use super::{Device, DeviceId, DeviceInfo, DeviceProgramId, Event, MemoryPool, Po
 /// CUDA configuration
 #[allow(clippy::question_mark)]
 #[derive(Debug, Default, DeJson)]
+#[nserde(default)]
 pub struct CUDAConfig {
     /// If set to None, then it will automatically use all CUDA devices,
     /// otherwise it uses only selected devices

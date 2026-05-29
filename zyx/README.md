@@ -49,8 +49,7 @@ let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
 - [x] `OpenCL`
 - [x] `WGPU (WGSL)`
 
-Please look at file [DEVICE_CONFIG.md](https://github.com/zk4x/zyx/blob/main/zyx/DEVICE_CONFIG.md)
-for detailed info how to tell Zyx which hardware it should utilize.
+Please look at file [CONFIG.md](CONFIG.md) for detailed info how to tell Zyx which hardware it should utilize, configure autotune, and set up backends.
 
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md)

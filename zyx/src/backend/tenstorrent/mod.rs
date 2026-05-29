@@ -465,6 +465,7 @@ fn dram_size_for_subsystem_id(subsystem_id: u16) -> Result<Dim, BackendError> {
 // ---------------------------------------------------------------------------
 
 #[derive(Default, Debug, DeJson)]
+#[nserde(default)]
 pub struct TTConfig {
     /// If set to None, then it will automatically use all Tenstorrent devices,
     /// otherwise it uses only selected devices
