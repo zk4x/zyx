@@ -317,7 +317,7 @@ impl Kernel {
 
             op_id = self.next_op(op_id);
         }
-        let _ = (n_instructions, peak_reg_bytes);
+        let _ = peak_reg_bytes;
 
         let global_ws = gws.iter().product::<u64>();
         let n_threads = lws.iter().product::<u64>();
@@ -330,8 +330,10 @@ impl Kernel {
         let total_stores = n_threads * global_ws * global_stores_per_thread;
         let total_local = n_threads * global_ws * (local_loads_per_thread + local_stores_per_thread);
         let total_barriers = n_threads * global_ws * barriers_per_thread;
+        let total_instr = n_threads * global_ws * n_instructions;
 
         let memory_score = (total_loads * 10 + total_stores * 10 + total_local + total_barriers * 20) as f64;
+        let alu_score = total_instr as f64;
 
         // Penalize underutilized workgroups: single-thread workgroups can't fill a warp/wavefront,
         // causing severe inefficiency (~98% idle compute) and risking GPU watchdog timeouts.
@@ -339,7 +341,7 @@ impl Kernel {
         let warp_size = u64::from(dev_info.warp_size).max(1);
         let occupancy_penalty = (warp_size as f64 / n_threads.max(1) as f64).clamp(1.0, warp_size as f64);
 
-        let cost = (memory_score * occupancy_penalty) as u64;
+        let cost = ((memory_score + alu_score * 0.1) * occupancy_penalty) as u64;
 
         Cost { cost }
     }
