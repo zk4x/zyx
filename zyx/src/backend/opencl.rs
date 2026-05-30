@@ -45,10 +45,7 @@ fn write_all(fd: i32, data: &[u8]) -> Result<(), BackendError> {
     while offset < data.len() {
         let n = unsafe { write(fd, data.as_ptr().add(offset), data.len() - offset) };
         if n <= 0 {
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: "pipe write failed".into(),
-            });
+            return Err(BackendError { status: ErrorStatus::Initialization, context: "pipe write failed".into() });
         }
         offset += n as usize;
     }
@@ -244,36 +241,67 @@ fn read_command(rx_fd: i32) -> Option<Command> {
         return None;
     }
     let tag = tag_buf[0];
-    macro_rules! r32 { () => { read_u32(rx_fd).ok()? }; }
-    macro_rules! r64 { () => { read_u64(rx_fd).ok()? }; }
-    macro_rules! rv64 { () => {{
-        let len = r32!() as usize;
-        let mut v = Vec::with_capacity(len);
-        for _ in 0..len { v.push(r64!()); }
-        v
-    }}; }
-    macro_rules! rv32 { () => {{
-        let len = r32!() as usize;
-        let mut v = Vec::with_capacity(len);
-        for _ in 0..len { v.push(r32!()); }
-        v
-    }}; }
-    macro_rules! rstr { () => {{
-        let len = r32!() as usize;
-        let mut buf = vec![0u8; len];
-        read_exact(rx_fd, &mut buf).ok()?;
-        String::from_utf8(buf).ok()?
-    }}; }
-    macro_rules! rvu64 { () => {{
-        let len = r32!() as usize;
-        let mut v = Vec::with_capacity(len);
-        for _ in 0..len { v.push(r64!()); }
-        v
-    }}; }
+    macro_rules! r32 {
+        () => {
+            read_u32(rx_fd).ok()?
+        };
+    }
+    macro_rules! r64 {
+        () => {
+            read_u64(rx_fd).ok()?
+        };
+    }
+    macro_rules! rv64 {
+        () => {{
+            let len = r32!() as usize;
+            let mut v = Vec::with_capacity(len);
+            for _ in 0..len {
+                v.push(r64!());
+            }
+            v
+        }};
+    }
+    macro_rules! rv32 {
+        () => {{
+            let len = r32!() as usize;
+            let mut v = Vec::with_capacity(len);
+            for _ in 0..len {
+                v.push(r32!());
+            }
+            v
+        }};
+    }
+    macro_rules! rstr {
+        () => {{
+            let len = r32!() as usize;
+            let mut buf = vec![0u8; len];
+            read_exact(rx_fd, &mut buf).ok()?;
+            String::from_utf8(buf).ok()?
+        }};
+    }
+    macro_rules! rvu64 {
+        () => {{
+            let len = r32!() as usize;
+            let mut v = Vec::with_capacity(len);
+            for _ in 0..len {
+                v.push(r64!());
+            }
+            v
+        }};
+    }
     Some(match tag {
         0 => Command::Allocate { bytes: r64!() },
         1 => Command::Deallocate { buffer_id: r32!(), events: rv64!() },
-        2 => Command::HostToPool { src: { let l = r32!() as usize; let mut b = vec![0u8; l]; read_exact(rx_fd, &mut b).ok()?; b }, dst: r32!(), event_wait_list: rv64!() },
+        2 => Command::HostToPool {
+            src: {
+                let l = r32!() as usize;
+                let mut b = vec![0u8; l];
+                read_exact(rx_fd, &mut b).ok()?;
+                b
+            },
+            dst: r32!(),
+            event_wait_list: rv64!(),
+        },
         3 => Command::PoolToHost { src: r32!(), len: r64!() as usize, event_wait_list: rv64!() },
         4 => Command::SyncEvents { events: rv64!() },
         5 => Command::ReleaseEvents { events: rv64!() },
@@ -373,17 +401,14 @@ pub(super) fn initialize_device(
         Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
         *mut c_void,
     ) -> OpenCLStatus = *unsafe { opencl.get(b"clBuildProgram\0") }?;
-    let clReleaseProgram: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clReleaseProgram\0") }?;
-    let _clReleaseContext: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clReleaseContext\0") }?;
+    let clReleaseProgram: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus = *unsafe { opencl.get(b"clReleaseProgram\0") }?;
+    let _clReleaseContext: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus = *unsafe { opencl.get(b"clReleaseContext\0") }?;
     //let clReleaseEvent = *unsafe { opencl.get(b"clReleaseContext\0") }?;
     let clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus =
         *unsafe { opencl.get(b"clSetKernelArg\0") }?;
     let clCreateKernel: unsafe extern "C" fn(*mut c_void, *const i8, *mut OpenCLStatus) -> *mut c_void =
         *unsafe { opencl.get(b"clCreateKernel\0") }?;
-    let clReleaseMemObject: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clReleaseMemObject\0") }?;
+    let clReleaseMemObject: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus = *unsafe { opencl.get(b"clReleaseMemObject\0") }?;
     let clGetDeviceInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus =
         *unsafe { opencl.get(b"clGetDeviceInfo\0") }?;
     let clCreateProgramWithSource: unsafe extern "C" fn(
@@ -417,8 +442,7 @@ pub(super) fn initialize_device(
     ) -> OpenCLStatus = *unsafe { opencl.get(b"clEnqueueWriteBuffer\0") }?;
     let clCreateBuffer: unsafe extern "C" fn(*mut c_void, cl_bitfield, usize, *mut c_void, *mut OpenCLStatus) -> *mut c_void =
         *unsafe { opencl.get(b"clCreateBuffer\0") }?;
-    let clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus =
-        *unsafe { opencl.get(b"clFinish\0") }?;
+    let clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus = *unsafe { opencl.get(b"clFinish\0") }?;
     let clGetPlatformInfo: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus =
         *unsafe { opencl.get(b"clGetPlatformInfo\0") }?;
 
@@ -522,18 +546,12 @@ pub(super) fn initialize_device(
         let mut cmd_pipe = [-1i32; 2];
         let mut reply_pipe = [-1i32; 2];
         if unsafe { pipe(cmd_pipe.as_mut_ptr()) } != 0 || unsafe { pipe(reply_pipe.as_mut_ptr()) } != 0 {
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: "pipe() failed".into(),
-            });
+            return Err(BackendError { status: ErrorStatus::Initialization, context: "pipe() failed".into() });
         }
 
         let pid = unsafe { fork() };
         if pid < 0 {
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: "fork() failed".into(),
-            });
+            return Err(BackendError { status: ErrorStatus::Initialization, context: "fork() failed".into() });
         }
 
         if pid == 0 {
@@ -570,7 +588,8 @@ pub(super) fn initialize_device(
                 }
                 queues.push(dev_queues);
             }
-            let data_queue = queues.first()
+            let data_queue = queues
+                .first()
                 .and_then(|q| q.first())
                 .map(|q| q.queue)
                 .expect("no OpenCL command queue created");
@@ -612,8 +631,9 @@ pub(super) fn initialize_device(
                             .filter(|event| !event.is_null())
                             .collect();
                         if !event_wait_list.is_empty() {
-                            let _ = unsafe { clWaitForEvents(event_wait_list.len().try_into().unwrap(), event_wait_list.as_ptr()) }
-                                .check(ErrorStatus::Deinitialization);
+                            let _ =
+                                unsafe { clWaitForEvents(event_wait_list.len().try_into().unwrap(), event_wait_list.as_ptr()) }
+                                    .check(ErrorStatus::Deinitialization);
                         }
                         let _ = unsafe { clReleaseMemObject(buffer.buffer) }.check(ErrorStatus::Deinitialization);
                         free_bytes += buffer.bytes;
@@ -709,7 +729,9 @@ pub(super) fn initialize_device(
                             Ok(())
                         };
                         match result {
-                            Ok(()) => { let _ = write_u8(reply_fd, 0); }
+                            Ok(()) => {
+                                let _ = write_u8(reply_fd, 0);
+                            }
                             Err(e) => {
                                 let _ = write_u8(reply_fd, 1);
                                 let _ = write_error(reply_fd, &e);
@@ -746,7 +768,8 @@ pub(super) fn initialize_device(
                         }
                         .check(ErrorStatus::KernelCompilation)
                         {
-                            let build_log = get_program_build_data(program, device_ids[0], clGetProgramBuildInfo, CL_PROGRAM_BUILD_LOG);
+                            let build_log =
+                                get_program_build_data(program, device_ids[0], clGetProgramBuildInfo, CL_PROGRAM_BUILD_LOG);
                             match build_log {
                                 Ok(build_log) => {
                                     panic!("{e:?} {}", String::from_utf8_lossy(&build_log));
@@ -778,10 +801,9 @@ pub(super) fn initialize_device(
                             .filter(|event| !event.is_null())
                             .collect();
                         if !events.is_empty() {
-                            let _ = unsafe {
-                                clWaitForEvents(events.len().try_into().expect("So many events..."), events.as_ptr())
-                            }
-                            .check(ErrorStatus::KernelSync);
+                            let _ =
+                                unsafe { clWaitForEvents(events.len().try_into().expect("So many events..."), events.as_ptr()) }
+                                    .check(ErrorStatus::KernelSync);
                         }
 
                         let queue_id = next_queue(&mut queues[device_idx], clFinish);
@@ -790,10 +812,10 @@ pub(super) fn initialize_device(
                         for &arg in &args {
                             let arg = &buffers[PoolBufferId(arg)];
                             let ptr: *const _ = &raw const arg.buffer;
-                            if let Err(e) = unsafe {
-                                clSetKernelArg(program.kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast())
-                            }
-                            .check(ErrorStatus::IncorrectKernelArg) {
+                            if let Err(e) =
+                                unsafe { clSetKernelArg(program.kernel, i, core::mem::size_of::<*mut c_void>(), ptr.cast()) }
+                                    .check(ErrorStatus::IncorrectKernelArg)
+                            {
                                 let _ = write_u8(reply_fd, 1);
                                 let _ = write_error(reply_fd, &e);
                                 continue;
@@ -819,7 +841,8 @@ pub(super) fn initialize_device(
                                 &raw mut event,
                             )
                         }
-                        .check(ErrorStatus::KernelLaunch) {
+                        .check(ErrorStatus::KernelLaunch)
+                        {
                             let _ = write_u8(reply_fd, 1);
                             let _ = write_error(reply_fd, &e);
                             continue;
@@ -1539,7 +1562,9 @@ fn query_device_info(
         .expect("What a vector width...")
             * 4,
         local_mem_size: Dim::try_from(usize::from_ne_bytes(
-            get_device_data(device, clGetDeviceInfo, CL_DEVICE_LOCAL_MEM_SIZE)?.try_into().unwrap(),
+            get_device_data(device, clGetDeviceInfo, CL_DEVICE_LOCAL_MEM_SIZE)?
+                .try_into()
+                .unwrap(),
         ))
         .expect("What a memory size..."),
         max_register_bytes: 256,
@@ -1548,11 +1573,7 @@ fn query_device_info(
         warp_size: {
             if let Ok(device_type_data) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_TYPE) {
                 let device_type = u64::from_ne_bytes(device_type_data.try_into().unwrap_or_default());
-                if device_type & CL_DEVICE_TYPE_GPU != 0 {
-                    64
-                } else {
-                    1
-                }
+                if device_type & CL_DEVICE_TYPE_GPU != 0 { 64 } else { 1 }
             } else {
                 1
             }
@@ -1610,7 +1631,14 @@ fn get_device_data(
 fn get_program_build_data(
     program: *mut c_void,
     device: *mut c_void,
-    clGetProgramBuildInfo: unsafe extern "C" fn(*mut c_void, *mut c_void, cl_uint, usize, *mut c_void, *mut usize) -> OpenCLStatus,
+    clGetProgramBuildInfo: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        cl_uint,
+        usize,
+        *mut c_void,
+        *mut usize,
+    ) -> OpenCLStatus,
     param_name: cl_uint,
 ) -> Result<Vec<u8>, OpenCLStatus> {
     let size = {
@@ -1639,10 +1667,7 @@ fn get_program_build_data(
     }
 }
 
-fn next_queue(
-    queues: &mut [OpenCLQueue],
-    clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus,
-) -> usize {
+fn next_queue(queues: &mut [OpenCLQueue], clFinish: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus) -> usize {
     let mut id = queues.iter().enumerate().min_by_key(|(_, q)| q.load).unwrap().0;
     if queues[id].load > 20 {
         if unsafe { clFinish(queues[id].queue) }.check(ErrorStatus::KernelSync).is_ok() {
@@ -1715,6 +1740,7 @@ const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;
 const CL_MEM_READ_WRITE: cl_bitfield = 1;
 //const CL_MEM_READ_ONLY: cl_bitfield = 4;
 const CL_NON_BLOCKING: cl_uint = 0;
+const CL_BLOCKING: cl_uint = 1;
 const CL_PROGRAM_BUILD_LOG: cl_uint = 0x1183; // 4483
 
 #[allow(clippy::upper_case_acronyms)]
@@ -1799,5 +1825,3 @@ impl From<cl_int> for OpenCLStatus {
         }
     }
 }
-
-
