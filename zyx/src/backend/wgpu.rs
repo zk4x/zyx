@@ -14,8 +14,8 @@ use nanoserde::DeJson;
 use pollster::FutureExt;
 use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc, time::Duration};
 use wgpu::{
-    BufferDescriptor, BufferUsages, PowerPreference, ShaderModule, ShaderModuleDescriptor, ShaderSource, SubmissionIndex,
-    wgt::PollType,
+    BindGroupLayout, BufferDescriptor, BufferUsages, ComputePipeline, PowerPreference, ShaderModule, ShaderModuleDescriptor,
+    ShaderSource, SubmissionIndex, wgt::PollType,
 };
 
 #[derive(DeJson, Debug)]
@@ -55,12 +55,14 @@ pub struct WGPUEvent {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(super) struct WGPUProgram {
     name: String,
     gws: Vec<u64>,
-    //local_work_size: [usize; 3],
     arg_ro_flags: Vec<bool>,
     shader: ShaderModule,
+    pipeline: ComputePipeline,
+    bind_group_layout: BindGroupLayout,
 }
 
 pub(super) fn initialize_device(
@@ -616,13 +618,44 @@ impl WGPUDevice {
             label: None,
             source: ShaderSource::Wgsl(std::borrow::Cow::Owned(source)),
         });
-        let id = self.programs.push(WGPUProgram {
-            name,
-            gws,
-            //local_work_size,
-            arg_ro_flags,
-            shader: shader_module,
+
+        let bg_layout_entries: Vec<wgpu::BindGroupLayoutEntry> = arg_ro_flags
+            .iter()
+            .enumerate()
+            .map(|(bind_id, ro)| wgpu::BindGroupLayoutEntry {
+                binding: u32::try_from(bind_id).unwrap(),
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                    ty: wgpu::BufferBindingType::Storage { read_only: *ro },
+                },
+                count: None,
+            })
+            .collect();
+
+        let bind_group_layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &bg_layout_entries });
+
+        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
+
+        let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            module: &shader_module,
+            entry_point: Some(&name),
+            layout: Some(&pipeline_layout),
+            cache: None,
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        });
+
+        let id = self
+            .programs
+            .push(WGPUProgram { name, gws, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout });
 
         Ok(id)
     }
@@ -641,53 +674,19 @@ impl WGPUDevice {
     ) -> Result<Event, BackendError> {
         drop(event_wait_list);
         let program = &self.programs[program_id];
-        let mut set_layout: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
-        let mut binds: Vec<wgpu::BindGroupEntry> = Vec::new();
-        for (bind_id, &arg) in args.iter().enumerate() {
-            let bind_entry = wgpu::BindGroupLayoutEntry {
-                binding: u32::try_from(bind_id).unwrap(),
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                    ty: wgpu::BufferBindingType::Storage { read_only: program.arg_ro_flags[bind_id] },
-                },
-                count: None,
-            };
-            let buffer = &memory_pool.buffers[arg];
-            let bind = wgpu::BindGroupEntry { binding: u32::try_from(bind_id).unwrap(), resource: buffer.as_entire_binding() };
-            set_layout.push(bind_entry);
-            binds.push(bind);
-        }
-        // Program
-        // shader
-        // entry point - function name
-        // descriptors
-        let mut layouts = Vec::new();
-        let mut sets = Vec::new();
-        // Unwraping of descriptors from program
-        let set_layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &set_layout });
-        let set = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &set_layout, entries: &binds });
-        layouts.push(set_layout);
-        sets.push(set);
-        // Compute pipeline bindings
-        let group_layouts = layouts.iter().map(Some).collect::<Vec<_>>();
-        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let binds: Vec<wgpu::BindGroupEntry> = args
+            .iter()
+            .enumerate()
+            .map(|(bind_id, &arg)| {
+                let buffer = &memory_pool.buffers[arg];
+                wgpu::BindGroupEntry { binding: u32::try_from(bind_id).unwrap(), resource: buffer.as_entire_binding() }
+            })
+            .collect();
+
+        let set = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
-            bind_group_layouts: &group_layouts,
-            immediate_size: 0,
-        });
-        let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: None,
-            module: &program.shader,
-            entry_point: Some(&program.name),
-            layout: Some(&pipeline_layout),
-            cache: None,
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            layout: &program.bind_group_layout,
+            entries: &binds,
         });
         let mut encoder = self
             .device
@@ -695,10 +694,8 @@ impl WGPUDevice {
         {
             let mut cpass = encoder
                 .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("Kernel::enqueue"), timestamp_writes: None });
-            cpass.set_pipeline(&pipeline);
-            for (id_set, set) in sets.iter().enumerate() {
-                cpass.set_bind_group(u32::try_from(id_set).unwrap(), set, &[]);
-            }
+            cpass.set_pipeline(&program.pipeline);
+            cpass.set_bind_group(0, &set, &[]);
             cpass.insert_debug_marker(&program.name);
             cpass.dispatch_workgroups(
                 u32::try_from(program.gws.first().copied().unwrap_or(1)).unwrap(),
