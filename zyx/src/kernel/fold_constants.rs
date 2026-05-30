@@ -415,6 +415,14 @@ impl Kernel {
                         true
                     };
 
+                    // Remap operands BEFORE dedup check so the lookup uses
+                    // post-remap OpIds, matching what's already in the map.
+                    for param in op.parameters_mut() {
+                        if let Some(&new_id) = remaps.get(param) {
+                            *param = new_id;
+                        }
+                    }
+
                     if can_cse {
                         for loop_level in &stack {
                             if let Some(&old_op_id) = loop_level.get(op) {
@@ -426,11 +434,6 @@ impl Kernel {
                     }
 
                     if !remove_op {
-                        for param in op.parameters_mut() {
-                            if let Some(&new_id) = remaps.get(param) {
-                                *param = new_id;
-                            }
-                        }
                         stack.last_mut().unwrap().insert(op.clone(), op_id);
                     }
                 }

@@ -85,18 +85,16 @@ impl Optimization {
                     let n_options = facs.len() + 1;
                     let factor_idx = remaining_global % n_options;
                     remaining_global /= n_options;
-                    if factor_idx < facs.len() {
-                        parts.push(format!("upcast axis {} by {}", op_id, facs[factor_idx]));
+                    if factor_idx > 0 {
+                        parts.push(format!("upcast axis {} by {}", op_id, facs[factor_idx - 1]));
                     }
                 }
                 let mut remaining_reduce = config / n_global_options;
                 for (op_id, facs) in reduce_splits.iter() {
-                    let n_options = facs.len() + 1;
+                    let n_options = facs.len();
                     let factor_idx = remaining_reduce % n_options;
                     remaining_reduce /= n_options;
-                    if factor_idx < facs.len() {
-                        parts.push(format!("unroll {} by {}", op_id, facs[factor_idx]));
-                    }
+                    parts.push(format!("unroll {} by {}", op_id, facs[factor_idx]));
                 }
                 if parts.is_empty() {
                     println!("register tiling (no-op)");
@@ -303,7 +301,8 @@ impl Kernel {
                     config_id += 1;
                     continue;
                 }
-                let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost: new_kernel.get_cost(dev_info_ref) };
+                let cost = new_kernel.get_cost(dev_info_ref);
+                let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost };
                 visited.insert(hash);
                 items.push(new_seq);
                 config_id += 1;
@@ -380,30 +379,11 @@ impl Kernel {
         let cost_limit = min_cost.saturating_mul(100);
         items.retain(|s| s.cost.cost <= cost_limit);
 
-        // Ensure diversity: force-include the cheapest seed from each opt type
-        // so we don't miss fast outliers like single-thread split_loop
-        let mut launch_indices: Vec<usize> = Vec::new();
-        let mut selected: Set<usize> = Set::default();
-        for opt_type in 0..AVAILABLE_OPTIMIZATIONS.len() {
-            if let Some(idx) = items.iter().position(|s| !s.opts.is_empty() && s.opts[0].0 == opt_type) {
-                if selected.insert(idx) {
-                    launch_indices.push(idx);
-                }
-            }
-        }
-        // Fill remaining slots from cheapest overall
-        for (idx, _) in items.iter().enumerate() {
-            if launch_indices.len() >= n_launches {
-                break;
-            }
-            if selected.insert(idx) {
-                launch_indices.push(idx);
-            }
-        }
-        launch_indices.sort_unstable();
+        // Pick the cheapest n_launches kernels
+        let n = n_launches.min(items.len());
+        items.truncate(n);
 
-        for &idx in launch_indices.iter() {
-            let opt_seq = &items[idx];
+        for opt_seq in items.iter() {
             let mut kernel = kernel.clone();
 
             println!("launch (cost: {}, n_opts: {}):", opt_seq.cost.cost, opt_seq.opts.len());

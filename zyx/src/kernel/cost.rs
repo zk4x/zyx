@@ -111,6 +111,7 @@ impl Kernel {
         let mut n_mads = 0u64;
         let mut n_scoped_loads = [0u64; 3];
         let mut n_scoped_stores = [0u64; 3];
+        let mut reuse_credit = [0u64; 3];
         let mut barriers_per_thread = 0u64;
         let mut gws = [1u64; 3];
         let mut lws = [1u64; 3];
@@ -268,10 +269,23 @@ impl Kernel {
                 &Op::Load { src, vlen, .. } => {
                     n_instructions += loop_mult;
                     let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
+                    let total_elements = loop_mult * u64::from(vlen);
+                    let rc = rcs.get(&op_id).copied().unwrap_or(1);
+                    let extra_uses = rc.saturating_sub(1) as u64;
+                    let credit = total_elements * extra_uses;
                     match scope {
-                        Scope::Global => n_scoped_loads[0] += loop_mult * u64::from(vlen),
-                        Scope::Local => n_scoped_loads[1] += loop_mult * u64::from(vlen),
-                        Scope::Register => n_scoped_loads[2] += loop_mult * u64::from(vlen),
+                        Scope::Global => {
+                            n_scoped_loads[0] += total_elements;
+                            reuse_credit[0] += credit;
+                        }
+                        Scope::Local => {
+                            n_scoped_loads[1] += total_elements;
+                            reuse_credit[1] += credit;
+                        }
+                        Scope::Register => {
+                            n_scoped_loads[2] += total_elements;
+                            reuse_credit[2] += credit;
+                        }
                     }
                 }
                 &Op::Store { dst, vlen, .. } => {
@@ -324,36 +338,39 @@ impl Kernel {
         }
 
         let n_threads = lws.iter().product::<u64>();
-        let global_loads_per_thread = n_scoped_loads[0];
+        let global_load_ops_per_thread = n_scoped_loads[0].saturating_sub(reuse_credit[0]);
         let local_loads_per_thread = n_scoped_loads[1];
         let global_stores_per_thread = n_scoped_stores[0];
         let local_stores_per_thread = n_scoped_stores[1];
 
-        // Per-thread cost (not total across all threads).
-        // global_ws × per_thread = constant for all tile sizes (same total work),
-        // so multiplying by global_ws makes the cost model blind to tile size.
-        // Instead we measure per-thread latency: how much work each thread does.
-        // Larger tiles do more work per thread but have fewer total threads,
-        // resulting in better data reuse and lower per-thread memory traffic.
-        let memory_score = (global_loads_per_thread * 10 + global_stores_per_thread * 10
-            + n_threads * (local_loads_per_thread + local_stores_per_thread)
-            + n_threads * barriers_per_thread * 20) as f64;
-        let alu_score = n_instructions as f64;
+        let global_ws = gws.iter().product::<u64>();
+        // Subtract reuse credit: values loaded once and used by multiple
+        // consumers (register reuse) should not be charged multiple times.
+        let per_thread_loads = global_ws * global_load_ops_per_thread;
+        let per_thread_stores = global_ws * global_stores_per_thread;
+        let per_thread_instr = global_ws * n_instructions;
+        let workgroup_local =
+            n_threads * global_ws * (local_loads_per_thread + local_stores_per_thread);
+        let workgroup_barriers = n_threads * global_ws * barriers_per_thread;
 
-        // Reward arithmetic intensity: more FLOPs per byte is better.
-        // peak_reg_bytes penalizes register pressure (spilling to local mem is costly).
-        let bytes_per_thread =
-            (global_loads_per_thread + global_stores_per_thread) * 4; // f32 = 4 bytes
-        let flops_per_thread = n_mads * 2; // each MAD = 2 FLOPs
-        let arith_intensity = if bytes_per_thread > 0 {
-            flops_per_thread as f64 / bytes_per_thread as f64
+        let memory_score = (per_thread_loads * 10 + per_thread_stores * 10 + workgroup_local
+            + workgroup_barriers * 20) as f64;
+        let alu_score = per_thread_instr as f64;
+
+        // Use actual loaded elements (with vlen) for bandwidth / arith intensity.
+        let bytes_total = (global_ws * n_scoped_loads[0] + per_thread_stores) * 4;
+        let flops_total = n_mads * 2 * global_ws;
+        let arith_intensity = if bytes_total > 0 {
+            flops_total as f64 / bytes_total as f64
         } else {
             0.0
         };
+        // Penalize register pressure relative to device limit.
         let reg_pressure = peak_reg_bytes as f64;
+        let max_regs = dev_info.max_register_bytes as f64;
 
         let cost = (memory_score + alu_score * 0.1 - arith_intensity * 5.0
-            + reg_pressure * 10.0) as u64;
+            + if reg_pressure > max_regs { 1_000_000.0 } else { 0.0 }) as u64;
 
         Cost { cost }
     }
