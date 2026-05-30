@@ -607,9 +607,10 @@ static inline unsigned short f32tobf16(float v) {
 "
             .to_string()
         };
-        // Add #include for math functions
+        // Add #include for math functions and optional OpenMP header
+        let omp_include = if gws[0] > 1 { "#include <omp.h>\n" } else { "" };
         let full_source =
-            format!("#include <math.h>\n#include <stdint.h>\n#include <string.h>\n#include <omp.h>\n{f16_helpers}{source}");
+            format!("#include <math.h>\n#include <stdint.h>\n#include <string.h>\n{omp_include}{f16_helpers}{source}");
         std::fs::write(&c_path, &full_source).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to write C source: {e}").into(),
@@ -642,15 +643,13 @@ static inline unsigned short f32tobf16(float v) {
 
         if !openmp_success {
             // Fall back to sequential: strip OpenMP pragma and include, recompile without -fopenmp
-            if has_openmp {
-                let seq_source = full_source
-                    .replace("#pragma omp parallel for\n", "")
-                    .replace("#include <omp.h>\n", "");
-                std::fs::write(&c_path, &seq_source).map_err(|e| BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("Failed to write C source: {e}").into(),
-                })?;
-            }
+            let seq_source = full_source
+                .replace("#pragma omp parallel for\n", "")
+                .replace("#include <omp.h>\n", "");
+            std::fs::write(&c_path, &seq_source).map_err(|e| BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("Failed to write C source: {e}").into(),
+            })?;
             let output = Command::new(compiler)
                 .args(["-shared", "-O3", "-ffast-math", "-fPIC", "-o"])
                 .arg(&so_path)
