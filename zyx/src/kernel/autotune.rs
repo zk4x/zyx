@@ -412,8 +412,6 @@ impl Kernel {
                 match kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes) {
                     Ok((program_id, time)) => {
                         any_success = true;
-                        let perf_line = crate::kernel_cache::get_perf(flop, read_bytes, write_bytes, time);
-                        println!("  -> {time} ns  {perf_line}");
                         if time < best_time {
                             best_program = program_id;
                             best_time = time;
