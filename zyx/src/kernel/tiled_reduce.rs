@@ -26,7 +26,11 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_tiled_reduce");
         // Let's not tile reduce kernel with barriers for now
         // Don't apply tiled reduce if there's already a barrier or local index
-        if self.ops.values().any(|node| matches!(node.op, Op::Barrier { .. } | Op::Index { scope: Scope::Local, .. })) {
+        if self
+            .ops
+            .values()
+            .any(|node| matches!(node.op, Op::Barrier { .. } | Op::Index { scope: Scope::Local, .. }))
+        {
             return (Optimization::TiledReduce { factors: Vec::new() }, 0);
         }
         // Only apply tiled reduce if there's exactly one loop in the kernel

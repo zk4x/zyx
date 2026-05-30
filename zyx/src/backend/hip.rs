@@ -198,9 +198,9 @@ pub(super) fn initialize_device(
     }
     if debug_dev {
         println!(
-                "HIP: driver version {}.{} on devices:",
-                driver_version / 1000,
-                (driver_version - (driver_version / 1000 * 1000)) / 10
+            "HIP: driver version {}.{} on devices:",
+            driver_version / 1000,
+            (driver_version - (driver_version / 1000 * 1000)) / 10
         );
     }
 

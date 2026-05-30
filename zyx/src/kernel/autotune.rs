@@ -371,6 +371,15 @@ impl Kernel {
         // Sort items by cost and benchmark the cheapest ones
         items.sort_by_key(|s| s.cost);
 
+        // Skip candidates whose cost far exceeds the cheapest variant.
+        // This is necessary because the AMD GPU kernel driver uses force_sig(SIGABRT)
+        // (which bypasses user-space signal handlers) to kill processes that trigger
+        // the GPU watchdog on long-running compute shaders. A kernel that is estimated
+        // at >100x the cheapest variant will never be optimal, so skip it safely.
+        let min_cost = items.first().map_or(0, |s| s.cost.cost);
+        let cost_limit = min_cost.saturating_mul(100);
+        items.retain(|s| s.cost.cost <= cost_limit);
+
         // Ensure diversity: force-include the cheapest seed from each opt type
         // so we don't miss fast outliers like single-thread split_loop
         let mut launch_indices: Vec<usize> = Vec::new();
@@ -391,7 +400,7 @@ impl Kernel {
                 launch_indices.push(idx);
             }
         }
-        launch_indices.sort();
+        launch_indices.sort_unstable();
 
         for &idx in launch_indices.iter() {
             let opt_seq = &items[idx];

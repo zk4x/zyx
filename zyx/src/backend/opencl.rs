@@ -324,10 +324,7 @@ pub(super) fn initialize_device(
                     Vec::default()
                 }
             };
-            println!(
-                "OpenCL: {} on devices:",
-                String::from_utf8(platform_name).unwrap()
-            );
+            println!("OpenCL: {} on devices:", String::from_utf8(platform_name).unwrap());
         }
         if device_ids.is_empty() {
             continue;

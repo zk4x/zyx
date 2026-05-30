@@ -609,7 +609,11 @@ pub(super) fn initialize_device(
     if !runtime_path.exists() {
         return Err(BackendError {
             status: ErrorStatus::Initialization,
-            context: format!("runtime not found at {}. Rebuild with TT_METAL_ROOT set.", runtime_path.display()).into(),
+            context: format!(
+                "runtime not found at {}. Rebuild with TT_METAL_ROOT set.",
+                runtime_path.display()
+            )
+            .into(),
         });
     }
 

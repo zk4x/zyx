@@ -316,9 +316,9 @@ pub(super) fn initialize_device(
         .collect();
     if debug_dev && !device_ids.is_empty() {
         println!(
-                "CUDA: driver version {}.{} on devices:",
-                driver_version / 1000,
-                (driver_version - (driver_version / 1000 * 1000)) / 10
+            "CUDA: driver version {}.{} on devices:",
+            driver_version / 1000,
+            (driver_version - (driver_version / 1000 * 1000)) / 10
         );
     }
 
@@ -1469,7 +1469,9 @@ impl CUDADevice {
                     match uop {
                         UOp::BitNot => _ = writeln!(source, "{indent}r{reg} = ~{x};"),
                         UOp::Neg => _ = writeln!(source, "{indent}r{reg} = -{x};"),
-                        UOp::Exp => unreachable!("internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching CUDA backend"),
+                        UOp::Exp => unreachable!(
+                            "internal bug: UOp::Exp should be converted to Exp2 + mul by ln2(e) by IR pass before reaching CUDA backend"
+                        ),
                         UOp::Exp2 => {
                             if dtype.0 == DType::F16 {
                                 _ = writeln!(source, "{indent}r{reg} = (half)exp2((float){x});");
