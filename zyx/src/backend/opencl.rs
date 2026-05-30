@@ -157,6 +157,36 @@ pub(super) fn initialize_device(
         return Ok(());
     }
 
+    // Block SIGABRT before any OpenCL library loading or API calls,
+    // so that any ICD-created threads inherit SIGABRT as blocked.
+    unsafe extern "C" {
+        fn sigemptyset(set: *mut c_void) -> i32;
+        fn sigaddset(set: *mut c_void, signum: i32) -> i32;
+        fn pthread_sigmask(how: i32, set: *const c_void, oldset: *mut c_void) -> i32;
+    }
+    const SIGABRT: i32 = 6;
+    const SIG_BLOCK: i32 = 0;
+    let mut sigset = std::mem::MaybeUninit::<[u8; 128]>::uninit();
+    unsafe { sigemptyset(sigset.as_mut_ptr().cast()) };
+    unsafe { sigaddset(sigset.as_mut_ptr().cast(), SIGABRT) };
+    let ret = unsafe { pthread_sigmask(SIG_BLOCK, sigset.as_ptr().cast(), ptr::null_mut()) };
+    if ret != 0 {
+        return Err(BackendError {
+            status: ErrorStatus::Initialization,
+            context: format!("pthread_sigmask failed: {ret}").into(),
+        });
+    }
+
+    // Install a process-wide no-op SIGABRT handler to catch the signal
+    // that the ROCm runtime sends via abort() when it detects context loss.
+    // Must be on the main thread before any OpenCL calls.
+    type SigH = unsafe extern "C" fn(i32);
+    unsafe extern "C" {
+        fn signal(sig: i32, handler: SigH) -> SigH;
+    }
+    unsafe extern "C" fn sigabrt_handler(_: i32) {}
+    let _prev = unsafe { signal(SIGABRT, sigabrt_handler as SigH) };
+
     // Search for opencl dynamic library path, kinda primitive, but fast and mostly works
     let mut opencl_paths = Vec::new();
     for lib_folder in ["/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu"] {
@@ -366,18 +396,6 @@ pub(super) fn initialize_device(
             continue;
         }
 
-        unsafe extern "C" {
-            fn sigemptyset(set: *mut c_void) -> i32;
-            fn sigaddset(set: *mut c_void, signum: i32) -> i32;
-            fn pthread_sigmask(how: i32, set: *const c_void, oldset: *mut c_void) -> i32;
-        }
-        const SIGABRT: i32 = 6;
-        const SIG_BLOCK: i32 = 0;
-        let mut sigset = std::mem::MaybeUninit::<[u8; 128]>::uninit();
-        unsafe { sigemptyset(sigset.as_mut_ptr().cast()) };
-        unsafe { sigaddset(sigset.as_mut_ptr().cast(), SIGABRT) };
-        unsafe { pthread_sigmask(SIG_BLOCK, sigset.as_ptr().cast(), ptr::null_mut()) };
-
         let (tx, rx): (Sender<Command>, Receiver<Command>) = channel();
 
         // Cast to usize for Send safety through the closure
@@ -422,6 +440,15 @@ pub(super) fn initialize_device(
             let mut buffers: Slab<PoolBufferId, OpenCLBuffer> = Slab::new();
             let mut programs: Slab<DeviceProgramId, OpenCLProgram> = Slab::new();
             let mut free_bytes: Dim = total_bytes;
+
+            // Unblock SIGABRT so it can be delivered (absorbed by the no-op handler)
+            const SIG_UNBLOCK: i32 = 1;
+            unsafe {
+                let mut mask = std::mem::MaybeUninit::<[u8; 128]>::uninit();
+                sigemptyset(mask.as_mut_ptr().cast());
+                sigaddset(mask.as_mut_ptr().cast(), SIGABRT);
+                pthread_sigmask(SIG_UNBLOCK, mask.as_ptr().cast(), ptr::null_mut());
+            }
 
             while let Ok(cmd) = rx.recv() {
                 match cmd {
