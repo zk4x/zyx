@@ -108,6 +108,7 @@ impl Kernel {
 
         // Second pass: instruction counting + register allocation simulation
         let mut n_instructions = 0;
+        let mut n_mads = 0u64;
         let mut n_scoped_loads = [0u64; 3];
         let mut n_scoped_stores = [0u64; 3];
         let mut barriers_per_thread = 0u64;
@@ -247,8 +248,12 @@ impl Kernel {
 
             // Instruction counting (original logic)
             match op {
-                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Mad { .. } => {
+                Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
                     n_instructions += loop_mult;
+                }
+                Op::Mad { .. } => {
+                    n_instructions += loop_mult;
+                    n_mads += loop_mult;
                 }
                 Op::Const(_)
                 | Op::Define { .. }
@@ -317,32 +322,38 @@ impl Kernel {
 
             op_id = self.next_op(op_id);
         }
-        let _ = peak_reg_bytes;
 
-        let global_ws = gws.iter().product::<u64>();
         let n_threads = lws.iter().product::<u64>();
         let global_loads_per_thread = n_scoped_loads[0];
         let local_loads_per_thread = n_scoped_loads[1];
         let global_stores_per_thread = n_scoped_stores[0];
         let local_stores_per_thread = n_scoped_stores[1];
 
-        // Execution time is determined by per-thread work (latency), not total work
-        // across all threads. Threads within a workgroup execute in SIMD fashion,
-        // so the cost is dominated by the slowest thread, not the sum of all threads.
-        // - Global memory: scales with global_ws (number of workgroups), not n_threads.
-        //   More threads reduce each thread's share of the work without changing total
-        //   data volume, lowering latency via parallelism.
-        // - Local/barrier: these are per-workgroup overhead, scale with n_threads.
-        let per_thread_loads = global_ws * global_loads_per_thread;
-        let per_thread_stores = global_ws * global_stores_per_thread;
-        let per_thread_instr = global_ws * n_instructions;
-        let workgroup_local = n_threads * global_ws * (local_loads_per_thread + local_stores_per_thread);
-        let workgroup_barriers = n_threads * global_ws * barriers_per_thread;
+        // Per-thread cost (not total across all threads).
+        // global_ws × per_thread = constant for all tile sizes (same total work),
+        // so multiplying by global_ws makes the cost model blind to tile size.
+        // Instead we measure per-thread latency: how much work each thread does.
+        // Larger tiles do more work per thread but have fewer total threads,
+        // resulting in better data reuse and lower per-thread memory traffic.
+        let memory_score = (global_loads_per_thread * 10 + global_stores_per_thread * 10
+            + n_threads * (local_loads_per_thread + local_stores_per_thread)
+            + n_threads * barriers_per_thread * 20) as f64;
+        let alu_score = n_instructions as f64;
 
-        let memory_score = (per_thread_loads * 10 + per_thread_stores * 10 + workgroup_local + workgroup_barriers * 20) as f64;
-        let alu_score = per_thread_instr as f64;
+        // Reward arithmetic intensity: more FLOPs per byte is better.
+        // peak_reg_bytes penalizes register pressure (spilling to local mem is costly).
+        let bytes_per_thread =
+            (global_loads_per_thread + global_stores_per_thread) * 4; // f32 = 4 bytes
+        let flops_per_thread = n_mads * 2; // each MAD = 2 FLOPs
+        let arith_intensity = if bytes_per_thread > 0 {
+            flops_per_thread as f64 / bytes_per_thread as f64
+        } else {
+            0.0
+        };
+        let reg_pressure = peak_reg_bytes as f64;
 
-        let cost = (memory_score + alu_score * 0.1) as u64;
+        let cost = (memory_score + alu_score * 0.1 - arith_intensity * 5.0
+            + reg_pressure * 10.0) as u64;
 
         Cost { cost }
     }
