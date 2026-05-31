@@ -594,6 +594,7 @@ impl<'a> Kernelizer<'a> {
         let kernel_id = if let Some(&kid) = self.cache.kernels.get(&kernel) {
             // If it has been compiled for the device
             if let Some(&program_id) = self.cache.programs.get(&(kid, dev_id)) {
+                //println!("Program in cache dev_id={dev_id:?}, program_id={program_id:?}'");
                 if self.debug.kmd() {
                     println!("Kernel launch from memory pool {pool_id:?} with args: {args:?}");
                 }
@@ -659,6 +660,7 @@ impl<'a> Kernelizer<'a> {
 
         let (program_id, opts) = kernel.autotune(&args, device, pool, self.autotune_config, flop, read, write, self.debug)?;
         self.cache.programs.insert((kernel_id, dev_id), program_id);
+        //println!("Insert into cache dev_id={dev_id:?}, program_id={program_id:?}'");
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
         let event = device.launch(program_id, pool, &args, event_wait_list)?;
         self.events.insert(output_buffers, event);

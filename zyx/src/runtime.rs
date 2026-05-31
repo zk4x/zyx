@@ -240,6 +240,10 @@ impl Runtime {
         // drop graph
         self.graph = Graph::new();
 
+        /* If devices are removed, cache has to be removed as well,
+         * otherwise cache things programs exist even though they don't
+        // drop cache
+        self.kernel_cache.deinitialize(&mut self.devices);
         // drop devices
         let dev_ids: Vec<DeviceId> = self.devices.ids().collect();
         for id in dev_ids {
@@ -253,21 +257,13 @@ impl Runtime {
             self.pools[id].deinitialize();
             self.pools.remove(id);
         }
-        self.config_dir = None;
+        self.config_dir = None;*/
 
         // These variables are persistent:
         /*self.rng
         self.training
         self.search_iterations
         self.debug*/
-
-        // Timer
-        /*for (name, (time, iters)) in crate::ET.lock().iter() {
-            println!(
-                "Timer {name} took {time}us for {iters} iterations, {}us/iter",
-                time / iters
-            );
-        }*/
     }
 
     pub(super) const fn manual_seed(&mut self, seed: u64) {

@@ -6,6 +6,7 @@ use crate::{
     Map,
     backend::{Device, DeviceId, DeviceInfo, DeviceProgramId},
     kernel::{Kernel, autotune::OptSeq},
+    slab::Slab,
 };
 use nanoserde::{DeBin, SerBin};
 use std::hash::BuildHasherDefault;
@@ -99,9 +100,9 @@ impl KernelCache {
     }
 
     #[allow(unused)]
-    pub fn deinitialize(&mut self, devices: &mut [Device]) {
+    pub fn deinitialize(&mut self, devices: &mut Slab<DeviceId, Device>) {
         for (&(_, dev_id), &program_id) in &self.programs {
-            devices[dev_id.0 as usize].release(program_id);
+            devices[dev_id].release(program_id);
         }
         self.device_infos = Map::default();
         self.kernels = Map::default();

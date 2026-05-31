@@ -391,6 +391,7 @@ pub(super) fn initialize_device(
         let worker_device_ids: Vec<usize> = device_ids.iter().map(|&d| d as usize).collect();
         let worker_library = library.clone();
         thread::spawn(move || {
+            println!("Launch worker thread");
             let _worker_library = worker_library;
             let devices: Vec<*mut c_void> = worker_device_ids.iter().map(|&d| d as *mut c_void).collect();
             let mut status = OpenCLStatus::CL_SUCCESS;
@@ -610,6 +611,7 @@ pub(super) fn initialize_device(
                             continue;
                         }
                         let program_id = programs.push(OpenCLProgram { program, kernel, gws, lws });
+                        //println!("Pushed program_id={program_id:?}'");
                         let _ = reply.send(Ok(program_id));
                     }
                     Command::Launch { device_idx, program_id, args, event_wait_list, reply } => {
@@ -627,12 +629,14 @@ pub(super) fn initialize_device(
 
                         let queue_id = next_queue(&mut queues[device_idx], clFinish);
                         if !programs.contains_key(program_id) {
+                            println!("Launching program_id={program_id:?}, NOT FOUND, programs={programs:?}");
                             let _ = reply.send(Err(BackendError {
                                 status: ErrorStatus::KernelLaunch,
                                 context: format!("Invalid program_id={program_id:?}").into(),
                             }));
                             continue;
                         }
+                        //println!("Launching program_id={program_id:?}");
                         let program = &programs[program_id];
                         let mut i = 0;
                         for &arg in &args {
@@ -678,6 +682,7 @@ pub(super) fn initialize_device(
                     Command::ReleaseProgram { program_id } => {
                         let _ = unsafe { clReleaseProgram(programs[program_id].program) }.check(ErrorStatus::Deinitialization);
                         programs.remove(program_id);
+                        println!("Released program_id={program_id:?}'");
                     }
                     Command::ReleaseEvents { events } => {
                         let events: Vec<*mut c_void> =
@@ -1257,6 +1262,7 @@ impl OpenCLDevice {
     }
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
+        println!("Release program_id={program_id:?}");
         self.tx.send(Command::ReleaseProgram { program_id }).unwrap();
     }
 
