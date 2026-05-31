@@ -37,7 +37,7 @@ fn matmul_bench() -> Result<(), ZyxError> {
 
         let avg = total as f64 / 3.0;
         let gflops_val = flops / (avg * 1000.0);
-        println!("  [{m},{k}]x[{k},{n}]  {avg:.0} μs  {gflops_val:.1} GFLOP/s");
+        //println!("  [{m},{k}]x[{k},{n}]  {avg:.0} μs  {gflops_val:.1} GFLOP/s");
     }
 
     println!();
@@ -84,7 +84,7 @@ fn reduce_bench() -> Result<(), ZyxError> {
             .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
         let avg = total as f64 / 5.0;
         let throughput = elem_count as f64 / (avg * 1000.0);
-        println!("  {label} sum_all  {avg:.0} μs  {throughput:.1}M elem/s");
+        //println!("  {label} sum_all  {avg:.0} μs  {throughput:.1}M elem/s");
 
         // Mean all
         let total = (0..5)
@@ -98,7 +98,7 @@ fn reduce_bench() -> Result<(), ZyxError> {
             .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
         let avg = total as f64 / 5.0;
         let throughput = elem_count as f64 / (avg * 1000.0);
-        println!("  {label} mean_all  {avg:.0} μs  {throughput:.1}M elem/s");
+        //println!("  {label} mean_all  {avg:.0} μs  {throughput:.1}M elem/s");
 
         // Max all
         let total = (0..5)
@@ -112,7 +112,7 @@ fn reduce_bench() -> Result<(), ZyxError> {
             .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
         let avg = total as f64 / 5.0;
         let throughput = elem_count as f64 / (avg * 1000.0);
-        println!("  {label} max_all  {avg:.0} μs  {throughput:.1}M elem/s");
+        //println!("  {label} max_all  {avg:.0} μs  {throughput:.1}M elem/s");
 
         // Var along last axis
         let total = (0..5)
@@ -125,7 +125,7 @@ fn reduce_bench() -> Result<(), ZyxError> {
             })
             .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
         let avg = total as f64 / 5.0;
-        println!("  {label} var([-1])  {avg:.0} μs");
+        //println!("  {label} var([-1])  {avg:.0} μs");
     }
 
     println!();
@@ -148,19 +148,21 @@ fn softmax_bench() -> Result<(), ZyxError> {
         Tensor::realize([&x])?;
 
         // Warmup
-        let _ = x.softmax(axes.iter().copied())?;
+        let out = x.softmax(axes.iter().copied())?;
+        out.realize_one()?;
 
         let total = (0..5)
             .map(|_| {
                 let x = Tensor::rand(&shape, DType::F32)?;
                 let start = Instant::now();
-                let _ = x.softmax(axes.iter().copied())?;
+                let out = x.softmax(axes.iter().copied())?;
+                out.realize_one()?;
                 Ok::<u128, ZyxError>(start.elapsed().as_micros())
             })
             .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
 
         let avg = total as f64 / 5.0;
-        println!("  {label} softmax({axes:?})  {avg:.0} μs");
+        //println!("  {label} softmax({axes:?})  {avg:.0} μs");
     }
 
     println!();
@@ -182,7 +184,8 @@ fn embedding_bench() -> Result<(), ZyxError> {
 
         // Warmup
         let indices = Tensor::from(vec![0i32; *seq_len as usize]);
-        let _ = embedding.index_select(0, indices)?;
+        let out = embedding.index_select(0, indices)?;
+        out.realize_one()?;
 
         let total = (0..5)
             .map(|_| {
@@ -190,13 +193,14 @@ fn embedding_bench() -> Result<(), ZyxError> {
                 let idx: Vec<i32> = (0..*seq_len).map(|i| (i % vocab_size) as i32).collect();
                 let indices = Tensor::from(idx);
                 let start = Instant::now();
-                let _ = embedding.index_select(0, indices)?;
+                let out = embedding.index_select(0, indices)?;
+                out.realize_one()?;
                 Ok::<u128, ZyxError>(start.elapsed().as_micros())
             })
             .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
 
         let avg = total as f64 / 5.0;
-        println!("  {label}  {avg:.0} μs");
+        //println!("  {label}  {avg:.0} μs");
     }
 
     println!();
@@ -219,19 +223,21 @@ fn gelu_bench() -> Result<(), ZyxError> {
         Tensor::realize([&x])?;
 
         // Warmup
-        let _ = x.gelu();
+        let out = x.gelu();
+        out.realize_one()?;
 
         let total = (0..5)
             .map(|_| {
                 let x = Tensor::rand(&shape, DType::F32)?;
                 let start = Instant::now();
-                let _ = x.gelu();
+                let out = x.gelu();
+                out.realize_one()?;
                 Ok::<u128, ZyxError>(start.elapsed().as_micros())
             })
             .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
 
         let avg = total as f64 / 5.0;
-        println!("  {label} gelu  {avg:.0} μs");
+        //println!("  {label} gelu  {avg:.0} μs");
     }
 
     println!();
@@ -285,13 +291,14 @@ fn activation_bench() -> Result<(), ZyxError> {
             .map(|_| {
                 let x = Tensor::rand(shape, DType::F32)?;
                 let start = Instant::now();
-                let _ = op(&x)?;
+                let out = op(&x)?;
+                out.realize_one()?;
                 Ok::<u128, ZyxError>(start.elapsed().as_micros())
             })
             .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
 
         let avg = total as f64 / 5.0;
-        println!("  {:?} {name}  {avg:.0} μs", shape);
+        //println!("  {:?} {name}  {avg:.0} μs", shape);
     }
 
     println!();

@@ -287,18 +287,6 @@ impl Kernel {
                 }
             }
         }*/
-        kernel.run_always_on_optimizations();
-
-        // Register tiling
-        let (rt_opt, _) = kernel.opt_register_tiling();
-        let rt_config = 468; // 2x2 (upcast both gidx by 2, reduce unroll by 2)
-        eprintln!("=== Register tiling config: {} ===", rt_config);
-        /*for i in 0..500 {
-            println!("Config i={i}");
-            rt_opt.debug(i);
-        }*/
-        rt_opt.debug(rt_config);
-        rt_opt.apply(&mut kernel, rt_config);
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
@@ -447,11 +435,11 @@ impl Kernel {
         for opt_seq in items.iter() {
             let mut kernel = kernel.clone();
 
-            println!("launch (cost: {}, n_opts: {}):", opt_seq.cost.cost, opt_seq.opts.len());
+            //println!("launch (cost: {}, n_opts: {}):", opt_seq.cost.cost, opt_seq.opts.len());
             for &(opt_id, opt_cfg) in &opt_seq.opts {
                 let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, device.info());
-                print!("  ");
-                opt.debug(opt_cfg);
+                //print!("  ");
+                //opt.debug(opt_cfg);
                 opt.apply(&mut kernel, opt_cfg);
             }
             let (gws, lws) = kernel.work_sizes();
@@ -518,6 +506,7 @@ impl Kernel {
         memory_pool.sync_events(vec![event])?;
         let nanos = begin.elapsed().as_nanos() as u64;
         let perf = crate::kernel_cache::get_perf(flops, bytes_read, bytes_written, nanos);
+        self.get_cost(device.info()).debug();
         if debug.perf() {
             println!("{perf}");
         }

@@ -8,9 +8,27 @@ use crate::{
 };
 use nanoserde::{DeBin, SerBin};
 
+/*#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, DeBin, SerBin)]
+pub struct Cost {
+    pub cost: u64,
+}*/
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, DeBin, SerBin)]
 pub struct Cost {
     pub cost: u64,
+    num_groups: u64,
+    wi_per_group: u64,
+    wi_ops: u64,
+    wi_compute_ops: u64,
+    wi_barriers: u64,
+    wi_local_load_bits: u64,
+    wi_local_store_bits: u64,
+    wi_peak_reg_bytes: u64,
+    wi_branches: u64,
+
+    warp_size: u64,
+    max_local_threads: u64,
+    max_register_bytes: u64,
 }
 
 impl Ord for Cost {
@@ -107,8 +125,8 @@ impl Kernel {
         }
 
         // Second pass: instruction counting + register allocation simulation
-        let mut n_wi_compute_ops = 0;
-        let mut n_wi_ops = 0;
+        let mut wi_compute_ops = 0;
+        let mut wi_ops = 0;
         let mut n_scoped_load_bits = [0u64; 3];
         let mut n_scoped_store_bits = [0u64; 3];
         let mut wi_barriers = 0u64;
@@ -184,15 +202,15 @@ impl Kernel {
             // Instruction counting
             match op {
                 Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
-                    n_wi_ops += loop_mult;
+                    wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
-                        n_wi_compute_ops += loop_mult;
+                        wi_compute_ops += loop_mult;
                     }
                 }
                 Op::Mad { .. } => {
-                    n_wi_ops += 2 * loop_mult;
+                    wi_ops += 2 * loop_mult;
                     if !indexing_ops.contains(&op_id) {
-                        n_wi_compute_ops += 2 * loop_mult;
+                        wi_compute_ops += 2 * loop_mult;
                     }
                 }
                 Op::Const(_)
@@ -206,9 +224,9 @@ impl Kernel {
                 | Op::Move { .. }
                 | Op::Reduce { .. } => {}
                 &Op::Load { src, vlen, .. } => {
-                    n_wi_ops += loop_mult;
+                    wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
-                        n_wi_compute_ops += loop_mult;
+                        wi_compute_ops += loop_mult;
                     }
                     let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
                     let total_elements = loop_mult * u64::from(vlen);
@@ -225,9 +243,9 @@ impl Kernel {
                     }
                 }
                 &Op::Store { dst, vlen, .. } => {
-                    n_wi_ops += loop_mult * 3;
+                    wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
-                        n_wi_compute_ops += loop_mult * 3;
+                        wi_compute_ops += loop_mult * 3;
                     }
                     let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
                     match scope {
@@ -248,9 +266,9 @@ impl Kernel {
                     Scope::Register => {}
                 },
                 Op::Loop { len } => {
-                    n_wi_ops += loop_mult * 3;
+                    wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
-                        n_wi_compute_ops += loop_mult * 3;
+                        wi_compute_ops += loop_mult * 3;
                     }
                     loop_mult *= *len as u64;
                     latest_loop_lengths.push(*len as u64);
@@ -262,10 +280,10 @@ impl Kernel {
                     let (m, n, k) = dims.decompose_mnk();
                     let warp = u64::from(dev_info.warp_size);
                     let cost = (m * n * k) / warp;
-                    n_wi_ops += loop_mult * cost;
+                    wi_ops += loop_mult * cost;
                     if !indexing_ops.contains(&op_id) {
                         // TODO multiply by some constant
-                        n_wi_compute_ops += loop_mult * cost;
+                        wi_compute_ops += loop_mult * cost;
                     }
                 }
                 Op::Barrier { .. } => {
@@ -273,9 +291,9 @@ impl Kernel {
                 }
                 Op::If { .. } => {
                     wi_branches += loop_mult;
-                    n_wi_ops += loop_mult * 3;
+                    wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
-                        n_wi_compute_ops += loop_mult * 3;
+                        wi_compute_ops += loop_mult * 3;
                     }
                 }
             }
@@ -302,8 +320,8 @@ impl Kernel {
         let wi_per_group = lws.iter().product::<u64>();
         let n_work_items = num_groups * wi_per_group;
 
-        let n_ops = n_wi_ops * n_work_items;
-        let n_compute_ops = n_wi_compute_ops * n_work_items;
+        let n_ops = wi_ops * n_work_items;
+        let n_compute_ops = wi_compute_ops * n_work_items;
         let n_barriers = wi_barriers * n_work_items;
         let n_local_memory_bits = (wi_local_load_bits as f64 + wi_local_store_bits as f64 * 1.5) * n_work_items as f64;
         let n_global_memory_bits = (wi_global_load_bits as f64 + wi_global_store_bits as f64 * 1.5) * n_work_items as f64;
@@ -326,6 +344,26 @@ impl Kernel {
 
         let cost = cost as u64;
 
-        Cost { cost }
+        Cost {
+            cost,
+            num_groups,
+            wi_per_group,
+            wi_ops,
+            wi_compute_ops,
+            wi_barriers,
+            wi_local_load_bits,
+            wi_local_store_bits,
+            wi_peak_reg_bytes,
+            wi_branches,
+            warp_size: dev_info.warp_size as u64,
+            max_local_threads: dev_info.max_local_threads,
+            max_register_bytes: dev_info.max_register_bytes,
+        }
+    }
+}
+
+impl Cost {
+    fn debug(&self) {
+        println!();
     }
 }
