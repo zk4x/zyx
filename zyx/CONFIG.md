@@ -15,7 +15,7 @@ The same directory is also used for the kernel cache (file named `cached_kernels
 {
   "autotune": {
     "save_to_disk": true,
-    "n_launches": 20,
+    "n_launches": 1,
     "n_seeds": 100,
     "n_added_per_step": 10,
     "n_removed_per_step": 5,
