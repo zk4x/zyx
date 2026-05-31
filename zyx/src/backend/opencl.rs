@@ -597,7 +597,6 @@ pub(super) fn initialize_device(
             );
             free_bytes_list.push(platform_total_bytes[pool_idx]);
         }
-
         // ── Command loop ──
         while let Some(cmd) = read_command(rx_fd) {
             match cmd {
@@ -694,15 +693,11 @@ pub(super) fn initialize_device(
                         .map(|e| e as *mut c_void)
                         .filter(|event| !event.is_null())
                         .collect();
-                    if !event_wait_list.is_empty() {
-                        let _ = unsafe {
-                            clWaitForEvents(
-                                u32::try_from(event_wait_list.len()).expect("So many events..."),
-                                event_wait_list.as_ptr(),
-                            )
-                        }
-                        .check(ErrorStatus::MemoryCopyP2H);
-                    }
+                    let event_wait_list_ptr = if event_wait_list.is_empty() {
+                        ptr::null()
+                    } else {
+                        event_wait_list.as_ptr()
+                    };
                     let mut dst = vec![0u8; len];
                     let mut event: *mut c_void = ptr::null_mut();
                     let status = unsafe {
@@ -713,8 +708,8 @@ pub(super) fn initialize_device(
                             0,
                             dst.len(),
                             dst.as_mut_ptr().cast(),
-                            0,
-                            ptr::null(),
+                            event_wait_list.len().try_into().expect("So many events..."),
+                            event_wait_list_ptr,
                             &raw mut event,
                         )
                     };
@@ -802,21 +797,21 @@ pub(super) fn initialize_device(
                     let _ = write_u8(reply_fd, 0);
                     let _ = write_u32(reply_fd, program_id.0);
                 }
-                Command::Launch { pool_idx, device_idx, program_id, args, event_wait_list } => {
+                Command::Launch { pool_idx, device_idx: _, program_id, args, event_wait_list } => {
                     let events: Vec<*mut c_void> = event_wait_list
                         .into_iter()
                         .map(|e| e as *mut c_void)
                         .filter(|event| !event.is_null())
                         .collect();
-                    if !events.is_empty() {
-                        let _ = unsafe { clWaitForEvents(events.len().try_into().expect("So many events..."), events.as_ptr()) }
-                            .check(ErrorStatus::KernelSync);
-                    }
+                    let event_wait_list_ptr = if events.is_empty() {
+                        ptr::null()
+                    } else {
+                        events.as_ptr()
+                    };
 
-                    let qs = &mut queues_list[pool_idx as usize];
                     let pgram = &programs_list[pool_idx as usize][DeviceProgramId(program_id)];
                     let bufs = &buffers_list[pool_idx as usize];
-                    let queue_id = next_queue(&mut qs[device_idx], clFinish);
+                    let queue = data_queues[pool_idx as usize];
                     let mut i = 0;
                     for &arg in &args {
                         let arg = &bufs[PoolBufferId(arg)];
@@ -839,14 +834,14 @@ pub(super) fn initialize_device(
                     };
                     if let Err(e) = unsafe {
                         clEnqueueNDRangeKernel(
-                            qs[device_idx][queue_id].queue,
+                            queue,
                             pgram.kernel,
                             u32::try_from(pgram.gws.len()).expect("So many programs..."),
                             ptr::null(),
                             pgram.gws.as_ptr().cast(),
                             lws_ptr,
-                            0,
-                            ptr::null(),
+                            events.len().try_into().expect("So many events..."),
+                            event_wait_list_ptr,
                             &raw mut event,
                         )
                     }
@@ -856,8 +851,7 @@ pub(super) fn initialize_device(
                         let _ = write_error(reply_fd, &e);
                         continue;
                     }
-                    qs[device_idx][queue_id].load += 1;
-                    let _ = unsafe { clFinish(qs[device_idx][queue_id].queue) }.check(ErrorStatus::KernelLaunch);
+                    let _ = unsafe { clFinish(queue) }.check(ErrorStatus::KernelLaunch);
                     let _ = write_u8(reply_fd, 0);
                     let _ = write_u64(reply_fd, event as u64);
                 }
