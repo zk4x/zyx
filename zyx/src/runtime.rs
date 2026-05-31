@@ -240,21 +240,20 @@ impl Runtime {
         // drop graph
         self.graph = Graph::new();
 
-        /*
-        // It seems there is no point in actually deinitializing anything...
-        // Drop programs (kernels)
-        self.cache.deinitialize(&mut self.devices);
         // drop devices
-        while let Some(mut dev) = self.devices.pop() {
-            dev.deinitialize();
+        let dev_ids: Vec<DeviceId> = self.devices.ids().collect();
+        for id in dev_ids {
+            self.devices[id].deinitialize();
+            self.devices.remove(id);
         }
         // drop memory pools
-        while let Some(mut pool) = self.pools.pop() {
-            pool.release_events(self.events.values().cloned().collect());
-            pool.deinitialize();
+        let pool_ids: Vec<PoolId> = self.pools.ids().collect();
+        for id in pool_ids {
+            self.pools[id].release_events(self.events.values().cloned().collect());
+            self.pools[id].deinitialize();
+            self.pools.remove(id);
         }
         self.config_dir = None;
-        */
 
         // These variables are persistent:
         /*self.rng

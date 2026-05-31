@@ -1,6 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+#![allow(unused)]
+
 use crate::{
     DType, Map,
     dtype::Constant,
@@ -50,7 +52,11 @@ impl Kernel {
         lidxs.sort_by_key(|(_, _, a)| *a);
 
         let max_batch = self.max_global_load_batch();
-        eprintln!("=== tile_local: max_batch={}, lidxs={:?} ===", max_batch, lidxs.iter().map(|(_, l, a)| (l, a)).collect::<Vec<_>>());
+        eprintln!(
+            "=== tile_local: max_batch={}, lidxs={:?} ===",
+            max_batch,
+            lidxs.iter().map(|(_, l, a)| (l, a)).collect::<Vec<_>>()
+        );
         if max_batch == 0 {
             return;
         }
@@ -96,12 +102,7 @@ impl Kernel {
 
         let tile_buf = self.insert_before(
             insert_point,
-            Op::Define {
-                dtype: tile_dtype,
-                scope: Scope::Local,
-                ro: false,
-                len: tile_size * max_batch as Dim,
-            },
+            Op::Define { dtype: tile_dtype, scope: Scope::Local, ro: false, len: tile_size * max_batch as Dim },
         );
 
         // Walk all ops, batch consecutive global loads, wrap each batch
@@ -134,7 +135,12 @@ impl Kernel {
     }
 
     fn flush_tile_batch(&mut self, pending: &[OpId], tile_buf: OpId, lin_lidx: OpId, tile_size: Dim) {
-        eprintln!("=== flush: n={}, tile_buf={}, tile_size={} ===", pending.len(), tile_buf, tile_size);
+        eprintln!(
+            "=== flush: n={}, tile_buf={}, tile_size={} ===",
+            pending.len(),
+            tile_buf,
+            tile_size
+        );
         let n = pending.len();
         let mut insert_pt = pending[n - 1];
 
@@ -154,12 +160,7 @@ impl Kernel {
 
         // Insert Stores (each to its own position)
         for (&load_id, &pos) in pending.iter().zip(positions.iter()) {
-            insert_pt = self.insert_after(insert_pt, Op::Store {
-                dst: tile_buf,
-                x: load_id,
-                index: pos,
-                vlen: 1,
-            });
+            insert_pt = self.insert_after(insert_pt, Op::Store { dst: tile_buf, x: load_id, index: pos, vlen: 1 });
         }
 
         // One Barrier
@@ -168,11 +169,7 @@ impl Kernel {
         // Insert Loads (each from its own position)
         let mut new_loads: Vec<OpId> = Vec::with_capacity(n);
         for &pos in positions.iter() {
-            insert_pt = self.insert_after(insert_pt, Op::Load {
-                src: tile_buf,
-                index: pos,
-                vlen: 1,
-            });
+            insert_pt = self.insert_after(insert_pt, Op::Load { src: tile_buf, index: pos, vlen: 1 });
             new_loads.push(insert_pt);
         }
 
