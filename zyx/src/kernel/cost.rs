@@ -32,141 +32,11 @@ pub struct Cost {
 }
 
 impl Cost {
-    /// Debug prints detailed cost information for kernel optimization analysis
-    pub fn debug(&self) {
-        println!("=== Cost Analysis ===");
-        println!("Total cost: {}", self.cost);
-        println!("Work groups: {}", self.num_groups);
-        println!("Work items per group: {}", self.wi_per_group);
-        println!("Work items ops: {}", self.wi_ops);
-        println!("Compute ops: {}", self.wi_compute_ops);
-        println!("Barriers: {}", self.wi_barriers);
-        println!("Local load bits: {}", self.wi_local_load_bits);
-        println!("Local store bits: {}", self.wi_local_store_bits);
-        println!("Peak register bytes: {}", self.wi_peak_reg_bytes);
-        println!("Branches: {}", self.wi_branches);
-        println!("Warp size: {}", self.warp_size);
-        println!("Max local threads: {}", self.max_local_threads);
-        println!("Max register bytes: {}", self.max_register_bytes);
-        
-        // Calculate derived metrics
-        let total_work_items = self.num_groups * self.wi_per_group;
-        println!("Total work items: {total_work_items}");
-        
-        let ops_per_work_item = if total_work_items > 0 {
-            self.wi_ops as f64 / total_work_items as f64
-        } else {
-            0.0
-        };
-        println!("Ops per work item: {ops_per_work_item:.2}");
-        
-        let compute_ratio = if self.wi_ops > 0 {
-            self.wi_compute_ops as f64 / self.wi_ops as f64
-        } else {
-            0.0
-        };
-        println!("Compute ops ratio: {compute_ratio:.2}%");
-        
-        let register_pressure_ratio = if self.max_register_bytes > 0 {
-            self.wi_peak_reg_bytes as f64 / self.max_register_bytes as f64
-        } else {
-            0.0
-        };
-        println!("Register pressure: {register_pressure_ratio:.2}%");
-        
-        let warp_efficiency = if self.wi_per_group > 0 {
-            (self.wi_per_group as f64 / self.warp_size as f64).min(1.0)
-        } else {
-            0.0
-        };
-        println!("Warp efficiency: {warp_efficiency:.2}%");
-        println!("====================");
-    }
-
-    /// Debug prints cost information in a compact format for quick analysis
-    pub fn debug_compact(&self) {
+    fn debug(&self) {
         println!(
-            "Cost: cost={}, groups={}, wi/group={}, ops={}, comp_ops={}, regs={}B",
-            self.cost,
-            self.num_groups,
-            self.wi_per_group,
-            self.wi_ops,
-            self.wi_compute_ops,
-            self.wi_peak_reg_bytes
+            "Cost: {}",
+            self.num_groups, self.wi_per_group, self.wi_ops, self.wi_compute_ops
         );
-    }
-
-    /// Debug prints cost information with detailed memory analysis
-    pub fn debug_memory(&self) {
-        println!("=== Memory Cost Analysis ===");
-        println!("Local load bits: {}", self.wi_local_load_bits);
-        println!("Local store bits: {}", self.wi_local_store_bits);
-        
-        let local_memory_bytes = (self.wi_local_load_bits + self.wi_local_store_bits) / 8;
-        println!("Local memory usage: {local_memory_bytes} bytes");
-        
-        let global_memory_bytes = (self.wi_global_load_bits() + self.wi_global_store_bits()) / 8;
-        println!("Global memory usage: {global_memory_bytes} bytes");
-        
-        let total_memory_pressure = local_memory_bytes + global_memory_bytes;
-        println!("Total memory pressure: {total_memory_pressure} bytes");
-        println!("=========================");
-    }
-
-    /// Debug prints cost information with performance bottlenecks analysis
-    pub fn debug_bottlenecks(&self) {
-        println!("=== Performance Bottlenecks Analysis ===");
-        
-        let register_pressure_ratio = if self.max_register_bytes > 0 {
-            self.wi_peak_reg_bytes as f64 / self.max_register_bytes as f64
-        } else {
-            0.0
-        };
-        
-        let warp_efficiency = if self.wi_per_group > 0 {
-            (self.wi_per_group as f64 / self.warp_size as f64).min(1.0)
-        } else {
-            0.0
-        };
-        
-        let compute_ratio = if self.wi_ops > 0 {
-            self.wi_compute_ops as f64 / self.wi_ops as f64
-        } else {
-            0.0
-        };
-        
-        // Identify bottlenecks
-        if register_pressure_ratio > 0.8 {
-            println!("⚠️  BOTTLENECK: High register pressure ({:.1}%)", register_pressure_ratio * 100.0);
-        }
-        
-        if warp_efficiency < 0.5 {
-            println!("⚠️  BOTTLENECK: Low warp efficiency ({:.1}%)", warp_efficiency * 100.0);
-        }
-        
-        if compute_ratio < 0.3 {
-            println!("⚠️  BOTTLENECK: Low compute ops ratio ({:.1}%)", compute_ratio * 100.0);
-        }
-        
-        if self.wi_barriers > 100 {
-            println!("⚠️  BOTTLENECK: High barrier count ({})", self.wi_barriers);
-        }
-        
-        println!("====================================");
-    }
-
-    /// Get global load bits (helper function)
-    const fn wi_global_load_bits(&self) -> u64 {
-        // This would need to be tracked in the cost calculation
-        // For now, return 0 - this is a placeholder
-        0
-    }
-
-    /// Get global store bits (helper function)
-    const fn wi_global_store_bits(&self) -> u64 {
-        // This would need to be tracked in the cost calculation
-        // For now, return 0 - this is a placeholder
-        0
     }
 }
 
@@ -389,13 +259,13 @@ impl Kernel {
                     let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
                     match scope {
                         Scope::Global => {
-                            n_scoped_store_bits[0] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64;
+                            n_scoped_store_bits[0] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64
                         }
                         Scope::Local => {
-                            n_scoped_store_bits[1] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64;
+                            n_scoped_store_bits[1] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64
                         }
                         Scope::Register => {
-                            n_scoped_store_bits[2] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64;
+                            n_scoped_store_bits[2] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64
                         }
                     }
                 }
@@ -462,17 +332,15 @@ impl Kernel {
         let n_ops = wi_ops * n_work_items;
         let n_compute_ops = wi_compute_ops * n_work_items;
         let n_barriers = wi_barriers * n_work_items;
-        let n_local_memory_bits = wi_local_store_bits as f64 * 1.5 + wi_local_load_bits as f64;
-        let n_local_memory_bits = n_local_memory_bits * n_work_items as f64;
-        
-        let n_global_memory_bits = wi_global_store_bits as f64 * 1.5 + wi_global_load_bits as f64;
-        let n_global_memory_bits = n_global_memory_bits * n_work_items as f64;
+        let n_local_memory_bits = (wi_local_load_bits as f64 + wi_local_store_bits as f64 * 1.5) * n_work_items as f64;
+        let n_global_memory_bits = (wi_global_load_bits as f64 + wi_global_store_bits as f64 * 1.5) * n_work_items as f64;
         let register_pressure = if wi_peak_reg_bytes > dev_info.max_register_bytes {
             10
         } else {
             0
         };
         let warp_usage = wi_per_group as f64 / dev_info.warp_size as f64;
+        let _max_warps = dev_info.max_local_threads / dev_info.warp_size as u64;
         let n_branches = wi_branches * n_work_items;
 
         let cost = n_ops as f64
