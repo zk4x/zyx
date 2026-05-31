@@ -311,7 +311,7 @@ impl AutotuneConfig {
         AutotuneConfig {
             save_to_disk: true,
             n_added_per_step: 10,
-            n_launches: 20,
+            n_launches: 1,
             n_removed_per_step: 5,
             n_seeds: 100,
             n_total_opts: 1000,
