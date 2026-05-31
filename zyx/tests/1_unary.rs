@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Scalar, Tensor, ZyxError};
+use zyx::{DType, Float, Scalar, Tensor, ZyxError};
 
 #[test]
 fn relu_1() -> Result<(), ZyxError> {
@@ -592,8 +592,9 @@ fn f16_sin() -> Result<(), ZyxError> {
     let zdata: Vec<f32> = x.sin().cast(DType::F32).try_into()?;
     for (i, y) in zdata.iter().enumerate() {
         let input_f16 = half::f16::from_f32(data[i]);
-        let expected = input_f16.to_f32().sin();
-        assert!(expected.is_equal(*y));
+        let expected = input_f16.sin();
+        let result = half::f16::from_f32(*y);
+        assert!(expected.is_equal(result));
     }
     Ok(())
 }
