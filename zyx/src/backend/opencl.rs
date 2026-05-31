@@ -444,7 +444,7 @@ pub(super) fn initialize_device(
                 pthread_sigmask(SIG_UNBLOCK, mask.as_ptr().cast(), ptr::null_mut());
             }
 
-            while let Ok(cmd) = rx.recv() {
+            'work_thread_loop: while let Ok(cmd) = rx.recv() {
                 match cmd {
                     Command::Allocate { bytes, reply } => {
                         if bytes > free_bytes {
@@ -452,7 +452,7 @@ pub(super) fn initialize_device(
                                 status: ErrorStatus::MemoryAllocation,
                                 context: "Allocation failure".into(),
                             }));
-                            continue;
+                            continue 'work_thread_loop;
                         }
                         let mut status = OpenCLStatus::CL_SUCCESS;
                         let buffer = unsafe {
@@ -460,7 +460,7 @@ pub(super) fn initialize_device(
                         };
                         if let Err(e) = status.check(ErrorStatus::MemoryAllocation) {
                             let _ = reply.send(Err(e));
-                            continue;
+                            continue 'work_thread_loop;
                         }
                         free_bytes = free_bytes.saturating_sub(bytes);
                         let id = buffers.push(OpenCLBuffer { buffer, bytes });
@@ -509,7 +509,7 @@ pub(super) fn initialize_device(
                         };
                         if let Err(e) = status.check(ErrorStatus::MemoryCopyH2P) {
                             let _ = reply.send(Err(e));
-                            continue;
+                            continue 'work_thread_loop;
                         }
                         println!("{event:?}");
                         let _ = reply.send(Ok(OpenCLEvent { event }));
@@ -547,7 +547,7 @@ pub(super) fn initialize_device(
                         };
                         if let Err(e) = status.check(ErrorStatus::MemoryCopyP2H) {
                             let _ = reply.send(Err(e));
-                            continue;
+                            continue 'work_thread_loop;
                         }
                         let events = [event];
                         let _ = unsafe { clWaitForEvents(1, events.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H);
@@ -579,7 +579,7 @@ pub(super) fn initialize_device(
                         };
                         if let Err(e) = status.check(ErrorStatus::KernelCompilation) {
                             let _ = reply.send(Err(e));
-                            continue;
+                            continue 'work_thread_loop;
                         }
                         if let Err(e) = unsafe {
                             clBuildProgram(
@@ -602,7 +602,7 @@ pub(super) fn initialize_device(
                                 }
                                 Err(status) => {
                                     let _ = reply.send(Err(status.check(ErrorStatus::KernelCompilation).err().unwrap()));
-                                    continue;
+                                    continue 'work_thread_loop;
                                 }
                             }
                         }
@@ -611,7 +611,7 @@ pub(super) fn initialize_device(
                         let kernel = unsafe { clCreateKernel(program, program_name.as_ptr().cast(), &raw mut status) };
                         if let Err(e) = status.check(ErrorStatus::KernelCompilation) {
                             let _ = reply.send(Err(e));
-                            continue;
+                            continue 'work_thread_loop;
                         }
                         let program_id = programs.push(OpenCLProgram { program, kernel, gws, lws });
                         //println!("Pushed program_id={program_id:?}'");
@@ -637,7 +637,7 @@ pub(super) fn initialize_device(
                                 status: ErrorStatus::KernelLaunch,
                                 context: format!("Invalid program_id={program_id:?}").into(),
                             }));
-                            continue;
+                            continue 'work_thread_loop;
                         }
                         //println!("Launching program_id={program_id:?}");
                         let program = &programs[program_id];
@@ -650,7 +650,7 @@ pub(super) fn initialize_device(
                                     .check(ErrorStatus::IncorrectKernelArg)
                             {
                                 let _ = reply.send(Err(e));
-                                continue;
+                                continue 'work_thread_loop;
                             }
                             i += 1;
                         }
@@ -676,7 +676,7 @@ pub(super) fn initialize_device(
                         .check(ErrorStatus::KernelLaunch)
                         {
                             let _ = reply.send(Err(e));
-                            continue;
+                            continue 'work_thread_loop;
                         }
                         queues[device_idx][queue_id].load += 1;
                         let _ = unsafe { clFinish(queues[device_idx][queue_id].queue) }.check(ErrorStatus::KernelLaunch);
