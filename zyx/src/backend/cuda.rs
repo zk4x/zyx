@@ -119,7 +119,7 @@ enum CUDACommand {
     },
     Deallocate {
         buffer_id: PoolBufferId,
-        events: Vec<Event>,
+        event_wait_list: Vec<Event>,
     },
     HostToPool {
         src: *const u8,
@@ -413,7 +413,7 @@ pub(super) fn initialize_device(
                         let event = Event::CUDA(CUDAEvent { event });
                         let _ = reply.send(Ok((buffer_id, event)));
                     }
-                    CUDACommand::Deallocate { buffer_id, mut events } => {
+                    CUDACommand::Deallocate { buffer_id, event_wait_list: mut events } => {
                         let stream = next_stream(&mut streams, cuStreamSynchronize);
                         while let Some(Event::CUDA(CUDAEvent { event })) = events.pop() {
                             if !event.is_null() {
@@ -706,7 +706,9 @@ impl CUDAMemoryPool {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, events: Vec<Event>) {
-        self.tx.send(CUDACommand::Deallocate { buffer_id, events }).unwrap();
+        self.tx
+            .send(CUDACommand::Deallocate { buffer_id, event_wait_list: events })
+            .unwrap();
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]

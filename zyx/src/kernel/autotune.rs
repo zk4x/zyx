@@ -327,9 +327,6 @@ impl Kernel {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
-        let dev_info_ptr: *const DeviceInfo = device.info();
-        let dev_info_ref = unsafe { &*dev_info_ptr };
-
         let n_launches = config.n_launches;
         let n_seeds = config.n_seeds;
         let n_added_per_step = config.n_added_per_step;
@@ -350,7 +347,7 @@ impl Kernel {
             kernel.log2_to_ln();
         }
 
-        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel, dev_info_ref));
+        let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&kernel, device.info()));
         let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
         let mult = n_seeds.min(total_configs);
         for (opt_id, (_, n_configs)) in avail_configs.iter().enumerate() {
@@ -365,7 +362,7 @@ impl Kernel {
                     config_id += 1;
                     continue;
                 }
-                let cost = new_kernel.get_cost(dev_info_ref);
+                let cost = new_kernel.get_cost(device.info());
                 let new_seq = OptSeq { opts: vec![(opt_id, config_id)], cost };
                 visited.insert(hash);
                 items.push(new_seq);
@@ -380,12 +377,12 @@ impl Kernel {
             i += 1;
             let mut thread_kernel = kernel.clone();
             let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else { break };
-            opt_seq.apply(&mut thread_kernel, dev_info_ref);
+            opt_seq.apply(&mut thread_kernel, device.info());
             thread_kernel.run_always_on_optimizations();
 
             //println!("Next opt {i}, kernel size: {:?}", thread_kernel.ops.len());
 
-            let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel, dev_info_ref));
+            let avail_configs = AVAILABLE_OPTIMIZATIONS.map(|config_fn| config_fn(&thread_kernel, device.info()));
             let total_configs = avail_configs.iter().map(|(_, x)| *x).sum::<usize>();
             let mult = n_added_per_step.min(total_configs);
 
@@ -404,7 +401,7 @@ impl Kernel {
                     if visited.contains(&hash) {
                         continue;
                     }
-                    let new_seq = OptSeq { opts, cost: new_kernel.get_cost(dev_info_ref) };
+                    let new_seq = OptSeq { opts, cost: new_kernel.get_cost(device.info()) };
                     visited.insert(hash);
 
                     if new_kernel.ops.len().0 > 10000 {
@@ -452,7 +449,7 @@ impl Kernel {
 
             println!("launch (cost: {}, n_opts: {}):", opt_seq.cost.cost, opt_seq.opts.len());
             for &(opt_id, opt_cfg) in &opt_seq.opts {
-                let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, dev_info_ref);
+                let (opt, _) = AVAILABLE_OPTIMIZATIONS[opt_id](&kernel, device.info());
                 print!("  ");
                 opt.debug(opt_cfg);
                 opt.apply(&mut kernel, opt_cfg);

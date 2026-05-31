@@ -93,26 +93,21 @@ enum Command {
     },
     Deallocate {
         buffer_id: PoolBufferId,
-        events: Vec<OpenCLEvent>,
+        event_wait_list: Vec<OpenCLEvent>,
     },
     HostToPool {
-        src: Vec<u8>,
+        src: *const u8,
+        bytes: Dim,
         dst: PoolBufferId,
         event_wait_list: Vec<OpenCLEvent>,
         reply: Sender<Result<OpenCLEvent, BackendError>>,
     },
     PoolToHost {
         src: PoolBufferId,
-        len: usize,
+        dst: *mut u8,
+        bytes: Dim,
         event_wait_list: Vec<OpenCLEvent>,
-        reply: Sender<Result<Vec<u8>, BackendError>>,
-    },
-    SyncEvents {
-        events: Vec<OpenCLEvent>,
         reply: Sender<Result<(), BackendError>>,
-    },
-    ReleaseEvents {
-        events: Vec<OpenCLEvent>,
     },
     Compile {
         name: Box<str>,
@@ -122,11 +117,18 @@ enum Command {
         reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
     Launch {
-        device_idx: usize,
+        device_id: usize,
         program_id: DeviceProgramId,
         args: Vec<PoolBufferId>,
         event_wait_list: Vec<OpenCLEvent>,
         reply: Sender<Result<OpenCLEvent, BackendError>>,
+    },
+    SyncEvents {
+        events: Vec<OpenCLEvent>,
+        reply: Sender<Result<(), BackendError>>,
+    },
+    ReleaseEvents {
+        events: Vec<OpenCLEvent>,
     },
     ReleaseProgram {
         program_id: DeviceProgramId,
@@ -134,6 +136,7 @@ enum Command {
 }
 
 unsafe impl Send for OpenCLEvent {}
+unsafe impl Send for Command {}
 
 pub(super) fn initialize_device(
     config: &OpenCLConfig,
@@ -463,7 +466,7 @@ pub(super) fn initialize_device(
                         let id = buffers.push(OpenCLBuffer { buffer, bytes });
                         let _ = reply.send(Ok((id, OpenCLEvent { event: ptr::null_mut() })));
                     }
-                    Command::Deallocate { buffer_id, events } => {
+                    Command::Deallocate { buffer_id, event_wait_list: events } => {
                         let buffer = &buffers[buffer_id];
                         debug_assert!(!buffer.buffer.is_null(), "Deallocating null buffer is invalid");
                         let event_wait_list: Vec<*mut c_void> =
@@ -477,9 +480,9 @@ pub(super) fn initialize_device(
                         free_bytes += buffer.bytes;
                         buffers.remove(buffer_id);
                     }
-                    Command::HostToPool { src, dst, event_wait_list, reply } => {
+                    Command::HostToPool { src, bytes, dst, event_wait_list, reply } => {
                         let dst = &buffers[dst];
-                        debug_assert!(src.len() as u64 <= dst.bytes);
+                        debug_assert!(bytes <= dst.bytes);
                         let event_wait_list: Vec<*mut c_void> = event_wait_list
                             .into_iter()
                             .map(|e| e.event)
@@ -497,8 +500,8 @@ pub(super) fn initialize_device(
                                 dst.buffer,
                                 CL_NON_BLOCKING,
                                 0,
-                                src.len(),
-                                src.as_ptr().cast(),
+                                bytes as usize,
+                                src.cast(),
                                 event_wait_list.len().try_into().expect("So many events..."),
                                 event_wait_list_ptr,
                                 &raw mut event,
@@ -508,9 +511,10 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Err(e));
                             continue;
                         }
+                        println!("{event:?}");
                         let _ = reply.send(Ok(OpenCLEvent { event }));
                     }
-                    Command::PoolToHost { src, len, event_wait_list, reply } => {
+                    Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => {
                         let src = &buffers[src];
                         debug_assert!(!src.buffer.is_null(), "Trying to read null memory. Internal bug.");
                         let mut event_wait_list: Vec<*mut c_void> = event_wait_list
@@ -527,7 +531,6 @@ pub(super) fn initialize_device(
                             }
                             .check(ErrorStatus::MemoryCopyP2H);
                         }
-                        let mut dst = vec![0u8; len];
                         let mut event: *mut c_void = ptr::null_mut();
                         let status = unsafe {
                             clEnqueueReadBuffer(
@@ -535,8 +538,8 @@ pub(super) fn initialize_device(
                                 src.buffer,
                                 CL_NON_BLOCKING,
                                 0,
-                                dst.len(),
-                                dst.as_mut_ptr().cast(),
+                                bytes as usize,
+                                dst.cast(),
                                 0,
                                 ptr::null(),
                                 &raw mut event,
@@ -549,7 +552,7 @@ pub(super) fn initialize_device(
                         let events = [event];
                         let _ = unsafe { clWaitForEvents(1, events.as_ptr()) }.check(ErrorStatus::MemoryCopyP2H);
                         event_wait_list.push(event);
-                        let _ = reply.send(Ok(dst));
+                        _ = reply.send(Ok(()));
                     }
                     Command::SyncEvents { events, reply } => {
                         let events: Vec<*mut c_void> =
@@ -614,7 +617,7 @@ pub(super) fn initialize_device(
                         //println!("Pushed program_id={program_id:?}'");
                         let _ = reply.send(Ok(program_id));
                     }
-                    Command::Launch { device_idx, program_id, args, event_wait_list, reply } => {
+                    Command::Launch { device_id: device_idx, program_id, args, event_wait_list, reply } => {
                         // Sync events
                         let events: Vec<*mut c_void> = event_wait_list
                             .into_iter()
@@ -736,11 +739,13 @@ impl OpenCLMemoryPool {
                 e
             })
             .collect();
-        self.tx.send(Command::Deallocate { buffer_id, events }).unwrap();
+        self.tx
+            .send(Command::Deallocate { buffer_id, event_wait_list: events })
+            .unwrap();
     }
 
     pub fn host_to_pool(&mut self, src: &[u8], dst: PoolBufferId, event_wait_list: Vec<Event>) -> Result<Event, BackendError> {
-        let events = event_wait_list
+        let event_wait_list = event_wait_list
             .into_iter()
             .map(|e| {
                 let Event::OpenCL(e) = e else { unreachable!() };
@@ -749,27 +754,24 @@ impl OpenCLMemoryPool {
             .collect();
         let (reply, reply_rx) = channel();
         self.tx
-            .send(Command::HostToPool { src: src.to_vec(), dst, event_wait_list: events, reply })
+            .send(Command::HostToPool { src: src.as_ptr(), bytes: src.len() as Dim, dst, event_wait_list, reply })
             .unwrap();
         reply_rx.recv().unwrap().map(Event::OpenCL)
     }
 
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
-        let events = event_wait_list
+        let event_wait_list = event_wait_list
             .into_iter()
             .map(|e| {
                 let Event::OpenCL(e) = e else { unreachable!() };
                 e
             })
             .collect();
-        let len = dst.len();
         let (reply, reply_rx) = channel();
         self.tx
-            .send(Command::PoolToHost { src, len, event_wait_list: events, reply })
+            .send(Command::PoolToHost { src, dst: dst.as_mut_ptr(), bytes: dst.len() as Dim, event_wait_list, reply })
             .unwrap();
-        let data = reply_rx.recv().unwrap()?;
-        dst.copy_from_slice(&data);
-        Ok(())
+        reply_rx.recv().unwrap()
     }
 
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
@@ -1250,13 +1252,7 @@ impl OpenCLDevice {
             .collect();
         let (reply, reply_rx) = channel();
         self.tx
-            .send(Command::Launch {
-                device_idx: self.device_idx,
-                program_id,
-                args: args.to_vec(),
-                event_wait_list: events,
-                reply,
-            })
+            .send(Command::Launch { device_id: self.device_idx, program_id, args: args.to_vec(), event_wait_list: events, reply })
             .unwrap();
         reply_rx.recv().unwrap().map(Event::OpenCL)
     }
