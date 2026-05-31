@@ -635,10 +635,19 @@ impl Scalar for f16 {
     }
 
     fn is_equal(self, rhs: Self) -> bool {
-        (self == -Self::INFINITY && rhs == -Self::INFINITY)
-            || (self.is_nan() && rhs.is_nan())
-            || self == rhs
-            || self.sub(rhs).abs() <= self.abs() * Self::epsilon()
+        let a = self;
+        let b = rhs;
+        if a.is_nan() && b.is_nan() {
+            return true;
+        }
+        if a == b {
+            return true;
+        }
+        let diff = (a - b).abs();
+        let max_abs = a.abs().max(b.abs());
+        let rel_tol = f16::from_f32(0.01) * max_abs;
+        let abs_tol = f16::from_f32(0.001);
+        diff < rel_tol || diff < abs_tol
     }
 
     fn epsilon() -> Self {

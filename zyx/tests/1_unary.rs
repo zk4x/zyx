@@ -590,11 +590,12 @@ fn f16_sin() -> Result<(), ZyxError> {
     let x = Tensor::from(data).cast(DType::F16);
     x.realize_one()?;
     let zdata: Vec<f32> = x.sin().cast(DType::F32).try_into()?;
+    println!("{zdata:?}");
     for (i, y) in zdata.iter().enumerate() {
         let input_f16 = half::f16::from_f32(data[i]);
         let expected = input_f16.sin();
         let result = half::f16::from_f32(*y);
-        assert!(expected.is_equal(result));
+        assert!(expected.is_equal(result), "{expected} != {result}");
     }
     Ok(())
 }
