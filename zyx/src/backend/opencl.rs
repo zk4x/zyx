@@ -1548,8 +1548,8 @@ fn query_device_info(
         ]);
         max_local_work_dims[i] = max_dim_size as Dim;
     }
-    let mlt = if let Ok(data) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_MAX_WORK_GROUP_SIZE) {
-        usize::from_ne_bytes(data.try_into().unwrap_or_default())
+    let mlt: u64 = if let Ok(data) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_MAX_WORK_GROUP_SIZE) {
+        u64::from_ne_bytes(data.try_into().unwrap_or_default())
     } else {
         256
     };
