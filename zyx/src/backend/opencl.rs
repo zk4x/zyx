@@ -394,7 +394,6 @@ pub(super) fn initialize_device(
         let worker_device_ids: Vec<usize> = device_ids.iter().map(|&d| d as usize).collect();
         let worker_library = library.clone();
         thread::spawn(move || {
-            println!("Launch worker thread");
             let _worker_library = worker_library;
             let devices: Vec<*mut c_void> = worker_device_ids.iter().map(|&d| d as *mut c_void).collect();
             let mut status = OpenCLStatus::CL_SUCCESS;
@@ -511,7 +510,6 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Err(e));
                             continue 'work_thread_loop;
                         }
-                        println!("{event:?}");
                         let _ = reply.send(Ok(OpenCLEvent { event }));
                     }
                     Command::PoolToHost { src, dst, bytes, event_wait_list, reply } => {
@@ -679,7 +677,7 @@ pub(super) fn initialize_device(
                             continue 'work_thread_loop;
                         }
                         queues[device_idx][queue_id].load += 1;
-                        let _ = unsafe { clFinish(queues[device_idx][queue_id].queue) }.check(ErrorStatus::KernelLaunch);
+                        //let _ = unsafe { clFinish(queues[device_idx][queue_id].queue) }.check(ErrorStatus::KernelLaunch);
                         let _ = reply.send(Ok(OpenCLEvent { event }));
                     }
                     Command::ReleaseProgram { program_id } => {
