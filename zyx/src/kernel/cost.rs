@@ -313,7 +313,7 @@ impl Kernel {
             0
         };
         let warp_usage = wi_per_group as f64 / dev_info.warp_size as f64;
-        let max_warps = dev_info.max_local_threads / dev_info.warp_size as u64;
+        let _max_warps = dev_info.max_local_threads / dev_info.warp_size as u64;
         let n_branches = wi_branches * n_work_items;
 
         let cost = n_ops as f64

@@ -133,13 +133,6 @@ enum Command {
     },
 }
 
-unsafe impl Send for Command {}
-// This definitely isn't correct, but for now...
-unsafe impl Send for OpenCLMemoryPool {}
-unsafe impl Send for OpenCLBuffer {}
-unsafe impl Send for OpenCLDevice {}
-unsafe impl Send for OpenCLProgram {}
-unsafe impl Send for OpenCLQueue {}
 unsafe impl Send for OpenCLEvent {}
 
 pub(super) fn initialize_device(
@@ -253,8 +246,8 @@ pub(super) fn initialize_device(
         *mut c_void,
     ) -> OpenCLStatus = *unsafe { opencl.get(b"clBuildProgram\0") }?;
     let clReleaseProgram: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus = *unsafe { opencl.get(b"clReleaseProgram\0") }?;
+    let clReleaseEvent: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus = *unsafe { opencl.get(b"clReleaseEvent\0") }?;
     let _clReleaseContext: unsafe extern "C" fn(*mut c_void) -> OpenCLStatus = *unsafe { opencl.get(b"clReleaseContext\0") }?;
-    //let clReleaseEvent = *unsafe { opencl.get(b"clReleaseContext\0") }?;
     let clSetKernelArg: unsafe extern "C" fn(*mut c_void, cl_uint, usize, *const c_void) -> OpenCLStatus =
         *unsafe { opencl.get(b"clSetKernelArg\0") }?;
     let clCreateKernel: unsafe extern "C" fn(*mut c_void, *const i8, *mut OpenCLStatus) -> *mut c_void =
@@ -568,7 +561,6 @@ pub(super) fn initialize_device(
                         };
                         let _ = reply.send(result);
                     }
-                    Command::ReleaseEvents { events: _ } => {}
                     Command::Compile { name, source, gws, lws, reply } => {
                         let sources: &[&str] = &[source.as_str()];
                         let mut status = OpenCLStatus::CL_SUCCESS;
@@ -634,6 +626,13 @@ pub(super) fn initialize_device(
                         }
 
                         let queue_id = next_queue(&mut queues[device_idx], clFinish);
+                        if !programs.contains_key(program_id) {
+                            let _ = reply.send(Err(BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: format!("Invalid program_id={program_id:?}").into(),
+                            }));
+                            continue;
+                        }
                         let program = &programs[program_id];
                         let mut i = 0;
                         for &arg in &args {
@@ -679,6 +678,13 @@ pub(super) fn initialize_device(
                     Command::ReleaseProgram { program_id } => {
                         let _ = unsafe { clReleaseProgram(programs[program_id].program) }.check(ErrorStatus::Deinitialization);
                         programs.remove(program_id);
+                    }
+                    Command::ReleaseEvents { events } => {
+                        let events: Vec<*mut c_void> =
+                            events.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
+                        for event in events {
+                            let _ = unsafe { clReleaseEvent(event) }.check(ErrorStatus::Deinitialization);
+                        }
                     }
                 }
             }
@@ -972,7 +978,6 @@ impl OpenCLDevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
-        let mut acc_bytes: u64 = 0;
         let mut op_id = kernel.head;
         while !op_id.is_null() {
             let op = kernel.at(op_id);
@@ -991,7 +996,6 @@ impl OpenCLDevice {
                             if ro { "const " } else { "" },
                             dtype.ocl(),
                         );
-                        acc_bytes += u64::from(dtype.bit_size() / 8) * len;
                     } else if scope == Scope::Local {
                         _ = writeln!(
                             source,
