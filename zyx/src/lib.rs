@@ -76,14 +76,14 @@ mod slab;
 mod tensor;
 // Constant initializable hasher because apparently noone invented that yet...
 mod autograd;
-mod chasher;
+mod hashers;
 mod kernelize;
 mod module;
 mod prog_bar;
 mod view;
 
-type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
-type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::chasher::CHasher>>;
+type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
+type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 
 pub use autograd::GradientTape;
 pub use dtype::DType;

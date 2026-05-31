@@ -7,6 +7,7 @@
 
 use crate::backend::{AutotuneConfig, Device, DeviceInfo, DeviceProgramId, MemoryPool, PoolBufferId};
 use crate::error::{BackendError, ErrorStatus};
+use crate::hashers::AHasher;
 use crate::kernel::cost::Cost;
 use crate::kernel::{Kernel, Op, OpId, Scope};
 use crate::rng::Rng;
@@ -499,18 +500,7 @@ impl Kernel {
     }
 
     pub fn get_hash(&self) -> u64 {
-        use sha2::Digest;
-        struct H(sha2::Sha256);
-        impl std::hash::Hasher for H {
-            fn finish(&self) -> u64 {
-                let hash = self.0.clone().finalize();
-                u64::from_le_bytes(hash[..8].try_into().unwrap())
-            }
-            fn write(&mut self, bytes: &[u8]) {
-                self.0.update(bytes);
-            }
-        }
-        let mut hasher = H(sha2::Sha256::new());
+        let mut hasher = AHasher::default();
         self.hash(&mut hasher);
         hasher.finish()
     }
