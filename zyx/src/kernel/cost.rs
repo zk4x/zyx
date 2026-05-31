@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use crate::{
-    DType, Map,
+    DType, Map, Set,
     backend::DeviceInfo,
     kernel::{Kernel, Op, OpId, Scope},
 };
@@ -107,12 +107,11 @@ impl Kernel {
         }
 
         // Second pass: instruction counting + register allocation simulation
-        let mut n_instructions = 0;
-        let mut n_mads = 0u64;
-        let mut n_scoped_loads = [0u64; 3];
-        let mut n_scoped_stores = [0u64; 3];
-        let mut reuse_credit = [0u64; 3];
-        let mut barriers_per_thread = 0u64;
+        let mut n_wi_compute_ops = 0;
+        let mut n_wi_ops = 0;
+        let mut n_scoped_load_bits = [0u64; 3];
+        let mut n_scoped_store_bits = [0u64; 3];
+        let mut wi_barriers = 0u64;
         let mut gws = [1u64; 3];
         let mut lws = [1u64; 3];
         let mut loop_mult = 1u64;
@@ -120,7 +119,9 @@ impl Kernel {
 
         let mut reg_slots: Vec<(u32, (DType, u16))> = Vec::new(); // (rc, dtype)
         let mut reg_map: Map<OpId, usize> = Map::default();
-        let mut peak_reg_bytes = 0u64;
+        let mut indexing_ops: Set<OpId> = Set::default();
+        let mut wi_peak_reg_bytes = 0u64;
+        let mut wi_branches = 0u64;
 
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -135,8 +136,18 @@ impl Kernel {
                 | Op::Binary { .. }
                 | Op::Mad { .. }
                 | Op::Vectorize { .. }
-                | Op::Wmma { .. } => true,
-                _ => false,
+                | Op::Wmma { .. }
+                | Op::Loop { .. }
+                | Op::Devectorize { .. }
+                | Op::Define { .. }
+                | Op::Const(_)
+                | Op::Index { .. } => true,
+                Op::Store { .. } | Op::EndLoop | Op::Barrier { .. } | Op::If { .. } | Op::EndIf => false,
+                Op::ConstView(_) => todo!(),
+                Op::LoadView(_) => todo!(),
+                Op::StoreView { .. } => todo!(),
+                Op::Move { .. } => todo!(),
+                Op::Reduce { .. } => todo!(),
             };
             if produces {
                 if let Some(&rc) = rcs.get(&op_id) {
@@ -155,106 +166,34 @@ impl Kernel {
             }
 
             // Decrement RC for each operand
-            match op {
-                &Op::Load { index, .. } => {
-                    if let Some(&idx) = reg_map.get(&index) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
+            for param in op.parameters() {
+                if let Some(&p) = reg_map.get(&param) {
+                    if reg_slots[p].0 > 0 {
+                        reg_slots[p].0 -= 1;
                     }
                 }
-                &Op::Store { x, index, .. } => {
-                    if let Some(&idx) = reg_map.get(&x) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                    if let Some(&idx) = reg_map.get(&index) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                }
-                &Op::Cast { x, .. } | &Op::Unary { x, .. } => {
-                    if let Some(&idx) = reg_map.get(&x) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                }
-                &Op::Binary { x, y, .. } => {
-                    if let Some(&idx) = reg_map.get(&x) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                    if let Some(&idx) = reg_map.get(&y) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                }
-                &Op::Mad { x, y, z } => {
-                    if let Some(&idx) = reg_map.get(&x) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                    if let Some(&idx) = reg_map.get(&y) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                    if let Some(&idx) = reg_map.get(&z) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                }
-                Op::Vectorize { ops } => {
-                    for &x in ops.iter() {
-                        if let Some(&idx) = reg_map.get(&x) {
-                            if reg_slots[idx].0 > 0 {
-                                reg_slots[idx].0 -= 1;
-                            }
-                        }
-                    }
-                }
-                &Op::Wmma { a, b, c, .. } => {
-                    if let Some(&idx) = reg_map.get(&a) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                    if let Some(&idx) = reg_map.get(&b) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                    if let Some(&idx) = reg_map.get(&c) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                }
-                &Op::If { condition } => {
-                    if let Some(&idx) = reg_map.get(&condition) {
-                        if reg_slots[idx].0 > 0 {
-                            reg_slots[idx].0 -= 1;
-                        }
-                    }
-                }
-                _ => {}
             }
 
-            // Instruction counting (original logic)
+            // Is this indexing or compute?
+            if matches!(op, Op::Const(_) | Op::Index { .. } | Op::Loop { .. }) {
+                indexing_ops.insert(op_id);
+            } else if op.parameters().all(|p| indexing_ops.contains(&p)) {
+                indexing_ops.insert(op_id);
+            }
+
+            // Instruction counting
             match op {
                 Op::Cast { .. } | Op::Unary { .. } | Op::Binary { .. } => {
-                    n_instructions += loop_mult;
+                    n_wi_ops += loop_mult;
+                    if !indexing_ops.contains(&op_id) {
+                        n_wi_compute_ops += loop_mult;
+                    }
                 }
                 Op::Mad { .. } => {
-                    n_instructions += loop_mult;
-                    n_mads += loop_mult;
+                    n_wi_ops += 2 * loop_mult;
+                    if !indexing_ops.contains(&op_id) {
+                        n_wi_compute_ops += 2 * loop_mult;
+                    }
                 }
                 Op::Const(_)
                 | Op::Define { .. }
@@ -267,34 +206,40 @@ impl Kernel {
                 | Op::Move { .. }
                 | Op::Reduce { .. } => {}
                 &Op::Load { src, vlen, .. } => {
-                    n_instructions += loop_mult;
+                    n_wi_ops += loop_mult;
+                    if !indexing_ops.contains(&op_id) {
+                        n_wi_compute_ops += loop_mult;
+                    }
                     let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
                     let total_elements = loop_mult * u64::from(vlen);
-                    let rc = rcs.get(&op_id).copied().unwrap_or(1);
-                    let extra_uses = rc.saturating_sub(1) as u64;
-                    let credit = total_elements * extra_uses;
                     match scope {
                         Scope::Global => {
-                            n_scoped_loads[0] += total_elements;
-                            reuse_credit[0] += credit;
+                            n_scoped_load_bits[0] += total_elements * dtypes[&op_id].0.bit_size() as u64;
                         }
                         Scope::Local => {
-                            n_scoped_loads[1] += total_elements;
-                            reuse_credit[1] += credit;
+                            n_scoped_load_bits[1] += total_elements * dtypes[&op_id].0.bit_size() as u64;
                         }
                         Scope::Register => {
-                            n_scoped_loads[2] += total_elements;
-                            reuse_credit[2] += credit;
+                            n_scoped_load_bits[2] += total_elements * dtypes[&op_id].0.bit_size() as u64;
                         }
                     }
                 }
                 &Op::Store { dst, vlen, .. } => {
-                    n_instructions += loop_mult * 3;
+                    n_wi_ops += loop_mult * 3;
+                    if !indexing_ops.contains(&op_id) {
+                        n_wi_compute_ops += loop_mult * 3;
+                    }
                     let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
                     match scope {
-                        Scope::Global => n_scoped_stores[0] += loop_mult * u64::from(vlen),
-                        Scope::Local => n_scoped_stores[1] += loop_mult * u64::from(vlen),
-                        Scope::Register => n_scoped_stores[2] += loop_mult * u64::from(vlen),
+                        Scope::Global => {
+                            n_scoped_store_bits[0] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64
+                        }
+                        Scope::Local => {
+                            n_scoped_store_bits[1] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64
+                        }
+                        Scope::Register => {
+                            n_scoped_store_bits[2] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64
+                        }
                     }
                 }
                 &Op::Index { len, scope, axis } => match scope {
@@ -303,7 +248,10 @@ impl Kernel {
                     Scope::Register => {}
                 },
                 Op::Loop { len } => {
-                    n_instructions += loop_mult * 3;
+                    n_wi_ops += loop_mult * 3;
+                    if !indexing_ops.contains(&op_id) {
+                        n_wi_compute_ops += loop_mult * 3;
+                    }
                     loop_mult *= *len as u64;
                     latest_loop_lengths.push(*len as u64);
                 }
@@ -314,13 +262,21 @@ impl Kernel {
                     let (m, n, k) = dims.decompose_mnk();
                     let warp = u64::from(dev_info.warp_size);
                     let cost = (m * n * k) / warp;
-                    n_instructions += loop_mult * cost;
+                    n_wi_ops += loop_mult * cost;
+                    if !indexing_ops.contains(&op_id) {
+                        // TODO multiply by some constant
+                        n_wi_compute_ops += loop_mult * cost;
+                    }
                 }
                 Op::Barrier { .. } => {
-                    barriers_per_thread += loop_mult;
+                    wi_barriers += loop_mult;
                 }
                 Op::If { .. } => {
-                    n_instructions += loop_mult * 3;
+                    wi_branches += loop_mult;
+                    n_wi_ops += loop_mult * 3;
+                    if !indexing_ops.contains(&op_id) {
+                        n_wi_compute_ops += loop_mult * 3;
+                    }
                 }
             }
 
@@ -330,47 +286,45 @@ impl Kernel {
                 .filter(|(r, _)| *r > 0)
                 .map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * u64::from(dt.1))
                 .sum();
-            if bytes > peak_reg_bytes {
-                peak_reg_bytes = bytes;
+            if bytes > wi_peak_reg_bytes {
+                wi_peak_reg_bytes = bytes;
             }
 
             op_id = self.next_op(op_id);
         }
 
-        let n_threads = lws.iter().product::<u64>();
-        let global_load_ops_per_thread = n_scoped_loads[0].saturating_sub(reuse_credit[0]);
-        let local_loads_per_thread = n_scoped_loads[1];
-        let global_stores_per_thread = n_scoped_stores[0];
-        let local_stores_per_thread = n_scoped_stores[1];
+        let wi_global_load_bits = n_scoped_load_bits[0];
+        let wi_local_load_bits = n_scoped_load_bits[1];
+        let wi_global_store_bits = n_scoped_store_bits[0];
+        let wi_local_store_bits = n_scoped_store_bits[1];
 
-        let global_ws = gws.iter().product::<u64>();
-        // Subtract reuse credit: values loaded once and used by multiple
-        // consumers (register reuse) should not be charged multiple times.
-        let per_thread_loads = global_ws * global_load_ops_per_thread;
-        let per_thread_stores = global_ws * global_stores_per_thread;
-        let per_thread_instr = global_ws * n_instructions;
-        let workgroup_local =
-            n_threads * global_ws * (local_loads_per_thread + local_stores_per_thread);
-        let workgroup_barriers = n_threads * global_ws * barriers_per_thread;
+        let num_groups = gws.iter().product::<u64>();
+        let wi_per_group = lws.iter().product::<u64>();
+        let n_work_items = num_groups * wi_per_group;
 
-        let memory_score = (per_thread_loads * 10 + per_thread_stores * 10 + workgroup_local
-            + workgroup_barriers * 20) as f64;
-        let alu_score = per_thread_instr as f64;
-
-        // Use actual loaded elements (with vlen) for bandwidth / arith intensity.
-        let bytes_total = (global_ws * n_scoped_loads[0] + per_thread_stores) * 4;
-        let flops_total = n_mads * 2 * global_ws;
-        let arith_intensity = if bytes_total > 0 {
-            flops_total as f64 / bytes_total as f64
+        let n_ops = n_wi_ops * n_work_items;
+        let n_compute_ops = n_wi_compute_ops * n_work_items;
+        let n_barriers = wi_barriers * n_work_items;
+        let n_local_memory_bits = (wi_local_load_bits as f64 + wi_local_store_bits as f64 * 1.5) * n_work_items as f64;
+        let n_global_memory_bits = (wi_global_load_bits as f64 + wi_global_store_bits as f64 * 1.5) * n_work_items as f64;
+        let register_pressure = if wi_peak_reg_bytes > dev_info.max_register_bytes {
+            10
         } else {
-            0.0
+            0
         };
-        // Penalize register pressure relative to device limit.
-        let reg_pressure = peak_reg_bytes as f64;
-        let max_regs = dev_info.max_register_bytes as f64;
+        let warp_usage = wi_per_group as f64 / dev_info.warp_size as f64;
+        let max_warps = dev_info.max_local_threads / dev_info.warp_size as u64;
+        let n_branches = wi_branches * n_work_items;
 
-        let cost = (memory_score + alu_score * 0.1 - arith_intensity * 5.0
-            + if reg_pressure > max_regs { 1_000_000.0 } else { 0.0 }) as u64;
+        let cost = n_ops as f64
+            + n_compute_ops as f64
+            + n_barriers as f64
+            + n_local_memory_bits * n_global_memory_bits
+            + register_pressure as f64
+            + warp_usage
+            + n_branches as f64;
+
+        let cost = cost as u64;
 
         Cost { cost }
     }

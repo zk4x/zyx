@@ -78,29 +78,55 @@ impl Optimization {
                 println!("upcast axis {op_id} by {factor}, cfg_opt={config}");
             }
             Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
-                let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
-                let mut remaining_global = config % n_global_options;
-                let mut parts = Vec::new();
-                for (op_id, facs) in global_upcasts.iter() {
-                    let n_options = facs.len() + 1;
-                    let factor_idx = remaining_global % n_options;
-                    remaining_global /= n_options;
-                    if factor_idx > 0 {
-                        parts.push(format!("upcast axis {} by {}", op_id, facs[factor_idx - 1]));
-                    }
+                use std::fmt::Write;
+
+                let mut info = String::new();
+
+                let n_global = global_upcasts.len();
+                let n_reduce = reduce_splits.len();
+                if n_global == 0 || n_reduce == 0 {
+                    return;
                 }
+
+                let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
+
+                let mut remaining_global = config % n_global_options;
                 let mut remaining_reduce = config / n_global_options;
-                for (op_id, facs) in reduce_splits.iter() {
-                    let n_options = facs.len();
+
+                let mut reduce_indices: Vec<usize> = Vec::with_capacity(n_reduce);
+                for (_, factors) in reduce_splits.iter() {
+                    let n_options = factors.len();
                     let factor_idx = remaining_reduce % n_options;
                     remaining_reduce /= n_options;
-                    parts.push(format!("unroll {} by {}", op_id, facs[factor_idx]));
+                    reduce_indices.push(factor_idx);
                 }
-                if parts.is_empty() {
-                    println!("register tiling (no-op)");
-                } else {
-                    println!("register tiling {}", parts.join(", "));
+
+                let mut global_indices: Vec<usize> = Vec::with_capacity(n_global);
+                for (_, factors) in global_upcasts.iter() {
+                    let n_options = factors.len() + 1;
+                    let factor_idx = remaining_global % n_options;
+                    remaining_global /= n_options;
+                    global_indices.push(factor_idx);
                 }
+
+                // Apply unroll FIRST
+                for (i, (&reduce_id, factors)) in reduce_splits.iter().enumerate() {
+                    let factor_idx = reduce_indices[i];
+                    let reduce_factor = factors[factor_idx];
+                    write!(info, "unroll loop_id={reduce_id} by {reduce_factor}");
+                }
+
+                // Then apply upcast
+                let mut idx = 0;
+                for (op_id, factors) in global_upcasts.iter() {
+                    let factor_idx = global_indices[idx];
+                    let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
+                    if factor > 1 {
+                        write!(info, ", upcast gidx op_id={op_id} by {factor}");
+                    }
+                    idx += 1;
+                }
+                println!("{info}");
             }
             Optimization::UnrollConstantLoops => println!("UnrollConstantLoops"),
             Optimization::TiledReduce { factors } => {

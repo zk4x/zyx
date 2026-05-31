@@ -1740,7 +1740,7 @@ const CL_DEVICE_TYPE_ALL: cl_bitfield = 0xFFFF_FFFF;
 const CL_MEM_READ_WRITE: cl_bitfield = 1;
 //const CL_MEM_READ_ONLY: cl_bitfield = 4;
 const CL_NON_BLOCKING: cl_uint = 0;
-const CL_BLOCKING: cl_uint = 1;
+//const CL_BLOCKING: cl_uint = 1;
 const CL_PROGRAM_BUILD_LOG: cl_uint = 0x1183; // 4483
 
 #[allow(clippy::upper_case_acronyms)]

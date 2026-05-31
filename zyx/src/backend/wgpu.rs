@@ -158,7 +158,7 @@ pub(super) fn initialize_device(
             ],
             preferred_vector_size: 4,
             local_mem_size: 64 * 1024,
-            max_register_bytes: 1024,
+            max_register_bytes: 512,
             tensor_cores: false,
             warp_size: 32,
             supported_dtypes,
