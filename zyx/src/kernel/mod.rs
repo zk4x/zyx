@@ -850,13 +850,16 @@ impl Kernel {
                         params.push(z);
                     }
                     match (&self.ops[x].op, &self.ops[y].op) {
-                        (Op::Loop { len: dim, .. }, Op::Const(c)) | (Op::Const(c), Op::Loop { len: dim, .. }) => {
-                            let (target, d) = if matches!(self.ops[x].op, Op::Loop { .. }) {
-                                (x, *dim)
+                        (Op::Loop { len: dim, .. }, Op::Const(c))
+                        | (Op::Index { len: dim, .. }, Op::Const(c))
+                        | (Op::Const(c), Op::Loop { len: dim, .. })
+                        | (Op::Const(c), Op::Index { len: dim, .. }) => {
+                            let target = if matches!(self.ops[x].op, Op::Loop { .. } | Op::Index { .. }) {
+                                x
                             } else {
-                                (y, *dim)
+                                y
                             };
-                            indices.insert(target, (d, c.as_dim().unwrap()));
+                            indices.insert(target, (*dim, c.as_dim().unwrap()));
                         }
                         _ => {}
                     }

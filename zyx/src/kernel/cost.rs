@@ -27,6 +27,8 @@ pub struct Cost {
     wi_local_store_bits: u64,
     wi_peak_reg_bytes: u64,
     wi_branches: u64,
+    wi_global_load_lidx_stride: u64,
+    wi_global_store_lidx_stride: u64,
 
     warp_size: u64,
     max_local_threads: u64,
@@ -37,7 +39,7 @@ impl Cost {
     pub fn debug(&self) {
         println!(
             "num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}
-wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, warp_size={}, max_local_threads={}, max_register_bytes={}",
+wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={}",
             self.num_groups,
             self.wi_per_group,
             self.wi_ops,
@@ -49,6 +51,8 @@ wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches
             self.wi_local_store_bits,
             self.wi_peak_reg_bytes,
             self.wi_branches,
+            self.wi_global_load_lidx_stride,
+            self.wi_global_store_lidx_stride,
             self.warp_size,
             self.max_local_threads,
             self.max_register_bytes
@@ -165,6 +169,10 @@ impl Kernel {
         let mut indexing_ops: Set<OpId> = Set::default();
         let mut wi_peak_reg_bytes = 0u64;
         let mut wi_branches = 0u64;
+        let mut glb_load_lidx_stride_weighted = 0u64;
+        let mut glb_load_lidx_stride_weight = 0u64;
+        let mut glb_store_lidx_stride_weighted = 0u64;
+        let mut glb_store_lidx_stride_weight = 0u64;
 
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -253,7 +261,7 @@ impl Kernel {
                 | Op::StoreView { .. }
                 | Op::Move { .. }
                 | Op::Reduce { .. } => {}
-                &Op::Load { src, vlen, .. } => {
+                &Op::Load { src, index, vlen } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
@@ -262,7 +270,28 @@ impl Kernel {
                     let total_elements = loop_mult * u64::from(vlen);
                     match scope {
                         Scope::Global => {
-                            n_scoped_load_bits[0] += total_elements * dtypes[&op_id].0.bit_size() as u64;
+                            let n_bits = total_elements * dtypes[&op_id].0.bit_size() as u64;
+                            n_scoped_load_bits[0] += n_bits;
+                            // Track stride weighted by loaded bits
+                            let strides = self.get_strides(index);
+                            let mut has_index = false;
+                            for (oid, (_, st)) in &strides {
+                                if oid.is_null() { continue; }
+                                if matches!(self.ops[*oid].op, Op::Index { .. }) {
+                                    if *st > 0 {
+                                        glb_load_lidx_stride_weighted += st * n_bits;
+                                        glb_load_lidx_stride_weight += n_bits;
+                                        has_index = true;
+                                    }
+                                }
+                            }
+                            // If get_strides found nothing, check if index itself is an Index node
+                            if !has_index {
+                                if let Op::Index { .. } = self.ops[index].op {
+                                    glb_load_lidx_stride_weighted += 1 * n_bits;
+                                    glb_load_lidx_stride_weight += n_bits;
+                                }
+                            }
                         }
                         Scope::Local => {
                             n_scoped_load_bits[1] += total_elements * dtypes[&op_id].0.bit_size() as u64;
@@ -272,7 +301,7 @@ impl Kernel {
                         }
                     }
                 }
-                &Op::Store { dst, vlen, .. } => {
+                &Op::Store { dst, index, vlen, .. } => {
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
@@ -280,7 +309,28 @@ impl Kernel {
                     let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
                     match scope {
                         Scope::Global => {
-                            n_scoped_store_bits[0] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64
+                            let n_bits = loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64;
+                            n_scoped_store_bits[0] += n_bits;
+                            // Track stride weighted by stored bits
+                            let strides = self.get_strides(index);
+                            let mut has_index = false;
+                            for (oid, (_, st)) in &strides {
+                                if oid.is_null() { continue; }
+                                if matches!(self.ops[*oid].op, Op::Index { .. }) {
+                                    if *st > 0 {
+                                        glb_store_lidx_stride_weighted += st * n_bits;
+                                        glb_store_lidx_stride_weight += n_bits;
+                                        has_index = true;
+                                    }
+                                }
+                            }
+                            // If get_strides found nothing, check if index itself is an Index node
+                            if !has_index {
+                                if let Op::Index { .. } = self.ops[index].op {
+                                    glb_store_lidx_stride_weighted += 1 * n_bits;
+                                    glb_store_lidx_stride_weight += n_bits;
+                                }
+                            }
                         }
                         Scope::Local => {
                             n_scoped_store_bits[1] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64
@@ -389,6 +439,8 @@ impl Kernel {
             wi_local_store_bits,
             wi_peak_reg_bytes,
             wi_branches,
+            wi_global_load_lidx_stride: if glb_load_lidx_stride_weight > 0 { glb_load_lidx_stride_weighted / glb_load_lidx_stride_weight } else { 0 },
+            wi_global_store_lidx_stride: if glb_store_lidx_stride_weight > 0 { glb_store_lidx_stride_weighted / glb_store_lidx_stride_weight } else { 0 },
             warp_size: dev_info.warp_size as u64,
             max_local_threads: dev_info.max_local_threads,
             max_register_bytes: dev_info.max_register_bytes,

@@ -48,7 +48,8 @@ def parse_bench_output(filename):
                 if i < len(lines):
                     m2 = re.match(
                         r'wi_local_load_bits=(\d+), wi_local_store_bits=(\d+), '
-                        r'wi_peak_reg_bytes=(\d+), wi_branches=(\d+), '
+                        r'wi_peak_reg_bytes=(\d+), wi_branches=(\d+)(?:, '
+                        r'wi_global_load_lidx_stride=(\d+), wi_global_store_lidx_stride=(\d+))?, '
                         r'warp_size=(\d+), max_local_threads=(\d+), max_register_bytes=(\d+)',
                         lines[i].strip()
                     )
@@ -57,9 +58,11 @@ def parse_bench_output(filename):
                         entry['wi_local_store_bits'] = int(m2.group(2))
                         entry['wi_peak_reg_bytes'] = int(m2.group(3))
                         entry['wi_branches'] = int(m2.group(4))
-                        entry['warp_size'] = int(m2.group(5))
-                        entry['max_local_threads'] = int(m2.group(6))
-                        entry['max_register_bytes'] = int(m2.group(7))
+                        entry['wi_global_load_lidx_stride'] = int(m2.group(5)) if m2.group(5) else 0
+                        entry['wi_global_store_lidx_stride'] = int(m2.group(6)) if m2.group(6) else 0
+                        entry['warp_size'] = int(m2.group(7))
+                        entry['max_local_threads'] = int(m2.group(8))
+                        entry['max_register_bytes'] = int(m2.group(9))
 
                 i += 1
                 if i < len(lines):
@@ -84,7 +87,8 @@ def write_csv(entries):
             'section', 'num_groups', 'wi_per_group', 'wi_ops', 'wi_compute_ops',
             'wi_barriers', 'wi_global_load_bits', 'wi_global_store_bits',
             'wi_local_load_bits', 'wi_local_store_bits', 'wi_peak_reg_bytes',
-            'wi_branches', 'warp_size', 'max_local_threads', 'max_register_bytes',
+            'wi_branches', 'wi_global_load_lidx_stride', 'wi_global_store_lidx_stride',
+            'warp_size', 'max_local_threads', 'max_register_bytes',
             'time_us', 'gflops'
         ])
         for e in entries:
@@ -93,7 +97,10 @@ def write_csv(entries):
                 e['wi_compute_ops'], e['wi_barriers'], e['wi_global_load_bits'],
                 e['wi_global_store_bits'], e.get('wi_local_load_bits', 0),
                 e.get('wi_local_store_bits', 0), e.get('wi_peak_reg_bytes', 0),
-                e.get('wi_branches', 0), e.get('warp_size', 32),
+                e.get('wi_branches', 0),
+                e.get('wi_global_load_lidx_stride', 0),
+                e.get('wi_global_store_lidx_stride', 0),
+                e.get('warp_size', 32),
                 e.get('max_local_threads', 1024), e.get('max_register_bytes', 256),
                 e['time_us'], e['gflops']
             ])
@@ -114,6 +121,8 @@ def build_features(entries):
         preg = e.get('wi_peak_reg_bytes', 0)
         warp = e.get('warp_size', 32)
         mreg = e.get('max_register_bytes', 256)
+        ld_st = e.get('wi_global_load_lidx_stride', 0)
+        st_st = e.get('wi_global_store_lidx_stride', 0)
 
         lng = np.log(ng)
         lwpg = np.log(wpg + 1)
@@ -142,6 +151,10 @@ def build_features(entries):
             gsb / max(wpg, 1),
             ng * wpg,
             barr * lwpg,
+            ld_st,
+            st_st,
+            np.log1p(ld_st),
+            np.log1p(st_st),
         ])
 
     return np.array(features)
@@ -172,6 +185,7 @@ def main():
         'lng', 'lwpg', 'lops', 'lcop', 'lgmem', 'wr', 'rr',
         'lng*lcop', 'lwpg*lops', 'lng*wr', 'lcop*lgmem', 'lwpg*wr', 'lng*rr',
         'barr', 'lm_ratio', 'rw_ratio', 'store_per_thread', 'total_threads', 'barr*lwpg',
+        'ld_stride', 'st_stride', 'log1p_ld_stride', 'log1p_st_stride',
     ]
     print(f"Total features: {X.shape[1]}")
 
