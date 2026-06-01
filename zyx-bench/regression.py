@@ -323,6 +323,59 @@ def build_features(entries):
         ('layer_norm_passes', lambda e: min(e['wi_barriers'] / 2.0, 3.0)),  # 1=1 pass, 2=2 passes, 3=3+ passes for LayerNorm
         ('embedding_sparsity', lambda e: e['num_groups'] / max(e['wi_global_load_bits'] / 32.0, 1)),  # sparsity factor for index_select
         ('compute_intensity_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'] * 32, 1)),  # compute intensity per thread
+        # Additional GPU-specific features from neural_net.py
+        ('active_warps', lambda e: e['num_groups'] * e['wi_per_group'] / 2048.0),  # SM occupancy proxy
+        ('bank_conflict_barr_load', lambda e: (e.get('wi_local_load_lidx_stride', 0) % 10) * e['wi_barriers']),  # bank conflicts × barriers
+        ('bank_conflict_barr_store', lambda e: (e.get('wi_local_store_lidx_stride', 0) % 10) * e['wi_barriers']),  # bank conflicts × barriers
+        ('bank_conflict_load_adj4', lambda e: abs((e.get('wi_local_load_lidx_stride', 0) % 10) - 4)),  # distance from optimal stride 4
+        ('bank_conflict_load_adj8', lambda e: abs((e.get('wi_local_load_lidx_stride', 0) % 10) - 8)),  # distance from optimal stride 8
+        ('bank_conflict_store_adj4', lambda e: abs((e.get('wi_local_store_lidx_stride', 0) % 10) - 4)),  # distance from optimal stride 4
+        ('bank_conflict_store_adj8', lambda e: abs((e.get('wi_local_store_lidx_stride', 0) % 10) - 8)),  # distance from optimal stride 8
+        ('barrier_density', lambda e: e['wi_barriers'] / max(e['num_groups'] * e['wi_per_group'], 1)),  # barriers per thread
+        ('barrier_overhead', lambda e: e['wi_barriers'] * np.log1p(e['wi_barriers']) / max(e['wi_ops'] / max(e['wi_barriers'], 1), 1)),  # sync cost
+        ('barrier_per_thread', lambda e: e['wi_barriers'] / max(e['num_groups'] * e['wi_per_group'], 1)),  # barriers per thread
+        ('bw_ratio', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max((e['num_groups'] * e['wi_per_group']) * 256.0, 1)),  # memory bandwidth utilization
+        ('bw_util_barr', lambda e: ((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max((e['num_groups'] * e['wi_per_group']) * 256.0, 1)) * e['wi_barriers']),  # bandwidth × barriers
+        ('coalescing_barr', lambda e: (1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0)) * e['wi_barriers']),  # coalescing × barriers
+        ('coalescing_store_barr', lambda e: (1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0)) * e['wi_barriers']),  # store coalescing × barriers
+        ('global_bandwidth_util', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max((e['num_groups'] * e['wi_per_group']) * 256.0, 1)),  # global memory utilization
+        ('global_coalescing_avg', lambda e: (1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0) + 1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0)) / 2.0),  # avg coalescing
+        ('global_coalescing_min', lambda e: min(1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0), 1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0))),  # min coalescing
+        ('global_coalescing_product', lambda e: (1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0)) * (1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0))),  # coalescing product
+        ('global_coalescing_store', lambda e: 1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0)),  # store coalescing
+        ('local_bw_ratio', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)),  # local vs global memory ratio
+        ('local_coalescing_avg', lambda e: (1.0 - min(abs((e.get('wi_local_load_lidx_stride', 0) % 10) - 5) / 5.0, 1.0) + 1.0 - min(abs((e.get('wi_local_store_lidx_stride', 0) % 10) - 5) / 5.0, 1.0)) / 2.0),  # avg local coalescing
+        ('local_coalescing_load', lambda e: 1.0 - min(abs((e.get('wi_local_load_lidx_stride', 0) % 10) - 5) / 5.0, 1.0)),  # local load coalescing
+        ('local_coalescing_store', lambda e: 1.0 - min(abs((e.get('wi_local_store_lidx_stride', 0) % 10) - 5) / 5.0, 1.0)),  # local store coalescing
+        ('load_bank_conflict', lambda e: e.get('wi_local_load_lidx_stride', 0) % 10),  # load bank conflicts
+        ('mem_intensity_barr', lambda e: (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)) * e['wi_barriers']),  # compute intensity × barriers
+        ('memory_intensity', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)),  # compute vs memory intensity
+        ('memory_pressure', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1)),  # memory per thread
+        ('occupancy_barr', lambda e: min((e['num_groups'] * e['wi_per_group']) / 2048.0, 1.0) * e['wi_barriers']),  # SM occupancy × barriers
+        ('reduce_complexity', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0))),  # reduce complexity
+        ('reduce_tree_depth', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0))),  # reduce tree depth
+        ('register_efficiency', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)),  # register efficiency
+        ('register_per_thread', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e['num_groups'] * e['wi_per_group'], 1)),  # register per thread
+        ('register_pressure_score', lambda e: (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)) * (1.0 + e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1))),  # register pressure score
+        ('register_utilization', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)),  # register utilization
+        ('register_waste', lambda e: (e.get('max_register_bytes', 256) - e.get('wi_peak_reg_bytes', 0)) / max(e.get('max_register_bytes', 256), 1)),  # register waste
+        ('reg_pressure_barr', lambda e: (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)) * e['wi_barriers']),  # register pressure × barriers
+        ('shared_mem_barr', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) * e['wi_barriers']),  # shared memory × barriers
+        ('shared_mem_efficiency', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / max(e['num_groups'] * e['wi_per_group'], 1)),  # shared memory efficiency
+        ('shared_mem_load_ratio', lambda e: e.get('wi_local_load_bits', 0) / max(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0) + 1, 1)),  # shared memory load ratio
+        ('shared_mem_per_thread', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / max(e['num_groups'] * e['wi_per_group'], 1)),  # shared memory per thread
+        ('shared_mem_pressure', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 65536.0),  # shared memory pressure
+        ('shared_mem_store_ratio', lambda e: e.get('wi_local_store_bits', 0) / max(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0) + 1, 1)),  # shared memory store ratio
+        ('shared_mem_util', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 65536.0),  # shared memory utilization
+        ('store_bank_conflict', lambda e: e.get('wi_local_store_lidx_stride', 0) % 10),  # store bank conflicts
+        ('sync_efficiency', lambda e: 1.0 / (1.0 + e['wi_barriers'])),  # sync efficiency (inverse of barriers)
+        ('thread_efficiency', lambda e: (e['wi_ops'] * e['wi_per_group']) / max(e['num_groups'] * e['wi_per_group'], 1)),  # thread efficiency
+        ('warp_divergence', lambda e: np.log(max(32.0 / e['wi_per_group'], 1.0))),  # warp divergence proxy
+        ('warp_efficiency', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1)),  # warp efficiency
+        ('warp_occupancy', lambda e: (e['num_groups'] * e['wi_per_group']) / 2048.0),  # warp occupancy
+        ('warp_util_barr', lambda e: (e['wi_per_group'] / max(e.get('warp_size', 32), 1)) * e['wi_barriers']),  # warp utilization × barriers
+        ('warp_utilization', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1)),  # warp utilization
+        ('warp_waste', lambda e: (32.0 - e['wi_per_group']) / 32.0),  # warp waste (fraction of warp unused)
     ]
 
     FEATURE_NAMES = [name for name, _ in feature_defs]

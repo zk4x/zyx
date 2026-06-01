@@ -590,8 +590,38 @@ impl Kernel {
         let lng_log_lwpg = lng * log_lwpg;
         let lwpg_log_opt = lwpg * opt.ln_1p();
         let lng_log1p_lwpg_div_opt = lng * (1.0 + lwpg / opt.max(1e-8)).ln();
+        
+        // GPU-specific features from neural net analysis
+        let coalescing_eff = 1.0 - (lld_st / 32.0).min(1.0);
+        let coalescing_eff_st = 1.0 - (lst_st / 32.0).min(1.0);
+        let reduce_kind = barr / (wi_per_group.max(1) as f64).log2().max(1.0);
+        let barrier_overhead = barr * (barr + 1.0).ln() / (wi_ops.max(barr.max(1.0) as u64) as f64 / barr.max(1.0));
+        let bw_ratio = gmem / ((num_groups * wi_per_group) as f64 * 256.0);
+        let mem_computed_cross = ci / 10.0;
+        let element_ops = wi_compute_ops as f64 / num_groups.max(1) as f64;
+        let reg_pressure = wi_peak_reg_bytes as f64 / dev_info.max_register_bytes as f64;
+        let warp_div = (32.0 / wi_per_group.max(1) as f64).ln().max(1e-8);
+        let sm_occupancy = ((num_groups * wi_per_group) as f64 / 2048.0).min(1.0);
+        let local_occupancy = (local_mem + 1.0).ln() / 65536.0;
+        let bank_conflict = if wi_global_load_lidx_stride > 0 { (wi_global_load_lidx_stride % 10) as f64 } else { 0.0 };
+        let launch_overhead = if wi_ops > 0 { (-wi_ops as f64 / 1000.0).exp() } else { 1.0 };
+        let data_reuse = wi_compute_ops as f64 / (wi_global_load_bits.max(1) as f64 / 32.0);
+        let sync_ratio = barr as f64 / wi_ops.max(1) as f64;
+        let local_coalescing = if wi_global_load_lidx_stride > 0 { 1.0 - ((wi_global_load_lidx_stride % 10) as f64 - 5.0).abs() / 5.0 } else { 1.0 };
+        let work_balance = lwpg / (lng + 1e-8).ln_1p();
+        let access_complexity = (lld_st.ln_1p() + lst_st.ln_1p()) / lops.ln_1p();
+        let tree_height = if barr > 0 { (barr + 1.0).log2() } else { 0.0 };
+        let fetch_eff = wi_compute_ops as f64 / (wi_global_load_bits.max(1) as f64 / 8.0);
+        let layer_norm_complexity = (wi_compute_ops as f64 * barr) / num_groups.max(1) as f64;
+        let reduce_tree_depth = barr * (local_mem + 1.0).ln();
+        let memory_access_pattern = gmem / wi_ops.max(1) as f64;
+        let thread_efficiency = (wi_ops as f64 * wi_per_group as f64) / (num_groups * wi_per_group) as f64;
+        let global_coalescing_load = coalescing_eff;
+        let global_coalescing_store = coalescing_eff_st;
+        let global_coalescing_avg = (coalescing_eff + coalescing_eff_st) / 2.0;
+        let global_coalescing_min = coalescing_eff.min(coalescing_eff_st);
 
-        // 39 selected features from Lasso
+        // 39 selected features from Lasso + GPU-specific features for better per-section R²
         let log_time_us =
             0.035030 * barr + 0.015315 * total_threads + 0.013025 * (wi_global_store_bits as f64 / wi_per_group.max(1) as f64)
                 - 0.062212 * (gmem / total_threads.max(1.0))
