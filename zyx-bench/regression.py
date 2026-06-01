@@ -53,6 +53,8 @@ def parse_bench_output(filename):
                         r'wi_peak_reg_bytes=(\d+), wi_branches=(\d+)(?:, '
                         r'wi_global_load_lidx_stride=(\d+))?, '
                         r'(?:wi_global_store_lidx_stride=(\d+))?, '
+                        r'(?:wi_local_load_lidx_stride=(\d+))?, '
+                        r'(?:wi_local_store_lidx_stride=(\d+))?, '
                         r'warp_size=(\d+), max_local_threads=(\d+), max_register_bytes=(\d+)',
                         lines[i].strip()
                     )
@@ -63,9 +65,11 @@ def parse_bench_output(filename):
                         entry['wi_branches'] = int(m2.group(4))
                         entry['wi_global_load_lidx_stride'] = int(m2.group(5)) / 10.0 if m2.group(5) else 0.0
                         entry['wi_global_store_lidx_stride'] = int(m2.group(6)) / 10.0 if m2.group(6) else 0.0
-                        entry['warp_size'] = int(m2.group(7))
-                        entry['max_local_threads'] = int(m2.group(8))
-                        entry['max_register_bytes'] = int(m2.group(9))
+                        entry['wi_local_load_lidx_stride'] = int(m2.group(7)) / 10.0 if m2.group(7) else 0.0
+                        entry['wi_local_store_lidx_stride'] = int(m2.group(8)) / 10.0 if m2.group(8) else 0.0
+                        entry['warp_size'] = int(m2.group(9))
+                        entry['max_local_threads'] = int(m2.group(10))
+                        entry['max_register_bytes'] = int(m2.group(11))
 
                 i += 1
                 if i < len(lines):
@@ -93,6 +97,7 @@ def write_csv(entries):
             'wi_barriers', 'wi_global_load_bits', 'wi_global_store_bits',
             'wi_local_load_bits', 'wi_local_store_bits', 'wi_peak_reg_bytes',
             'wi_branches', 'wi_global_load_lidx_stride', 'wi_global_store_lidx_stride',
+            'wi_local_load_lidx_stride', 'wi_local_store_lidx_stride',
             'warp_size', 'max_local_threads', 'max_register_bytes',
             'time_us', 'gflops'
         ])
@@ -105,6 +110,8 @@ def write_csv(entries):
                 e.get('wi_branches', 0),
                 e.get('wi_global_load_lidx_stride', 0),
                 e.get('wi_global_store_lidx_stride', 0),
+                e.get('wi_local_load_lidx_stride', 0),
+                e.get('wi_local_store_lidx_stride', 0),
                 e.get('warp_size', 32),
                 e.get('max_local_threads', 1024), e.get('max_register_bytes', 256),
                 e['time_us'], e['gflops']
@@ -224,6 +231,14 @@ def build_features(entries):
         ('lld_st*lst_st', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log1p(e.get('wi_global_store_lidx_stride', 0))),
         ('lst_st*lops', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0)) * np.log(e['wi_ops'])),
         ('lst_st*lng', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0)) * np.log(e['num_groups'])),
+        # local stride core (4)
+        ('lld_st_loc', lambda e: np.log1p(e.get('wi_local_load_lidx_stride', 0))),
+        ('lst_st_loc', lambda e: np.log1p(e.get('wi_local_store_lidx_stride', 0))),
+        ('lld_st_loc*barr', lambda e: np.log1p(e.get('wi_local_load_lidx_stride', 0)) * e['wi_barriers']),
+        ('lst_st_loc*barr', lambda e: np.log1p(e.get('wi_local_store_lidx_stride', 0)) * e['wi_barriers']),
+        # local stride × lng (2)
+        ('lld_st_loc*lng', lambda e: np.log1p(e.get('wi_local_load_lidx_stride', 0)) * np.log(e['num_groups'])),
+        ('lst_st_loc*lng', lambda e: np.log1p(e.get('wi_local_store_lidx_stride', 0)) * np.log(e['num_groups'])),
         # memory ratio (4)
         ('lops*lgmem', lambda e: np.log(e['wi_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
         ('lcop*lgmem', lambda e: np.log(e['wi_compute_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
