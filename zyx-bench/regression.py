@@ -110,79 +110,83 @@ def write_csv(entries):
 
 
 def build_features(entries):
-    # Each "feature" is (name, callable(e) -> value)
+    # Single source of truth: (name, callable)
+    F = lambda name, fn: (name, fn)
     feature_defs = [
-        # core transforms (7)
-        ('lng', lambda e: np.log(e['num_groups'])),
-        ('lwpg', lambda e: np.log(e['wi_per_group'] + 1)),
-        ('lops', lambda e: np.log(e['wi_ops'])),
-        ('lcop', lambda e: np.log(e['wi_compute_ops'])),
-        ('lgmem', lambda e: np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
-        ('barr', lambda e: e['wi_barriers']),
-        ('lld_st', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0))),
-        # secondary (4)
-        ('wr', lambda e: e['wi_per_group'] / e.get('warp_size', 32)),
-        ('rr', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)),
-        ('lst_st', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0))),
-        ('total_threads', lambda e: e['num_groups'] * e['wi_per_group']),
-        # tertiary (4)
-        ('store_per_thread', lambda e: e['wi_global_store_bits'] / max(e['wi_per_group'], 1)),
-        ('ci', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)),
-        ('overhead', lambda e: e['wi_ops'] / max(e['wi_compute_ops'], 1)),
-        ('mem_per_thread', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1)),
-        # log ratios (4)
-        ('log1p_ci', lambda e: np.log1p(e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
-        ('log1p_overhead', lambda e: np.log1p(e['wi_ops'] / max(e['wi_compute_ops'], 1))),
-        ('log1p_mp', lambda e: np.log1p((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1))),
-        ('log1p_lm', lambda e: np.log1p((e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0) + 1) / max(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1, 1))),
-        # floor features for tiny kernels (4)
-        ('log_ops_100', lambda e: np.log(e['wi_ops'] + 100)),
-        ('log_cops_100', lambda e: np.log(e['wi_compute_ops'] + 100)),
-        ('log1p_1000_div_ops', lambda e: np.log1p(1000 / max(e['wi_ops'], 1))),
-        ('log1p_1000_div_cops', lambda e: np.log1p(1000 / max(e['wi_compute_ops'], 1))),
-        # work per resource (6)
-        ('ops_per_thread', lambda e: e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)),
-        ('cops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)),
-        ('ops_per_group', lambda e: e['wi_ops'] / max(e['num_groups'], 1)),
-        ('log_opt', lambda e: np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))),
-        ('inv_threads', lambda e: 1.0 / max(e['num_groups'] * e['wi_per_group'], 1)),
-        ('log_inv_threads', lambda e: np.log1p(1.0 / max(e['num_groups'] * e['wi_per_group'], 1))),
-        # barrier interactions (6)
-        ('barr*lops', lambda e: e['wi_barriers'] * np.log(e['wi_ops'])),
-        ('barr*lcop', lambda e: e['wi_barriers'] * np.log(e['wi_compute_ops'])),
-        ('barr*lgmem', lambda e: e['wi_barriers'] * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
-        ('barr*lwpg', lambda e: e['wi_barriers'] * np.log(e['wi_per_group'] + 1)),
-        ('barr*lng', lambda e: e['wi_barriers'] * np.log(e['num_groups'])),
-        ('barr*wr', lambda e: e['wi_barriers'] * (e['wi_per_group'] / e.get('warp_size', 32))),
-        # stride core (5)
-        ('lld_st*lops', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_ops'])),
-        ('lld_st*lcop', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_compute_ops'])),
-        ('lld_st*lng', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['num_groups'])),
-        ('lld_st*barr', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * e['wi_barriers']),
-        ('lld_st*lgmem', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
-        # stride secondary (4)
-        ('lld_st*wr', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * (e['wi_per_group'] / e.get('warp_size', 32))),
-        ('lld_st*lst_st', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log1p(e.get('wi_global_store_lidx_stride', 0))),
-        ('lst_st*lops', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0)) * np.log(e['wi_ops'])),
-        ('lst_st*lng', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0)) * np.log(e['num_groups'])),
-        # memory ratio (4)
-        ('lops*lgmem', lambda e: np.log(e['wi_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
-        ('lcop*lgmem', lambda e: np.log(e['wi_compute_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
-        ('lng*lgmem', lambda e: np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
-        ('lwpg*lgmem', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
-        # compute intensity interactions (4)
-        ('lops*ci', lambda e: np.log(e['wi_ops']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
-        ('lcop*ci', lambda e: np.log(e['wi_compute_ops']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
-        ('lng*ci', lambda e: np.log(e['num_groups']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
-        ('lld_st*ci', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
-        # thread/group (4)
-        ('lng*wr', lambda e: np.log(e['num_groups']) * (e['wi_per_group'] / e.get('warp_size', 32))),
-        ('lwpg*wr', lambda e: np.log(e['wi_per_group'] + 1) * (e['wi_per_group'] / e.get('warp_size', 32))),
-        ('lng*rr', lambda e: np.log(e['num_groups']) * (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1))),
-        ('lwpg*rr', lambda e: np.log(e['wi_per_group'] + 1) * (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1))),
-        # MLX (2)
-        ('lng*lcop', lambda e: np.log(e['num_groups']) * np.log(e['wi_compute_ops'])),
-        ('lwpg*lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops'])),
+        # --- size & occupancy (7) ---
+        F('lng',  lambda e: np.log(e['num_groups'])),
+        F('lwpg', lambda e: np.log(e['wi_per_group'] + 1)),
+        F('lops', lambda e: np.log(e['wi_ops'])),
+        F('barr', lambda e: e['wi_barriers']),
+        F('wr',   lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1)),
+        F('rr',   lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)),
+        F('tot_th', lambda e: e['num_groups'] * e['wi_per_group']),
+
+        # --- stride / coalescing (2) ---
+        F('lld_st', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0))),
+        F('lst_st', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0))),
+
+        # --- derived ratios (4) ---
+        F('ci',     lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)),
+        F('overhd', lambda e: e['wi_ops'] / max(e['wi_compute_ops'], 1)),
+        F('opt',    lambda e: e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)),
+        F('mpt',    lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1)),
+
+        # --- log of ratios (3) ---
+        F('log_ci',  lambda e: np.log1p(e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
+        F('log_oh',  lambda e: np.log1p(e['wi_ops'] / max(e['wi_compute_ops'], 1))),
+        F('log_lm',  lambda e: np.log1p((e.get('wi_local_load_bits',0)+e.get('wi_local_store_bits',0)+1) / max(e['wi_global_load_bits']+e['wi_global_store_bits']+1, 1))),
+
+        # --- barrier one-hot (7) ---
+        F('b0', lambda e: 1. if e['wi_barriers']==0 else 0.),
+        F('b3', lambda e: 1. if e['wi_barriers']==3 else 0.),
+        F('b4', lambda e: 1. if e['wi_barriers']==4 else 0.),
+        F('b5', lambda e: 1. if e['wi_barriers']==5 else 0.),
+        F('b6', lambda e: 1. if e['wi_barriers']==6 else 0.),
+        F('b7', lambda e: 1. if e['wi_barriers']==7 else 0.),
+        F('b8', lambda e: 1. if e['wi_barriers']==8 else 0.),
+
+        # --- size × barrier (5) ---
+        F('lng*b', lambda e: np.log(e['num_groups']) * e['wi_barriers']),
+        F('lwpg*b',lambda e: np.log(e['wi_per_group']+1) * e['wi_barriers']),
+        F('lops*b',lambda e: np.log(e['wi_ops']) * e['wi_barriers']),
+        F('wr*b',  lambda e: (e['wi_per_group']/max(e.get('warp_size',32),1)) * e['wi_barriers']),
+        F('rr*b',  lambda e: (e.get('wi_peak_reg_bytes',0)/max(e.get('max_register_bytes',256),1)) * e['wi_barriers']),
+
+        # --- size × stride (5) ---
+        F('lng*s', lambda e: np.log(e['num_groups']) * np.log1p(e.get('wi_global_load_lidx_stride',0))),
+        F('lwpg*s',lambda e: np.log(e['wi_per_group']+1) * np.log1p(e.get('wi_global_load_lidx_stride',0))),
+        F('lops*s',lambda e: np.log(e['wi_ops']) * np.log1p(e.get('wi_global_load_lidx_stride',0))),
+        F('barr*s',lambda e: e['wi_barriers'] * np.log1p(e.get('wi_global_load_lidx_stride',0))),
+        F('wr*s',  lambda e: (e['wi_per_group']/max(e.get('warp_size',32),1)) * np.log1p(e.get('wi_global_load_lidx_stride',0))),
+
+        # --- store stride (2) ---
+        F('lst*lops',lambda e: np.log1p(e.get('wi_global_store_lidx_stride',0)) * np.log(e['wi_ops'])),
+        F('lst*lng', lambda e: np.log1p(e.get('wi_global_store_lidx_stride',0)) * np.log(e['num_groups'])),
+
+        # --- occupancy × ops (4) ---
+        F('lng*lops', lambda e: np.log(e['num_groups']) * np.log(e['wi_ops'])),
+        F('lwpg*lops',lambda e: np.log(e['wi_per_group']+1) * np.log(e['wi_ops'])),
+        F('lng*opt', lambda e: np.log(e['num_groups']) * (e['wi_ops']/max(e['num_groups']*e['wi_per_group'],1))),
+        F('lwpg*opt',lambda e: np.log(e['wi_per_group']+1) * (e['wi_ops']/max(e['num_groups']*e['wi_per_group'],1))),
+
+        # --- compute intensity × size (4) ---
+        F('lng*ci',  lambda e: np.log(e['num_groups']) * (e['wi_compute_ops']/max(e['wi_global_load_bits']+e['wi_global_store_bits'],1))),
+        F('lwpg*ci', lambda e: np.log(e['wi_per_group']+1) * (e['wi_compute_ops']/max(e['wi_global_load_bits']+e['wi_global_store_bits'],1))),
+        F('lops*ci', lambda e: np.log(e['wi_ops']) * (e['wi_compute_ops']/max(e['wi_global_load_bits']+e['wi_global_store_bits'],1))),
+        F('s*ci',    lambda e: np.log1p(e.get('wi_global_load_lidx_stride',0)) * (e['wi_compute_ops']/max(e['wi_global_load_bits']+e['wi_global_store_bits'],1))),
+
+        # --- register pressure (2) ---
+        F('lng*rr',  lambda e: np.log(e['num_groups']) * (e.get('wi_peak_reg_bytes',0)/max(e.get('max_register_bytes',256),1))),
+        F('lwpg*rr', lambda e: np.log(e['wi_per_group']+1) * (e.get('wi_peak_reg_bytes',0)/max(e.get('max_register_bytes',256),1))),
+
+        # --- floor / tiny kernel (2) ---
+        F('log_o100', lambda e: np.log(e['wi_ops']+100)),
+        F('log1p_1kdo', lambda e: np.log1p(1000/max(e['wi_ops'],1))),
+
+        # --- misc (2) ---
+        F('spt', lambda e: e['wi_global_store_bits']/max(e['wi_per_group'],1)),
+        F('log1p_mp', lambda e: np.log1p((e['wi_global_load_bits']+e['wi_global_store_bits'])/max(e['num_groups']*e['wi_per_group'],1))),
     ]
 
     FEATURE_NAMES = [name for name, _ in feature_defs]
