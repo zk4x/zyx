@@ -67,13 +67,15 @@ def parse_bench_output(filename):
 
                 i += 1
                 if i < len(lines):
-                    time_match = re.match(r'([\d.]+)\s*(μs|ms)\s*~\s*([\d.]+)\s*GFLOP/s', lines[i].strip())
+                    time_match = re.match(r'([\d.]+)\s*(s|ms|μs)\s*~\s*([\d.]+)\s*[MG]FLOP/s', lines[i].strip())
                     if time_match:
                         time_val = float(time_match.group(1))
                         unit = time_match.group(2)
                         entry['gflops'] = float(time_match.group(3))
                         if unit == 'ms':
                             time_val *= 1000.0
+                        elif unit == 's':
+                            time_val *= 1_000_000.0
                         entry['time_us'] = time_val
                         entries.append(entry)
         i += 1
