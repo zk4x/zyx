@@ -632,7 +632,7 @@ impl Kernel {
                 - 0.010186 * barr * (1.0 + num_groups as f64 / local_mem.max(1.0)).ln()
                 + 5.755699;
 
-        let cost = log_time_us.exp().max(1.0) as u64;
+        let cost = log_time_us.max(1.0) as u64;
 
         Cost {
             cost,
