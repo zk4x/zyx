@@ -277,6 +277,52 @@ def build_features(entries):
         ('log_cops_100*b0', lambda e: np.log(e['wi_compute_ops'] + 100) * (1.0 if e['wi_barriers'] == 0 else 0.0)),
         ('lng*lwpg*b0', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log(e['num_groups']) * np.log1p(e['wi_per_group'])),
         ('lwpg*lops*b0', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log1p(e['wi_per_group']) * np.log(e['wi_ops'])),
+        # GPU execution regime features
+        # coalescing efficiency: 1.0 = fully coalesced, 0.0 = worst case
+        ('coalescing_eff', lambda e: 1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0)),
+        ('coalescing_eff_st', lambda e: 1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0)),
+        # tree vs linear reduce: 1.0 = tree reduce, >>1.0 = linear reduce, <<1.0 = over-reducing
+        ('reduce_kind', lambda e: e['wi_barriers'] / max(np.log2(e['wi_per_group'] + 1), 1.0)),
+        # barrier overhead: sync cost relative to work between barriers
+        ('barrier_overhead', lambda e: e['wi_barriers'] * np.log1p(e['wi_barriers']) / max(e['wi_ops'] / max(e['wi_barriers'], 1), 1)),
+        # memory bandwidth ratio: global memory per SM relative to 256B cache line
+        ('bw_ratio', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max((e['num_groups'] * e['wi_per_group']) * 256.0, 1)),
+        # compute vs memory bound crossing: chip threshold ~10 FLOPs/byte
+        ('mem_computed_cross', lambda e: (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)) / 10.0),
+        # element work complexity: ops per output element (exp vs gelu vs silu)
+        ('element_ops', lambda e: e['wi_compute_ops'] / max(e['num_groups'], 1)),
+        # register pressure: spilling risk
+        ('reg_pressure', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)),
+        # warp divergence proxy
+        ('warp_div', lambda e: np.log(max(32 / max(e['wi_per_group'], 1), 1e-8))),
+        # SM occupancy proxy
+        ('sm_occupancy', lambda e: min((e['num_groups'] * e['wi_per_group']) / 2048.0, 1.0)),
+        # local memory occupancy (shared memory pressure)
+        ('local_occupancy', lambda e: np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 65536.0),
+        # bank conflict probability: local address mod 32
+        ('bank_conflict', lambda e: (int(e.get('wi_local_load_lidx_stride', 0)) % 10) if e.get('wi_local_load_lidx_stride', 0) > 0 else 0.0),
+        # launch overhead regime: tiny kernels dominated by kernel launch latency
+        ('launch_overhead', lambda e: np.exp(-e['wi_ops'] / 1000.0) if e['wi_ops'] > 0 else 1.0),
+        # compute ops vs memory ops ratio (data reuse)
+        ('data_reuse', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] / 32.0, 1)),
+        # barrier-to-work ratio (sync-heavy vs compute-heavy)
+        ('sync_ratio', lambda e: e['wi_barriers'] / max(e['wi_ops'], 1)),
+        # local memory coalescing efficiency (bank-aware)
+        ('local_coalescing', lambda e: 1.0 - min(abs(np.mod(e.get('wi_local_load_lidx_stride', 0), 10) - 5) / 5.0, 1.0) if e.get('wi_local_load_lidx_stride', 0) > 0 else 1.0),
+        # work distribution balance (uniformity across groups)
+        ('work_balance', lambda e: np.log1p(e['wi_per_group']) / max(np.log1p(e['num_groups']), 1e-8)),
+        # memory access pattern complexity
+        ('access_complexity', lambda e: (np.log1p(e.get('wi_global_load_lidx_stride', 0)) + np.log1p(e.get('wi_global_store_lidx_stride', 0))) / max(np.log1p(e['wi_ops']), 1)),
+        # reduction tree height impact
+        ('tree_height', lambda e: np.log2(e['wi_barriers'] + 1) if e['wi_barriers'] > 0 else 0),
+        # compute per memory access (fetch efficiency)
+        ('fetch_eff', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] / 8.0, 1)),
+        # 5 features targeting specific bottlenecks
+        ('tree_reduce_cost', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0))),  # barriers * local_mem
+        ('element_ops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)),  # compute per thread element
+        ('layer_norm_passes', lambda e: min(e['wi_barriers'] / 2.0, 3.0)),  # 1=1 pass, 2=2 passes, 3=3+ passes for LayerNorm
+        ('embedding_sparsity', lambda e: e['num_groups'] / max(e['wi_global_load_bits'] / 32.0, 1)),  # sparsity factor for index_select
+        ('compute_intensity_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'] * 32, 1)),  # compute intensity per thread
     ]
 
     FEATURE_NAMES = [name for name, _ in feature_defs]
