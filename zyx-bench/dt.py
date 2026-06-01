@@ -240,6 +240,20 @@ def build_features(entries):
         # MLX (2)
         ('lng*lcop', lambda e: np.log(e['num_groups']) * np.log(e['wi_compute_ops'])),
         ('lwpg*lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops'])),
+        # warp utilization (4)
+        ('warp_util', lambda e: e['wi_per_group'] / e.get('warp_size', 32)),
+        ('log_warp_waste', lambda e: np.log(32 / max(e['wi_per_group'], 1))),
+        ('lng_warp_waste', lambda e: np.log(e['num_groups']) * np.log(32 / max(e['wi_per_group'], 1))),
+        ('lwpg_warp_waste', lambda e: np.log(e['wi_per_group'] + 1) * np.log(32 / max(e['wi_per_group'], 1))),
+        # launch overhead regime (3)
+        ('lng_div_lops', lambda e: np.log(max(e['num_groups'] / max(e['wi_ops'], 1), 1e-8))),
+        ('raw_ng_lwpg', lambda e: e['num_groups'] * np.log1p(e['wi_per_group'])),
+        ('total_threads_lwpg', lambda e: (e['num_groups'] * e['wi_per_group']) * np.log1p(e['wi_per_group'])),
+        # tree reduction (4)
+        ('llm', lambda e: np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0))),
+        ('barr_llm', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0))),
+        ('barr_wpg', lambda e: e['wi_barriers'] * np.log1p(e['wi_per_group'])),
+        ('barr_ng_loc', lambda e: e['wi_barriers'] * np.log1p(e['num_groups'] / max(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0), 1))),
     ]
 
     FEATURE_NAMES = [name for name, _ in feature_defs]

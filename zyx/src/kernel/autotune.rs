@@ -427,6 +427,9 @@ impl Kernel {
         }
         items = sampled;
 
+        // Sort by cost: try cheaper configs first
+        items.sort_by_key(|opt_seq| opt_seq.cost.cost);
+
         for opt_seq in items.iter() {
             let mut kernel = kernel.clone();
 

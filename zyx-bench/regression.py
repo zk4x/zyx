@@ -4,7 +4,8 @@
 import re
 import csv
 import numpy as np
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import Ridge, Lasso
+from sklearn.preprocessing import StandardScaler
 from collections import Counter
 
 BENCH_OUTPUT = '/home/x/Dev/rust/zyx/zyx-bench/bench_output.txt'
@@ -240,6 +241,26 @@ def build_features(entries):
         # MLX (2)
         ('lng*lcop', lambda e: np.log(e['num_groups']) * np.log(e['wi_compute_ops'])),
         ('lwpg*lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops'])),
+        # warp utilization (4)
+        ('warp_util', lambda e: e['wi_per_group'] / e.get('warp_size', 32)),
+        ('log_warp_waste', lambda e: np.log(32 / max(e['wi_per_group'], 1))),
+        ('lng_warp_waste', lambda e: np.log(e['num_groups']) * np.log(32 / max(e['wi_per_group'], 1))),
+        ('lwpg_warp_waste', lambda e: np.log(e['wi_per_group'] + 1) * np.log(32 / max(e['wi_per_group'], 1))),
+        # launch overhead regime (3)
+        ('lng_div_lops', lambda e: np.log(max(e['num_groups'] / max(e['wi_ops'], 1), 1e-8))),
+        ('raw_ng_lwpg', lambda e: e['num_groups'] * np.log1p(e['wi_per_group'])),
+        ('total_threads_lwpg', lambda e: (e['num_groups'] * e['wi_per_group']) * np.log1p(e['wi_per_group'])),
+        # tree reduction (4)
+        ('llm', lambda e: np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0))),
+        ('barr_llm', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0))),
+        ('barr_wpg', lambda e: e['wi_barriers'] * np.log1p(e['wi_per_group'])),
+        ('barr_ng_loc', lambda e: e['wi_barriers'] * np.log1p(e['num_groups'] / max(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0), 1))),
+        # barrier-regime interactions (5)
+        ('b0*lcop', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log(e['wi_compute_ops'])),
+        ('b0*lgmem', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
+        ('log_cops_100*b0', lambda e: np.log(e['wi_compute_ops'] + 100) * (1.0 if e['wi_barriers'] == 0 else 0.0)),
+        ('lng*lwpg*b0', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log(e['num_groups']) * np.log1p(e['wi_per_group'])),
+        ('lwpg*lops*b0', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log1p(e['wi_per_group']) * np.log(e['wi_ops'])),
     ]
 
     FEATURE_NAMES = [name for name, _ in feature_defs]
@@ -272,21 +293,42 @@ def main():
     X, FEATURE_NAMES = build_features(entries)
     print(f"Total features: {X.shape[1]}")
 
-    # Ridge regression with all features (regularization handles overfitting)
-    model = Ridge(alpha=1.0)
-    model.fit(X, y)
+    # Lasso for feature selection (~30 features via L1)
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
 
-    y_pred = model.predict(X)
+    target_n = 30
+    best_alpha = None
+    for alpha in np.logspace(-3, -1, 40):
+        l = Lasso(alpha=alpha, random_state=42, max_iter=10000)
+        l.fit(Xs, y)
+        nz = np.sum(l.coef_ != 0)
+        if nz >= target_n - 5 and nz <= target_n + 10:
+            best_alpha = alpha
+            break
+    if best_alpha is None:
+        best_alpha = 0.01
+
+    lasso = Lasso(alpha=best_alpha, random_state=42, max_iter=10000)
+    lasso.fit(Xs, y)
+    n_selected = np.sum(lasso.coef_ != 0)
+    print(f"\nLasso selected {n_selected}/{X.shape[1]} features (alpha={best_alpha:.6f})")
+
+    # Refit with Ridge on selected features only
+    selected = lasso.coef_ != 0
+    selected_names = [n for n, s in zip(FEATURE_NAMES, selected) if s]
+    selected_coefs = lasso.coef_[selected]
+
+    print(f"\nSelected coefficients:")
+    for name, c in zip(selected_names, selected_coefs):
+        print(f"  {name:25s}  {c:.6f}")
+    print(f"  {'intercept':25s}  {lasso.intercept_:.6f}")
+
+    y_pred = lasso.predict(Xs)
     ss_res = np.sum((y - y_pred) ** 2)
     ss_tot = np.sum((y - np.mean(y)) ** 2)
     r2 = 1 - ss_res / ss_tot
-    print(f"\nRidge R² = {r2:.4f}")
-
-    print(f"\nRidge R² = {r2:.4f}")
-    print(f"Coefficients:")
-    for name, c in zip(FEATURE_NAMES, model.coef_):
-        print(f"  {name:20s}  {c:.6f}")
-    print(f"  {'intercept':20s}  {model.intercept_:.6f}")
+    print(f"\nLasso R² = {r2:.4f}")
 
     print("\nPer-section R²:")
     for section in sorted(set(e['section'] for e in entries)):
@@ -299,14 +341,18 @@ def main():
             r2_sec = 1 - ss_res_sec / ss_tot_sec if ss_tot_sec > 0 else 0
             print(f"  {section}: R²={r2_sec:.4f} (n={len(mask)})")
 
-    print("\n=== Cost.rs constants ===")
-    print(f"const LOG_TIME_COEFS: [f64; {len(FEATURE_NAMES)}] = [")
-    for c in model.coef_:
+    print(f"\n=== Cost.rs ({n_selected} selected features) ===")
+    print(f"const SELECTED_FEATURES: [&str; {n_selected}] = [")
+    for n in selected_names:
+        print(f'    "{n}",')
+    print("];")
+    print(f"const LOG_TIME_COEFS: [f64; {n_selected}] = [")
+    for c in selected_coefs:
         print(f"    {c:.6f},")
     print("];")
-    print(f"const LOG_TIME_INTERCEPT: f64 = {model.intercept_:.6f};")
+    print(f"const LOG_TIME_INTERCEPT: f64 = {lasso.intercept_:.6f};")
 
-    return model, entries
+    return lasso, entries, selected_names, selected_coefs
 
 
 if __name__ == '__main__':
