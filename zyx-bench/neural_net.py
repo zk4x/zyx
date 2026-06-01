@@ -323,12 +323,11 @@ def build_features(entries):
         ('tree_height', lambda e: np.log2(e['wi_barriers'] + 1) if e['wi_barriers'] > 0 else 0),
         # compute per memory access (fetch efficiency)
         ('fetch_eff', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] / 8.0, 1)),
-        # 5 features targeting specific bottlenecks
-        ('tree_reduce_cost', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0))),  # barriers * local_mem
-        ('element_ops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)),  # compute per thread element
-        ('layer_norm_passes', lambda e: min(e['wi_barriers'] / 2.0, 3.0)),  # 1=1 pass, 2=2 passes, 3=3+ passes for LayerNorm
-        ('embedding_sparsity', lambda e: e['num_groups'] / max(e['wi_global_load_bits'] / 32.0, 1)),  # sparsity factor for index_select
-        ('compute_intensity_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'] * 32, 1)),  # compute intensity per thread
+        # Additional features for challenging sections
+        ('layer_norm_complexity', lambda e: (e['wi_compute_ops'] * e['wi_barriers']) / max(e['num_groups'], 1)),  # LayerNorm: compute * passes per element
+        ('reduce_tree_depth', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0))),  # Reduce: barriers * local_mem_depth
+        ('memory_access_pattern', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['wi_ops'], 1)),  # memory ops per total op
+        ('thread_efficiency', lambda e: (e['wi_ops'] * e['wi_per_group']) / max(e['num_groups'] * e['wi_per_group'], 1)),  # ops per thread (normalized)
     ]
 
     FEATURE_NAMES = [name for name, _ in feature_defs]
