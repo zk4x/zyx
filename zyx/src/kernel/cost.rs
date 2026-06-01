@@ -38,8 +38,9 @@ pub struct Cost {
 impl Cost {
     pub fn debug(&self) {
         println!(
-            "num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}
+            "const={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}
 wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={}",
+            self.cost,
             self.num_groups,
             self.wi_per_group,
             self.wi_ops,
@@ -274,22 +275,42 @@ impl Kernel {
                             n_scoped_load_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
                             let strides = self.get_strides(index);
-                            let stride = strides.iter().find_map(|(oid, (_, st))| {
-                                if oid.is_null() || *st == 0 { return None; }
-                                if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Local, .. }) {
-                                    Some(*st)
-                                } else { None }
-                            }).or_else(|| strides.iter().find_map(|(oid, (_, st))| {
-                                if oid.is_null() || *st == 0 { return None; }
-                                if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
-                                    Some(*st)
-                                } else { None }
-                            })).or_else(|| strides.iter().find_map(|(oid, (_, st))| {
-                                if oid.is_null() || *st == 0 { return None; }
-                                if matches!(self.ops[*oid].op, Op::Loop { .. }) {
-                                    Some(*st)
-                                } else { None }
-                            }));
+                            let stride = strides
+                                .iter()
+                                .find_map(|(oid, (_, st))| {
+                                    if oid.is_null() || *st == 0 {
+                                        return None;
+                                    }
+                                    if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Local, .. }) {
+                                        Some(*st)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .or_else(|| {
+                                    strides.iter().find_map(|(oid, (_, st))| {
+                                        if oid.is_null() || *st == 0 {
+                                            return None;
+                                        }
+                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                            Some(*st)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .or_else(|| {
+                                    strides.iter().find_map(|(oid, (_, st))| {
+                                        if oid.is_null() || *st == 0 {
+                                            return None;
+                                        }
+                                        if matches!(self.ops[*oid].op, Op::Loop { .. }) {
+                                            Some(*st)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                });
                             if let Some(st) = stride {
                                 glb_load_lidx_stride_weighted += st * n_bits;
                                 glb_load_lidx_stride_weight += n_bits;
@@ -318,22 +339,42 @@ impl Kernel {
                             n_scoped_store_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
                             let strides = self.get_strides(index);
-                            let stride = strides.iter().find_map(|(oid, (_, st))| {
-                                if oid.is_null() || *st == 0 { return None; }
-                                if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Local, .. }) {
-                                    Some(*st)
-                                } else { None }
-                            }).or_else(|| strides.iter().find_map(|(oid, (_, st))| {
-                                if oid.is_null() || *st == 0 { return None; }
-                                if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
-                                    Some(*st)
-                                } else { None }
-                            })).or_else(|| strides.iter().find_map(|(oid, (_, st))| {
-                                if oid.is_null() || *st == 0 { return None; }
-                                if matches!(self.ops[*oid].op, Op::Loop { .. }) {
-                                    Some(*st)
-                                } else { None }
-                            }));
+                            let stride = strides
+                                .iter()
+                                .find_map(|(oid, (_, st))| {
+                                    if oid.is_null() || *st == 0 {
+                                        return None;
+                                    }
+                                    if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Local, .. }) {
+                                        Some(*st)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .or_else(|| {
+                                    strides.iter().find_map(|(oid, (_, st))| {
+                                        if oid.is_null() || *st == 0 {
+                                            return None;
+                                        }
+                                        if matches!(self.ops[*oid].op, Op::Index { scope: Scope::Global, .. }) {
+                                            Some(*st)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .or_else(|| {
+                                    strides.iter().find_map(|(oid, (_, st))| {
+                                        if oid.is_null() || *st == 0 {
+                                            return None;
+                                        }
+                                        if matches!(self.ops[*oid].op, Op::Loop { .. }) {
+                                            Some(*st)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                });
                             if let Some(st) = stride {
                                 glb_store_lidx_stride_weighted += st * n_bits;
                                 glb_store_lidx_stride_weight += n_bits;
@@ -453,46 +494,45 @@ impl Kernel {
         let lng_log1p_lwpg_div_opt = lng * (1.0 + lwpg / opt.max(1e-8)).ln();
 
         // 39 selected features from Lasso
-        let log_time_us = 0.035030 * barr
-            + 0.015315 * total_threads
-            + 0.013025 * (wi_global_store_bits as f64 / wi_per_group.max(1) as f64)
-            - 0.062212 * (gmem / total_threads.max(1.0))
-            - 0.056089 * ci.ln_1p()
-            - 0.035205 * (wi_ops as f64 / wi_compute_ops.max(1) as f64).ln_1p()
-            - 0.131589 * (100.0 / wi_ops.max(1) as f64).ln_1p()
-            + 0.376882 * (1000.0 / wi_compute_ops.max(1) as f64).ln_1p()
-            + 0.178002 * log_lwpg
-            - 0.484077 * lng_log_opt
-            - 0.164596 * lng_log_lwpg
-            - 0.075348 * lwpg_log_opt
-            + 0.046618 * raw_ng
-            + 0.142005 * (num_groups * wi_per_group) as f64
-            - 0.078469 * raw_ng / wi_ops.max(1) as f64
-            + 0.030256 * (wi_branches as f64).ln_1p()
-            - 0.038757 * lng * lwpg
-            + 0.998624 * lng_log1p_lwpg_div_opt
-            - 0.011622 * b0
-            + 0.031162 * b4
-            + 0.000044 * b7
-            + 0.013697 * b3 * lng
-            - 0.012228 * b4 * lng
-            - 0.007321 * b7 * lng
-            - 0.051676 * barr * lng
-            + 0.046386 * lld_st.ln_1p() * warp_ratio
-            + 0.007545 * lld_st.ln_1p() * lst_st.ln_1p()
-            + 0.029707 * lst_st.ln_1p() * lng
-            + 2.685514 * lops * lgmem
-            + 0.179980 * lcop * lgmem
-            + 0.098591 * lwpg * lgmem
-            + 0.159286 * lcop * ci
-            - 0.043359 * lng * ci
-            - 0.019263 * lld_st.ln_1p() * ci
-            + 0.100067 * lwpg * reg_ratio
-            + 0.901502 * lng * lcop
-            - 0.051377 * lwpg * (32.0 / wi_per_group.max(1) as f64).ln()
-            + 0.041226 * raw_ng * lwpg
-            - 0.010186 * barr * (1.0 + num_groups as f64 / local_mem.max(1.0)).ln()
-            + 5.755699;
+        let log_time_us =
+            0.035030 * barr + 0.015315 * total_threads + 0.013025 * (wi_global_store_bits as f64 / wi_per_group.max(1) as f64)
+                - 0.062212 * (gmem / total_threads.max(1.0))
+                - 0.056089 * ci.ln_1p()
+                - 0.035205 * (wi_ops as f64 / wi_compute_ops.max(1) as f64).ln_1p()
+                - 0.131589 * (100.0 / wi_ops.max(1) as f64).ln_1p()
+                + 0.376882 * (1000.0 / wi_compute_ops.max(1) as f64).ln_1p()
+                + 0.178002 * log_lwpg
+                - 0.484077 * lng_log_opt
+                - 0.164596 * lng_log_lwpg
+                - 0.075348 * lwpg_log_opt
+                + 0.046618 * raw_ng
+                + 0.142005 * (num_groups * wi_per_group) as f64
+                - 0.078469 * raw_ng / wi_ops.max(1) as f64
+                + 0.030256 * (wi_branches as f64).ln_1p()
+                - 0.038757 * lng * lwpg
+                + 0.998624 * lng_log1p_lwpg_div_opt
+                - 0.011622 * b0
+                + 0.031162 * b4
+                + 0.000044 * b7
+                + 0.013697 * b3 * lng
+                - 0.012228 * b4 * lng
+                - 0.007321 * b7 * lng
+                - 0.051676 * barr * lng
+                + 0.046386 * lld_st.ln_1p() * warp_ratio
+                + 0.007545 * lld_st.ln_1p() * lst_st.ln_1p()
+                + 0.029707 * lst_st.ln_1p() * lng
+                + 2.685514 * lops * lgmem
+                + 0.179980 * lcop * lgmem
+                + 0.098591 * lwpg * lgmem
+                + 0.159286 * lcop * ci
+                - 0.043359 * lng * ci
+                - 0.019263 * lld_st.ln_1p() * ci
+                + 0.100067 * lwpg * reg_ratio
+                + 0.901502 * lng * lcop
+                - 0.051377 * lwpg * (32.0 / wi_per_group.max(1) as f64).ln()
+                + 0.041226 * raw_ng * lwpg
+                - 0.010186 * barr * (1.0 + num_groups as f64 / local_mem.max(1.0)).ln()
+                + 5.755699;
 
         let cost = log_time_us.exp().max(1.0) as u64;
 
@@ -509,8 +549,16 @@ impl Kernel {
             wi_local_store_bits,
             wi_peak_reg_bytes,
             wi_branches,
-            wi_global_load_lidx_stride: if glb_load_lidx_stride_weight > 0 { (glb_load_lidx_stride_weighted as f64 / glb_load_lidx_stride_weight as f64 * 10.0) as u64 } else { 0 },
-            wi_global_store_lidx_stride: if glb_store_lidx_stride_weight > 0 { (glb_store_lidx_stride_weighted as f64 / glb_store_lidx_stride_weight as f64 * 10.0) as u64 } else { 0 },
+            wi_global_load_lidx_stride: if glb_load_lidx_stride_weight > 0 {
+                (glb_load_lidx_stride_weighted as f64 / glb_load_lidx_stride_weight as f64 * 10.0) as u64
+            } else {
+                0
+            },
+            wi_global_store_lidx_stride: if glb_store_lidx_stride_weight > 0 {
+                (glb_store_lidx_stride_weighted as f64 / glb_store_lidx_stride_weight as f64 * 10.0) as u64
+            } else {
+                0
+            },
             warp_size: dev_info.warp_size as u64,
             max_local_threads: dev_info.max_local_threads,
             max_register_bytes: dev_info.max_register_bytes,
