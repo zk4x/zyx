@@ -4,7 +4,7 @@
 use crate::{
     DType, Map, Set,
     backend::DeviceInfo,
-    kernel::{Kernel, Op, OpId, Scope},
+    kernel::{IDX_T, Kernel, Op, OpId, Scope},
 };
 use nanoserde::{DeBin, SerBin};
 
@@ -218,13 +218,15 @@ impl Kernel {
             }
 
             // Is this indexing or compute?
-            if matches!(op, Op::Const(_) | Op::Index { .. } | Op::Loop { .. })
-                || op.parameters().all(|p| indexing_ops.contains(&p))
+            if (matches!(op, Op::Index { .. } | Op::Loop { .. })
+                || (op.parameters().count() > 0 && op.parameters().all(|p| indexing_ops.contains(&p))))
             {
-                if matches!(op, Op::Load { .. }) {
-                    println!("op={op:?} is indexing");
-                }
                 indexing_ops.insert(op_id);
+            }
+            if let Op::Const(c) = op {
+                if c.dtype() == IDX_T {
+                    indexing_ops.insert(op_id);
+                }
             }
 
             // Instruction counting
