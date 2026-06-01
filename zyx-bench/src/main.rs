@@ -305,6 +305,195 @@ fn activation_bench() -> Result<(), ZyxError> {
     Ok(())
 }
 
+fn ln_softmax_bench() -> Result<(), ZyxError> {
+    println!("=== Ln Softmax ===");
+
+    let cases: &[(&str, &[u64], &[i32])] = &[
+        ("[4096]", &[4096], &[]),
+        ("[256, 4096]", &[256, 4096], &[]),
+        ("[512, 1024]", &[512, 1024], &[1]),
+        ("[32, 768, 1024]", &[32, 768, 1024], &[1]),
+        ("[64, 512]", &[64, 512], &[]),
+    ];
+
+    for (_label, dims, axes) in cases {
+        let shape: Vec<u64> = dims.to_vec();
+        let x = Tensor::rand(&shape, DType::F32)?;
+        Tensor::realize([&x])?;
+
+        let out = x.ln_softmax(axes.iter().copied())?;
+        out.realize_one()?;
+
+        let total = (0..5)
+            .map(|_| {
+                let x = Tensor::rand(&shape, DType::F32)?;
+                let start = Instant::now();
+                let out = x.ln_softmax(axes.iter().copied())?;
+                out.realize_one()?;
+                Ok::<u128, ZyxError>(start.elapsed().as_micros())
+            })
+            .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
+
+        let _avg = total as f64 / 5.0;
+    }
+
+    println!();
+    Ok(())
+}
+
+fn reduce_axis_bench() -> Result<(), ZyxError> {
+    println!("=== Reduce Axis ===");
+
+    let cases: &[(&str, &[u64])] = &[
+        ("[512, 512]", &[512, 512]),
+        ("[256, 1024]", &[256, 1024]),
+        ("[128, 2048]", &[128, 2048]),
+        ("[64, 4096]", &[64, 4096]),
+        ("[32, 128, 256]", &[32, 128, 256]),
+        ("[16, 512, 512]", &[16, 512, 512]),
+    ];
+
+    for (_label, dims) in cases {
+        let shape: Vec<u64> = dims.to_vec();
+        let x = Tensor::rand(&shape, DType::F32)?;
+        Tensor::realize([&x])?;
+
+        // sum along last axis
+        let out = x.sum([shape.len() as i32 - 1])?;
+        out.realize_one()?;
+
+        let total = (0..5)
+            .map(|_| {
+                let x = Tensor::rand(&shape, DType::F32)?;
+                let start = Instant::now();
+                let out = x.sum([shape.len() as i32 - 1])?;
+                out.realize_one()?;
+                Ok::<u128, ZyxError>(start.elapsed().as_micros())
+            })
+            .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
+        let _avg = total as f64 / 5.0;
+
+        // max along last axis
+        let out = x.max([shape.len() as i32 - 1])?;
+        out.realize_one()?;
+
+        let total = (0..5)
+            .map(|_| {
+                let x = Tensor::rand(&shape, DType::F32)?;
+                let start = Instant::now();
+                let out = x.max([shape.len() as i32 - 1])?;
+                out.realize_one()?;
+                Ok::<u128, ZyxError>(start.elapsed().as_micros())
+            })
+            .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
+        let _avg = total as f64 / 5.0;
+
+        // var along last axis
+        let out = x.var([shape.len() as i32 - 1])?;
+        out.realize_one()?;
+
+        let total = (0..5)
+            .map(|_| {
+                let x = Tensor::rand(&shape, DType::F32)?;
+                let start = Instant::now();
+                let out = x.var([shape.len() as i32 - 1])?;
+                out.realize_one()?;
+                Ok::<u128, ZyxError>(start.elapsed().as_micros())
+            })
+            .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
+        let _avg = total as f64 / 5.0;
+    }
+
+    println!();
+    Ok(())
+}
+
+fn silu_like_bench() -> Result<(), ZyxError> {
+    println!("=== SiLU-like (x * sigmoid(x)) ===");
+
+    let shapes: &[(&str, &[u64])] = &[
+        ("[4096]", &[4096]),
+        ("[16384]", &[16384]),
+        ("[1024, 4096]", &[1024, 4096]),
+        ("[512, 1024]", &[512, 1024]),
+        ("[256, 1024, 512]", &[256, 1024, 512]),
+        ("[16, 768, 2048]", &[16, 768, 2048]),
+    ];
+
+    for (_label, dims) in shapes {
+        let shape: Vec<u64> = dims.to_vec();
+        let x = Tensor::rand(&shape, DType::F32)?;
+        Tensor::realize([&x])?;
+
+        // warmup
+        let out = x.sigmoid()?.mul(&x)?;
+        out.realize_one()?;
+
+        let total = (0..5)
+            .map(|_| {
+                let x = Tensor::rand(&shape, DType::F32)?;
+                let start = Instant::now();
+                let out = x.sigmoid()?.mul(&x)?;
+                out.realize_one()?;
+                Ok::<u128, ZyxError>(start.elapsed().as_micros())
+            })
+            .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
+        let _avg = total as f64 / 5.0;
+    }
+
+    println!();
+    Ok(())
+}
+
+fn layer_norm_like_bench() -> Result<(), ZyxError> {
+    println!("=== Layer Norm-like (mean+var+normalize) ===");
+
+    let shapes: &[(&str, &[u64])] = &[
+        ("[128, 768]", &[128, 768]),
+        ("[64, 1024]", &[64, 1024]),
+        ("[32, 2048]", &[32, 2048]),
+        ("[16, 768, 1024]", &[16, 768, 1024]),
+    ];
+
+    for (_label, dims) in shapes {
+        let shape: Vec<u64> = dims.to_vec();
+        let x = Tensor::rand(&shape, DType::F32)?;
+        let gamma = Tensor::rand([*dims.last().unwrap()], DType::F32)?;
+        let beta = Tensor::rand([*dims.last().unwrap()], DType::F32)?;
+        Tensor::realize([&x, &gamma, &beta])?;
+
+        // warmup: normalize along last axis
+        let mean = x.mean([-1])?;
+        let centered = x.sub(&mean)?;
+        let var = centered.var([-1])?;
+        let std = var.add(Tensor::from(1e-5))?.sqrt()?;
+        let norm = centered.div(&std)?;
+        let out = norm.mul(&gamma)?.add(&beta)?;
+        out.realize_one()?;
+
+        let total = (0..5)
+            .map(|_| {
+                let x = Tensor::rand(&shape, DType::F32)?;
+                let gamma = Tensor::rand([*dims.last().unwrap()], DType::F32)?;
+                let beta = Tensor::rand([*dims.last().unwrap()], DType::F32)?;
+                let start = Instant::now();
+                let mean = x.mean([-1])?;
+                let centered = x.sub(&mean)?;
+                let var = centered.var([-1])?;
+                let std = var.add(Tensor::from(1e-5))?.sqrt()?;
+                let norm = centered.div(&std)?;
+                let out = norm.mul(&gamma)?.add(&beta)?;
+                out.realize_one()?;
+                Ok::<u128, ZyxError>(start.elapsed().as_micros())
+            })
+            .try_fold(0u128, |acc, t| t.map(|v| acc + v))?;
+        let _avg = total as f64 / 5.0;
+    }
+
+    println!();
+    Ok(())
+}
+
 fn main() -> Result<(), ZyxError> {
     matmul_bench()?;
     reduce_bench()?;
@@ -312,5 +501,9 @@ fn main() -> Result<(), ZyxError> {
     embedding_bench()?;
     gelu_bench()?;
     activation_bench()?;
+    ln_softmax_bench()?;
+    reduce_axis_bench()?;
+    silu_like_bench()?;
+    layer_norm_like_bench()?;
     Ok(())
 }

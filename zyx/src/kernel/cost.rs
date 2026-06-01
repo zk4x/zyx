@@ -348,31 +348,33 @@ impl Kernel {
 
         let num_groups = gws.iter().product::<u64>();
         let wi_per_group = lws.iter().product::<u64>();
-        let n_work_items = num_groups * wi_per_group;
-
-        let n_ops = wi_ops * n_work_items;
-        let n_compute_ops = wi_compute_ops * n_work_items;
-        let n_barriers = wi_barriers * n_work_items;
-        let n_local_memory_bits = (wi_local_load_bits as f64 + wi_local_store_bits as f64 * 1.5) * n_work_items as f64;
-        let n_global_memory_bits = (wi_global_load_bits as f64 + wi_global_store_bits as f64 * 1.5) * n_work_items as f64;
-        let register_pressure = if wi_peak_reg_bytes > dev_info.max_register_bytes {
-            10
-        } else {
-            0
-        };
         let warp_usage = wi_per_group as f64 / dev_info.warp_size as f64;
-        let _max_warps = dev_info.max_local_threads / dev_info.warp_size as u64;
-        let n_branches = wi_branches * n_work_items;
 
-        let cost = n_ops as f64
-            + n_compute_ops as f64
-            + n_barriers as f64
-            + n_local_memory_bits * n_global_memory_bits
-            + register_pressure as f64
-            + warp_usage
-            + n_branches as f64;
+        // Learned cost model (ridge regression on OpenCL autotune data, R²=0.957)
+        // Predicts log(estimated_time_us), then exponentiates.
+        let gmem = (wi_global_load_bits + wi_global_store_bits) as f64;
+        let reg_ratio = wi_peak_reg_bytes as f64 / dev_info.max_register_bytes as f64;
+        let warp_ratio = warp_usage;
 
-        let cost = cost as u64;
+        let lng = (num_groups.max(1) as f64).ln();
+        let lwpg = (wi_per_group.max(1) as f64).ln();
+        let lops = (wi_ops.max(1) as f64).ln();
+        let lcop = (wi_compute_ops.max(1) as f64).ln();
+        let lgmem = gmem.max(1.0).ln();
+
+        let log_time_us = 0.035389 * lng * lcop
+            + 0.217680 * lwpg * lops
+            + 0.388313 * lng * warp_ratio
+            + 0.037807 * lcop * lgmem
+            + 0.320388 * lng
+            - 2.411369 * lwpg
+            - 2.151532 * lwpg * warp_ratio
+            + 9.159336 * warp_ratio
+            - 0.567267 * lcop
+            + 0.006446 * lng * reg_ratio
+            + 2.365910;
+
+        let cost = log_time_us.exp().max(1.0) as u64;
 
         Cost {
             cost,
