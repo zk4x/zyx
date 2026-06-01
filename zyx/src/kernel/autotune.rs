@@ -416,21 +416,16 @@ impl Kernel {
         let mut best_opt_seq = OptSeq { opts: Vec::new(), cost: Cost::default() };
         let mut any_success = false;
         let mut last_error = None;
-        // Sort items by cost and benchmark the cheapest ones
-        items.sort_by_key(|s| s.cost);
 
-        // Skip candidates whose cost far exceeds the cheapest variant.
-        // This is necessary because the AMD GPU kernel driver uses force_sig(SIGABRT)
-        // (which bypasses user-space signal handlers) to kill processes that trigger
-        // the GPU watchdog on long-running compute shaders. A kernel that is estimated
-        // at >100x the cheapest variant will never be optimal, so skip it safely.
-        let min_cost = items.first().map_or(0, |s| s.cost.cost);
-        let cost_limit = min_cost.saturating_mul(100);
-        items.retain(|s| s.cost.cost <= cost_limit);
-
-        // Pick the cheapest n_launches kernels
+        // Sample randomly for variety in cost model data
         let n = n_launches.min(items.len());
-        items.truncate(n);
+        let mut rng_launch = Rng::seed_from_u64(0xDEAD_BEEF);
+        let mut sampled = Vec::with_capacity(n);
+        while sampled.len() < n && !items.is_empty() {
+            let idx = rng_launch.range::<u64>(0..items.len() as u64) as usize;
+            sampled.push(items.swap_remove(idx));
+        }
+        items = sampled;
 
         for opt_seq in items.iter() {
             let mut kernel = kernel.clone();
