@@ -151,6 +151,13 @@ def build_features(entries):
         ('lng_log_opt', lambda e: np.log(e['num_groups']) * np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))),
         ('lng_log_lwpg', lambda e: np.log(e['num_groups']) * np.log(max(np.log(e['wi_per_group'] + 1), 1e-8))),
         ('lwpg_log_opt', lambda e: np.log(e['wi_per_group']+1) * np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))),
+        ('raw_ng', lambda e: e['num_groups']),
+        ('raw_ng_wpg', lambda e: e['num_groups'] * e['wi_per_group']),
+        ('raw_ng_per_ops', lambda e: e['num_groups'] / max(e['wi_ops'], 1)),
+        ('lbranch', lambda e: np.log1p(e.get('wi_branches', 0))),
+        ('barr*lbranch', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_branches', 0))),
+        ('lwpg*lbranch', lambda e: np.log(e['wi_per_group'] + 1) * np.log1p(e.get('wi_branches', 0))),
+        ('lng*lbranch', lambda e: np.log(e['num_groups']) * np.log1p(e.get('wi_branches', 0))),
         ('lng_lwpg', lambda e: np.log(e['num_groups']) * np.log(e['wi_per_group'] + 1)),
         ('lwpg_lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops'])),
         # shuffle depth / work balance (2)
