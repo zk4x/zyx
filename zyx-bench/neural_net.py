@@ -357,66 +357,112 @@ def main():
 
     y = np.log(np.array([e['time_us'] for e in entries]))
 
-    # Build feature matrix
+    # Build feature matrix with section encoding
     X, FEATURE_NAMES = build_features(entries)
-    print(f"Total features: {X.shape[1]}")
-
-    # Split data for validation
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    # Scale features
+    # Add section as one-hot encoding
+    sections = sorted(set(e['section'] for e in entries))
+    section_map = {sec: i for i, sec in enumerate(sections)}
+    section_one_hot = np.zeros((len(entries), len(sections)))
+    for i, e in enumerate(entries):
+        section_one_hot[i, section_map[e['section']]] = 1
+    
+    # Combine features with section encoding
+    X_with_section = np.concatenate([X, section_one_hot], axis=1)
+    FEATURE_NAMES_with_section = FEATURE_NAMES + [f"section_{sec}" for sec in sections]
+    
+    print(f"Total features with section encoding: {X_with_section.shape[1]}")
+    
+    # Split data for validation
+    X_train, X_test, y_train, y_test = train_test_split(X_with_section, y, test_size=0.2, random_state=42)
+    train_indices = np.arange(len(X_train))
+    test_indices = np.arange(len(X_test))
+    
+    # Scale features (only non-section features)
     scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    X_train_scaled = scaler.fit_transform(X_train[:, :-len(sections)])
+    X_test_scaled = scaler.transform(X_test[:, :-len(sections)])
 
-    # Define neural network
+    # Define neural network with section input
     class NeuralNet(nn.Module):
-        def __init__(self, input_dim, hidden_dim=64, dropout_rate=0.3):
+        def __init__(self, input_dim, section_dim, hidden_dim=96, dropout_rate=0.3):
             super(NeuralNet, self).__init__()
+            # Feature processing branch
             self.fc1 = nn.Linear(input_dim, hidden_dim)
             self.bn1 = nn.BatchNorm1d(hidden_dim)
             self.dropout1 = nn.Dropout(dropout_rate)
-            self.fc2 = nn.Linear(hidden_dim, hidden_dim//2)
-            self.bn2 = nn.BatchNorm1d(hidden_dim//2)
-            self.dropout2 = nn.Dropout(dropout_rate)
-            self.fc3 = nn.Linear(hidden_dim//2, 1)
             
-        def forward(self, x):
-            x = torch.relu(self.bn1(self.fc1(x)))
-            x = self.dropout1(x)
-            x = torch.relu(self.bn2(self.fc2(x)))
-            x = self.dropout2(x)
-            x = self.fc3(x)
-            return x.squeeze()
+            # Section processing branch  
+            self.section_fc = nn.Linear(section_dim, hidden_dim // 2)
+            self.section_bn = nn.BatchNorm1d(hidden_dim // 2)
+            self.section_dropout = nn.Dropout(dropout_rate)
+            
+            # Combined processing
+            self.fc2 = nn.Linear(hidden_dim + hidden_dim // 2, hidden_dim)
+            self.bn2 = nn.BatchNorm1d(hidden_dim)
+            self.dropout2 = nn.Dropout(dropout_rate)
+            self.fc3 = nn.Linear(hidden_dim, hidden_dim // 2)
+            self.bn3 = nn.BatchNorm1d(hidden_dim // 2)
+            self.dropout3 = nn.Dropout(dropout_rate * 0.7)
+            self.fc4 = nn.Linear(hidden_dim // 2, 1)
+            
+        def forward(self, x, section):
+            # Process features
+            feat = torch.relu(self.bn1(self.fc1(x)))
+            feat = self.dropout1(feat)
+            
+            # Process sections
+            sec = torch.relu(self.section_bn(self.section_fc(section)))
+            sec = self.section_dropout(sec)
+            
+            # Combine
+            combined = torch.cat([feat, sec], dim=1)
+            
+            # Final layers
+            out = torch.relu(self.bn2(self.fc2(combined)))
+            out = self.dropout2(out)
+            out = torch.relu(self.bn3(self.fc3(out)))
+            out = self.dropout3(out)
+            out = self.fc4(out)
+            return out.squeeze()
 
     # Convert to tensors
     X_train_tensor = torch.FloatTensor(X_train_scaled)
-    y_train_tensor = torch.FloatTensor(y_train)
     X_test_tensor = torch.FloatTensor(X_test_scaled)
+    section_train_tensor = torch.FloatTensor(section_one_hot[train_indices])
+    section_test_tensor = torch.FloatTensor(section_one_hot[test_indices])
+    y_train_tensor = torch.FloatTensor(y_train)
     y_test_tensor = torch.FloatTensor(y_test)
 
     # Create data loaders
-    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+    train_dataset = TensorDataset(
+        torch.FloatTensor(X_train_scaled), 
+        torch.FloatTensor(section_one_hot[train_indices]),
+        torch.FloatTensor(y_train)
+    )
     train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
 
     # Initialize model
     input_dim = X_train_scaled.shape[1]
-    model = NeuralNet(input_dim, hidden_dim=64, dropout_rate=0.3)
+    section_dim = len(sections)
+    model = NeuralNet(input_dim, section_dim, hidden_dim=96, dropout_rate=0.3)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5, min_lr=1e-6)
 
     # Train model
     print("\nTraining neural network...")
-    epochs = 200
+    epochs = 300
     best_val_loss = float('inf')
+    patience_counter = 0
+    patience = 25
     
     for epoch in range(epochs):
         model.train()
         train_loss = 0
-        for batch_X, batch_y in train_loader:
+        for batch_X, batch_section, batch_y in train_loader:
             optimizer.zero_grad()
-            outputs = model(batch_X)
+            outputs = model(batch_X, batch_section)
             loss = criterion(outputs, batch_y)
             loss.backward()
             optimizer.step()
@@ -425,8 +471,11 @@ def main():
         # Validation
         model.eval()
         with torch.no_grad():
-            val_outputs = model(X_test_tensor)
-            val_loss = criterion(val_outputs, y_test_tensor)
+            val_outputs = model(
+                torch.FloatTensor(X_test_scaled),
+                torch.FloatTensor(section_one_hot[test_indices])
+            )
+            val_loss = criterion(val_outputs, torch.FloatTensor(y_test))
             scheduler.step(val_loss)
         
         if epoch % 20 == 0:
@@ -434,7 +483,13 @@ def main():
         
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            patience_counter = 0
             best_model_state = model.state_dict()
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"Early stopping at epoch {epoch}")
+                break
     
     # Load best model
     model.load_state_dict(best_model_state)
@@ -442,9 +497,21 @@ def main():
     # Make predictions
     model.eval()
     with torch.no_grad():
-        y_pred_train = model(X_train_tensor).numpy()
-        y_pred_test = model(X_test_tensor).numpy()
-        y_pred_all = model(torch.FloatTensor(scaler.transform(X))).numpy()
+        y_pred_train = model(
+            torch.FloatTensor(X_train_scaled),
+            torch.FloatTensor(section_one_hot[train_indices])
+        ).numpy()
+        y_pred_test = model(
+            torch.FloatTensor(X_test_scaled),
+            torch.FloatTensor(section_one_hot[test_indices])
+        ).numpy()
+        
+        # Predict on all data
+        X_all_scaled = scaler.transform(X_with_section[:, :-len(sections)])
+        y_pred_all = model(
+            torch.FloatTensor(X_all_scaled),
+            torch.FloatTensor(section_one_hot)
+        ).numpy()
 
     # Calculate R²
     ss_res_train = np.sum((y_train - y_pred_train) ** 2)
