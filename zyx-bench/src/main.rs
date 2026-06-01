@@ -83,12 +83,23 @@ fn gelu_bench() -> Result<(), ZyxError> {
 
 fn activation_bench() -> Result<(), ZyxError> {
     println!("=== Other Activations ===");
-    let x = Tensor::rand([16384u64], DType::F32)?;
-    x.relu().realize_one()?;
-    x.sigmoid().realize_one()?;
-    x.tanh().realize_one()?;
-    x.exp().realize_one()?;
-    x.log(Tensor::from(2.0)).realize_one()?;
+    for dims in [
+        &[16384u64][..],
+        &[32768u64],
+        &[65536u64],
+        &[131072u64],
+        &[524288u64],
+        &[4096u64, 4096u64],
+        &[512u64, 2048u64],
+        &[128u64, 16384u64],
+    ] {
+        let x = Tensor::rand(dims, DType::F32)?;
+        x.relu().realize_one()?;
+        x.sigmoid().realize_one()?;
+        x.tanh().realize_one()?;
+        x.exp().realize_one()?;
+        x.log(Tensor::from(2.0)).realize_one()?;
+    }
     println!();
     Ok(())
 }
