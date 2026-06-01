@@ -27,22 +27,22 @@ def parse_bench_output(filename):
             i += 1
             continue
 
-        if line.startswith('num_groups='):
+        if line.startswith('num_groups=') or line.startswith('const=') or line.startswith('cost='):
             m = re.match(
-                r'num_groups=(\d+), wi_per_group=(\d+), wi_ops=(\d+), wi_compute_ops=(\d+), '
+                r'(?:cost=(\d+), )?num_groups=(\d+), wi_per_group=(\d+), wi_ops=(\d+), wi_compute_ops=(\d+), '
                 r'wi_barriers=(\d+), wi_global_load_bits=(\d+), wi_global_store_bits=(\d+)',
                 line
             )
             if m:
                 entry = {
                     'section': current_section,
-                    'num_groups': int(m.group(1)),
-                    'wi_per_group': int(m.group(2)),
-                    'wi_ops': int(m.group(3)),
-                    'wi_compute_ops': int(m.group(4)),
-                    'wi_barriers': int(m.group(5)),
-                    'wi_global_load_bits': int(m.group(6)),
-                    'wi_global_store_bits': int(m.group(7)),
+                    'num_groups': int(m.group(2)),
+                    'wi_per_group': int(m.group(3)),
+                    'wi_ops': int(m.group(4)),
+                    'wi_compute_ops': int(m.group(5)),
+                    'wi_barriers': int(m.group(6)),
+                    'wi_global_load_bits': int(m.group(7)),
+                    'wi_global_store_bits': int(m.group(8)),
                 }
                 i += 1
                 if i < len(lines):

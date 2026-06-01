@@ -38,7 +38,7 @@ pub struct Cost {
 impl Cost {
     pub fn debug(&self) {
         println!(
-            "const={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}
+            "cost={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}
 wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={}",
             self.cost,
             self.num_groups,
