@@ -839,6 +839,20 @@ impl Kernel {
                             _ => {} //op => println!("op={op:?}"),
                         }
                     }
+                    if bop == BOp::BitShiftLeft {
+                        match (&self.ops[x].op, &self.ops[y].op) {
+                            (Op::Loop { len, .. }, Op::Const(c)) | (Op::Index { len, .. }, Op::Const(c)) => {
+                                indices.insert(x, (*len, 1u64 << c.as_dim().unwrap()));
+                            }
+                            (Op::Const(c), Op::Loop { len, .. }) | (Op::Const(c), Op::Index { len, .. }) => {
+                                indices.insert(y, (*len, 1u64 << c.as_dim().unwrap()));
+                            }
+                            _ => {
+                                params.push(x);
+                                params.push(y);
+                            }
+                        }
+                    }
                 }
                 Op::Mad { x, y, z } => {
                     if let Some(len) = match &self.ops[z].op {

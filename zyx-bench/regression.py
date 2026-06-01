@@ -49,7 +49,8 @@ def parse_bench_output(filename):
                     m2 = re.match(
                         r'wi_local_load_bits=(\d+), wi_local_store_bits=(\d+), '
                         r'wi_peak_reg_bytes=(\d+), wi_branches=(\d+)(?:, '
-                        r'wi_global_load_lidx_stride=(\d+), wi_global_store_lidx_stride=(\d+))?, '
+                        r'wi_global_load_lidx_stride_weighted_sum=(\d+), wi_global_load_lidx_stride_weight=(\d+), '
+                        r'wi_global_store_lidx_stride_weighted_sum=(\d+), wi_global_store_lidx_stride_weight=(\d+))?, '
                         r'warp_size=(\d+), max_local_threads=(\d+), max_register_bytes=(\d+)',
                         lines[i].strip()
                     )
@@ -58,11 +59,19 @@ def parse_bench_output(filename):
                         entry['wi_local_store_bits'] = int(m2.group(2))
                         entry['wi_peak_reg_bytes'] = int(m2.group(3))
                         entry['wi_branches'] = int(m2.group(4))
-                        entry['wi_global_load_lidx_stride'] = int(m2.group(5)) if m2.group(5) else 0
-                        entry['wi_global_store_lidx_stride'] = int(m2.group(6)) if m2.group(6) else 0
-                        entry['warp_size'] = int(m2.group(7))
-                        entry['max_local_threads'] = int(m2.group(8))
-                        entry['max_register_bytes'] = int(m2.group(9))
+                        if m2.group(5):
+                            ll_sum = int(m2.group(5))
+                            ll_w = int(m2.group(6))
+                            ls_sum = int(m2.group(7))
+                            ls_w = int(m2.group(8))
+                            entry['wi_global_load_lidx_stride'] = ll_sum / ll_w if ll_w > 0 else 0.0
+                            entry['wi_global_store_lidx_stride'] = ls_sum / ls_w if ls_w > 0 else 0.0
+                        else:
+                            entry['wi_global_load_lidx_stride'] = 0.0
+                            entry['wi_global_store_lidx_stride'] = 0.0
+                        entry['warp_size'] = int(m2.group(9))
+                        entry['max_local_threads'] = int(m2.group(10))
+                        entry['max_register_bytes'] = int(m2.group(11))
 
                 i += 1
                 if i < len(lines):

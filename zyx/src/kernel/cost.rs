@@ -277,7 +277,7 @@ impl Kernel {
                             let mut has_index = false;
                             for (oid, (_, st)) in &strides {
                                 if oid.is_null() { continue; }
-                                if matches!(self.ops[*oid].op, Op::Index { .. }) {
+                                if matches!(self.ops[*oid].op, Op::Index { .. }) || matches!(self.ops[*oid].op, Op::Loop { .. }) {
                                     if *st > 0 {
                                         glb_load_lidx_stride_weighted += st * n_bits;
                                         glb_load_lidx_stride_weight += n_bits;
@@ -316,7 +316,7 @@ impl Kernel {
                             let mut has_index = false;
                             for (oid, (_, st)) in &strides {
                                 if oid.is_null() { continue; }
-                                if matches!(self.ops[*oid].op, Op::Index { .. }) {
+                                if matches!(self.ops[*oid].op, Op::Index { .. }) || matches!(self.ops[*oid].op, Op::Loop { .. }) {
                                     if *st > 0 {
                                         glb_store_lidx_stride_weighted += st * n_bits;
                                         glb_store_lidx_stride_weight += n_bits;
