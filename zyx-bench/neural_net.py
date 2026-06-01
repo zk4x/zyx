@@ -328,6 +328,72 @@ def build_features(entries):
         ('reduce_tree_depth', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0))),  # Reduce: barriers * local_mem_depth
         ('memory_access_pattern', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['wi_ops'], 1)),  # memory ops per total op
         ('thread_efficiency', lambda e: (e['wi_ops'] * e['wi_per_group']) / max(e['num_groups'] * e['wi_per_group'], 1)),  # ops per thread (normalized)
+        # Enhanced GPU-specific features
+        ('global_coalescing_load', lambda e: 1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0)),
+        ('global_coalescing_store', lambda e: 1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0)),
+        ('global_coalescing_avg', lambda e: (1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0) + 
+                                              1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0)) / 2.0),
+        ('global_coalescing_min', lambda e: min(1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0),
+                                                1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0))),
+        ('global_coalescing_product', lambda e: (1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0)) *
+                                                (1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0))),
+        ('local_coalescing_load', lambda e: 1.0 - min(abs(int(e.get('wi_local_load_lidx_stride', 0)) % 32) / 32.0, 1.0) if e.get('wi_local_load_lidx_stride', 0) > 0 else 1.0),
+        ('local_coalescing_store', lambda e: 1.0 - min(abs(int(e.get('wi_local_store_lidx_stride', 0)) % 32) / 32.0, 1.0) if e.get('wi_local_store_lidx_stride', 0) > 0 else 1.0),
+        ('local_coalescing_avg', lambda e: ((1.0 - min(abs(int(e.get('wi_local_load_lidx_stride', 0)) % 32) / 32.0, 1.0)) if e.get('wi_local_load_lidx_stride', 0) > 0 else 1.0 + 
+                                            (1.0 - min(abs(int(e.get('wi_local_store_lidx_stride', 0)) % 32) / 32.0, 1.0)) if e.get('wi_local_store_lidx_stride', 0) > 0 else 1.0) / 2.0),
+        ('load_bank_conflict', lambda e: abs(int(e.get('wi_local_load_lidx_stride', 0)) % 32) / 32.0 if e.get('wi_local_load_lidx_stride', 0) > 0 else 0.0),
+        ('store_bank_conflict', lambda e: abs(int(e.get('wi_local_store_lidx_stride', 0)) % 32) / 32.0 if e.get('wi_local_store_lidx_stride', 0) > 0 else 0.0),
+        ('bank_conflict_load_adj4', lambda e: abs(int(e.get('wi_local_load_lidx_stride', 0)) % 4) / 4.0 if e.get('wi_local_load_lidx_stride', 0) > 0 else 0.0),
+        ('bank_conflict_store_adj4', lambda e: abs(int(e.get('wi_local_store_lidx_stride', 0)) % 4) / 4.0 if e.get('wi_local_store_lidx_stride', 0) > 0 else 0.0),
+        ('bank_conflict_load_adj8', lambda e: abs(int(e.get('wi_local_load_lidx_stride', 0)) % 8) / 8.0 if e.get('wi_local_load_lidx_stride', 0) > 0 else 0.0),
+        ('bank_conflict_store_adj8', lambda e: abs(int(e.get('wi_local_store_lidx_stride', 0)) % 8) / 8.0 if e.get('wi_local_store_lidx_stride', 0) > 0 else 0.0),
+        ('shared_mem_util', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 
+                                       max((e['num_groups'] * e['wi_per_group']) * 16384.0, 1.0)),
+        ('shared_mem_load_ratio', lambda e: e.get('wi_local_load_bits', 0) / 
+                                           max(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0), 1.0)),
+        ('shared_mem_store_ratio', lambda e: e.get('wi_local_store_bits', 0) / 
+                                            max(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0), 1.0)),
+        ('shared_mem_per_thread', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 
+                                             max(e['num_groups'] * e['wi_per_group'], 1.0)),
+        ('shared_mem_efficiency', lambda e: min((e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 65536.0, 1.0)),
+        ('shared_mem_pressure', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 
+                                         max(e.get('max_local_threads', 1024) * 64.0, 1.0)),
+        ('warp_utilization', lambda e: e['wi_per_group'] / e.get('warp_size', 32)),
+        ('warp_efficiency', lambda e: min(e['wi_per_group'] / e.get('warp_size', 32), 1.0)),
+        ('warp_waste', lambda e: max(0.0, (e.get('warp_size', 32) - e['wi_per_group']) / e.get('warp_size', 32))),
+        ('warp_occupancy', lambda e: min((e['num_groups'] * e['wi_per_group']) / 2048.0, 1.0)),
+        ('active_warps', lambda e: e['num_groups'] * max(1, e['wi_per_group'] // e.get('warp_size', 32))),
+        ('warp_divergence', lambda e: np.log1p(e.get('wi_branches', 0)) / max(np.log(e['wi_ops'] + 1), 1.0)),
+        ('global_bandwidth_util', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / 
+                                           max(e['num_groups'] * e['wi_per_group'] * 256.0, 1.0)),
+        ('memory_intensity', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1.0)),
+        ('bw_ratio', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / 
+                              max((e['num_groups'] * e['wi_per_group']) * 256.0, 1.0)),
+        ('local_bw_ratio', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 
+                                    max((e['num_groups'] * e['wi_per_group']) * 16384.0, 1.0)),
+        ('memory_pressure', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / 
+                                    max(e['num_groups'] * e['wi_per_group'] * 32.0, 1.0)),
+        ('register_pressure_score', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1.0) * 
+                                            e.get('wi_per_group', 1) / 32.0),
+        ('register_efficiency', lambda e: min(e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1.0), 1.0)),
+        ('register_per_thread', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e['num_groups'] * e['wi_per_group'], 1.0)),
+        ('register_utilization', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e['wi_per_group'] * 32.0, 1.0)),
+        ('register_waste', lambda e: max(0.0, (e.get('max_register_bytes', 256) - e.get('wi_peak_reg_bytes', 0)) / e.get('max_register_bytes', 256))),
+        ('barrier_per_thread', lambda e: e['wi_barriers'] / max(e['num_groups'] * e['wi_per_group'], 1.0)),
+        ('barrier_density', lambda e: e['wi_barriers'] / max(np.log(e['wi_ops'] + 1), 1.0)),
+        ('barrier_overhead', lambda e: e['wi_barriers'] * np.log1p(e['wi_barriers']) / max(e['wi_ops'] / max(e['wi_barriers'], 1), 1)),
+        ('sync_efficiency', lambda e: e['wi_compute_ops'] / max(e['wi_barriers'] * e['wi_per_group'] + 1, 1.0)),
+        ('coalescing_barr', lambda e: (1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0)) * e['wi_barriers']),
+        ('coalescing_store_barr', lambda e: (1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0)) * e['wi_barriers']),
+        ('bank_conflict_barr_load', lambda e: (abs(int(e.get('wi_local_load_lidx_stride', 0)) % 32) / 32.0) * e['wi_barriers'] if e.get('wi_local_load_lidx_stride', 0) > 0 else 0.0),
+        ('bank_conflict_barr_store', lambda e: (abs(int(e.get('wi_local_store_lidx_stride', 0)) % 32) / 32.0) * e['wi_barriers'] if e.get('wi_local_store_lidx_stride', 0) > 0 else 0.0),
+        ('shared_mem_barr', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / max(e['num_groups'] * e['wi_per_group'] * 16384.0, 1.0) * e['wi_barriers']),
+        ('bw_util_barr', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'] * 256.0, 1.0) * e['wi_barriers']),
+        ('reg_pressure_barr', lambda e: (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1.0)) * e['wi_barriers']),
+        ('warp_util_barr', lambda e: (e['wi_per_group'] / e.get('warp_size', 32)) * e['wi_barriers']),
+        ('occupancy_barr', lambda e: min((e['num_groups'] * e['wi_per_group']) / 2048.0, 1.0) * e['wi_barriers']),
+        ('mem_intensity_barr', lambda e: (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1.0)) * e['wi_barriers']),
+        ('reduce_complexity', lambda e: e['wi_barriers'] * np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1.0))),
     ]
 
     FEATURE_NAMES = [name for name, _ in feature_defs]
@@ -448,14 +514,16 @@ def main():
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.5, min_lr=1e-6)
-
-    # Train model
-    print("\nTraining neural network...")
+    
+    # Training parameters
     epochs = 300
     best_val_loss = float('inf')
     patience_counter = 0
     patience = 25
     
+    print("\nTraining neural network with iterative pruning for sparsity...")
+    
+    # Train model
     for epoch in range(epochs):
         model.train()
         train_loss = 0
@@ -489,6 +557,57 @@ def main():
             if patience_counter >= patience:
                 print(f"Early stopping at epoch {epoch}")
                 break
+    
+    # Apply iterative pruning to achieve ~90% sparsity
+    print("\nApplying iterative pruning to achieve 90% sparsity...")
+    target_sparsity = 0.9
+    
+    # Calculate pruning threshold
+    all_weights = []
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            all_weights.extend(param.data.abs().cpu().numpy().flatten())
+    
+    threshold = np.sort(np.array(all_weights))[int(len(all_weights) * (1 - target_sparsity))]
+    print(f"Pruning threshold: {threshold:.6f}")
+    
+    # Apply pruning
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            mask = param.data.abs() > threshold
+            param.data *= mask.float()
+    
+    # Verify final sparsity
+    total_weights = 0
+    zero_weights = 0
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            total_weights += param.numel()
+            zero_weights += (param == 0).sum().item()
+    final_sparsity = zero_weights / total_weights * 100
+    print(f"Final sparsity after pruning: {final_sparsity:.1f}%")
+    
+    # Retrain slightly to recover from pruning
+    print("Retraining after pruning...")
+    for epoch in range(20):
+        model.train()
+        for batch_X, batch_section, batch_y in train_loader:
+            optimizer.zero_grad()
+            outputs = model(batch_X, batch_section)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
+    
+    # Update best model state
+    model.eval()
+    with torch.no_grad():
+        val_outputs = model(
+            torch.FloatTensor(X_test_scaled),
+            torch.FloatTensor(section_one_hot[test_indices])
+        )
+        val_loss = criterion(val_outputs, torch.FloatTensor(y_test))
+        if val_loss < best_val_loss:
+            best_model_state = model.state_dict()
     
     # Load best model
     model.load_state_dict(best_model_state)
@@ -525,10 +644,11 @@ def main():
     ss_tot_all = np.sum((y - np.mean(y)) ** 2)
     r2_all = 1 - ss_res_all / ss_tot_all
 
-    print(f"\nNeural Net Results:")
+    print(f"\nSparse Neural Net Results:")
     print(f"Train R² = {r2_train:.4f}")
     print(f"Test R² = {r2_test:.4f}")
     print(f"Overall R² = {r2_all:.4f}")
+    print(f"Final weight sparsity: {final_sparsity:.1f}%")
 
     print("\nPer-section R²:")
     for section in sorted(set(e['section'] for e in entries)):
