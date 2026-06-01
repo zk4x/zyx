@@ -21,6 +21,8 @@ pub struct Cost {
     wi_ops: u64,
     wi_compute_ops: u64,
     wi_barriers: u64,
+    wi_global_load_bits: u64,
+    wi_global_store_bits: u64,
     wi_local_load_bits: u64,
     wi_local_store_bits: u64,
     wi_peak_reg_bytes: u64,
@@ -32,10 +34,24 @@ pub struct Cost {
 }
 
 impl Cost {
-    fn debug(&self) {
+    pub fn debug(&self) {
         println!(
-            "Cost: {}",
-            self.num_groups, self.wi_per_group, self.wi_ops, self.wi_compute_ops
+            "num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}
+wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, warp_size={}, max_local_threads={}, max_register_bytes={}",
+            self.num_groups,
+            self.wi_per_group,
+            self.wi_ops,
+            self.wi_compute_ops,
+            self.wi_barriers,
+            self.wi_global_load_bits,
+            self.wi_global_store_bits,
+            self.wi_local_load_bits,
+            self.wi_local_store_bits,
+            self.wi_peak_reg_bytes,
+            self.wi_branches,
+            self.warp_size,
+            self.max_local_threads,
+            self.max_register_bytes
         );
     }
 }
@@ -202,9 +218,12 @@ impl Kernel {
             }
 
             // Is this indexing or compute?
-            if matches!(op, Op::Const(_) | Op::Index { .. } | Op::Loop { .. }) {
-                indexing_ops.insert(op_id);
-            } else if op.parameters().all(|p| indexing_ops.contains(&p)) {
+            if matches!(op, Op::Const(_) | Op::Index { .. } | Op::Loop { .. })
+                || op.parameters().all(|p| indexing_ops.contains(&p))
+            {
+                if matches!(op, Op::Load { .. }) {
+                    println!("op={op:?} is indexing");
+                }
                 indexing_ops.insert(op_id);
             }
 
@@ -360,6 +379,8 @@ impl Kernel {
             wi_ops,
             wi_compute_ops,
             wi_barriers,
+            wi_global_load_bits,
+            wi_global_store_bits,
             wi_local_load_bits,
             wi_local_store_bits,
             wi_peak_reg_bytes,

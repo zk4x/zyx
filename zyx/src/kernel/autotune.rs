@@ -507,6 +507,7 @@ impl Kernel {
         let nanos = begin.elapsed().as_nanos() as u64;
         let perf = crate::kernel_cache::get_perf(flops, bytes_read, bytes_written, nanos);
         self.get_cost(device.info()).debug();
+        println!("{perf}");
         if debug.perf() {
             println!("{perf}");
         }

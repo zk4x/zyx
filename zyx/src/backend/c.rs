@@ -71,7 +71,7 @@ pub(super) fn initialize_device(
             max_local_work_dims: vec![1, 1, 1],
             preferred_vector_size: 8,
             local_mem_size: 0,
-            max_register_bytes: Dim::from(u64::MAX),
+            max_register_bytes: 1000,
             tensor_cores: false,
             warp_size: 1,
             supported_dtypes: {
