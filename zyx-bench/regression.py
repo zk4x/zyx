@@ -110,57 +110,86 @@ def write_csv(entries):
 
 
 def build_features(entries):
+    # Each "feature" is (name, callable(e) -> value)
+    feature_defs = [
+        # core transforms (7)
+        ('lng', lambda e: np.log(e['num_groups'])),
+        ('lwpg', lambda e: np.log(e['wi_per_group'] + 1)),
+        ('lops', lambda e: np.log(e['wi_ops'])),
+        ('lcop', lambda e: np.log(e['wi_compute_ops'])),
+        ('lgmem', lambda e: np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
+        ('barr', lambda e: e['wi_barriers']),
+        ('lld_st', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0))),
+        # secondary (4)
+        ('wr', lambda e: e['wi_per_group'] / e.get('warp_size', 32)),
+        ('rr', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)),
+        ('lst_st', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0))),
+        ('total_threads', lambda e: e['num_groups'] * e['wi_per_group']),
+        # tertiary (4)
+        ('store_per_thread', lambda e: e['wi_global_store_bits'] / max(e['wi_per_group'], 1)),
+        ('ci', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)),
+        ('overhead', lambda e: e['wi_ops'] / max(e['wi_compute_ops'], 1)),
+        ('mem_per_thread', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1)),
+        # log ratios (4)
+        ('log1p_ci', lambda e: np.log1p(e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
+        ('log1p_overhead', lambda e: np.log1p(e['wi_ops'] / max(e['wi_compute_ops'], 1))),
+        ('log1p_mp', lambda e: np.log1p((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1))),
+        ('log1p_lm', lambda e: np.log1p((e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0) + 1) / max(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1, 1))),
+        # floor features for tiny kernels (4)
+        ('log_ops_100', lambda e: np.log(e['wi_ops'] + 100)),
+        ('log_cops_100', lambda e: np.log(e['wi_compute_ops'] + 100)),
+        ('log1p_1000_div_ops', lambda e: np.log1p(1000 / max(e['wi_ops'], 1))),
+        ('log1p_1000_div_cops', lambda e: np.log1p(1000 / max(e['wi_compute_ops'], 1))),
+        # work per resource (6)
+        ('ops_per_thread', lambda e: e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)),
+        ('cops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)),
+        ('ops_per_group', lambda e: e['wi_ops'] / max(e['num_groups'], 1)),
+        ('log_opt', lambda e: np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))),
+        ('inv_threads', lambda e: 1.0 / max(e['num_groups'] * e['wi_per_group'], 1)),
+        ('log_inv_threads', lambda e: np.log1p(1.0 / max(e['num_groups'] * e['wi_per_group'], 1))),
+        # barrier interactions (6)
+        ('barr*lops', lambda e: e['wi_barriers'] * np.log(e['wi_ops'])),
+        ('barr*lcop', lambda e: e['wi_barriers'] * np.log(e['wi_compute_ops'])),
+        ('barr*lgmem', lambda e: e['wi_barriers'] * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
+        ('barr*lwpg', lambda e: e['wi_barriers'] * np.log(e['wi_per_group'] + 1)),
+        ('barr*lng', lambda e: e['wi_barriers'] * np.log(e['num_groups'])),
+        ('barr*wr', lambda e: e['wi_barriers'] * (e['wi_per_group'] / e.get('warp_size', 32))),
+        # stride core (5)
+        ('lld_st*lops', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_ops'])),
+        ('lld_st*lcop', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_compute_ops'])),
+        ('lld_st*lng', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['num_groups'])),
+        ('lld_st*barr', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * e['wi_barriers']),
+        ('lld_st*lgmem', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
+        # stride secondary (4)
+        ('lld_st*wr', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * (e['wi_per_group'] / e.get('warp_size', 32))),
+        ('lld_st*lst_st', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log1p(e.get('wi_global_store_lidx_stride', 0))),
+        ('lst_st*lops', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0)) * np.log(e['wi_ops'])),
+        ('lst_st*lng', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0)) * np.log(e['num_groups'])),
+        # memory ratio (4)
+        ('lops*lgmem', lambda e: np.log(e['wi_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
+        ('lcop*lgmem', lambda e: np.log(e['wi_compute_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
+        ('lng*lgmem', lambda e: np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
+        ('lwpg*lgmem', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1)),
+        # compute intensity interactions (4)
+        ('lops*ci', lambda e: np.log(e['wi_ops']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
+        ('lcop*ci', lambda e: np.log(e['wi_compute_ops']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
+        ('lng*ci', lambda e: np.log(e['num_groups']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
+        ('lld_st*ci', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))),
+        # thread/group (4)
+        ('lng*wr', lambda e: np.log(e['num_groups']) * (e['wi_per_group'] / e.get('warp_size', 32))),
+        ('lwpg*wr', lambda e: np.log(e['wi_per_group'] + 1) * (e['wi_per_group'] / e.get('warp_size', 32))),
+        ('lng*rr', lambda e: np.log(e['num_groups']) * (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1))),
+        ('lwpg*rr', lambda e: np.log(e['wi_per_group'] + 1) * (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1))),
+        # MLX (2)
+        ('lng*lcop', lambda e: np.log(e['num_groups']) * np.log(e['wi_compute_ops'])),
+        ('lwpg*lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops'])),
+    ]
+
+    FEATURE_NAMES = [name for name, _ in feature_defs]
     features = []
     for e in entries:
-        ng = e['num_groups']
-        wpg = e['wi_per_group']
-        ops = e['wi_ops']
-        cops = e['wi_compute_ops']
-        barr = e['wi_barriers']
-        glb = e['wi_global_load_bits']
-        gsb = e['wi_global_store_bits']
-        llb = e.get('wi_local_load_bits', 0)
-        lsb = e.get('wi_local_store_bits', 0)
-        preg = e.get('wi_peak_reg_bytes', 0)
-        warp = e.get('warp_size', 32)
-        mreg = e.get('max_register_bytes', 256)
-        ld_st = e.get('wi_global_load_lidx_stride', 0)
-        st_st = e.get('wi_global_store_lidx_stride', 0)
-
-        lng = np.log(ng)
-        lwpg = np.log(wpg + 1)
-        lops = np.log(ops)
-        lcop = np.log(cops)
-        wr = wpg / warp
-        rr = preg / mreg if mreg > 0 else 0
-
-        features.append([
-            lng,
-            lwpg,
-            lops,
-            lcop,
-            np.log(glb + gsb + 1),
-            wr,
-            rr,
-            lng * lcop,
-            lwpg * lops,
-            lng * wr,
-            lcop * np.log(glb + gsb + 1),
-            lwpg * wr,
-            lng * rr,
-            barr,
-            np.log1p((llb + lsb + 1) / (glb + gsb + 1)),
-            np.log1p(glb / max(gsb, 1)),
-            gsb / max(wpg, 1),
-            ng * wpg,
-            barr * lwpg,
-            ld_st,
-            st_st,
-            np.log1p(ld_st),
-            np.log1p(st_st),
-        ])
-
-    return np.array(features)
+        features.append([fn(e) for _, fn in feature_defs])
+    return np.array(features), FEATURE_NAMES
 
 
 def main():
@@ -183,13 +212,7 @@ def main():
     y = np.log(np.array([e['time_us'] for e in entries]))
 
     # Build feature matrix
-    X = build_features(entries)
-    FEATURE_NAMES = [
-        'lng', 'lwpg', 'lops', 'lcop', 'lgmem', 'wr', 'rr',
-        'lng*lcop', 'lwpg*lops', 'lng*wr', 'lcop*lgmem', 'lwpg*wr', 'lng*rr',
-        'barr', 'lm_ratio', 'rw_ratio', 'store_per_thread', 'total_threads', 'barr*lwpg',
-        'ld_stride', 'st_stride', 'log1p_ld_stride', 'log1p_st_stride',
-    ]
+    X, FEATURE_NAMES = build_features(entries)
     print(f"Total features: {X.shape[1]}")
 
     # Ridge regression with all features (regularization handles overfitting)
