@@ -5,6 +5,8 @@
 // Ridge features: 20, DT leaves: 80
 // Total parameters: 100
 
+#![allow(unused)]
+
 use super::cost::Cost;
 
 impl Cost {
@@ -35,14 +37,12 @@ impl Cost {
             lwpg,  // lwpg
             lcop,  // lcop
             lgmem,  // lgmem
-            (wi_ops as f32 + 10.0).ln(),  // log_ops_10
             wi_ops as f32 / (num_groups * wi_per_group).max(1) as f32,  // ops_per_thread
             wi_ops as f32 / num_groups.max(1) as f32,  // ops_per_group
             lwpg.max(1e-8).ln(),  // log_lwpg
             (wi_ops as f32 / (num_groups * wi_per_group).max(1) as f32).ln_1p(),  // log_opt
             (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lwpg,  // b0*lwpg
             lops * lgmem,  // lops*lgmem
-            lcop * lgmem,  // lcop*lgmem
             (32.0 / wi_per_group.max(1) as f32).ln(),  // log_warp_waste
             (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lcop,  // b0*lcop
             (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lgmem,  // b0*lgmem
@@ -51,82 +51,64 @@ impl Cost {
             wi_compute_ops as f32 / (num_groups * wi_barriers.max(1)).max(1) as f32,  // compute_per_barrier
             wi_ops as f32 / (num_groups as f32 * (wi_per_group as f32).ln_1p()).max(1.0),  // group_work_density
             (lwpg.abs()).ln_1p(),  // log1p_lwpg_raw
-            ((num_groups * wi_per_group) as f32 / wi_ops.max(1) as f32 + 1.0).ln(),  // log_threads_per_ops
+            (if wi_barriers > 0 { 1.0 } else { 0.0 }) * lgmem,  // barr_nonzero_lmem
+            (if wi_barriers > 0 { 1.0 } else { 0.0 }) * lcop,  // bgt_lcop
+            (if wi_barriers > 0 { 1.0 } else { 0.0 }) * lgmem,  // bgt_lgmem
         ];
 
         // DT leaf bias (inline tree traversal)
         let leaf_bias: f32 = {
-if (lcop) < 14.695358276367188f32 {
-    if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 85.1065673828125f32 {
+if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 86.06364440917969f32 {
+    if ((wi_compute_ops as f32 + 100.0).ln()) < 16.897276401519775f32 {
         if ((if wi_barriers == 0 { 1.0 } else { 0.0 }) * lgmem) < 13.172722816467285f32 {
-            if ((num_groups * wi_per_group) as f32) < 1310720.0f32 {
+            if ((num_groups * wi_per_group) as f32) < 1114112.0f32 {
                 if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 61.976762771606445f32 {
                     if (lgmem) < 11.792017936706543f32 {
-                        if ((lng.abs()).ln_1p()) < 2.4508472681045532f32 {
+                        if (num_groups as f32) < 40960.0f32 {
                             if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 55.797279357910156f32 {
                                 if ((wi_global_load_lidx_stride as f32).ln_1p() * lgmem) < 7.21555757522583f32 {
-                                    if (num_groups as f32) < 10240.0f32 {
-                                        if ((if wi_barriers == 0 { 1.0 } else { 0.0 }) * lops) < 2.602003335952759f32 {
-                                            -0.074346
-                                        } else {
-                                            if ((num_groups * wi_per_group) as f32) < 14336.0f32 {
-                                                -0.088780
-                                            } else {
-                                                -0.144376
-                                            }
-                                        }
+                                    if (lng) < 9.213645458221436f32 {
+                                        -0.573728
                                     } else {
-                                        -0.101340
+                                        -0.140016
                                     }
                                 } else {
                                     if (lwpg * rr) < 0.25870873034000397f32 {
-                                        -0.165051
+                                        -0.328804
                                     } else {
-                                        if (rr) < 3.2890625f32 {
-                                            -0.144045
-                                        } else {
-                                            0.016016
-                                        }
+                                        -0.355873
                                     }
                                 }
                             } else {
-                                if ((wi_ops as f32 / num_groups.max(1) as f32 + 1.0).ln()) < 0.018744096159934998f32 {
-                                    -0.036285
+                                if (wi_ops as f32 / num_groups.max(1) as f32) < 0.0189208984375f32 {
+                                    -0.009886
                                 } else {
                                     if (((wi_local_load_bits + wi_local_store_bits + 1) as f32 / (wi_global_load_bits + wi_global_store_bits + 1).max(1) as f32).ln_1p()) < 6.0323625802993774e-05f32 {
-                                        -0.151389
+                                        -0.278574
                                     } else {
-                                        if (lcop * ci) < 1.0537550449371338f32 {
-                                            -0.085136
-                                        } else {
-                                            -0.175903
-                                        }
+                                        -0.306487
                                     }
                                 }
                             }
                         } else {
-                            if (lng) < 12.130075454711914f32 {
-                                -0.050561
+                            if ((lng.abs()).ln_1p()) < 2.574557065963745f32 {
+                                -0.050285
                             } else {
-                                0.017942
+                                0.032719
                             }
                         }
                     } else {
                         if (lcop * lgmem) < 134.933349609375f32 {
                             if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 47.645328521728516f32 {
-                                -0.078885
+                                -0.223837
                             } else {
-                                -0.051698
+                                -0.115573
                             }
                         } else {
-                            if (lwpg * lops * (if wi_barriers == 0 { 1.0 } else { 0.0 })) < 25.94330596923828f32 {
-                                if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 47.2320671081543f32 {
-                                    -0.045386
-                                } else {
-                                    -0.036414
-                                }
+                            if (lwpg * lops) < 25.94330596923828f32 {
+                                -0.175545
                             } else {
-                                0.035871
+                                -0.017322
                             }
                         }
                     }
@@ -138,265 +120,285 @@ if (lcop) < 14.695358276367188f32 {
                                     if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 66.97113418579102f32 {
                                         if ((num_groups as f32 / wi_ops.max(1) as f32).max(1e-8).ln()) < 4.021413087844849f32 {
                                             if (lng * rr) < 5.1606972217559814f32 {
-                                                -0.121309
+                                                -0.184163
                                             } else {
-                                                -0.050887
+                                                -0.079357
                                             }
                                         } else {
-                                            -0.018188
+                                            0.007796
                                         }
                                     } else {
-                                        -0.066139
+                                        -0.075939
                                     }
                                 } else {
-                                    if ((wi_ops as f32 / (num_groups * wi_per_group * wi_barriers.max(1)).max(1) as f32).ln_1p()) < 0.0013761583250015974f32 {
-                                        0.007620
+                                    if (wi_ops as f32 / (num_groups * wi_per_group).max(1) as f32) < 0.001377105712890625f32 {
+                                        0.037586
                                     } else {
-                                        -0.043725
+                                        -0.079450
                                     }
                                 }
                             } else {
                                 if (lops * ci) < 0.6356827020645142f32 {
-                                    0.028525
+                                    0.025802
                                 } else {
-                                    0.017410
+                                    0.004461
                                 }
                             }
                         } else {
-                            if ((num_groups * wi_per_group) as f32) < 81920.0f32 {
+                            if ((num_groups * wi_per_group) as f32) < 40960.0f32 {
                                 if (wi_ops as f32 / (num_groups as f32 * (wi_per_group as f32).ln_1p()).max(1.0)) < 52.39078330993652f32 {
-                                    if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 73.7971305847168f32 {
-                                        if ((wi_global_load_lidx_stride as f32).ln_1p() * lops) < 5.802663326263428f32 {
-                                            -0.037949
-                                        } else {
-                                            -0.044880
-                                        }
+                                    if (wi_ops as f32 / wi_barriers.max(1) as f32) < 2765.0f32 {
+                                        -0.069958
                                     } else {
-                                        if (lcop * ci) < 0.9567817747592926f32 {
-                                            0.031592
-                                        } else {
-                                            -0.007407
-                                        }
+                                        -0.032241
                                     }
                                 } else {
                                     if (lng * lgmem) < 34.69034004211426f32 {
-                                        0.057018
+                                        0.025358
                                     } else {
-                                        -0.020239
+                                        -0.045705
                                     }
                                 }
                             } else {
-                                0.025205
+                                if (lops * ci) < 1.2217543721199036f32 {
+                                    0.077007
+                                } else {
+                                    0.003369
+                                }
                             }
                         }
                     } else {
-                        if ((num_groups * wi_per_group) as f32) < 163840.0f32 {
-                            if (lng * lgmem) < 95.1612548828125f32 {
-                                0.035407
+                        if (lops * ci) < 0.6242369115352631f32 {
+                            if (wi_ops as f32 / wi_compute_ops.max(1) as f32) < 1.42578125f32 {
+                                0.093129
                             } else {
-                                0.061593
+                                0.064054
                             }
                         } else {
-                            if ((wi_global_store_lidx_stride as f32).ln_1p()) < 12.300548076629639f32 {
-                                0.048910
+                            if (lng * lgmem) < 95.1612548828125f32 {
+                                0.042587
                             } else {
-                                0.047124
+                                0.080767
                             }
                         }
                     }
                 }
             } else {
-                if ((if wi_barriers == 0 { 1.0 } else { 0.0 }) * lng) < 14.065676212310791f32 {
+                if ((lng.abs()).ln_1p()) < 2.712328553199768f32 {
                     if ((if wi_barriers == 0 { 1.0 } else { 0.0 }) * lops) < 2.86179256439209f32 {
                         if (lng * lgmem) < 51.40876770019531f32 {
-                            -0.023958
+                            -0.019645
                         } else {
-                            0.023261
+                            0.052945
                         }
                     } else {
                         if ((num_groups * wi_per_group) as f32) < 10485760.0f32 {
                             if ((if wi_barriers == 0 { 1.0 } else { 0.0 }) * lgmem) < 5.061251163482666f32 {
-                                -0.017564
+                                0.012887
                             } else {
                                 if (lng * lcop) < 57.89606857299805f32 {
-                                    0.057151
+                                    0.141870
                                 } else {
-                                    0.054716
+                                    0.091474
                                 }
                             }
                         } else {
                             if (lwpg * lgmem) < 21.910325050354004f32 {
-                                0.085754
+                                0.141444
                             } else {
-                                0.067805
+                                0.164876
                             }
                         }
                     }
                 } else {
-                    if ((lng.abs()).ln_1p()) < 2.800369381904602f32 {
-                        0.146662
+                    if (num_groups as f32) < 5242880.0f32 {
+                        0.224297
                     } else {
-                        0.162005
+                        0.231595
                     }
                 }
             }
         } else {
             if (lgmem) < 14.556823253631592f32 {
-                if (lgmem) < 14.269405841827393f32 {
+                if (lops * lgmem) < 178.0644760131836f32 {
                     if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 54.99669075012207f32 {
-                        if (lwpg * lops) < 34.877607345581055f32 {
+                        if (lwpg * lops * (if wi_barriers == 0 { 1.0 } else { 0.0 })) < 34.877607345581055f32 {
                             if (((wi_ops as f32 / wi_compute_ops.max(1) as f32)).ln_1p()) < 0.8994536101818085f32 {
-                                if ((lops.abs()).ln_1p()) < 2.5829657316207886f32 {
-                                    -0.011443
+                                if ((if wi_barriers == 0 { 1.0 } else { 0.0 }) * lops) < 12.236335277557373f32 {
+                                    -0.093730
                                 } else {
-                                    0.020342
+                                    -0.020843
                                 }
                             } else {
-                                0.000396
+                                -0.019776
                             }
                         } else {
-                            0.061198
+                            0.031982
                         }
                     } else {
-                        0.038345
+                        0.044566
                     }
                 } else {
-                    if (((wi_global_load_bits + wi_global_store_bits) as f32 / (num_groups * wi_per_group).max(1) as f32).ln_1p()) < 11.783761024475098f32 {
-                        0.086776
-                    } else {
-                        0.063608
-                    }
+                    0.064206
                 }
             } else {
-                if ((if wi_barriers == 0 { 1.0 } else { 0.0 }) * lgmem) < 15.367044925689697f32 {
-                    if (((num_groups * wi_per_group) as f32 / wi_ops.max(1) as f32 + 1.0).ln()) < 0.0002032239717664197f32 {
-                        0.098785
-                    } else {
-                        0.048189
-                    }
+                if (lgmem) < 15.367044925689697f32 {
+                    0.094795
                 } else {
-                    0.202884
+                    0.200760
                 }
             }
         }
     } else {
-        if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 117.90045166015625f32 {
+        if ((100.0 / wi_ops.max(1) as f32).ln_1p()) < 2.8235997362457965e-07f32 {
+            0.549367
+        } else {
+            0.362426
+        }
+    }
+} else {
+    if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 120.19371795654297f32 {
+        if (lng * lgmem) < 123.0359992980957f32 {
             if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 93.73390197753906f32 {
                 if (wi_ops as f32 / (num_groups as f32 * (wi_per_group as f32).ln_1p()).max(1.0)) < 0.006292900303378701f32 {
-                    0.144993
+                    0.221120
                 } else {
                     if (lcop * ci) < 1.0582632422447205f32 {
                         if (wi_compute_ops as f32 / (num_groups * wi_barriers.max(1)).max(1) as f32) < 9.1171875f32 {
-                            0.096842
+                            0.129943
                         } else {
-                            0.074291
+                            0.071813
                         }
                     } else {
                         if (rr) < 5.3203125f32 {
                             if (((num_groups * wi_per_group) as f32 / wi_ops.max(1) as f32 + 1.0).ln()) < 4.188023328781128f32 {
-                                if (lwpg * lgmem) < 36.19500732421875f32 {
-                                    0.090458
+                                if (lwpg * lops) < 32.306509017944336f32 {
+                                    0.091688
                                 } else {
-                                    0.023463
+                                    0.015131
                                 }
                             } else {
-                                0.064553
+                                0.103157
                             }
                         } else {
-                            0.075190
+                            0.080682
                         }
                     }
                 }
             } else {
-                if (rr) < 2.5390625f32 {
-                    if (lng * wr) < 11.783502101898193f32 {
-                        if (lng * lgmem) < 123.10322952270508f32 {
-                            if ((wi_global_store_lidx_stride as f32).ln_1p()) < 0.3465735912322998f32 {
-                                if (lng * lwpg) < 24.301971435546875f32 {
-                                    0.034865
-                                } else {
-                                    0.027156
-                                }
-                            } else {
-                                0.148941
-                            }
-                        } else {
-                            0.113303
-                        }
+                if (wi_ops as f32 / wi_compute_ops.max(1) as f32) < 1.2146396040916443f32 {
+                    if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 106.04225158691406f32 {
+                        0.129366
                     } else {
-                        if (((wi_global_load_bits + wi_global_store_bits) as f32 / wi_compute_ops.max(1) as f32 + 1.0).ln()) < 1.845485270023346f32 {
-                            if ((wi_global_load_lidx_stride as f32).ln_1p() * lcop) < 4.987450122833252f32 {
-                                0.031434
-                            } else {
-                                0.108255
-                            }
-                        } else {
-                            0.033229
-                        }
+                        0.182903
                     }
                 } else {
-                    if (((wi_global_load_bits + wi_global_store_bits) as f32 / wi_compute_ops.max(1) as f32 + 1.0).ln()) < 1.7169694900512695f32 {
-                        0.039469
-                    } else {
-                        if (wi_ops as f32 / (num_groups as f32 * (wi_per_group as f32).ln_1p()).max(1.0)) < 38.004873275756836f32 {
-                            if (lng * rr) < 53.9842529296875f32 {
-                                0.091493
+                    if (rr) < 2.3359375f32 {
+                        if (lng * lwpg) < 21.707261085510254f32 {
+                            if ((wi_global_store_lidx_stride as f32).ln_1p()) < 0.3465735912322998f32 {
+                                0.042415
                             } else {
-                                0.118779
+                                0.164582
                             }
                         } else {
-                            0.137232
+                            if ((num_groups * wi_per_group) as f32) < 25952256.0f32 {
+                                0.210708
+                            } else {
+                                0.125710
+                            }
+                        }
+                    } else {
+                        if (lops * ci) < 1.5801965594291687f32 {
+                            0.114983
+                        } else {
+                            0.250138
                         }
                     }
                 }
             }
         } else {
-            if (lng * lgmem) < 151.6023406982422f32 {
-                if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 143.82078552246094f32 {
-                    0.174557
-                } else {
-                    0.141810
-                }
+            if (lng * lgmem) < 132.1332778930664f32 {
+                0.258663
             } else {
-                0.259384
+                0.296183
             }
         }
-    }
-} else {
-    if ((100.0 / wi_ops.max(1) as f32).ln_1p()) < 2.8235997362457965e-07f32 {
-        0.447938
     } else {
-        if (rr) < 9.140625f32 {
-            0.374155
+        if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 149.04379272460938f32 {
+            if (lng * lgmem) < 147.99030303955078f32 {
+                if ((wi_global_load_lidx_stride as f32).ln_1p() * lcop) < 38.327035903930664f32 {
+                    if (lng * lgmem) < 130.79727935791016f32 {
+                        if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 136.0617446899414f32 {
+                            0.371133
+                        } else {
+                            0.268620
+                        }
+                    } else {
+                        if ((if wi_barriers == 0 { 1.0 } else { 0.0 }) * lng) < 8.867072105407715f32 {
+                            0.147322
+                        } else {
+                            0.423773
+                        }
+                    }
+                } else {
+                    if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 129.3759307861328f32 {
+                        0.288958
+                    } else {
+                        0.314943
+                    }
+                }
+            } else {
+                if (lng * lgmem) < 160.0317153930664f32 {
+                    if (lwpg * lgmem) < 10.260620594024658f32 {
+                        0.464426
+                    } else {
+                        0.262083
+                    }
+                } else {
+                    0.476266
+                }
+            }
         } else {
-            0.020267
+            if (lng * lgmem) < 191.9724884033203f32 {
+                if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()) < 159.86176300048828f32 {
+                    0.330861
+                } else {
+                    if ((wi_global_load_lidx_stride as f32).ln_1p() * lgmem) < 71.37892532348633f32 {
+                        0.330463
+                    } else {
+                        0.235489
+                    }
+                }
+            } else {
+                0.399032
+            }
         }
     }
 }
         };
 
         // Ridge linear combination
-        let mut result = 5.711902;
-        result += 7.347502 * (features[0] - 1.874660) / 1.409357;  // lwpg
-        result += 6.526506 * (features[1] - 8.967356) / 3.008489;  // lcop
-        result += -0.820678 * (features[2] - 10.869138) / 2.972298;  // lgmem
-        result += -4.120573 * (features[3] - 9.336120) / 2.910874;  // log_ops_10
-        result += 55.666790 * (features[4] - 10319074.578351) / 115625148.729873;  // ops_per_thread
-        result += -20.484689 * (features[5] - 10326005.526752) / 115624549.637686;  // ops_per_group
-        result += 4.946116 * (features[6] - 0.363784) / 0.719127;  // log_lwpg
-        result += -0.744973 * (features[7] - 4.031321) / 4.229802;  // log_opt
-        result += 0.038572 * (features[8] - 1.617858) / 1.403171;  // b0*lwpg
-        result += 11.146633 * (features[9] - 109.929196) / 64.155180;  // lops*lgmem
-        result += -10.663594 * (features[10] - 106.338001) / 63.555895;  // lcop*lgmem
-        result += 4.409473 * (features[11] - 1.959096) / 1.668457;  // log_warp_waste
-        result += -2.289511 * (features[12] - 8.454930) / 3.789928;  // b0*lcop
-        result += 1.932845 * (features[13] - 10.231101) / 4.094631;  // b0*lgmem
-        result += -61.480865 * (features[14] - 6965901.938373) / 77187228.188687;  // element_ops
-        result += 4.409473 * (features[15] - 1.959096) / 1.668457;  // warp_div
-        result += 61.628613 * (features[16] - 6965764.613061) / 77187240.546892;  // compute_per_barrier
-        result += -35.383334 * (features[17] - 10324799.199875) / 115624654.699099;  // group_work_density
-        result += -3.510526 * (features[18] - 0.951341) / 0.443264;  // log1p_lwpg_raw
-        result += 1.067402 * (features[19] - 1.510333) / 2.876826;  // log_threads_per_ops
+        let mut result = 6.085866;
+        result += -21.706121 * (features[0] - 1.869817) / 1.409108;  // lwpg
+        result += -0.165134 * (features[1] - 9.135977) / 2.968424;  // lcop
+        result += -0.045157 * (features[2] - 11.023665) / 2.915840;  // lgmem
+        result += -23.721382 * (features[3] - 9452233.272961) / 110699170.850467;  // ops_per_thread
+        result += -30.463539 * (features[4] - 9458587.929365) / 110698646.889187;  // ops_per_group
+        result += -15.686670 * (features[5] - 0.360247) / 0.720144;  // log_lwpg
+        result += -0.161059 * (features[6] - 3.784058) / 4.145262;  // log_opt
+        result += 0.025949 * (features[7] - 1.625674) / 1.403887;  // b0*lwpg
+        result += 0.725215 * (features[8] - 112.800322) / 62.808584;  // lops*lgmem
+        result += -12.873243 * (features[9] - 1.965763) / 1.669083;  // log_warp_waste
+        result += -0.377823 * (features[10] - 8.648948) / 3.748125;  // b0*lcop
+        result += 0.133860 * (features[11] - 10.416086) / 4.033345;  // b0*lgmem
+        result += -97.264817 * (features[12] - 6380745.291198) / 73899377.699039;  // element_ops
+        result += -12.873241 * (features[13] - 1.965763) / 1.669083;  // warp_div
+        result += 97.220505 * (features[14] - 6380619.501739) / 73899388.526720;  // compute_per_barrier
+        result += 54.155863 * (features[15] - 9457478.649959) / 110698739.115676;  // group_work_density
+        result += 11.296140 * (features[16] - 0.949454) / 0.443576;  // log1p_lwpg_raw
+        result += -0.304087 * (features[17] - 0.607579) / 2.211662;  // barr_nonzero_lmem
+        result += 0.518981 * (features[18] - 0.487029) / 1.785404;  // bgt_lcop
+        result += -0.304087 * (features[19] - 0.607579) / 2.211662;  // bgt_lgmem
         result += leaf_bias;
         result
     }

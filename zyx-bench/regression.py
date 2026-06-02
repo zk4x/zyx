@@ -681,6 +681,8 @@ def main():
         f.write(f"// Ridge features: {len(final_ridge_coefs)}, DT leaves: {len(final_dt_coefs)}\n")
         f.write(f"// Total parameters: {len(final_ridge_coefs) + len(final_dt_coefs)}\n")
         f.write("\n")
+        f.write("#![allow(unused)]\n")
+        f.write("\n")
         f.write("use super::cost::Cost;\n")
         f.write("\n")
         f.write("impl Cost {\n")
