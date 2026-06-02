@@ -575,15 +575,16 @@ def main():
     for section in sorted(section_groups.keys()):
         if section in dt_r2_sections:
             r2 = dt_r2_sections[section]
-            flag = " *** ABOVE 0.95 ***" if "MatMul" in section and r2 >= 0.95 else ""
-            flag += " *** ABOVE 0.8 ***" if r2 >= 0.8 and section != "MatMul" else ""
+            flag = " *** ABOVE 0.95 ***" if r2 >= 0.95 else ""
             print(f"  {section}: R²={r2:.4f}{flag}")
 
-    if "MatMul" in dt_r2_sections and dt_r2_sections["MatMul"] >= 0.95 and dt_min_r2 >= 0.8:
+    if dt_min_r2 >= 0.95:
         print("\n*** All targets MET! ***")
-    elif "MatMul" in dt_r2_sections:
-        print(f"\nMatMul R²={dt_r2_sections['MatMul']:.4f} (target: 0.95)")
-        print(f"Worst section R²={dt_min_r2:.4f} (target: 0.8)")
+    else:
+        print(f"\nWorst section R²={dt_min_r2:.4f} (target: 0.95)")
+        for section in sorted(section_groups.keys()):
+            if section in dt_r2_sections and dt_r2_sections[section] < 0.95:
+                print(f"  {section}: R²={dt_r2_sections[section]:.4f}")
 
     # === Cost.rs code generation ===
     # Model: log_time = dt_tree_bias (DT-only).
