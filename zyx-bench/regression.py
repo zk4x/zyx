@@ -9,7 +9,7 @@ import io
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge, ElasticNet, ElasticNetCV, LassoCV
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.feature_selection import SelectFromModel
 from collections import Counter
@@ -536,10 +536,11 @@ def main():
     sample_weights = sample_weights / np.mean(sample_weights)
 
     # === DT-only model ===
-    # Ridge was attempted but failed for OOD inputs: features like lng*lcop have z=93+
-    # even with weighted scaling. Ridge can't handle extreme range across MatMul configs.
-    # DT handles all ranges naturally (tree splits on raw values), R²=0.93 alone.
-    max_dt_leaves = 200
+    # DT handles all ranges naturally (tree splits on raw values).
+    # Ridge was attempted but makes ranking worse — global feature scaling
+    # can't distinguish within-section differences (all MatMul entries get
+    # near-identical scaled values when mean/std are dominated by other sections).
+    max_dt_leaves = 1500
     print(f"\nTraining DT with max {max_dt_leaves} leaves...")
     dt = DecisionTreeRegressor(max_leaf_nodes=max_dt_leaves, random_state=42, min_samples_leaf=5)
     dt.fit(X, y)
@@ -585,8 +586,7 @@ def main():
         print(f"Worst section R²={dt_min_r2:.4f} (target: 0.8)")
 
     # === Cost.rs code generation ===
-    # Model: log_time = dt_tree_bias (DT-only, no Ridge).
-    # DT handles all ranges with tree splits; Ridge failed on OOD extrapolation.
+    # Model: log_time = dt_tree_bias (DT-only).
     rust_path = os.path.join(os.path.dirname(__file__), '..', 'zyx', 'src', 'kernel', 'predict_cost.rs')
     with open(rust_path, 'w') as f:
         f.write("// Copyright (C) 2025 zk4x\n")
@@ -645,16 +645,8 @@ def main():
     matmul_idx = np.where(matmul_mask)[0]
     mm_actual_us = np.array([entries[i]['time_us'] for i in matmul_idx])
     mm_pred_us = np.exp(full_pred[matmul_mask])
-    
-    # === MatMul ranking diagnostic ===
-    print("\n=== MatMul Within-Section Ranking ===")
-    full_pred = dt_pred
-    matmul_mask = np.array([e['section'] == 'MatMul' for e in entries])
-    matmul_idx = np.where(matmul_mask)[0]
-    mm_actual_us = np.array([entries[i]['time_us'] for i in matmul_idx])
-    mm_pred_us = np.exp(full_pred[matmul_mask])
 
-    # Sort by actual time
+    print("\n=== MatMul Within-Section Ranking ===")
     sort_order = np.argsort(mm_actual_us)
     print(f"{'#':>4} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_us':>10}")
     print("-" * 55)
@@ -672,7 +664,6 @@ def main():
     rho, _ = _spearmanr(mm_actual_us, mm_pred_us)
     print(f"\nMatMul Spearman ρ = {rho:.4f}")
 
-    # Also show top-10 by predicted cost (lowest predicted = best choice)
     pred_order = np.argsort(mm_pred_us)
     print(f"\n{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_us':>10}")
     print("-" * 55)
@@ -681,7 +672,6 @@ def main():
         a = mm_actual_us[si]; p = mm_pred_us[si]
         print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.1f}")
 
-    # High-ops MatMul entries (>50K ops = larger matmuls)
     print(f"\n--- High-ops MatMul entries (ops > 50000) ---")
     high_mask = np.array([entries[i]['wi_ops'] > 50000 for i in matmul_idx])
     high_si = np.where(high_mask)[0]
@@ -691,14 +681,13 @@ def main():
     print(f"{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>8} {'us_time':>8} {'actual_us':>10} {'pred_us':>10}")
     print("-" * 70)
     for rank, si in enumerate(high_pred_order[:15]):
-        actual_si = high_si[si]  # index into mm arrays
+        actual_si = high_si[si]
         e = entries[matmul_idx[actual_si]]
         a = high_actual[si]; p = high_pred[si]
         print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:8} {e['time_us']:8.0f} {a:10.1f} {p:10.1f}")
     rho_high, _ = _spearmanr(high_actual, high_pred)
     print(f"High-ops MatMul Spearman ρ = {rho_high:.4f}")
 
-    # Large MatMul ranking diagnostic
     print("\n=== Large MatMul Within-Section Ranking ===")
     lm_mask = np.array([e['section'] == 'Large MatMul' for e in entries])
     lm_idx = np.where(lm_mask)[0]
@@ -715,7 +704,6 @@ def main():
     print(f"Large MatMul Spearman ρ = {rho_lm:.4f}")
 
     return dt, entries, None, None
-
 
 if __name__ == '__main__':
     main()
