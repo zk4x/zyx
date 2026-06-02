@@ -9,7 +9,7 @@ use std::ops::{Add, Div, Mul, Sub};
 use zyx::{DType, Module, Tensor, ZyxError};
 
 fn matmul_bench() -> Result<(), ZyxError> {
-    println!("=== MatMul ===");
+    //println!("=== MatMul ===");
     for &(m, n, k) in &[
         (256, 256, 256),
         (512, 512, 512),
@@ -28,12 +28,12 @@ fn matmul_bench() -> Result<(), ZyxError> {
         let b = Tensor::rand([n, k], DType::F32)?;
         a.matmul(b.t())?.realize()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn reduce_bench() -> Result<(), ZyxError> {
-    println!("=== Reduce ===");
+    //println!("=== Reduce ===");
     for dims in [
         &[4096u64][..],
         &[16384],
@@ -51,12 +51,12 @@ fn reduce_bench() -> Result<(), ZyxError> {
         x.var_all().realize_one()?;
         x.std_all().realize_one()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn softmax_bench() -> Result<(), ZyxError> {
-    println!("=== Softmax ===");
+    //println!("=== Softmax ===");
     for &(dims, ref axes) in &[
         (&[4096u64][..], &[0i32][..]),
         (&[128, 4096], &[0i32][..]),
@@ -72,12 +72,12 @@ fn softmax_bench() -> Result<(), ZyxError> {
         let x = Tensor::rand(dims, DType::F32)?;
         x.softmax(axes.iter().copied())?.realize_one()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn embedding_bench() -> Result<(), ZyxError> {
-    println!("=== Embedding (index_select) ===");
+    //println!("=== Embedding (index_select) ===");
     for &(vocab_size, embed_dim, seq_len) in
         &[(10000, 768, 64), (50000, 1024, 256), (100000, 768, 128)]
     {
@@ -86,22 +86,22 @@ fn embedding_bench() -> Result<(), ZyxError> {
         let indices = Tensor::from(idx);
         embedding.index_select(0, indices)?.realize_one()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn gelu_bench() -> Result<(), ZyxError> {
-    println!("=== GELU Activation ===");
+    //println!("=== GELU Activation ===");
     for dims in [&[4096u64][..], &[16384], &[1024, 4096], &[256, 1024, 512]] {
         let x = Tensor::rand(dims, DType::F32)?;
         x.gelu().realize_one()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn activation_bench() -> Result<(), ZyxError> {
-    println!("=== Other Activations ===");
+    //println!("=== Other Activations ===");
     for dims in [
         &[16384u64][..],
         &[32768u64],
@@ -119,12 +119,12 @@ fn activation_bench() -> Result<(), ZyxError> {
         x.exp().realize_one()?;
         x.log(Tensor::from(2.0)).realize_one()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn ln_softmax_bench() -> Result<(), ZyxError> {
-    println!("=== Ln Softmax ===");
+    //println!("=== Ln Softmax ===");
     for &(dims, ref axes) in &[
         (&[4096u64][..], &[0i32][..]),
         (&[256, 4096], &[0i32][..]),
@@ -135,12 +135,12 @@ fn ln_softmax_bench() -> Result<(), ZyxError> {
         let x = Tensor::rand(dims, DType::F32)?;
         x.ln_softmax(axes.iter().copied())?.realize_one()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn reduce_axis_bench() -> Result<(), ZyxError> {
-    println!("=== Reduce Axis ===");
+    //println!("=== Reduce Axis ===");
     for dims in [
         &[512, 512][..],
         &[256, 1024],
@@ -177,12 +177,12 @@ fn reduce_axis_bench() -> Result<(), ZyxError> {
             x.mean([0])?.realize_one()?;
         }
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn silu_like_bench() -> Result<(), ZyxError> {
-    println!("=== SiLU-like (x * sigmoid(x)) ===");
+    //println!("=== SiLU-like (x * sigmoid(x)) ===");
     for dims in [
         &[4096u64][..],
         &[16384],
@@ -194,12 +194,12 @@ fn silu_like_bench() -> Result<(), ZyxError> {
         let x = Tensor::rand(dims, DType::F32)?;
         x.sigmoid().mul(&x).realize_one()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn layer_norm_like_bench() -> Result<(), ZyxError> {
-    println!("=== Layer Norm-like (mean+var+normalize) ===");
+    //println!("=== Layer Norm-like (mean+var+normalize) ===");
     for dims in [&[128, 768][..], &[64, 1024], &[32, 2048], &[16, 768, 1024]] {
         let last = *dims.last().unwrap();
         let x = Tensor::rand(dims, DType::F32)?;
@@ -212,12 +212,12 @@ fn layer_norm_like_bench() -> Result<(), ZyxError> {
         let norm = centered.div(&std);
         norm.mul(&gamma).add(&beta).realize_one()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn reduce_multi_axis_bench() -> Result<(), ZyxError> {
-    println!("=== Reduce Multi Axis ===");
+    //println!("=== Reduce Multi Axis ===");
     for dims in [
         &[64, 64, 64][..],
         &[32, 128, 256],
@@ -230,12 +230,12 @@ fn reduce_multi_axis_bench() -> Result<(), ZyxError> {
         x.mean([1, 2])?.realize_one()?;
         x.var([0, 2])?.realize_one()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn large_matmul_bench() -> Result<(), ZyxError> {
-    println!("=== Large MatMul ===");
+    //println!("=== Large MatMul ===");
     let dims: &[u64] = &[256, 320, 384, 448, 512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1792, 2048, 2304, 2560, 3072, 3584, 4096, 4608, 5120, 6144];
     // Square
     for &n in dims {
@@ -261,22 +261,22 @@ fn large_matmul_bench() -> Result<(), ZyxError> {
         let b = Tensor::rand([1024, k], DType::F32)?;
         a.matmul(b.t())?.realize()?;
     }
-    println!();
+    //println!();
     Ok(())
 }
 
 fn main() -> Result<(), ZyxError> {
-    //matmul_bench()?;
-    //reduce_bench()?;
-    //softmax_bench()?;
-    //embedding_bench()?;
-    //gelu_bench()?;
-    //activation_bench()?;
-    //ln_softmax_bench()?;
-    //reduce_axis_bench()?;
-    //silu_like_bench()?;
-    //layer_norm_like_bench()?;
-    //reduce_multi_axis_bench()?;
+    matmul_bench()?;
+    reduce_bench()?;
+    softmax_bench()?;
+    embedding_bench()?;
+    gelu_bench()?;
+    activation_bench()?;
+    ln_softmax_bench()?;
+    reduce_axis_bench()?;
+    silu_like_bench()?;
+    layer_norm_like_bench()?;
+    reduce_multi_axis_bench()?;
     large_matmul_bench()?;
     Ok(())
 }
