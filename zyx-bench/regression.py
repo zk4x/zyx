@@ -645,32 +645,13 @@ def main():
 
     print(f"Total features: {X.shape[1]}")
 
-    # Create sample weights: 50% to barrier>0, 50% to barrier=0
-    # Within each barrier group, each section gets equal weight
+    # Sample weights: 50% to barrier>0, 50% to barrier=0, per-kernel equal
     barr_vals = np.array([e['wi_barriers'] for e in entries])
-    barrier_mask = barr_vals > 0
-    
-    # Group sections by barrier regime
-    barrier0_sections = set()
-    barrier_gt0_sections = set()
-    for i, e in enumerate(entries):
-        if e['wi_barriers'] > 0:
-            barrier_gt0_sections.add(e['section'])
-        else:
-            barrier0_sections.add(e['section'])
-    
-    # Within each regime, give each section equal weight
-    barrier_weights = np.zeros(len(entries))
-    
-    for section_list, total_weight in [(barrier0_sections, 0.5), (barrier_gt0_sections, 0.5)]:
-        for section in section_list:
-            indices = section_groups[section]
-            weight_per_sample = total_weight / len(section_list) / len(indices)
-            for idx in indices:
-                barrier_weights[idx] = weight_per_sample
-    
-    sample_weights = barrier_weights * len(entries)
-    sample_weights = sample_weights / np.mean(sample_weights)
+    n_barr0 = np.sum(barr_vals == 0)
+    n_barr_gt0 = np.sum(barr_vals > 0)
+    sample_weights = np.where(barr_vals > 0, 0.5 / n_barr_gt0, 0.5 / n_barr0)
+    sample_weights *= len(entries)
+    sample_weights /= np.mean(sample_weights)
 
     # === Ridge+DT Stacking ===
     # DT carves the feature space into regions where relationships are roughly linear.
@@ -703,73 +684,32 @@ def main():
     stacked_pred = ridge.predict(X_scaled)
     print(f"Ridge alpha={best_alpha:.4f}, stacked R²={ridge.score(X_scaled, y, sample_weight=sample_weights):.4f}")
 
-    # === Evaluate DT results ===
-    def evaluate_model_impl(model_fn, y, section_groups):
-        y_pred = model_fn()
-        section_r2s = {}
-        for section in section_groups.keys():
-            mask = section_groups[section]
-            if len(mask) > 1:
-                y_sec = y[mask]
-                y_pred_sec = y_pred[mask]
+    # === Per-kernel R² evaluation ===
+    def per_kernel_r2(y_pred, variant_groups):
+        r2s = []
+        for g in variant_groups:
+            if len(g) >= 3:
+                y_sec = y[g]
+                y_pred_sec = y_pred[g]
                 ss_res = np.sum((y_sec - y_pred_sec) ** 2)
                 ss_tot = np.sum((y_sec - np.mean(y_sec)) ** 2)
                 r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-                section_r2s[section] = r2
-        return section_r2s
+                r2s.append(r2)
+        return np.array(r2s)
 
-    # Within-variant Spearman: the real metric
-    def within_variant_spearman(y_pred, variant_groups, entries):
-        rhos = []
-        for g in variant_groups:
-            if len(g) >= 3:
-                actual = np.array([entries[i]['time_us'] for i in g])
-                pred = y_pred[g]
-                r, _ = _spearmanr(actual, pred)
-                rhos.append(r)
-        return np.mean(rhos) if rhos else 0.0, np.std(rhos) if len(rhos) > 1 else 0.0
+    def print_per_kernel_report(label, y_pred, variant_groups):
+        r2s = per_kernel_r2(y_pred, variant_groups)
+        if len(r2s) == 0:
+            return
+        print(f"\n=== {label} Results ===")
+        print(f"  Overall mean R²:   {np.mean(r2s):.4f}  (over {len(r2s)} kernels)")
+        print(f"  Median R²:         {np.median(r2s):.4f}")
+        print(f"  Worst 5% quantile: {np.quantile(r2s, 0.05):.4f}")
+        print(f"  Worst R²:          {np.min(r2s):.4f}")
+        print(f"  Best R²:           {np.max(r2s):.4f}")
 
-    def print_within_variant_metrics(label, y_pred, variant_groups, entries):
-        mean_rho, std_rho = within_variant_spearman(y_pred, variant_groups, entries)
-        print(f"  Within-variant Spearman ρ: {mean_rho:.4f} ± {std_rho:.4f}")
-
-    dt_r2_sections = evaluate_model_impl(lambda: dt.predict(X), y, section_groups)
-    dt_min_r2 = min(dt_r2_sections.values()) if dt_r2_sections else 0
-    print(f"\n=== DT-Only Results ===")
-    print(f"DT leaves: {len(leaf_node_ids)}")
-    print(f"Total parameters: {len(leaf_node_ids)}")
-    print(f"Minimum per-section R²: {dt_min_r2:.4f}")
-    print()
-    for section in sorted(section_groups.keys()):
-        if section in dt_r2_sections:
-            r2 = dt_r2_sections[section]
-            flag = " *** ABOVE 0.95 ***" if r2 >= 0.95 else ""
-            print(f"  {section}: R²={r2:.4f}{flag}")
-    print_within_variant_metrics("DT", dt.predict(X), variant_groups, entries)
-
-    # === Evaluate stacked Ridge+DT results ===
-    stacked_r2_sections = evaluate_model_impl(lambda: stacked_pred, y, section_groups)
-    stacked_min_r2 = min(stacked_r2_sections.values()) if stacked_r2_sections else 0
-    print(f"\n=== Ridge+DT Stacked Results ===")
-    print(f"DT leaves: {len(leaf_node_ids)}")
-    print(f"Ridge features: {X_stacked.shape[1]} (143 original + 1 DT pred)")
-    print(f"Total parameters: {len(ridge_coef)} + 1 intercept = {len(ridge_coef) + 1}")
-    print(f"Minimum per-section R²: {stacked_min_r2:.4f}")
-    print()
-    for section in sorted(section_groups.keys()):
-        if section in stacked_r2_sections:
-            r2 = stacked_r2_sections[section]
-            flag = " *** ABOVE 0.95 ***" if r2 >= 0.95 else ""
-            print(f"  {section}: R²={r2:.4f}{flag}")
-    print_within_variant_metrics("Stacked", stacked_pred, variant_groups, entries)
-
-    if stacked_min_r2 >= 0.95:
-        print("\n*** All targets MET! ***")
-    else:
-        print(f"\nWorst section R²={stacked_min_r2:.4f} (target: 0.95)")
-        for section in sorted(section_groups.keys()):
-            if section in stacked_r2_sections and stacked_r2_sections[section] < 0.95:
-                print(f"  {section}: R²={stacked_r2_sections[section]:.4f}")
+    print_per_kernel_report("DT-only", dt.predict(X), variant_groups)
+    print_per_kernel_report("Ridge+DT Stacked", stacked_pred, variant_groups)
 
     # === Cost.rs code generation ===
     # Model: log_time = ridge_intercept + sum(ridge_coef[i] * scaled_feature[i])
@@ -886,112 +826,6 @@ def main():
         f.write("    }\n")
         f.write("}\n")
     print(f"\nWrote {rust_path}")
-
-    # === Diagnostic ===
-    full_pred = stacked_pred
-    matmul_mask = np.array([e['section'] == 'MatMul' for e in entries])
-    matmul_idx = np.where(matmul_mask)[0]
-    mm_actual_us = np.array([entries[i]['time_us'] for i in matmul_idx])
-    mm_pred_rank = full_pred[matmul_mask]
-
-    print("\n=== MatMul Within-Section Ranking ===")
-    print("(target = rank 0..1 within variant, 0 = fastest)")
-    sort_order = np.argsort(mm_actual_us)
-    print(f"{'#':>4} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_rank':>10}")
-    print("-" * 55)
-    for rank, idx in enumerate(sort_order[:15]):
-        e = entries[matmul_idx[idx]]
-        a = mm_actual_us[idx]; p = mm_pred_rank[idx]
-        print(f"{rank:4d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.4f}")
-    print("  ...")
-    for rank, idx in enumerate(sort_order[-5:]):
-        e = entries[matmul_idx[idx]]
-        a = mm_actual_us[idx]; p = mm_pred_rank[idx]
-        print(f"{len(sort_order)-5+rank:4d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.4f}")
-
-    rho, _ = _spearmanr(mm_actual_us, mm_pred_rank)
-    print(f"\nMatMul Spearman ρ (actual_us vs pred_rank) = {rho:.4f}")
-
-    # Within-variant: compare predicted rank to actual group rank
-    # For each variant group in MatMul, compute Spearman of predicted vs actual rank
-    mm_groups = [g for g in variant_groups if entries[g[0]]['section'] == 'MatMul' and len(g) >= 3]
-    within_rhos = []
-    for g in mm_groups:
-        actual = np.array([entries[i]['time_us'] for i in g])
-        pred = full_pred[g]
-        if len(g) >= 3:
-            r, _ = _spearmanr(actual, pred)
-            within_rhos.append(r)
-    if within_rhos:
-        print(f"Within-variant Spearman ρ (avg over {len(within_rhos)} groups): {np.mean(within_rhos):.4f}")
-
-    pred_order = np.argsort(mm_pred_rank)
-    print(f"\n{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_rank':>10}")
-    print("-" * 65)
-    for rank, si in enumerate(pred_order[:10]):
-        e = entries[matmul_idx[si]]
-        a = mm_actual_us[si]; p = mm_pred_rank[si]
-        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.4f}")
-
-    print(f"\n--- High-ops MatMul entries (ops > 50000) ---")
-    high_mask = np.array([entries[i]['wi_ops'] > 50000 for i in matmul_idx])
-    high_si = np.where(high_mask)[0]
-    high_actual = mm_actual_us[high_mask]
-    high_pred = mm_pred_rank[high_mask]
-    high_pred_order = np.argsort(high_pred)
-    print(f"{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>8} {'us_time':>8} {'actual_us':>10} {'pred_rank':>10}")
-    print("-" * 70)
-    for rank, si in enumerate(high_pred_order[:15]):
-        actual_si = high_si[si]
-        e = entries[matmul_idx[actual_si]]
-        a = high_actual[si]; p = high_pred[si]
-        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:8} {e['time_us']:8.0f} {a:10.1f} {p:10.4f}")
-    rho_high, _ = _spearmanr(high_actual, high_pred)
-    print(f"High-ops MatMul Spearman ρ = {rho_high:.4f}")
-
-    print("\n=== Large MatMul Within-Section Ranking ===")
-    lm_mask = np.array([e['section'] == 'Large MatMul' for e in entries])
-    lm_idx = np.where(lm_mask)[0]
-    lm_actual_us = np.array([entries[i]['time_us'] for i in lm_idx])
-    lm_pred_rank = full_pred[lm_mask]
-    lm_pred_order = np.argsort(lm_pred_rank)
-    print(f"{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_rank':>10}")
-    print("-" * 65)
-    for rank, si in enumerate(lm_pred_order[:10]):
-        e = entries[lm_idx[si]]
-        a = lm_actual_us[si]; p = lm_pred_rank[si]
-        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.4f}")
-    rho_lm, _ = _spearmanr(lm_actual_us, lm_pred_rank)
-    print(f"Large MatMul Spearman ρ = {rho_lm:.4f}")
-
-    # === Show 2.94 TFLOP/s entry prediction ===
-    tf_entry = None
-    for e in entries:
-        if abs(e['time_us'] - 727.7) < 1 and e['wi_ops'] == 601163:
-            tf_entry = e
-            break
-    if tf_entry:
-        tf_rank = predict_entry(tf_entry, dt, ridge, scaler)
-        tf_idx = entries.index(tf_entry)
-        # Show rank within its variant group
-        for g in variant_groups:
-            if tf_idx in g:
-                g_preds = [full_pred[i] for i in g]
-                g_actuals = [entries[i]['time_us'] for i in g]
-                print(f"\n=== 2.94 TFLOP/s entry in variant group of size {len(g)} ===")
-                for gi in g:
-                    e = entries[gi]
-                    act = e['time_us']
-                    pred = full_pred[gi]
-                    flag = " <<<< 2.94TF" if gi == tf_idx else ""
-                    print(f"  idx={gi:5d} ng={e['num_groups']:6d} wipg={e['wi_per_group']:3d} actual={act:8.1f}us pred_rank={pred:.4f}{flag}")
-                print(f"Best actual: {min(g_actuals):.1f}us, Worst: {max(g_actuals):.1f}us")
-                # Prediction rank within group
-                pred_best_idx = int(np.argmin(g_preds))
-                print(f"Model picks: group idx {pred_best_idx} (actual={g_actuals[pred_best_idx]:.1f}us)")
-                best_actual_idx = int(np.argmin(g_actuals))
-                print(f"True best: group idx {best_actual_idx} (actual={g_actuals[best_actual_idx]:.1f}us)")
-                break
 
     return dt, entries, ridge, scaler
 
