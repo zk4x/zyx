@@ -535,151 +535,66 @@ def main():
     sample_weights = barrier_weights * len(entries)
     sample_weights = sample_weights / np.mean(sample_weights)
 
-    # === DT leaf features ===
-    max_dt_leaves = 80
-    max_features = 20
+    # === DT-only model ===
+    # Ridge was attempted but failed for OOD inputs: features like lng*lcop have z=93+
+    # even with weighted scaling. Ridge can't handle extreme range across MatMul configs.
+    # DT handles all ranges naturally (tree splits on raw values), R²=0.93 alone.
+    max_dt_leaves = 200
     print(f"\nTraining DT with max {max_dt_leaves} leaves...")
     dt = DecisionTreeRegressor(max_leaf_nodes=max_dt_leaves, random_state=42, min_samples_leaf=5)
     dt.fit(X, y)
-    leaf_ids = dt.apply(X)
-    unique_leaves = sorted(set(leaf_ids))
-    leaf_to_idx = {leaf: i for i, leaf in enumerate(unique_leaves)}
-    n_leaves = len(unique_leaves)
-    print(f"DT has {n_leaves} leaves, R²={dt.score(X, y):.4f}")
+    dt_pred = dt.predict(X)
+    tree = dt.tree_
+    leaf_node_ids = [i for i in range(tree.node_count) if tree.feature[i] == -2]
+    dt_leaf_values = tree.value[leaf_node_ids, 0, 0]
+    print(f"DT has {len(leaf_node_ids)} leaves, R²={dt.score(X, y):.4f}")
 
-    leaf_onehot = np.zeros((len(entries), n_leaves))
-    for i, leaf in enumerate(leaf_ids):
-        leaf_onehot[i, leaf_to_idx[leaf]] = 1.0
+    # Evaluate per-section R² for DT alone
+    def evaluate_dt(X, y, section_groups):
+        y_pred = dt.predict(X)
+        section_r2s = {}
+        for section in section_groups.keys():
+            mask = section_groups[section]
+            if len(mask) > 1:
+                y_sec = y[mask]
+                y_pred_sec = y_pred[mask]
+                ss_res = np.sum((y_sec - y_pred_sec) ** 2)
+                ss_tot = np.sum((y_sec - np.mean(y_sec)) ** 2)
+                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+                section_r2s[section] = r2
+        return section_r2s
 
-    for leaf_idx in range(n_leaves):
-        FEATURE_NAMES.append(f'dt_leaf_{leaf_idx}')
-    X = np.column_stack([X, leaf_onehot])
-    print(f"Total features after DT leaves: {X.shape[1]}")
-
-    # Scale features
-    scaler = StandardScaler()
-    Xs = scaler.fit_transform(X)
-
-    print(f"\nTotal entries: {len(entries)}, Features: {X.shape[1]}")
-    print(f"Section counts: {dict(section_counts)}")
-
-    # Try multiple model approaches
-    best_model = None
-    best_r2_sections = {}
-    best_min_r2 = -999
-
-    print("\n=== Model Search ===")
-
-    # Ridge regression with various alphas
-    for alpha in [1e-8, 1e-6, 1e-4, 1e-2]:
-        l = Ridge(alpha=alpha, random_state=42, max_iter=10000)
-        l.fit(Xs, y, sample_weight=sample_weights)
-        section_r2s = evaluate_model(l, Xs, y, section_groups)
-        min_r2 = min(section_r2s.values()) if section_r2s else 0
-        print(f"   Ridge(alpha={alpha:.8f}): min R²={min_r2:.4f}")
-        if min_r2 > best_min_r2:
-            best_min_r2 = min_r2
-            best_model = l
-            best_r2_sections = section_r2s
-
-    # Weight boosting: give extra weight to sections below 0.8
-    below_target = [s for s, r in best_r2_sections.items() if r < 0.8]
-    if below_target:
-        print(f"\n   Boosting weights for {len(below_target)} sections below 0.8...")
-        boosted_weights = sample_weights.copy()
-        for section in below_target:
-            for idx in section_groups[section]:
-                boosted_weights[idx] *= 3.0
-        boosted_weights = boosted_weights / np.mean(boosted_weights)
-        
-        for alpha in [1e-8, 1e-6, 1e-4]:
-            l = Ridge(alpha=alpha, random_state=42, max_iter=10000)
-            l.fit(Xs, y, sample_weight=boosted_weights)
-            section_r2s = evaluate_model(l, Xs, y, section_groups)
-            min_r2 = min(section_r2s.values()) if section_r2s else 0
-            print(f"   Boosted Ridge(alpha={alpha:.8f}): min R²={min_r2:.4f}")
-            if min_r2 > best_min_r2:
-                best_min_r2 = min_r2
-                best_model = l
-                best_r2_sections = section_r2s
-                print(f"   *** WEIGHT BOOSTING HELPED ***")
-
-    # === Feature pruning: keep only top N features (excluding DT leaves) ===
-    dt_leaf_names = [n for n in FEATURE_NAMES if n.startswith('dt_leaf_')]
-    ridge_names = [n for n in FEATURE_NAMES if not n.startswith('dt_leaf_')]
-    ridge_indices = [i for i, n in enumerate(FEATURE_NAMES) if not n.startswith('dt_leaf_')]
-    dt_indices = [i for i, n in enumerate(FEATURE_NAMES) if n.startswith('dt_leaf_')]
-    
-    ridge_coefs = best_model.coef_[ridge_indices]
-    
-    if len(ridge_names) > max_features and max_features > 0:
-        top_k = np.argsort(np.abs(ridge_coefs))[-max_features:]
-        ridge_sel_indices = [ridge_indices[i] for i in sorted(top_k)]
-        selected_ridge_names = [ridge_names[i] for i in top_k]
-    elif max_features == 0:
-        ridge_sel_indices = []
-        selected_ridge_names = []
-    else:
-        ridge_sel_indices = ridge_indices
-        selected_ridge_names = ridge_names
-    
-    n_params = len(selected_ridge_names) + len(dt_indices)
-    print(f"\n=== Results ===")
-    print(f"Ridge features: {len(selected_ridge_names)} (max {max_features})")
-    print(f"DT leaves: {len(dt_indices)}")
-    print(f"Total parameters: {n_params}")
-    print(f"Minimum per-section R²: {best_min_r2:.4f}")
+    dt_r2_sections = evaluate_dt(X, y, section_groups)
+    dt_min_r2 = min(dt_r2_sections.values()) if dt_r2_sections else 0
+    print(f"\n=== DT-Only Results ===")
+    print(f"DT leaves: {len(leaf_node_ids)}")
+    print(f"Total parameters: {len(leaf_node_ids)}")
+    print(f"Minimum per-section R²: {dt_min_r2:.4f}")
     print()
     for section in sorted(section_groups.keys()):
-        if section in best_r2_sections:
-            r2 = best_r2_sections[section]
+        if section in dt_r2_sections:
+            r2 = dt_r2_sections[section]
             flag = " *** ABOVE 0.95 ***" if "MatMul" in section and r2 >= 0.95 else ""
             flag += " *** ABOVE 0.8 ***" if r2 >= 0.8 and section != "MatMul" else ""
             print(f"  {section}: R²={r2:.4f}{flag}")
 
-    if "MatMul" in best_r2_sections and best_r2_sections["MatMul"] >= 0.95 and best_min_r2 >= 0.8:
+    if "MatMul" in dt_r2_sections and dt_r2_sections["MatMul"] >= 0.95 and dt_min_r2 >= 0.8:
         print("\n*** All targets MET! ***")
-    elif "MatMul" in best_r2_sections:
-        print(f"\nMatMul R²={best_r2_sections['MatMul']:.4f} (target: 0.95)")
-        print(f"Worst section R²={best_min_r2:.4f} (target: 0.8)")
+    elif "MatMul" in dt_r2_sections:
+        print(f"\nMatMul R²={dt_r2_sections['MatMul']:.4f} (target: 0.95)")
+        print(f"Worst section R²={dt_min_r2:.4f} (target: 0.8)")
 
     # === Cost.rs code generation ===
-    # We need to generate:
-    # 1. DT as flat if-else chain (traverse to leaf, return bias)
-    # 2. Ridge features and coefficients
-    # 
-    # In cost.rs, the model is:
-    #   log_time = dt_bias + intercept + sum(coef_i * feature_i)
-    # 
-    # The DT and Ridge are trained together so the DT leaf biases 
-    # represent the DT's contribution AFTER Ridge accounts for linear effects.
-    
-    # Refit: use only selected ridge features + all DT leaves
-    final_indices = ridge_sel_indices + dt_indices
-    final_names = [FEATURE_NAMES[i] for i in final_indices]
-    
-    # Remap scaler and refit
-    X_final = X[:, final_indices]
-    scaler_final = StandardScaler()
-    Xs_final = scaler_final.fit_transform(X_final)
-    l_final = Ridge(alpha=best_model.alpha, random_state=42, max_iter=10000)
-    l_final.fit(Xs_final, y, sample_weight=sample_weights)
-    
-    # Split back into ridge and dt coefficients
-    n_ridge_sel = len(ridge_sel_indices)
-    final_ridge_coefs = l_final.coef_[:n_ridge_sel]
-    final_dt_coefs = l_final.coef_[n_ridge_sel:]
-    final_intercept = l_final.intercept_
-    
-    # Write Rust prediction function to ../zyx/src/kernel/predict_cost.rs
+    # Model: log_time = dt_tree_bias (DT-only, no Ridge).
+    # DT handles all ranges with tree splits; Ridge failed on OOD extrapolation.
     rust_path = os.path.join(os.path.dirname(__file__), '..', 'zyx', 'src', 'kernel', 'predict_cost.rs')
     with open(rust_path, 'w') as f:
         f.write("// Copyright (C) 2025 zk4x\n")
         f.write("// SPDX-License-Identifier: LGPL-3.0-only\n")
         f.write("//\n")
         f.write("// Auto-generated by regression.py. Do not edit manually.\n")
-        f.write(f"// Ridge features: {len(final_ridge_coefs)}, DT leaves: {len(final_dt_coefs)}\n")
-        f.write(f"// Total parameters: {len(final_ridge_coefs) + len(final_dt_coefs)}\n")
+        f.write(f"// DT-only model: {len(leaf_node_ids)} leaves, no Ridge\n")
+        f.write(f"// Total parameters: {len(leaf_node_ids)}\n")
         f.write("\n")
         f.write("#![allow(unused)]\n")
         f.write("\n")
@@ -696,7 +611,7 @@ def main():
         f.write("        wi_local_load_lidx_stride: u32, wi_local_store_lidx_stride: u32,\n")
         f.write("        warp_size: u32, max_local_threads: u32, max_register_bytes: u32,\n")
         f.write("    ) -> f32 {\n")
-        f.write("        // Compute transformed features from raw inputs\n")
+        f.write("        // Compute transformed features\n")
         f.write("        let lng = (num_groups as f32).ln();\n")
         f.write("        let lwpg = (wi_per_group as f32 + 1.0).ln();\n")
         f.write("        let lops = (wi_ops as f32).ln();\n")
@@ -708,43 +623,98 @@ def main():
         f.write("        let wr = wi_per_group as f32 / warp_size as f32;\n")
         f.write("        let rr = wi_peak_reg_bytes as f32 / max_register_bytes.max(1) as f32;\n")
         f.write("\n")
-        f.write("        // Build feature vector for Ridge\n")
-        f.write(f"        let features: [f32; {n_ridge_sel}] = [\n")
-        for i in range(n_ridge_sel):
-            name = final_names[i]
-            expr = _feature_to_rust(name)
-            f.write(f"            {expr},  // {name}\n")
-        f.write("        ];\n")
-        f.write("\n")
         f.write("        // DT leaf bias (inline tree traversal)\n")
         f.write("        let leaf_bias: f32 = {\n")
-        # Capture print output from _print_dt_rust
         import io
         buf = io.StringIO()
         old_stdout = sys.stdout
         sys.stdout = buf
-        _print_dt_rust(dt, FEATURE_NAMES, final_dt_coefs)
+        _print_dt_rust(dt, FEATURE_NAMES, dt_leaf_values)
         sys.stdout = old_stdout
         f.write(buf.getvalue())
         f.write("        };\n")
         f.write("\n")
-        f.write("        // Ridge linear combination\n")
-        f.write(f"        let mut result = {final_intercept:.6f};\n")
-        for i in range(n_ridge_sel):
-            std = scaler_final.scale_[i]
-            mean = scaler_final.mean_[i]
-            coef = final_ridge_coefs[i]
-            name = final_names[i]
-            f.write(f"        result += {coef:.6f} * (features[{i}] - {mean:.6f}) / {std:.6f};  // {name}\n")
-        f.write("        result += leaf_bias;\n")
-        f.write("        result.exp()\n")
+        f.write("        leaf_bias.exp()\n")
         f.write("    }\n")
         f.write("}\n")
     print(f"\nWrote {rust_path}")
 
-    return best_model, entries, selected_ridge_names, final_ridge_coefs
+    # === Diagnostic ===
+    full_pred = dt_pred
+    matmul_mask = np.array([e['section'] == 'MatMul' for e in entries])
+    matmul_idx = np.where(matmul_mask)[0]
+    mm_actual_us = np.array([entries[i]['time_us'] for i in matmul_idx])
+    mm_pred_us = np.exp(full_pred[matmul_mask])
+    
+    # === MatMul ranking diagnostic ===
+    print("\n=== MatMul Within-Section Ranking ===")
+    full_pred = dt_pred
+    matmul_mask = np.array([e['section'] == 'MatMul' for e in entries])
+    matmul_idx = np.where(matmul_mask)[0]
+    mm_actual_us = np.array([entries[i]['time_us'] for i in matmul_idx])
+    mm_pred_us = np.exp(full_pred[matmul_mask])
 
-    return best_model, entries, selected_names, selected_coefs
+    # Sort by actual time
+    sort_order = np.argsort(mm_actual_us)
+    print(f"{'#':>4} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_us':>10}")
+    print("-" * 55)
+    for rank, idx in enumerate(sort_order[:15]):
+        e = entries[matmul_idx[idx]]
+        a = mm_actual_us[idx]; p = mm_pred_us[idx]
+        print(f"{rank:4d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.1f}")
+    print("  ...")
+    for rank, idx in enumerate(sort_order[-5:]):
+        e = entries[matmul_idx[idx]]
+        a = mm_actual_us[idx]; p = mm_pred_us[idx]
+        print(f"{len(sort_order)-5+rank:4d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.1f}")
+
+    from scipy.stats import spearmanr as _spearmanr
+    rho, _ = _spearmanr(mm_actual_us, mm_pred_us)
+    print(f"\nMatMul Spearman ρ = {rho:.4f}")
+
+    # Also show top-10 by predicted cost (lowest predicted = best choice)
+    pred_order = np.argsort(mm_pred_us)
+    print(f"\n{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_us':>10}")
+    print("-" * 55)
+    for rank, si in enumerate(pred_order[:10]):
+        e = entries[matmul_idx[si]]
+        a = mm_actual_us[si]; p = mm_pred_us[si]
+        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.1f}")
+
+    # High-ops MatMul entries (>50K ops = larger matmuls)
+    print(f"\n--- High-ops MatMul entries (ops > 50000) ---")
+    high_mask = np.array([entries[i]['wi_ops'] > 50000 for i in matmul_idx])
+    high_si = np.where(high_mask)[0]
+    high_actual = mm_actual_us[high_mask]
+    high_pred = mm_pred_us[high_mask]
+    high_pred_order = np.argsort(high_pred)
+    print(f"{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>8} {'us_time':>8} {'actual_us':>10} {'pred_us':>10}")
+    print("-" * 70)
+    for rank, si in enumerate(high_pred_order[:15]):
+        actual_si = high_si[si]  # index into mm arrays
+        e = entries[matmul_idx[actual_si]]
+        a = high_actual[si]; p = high_pred[si]
+        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:8} {e['time_us']:8.0f} {a:10.1f} {p:10.1f}")
+    rho_high, _ = _spearmanr(high_actual, high_pred)
+    print(f"High-ops MatMul Spearman ρ = {rho_high:.4f}")
+
+    # Large MatMul ranking diagnostic
+    print("\n=== Large MatMul Within-Section Ranking ===")
+    lm_mask = np.array([e['section'] == 'Large MatMul' for e in entries])
+    lm_idx = np.where(lm_mask)[0]
+    lm_actual_us = np.array([entries[i]['time_us'] for i in lm_idx])
+    lm_pred_us = np.exp(full_pred[lm_mask])
+    lm_pred_order = np.argsort(lm_pred_us)
+    print(f"{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_us':>10}")
+    print("-" * 55)
+    for rank, si in enumerate(lm_pred_order[:10]):
+        e = entries[lm_idx[si]]
+        a = lm_actual_us[si]; p = lm_pred_us[si]
+        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.1f}")
+    rho_lm, _ = _spearmanr(lm_actual_us, lm_pred_us)
+    print(f"Large MatMul Spearman ρ = {rho_lm:.4f}")
+
+    return dt, entries, None, None
 
 
 if __name__ == '__main__':
