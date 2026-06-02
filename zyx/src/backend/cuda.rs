@@ -635,7 +635,7 @@ pub(super) fn initialize_device(
                 max_local_threads: 1,
                 max_local_work_dims: vec![1, 1, 1],
                 local_mem_size: 0,
-                max_register_bytes: 96,
+                max_register_bytes: 1024,
                 preferred_vector_size: 16,
                 tensor_cores: major >= 7,
                 warp_size: 32,
@@ -672,7 +672,7 @@ pub(super) fn initialize_device(
                 cuDeviceGetAttribute,
             )?)
             .unwrap(),
-            max_register_bytes: (max_regs_per_block as u64 / max_threads_per_block as u64).min(255) * 4,
+            max_register_bytes: (max_regs_per_block as u64 / max_threads_per_block as u64).min(256) * 4,
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
             warp_size: 32,
