@@ -686,7 +686,7 @@ def main():
         f.write("use super::cost::Cost;\n")
         f.write("\n")
         f.write("impl Cost {\n")
-        f.write("    pub fn predict_log_time(\n")
+        f.write("    pub fn predict_time_us(\n")
         f.write("        num_groups: u32, wi_per_group: u32, wi_ops: u32,\n")
         f.write("        wi_compute_ops: u32, wi_barriers: u32,\n")
         f.write("        wi_global_load_bits: u32, wi_global_store_bits: u32,\n")
@@ -737,7 +737,7 @@ def main():
             name = final_names[i]
             f.write(f"        result += {coef:.6f} * (features[{i}] - {mean:.6f}) / {std:.6f};  // {name}\n")
         f.write("        result += leaf_bias;\n")
-        f.write("        result\n")
+        f.write("        result.exp()\n")
         f.write("    }\n")
         f.write("}\n")
     print(f"\nWrote {rust_path}")

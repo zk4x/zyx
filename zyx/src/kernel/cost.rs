@@ -571,7 +571,7 @@ impl Kernel {
         };
 
         // Learned cost model: 20 Ridge features + 80-leaf DT (100 params, R²=0.931 MatMul, 0.818 worst)
-        let cost = Cost::predict_log_time(
+        let cost = Cost::predict_time_us(
             num_groups as u32,
             wi_per_group as u32,
             wi_ops as u32,

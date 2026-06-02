@@ -10,7 +10,7 @@
 use super::cost::Cost;
 
 impl Cost {
-    pub fn predict_log_time(
+    pub fn predict_time_us(
         num_groups: u32, wi_per_group: u32, wi_ops: u32,
         wi_compute_ops: u32, wi_barriers: u32,
         wi_global_load_bits: u32, wi_global_store_bits: u32,
@@ -400,6 +400,6 @@ if ((wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1
         result += 0.518981 * (features[18] - 0.487029) / 1.785404;  // bgt_lcop
         result += -0.304087 * (features[19] - 0.607579) / 2.211662;  // bgt_lgmem
         result += leaf_bias;
-        result
+        result.exp()
     }
 }
