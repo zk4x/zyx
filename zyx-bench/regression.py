@@ -13,6 +13,7 @@ from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.feature_selection import SelectFromModel
+from scipy.stats import spearmanr as _spearmanr
 from collections import Counter
 
 BENCH_OUTPUT = '/home/x/Dev/rust/zyx/zyx-bench/bench_output.txt'
@@ -359,13 +360,13 @@ def build_feature_matrix(entries):
 
 
 def predict_entry(entry, dt, ridge, scaler):
-    """Predict time_us for a single entry using trained Ridge+DT model."""
+    """Predict rank 0..1 for a single entry (0 = fastest in variant)."""
     feat_vec = np.array([fn(entry) for _, fn in FEATURE_DEFS]).reshape(1, -1)
     dt_pred = dt.predict(feat_vec)
     X_stacked = np.column_stack([feat_vec, dt_pred.reshape(-1, 1)])
     X_scaled = scaler.transform(X_stacked)
-    log_pred = ridge.predict(X_scaled)[0]
-    return np.exp(log_pred)
+    pred = ridge.predict(X_scaled)[0]
+    return pred
 
 
 def predict_raw(lng, lwpg, lops, lcop, lgmem, barr, wr, rr,
@@ -375,7 +376,7 @@ def predict_raw(lng, lwpg, lops, lcop, lgmem, barr, wr, rr,
                 wi_branches, wi_global_load_lidx_stride, wi_global_store_lidx_stride,
                 wi_local_load_lidx_stride, wi_local_store_lidx_stride,
                 warp_size, max_register_bytes):
-    """Standalone predict using raw params (no entry dict needed)."""
+    """Predict rank 0..1 (0 fastest in variant) using raw params."""
     entry = {
         'num_groups': num_groups, 'wi_per_group': wi_per_group,
         'wi_ops': wi_ops, 'wi_compute_ops': wi_compute_ops,
@@ -396,6 +397,34 @@ def predict_raw(lng, lwpg, lops, lcop, lgmem, barr, wr, rr,
     return predict_entry(entry, dt, ridge, scaler)
 
 
+def __detect_variant_groups(entries):
+    """Detect variant groups: entries in same section with similar wi_ops (2 sig figs)."""
+    def ops_bucket(ops):
+        """Round ops to 2 significant figures for grouping."""
+        if ops < 100:
+            return max(round(ops / 10) * 10, 10)
+        s = str(int(ops))
+        n = len(s)
+        scale = 10 ** (n - 2)
+        return (ops // scale) * scale
+
+    # Group by (section, ops_bucket)
+    from collections import defaultdict
+    bucket_map = defaultdict(list)
+    for i, e in enumerate(entries):
+        key = (e['section'], ops_bucket(e['wi_ops']))
+        bucket_map[key].append(i)
+
+    # Convert to groups of >= 2 entries
+    groups = [indices for indices in bucket_map.values() if len(indices) >= 2]
+    # Also add singletons (size 1) for entries not in any group
+    all_grouped = set(idx for g in groups for idx in g)
+    for i in range(len(entries)):
+        if i not in all_grouped:
+            groups.append([i])
+    return groups
+
+
 def main():
     print("Parsing bench_output.txt...")
     entries = parse_bench_output(BENCH_OUTPUT)
@@ -411,7 +440,30 @@ def main():
     barrier_counts = Counter(e['wi_barriers'] for e in entries)
     print(f"Barrier distribution: {dict(sorted(barrier_counts.items()))}")
 
-    y = np.log(np.array([e['time_us'] for e in entries]))
+    # === Variant grouping: consecutive entries within same section with similar ops ===
+    # Variants of the same kernel have very similar wi_ops counts.
+    # Group consecutive entries where ops changes by < 10%.
+    variant_groups = __detect_variant_groups(entries)
+    print(f"Detected {len(variant_groups)} variant groups")
+    group_sizes = Counter(len(g) for g in variant_groups)
+    for size in sorted(group_sizes):
+        print(f"  size {size}: {group_sizes[size]} groups")
+
+    # === Target: rank 0..1 within each variant group ===
+    # 0 = fastest in variant, 1 = slowest in variant
+    y = np.empty(len(entries))
+    for group in variant_groups:
+        if len(group) >= 2:
+            times = np.array([entries[i]['time_us'] for i in group])
+            ranks = np.argsort(np.argsort(times))  # rank by speed (0=fastest)
+            for j, idx in enumerate(group):
+                y[idx] = ranks[j] / (len(group) - 1)
+        else:
+            # Singleton group: put at median rank 0.5
+            y[group[0]] = 0.5
+    print(f"Target = rank 0..1 within variant (0=fastest)")
+    print(f"  y range: {y.min():.3f} - {y.max():.3f}")
+    print(f"  y mean: {y.mean():.3f}")
 
     # Group entries by section
     section_groups = {}
@@ -643,6 +695,21 @@ def main():
                 section_r2s[section] = r2
         return section_r2s
 
+    # Within-variant Spearman: the real metric
+    def within_variant_spearman(y_pred, variant_groups, entries):
+        rhos = []
+        for g in variant_groups:
+            if len(g) >= 3:
+                actual = np.array([entries[i]['time_us'] for i in g])
+                pred = y_pred[g]
+                r, _ = _spearmanr(actual, pred)
+                rhos.append(r)
+        return np.mean(rhos) if rhos else 0.0, np.std(rhos) if len(rhos) > 1 else 0.0
+
+    def print_within_variant_metrics(label, y_pred, variant_groups, entries):
+        mean_rho, std_rho = within_variant_spearman(y_pred, variant_groups, entries)
+        print(f"  Within-variant Spearman ρ: {mean_rho:.4f} ± {std_rho:.4f}")
+
     dt_r2_sections = evaluate_model_impl(lambda: dt.predict(X), y, section_groups)
     dt_min_r2 = min(dt_r2_sections.values()) if dt_r2_sections else 0
     print(f"\n=== DT-Only Results ===")
@@ -655,6 +722,7 @@ def main():
             r2 = dt_r2_sections[section]
             flag = " *** ABOVE 0.95 ***" if r2 >= 0.95 else ""
             print(f"  {section}: R²={r2:.4f}{flag}")
+    print_within_variant_metrics("DT", dt.predict(X), variant_groups, entries)
 
     # === Evaluate stacked Ridge+DT results ===
     stacked_r2_sections = evaluate_model_impl(lambda: stacked_pred, y, section_groups)
@@ -670,6 +738,7 @@ def main():
             r2 = stacked_r2_sections[section]
             flag = " *** ABOVE 0.95 ***" if r2 >= 0.95 else ""
             print(f"  {section}: R²={r2:.4f}{flag}")
+    print_within_variant_metrics("Stacked", stacked_pred, variant_groups, entries)
 
     if stacked_min_r2 >= 0.95:
         print("\n*** All targets MET! ***")
@@ -689,7 +758,7 @@ def main():
         f.write("// SPDX-License-Identifier: LGPL-3.0-only\n")
         f.write("//\n")
         f.write("// Auto-generated by regression.py. Do not edit manually.\n")
-        f.write(f"// Ridge+DT stacked model: {len(leaf_node_ids)} DT leaves, {len(ridge_coef)} Ridge features\n")
+        f.write(f"// Ridge+DT stacked model (rank 0..1 target): {len(leaf_node_ids)} DT leaves, {len(ridge_coef)} Ridge features\n")
         f.write(f"// Total parameters: {len(ridge_coef)} Ridge + 1 intercept + DT tree\n")
         f.write("\n")
         f.write("#![allow(unused)]\n")
@@ -790,7 +859,7 @@ def main():
         f.write("            pred += ridge_coef[i] * scaled[i];\n")
         f.write("        }\n")
         f.write("\n")
-        f.write("        pred.exp()\n")
+        f.write("        pred * 1_000_000.0\n")
         f.write("    }\n")
         f.write("}\n")
     print(f"\nWrote {rust_path}")
@@ -800,47 +869,60 @@ def main():
     matmul_mask = np.array([e['section'] == 'MatMul' for e in entries])
     matmul_idx = np.where(matmul_mask)[0]
     mm_actual_us = np.array([entries[i]['time_us'] for i in matmul_idx])
-    mm_pred_us = np.exp(full_pred[matmul_mask])
+    mm_pred_rank = full_pred[matmul_mask]
 
     print("\n=== MatMul Within-Section Ranking ===")
+    print("(target = rank 0..1 within variant, 0 = fastest)")
     sort_order = np.argsort(mm_actual_us)
-    print(f"{'#':>4} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_us':>10}")
+    print(f"{'#':>4} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_rank':>10}")
     print("-" * 55)
     for rank, idx in enumerate(sort_order[:15]):
         e = entries[matmul_idx[idx]]
-        a = mm_actual_us[idx]; p = mm_pred_us[idx]
-        print(f"{rank:4d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.1f}")
+        a = mm_actual_us[idx]; p = mm_pred_rank[idx]
+        print(f"{rank:4d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.4f}")
     print("  ...")
     for rank, idx in enumerate(sort_order[-5:]):
         e = entries[matmul_idx[idx]]
-        a = mm_actual_us[idx]; p = mm_pred_us[idx]
-        print(f"{len(sort_order)-5+rank:4d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.1f}")
+        a = mm_actual_us[idx]; p = mm_pred_rank[idx]
+        print(f"{len(sort_order)-5+rank:4d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.4f}")
 
-    from scipy.stats import spearmanr as _spearmanr
-    rho, _ = _spearmanr(mm_actual_us, mm_pred_us)
-    print(f"\nMatMul Spearman ρ = {rho:.4f}")
+    rho, _ = _spearmanr(mm_actual_us, mm_pred_rank)
+    print(f"\nMatMul Spearman ρ (actual_us vs pred_rank) = {rho:.4f}")
 
-    pred_order = np.argsort(mm_pred_us)
-    print(f"\n{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_us':>10}")
-    print("-" * 55)
+    # Within-variant: compare predicted rank to actual group rank
+    # For each variant group in MatMul, compute Spearman of predicted vs actual rank
+    mm_groups = [g for g in variant_groups if entries[g[0]]['section'] == 'MatMul' and len(g) >= 3]
+    within_rhos = []
+    for g in mm_groups:
+        actual = np.array([entries[i]['time_us'] for i in g])
+        pred = full_pred[g]
+        if len(g) >= 3:
+            r, _ = _spearmanr(actual, pred)
+            within_rhos.append(r)
+    if within_rhos:
+        print(f"Within-variant Spearman ρ (avg over {len(within_rhos)} groups): {np.mean(within_rhos):.4f}")
+
+    pred_order = np.argsort(mm_pred_rank)
+    print(f"\n{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_rank':>10}")
+    print("-" * 65)
     for rank, si in enumerate(pred_order[:10]):
         e = entries[matmul_idx[si]]
-        a = mm_actual_us[si]; p = mm_pred_us[si]
-        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.1f}")
+        a = mm_actual_us[si]; p = mm_pred_rank[si]
+        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.4f}")
 
     print(f"\n--- High-ops MatMul entries (ops > 50000) ---")
     high_mask = np.array([entries[i]['wi_ops'] > 50000 for i in matmul_idx])
     high_si = np.where(high_mask)[0]
     high_actual = mm_actual_us[high_mask]
-    high_pred = mm_pred_us[high_mask]
+    high_pred = mm_pred_rank[high_mask]
     high_pred_order = np.argsort(high_pred)
-    print(f"{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>8} {'us_time':>8} {'actual_us':>10} {'pred_us':>10}")
+    print(f"{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>8} {'us_time':>8} {'actual_us':>10} {'pred_rank':>10}")
     print("-" * 70)
     for rank, si in enumerate(high_pred_order[:15]):
         actual_si = high_si[si]
         e = entries[matmul_idx[actual_si]]
         a = high_actual[si]; p = high_pred[si]
-        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:8} {e['time_us']:8.0f} {a:10.1f} {p:10.1f}")
+        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:8} {e['time_us']:8.0f} {a:10.1f} {p:10.4f}")
     rho_high, _ = _spearmanr(high_actual, high_pred)
     print(f"High-ops MatMul Spearman ρ = {rho_high:.4f}")
 
@@ -848,16 +930,45 @@ def main():
     lm_mask = np.array([e['section'] == 'Large MatMul' for e in entries])
     lm_idx = np.where(lm_mask)[0]
     lm_actual_us = np.array([entries[i]['time_us'] for i in lm_idx])
-    lm_pred_us = np.exp(full_pred[lm_mask])
-    lm_pred_order = np.argsort(lm_pred_us)
-    print(f"{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_us':>10}")
-    print("-" * 55)
+    lm_pred_rank = full_pred[lm_mask]
+    lm_pred_order = np.argsort(lm_pred_rank)
+    print(f"{'Pred rank':>9} {'ng':>10} {'wipg':>5} {'ops':>6} {'actual_us':>10} {'pred_rank':>10}")
+    print("-" * 65)
     for rank, si in enumerate(lm_pred_order[:10]):
         e = entries[lm_idx[si]]
-        a = lm_actual_us[si]; p = lm_pred_us[si]
-        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.1f}")
-    rho_lm, _ = _spearmanr(lm_actual_us, lm_pred_us)
+        a = lm_actual_us[si]; p = lm_pred_rank[si]
+        print(f"{rank:9d} {e['num_groups']:10} {e['wi_per_group']:5} {e['wi_ops']:6} {a:10.1f} {p:10.4f}")
+    rho_lm, _ = _spearmanr(lm_actual_us, lm_pred_rank)
     print(f"Large MatMul Spearman ρ = {rho_lm:.4f}")
+
+    # === Show 2.94 TFLOP/s entry prediction ===
+    tf_entry = None
+    for e in entries:
+        if abs(e['time_us'] - 727.7) < 1 and e['wi_ops'] == 601163:
+            tf_entry = e
+            break
+    if tf_entry:
+        tf_rank = predict_entry(tf_entry, dt, ridge, scaler)
+        tf_idx = entries.index(tf_entry)
+        # Show rank within its variant group
+        for g in variant_groups:
+            if tf_idx in g:
+                g_preds = [full_pred[i] for i in g]
+                g_actuals = [entries[i]['time_us'] for i in g]
+                print(f"\n=== 2.94 TFLOP/s entry in variant group of size {len(g)} ===")
+                for gi in g:
+                    e = entries[gi]
+                    act = e['time_us']
+                    pred = full_pred[gi]
+                    flag = " <<<< 2.94TF" if gi == tf_idx else ""
+                    print(f"  idx={gi:5d} ng={e['num_groups']:6d} wipg={e['wi_per_group']:3d} actual={act:8.1f}us pred_rank={pred:.4f}{flag}")
+                print(f"Best actual: {min(g_actuals):.1f}us, Worst: {max(g_actuals):.1f}us")
+                # Prediction rank within group
+                pred_best_idx = int(np.argmin(g_preds))
+                print(f"Model picks: group idx {pred_best_idx} (actual={g_actuals[pred_best_idx]:.1f}us)")
+                best_actual_idx = int(np.argmin(g_actuals))
+                print(f"True best: group idx {best_actual_idx} (actual={g_actuals[best_actual_idx]:.1f}us)")
+                break
 
     return dt, entries, ridge, scaler
 

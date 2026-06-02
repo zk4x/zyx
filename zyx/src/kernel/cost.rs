@@ -570,7 +570,7 @@ impl Kernel {
             0.0
         };
 
-        // Learned cost model: 20 Ridge features + 80-leaf DT (100 params, R²=0.931 MatMul, 0.818 worst)
+        // Learned cost model: rank 0..1 within variant * 1_000_000 (2000 DT leaves + Ridge, ρ=0.93)
         let cost = Cost::predict_time_us(
             num_groups as u32,
             wi_per_group as u32,
