@@ -22,11 +22,11 @@ use std::thread;
 
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_upcast(k),
-    //|k, _| Kernel::opt_register_tiling(k),
+    |k, _| Kernel::opt_register_tiling(k),
     Kernel::opt_tiled_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_licm(k),
@@ -418,18 +418,18 @@ impl Kernel {
         let mut last_error = None;
 
         // Sample randomly for variety in cost model data
-        let n = n_launches.min(items.len());
+        /*let n = n_launches.min(items.len());
         let mut rng_launch = Rng::seed_from_u64(0xDEAD_BEEF);
         let mut sampled = Vec::with_capacity(n);
         while sampled.len() < n && !items.is_empty() {
             let idx = rng_launch.range::<u64>(0..items.len() as u64) as usize;
             sampled.push(items.swap_remove(idx));
         }
-        items = sampled;
+        items = sampled;*/
 
         // Sort by cost: try cheaper configs first
-        /*items.sort_by_key(|opt_seq| opt_seq.cost.cost);
-        items.truncate(n_launches);*/
+        items.sort_by_key(|opt_seq| opt_seq.cost.cost);
+        items.truncate(n_launches);
 
         for opt_seq in items.iter() {
             let mut kernel = kernel.clone();
