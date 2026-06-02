@@ -8,8 +8,9 @@ import sys
 import io
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import Ridge, ElasticNet, ElasticNetCV, LassoCV
+from sklearn.linear_model import Ridge, RidgeCV, ElasticNet, ElasticNetCV, LassoCV
 from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.pipeline import make_pipeline
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.feature_selection import SelectFromModel
 from collections import Counter
@@ -79,7 +80,7 @@ def parse_bench_output(filename):
 
                 i += 1
                 if i < len(lines):
-                    time_match = re.match(r'([\d.]+)\s*(s|ms|μs)\s*~\s*([\d.]+)\s*[MG]FLOP/s', lines[i].strip())
+                    time_match = re.match(r'([\d.]+)\s*(s|ms|μs)\s*~\s*([\d.]+)\s*[MGT]FLOP/s', lines[i].strip())
                     if time_match:
                         time_val = float(time_match.group(1))
                         unit = time_match.group(2)
@@ -324,6 +325,66 @@ def _print_dt_rust(dt, feature_names, leaf_biases, indent=0):
     return print_node(0)
 
 
+# Global feature definitions (name, function) for reuse in prediction
+FEATURE_DEFS = []
+FEATURE_NAMES = []
+
+def register_feature(name, fn):
+    """Register a feature for both training and prediction."""
+    FEATURE_DEFS.append((name, fn))
+    FEATURE_NAMES.append(name)
+
+
+def build_feature_matrix(entries):
+    """Build feature matrix for a list of entries."""
+    X = None
+    for name, fn in FEATURE_DEFS:
+        feat = np.array([fn(e) for e in entries]).reshape(-1, 1)
+        if X is None:
+            X = feat
+        else:
+            X = np.column_stack([X, feat])
+    return X
+
+
+def predict_entry(entry, dt, ridge, scaler):
+    """Predict time_us for a single entry using trained Ridge+DT model."""
+    feat_vec = np.array([fn(entry) for _, fn in FEATURE_DEFS]).reshape(1, -1)
+    dt_pred = dt.predict(feat_vec)
+    X_stacked = np.column_stack([feat_vec, dt_pred.reshape(-1, 1)])
+    X_scaled = scaler.transform(X_stacked)
+    log_pred = ridge.predict(X_scaled)[0]
+    return np.exp(log_pred)
+
+
+def predict_raw(lng, lwpg, lops, lcop, lgmem, barr, wr, rr,
+                num_groups, wi_per_group, wi_ops, wi_compute_ops,
+                wi_global_load_bits, wi_global_store_bits, wi_barriers,
+                wi_local_load_bits, wi_local_store_bits, wi_peak_reg_bytes,
+                wi_branches, wi_global_load_lidx_stride, wi_global_store_lidx_stride,
+                wi_local_load_lidx_stride, wi_local_store_lidx_stride,
+                warp_size, max_register_bytes):
+    """Standalone predict using raw params (no entry dict needed)."""
+    entry = {
+        'num_groups': num_groups, 'wi_per_group': wi_per_group,
+        'wi_ops': wi_ops, 'wi_compute_ops': wi_compute_ops,
+        'wi_barriers': wi_barriers,
+        'wi_global_load_bits': wi_global_load_bits,
+        'wi_global_store_bits': wi_global_store_bits,
+        'wi_local_load_bits': wi_local_load_bits,
+        'wi_local_store_bits': wi_local_store_bits,
+        'wi_peak_reg_bytes': wi_peak_reg_bytes,
+        'wi_branches': wi_branches,
+        'wi_global_load_lidx_stride': wi_global_load_lidx_stride,
+        'wi_global_store_lidx_stride': wi_global_store_lidx_stride,
+        'wi_local_load_lidx_stride': wi_local_load_lidx_stride,
+        'wi_local_store_lidx_stride': wi_local_store_lidx_stride,
+        'warp_size': warp_size, 'max_register_bytes': max_register_bytes,
+    }
+    from sklearn.tree import DecisionTreeRegressor
+    return predict_entry(entry, dt, ridge, scaler)
+
+
 def main():
     print("Parsing bench_output.txt...")
     entries = parse_bench_output(BENCH_OUTPUT)
@@ -349,162 +410,152 @@ def main():
             section_groups[section] = []
         section_groups[section].append(i)
 
-    # Build feature matrix
-    FEATURE_NAMES = []
-    X = None
+    # === FEATURES: all hand-engineered features (registered for reuse in predict_entry) ===
+    register_feature('lng', lambda e: np.log(e['num_groups']))
+    register_feature('lwpg', lambda e: np.log(e['wi_per_group'] + 1))
+    register_feature('lops', lambda e: np.log(e['wi_ops']))
+    register_feature('lcop', lambda e: np.log(e['wi_compute_ops']))
+    register_feature('lgmem', lambda e: np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('barr', lambda e: e['wi_barriers'])
+    register_feature('wr', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1))
+    register_feature('rr', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1))
+    register_feature('total_threads', lambda e: e['num_groups'] * e['wi_per_group'])
+    register_feature('overhead', lambda e: e['wi_ops'] / max(e['wi_compute_ops'], 1))
+    register_feature('ci', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))
 
-    def f(name, fn):
-        nonlocal X
-        FEATURE_NAMES.append(name)
-        feat = np.array([fn(e) for e in entries]).reshape(-1, 1)
-        if X is None:
-            X = feat
-        else:
-            X = np.column_stack([X, feat])
+    register_feature('log1p_ci', lambda e: np.log1p(e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
+    register_feature('log1p_overhead', lambda e: np.log1p(e['wi_ops'] / max(e['wi_compute_ops'], 1)))
+    register_feature('log1p_mp', lambda e: np.log1p((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1)))
+    register_feature('log1p_lm', lambda e: np.log1p((e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0) + 1) / max(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1, 1)))
 
-    # === FEATURES: all hand-engineered features ===
-    f('lng', lambda e: np.log(e['num_groups']))
-    f('lwpg', lambda e: np.log(e['wi_per_group'] + 1))
-    f('lops', lambda e: np.log(e['wi_ops']))
-    f('lcop', lambda e: np.log(e['wi_compute_ops']))
-    f('lgmem', lambda e: np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-    f('barr', lambda e: e['wi_barriers'])
-    f('wr', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1))
-    f('rr', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1))
-    f('total_threads', lambda e: e['num_groups'] * e['wi_per_group'])
-    f('overhead', lambda e: e['wi_ops'] / max(e['wi_compute_ops'], 1))
-    f('ci', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))
+    register_feature('log_ops_100', lambda e: np.log(e['wi_ops'] + 100))
+    register_feature('log_ops_10', lambda e: np.log(e['wi_ops'] + 10))
+    register_feature('log_cops_100', lambda e: np.log(e['wi_compute_ops'] + 100))
+    register_feature('log1p_1000_div_ops', lambda e: np.log1p(1000 / max(e['wi_ops'], 1)))
+    register_feature('log1p_100_div_ops', lambda e: np.log1p(100 / max(e['wi_ops'], 1)))
+    register_feature('log1p_1000_div_cops', lambda e: np.log1p(1000 / max(e['wi_compute_ops'], 1)))
 
-    f('log1p_ci', lambda e: np.log1p(e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
-    f('log1p_overhead', lambda e: np.log1p(e['wi_ops'] / max(e['wi_compute_ops'], 1)))
-    f('log1p_mp', lambda e: np.log1p((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1)))
-    f('log1p_lm', lambda e: np.log1p((e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0) + 1) / max(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1, 1)))
+    register_feature('ops_per_thread', lambda e: e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
+    register_feature('cops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
+    register_feature('ops_per_group', lambda e: e['wi_ops'] / max(e['num_groups'], 1))
 
-    f('log_ops_100', lambda e: np.log(e['wi_ops'] + 100))
-    f('log_ops_10', lambda e: np.log(e['wi_ops'] + 10))
-    f('log_cops_100', lambda e: np.log(e['wi_compute_ops'] + 100))
-    f('log1p_1000_div_ops', lambda e: np.log1p(1000 / max(e['wi_ops'], 1)))
-    f('log1p_100_div_ops', lambda e: np.log1p(100 / max(e['wi_ops'], 1)))
-    f('log1p_1000_div_cops', lambda e: np.log1p(1000 / max(e['wi_compute_ops'], 1)))
+    register_feature('log_lwpg', lambda e: np.log(max(np.log(e['wi_per_group'] + 1), 1e-8)))
+    register_feature('raw_ng', lambda e: e['num_groups'])
+    register_feature('raw_ng_wpg', lambda e: e['num_groups'] * e['wi_per_group'])
+    register_feature('lbranch', lambda e: np.log1p(e.get('wi_branches', 0)))
+    register_feature('barr*lbranch', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_branches', 0)))
+    register_feature('lwpg*lbranch', lambda e: np.log(e['wi_per_group'] + 1) * np.log1p(e.get('wi_branches', 0)))
+    register_feature('lng_lwpg', lambda e: np.log(e['num_groups']) * np.log(e['wi_per_group'] + 1))
+    register_feature('lwpg_lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops']))
 
-    f('ops_per_thread', lambda e: e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
-    f('cops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
-    f('ops_per_group', lambda e: e['wi_ops'] / max(e['num_groups'], 1))
+    register_feature('log_ops_per_group', lambda e: np.log(e['wi_ops'] / max(e['num_groups'], 1) + 1))
+    register_feature('log_opt', lambda e: np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)))
+    register_feature('inv_threads', lambda e: 1.0 / max(e['num_groups'] * e['wi_per_group'], 1))
+    register_feature('log_inv_threads', lambda e: np.log1p(1.0 / max(e['num_groups'] * e['wi_per_group'], 1)))
 
-    f('log_lwpg', lambda e: np.log(max(np.log(e['wi_per_group'] + 1), 1e-8)))
-    f('raw_ng', lambda e: e['num_groups'])
-    f('raw_ng_wpg', lambda e: e['num_groups'] * e['wi_per_group'])
-    f('lbranch', lambda e: np.log1p(e.get('wi_branches', 0)))
-    f('barr*lbranch', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_branches', 0)))
-    f('lwpg*lbranch', lambda e: np.log(e['wi_per_group'] + 1) * np.log1p(e.get('wi_branches', 0)))
-    f('lng_lwpg', lambda e: np.log(e['num_groups']) * np.log(e['wi_per_group'] + 1))
-    f('lwpg_lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops']))
-
-    f('log_ops_per_group', lambda e: np.log(e['wi_ops'] / max(e['num_groups'], 1) + 1))
-    f('log_opt', lambda e: np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)))
-    f('inv_threads', lambda e: 1.0 / max(e['num_groups'] * e['wi_per_group'], 1))
-    f('log_inv_threads', lambda e: np.log1p(1.0 / max(e['num_groups'] * e['wi_per_group'], 1)))
-
-    f('log_opt_barr', lambda e: np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'] * max(e['wi_barriers'], 1), 1)))
-    f('log_wpg_barr', lambda e: np.log1p(e['wi_per_group'] * e['wi_barriers']))
+    register_feature('log_opt_barr', lambda e: np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'] * max(e['wi_barriers'], 1), 1)))
+    register_feature('log_wpg_barr', lambda e: np.log1p(e['wi_per_group'] * e['wi_barriers']))
 
     for bval in [0, 3, 4, 5, 6, 7, 8]:
-        f(f'b{bval}', lambda e, b=bval: 1.0 if e['wi_barriers'] == b else 0.0)
+        register_feature(f'b{bval}', lambda e, b=bval: 1.0 if e['wi_barriers'] == b else 0.0)
 
-    f('barr_low', lambda e: 1.0 if e['wi_barriers'] == 0 else 0.0)
-    f('barr_med', lambda e: 1.0 if e['wi_barriers'] in [3, 4, 5] else 0.0)
-    f('barr_high', lambda e: 1.0 if e['wi_barriers'] >= 6 else 0.0)
-    f('barr_nonzero', lambda e: 1.0 if e['wi_barriers'] > 0 else 0.0)
+    register_feature('barr_low', lambda e: 1.0 if e['wi_barriers'] == 0 else 0.0)
+    register_feature('barr_med', lambda e: 1.0 if e['wi_barriers'] in [3, 4, 5] else 0.0)
+    register_feature('barr_high', lambda e: 1.0 if e['wi_barriers'] >= 6 else 0.0)
+    register_feature('barr_nonzero', lambda e: 1.0 if e['wi_barriers'] > 0 else 0.0)
 
     for bval in [0, 3, 4, 5, 6, 7, 8]:
-        f(f'b{bval}*lng', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['num_groups']))
-        f(f'b{bval}*lwpg', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['wi_per_group'] + 1))
-        f(f'b{bval}*lops', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['wi_ops']))
+        register_feature(f'b{bval}*lng', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['num_groups']))
+        register_feature(f'b{bval}*lwpg', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['wi_per_group'] + 1))
+        register_feature(f'b{bval}*lops', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['wi_ops']))
 
-    f('barr*lops', lambda e: e['wi_barriers'] * np.log(e['wi_ops']))
-    f('barr*lcop', lambda e: e['wi_barriers'] * np.log(e['wi_compute_ops']))
-    f('barr*lgmem', lambda e: e['wi_barriers'] * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-    f('barr*lwpg', lambda e: e['wi_barriers'] * np.log(e['wi_per_group'] + 1))
-    f('barr*lng', lambda e: e['wi_barriers'] * np.log(e['num_groups']))
-    f('barr*wr', lambda e: e['wi_barriers'] * (e['wi_per_group'] / max(e.get('warp_size', 32), 1)))
+    register_feature('barr*lops', lambda e: e['wi_barriers'] * np.log(e['wi_ops']))
+    register_feature('barr*lcop', lambda e: e['wi_barriers'] * np.log(e['wi_compute_ops']))
+    register_feature('barr*lgmem', lambda e: e['wi_barriers'] * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('barr*lwpg', lambda e: e['wi_barriers'] * np.log(e['wi_per_group'] + 1))
+    register_feature('barr*lng', lambda e: e['wi_barriers'] * np.log(e['num_groups']))
+    register_feature('barr*wr', lambda e: e['wi_barriers'] * (e['wi_per_group'] / max(e.get('warp_size', 32), 1)))
 
-    f('lld_st', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)))
-    f('lst_st', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0)))
-    f('lld_st*lops', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_ops']))
-    f('lld_st*lcop', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_compute_ops']))
-    f('lld_st*lgmem', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('lld_st', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)))
+    register_feature('lst_st', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0)))
+    register_feature('lld_st*lops', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_ops']))
+    register_feature('lld_st*lcop', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_compute_ops']))
+    register_feature('lld_st*lgmem', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
 
-    f('lops*lgmem', lambda e: np.log(e['wi_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-    f('lcop*lgmem', lambda e: np.log(e['wi_compute_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-    f('lng*lgmem', lambda e: np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-    f('lwpg*lgmem', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('lops*lgmem', lambda e: np.log(e['wi_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('lcop*lgmem', lambda e: np.log(e['wi_compute_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('lng*lgmem', lambda e: np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('lwpg*lgmem', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
 
-    f('lops*ci', lambda e: np.log(e['wi_ops']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
-    f('lcop*ci', lambda e: np.log(e['wi_compute_ops']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
-    f('lng*ci', lambda e: np.log(e['num_groups']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
+    register_feature('lops*ci', lambda e: np.log(e['wi_ops']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
+    register_feature('lcop*ci', lambda e: np.log(e['wi_compute_ops']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
+    register_feature('lng*ci', lambda e: np.log(e['num_groups']) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
 
-    f('lng*wr', lambda e: np.log(e['num_groups']) * (e['wi_per_group'] / max(e.get('warp_size', 32), 1)))
-    f('lwpg*wr', lambda e: np.log(e['wi_per_group'] + 1) * (e['wi_per_group'] / max(e.get('warp_size', 32), 1)))
-    f('lng*rr', lambda e: np.log(e['num_groups']) * (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)))
-    f('lwpg*rr', lambda e: np.log(e['wi_per_group'] + 1) * (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)))
+    register_feature('lng*wr', lambda e: np.log(e['num_groups']) * (e['wi_per_group'] / max(e.get('warp_size', 32), 1)))
+    register_feature('lwpg*wr', lambda e: np.log(e['wi_per_group'] + 1) * (e['wi_per_group'] / max(e.get('warp_size', 32), 1)))
+    register_feature('lng*rr', lambda e: np.log(e['num_groups']) * (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)))
+    register_feature('lwpg*rr', lambda e: np.log(e['wi_per_group'] + 1) * (e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1)))
 
-    f('lng*lcop', lambda e: np.log(e['num_groups']) * np.log(e['wi_compute_ops']))
-    f('lwpg*lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops']))
+    register_feature('lng*lcop', lambda e: np.log(e['num_groups']) * np.log(e['wi_compute_ops']))
+    register_feature('lwpg*lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops']))
 
-    f('warp_util', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1))
-    f('log_warp_waste', lambda e: np.log(32 / max(e['wi_per_group'], 1)))
-    f('lng_warp_waste', lambda e: np.log(e['num_groups']) * np.log(32 / max(e['wi_per_group'], 1)))
-    f('lwpg_warp_waste', lambda e: np.log(e['wi_per_group'] + 1) * np.log(32 / max(e['wi_per_group'], 1)))
+    register_feature('warp_util', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1))
+    register_feature('log_warp_waste', lambda e: np.log(32 / max(e['wi_per_group'], 1)))
+    register_feature('lng_warp_waste', lambda e: np.log(e['num_groups']) * np.log(32 / max(e['wi_per_group'], 1)))
+    register_feature('lwpg_warp_waste', lambda e: np.log(e['wi_per_group'] + 1) * np.log(32 / max(e['wi_per_group'], 1)))
 
-    f('lng_div_lops', lambda e: np.log(max(e['num_groups'] / max(e['wi_ops'], 1), 1e-8)))
-    f('llm', lambda e: np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)))
-    f('barr_wpg', lambda e: e['wi_barriers'] * np.log1p(e['wi_per_group']))
+    register_feature('lng_div_lops', lambda e: np.log(max(e['num_groups'] / max(e['wi_ops'], 1), 1e-8)))
+    register_feature('llm', lambda e: np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)))
+    register_feature('barr_wpg', lambda e: e['wi_barriers'] * np.log1p(e['wi_per_group']))
 
-    f('b0*lcop', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log(e['wi_compute_ops']))
-    f('b0*lgmem', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-    f('log_cops_100*b0', lambda e: np.log(e['wi_compute_ops'] + 100) * (1.0 if e['wi_barriers'] == 0 else 0.0))
-    f('lwpg*lops*b0', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log1p(e['wi_per_group']) * np.log(e['wi_ops']))
+    register_feature('b0*lcop', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log(e['wi_compute_ops']))
+    register_feature('b0*lgmem', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('log_cops_100*b0', lambda e: np.log(e['wi_compute_ops'] + 100) * (1.0 if e['wi_barriers'] == 0 else 0.0))
+    register_feature('lwpg*lops*b0', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * np.log1p(e['wi_per_group']) * np.log(e['wi_ops']))
 
-    f('coalescing_eff', lambda e: 1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0))
-    f('coalescing_eff_st', lambda e: 1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0))
-    f('reduce_kind', lambda e: e['wi_barriers'] / max(np.log2(e['wi_per_group'] + 1), 1.0))
-    f('element_ops', lambda e: e['wi_compute_ops'] / max(e['num_groups'], 1))
-    f('warp_div', lambda e: np.log(max(32 / max(e['wi_per_group'], 1), 1e-8)))
-    f('sm_occupancy', lambda e: min((e['num_groups'] * e['wi_per_group']) / 2048.0, 1.0))
-    f('tree_height', lambda e: np.log2(e['wi_barriers'] + 1) if e['wi_barriers'] > 0 else 0)
-    f('tree_reduce_cost', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)))
-    f('element_ops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
-    f('compute_intensity_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'] * 32, 1))
+    register_feature('coalescing_eff', lambda e: 1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0))
+    register_feature('coalescing_eff_st', lambda e: 1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0))
+    register_feature('reduce_kind', lambda e: e['wi_barriers'] / max(np.log2(e['wi_per_group'] + 1), 1.0))
+    register_feature('element_ops', lambda e: e['wi_compute_ops'] / max(e['num_groups'], 1))
+    register_feature('warp_div', lambda e: np.log(max(32 / max(e['wi_per_group'], 1), 1e-8)))
+    register_feature('sm_occupancy', lambda e: min((e['num_groups'] * e['wi_per_group']) / 2048.0, 1.0))
+    register_feature('tree_height', lambda e: np.log2(e['wi_barriers'] + 1) if e['wi_barriers'] > 0 else 0)
+    register_feature('tree_reduce_cost', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)))
+    register_feature('element_ops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
+    register_feature('compute_intensity_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'] * 32, 1))
 
-    f('shared_mem_pressure', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 65536.0)
-    f('warp_efficiency', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1))
-    f('warp_waste', lambda e: (32.0 - e['wi_per_group']) / 32.0)
+    register_feature('shared_mem_pressure', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 65536.0)
+    register_feature('warp_efficiency', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1))
+    register_feature('warp_waste', lambda e: (32.0 - e['wi_per_group']) / 32.0)
 
-    f('compute_per_barrier', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * max(e['wi_barriers'], 1), 1))
-    f('barrier_overhead_cost', lambda e: e['wi_barriers'] * np.log1p(e['wi_barriers']) / max(np.log1p(e['wi_ops']), 1))
-    f('group_work_density', lambda e: e['wi_ops'] / max(e['num_groups'] * np.log1p(e['wi_per_group']), 1))
-    f('ops_per_barrier', lambda e: e['wi_ops'] / max(e['wi_barriers'], 1))
-    f('mem_compute_ratio_log', lambda e: np.log((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['wi_compute_ops'], 1) + 1))
-    f('barrier_factor', lambda e: e['wi_barriers'] / max(np.log1p(e['wi_ops']), 1))
-    f('barrier_efficiency', lambda e: e['wi_barriers'] / max(np.log1p(e['wi_ops']), 1))
-    f('mem_compute_ratio_log', lambda e: np.log((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['wi_compute_ops'], 1) + 1))
-    f('log1p_lng', lambda e: np.log1p(np.abs(np.log(e['num_groups']))))
-    f('log1p_lwpg_raw', lambda e: np.log1p(np.abs(np.log(e['wi_per_group'] + 1))))
-    f('log1p_lops_raw', lambda e: np.log1p(np.abs(np.log(e['wi_ops']))))
-    f('log_ng_per_ops', lambda e: np.log(e['num_groups'] / max(e['wi_ops'], 1) + 1))
-    f('log_threads_per_ops', lambda e: np.log((e['num_groups'] * e['wi_per_group']) / max(e['wi_ops'], 1) + 1))
-    f('barr_med_lops', lambda e: (1.0 if e['wi_barriers'] in [3, 4, 5] else 0.0) * np.log(e['wi_ops']))
-    f('barr_nonzero_lops', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_ops']))
-    f('barr_nonzero_lmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-    f('compute_density', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
-    f('thread_compute', lambda e: np.log(e['wi_compute_ops'] + 1) * np.log(e['num_groups'] * e['wi_per_group'] + 1))
-    f('bgt_lng', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['num_groups']))
-    f('bgt_lwpg', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_per_group'] + 1))
-    f('bgt_lops', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_ops']))
-    f('bgt_lcop', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_compute_ops']))
-    f('bgt_lgmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-    f('bgt_lng_lgmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-    f('bgt_lng_lcop', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['num_groups']) * np.log(e['wi_compute_ops']))
+    register_feature('compute_per_barrier', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * max(e['wi_barriers'], 1), 1))
+    register_feature('barrier_overhead_cost', lambda e: e['wi_barriers'] * np.log1p(e['wi_barriers']) / max(np.log1p(e['wi_ops']), 1))
+    register_feature('group_work_density', lambda e: e['wi_ops'] / max(e['num_groups'] * np.log1p(e['wi_per_group']), 1))
+    register_feature('ops_per_barrier', lambda e: e['wi_ops'] / max(e['wi_barriers'], 1))
+    register_feature('mem_compute_ratio_log', lambda e: np.log((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['wi_compute_ops'], 1) + 1))
+    register_feature('barrier_factor', lambda e: e['wi_barriers'] / max(np.log1p(e['wi_ops']), 1))
+    register_feature('barrier_efficiency', lambda e: e['wi_barriers'] / max(np.log1p(e['wi_ops']), 1))
+    register_feature('mem_compute_ratio_log', lambda e: np.log((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['wi_compute_ops'], 1) + 1))
+    register_feature('log1p_lng', lambda e: np.log1p(np.abs(np.log(e['num_groups']))))
+    register_feature('log1p_lwpg_raw', lambda e: np.log1p(np.abs(np.log(e['wi_per_group'] + 1))))
+    register_feature('log1p_lops_raw', lambda e: np.log1p(np.abs(np.log(e['wi_ops']))))
+    register_feature('log_ng_per_ops', lambda e: np.log(e['num_groups'] / max(e['wi_ops'], 1) + 1))
+    register_feature('log_threads_per_ops', lambda e: np.log((e['num_groups'] * e['wi_per_group']) / max(e['wi_ops'], 1) + 1))
+    register_feature('barr_med_lops', lambda e: (1.0 if e['wi_barriers'] in [3, 4, 5] else 0.0) * np.log(e['wi_ops']))
+    register_feature('barr_nonzero_lops', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_ops']))
+    register_feature('barr_nonzero_lmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('compute_density', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
+    register_feature('thread_compute', lambda e: np.log(e['wi_compute_ops'] + 1) * np.log(e['num_groups'] * e['wi_per_group'] + 1))
+    register_feature('bgt_lng', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['num_groups']))
+    register_feature('bgt_lwpg', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_per_group'] + 1))
+    register_feature('bgt_lops', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_ops']))
+    register_feature('bgt_lcop', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_compute_ops']))
+    register_feature('bgt_lgmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('bgt_lng_lgmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    register_feature('bgt_lng_lcop', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['num_groups']) * np.log(e['wi_compute_ops']))
+
+    # Build feature matrix after all features are registered
+    X = build_feature_matrix(entries)
 
     print(f"Total features: {X.shape[1]}")
 
@@ -535,24 +586,40 @@ def main():
     sample_weights = barrier_weights * len(entries)
     sample_weights = sample_weights / np.mean(sample_weights)
 
-    # === DT-only model ===
-    # DT handles all ranges naturally (tree splits on raw values).
-    # Ridge was attempted but makes ranking worse — global feature scaling
-    # can't distinguish within-section differences (all MatMul entries get
-    # near-identical scaled values when mean/std are dominated by other sections).
+    # === Ridge+DT Stacking ===
+    # DT carves the feature space into regions where relationships are roughly linear.
+    # Ridge on [X, DT_pred] learns regional intercepts via DT_pred and linear slopes via X.
     max_dt_leaves = 1500
     print(f"\nTraining DT with max {max_dt_leaves} leaves...")
     dt = DecisionTreeRegressor(max_leaf_nodes=max_dt_leaves, random_state=42, min_samples_leaf=5)
-    dt.fit(X, y)
+    dt.fit(X, y, sample_weight=sample_weights)
     dt_pred = dt.predict(X)
     tree = dt.tree_
     leaf_node_ids = [i for i in range(tree.node_count) if tree.feature[i] == -2]
     dt_leaf_values = tree.value[leaf_node_ids, 0, 0]
     print(f"DT has {len(leaf_node_ids)} leaves, R²={dt.score(X, y):.4f}")
 
-    # Evaluate per-section R² for DT alone
-    def evaluate_dt(X, y, section_groups):
-        y_pred = dt.predict(X)
+    # Stack Ridge on [X, dt_pred]
+    X_stacked = np.column_stack([X, dt_pred])
+    alphas = [0.001, 0.01, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0]
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_stacked)
+    ridge_cv = RidgeCV(alphas=alphas)
+    ridge_cv.fit(X_scaled, y, sample_weight=sample_weights)
+    best_alpha = ridge_cv.alpha_
+    # Re-fit with best alpha
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_stacked)
+    ridge = Ridge(alpha=best_alpha)
+    ridge.fit(X_scaled, y, sample_weight=sample_weights)
+    ridge_coef = ridge.coef_
+    ridge_intercept = ridge.intercept_
+    stacked_pred = ridge.predict(X_scaled)
+    print(f"Ridge alpha={best_alpha:.4f}, stacked R²={ridge.score(X_scaled, y, sample_weight=sample_weights):.4f}")
+
+    # === Evaluate DT results ===
+    def evaluate_model_impl(model_fn, y, section_groups):
+        y_pred = model_fn()
         section_r2s = {}
         for section in section_groups.keys():
             mask = section_groups[section]
@@ -565,7 +632,7 @@ def main():
                 section_r2s[section] = r2
         return section_r2s
 
-    dt_r2_sections = evaluate_dt(X, y, section_groups)
+    dt_r2_sections = evaluate_model_impl(lambda: dt.predict(X), y, section_groups)
     dt_min_r2 = min(dt_r2_sections.values()) if dt_r2_sections else 0
     print(f"\n=== DT-Only Results ===")
     print(f"DT leaves: {len(leaf_node_ids)}")
@@ -578,24 +645,41 @@ def main():
             flag = " *** ABOVE 0.95 ***" if r2 >= 0.95 else ""
             print(f"  {section}: R²={r2:.4f}{flag}")
 
-    if dt_min_r2 >= 0.95:
+    # === Evaluate stacked Ridge+DT results ===
+    stacked_r2_sections = evaluate_model_impl(lambda: stacked_pred, y, section_groups)
+    stacked_min_r2 = min(stacked_r2_sections.values()) if stacked_r2_sections else 0
+    print(f"\n=== Ridge+DT Stacked Results ===")
+    print(f"DT leaves: {len(leaf_node_ids)}")
+    print(f"Ridge features: {X_stacked.shape[1]} (143 original + 1 DT pred)")
+    print(f"Total parameters: {len(ridge_coef)} + 1 intercept = {len(ridge_coef) + 1}")
+    print(f"Minimum per-section R²: {stacked_min_r2:.4f}")
+    print()
+    for section in sorted(section_groups.keys()):
+        if section in stacked_r2_sections:
+            r2 = stacked_r2_sections[section]
+            flag = " *** ABOVE 0.95 ***" if r2 >= 0.95 else ""
+            print(f"  {section}: R²={r2:.4f}{flag}")
+
+    if stacked_min_r2 >= 0.95:
         print("\n*** All targets MET! ***")
     else:
-        print(f"\nWorst section R²={dt_min_r2:.4f} (target: 0.95)")
+        print(f"\nWorst section R²={stacked_min_r2:.4f} (target: 0.95)")
         for section in sorted(section_groups.keys()):
-            if section in dt_r2_sections and dt_r2_sections[section] < 0.95:
-                print(f"  {section}: R²={dt_r2_sections[section]:.4f}")
+            if section in stacked_r2_sections and stacked_r2_sections[section] < 0.95:
+                print(f"  {section}: R²={stacked_r2_sections[section]:.4f}")
 
     # === Cost.rs code generation ===
-    # Model: log_time = dt_tree_bias (DT-only).
+    # Model: log_time = ridge_intercept + sum(ridge_coef[i] * scaled_feature[i])
+    # where scaled_feature[i] = (feature[i] - scaler_mean[i]) / scaler_scale[i]
+    # Feature 144 (0-indexed) is the DT leaf_bias.
     rust_path = os.path.join(os.path.dirname(__file__), '..', 'zyx', 'src', 'kernel', 'predict_cost.rs')
     with open(rust_path, 'w') as f:
         f.write("// Copyright (C) 2025 zk4x\n")
         f.write("// SPDX-License-Identifier: LGPL-3.0-only\n")
         f.write("//\n")
         f.write("// Auto-generated by regression.py. Do not edit manually.\n")
-        f.write(f"// DT-only model: {len(leaf_node_ids)} leaves, no Ridge\n")
-        f.write(f"// Total parameters: {len(leaf_node_ids)}\n")
+        f.write(f"// Ridge+DT stacked model: {len(leaf_node_ids)} DT leaves, {len(ridge_coef)} Ridge features\n")
+        f.write(f"// Total parameters: {len(ridge_coef)} Ridge + 1 intercept + DT tree\n")
         f.write("\n")
         f.write("#![allow(unused)]\n")
         f.write("\n")
@@ -612,7 +696,7 @@ def main():
         f.write("        wi_local_load_lidx_stride: u32, wi_local_store_lidx_stride: u32,\n")
         f.write("        warp_size: u32, max_local_threads: u32, max_register_bytes: u32,\n")
         f.write("    ) -> f32 {\n")
-        f.write("        // Compute transformed features\n")
+        f.write("        // Compute raw features (same order as the 143 training features)\n")
         f.write("        let lng = (num_groups as f32).ln();\n")
         f.write("        let lwpg = (wi_per_group as f32 + 1.0).ln();\n")
         f.write("        let lops = (wi_ops as f32).ln();\n")
@@ -624,7 +708,14 @@ def main():
         f.write("        let wr = wi_per_group as f32 / warp_size as f32;\n")
         f.write("        let rr = wi_peak_reg_bytes as f32 / max_register_bytes.max(1) as f32;\n")
         f.write("\n")
-        f.write("        // DT leaf bias (inline tree traversal)\n")
+        # Compute scaled features from raw features
+        f.write("        // Raw features array\n")
+        f.write("        let raw: [f32; 143] = [\n")
+        for i in range(X.shape[1]):
+            f.write(f"            {_feature_to_rust(FEATURE_NAMES[i])},\n")
+        f.write("        ];\n")
+        f.write("\n")
+        f.write("        // DT leaf bias\n")
         f.write("        let leaf_bias: f32 = {\n")
         import io
         buf = io.StringIO()
@@ -635,13 +726,46 @@ def main():
         f.write(buf.getvalue())
         f.write("        };\n")
         f.write("\n")
-        f.write("        leaf_bias.exp()\n")
+        # Output scaler means and scales
+        scaler_mean = scaler.mean_
+        scaler_scale = scaler.scale_
+        f.write("        // StandardScaler parameters (mean, scale)\n")
+        f.write("        let scaler_mean: [f32; 144] = [\n")
+        for i in range(144):
+            f.write(f"            {scaler_mean[i]:.8e}f32,\n")
+        f.write("        ];\n")
+        f.write("        let scaler_scale: [f32; 144] = [\n")
+        for i in range(144):
+            f.write(f"            {scaler_scale[i]:.8e}f32,\n")
+        f.write("        ];\n")
+        f.write("\n")
+        f.write("        // Ridge coefficients (post-scaling)\n")
+        f.write("        let ridge_coef: [f32; 144] = [\n")
+        for i in range(144):
+            f.write(f"            {ridge_coef[i]:.8e}f32,\n")
+        f.write("        ];\n")
+        f.write("\n")
+        f.write(f"        let ridge_intercept: f32 = {ridge_intercept:.8e}f32;\n")
+        f.write("\n")
+        f.write("        // Build X_stacked = [raw_features(143), leaf_bias]\n")
+        f.write("        let mut scaled: [f32; 144] = [0.0; 144];\n")
+        f.write("        for i in 0..143 {\n")
+        f.write("            scaled[i] = (raw[i] - scaler_mean[i]) / scaler_scale[i];\n")
+        f.write("        }\n")
+        f.write("        scaled[143] = (leaf_bias - scaler_mean[143]) / scaler_scale[143];\n")
+        f.write("\n")
+        f.write("        let mut pred = ridge_intercept;\n")
+        f.write("        for i in 0..144 {\n")
+        f.write("            pred += ridge_coef[i] * scaled[i];\n")
+        f.write("        }\n")
+        f.write("\n")
+        f.write("        pred.exp()\n")
         f.write("    }\n")
         f.write("}\n")
     print(f"\nWrote {rust_path}")
 
     # === Diagnostic ===
-    full_pred = dt_pred
+    full_pred = stacked_pred
     matmul_mask = np.array([e['section'] == 'MatMul' for e in entries])
     matmul_idx = np.where(matmul_mask)[0]
     mm_actual_us = np.array([entries[i]['time_us'] for i in matmul_idx])
@@ -704,7 +828,7 @@ def main():
     rho_lm, _ = _spearmanr(lm_actual_us, lm_pred_us)
     print(f"Large MatMul Spearman ρ = {rho_lm:.4f}")
 
-    return dt, entries, None, None
+    return dt, entries, ridge, scaler
 
 if __name__ == '__main__':
     main()
