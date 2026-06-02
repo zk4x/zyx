@@ -461,16 +461,13 @@ def main():
     print(f"\nWrote {len(entries)} entries to bench_data.csv")
 
     barrier_counts = Counter(e['wi_barriers'] for e in entries)
-    print(f"Barrier distribution: {dict(sorted(barrier_counts.items()))}")
+    #print(f"Barrier distribution: {dict(sorted(barrier_counts.items()))}")
 
     # === Variant grouping: consecutive entries within same section with similar ops ===
     # Variants of the same kernel have very similar wi_ops counts.
     # Group consecutive entries where ops changes by < 10%.
     variant_groups = __detect_variant_groups(entries)
-    print(f"Detected {len(variant_groups)} variant groups")
-    group_sizes = Counter(len(g) for g in variant_groups)
-    for size in sorted(group_sizes):
-        print(f"  size {size}: {group_sizes[size]} groups")
+    print(f"Detected {len(variant_groups)} variant groups, {len(entries)} entries")
 
     # === Target: rank 0..1 within each variant group ===
     # 0 = fastest in variant, 1 = slowest in variant
@@ -484,9 +481,7 @@ def main():
         else:
             # Singleton group: put at median rank 0.5
             y[group[0]] = 0.5
-    print(f"Target = rank 0..1 within variant (0=fastest)")
-    print(f"  y range: {y.min():.3f} - {y.max():.3f}")
-    print(f"  y mean: {y.mean():.3f}")
+    # Target = rank 0..1 within variant (0=fastest)
 
     # Group entries by section
     section_groups = {}
@@ -657,16 +652,14 @@ def main():
     # DT partitions the space into leaves. Each leaf gets its own intercept (learned by Ridge).
     # Ridge learns per-leaf intercepts + linear effects for selected features.
     # Final: intercept + sum(coef_i * scaled_feature_i) + leaf_bias
-    max_dt_leaves = 80
+    max_dt_leaves = 1000
     max_ridge_features = 20
-    print(f"\nTraining DT with max {max_dt_leaves} leaves...")
     dt = DecisionTreeRegressor(max_leaf_nodes=max_dt_leaves, random_state=42, min_samples_leaf=5)
     dt.fit(X, y, sample_weight=sample_weights)
     leaf_ids = dt.apply(X)
     tree = dt.tree_
     leaf_node_ids = [i for i in range(tree.node_count) if tree.feature[i] == -2]
     n_leaves = len(leaf_node_ids)
-    print(f"DT has {n_leaves} leaves, R²={dt.score(X, y):.4f}")
 
     # One-hot encode leaf assignments (traversal order = _print_dt_rust order)
     leaf_to_idx = {}
@@ -685,7 +678,7 @@ def main():
     n_total_features = X_with_leaves.shape[1]
 
     # Fit Ridge on all features
-    print(f"Total features (eng + DT leaves): {n_total_features}")
+    #print(f"Total features (eng + DT leaves): {n_total_features}")
     alphas = [0.001, 0.01, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0]
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_with_leaves)
@@ -704,6 +697,7 @@ def main():
     selected_ridge_indices = ridge_indices
     final_indices = selected_ridge_indices + dt_leaf_indices
     n_ridge_sel = len(selected_ridge_indices)
+    X_final = X_with_leaves[:, final_indices]
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_final)
     ridge = Ridge(alpha=best_alpha)
@@ -729,8 +723,19 @@ def main():
                 r2s.append(r2)
         return np.array(r2s)
 
+    def per_kernel_spearman(y_pred, variant_groups, entries):
+        rhos = []
+        for g in variant_groups:
+            if len(g) >= 3:
+                actual = np.array([entries[i]['time_us'] for i in g])
+                pred = y_pred[g]
+                r, _ = _spearmanr(actual, pred)
+                rhos.append(r)
+        return np.array(rhos)
+
     def print_per_kernel_report(label, y_pred, variant_groups):
         r2s = per_kernel_r2(y_pred, variant_groups)
+        rhos = per_kernel_spearman(y_pred, variant_groups, entries)
         if len(r2s) == 0:
             return
         print(f"\n=== {label} Results ===")
@@ -739,6 +744,7 @@ def main():
         print(f"  Worst 5% quantile: {np.quantile(r2s, 0.05):.4f}")
         print(f"  Worst R²:          {np.min(r2s):.4f}")
         print(f"  Best R²:           {np.max(r2s):.4f}")
+        print(f"  Spearman ρ:        {np.mean(rhos):.4f} ± {np.std(rhos):.4f}")
 
     print_per_kernel_report("Ridge + DT leaves", stacked_pred, variant_groups)
 
@@ -855,66 +861,6 @@ def main():
         f.write("    }\n")
         f.write("}\n")
     print(f"\nWrote {rust_path}")
-
-    # === Diagnostic: why is R² low? ===
-    print("\n=== Why so bad? Within-group feature variation ===")
-    for g in sorted(variant_groups, key=lambda g: len(g))[-10:]:
-        if len(g) < 5:
-            continue
-        times = [entries[i]['time_us'] for i in g]
-        t_range = max(times) - min(times)
-        t_mean = np.mean(times)
-        t_cv = np.std(times) / t_mean if t_mean > 0 else 0
-        feat_keys = ['num_groups', 'wi_per_group', 'wi_ops', 'wi_compute_ops',
-                     'wi_barriers', 'wi_global_load_bits', 'wi_global_store_bits',
-                     'wi_local_load_bits', 'wi_local_store_bits', 'wi_peak_reg_bytes',
-                     'wi_branches']
-        n_unique = {}
-        for k in feat_keys:
-            vals = [entries[i][k] for i in g]
-            n_unique[k] = len(set(vals))
-        actual = np.array([entries[i]['time_us'] for i in g])
-        pred = stacked_pred[g]
-        r, _ = _spearmanr(actual, pred) if len(g) >= 3 else (0, 0)
-        hash_val = entries[g[0]].get('variant_hash', '?')
-        uniq = ', '.join(f"{k}={v}" for k, v in n_unique.items() if v > 1)
-        print(f"  hash={hash_val} size={len(g):3d} ρ={r:.3f} t_range={t_range:.1f}us cv={t_cv:.3f}  varying: {uniq}")
-
-    # Count groups where most features are constant
-    const_count = 0
-    feature_names = ['num_groups', 'wi_per_group', 'wi_ops', 'wi_compute_ops',
-                     'wi_barriers', 'wi_global_load_bits', 'wi_global_store_bits',
-                     'wi_local_load_bits', 'wi_local_store_bits', 'wi_peak_reg_bytes',
-                     'wi_branches',
-                     'wi_global_load_lidx_stride', 'wi_global_store_lidx_stride',
-                     'wi_local_load_lidx_stride', 'wi_local_store_lidx_stride',
-                     'warp_size', 'max_local_threads', 'max_register_bytes']
-    for g in variant_groups:
-        if len(g) < 3:
-            continue
-        varying = 0
-        for k in feature_names:
-            vals = [entries[i][k] for i in g]
-            if len(set(vals)) > 1:
-                varying += 1
-        if varying <= 2:
-            const_count += 1
-    print(f"\n  Groups with ≤2 varying features: {const_count}/{len(variant_groups)}")
-
-    # How many features actually vary in any group?
-    feature_varying_count = {}
-    for k in feature_names:
-        feature_varying_count[k] = 0
-    for g in variant_groups:
-        if len(g) < 3:
-            continue
-        for k in feature_names:
-            vals = [entries[i][k] for i in g]
-            if len(set(vals)) > 1:
-                feature_varying_count[k] += 1
-    print("  Features that vary within groups (# groups affected):")
-    for k, v in sorted(feature_varying_count.items(), key=lambda x: -x[1]):
-        print(f"    {k}: {v}/{len(variant_groups)} groups")
 
     return dt, entries, ridge, scaler
 
