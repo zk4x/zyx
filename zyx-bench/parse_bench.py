@@ -29,7 +29,11 @@ def parse_bench_output(filename):
                 r'wi_peak_reg_bytes=(\d+), wi_branches=(\d+), '
                 r'wi_global_load_lidx_stride=(\d+), wi_global_store_lidx_stride=(\d+), '
                 r'wi_local_load_lidx_stride=(\d+), wi_local_store_lidx_stride=(\d+), '
-                r'warp_size=(\d+), max_local_threads=(\d+), max_register_bytes=(\d+)',
+                r'warp_size=(\d+), max_local_threads=(\d+), max_register_bytes=(\d+), '
+                r'wi_register_load_bits=(\d+), wi_register_store_bits=(\d+), '
+                r'gws0=(\d+), gws1=(\d+), gws2=(\d+), '
+                r'lws0=(\d+), lws1=(\d+), lws2=(\d+), '
+                r'max_loop_depth=(\d+), preferred_vector_size=(\d+), local_mem_size=(\d+)',
                 line
             )
             if m:
@@ -52,6 +56,17 @@ def parse_bench_output(filename):
                     'warp_size': int(m.group(17)),
                     'max_local_threads': int(m.group(18)),
                     'max_register_bytes': int(m.group(19)),
+                    'wi_register_load_bits': int(m.group(20)),
+                    'wi_register_store_bits': int(m.group(21)),
+                    'gws0': int(m.group(22)),
+                    'gws1': int(m.group(23)),
+                    'gws2': int(m.group(24)),
+                    'lws0': int(m.group(25)),
+                    'lws1': int(m.group(26)),
+                    'lws2': int(m.group(27)),
+                    'max_loop_depth': int(m.group(28)),
+                    'preferred_vector_size': int(m.group(29)),
+                    'local_mem_size': int(m.group(30)),
                 }
                 time_match = re.search(
                     r'variant_hash=(\d+), ([\d.]+)\s*(s|ms|μs)\s*~\s*([\d.]+)\s*[MGT]FLOP/s', line)
@@ -96,6 +111,9 @@ def write_csv(entries):
             'wi_branches', 'wi_global_load_lidx_stride', 'wi_global_store_lidx_stride',
             'wi_local_load_lidx_stride', 'wi_local_store_lidx_stride',
             'warp_size', 'max_local_threads', 'max_register_bytes',
+            'wi_register_load_bits', 'wi_register_store_bits',
+            'gws0', 'gws1', 'gws2', 'lws0', 'lws1', 'lws2',
+            'max_loop_depth', 'preferred_vector_size', 'local_mem_size',
             'time_us', 'gflops'
         ])
         for e in entries:
@@ -113,6 +131,12 @@ def write_csv(entries):
                 e.get('wi_local_store_lidx_stride', 0),
                 e.get('warp_size', 32),
                 e.get('max_local_threads', 1024), e.get('max_register_bytes', 256),
+                e.get('wi_register_load_bits', 0),
+                e.get('wi_register_store_bits', 0),
+                e.get('gws0', 1), e.get('gws1', 1), e.get('gws2', 1),
+                e.get('lws0', 1), e.get('lws1', 1), e.get('lws2', 1),
+                e.get('max_loop_depth', 0),
+                e.get('preferred_vector_size', 0), e.get('local_mem_size', 0),
                 e['time_us'], e['gflops']
             ])
     print(f"Wrote {len(entries)} entries to {BENCH_CSV}")

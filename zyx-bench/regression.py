@@ -394,13 +394,22 @@ def main():
         f.write("        wi_global_load_lidx_stride: u32, wi_global_store_lidx_stride: u32,\n")
         f.write("        wi_local_load_lidx_stride: u32, wi_local_store_lidx_stride: u32,\n")
         f.write("        warp_size: u32, max_local_threads: u32, max_register_bytes: u32,\n")
+        f.write("        wi_register_load_bits: u32, wi_register_store_bits: u32,\n")
+        f.write("        gws0: u32, gws1: u32, gws2: u32,\n")
+        f.write("        lws0: u32, lws1: u32, lws2: u32,\n")
+        f.write("        max_loop_depth: u32,\n")
+        f.write("        preferred_vector_size: u32, local_mem_size: u32,\n")
         f.write("    ) -> f64 {\n")
         for var in ['num_groups', 'wi_per_group', 'wi_ops', 'wi_compute_ops', 'wi_barriers',
                      'wi_global_load_bits', 'wi_global_store_bits', 'wi_local_load_bits',
                      'wi_local_store_bits', 'wi_peak_reg_bytes', 'wi_branches',
                      'wi_global_load_lidx_stride', 'wi_global_store_lidx_stride',
                      'wi_local_load_lidx_stride', 'wi_local_store_lidx_stride',
-                     'warp_size', 'max_local_threads', 'max_register_bytes']:
+                     'warp_size', 'max_local_threads', 'max_register_bytes',
+                     'wi_register_load_bits', 'wi_register_store_bits',
+                     'gws0', 'gws1', 'gws2',
+                     'lws0', 'lws1', 'lws2',
+                     'max_loop_depth', 'preferred_vector_size', 'local_mem_size']:
             f.write(f"        let {var} = {var} as f64;\n")
         f.write("        let lng = num_groups.ln();\n")
         f.write("        let lwpg = (wi_per_group + 1.0).ln();\n")

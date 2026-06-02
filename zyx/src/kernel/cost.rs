@@ -35,19 +35,35 @@ pub struct Cost {
     warp_size: u64,
     max_local_threads: u64,
     max_register_bytes: u64,
+
+    wi_register_load_bits: u64,
+    wi_register_store_bits: u64,
+    gws0: u64,
+    gws1: u64,
+    gws2: u64,
+    lws0: u64,
+    lws1: u64,
+    lws2: u64,
+    max_loop_depth: u64,
+    preferred_vector_size: u64,
+    local_mem_size: u64,
 }
 
 impl Cost {
     pub fn debug(&self) {
         print!(
-            "cost={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}, wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, wi_local_load_lidx_stride={}, wi_local_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={} ",
+            "cost={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}, wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, wi_local_load_lidx_stride={}, wi_local_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={}, wi_register_load_bits={}, wi_register_store_bits={}, gws0={}, gws1={}, gws2={}, lws0={}, lws1={}, lws2={}, max_loop_depth={}, preferred_vector_size={}, local_mem_size={} ",
             self.cost, self.num_groups, self.wi_per_group, self.wi_ops,
             self.wi_compute_ops, self.wi_barriers, self.wi_global_load_bits,
             self.wi_global_store_bits, self.wi_local_load_bits,
             self.wi_local_store_bits, self.wi_peak_reg_bytes, self.wi_branches,
             self.wi_global_load_lidx_stride, self.wi_global_store_lidx_stride,
             self.wi_local_load_lidx_stride, self.wi_local_store_lidx_stride,
-            self.warp_size, self.max_local_threads, self.max_register_bytes
+            self.warp_size, self.max_local_threads, self.max_register_bytes,
+            self.wi_register_load_bits, self.wi_register_store_bits,
+            self.gws0, self.gws1, self.gws2,
+            self.lws0, self.lws1, self.lws2,
+            self.max_loop_depth, self.preferred_vector_size, self.local_mem_size
         );
     }
 }
@@ -155,6 +171,7 @@ impl Kernel {
         let mut lws = [1u64; 3];
         let mut loop_mult = 1u64;
         let mut latest_loop_lengths: Vec<u64> = Vec::new();
+        let mut max_loop_depth = 0u64;
 
         let mut reg_slots: Vec<(u32, (DType, u16))> = Vec::new(); // (rc, dtype)
         let mut reg_map: Map<OpId, usize> = Map::default();
@@ -488,6 +505,10 @@ impl Kernel {
                     }
                     loop_mult *= *len as u64;
                     latest_loop_lengths.push(*len as u64);
+                    let depth = latest_loop_lengths.len() as u64;
+                    if depth > max_loop_depth {
+                        max_loop_depth = depth;
+                    }
                 }
                 Op::EndLoop => {
                     loop_mult /= latest_loop_lengths.pop().unwrap();
@@ -529,8 +550,10 @@ impl Kernel {
 
         let wi_global_load_bits = n_scoped_load_bits[0];
         let wi_local_load_bits = n_scoped_load_bits[1];
+        let wi_register_load_bits = n_scoped_load_bits[2];
         let wi_global_store_bits = n_scoped_store_bits[0];
         let wi_local_store_bits = n_scoped_store_bits[1];
+        let wi_register_store_bits = n_scoped_store_bits[2];
 
         let num_groups = gws.iter().product::<u64>();
         let wi_per_group = lws.iter().product::<u64>();
@@ -557,7 +580,7 @@ impl Kernel {
             0.0
         };
 
-        // Learned cost model: rank 0..1 within variant * 1_000_000 (2000 DT leaves + Ridge, ρ=0.93)
+        // Learned cost model: rank 0..1 within variant * 1_000_000 (2000 DT leaves + Ridge)
         let cost = Cost::predict_time_us(
             num_groups as u32,
             wi_per_group as u32,
@@ -577,6 +600,17 @@ impl Kernel {
             dev_info.warp_size as u32,
             dev_info.max_local_threads as u32,
             dev_info.max_register_bytes as u32,
+            wi_register_load_bits as u32,
+            wi_register_store_bits as u32,
+            gws[0] as u32,
+            gws[1] as u32,
+            gws[2] as u32,
+            lws[0] as u32,
+            lws[1] as u32,
+            lws[2] as u32,
+            max_loop_depth as u32,
+            dev_info.preferred_vector_size as u32,
+            dev_info.local_mem_size as u32,
         );
         let cost = cost.max(1.0) as u64;
 
@@ -616,6 +650,17 @@ impl Kernel {
             warp_size: dev_info.warp_size as u64,
             max_local_threads: dev_info.max_local_threads,
             max_register_bytes: dev_info.max_register_bytes,
+            wi_register_load_bits,
+            wi_register_store_bits,
+            gws0: gws[0],
+            gws1: gws[1],
+            gws2: gws[2],
+            lws0: lws[0],
+            lws1: lws[1],
+            lws2: lws[2],
+            max_loop_depth,
+            preferred_vector_size: dev_info.preferred_vector_size as u64,
+            local_mem_size: dev_info.local_mem_size,
         }
     }
 }
