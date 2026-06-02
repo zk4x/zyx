@@ -15,6 +15,7 @@ use std::{fmt::Display, hash::Hash};
 
 pub mod autotune;
 pub mod cost;
+pub mod predict_cost;
 pub mod custom;
 mod debug;
 mod div_mod;

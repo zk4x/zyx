@@ -234,6 +234,21 @@ fn reduce_multi_axis_bench() -> Result<(), ZyxError> {
     Ok(())
 }
 
+fn large_matmul_bench() -> Result<(), ZyxError> {
+    println!("=== Large MatMul ===");
+    for &(m, n, k) in &[
+        (1024, 1024, 1024),
+        (2048, 2048, 2048),
+        (4096, 4096, 4096),
+    ] {
+        let a = Tensor::rand([m, k], DType::F32)?;
+        let b = Tensor::rand([n, k], DType::F32)?;
+        a.matmul(b.t())?.realize()?;
+    }
+    println!();
+    Ok(())
+}
+
 fn main() -> Result<(), ZyxError> {
     //matmul_bench()?;
     //reduce_bench()?;
@@ -246,5 +261,6 @@ fn main() -> Result<(), ZyxError> {
     //silu_like_bench()?;
     layer_norm_like_bench()?;
     reduce_multi_axis_bench()?;
+    large_matmul_bench()?;
     Ok(())
 }
