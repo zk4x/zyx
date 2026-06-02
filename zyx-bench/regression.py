@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge, ElasticNet
 from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeRegressor
 from collections import Counter
 
 BENCH_OUTPUT = '/home/x/Dev/rust/zyx/zyx-bench/bench_output.txt'
@@ -244,6 +245,12 @@ def main():
     for bval in [0, 3, 4, 5, 6, 7, 8]:
         f(f'b{bval}', lambda e, b=bval: 1.0 if e['wi_barriers'] == b else 0.0)
 
+    # barrier groups (denser signal)
+    f('barr_low', lambda e: 1.0 if e['wi_barriers'] == 0 else 0.0)
+    f('barr_med', lambda e: 1.0 if e['wi_barriers'] in [3, 4, 5] else 0.0)
+    f('barr_high', lambda e: 1.0 if e['wi_barriers'] >= 6 else 0.0)
+    f('barr_nonzero', lambda e: 1.0 if e['wi_barriers'] > 0 else 0.0)
+
     # barrier one-hot x lng/lwpg/lops
     for bval in [0, 3, 4, 5, 6, 7, 8]:
         f(f'b{bval}*lng', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['num_groups']))
@@ -406,21 +413,81 @@ def main():
     f('log_ng_per_ops', lambda e: np.log(e['num_groups'] / max(e['wi_ops'], 1) + 1))
     f('log_threads_per_ops', lambda e: np.log((e['num_groups'] * e['wi_per_group']) / max(e['wi_ops'], 1) + 1))
     f('b0_ci', lambda e: (1.0 if e['wi_barriers'] == 0 else 0.0) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
+    f('barr_med_ng', lambda e: (1.0 if e['wi_barriers'] in [3, 4, 5] else 0.0) * np.log(e['num_groups']))
+    f('barr_med_lops', lambda e: (1.0 if e['wi_barriers'] in [3, 4, 5] else 0.0) * np.log(e['wi_ops']))
+    f('barr_high_ng', lambda e: (1.0 if e['wi_barriers'] >= 6 else 0.0) * np.log(e['num_groups']))
+    f('barr_nonzero_lops', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_ops']))
+    f('barr_nonzero_lmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
     f('compute_density', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
     f('mem_density', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1))
     f('group_aspect', lambda e: e['num_groups'] / max(e['wi_per_group'], 1))
     f('thread_compute', lambda e: np.log(e['wi_compute_ops'] + 1) * np.log(e['num_groups'] * e['wi_per_group'] + 1))
 
+    # === Barrier>0 gate: multiply top features by (barriers > 0) for separate slopes ===
+    _barr = lambda e: 1.0 if e['wi_barriers'] > 0 else 0.0
+    f('bgt_lng', lambda e, b=_barr: b(e) * np.log(e['num_groups']))
+    f('bgt_lwpg', lambda e, b=_barr: b(e) * np.log(e['wi_per_group'] + 1))
+    f('bgt_lops', lambda e, b=_barr: b(e) * np.log(e['wi_ops']))
+    f('bgt_lcop', lambda e, b=_barr: b(e) * np.log(e['wi_compute_ops']))
+    f('bgt_lgmem', lambda e, b=_barr: b(e) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    f('bgt_lng_lgmem', lambda e, b=_barr: b(e) * np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    f('bgt_lng_lcop', lambda e, b=_barr: b(e) * np.log(e['num_groups']) * np.log(e['wi_compute_ops']))
+    f('bgt_lwpg_lgmem', lambda e, b=_barr: b(e) * np.log(e['wi_per_group'] + 1) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
+    # Raw (non-log) features for barrier>0 to capture U-shape
+    f('bgt_ng_raw', lambda e, b=_barr: b(e) * e['num_groups'] / 1000.0)
+    f('bgt_barr_raw', lambda e, b=_barr: b(e) * e['wi_barriers'])
+    f('bgt_barr_ng', lambda e, b=_barr: b(e) * e['wi_barriers'] * e['num_groups'] / 1000.0)
+
     print(f"Total features: {X.shape[1]}")
 
-    # Create sample weights to give each section equal importance
-    section_weights = {}
-    for section, indices in section_groups.items():
-        weight_per_sample = 1.0 / (len(indices) / len(entries))
-        for idx in indices:
-            section_weights[idx] = weight_per_sample
+    # === DT leaf features: train a shallow DT, use leaf membership as features ===
+    # This gives piecewise linear capability: each leaf gets its own bias
+    print("\nTraining DT for leaf features...")
+    dt_leaf = DecisionTreeRegressor(max_leaf_nodes=200, random_state=42, min_samples_leaf=5)
+    dt_leaf.fit(X, y)
+    leaf_ids = dt_leaf.apply(X)
+    n_leaves = dt_leaf.get_n_leaves()
+    print(f"DT has {n_leaves} leaves, R²={dt_leaf.score(X, y):.4f}")
 
-    sample_weights = np.array([section_weights[i] for i in range(len(entries))])
+    # One-hot encode leaf membership (sklearn leaves are 1-indexed, may not be contiguous)
+    unique_leaves = sorted(set(leaf_ids))
+    leaf_to_idx = {leaf: i for i, leaf in enumerate(unique_leaves)}
+    n_leaves = len(unique_leaves)
+    leaf_onehot = np.zeros((len(entries), n_leaves))
+    for i, leaf in enumerate(leaf_ids):
+        leaf_onehot[i, leaf_to_idx[leaf]] = 1.0
+
+    # Add to feature matrix
+    for leaf_idx in range(n_leaves):
+        FEATURE_NAMES.append(f'dt_leaf_{leaf_idx}')
+    X = np.column_stack([X, leaf_onehot])
+    print(f"Total features after DT leaves: {X.shape[1]}")
+
+    # Create sample weights: 50% to barrier>0, 50% to barrier=0
+    # Within each barrier group, each section gets equal weight
+    barr_vals = np.array([e['wi_barriers'] for e in entries])
+    barrier_mask = barr_vals > 0
+    
+    # Group sections by barrier regime
+    barrier0_sections = set()
+    barrier_gt0_sections = set()
+    for i, e in enumerate(entries):
+        if e['wi_barriers'] > 0:
+            barrier_gt0_sections.add(e['section'])
+        else:
+            barrier0_sections.add(e['section'])
+    
+    # Within each regime, give each section equal weight
+    barrier_weights = np.zeros(len(entries))
+    
+    for section_list, total_weight in [(barrier0_sections, 0.5), (barrier_gt0_sections, 0.5)]:
+        for section in section_list:
+            indices = section_groups[section]
+            weight_per_sample = total_weight / len(section_list) / len(indices)
+            for idx in indices:
+                barrier_weights[idx] = weight_per_sample
+    
+    sample_weights = barrier_weights * len(entries)
     sample_weights = sample_weights / np.mean(sample_weights)
 
     # Scale features
@@ -437,50 +504,39 @@ def main():
 
     print("\n=== Model Search ===")
 
-    # 1. Ridge with very low regularization (near-OLS)
-    print("\n1. Ridge regression:")
-    for alpha in [1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4]:
-        l = Ridge(alpha=alpha, random_state=42, max_iter=10000, tol=1e-8)
+    # Ridge regression with various alphas
+    for alpha in [1e-8, 1e-6, 1e-4, 1e-2]:
+        l = Ridge(alpha=alpha, random_state=42, max_iter=10000)
         l.fit(Xs, y, sample_weight=sample_weights)
         section_r2s = evaluate_model(l, Xs, y, section_groups)
         min_r2 = min(section_r2s.values()) if section_r2s else 0
-        print(f"   alpha={alpha:.10f}: min R²={min_r2:.4f}")
+        print(f"   Ridge(alpha={alpha:.8f}): min R²={min_r2:.4f}")
         if min_r2 > best_min_r2:
             best_min_r2 = min_r2
             best_model = l
             best_r2_sections = section_r2s
-            print(f"   *** NEW BEST ***")
 
-    # 2. Ridge with higher regularization for comparison
-    for alpha in [1e-3, 1e-2, 0.1, 1.0]:
-        l = Ridge(alpha=alpha, random_state=42, max_iter=10000, tol=1e-8)
-        l.fit(Xs, y, sample_weight=sample_weights)
-        section_r2s = evaluate_model(l, Xs, y, section_groups)
-        min_r2 = min(section_r2s.values()) if section_r2s else 0
-        print(f"   alpha={alpha:.4f}: min R²={min_r2:.4f}")
-        if min_r2 > best_min_r2:
-            best_min_r2 = min_r2
-            best_model = l
-            best_r2_sections = section_r2s
-            print(f"   *** NEW BEST ***")
-
-    # 3. ElasticNet for additional search
-    print("\n3. ElasticNet regression:")
-    for alpha in [1e-7, 1e-6, 1e-5, 1e-4, 1e-3]:
-        for l1_ratio in [0.3, 0.5, 0.7]:
-            try:
-                l = ElasticNet(alpha=alpha, l1_ratio=l1_ratio, random_state=42, max_iter=100000, tol=1e-6)
-                l.fit(Xs, y, sample_weight=sample_weights)
-                section_r2s = evaluate_model(l, Xs, y, section_groups)
-                min_r2 = min(section_r2s.values()) if section_r2s else 0
-                print(f"   alpha={alpha:.7f}, l1={l1_ratio:.1f}: min R²={min_r2:.4f}")
-                if min_r2 > best_min_r2:
-                    best_min_r2 = min_r2
-                    best_model = l
-                    best_r2_sections = section_r2s
-                    print(f"   *** NEW BEST ***")
-            except Exception:
-                continue
+    # Weight boosting: give extra weight to sections below 0.8
+    below_target = [s for s, r in best_r2_sections.items() if r < 0.8]
+    if below_target:
+        print(f"\n   Boosting weights for {len(below_target)} sections below 0.8...")
+        boosted_weights = sample_weights.copy()
+        for section in below_target:
+            for idx in section_groups[section]:
+                boosted_weights[idx] *= 3.0
+        boosted_weights = boosted_weights / np.mean(boosted_weights)
+        
+        for alpha in [1e-8, 1e-6, 1e-4]:
+            l = Ridge(alpha=alpha, random_state=42, max_iter=10000)
+            l.fit(Xs, y, sample_weight=boosted_weights)
+            section_r2s = evaluate_model(l, Xs, y, section_groups)
+            min_r2 = min(section_r2s.values()) if section_r2s else 0
+            print(f"   Boosted Ridge(alpha={alpha:.8f}): min R²={min_r2:.4f}")
+            if min_r2 > best_min_r2:
+                best_min_r2 = min_r2
+                best_model = l
+                best_r2_sections = section_r2s
+                print(f"   *** WEIGHT BOOSTING HELPED ***")
 
     # Feature selection - pick top features by coefficient magnitude
     coef_abs = np.abs(best_model.coef_)
@@ -506,16 +562,9 @@ def main():
         print(f"\nMatMul R²={best_r2_sections['MatMul']:.4f} (target: 0.95)")
         print(f"Worst section R²={best_min_r2:.4f} (target: 0.8)")
 
-    print(f"\n=== Cost.rs ({len(selected_names)} selected features) ===")
-    print(f"const SELECTED_FEATURES: [&str; {len(selected_names)}] = [")
-    for n in selected_names:
-        print(f'    "{n}",')
-    print("];")
-    print(f"const LOG_TIME_COEFS: [f64; {len(selected_coefs)}] = [")
-    for c in selected_coefs:
-        print(f"    {c:.6f},")
-    print("];")
-    print(f"const LOG_TIME_INTERCEPT: f64 = {best_model.intercept_:.6f};")
+    # Don't output cost.rs until targets are met
+    # print(f"\n=== Cost.rs ({len(selected_names)} selected features) ===")
+    # ...
 
     return best_model, entries, selected_names, selected_coefs
 
