@@ -146,6 +146,17 @@ def evaluate_model(model, Xs, y, section_groups):
     return section_r2s
 
 
+def _fix_f64(expr):
+    """Convert a Rust f32 expression to f64 (no casts, float literals)."""
+    expr = expr.replace(' as f32', '')
+    expr = re.sub(r'\.max\((\d+)\)', lambda m: f'.max({m.group(1)}.0)', expr)
+    # Fix integer comparisons with f64 variables
+    expr = re.sub(r'(wi_barriers\s*[=!><]+\s*)(\d+)\b(?!\.)', lambda m: m.group(1) + m.group(2) + '.0', expr)
+    # Fix integer arithmetic with f64 variables (e.g., + 1, - 1)
+    expr = re.sub(r'(\+ )(\d+)\b(?!\.)(?!\d)', lambda m: m.group(1) + m.group(2) + '.0', expr)
+    return expr
+
+
 def _feature_to_rust(name):
     """Convert a feature name to a Rust expression using raw inputs."""
     # Simple features that map directly to a single log expression
@@ -169,9 +180,9 @@ def _feature_to_rust(name):
 
     # Special cases (check before pattern matching to avoid greedy prefix handlers)
     special = {
-        'total_threads': '(num_groups * wi_per_group) as f32',
+        'total_threads': '(num_groups as f32) * (wi_per_group as f32)',
         'raw_ng': 'num_groups as f32',
-        'raw_ng_wpg': '(num_groups * wi_per_group) as f32',
+        'raw_ng_wpg': '(num_groups as f32) * (wi_per_group as f32)',
         'warp_util': 'wr',
         'log_warp_waste': '(32.0 / wi_per_group.max(1) as f32).ln()',
         'lng_warp_waste': 'lng * (32.0 / wi_per_group.max(1) as f32).ln()',
@@ -182,13 +193,13 @@ def _feature_to_rust(name):
         'reduce_kind': 'barr / (wi_per_group as f32 + 1.0).log2().max(1.0)',
         'element_ops': 'wi_compute_ops as f32 / num_groups.max(1) as f32',
         'warp_div': '(32.0 / wi_per_group.max(1) as f32).max(1e-8).ln()',
-        'sm_occupancy': '((num_groups * wi_per_group) as f32 / 2048.0).min(1.0)',
+        'sm_occupancy': '((num_groups as f32) * (wi_per_group as f32) / 2048.0).min(1.0)',
         'local_occupancy': '((wi_local_load_bits + wi_local_store_bits) as f32).ln_1p() / 65536.0',
         'launch_overhead': 'if wi_ops > 0 { (-(wi_ops as f32) / 1000.0).exp() } else { 1.0 }',
         'tree_height': 'if wi_barriers > 0 { (wi_barriers as f32 + 1.0).log2() } else { 0.0 }',
         'tree_reduce_cost': 'barr * ((wi_local_load_bits + wi_local_store_bits) as f32).ln_1p()',
-        'element_ops_per_thread': 'wi_compute_ops as f32 / (num_groups * wi_per_group).max(1) as f32',
-        'compute_intensity_per_thread': 'wi_compute_ops as f32 / (num_groups * wi_per_group * 32).max(1) as f32',
+        'element_ops_per_thread': 'wi_compute_ops as f32 / ((num_groups as f32) * (wi_per_group as f32)).max(1.0)',
+        'compute_intensity_per_thread': 'wi_compute_ops as f32 / ((num_groups as f32) * (wi_per_group as f32) * 32.0).max(1.0)',
         'coalescing_eff': '1.0 - (wi_global_load_lidx_stride as f32 / 32.0).min(1.0)',
         'coalescing_eff_st': '1.0 - (wi_global_store_lidx_stride as f32 / 32.0).min(1.0)',
         'lld_st': '(wi_global_load_lidx_stride as f32).ln_1p()',
@@ -199,8 +210,8 @@ def _feature_to_rust(name):
         'log1p_1000_div_ops': '(1000.0 / wi_ops.max(1) as f32).ln_1p()',
         'log1p_100_div_ops': '(100.0 / wi_ops.max(1) as f32).ln_1p()',
         'log1p_1000_div_cops': '(1000.0 / wi_compute_ops.max(1) as f32).ln_1p()',
-        'ops_per_thread': 'wi_ops as f32 / (num_groups * wi_per_group).max(1) as f32',
-        'cops_per_thread': 'wi_compute_ops as f32 / (num_groups * wi_per_group).max(1) as f32',
+        'ops_per_thread': 'wi_ops as f32 / ((num_groups as f32) * (wi_per_group as f32)).max(1.0)',
+        'cops_per_thread': 'wi_compute_ops as f32 / ((num_groups as f32) * (wi_per_group as f32)).max(1.0)',
         'ops_per_group': 'wi_ops as f32 / num_groups.max(1) as f32',
         'log_lwpg': 'lwpg.max(1e-8).ln()',
         'log_opt': '(wi_ops as f32 / (num_groups * wi_per_group).max(1) as f32).ln_1p()',
@@ -313,10 +324,10 @@ def _print_dt_rust(dt, feature_names, leaf_biases, indent=0):
             feat_idx = tree.feature[node_id]
             fname = feature_names[feat_idx] if feat_idx < len(feature_names) else f'feat_{feat_idx}'
             threshold = tree.threshold[node_id]
-            expr = _feature_to_rust(fname)
+            expr = _fix_f64(_feature_to_rust(fname))
             left = tree.children_left[node_id]
             right = tree.children_right[node_id]
-            print(f"{prefix}if ({expr}) < {threshold}f32 {{")
+            print(f"{prefix}if ({expr}) < {threshold}f64 {{")
             print_node(left, depth + 1)
             print(f"{prefix}}} else {{")
             print_node(right, depth + 1)
@@ -589,7 +600,7 @@ def main():
     # === Ridge+DT Stacking ===
     # DT carves the feature space into regions where relationships are roughly linear.
     # Ridge on [X, DT_pred] learns regional intercepts via DT_pred and linear slopes via X.
-    max_dt_leaves = 1500
+    max_dt_leaves = 2000
     print(f"\nTraining DT with max {max_dt_leaves} leaves...")
     dt = DecisionTreeRegressor(max_leaf_nodes=max_dt_leaves, random_state=42, min_samples_leaf=5)
     dt.fit(X, y, sample_weight=sample_weights)
@@ -695,28 +706,48 @@ def main():
         f.write("        wi_global_load_lidx_stride: u32, wi_global_store_lidx_stride: u32,\n")
         f.write("        wi_local_load_lidx_stride: u32, wi_local_store_lidx_stride: u32,\n")
         f.write("        warp_size: u32, max_local_threads: u32, max_register_bytes: u32,\n")
-        f.write("    ) -> f32 {\n")
-        f.write("        // Compute raw features (same order as the 143 training features)\n")
-        f.write("        let lng = (num_groups as f32).ln();\n")
-        f.write("        let lwpg = (wi_per_group as f32 + 1.0).ln();\n")
-        f.write("        let lops = (wi_ops as f32).ln();\n")
-        f.write("        let lcop = (wi_compute_ops as f32).ln();\n")
-        f.write("        let lgmem = ((wi_global_load_bits + wi_global_store_bits) as f32 + 1.0).ln();\n")
-        f.write("        let log_inv_threads = (1.0 / (num_groups * wi_per_group) as f32).ln_1p();\n")
-        f.write("        let ci = wi_compute_ops as f32 / ((wi_global_load_bits + wi_global_store_bits) as f32).max(1.0);\n")
-        f.write("        let barr = wi_barriers as f32;\n")
-        f.write("        let wr = wi_per_group as f32 / warp_size as f32;\n")
-        f.write("        let rr = wi_peak_reg_bytes as f32 / max_register_bytes.max(1) as f32;\n")
+        f.write("    ) -> f64 {\n")
+        f.write("        // Convert all inputs to f64 immediately (no overflow risk)\n")
+        f.write("        let num_groups = num_groups as f64;\n")
+        f.write("        let wi_per_group = wi_per_group as f64;\n")
+        f.write("        let wi_ops = wi_ops as f64;\n")
+        f.write("        let wi_compute_ops = wi_compute_ops as f64;\n")
+        f.write("        let wi_barriers = wi_barriers as f64;\n")
+        f.write("        let wi_global_load_bits = wi_global_load_bits as f64;\n")
+        f.write("        let wi_global_store_bits = wi_global_store_bits as f64;\n")
+        f.write("        let wi_local_load_bits = wi_local_load_bits as f64;\n")
+        f.write("        let wi_local_store_bits = wi_local_store_bits as f64;\n")
+        f.write("        let wi_peak_reg_bytes = wi_peak_reg_bytes as f64;\n")
+        f.write("        let wi_branches = wi_branches as f64;\n")
+        f.write("        let wi_global_load_lidx_stride = wi_global_load_lidx_stride as f64;\n")
+        f.write("        let wi_global_store_lidx_stride = wi_global_store_lidx_stride as f64;\n")
+        f.write("        let wi_local_load_lidx_stride = wi_local_load_lidx_stride as f64;\n")
+        f.write("        let wi_local_store_lidx_stride = wi_local_store_lidx_stride as f64;\n")
+        f.write("        let warp_size = warp_size as f64;\n");
+        f.write("        let max_register_bytes = max_register_bytes as f64;\n");
+        f.write("\n")
+        f.write("        // Compute raw features (all f64, no overflow)\n")
+        f.write("        let lng = num_groups.ln();\n")
+        f.write("        let lwpg = (wi_per_group + 1.0).ln();\n")
+        f.write("        let lops = wi_ops.ln();\n")
+        f.write("        let lcop = wi_compute_ops.ln();\n")
+        f.write("        let lgmem = (wi_global_load_bits + wi_global_store_bits + 1.0).ln();\n")
+        f.write("        let log_inv_threads = (1.0 / (num_groups * wi_per_group)).ln_1p();\n")
+        f.write("        let ci = wi_compute_ops / (wi_global_load_bits + wi_global_store_bits).max(1.0);\n")
+        f.write("        let barr = wi_barriers;\n")
+        f.write("        let wr = wi_per_group / warp_size;\n")
+        f.write("        let rr = wi_peak_reg_bytes / max_register_bytes.max(1.0);\n")
         f.write("\n")
         # Compute scaled features from raw features
         f.write("        // Raw features array\n")
-        f.write("        let raw: [f32; 143] = [\n")
+        f.write("        let raw: [f64; 143] = [\n")
         for i in range(X.shape[1]):
-            f.write(f"            {_feature_to_rust(FEATURE_NAMES[i])},\n")
+            expr = _fix_f64(_feature_to_rust(FEATURE_NAMES[i]))
+            f.write(f"            {expr},\n")
         f.write("        ];\n")
         f.write("\n")
         f.write("        // DT leaf bias\n")
-        f.write("        let leaf_bias: f32 = {\n")
+        f.write("        let leaf_bias: f64 = {\n")
         import io
         buf = io.StringIO()
         old_stdout = sys.stdout
@@ -730,25 +761,25 @@ def main():
         scaler_mean = scaler.mean_
         scaler_scale = scaler.scale_
         f.write("        // StandardScaler parameters (mean, scale)\n")
-        f.write("        let scaler_mean: [f32; 144] = [\n")
+        f.write("        let scaler_mean: [f64; 144] = [\n")
         for i in range(144):
-            f.write(f"            {scaler_mean[i]:.8e}f32,\n")
+            f.write(f"            {scaler_mean[i]:.8e},\n")
         f.write("        ];\n")
-        f.write("        let scaler_scale: [f32; 144] = [\n")
+        f.write("        let scaler_scale: [f64; 144] = [\n")
         for i in range(144):
-            f.write(f"            {scaler_scale[i]:.8e}f32,\n")
+            f.write(f"            {scaler_scale[i]:.8e},\n")
         f.write("        ];\n")
         f.write("\n")
         f.write("        // Ridge coefficients (post-scaling)\n")
-        f.write("        let ridge_coef: [f32; 144] = [\n")
+        f.write("        let ridge_coef: [f64; 144] = [\n")
         for i in range(144):
-            f.write(f"            {ridge_coef[i]:.8e}f32,\n")
+            f.write(f"            {ridge_coef[i]:.8e},\n")
         f.write("        ];\n")
         f.write("\n")
-        f.write(f"        let ridge_intercept: f32 = {ridge_intercept:.8e}f32;\n")
+        f.write(f"        let ridge_intercept: f64 = {ridge_intercept:.8e};\n")
         f.write("\n")
         f.write("        // Build X_stacked = [raw_features(143), leaf_bias]\n")
-        f.write("        let mut scaled: [f32; 144] = [0.0; 144];\n")
+        f.write("        let mut scaled: [f64; 144] = [0.0; 144];\n")
         f.write("        for i in 0..143 {\n")
         f.write("            scaled[i] = (raw[i] - scaler_mean[i]) / scaler_scale[i];\n")
         f.write("        }\n")
