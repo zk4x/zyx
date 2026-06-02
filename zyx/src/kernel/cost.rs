@@ -559,110 +559,39 @@ impl Kernel {
             0.0
         };
 
-        // Learned cost model (Lasso on OpenCL autotune data, 39 features, R²=0.949)
-        // Predicts log(estimated_time_us), then exponentiates.
-        let gmem = (wi_global_load_bits + wi_global_store_bits) as f64;
-        let local_mem = (wi_local_load_bits + wi_local_store_bits) as f64;
-        let reg_ratio = wi_peak_reg_bytes as f64 / dev_info.max_register_bytes as f64;
-        let warp_ratio = wi_per_group as f64 / dev_info.warp_size as f64;
-        let ci = wi_compute_ops as f64 / gmem.max(1.0);
+        let loc_load_lidx_stride = if loc_load_lidx_stride_weight > 0 {
+            loc_load_lidx_stride_weighted as f64 / loc_load_lidx_stride_weight as f64
+        } else {
+            0.0
+        };
+        let loc_store_lidx_stride = if loc_store_lidx_stride_weight > 0 {
+            loc_store_lidx_stride_weighted as f64 / loc_store_lidx_stride_weight as f64
+        } else {
+            0.0
+        };
 
-        let lng = (num_groups.max(1) as f64).ln();
-        let lwpg = (wi_per_group.max(1) as f64).ln();
-        let lops = (wi_ops.max(1) as f64).ln();
-        let lcop = (wi_compute_ops.max(1) as f64).ln();
-        let lgmem = gmem.max(1.0).ln();
-        let opt = wi_ops as f64 / (num_groups.max(1) as f64 * wi_per_group.max(1) as f64);
-
-        let lld_st = glb_load_lidx_stride.max(0.0);
-        let lst_st = glb_store_lidx_stride.max(0.0);
-
-        let b0 = if wi_barriers == 0 { 1.0 } else { 0.0 };
-        let b3 = if wi_barriers == 3 { 1.0 } else { 0.0 };
-        let b4 = if wi_barriers == 4 { 1.0 } else { 0.0 };
-        let b7 = if wi_barriers == 7 { 1.0 } else { 0.0 };
-        let barr = wi_barriers as f64;
-        let total_threads = (num_groups * wi_per_group) as f64;
-        let raw_ng = num_groups as f64;
-
-        let log_lwpg = lwpg.max(1e-8).ln();
-        let lng_log_opt = lng * opt.ln_1p();
-        let lng_log_lwpg = lng * log_lwpg;
-        let lwpg_log_opt = lwpg * opt.ln_1p();
-        let lng_log1p_lwpg_div_opt = lng * (1.0 + lwpg / opt.max(1e-8)).ln();
-        
-        // GPU-specific features from neural net analysis
-        let coalescing_eff = 1.0 - (lld_st / 32.0).min(1.0);
-        let coalescing_eff_st = 1.0 - (lst_st / 32.0).min(1.0);
-        let reduce_kind = barr / (wi_per_group.max(1) as f64).log2().max(1.0);
-        let barrier_overhead = barr * (barr + 1.0).ln() / (wi_ops.max(barr.max(1.0) as u64) as f64 / barr.max(1.0));
-        let bw_ratio = gmem / ((num_groups * wi_per_group) as f64 * 256.0);
-        let mem_computed_cross = ci / 10.0;
-        let element_ops = wi_compute_ops as f64 / num_groups.max(1) as f64;
-        let reg_pressure = wi_peak_reg_bytes as f64 / dev_info.max_register_bytes as f64;
-        let warp_div = (32.0 / wi_per_group.max(1) as f64).ln().max(1e-8);
-        let sm_occupancy = ((num_groups * wi_per_group) as f64 / 2048.0).min(1.0);
-        let local_occupancy = (local_mem + 1.0).ln() / 65536.0;
-        let bank_conflict = if wi_global_load_lidx_stride > 0 { (wi_global_load_lidx_stride % 10) as f64 } else { 0.0 };
-        let launch_overhead = if wi_ops > 0 { (-wi_ops as f64 / 1000.0).exp() } else { 1.0 };
-        let data_reuse = wi_compute_ops as f64 / (wi_global_load_bits.max(1) as f64 / 32.0);
-        let sync_ratio = barr as f64 / wi_ops.max(1) as f64;
-        let local_coalescing = if wi_global_load_lidx_stride > 0 { 1.0 - ((wi_global_load_lidx_stride % 10) as f64 - 5.0).abs() / 5.0 } else { 1.0 };
-        let work_balance = lwpg / (lng + 1e-8).ln_1p();
-        let access_complexity = (lld_st.ln_1p() + lst_st.ln_1p()) / lops.ln_1p();
-        let tree_height = if barr > 0 { (barr + 1.0).log2() } else { 0.0 };
-        let fetch_eff = wi_compute_ops as f64 / (wi_global_load_bits.max(1) as f64 / 8.0);
-        let layer_norm_complexity = (wi_compute_ops as f64 * barr) / num_groups.max(1) as f64;
-        let reduce_tree_depth = barr * (local_mem + 1.0).ln();
-        let memory_access_pattern = gmem / wi_ops.max(1) as f64;
-        let thread_efficiency = (wi_ops as f64 * wi_per_group as f64) / (num_groups * wi_per_group) as f64;
-        let global_coalescing_load = coalescing_eff;
-        let global_coalescing_store = coalescing_eff_st;
-        let global_coalescing_avg = (coalescing_eff + coalescing_eff_st) / 2.0;
-        let global_coalescing_min = coalescing_eff.min(coalescing_eff_st);
-
-        // 39 selected features from Lasso + GPU-specific features for better per-section R²
-        let log_time_us =
-            0.035030 * barr + 0.015315 * total_threads + 0.013025 * (wi_global_store_bits as f64 / wi_per_group.max(1) as f64)
-                - 0.062212 * (gmem / total_threads.max(1.0))
-                - 0.056089 * ci.ln_1p()
-                - 0.035205 * (wi_ops as f64 / wi_compute_ops.max(1) as f64).ln_1p()
-                - 0.131589 * (100.0 / wi_ops.max(1) as f64).ln_1p()
-                + 0.376882 * (1000.0 / wi_compute_ops.max(1) as f64).ln_1p()
-                + 0.178002 * log_lwpg
-                - 0.484077 * lng_log_opt
-                - 0.164596 * lng_log_lwpg
-                - 0.075348 * lwpg_log_opt
-                + 0.046618 * raw_ng
-                + 0.142005 * (num_groups * wi_per_group) as f64
-                - 0.078469 * raw_ng / wi_ops.max(1) as f64
-                + 0.030256 * (wi_branches as f64).ln_1p()
-                - 0.038757 * lng * lwpg
-                + 0.998624 * lng_log1p_lwpg_div_opt
-                - 0.011622 * b0
-                + 0.031162 * b4
-                + 0.000044 * b7
-                + 0.013697 * b3 * lng
-                - 0.012228 * b4 * lng
-                - 0.007321 * b7 * lng
-                - 0.051676 * barr * lng
-                + 0.046386 * lld_st.ln_1p() * warp_ratio
-                + 0.007545 * lld_st.ln_1p() * lst_st.ln_1p()
-                + 0.029707 * lst_st.ln_1p() * lng
-                + 2.685514 * lops * lgmem
-                + 0.179980 * lcop * lgmem
-                + 0.098591 * lwpg * lgmem
-                + 0.159286 * lcop * ci
-                - 0.043359 * lng * ci
-                - 0.019263 * lld_st.ln_1p() * ci
-                + 0.100067 * lwpg * reg_ratio
-                + 0.901502 * lng * lcop
-                - 0.051377 * lwpg * (32.0 / wi_per_group.max(1) as f64).ln()
-                + 0.041226 * raw_ng * lwpg
-                - 0.010186 * barr * (1.0 + num_groups as f64 / local_mem.max(1.0)).ln()
-                + 5.755699;
-
-        let cost = log_time_us.max(1.0) as u64;
+        // Learned cost model: 20 Ridge features + 80-leaf DT (100 params, R²=0.931 MatMul, 0.818 worst)
+        let cost = Self::predict_log_time(
+            num_groups as u32,
+            wi_per_group as u32,
+            wi_ops as u32,
+            wi_compute_ops as u32,
+            wi_barriers as u32,
+            wi_global_load_bits as u32,
+            wi_global_store_bits as u32,
+            wi_local_load_bits as u32,
+            wi_local_store_bits as u32,
+            wi_peak_reg_bytes as u32,
+            wi_branches as u32,
+            glb_load_lidx_stride as u32,
+            glb_store_lidx_stride as u32,
+            loc_load_lidx_stride as u32,
+            loc_store_lidx_stride as u32,
+            dev_info.warp_size as u32,
+            dev_info.max_local_threads as u32,
+            dev_info.max_register_bytes as u32,
+        )
+        .max(1.0) as u64;
 
         Cost {
             cost,
@@ -701,5 +630,386 @@ impl Kernel {
             max_local_threads: dev_info.max_local_threads,
             max_register_bytes: dev_info.max_register_bytes,
         }
+    }
+
+    fn predict_log_time(
+        num_groups: u32,
+        wi_per_group: u32,
+        wi_ops: u32,
+        wi_compute_ops: u32,
+        wi_barriers: u32,
+        wi_global_load_bits: u32,
+        wi_global_store_bits: u32,
+        wi_local_load_bits: u32,
+        wi_local_store_bits: u32,
+        wi_peak_reg_bytes: u32,
+        _wi_branches: u32,
+        wi_global_load_lidx_stride: u32,
+        wi_global_store_lidx_stride: u32,
+        _wi_local_load_lidx_stride: u32,
+        _wi_local_store_lidx_stride: u32,
+        warp_size: u32,
+        _max_local_threads: u32,
+        max_register_bytes: u32,
+    ) -> f32 {
+        let lng = (num_groups as f32).ln();
+        let lwpg = (wi_per_group as f32 + 1.0).ln();
+        let lops = (wi_ops as f32).ln();
+        let lcop = (wi_compute_ops as f32).ln();
+        let lgmem = ((wi_global_load_bits + wi_global_store_bits) as f32 + 1.0).ln();
+        let _log_inv_threads = (1.0 / (num_groups * wi_per_group) as f32).ln_1p();
+        let ci = wi_compute_ops as f32 / ((wi_global_load_bits + wi_global_store_bits) as f32).max(1.0);
+        let _barr = wi_barriers as f32;
+        let wr = wi_per_group as f32 / warp_size as f32;
+        let rr = wi_peak_reg_bytes as f32 / max_register_bytes.max(1) as f32;
+
+        let features: [f32; 20] = [
+            lwpg,
+            lcop,
+            lgmem,
+            (wi_ops as f32 + 10.0).ln(),
+            wi_ops as f32 / (num_groups * wi_per_group).max(1) as f32,
+            wi_ops as f32 / num_groups.max(1) as f32,
+            lwpg.max(1e-8).ln(),
+            (wi_ops as f32 / (num_groups * wi_per_group).max(1) as f32).ln_1p(),
+            (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lwpg,
+            lops * lgmem,
+            (32.0 / wi_per_group.max(1) as f32).ln(),
+            (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lcop,
+            (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lgmem,
+            wi_compute_ops as f32 / num_groups.max(1) as f32,
+            (32.0 / wi_per_group.max(1) as f32).max(1e-8).ln(),
+            wi_compute_ops as f32 / (num_groups * wi_barriers.max(1)).max(1) as f32,
+            wi_ops as f32 / (num_groups as f32 * (wi_per_group as f32).ln_1p()).max(1.0),
+            (lwpg.abs()).ln_1p(),
+            (if wi_barriers > 0 { 1.0 } else { 0.0 }) * lcop,
+            (if wi_barriers > 0 { 1.0 } else { 0.0 }) * lgmem,
+        ];
+
+        // DT leaf bias
+        let leaf_bias: f32 = {
+            if lcop < 14.6954f32 {
+                if (wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln() < 85.1066f32 {
+                    if (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lgmem < 13.1727f32 {
+                        if ((num_groups * wi_per_group) as f32) < 1.31072e+06f32 {
+                            if (wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln() < 61.9768f32 {
+                                if lgmem < 11.792f32 {
+                                    if (lng.abs()).ln_1p() < 2.45085f32 {
+                                        if (wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()
+                                            < 55.7973f32
+                                        {
+                                            if (wi_global_load_lidx_stride as f32).ln_1p() * lgmem < 7.21556f32 {
+                                                if lng < 9.21365f32 {
+                                                    if (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lops < 2.602f32 {
+                                                        -0.315042
+                                                    } else {
+                                                        if ((num_groups * wi_per_group) as f32) < 14336.0f32 {
+                                                            -0.314046
+                                                        } else {
+                                                            -0.149670
+                                                        }
+                                                    }
+                                                } else {
+                                                    -0.087817
+                                                }
+                                            } else {
+                                                if lwpg * rr < 0.258709f32 {
+                                                    -0.239622
+                                                } else {
+                                                    if rr < 3.28906f32 { -0.257033 } else { -0.037636 }
+                                                }
+                                            }
+                                        } else {
+                                            if (num_groups as f32 / wi_ops.max(1) as f32 + 1.0).ln() < 3.98632f32 {
+                                                if ((wi_local_load_bits + wi_local_store_bits + 1) as f32
+                                                    / (wi_global_load_bits + wi_global_store_bits + 1).max(1) as f32)
+                                                    .ln_1p()
+                                                    < 6.03236e-05f32
+                                                {
+                                                    -0.203952
+                                                } else {
+                                                    if lcop * ci < 1.05376f32 { -0.089467 } else { -0.232103 }
+                                                }
+                                            } else {
+                                                0.016597
+                                            }
+                                        }
+                                    } else {
+                                        if (lng.abs()).ln_1p() < 2.57456f32 {
+                                            -0.005460
+                                        } else {
+                                            0.069694
+                                        }
+                                    }
+                                } else {
+                                    if lcop * lgmem < 134.933f32 {
+                                        if (wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()
+                                            < 47.6453f32
+                                        {
+                                            -0.132553
+                                        } else {
+                                            -0.060170
+                                        }
+                                    } else {
+                                        if lwpg * lops * (if wi_barriers == 0 { 1.0 } else { 0.0 }) < 25.9433f32 {
+                                            if (wi_compute_ops as f32 + 1.0).ln()
+                                                * ((num_groups * wi_per_group) as f32 + 1.0).ln()
+                                                < 47.2321f32
+                                            {
+                                                -0.060496
+                                            } else {
+                                                -0.016397
+                                            }
+                                        } else {
+                                            0.027505
+                                        }
+                                    }
+                                }
+                            } else {
+                                if lng * lgmem < 88.1638f32 {
+                                    if lwpg * rr < 2.95344f32 {
+                                        if (wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()
+                                            < 74.1777f32
+                                        {
+                                            if lng * lgmem < 81.5644f32 {
+                                                if (wi_compute_ops as f32 + 1.0).ln()
+                                                    * ((num_groups * wi_per_group) as f32 + 1.0).ln()
+                                                    < 66.9711f32
+                                                {
+                                                    if (wi_ops as f32 / num_groups.max(1) as f32 + 1.0).ln() < 0.0177702f32 {
+                                                        0.032813
+                                                    } else {
+                                                        if lng * rr < 5.1607f32 { -0.139093 } else { -0.052239 }
+                                                    }
+                                                } else {
+                                                    -0.013614
+                                                }
+                                            } else {
+                                                if (wi_ops as f32
+                                                    / (num_groups * wi_per_group * wi_barriers.max(1)).max(1) as f32)
+                                                    .ln_1p()
+                                                    < 0.00137616f32
+                                                {
+                                                    0.059518
+                                                } else {
+                                                    -0.026348
+                                                }
+                                            }
+                                        } else {
+                                            if lops * ci < 0.635683f32 { 0.037472 } else { 0.045831 }
+                                        }
+                                    } else {
+                                        if ((num_groups * wi_per_group) as f32) < 81920.0f32 {
+                                            if wi_ops as f32 / (num_groups as f32 * (wi_per_group as f32).ln_1p()).max(1.0)
+                                                < 52.3908f32
+                                            {
+                                                if (wi_compute_ops as f32 + 1.0).ln()
+                                                    * ((num_groups * wi_per_group) as f32 + 1.0).ln()
+                                                    < 73.7971f32
+                                                {
+                                                    if (wi_global_load_lidx_stride as f32).ln_1p() * lops < 5.80266f32 {
+                                                        -0.044590
+                                                    } else {
+                                                        -0.066834
+                                                    }
+                                                } else {
+                                                    if lops * ci < 0.995892f32 { 0.038506 } else { -0.003746 }
+                                                }
+                                            } else {
+                                                if lng * lgmem < 34.6903f32 { 0.053176 } else { -0.008790 }
+                                            }
+                                        } else {
+                                            0.080890
+                                        }
+                                    }
+                                } else {
+                                    if ((num_groups * wi_per_group) as f32) < 1.6384e+05f32 {
+                                        if lng * lgmem < 95.1613f32 { 0.067617 } else { 0.090148 }
+                                    } else {
+                                        if (wi_global_store_lidx_stride as f32).ln_1p() < 12.3005f32 {
+                                            0.111402
+                                        } else {
+                                            0.065163
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            if (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lng < 14.0657f32 {
+                                if (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lops < 2.86179f32 {
+                                    if lng * lgmem < 51.4088f32 { 0.002436 } else { 0.079411 }
+                                } else {
+                                    if ((num_groups * wi_per_group) as f32) < 1.04858e+07f32 {
+                                        if ((wi_local_load_bits + wi_local_store_bits + 1) as f32
+                                            / (wi_global_load_bits + wi_global_store_bits + 1).max(1) as f32)
+                                            .ln_1p()
+                                            < 0.00644501f32
+                                        {
+                                            if lng * lcop < 57.8961f32 { 0.188530 } else { 0.109664 }
+                                        } else {
+                                            0.041325
+                                        }
+                                    } else {
+                                        if lwpg * lgmem < 21.9103f32 { 0.171483 } else { 0.208951 }
+                                    }
+                                }
+                            } else {
+                                if (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lng < 15.452f32 {
+                                    0.269930
+                                } else {
+                                    0.269084
+                                }
+                            }
+                        }
+                    } else {
+                        if (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lgmem < 14.5568f32 {
+                            if (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lgmem < 14.2694f32 {
+                                if (wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln()
+                                    < 54.9967f32
+                                {
+                                    if lwpg * lops < 34.8776f32 {
+                                        if (wi_ops as f32 / wi_compute_ops.max(1) as f32).ln_1p() < 0.899454f32 {
+                                            if wi_ops as f32 / (wi_barriers.max(1) as f32) < 2.06145e+05f32 {
+                                                -0.015486
+                                            } else {
+                                                0.040021
+                                            }
+                                        } else {
+                                            0.033981
+                                        }
+                                    } else {
+                                        0.066556
+                                    }
+                                } else {
+                                    0.083887
+                                }
+                            } else {
+                                if ((wi_global_load_bits + wi_global_store_bits) as f32
+                                    / (num_groups * wi_per_group).max(1) as f32)
+                                    .ln_1p()
+                                    < 11.7838f32
+                                {
+                                    0.140588
+                                } else {
+                                    0.075589
+                                }
+                            }
+                        } else {
+                            if (if wi_barriers == 0 { 1.0 } else { 0.0 }) * lgmem < 15.367f32 {
+                                if ((num_groups * wi_per_group) as f32 / wi_ops.max(1) as f32 + 1.0).ln() < 0.000203224f32 {
+                                    0.136688
+                                } else {
+                                    0.079737
+                                }
+                            } else {
+                                0.305419
+                            }
+                        }
+                    }
+                } else {
+                    if (wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln() < 117.9f32 {
+                        if (wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln() < 93.7339f32 {
+                            if wi_ops as f32 / (num_groups as f32 * (wi_per_group as f32).ln_1p()).max(1.0) < 0.0062929f32 {
+                                0.240872
+                            } else {
+                                if lcop * ci < 1.05826f32 {
+                                    if wi_compute_ops as f32 / ((num_groups * wi_barriers.max(1)).max(1) as f32) < 9.11719f32 {
+                                        0.167117
+                                    } else {
+                                        0.088937
+                                    }
+                                } else {
+                                    if rr < 5.32031f32 {
+                                        if ((num_groups * wi_per_group) as f32 / wi_ops.max(1) as f32 + 1.0).ln() < 4.18802f32 {
+                                            if lwpg * lgmem < 36.195f32 { 0.120424 } else { 0.037685 }
+                                        } else {
+                                            0.128008
+                                        }
+                                    } else {
+                                        0.093967
+                                    }
+                                }
+                            }
+                        } else {
+                            if rr < 2.53906f32 {
+                                if lng * wr < 11.7835f32 {
+                                    if lng * lgmem < 123.103f32 {
+                                        if (wi_global_store_lidx_stride as f32).ln_1p() < 0.346574f32 {
+                                            if lng * lwpg < 24.302f32 { 0.057578 } else { 0.050432 }
+                                        } else {
+                                            0.218295
+                                        }
+                                    } else {
+                                        0.154045
+                                    }
+                                } else {
+                                    if ci < 0.187576f32 {
+                                        0.057914
+                                    } else {
+                                        if (wi_global_load_lidx_stride as f32).ln_1p() * lcop < 4.98745f32 {
+                                            0.085981
+                                        } else {
+                                            0.126168
+                                        }
+                                    }
+                                }
+                            } else {
+                                if ((wi_global_load_bits + wi_global_store_bits) as f32 / wi_compute_ops.max(1) as f32 + 1.0).ln()
+                                    < 1.71697f32
+                                {
+                                    0.061721
+                                } else {
+                                    if wi_ops as f32 / (num_groups as f32 * (wi_per_group as f32).ln_1p()).max(1.0) < 38.0049f32 {
+                                        if lng * rr < 53.9843f32 { 0.120308 } else { 0.165767 }
+                                    } else {
+                                        0.186418
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        if lng * lgmem < 151.85f32 {
+                            if (wi_compute_ops as f32 + 1.0).ln() * ((num_groups * wi_per_group) as f32 + 1.0).ln() < 143.821f32 {
+                                0.226339
+                            } else {
+                                0.158249
+                            }
+                        } else {
+                            0.284622
+                        }
+                    }
+                }
+            } else {
+                if (100.0 / wi_ops.max(1) as f32).ln_1p() < 2.8236e-07f32 {
+                    0.596516
+                } else {
+                    if rr < 9.14062f32 { 0.490526 } else { 0.032389 }
+                }
+            }
+        };
+
+        let mut result = 5.684563;
+        result += -23.816857 * (features[0] - 1.874778) / 1.409477;
+        result += -0.331053 * (features[1] - 8.965733) / 3.008445;
+        result += -0.003982 * (features[2] - 10.867630) / 2.972404;
+        result += 0.219753 * (features[3] - 9.334600) / 2.910882;
+        result += 88.788546 * (features[4] - 10325367.092181) / 115660116.274095;
+        result += -16.302304 * (features[5] - 10332302.250345) / 115659516.621871;
+        result += -17.480788 * (features[6] - 0.363830) / 0.719155;
+        result += -0.363476 * (features[7] - 4.033228) / 4.230333;
+        result += -0.102154 * (features[8] - 1.617893) / 1.403302;
+        result += 0.784724 * (features[9] - 109.898876) / 64.158217;
+        result += -14.112917 * (features[10] - 1.958964) / 1.668577;
+        result += -0.617851 * (features[11] - 8.453127) / 3.789894;
+        result += 0.437918 * (features[12] - 10.229378) / 4.094774;
+        result += -133.041843 * (features[13] - 6970149.690773) / 77210567.047053;
+        result += -14.112916 * (features[14] - 1.958964) / 1.668577;
+        result += 133.001714 * (features[15] - 6970012.281720) / 77210579.416615;
+        result += -72.509976 * (features[16] - 10331095.199491) / 115659621.780240;
+        result += 12.805095 * (features[17] - 0.951372) / 0.443286;
+        result += 0.734244 * (features[18] - 0.512606) / 1.831308;
+        result += -0.797162 * (features[19] - 0.638252) / 2.264033;
+        result += leaf_bias;
+        result
     }
 }

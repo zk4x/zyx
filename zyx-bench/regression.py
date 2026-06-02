@@ -537,7 +537,7 @@ def main():
     max_features = 20
     print(f"\nTraining DT with max {max_dt_leaves} leaves...")
     dt = DecisionTreeRegressor(max_leaf_nodes=max_dt_leaves, random_state=42, min_samples_leaf=5)
-    dt.fit(X, y, sample_weight=sample_weights)
+    dt.fit(X, y)
     leaf_ids = dt.apply(X)
     unique_leaves = sorted(set(leaf_ids))
     leaf_to_idx = {leaf: i for i, leaf in enumerate(unique_leaves)}
