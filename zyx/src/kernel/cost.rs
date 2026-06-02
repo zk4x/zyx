@@ -39,28 +39,15 @@ pub struct Cost {
 
 impl Cost {
     pub fn debug(&self) {
-        println!(
-            "cost={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}
-wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, wi_local_load_lidx_stride={}, wi_local_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={}",
-            self.cost,
-            self.num_groups,
-            self.wi_per_group,
-            self.wi_ops,
-            self.wi_compute_ops,
-            self.wi_barriers,
-            self.wi_global_load_bits,
-            self.wi_global_store_bits,
-            self.wi_local_load_bits,
-            self.wi_local_store_bits,
-            self.wi_peak_reg_bytes,
-            self.wi_branches,
-            self.wi_global_load_lidx_stride,
-            self.wi_global_store_lidx_stride,
-            self.wi_local_load_lidx_stride,
-            self.wi_local_store_lidx_stride,
-            self.warp_size,
-            self.max_local_threads,
-            self.max_register_bytes
+        print!(
+            "cost={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}, wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, wi_local_load_lidx_stride={}, wi_local_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={} ",
+            self.cost, self.num_groups, self.wi_per_group, self.wi_ops,
+            self.wi_compute_ops, self.wi_barriers, self.wi_global_load_bits,
+            self.wi_global_store_bits, self.wi_local_load_bits,
+            self.wi_local_store_bits, self.wi_peak_reg_bytes, self.wi_branches,
+            self.wi_global_load_lidx_stride, self.wi_global_store_lidx_stride,
+            self.wi_local_load_lidx_stride, self.wi_local_store_lidx_stride,
+            self.warp_size, self.max_local_threads, self.max_register_bytes
         );
     }
 }

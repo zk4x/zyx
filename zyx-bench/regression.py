@@ -23,6 +23,7 @@ BENCH_CSV = '/home/x/Dev/rust/zyx/zyx-bench/bench_data.csv'
 def parse_bench_output(filename):
     entries = []
     current_section = None
+    block_id = 0
 
     with open(filename) as f:
         lines = f.readlines()
@@ -33,18 +34,27 @@ def parse_bench_output(filename):
 
         if line.startswith('===') and line.endswith('==='):
             current_section = line[3:-3].strip()
+            block_id += 1
             i += 1
             continue
 
         if line.startswith('num_groups=') or line.startswith('const=') or line.startswith('cost='):
+            # Single-line format: all params + variant_hash + timing
+            # cost=..., num_groups=..., ..., max_register_bytes=... variant_hash=X, time ~ GFLOP/s, ...
             m = re.match(
                 r'(?:cost=(\d+), )?num_groups=(\d+), wi_per_group=(\d+), wi_ops=(\d+), wi_compute_ops=(\d+), '
-                r'wi_barriers=(\d+), wi_global_load_bits=(\d+), wi_global_store_bits=(\d+)',
+                r'wi_barriers=(\d+), wi_global_load_bits=(\d+), wi_global_store_bits=(\d+), '
+                r'wi_local_load_bits=(\d+), wi_local_store_bits=(\d+), '
+                r'wi_peak_reg_bytes=(\d+), wi_branches=(\d+), '
+                r'wi_global_load_lidx_stride=(\d+), wi_global_store_lidx_stride=(\d+), '
+                r'wi_local_load_lidx_stride=(\d+), wi_local_store_lidx_stride=(\d+), '
+                r'warp_size=(\d+), max_local_threads=(\d+), max_register_bytes=(\d+)',
                 line
             )
             if m:
                 entry = {
                     'section': current_section,
+                    'block_id': block_id,
                     'predicted_cost_us': int(m.group(1)) if m.group(1) and int(m.group(1)) != 18446744073709551615 else None,
                     'num_groups': int(m.group(2)),
                     'wi_per_group': int(m.group(3)),
@@ -53,45 +63,46 @@ def parse_bench_output(filename):
                     'wi_barriers': int(m.group(6)),
                     'wi_global_load_bits': int(m.group(7)),
                     'wi_global_store_bits': int(m.group(8)),
+                    'wi_local_load_bits': int(m.group(9)),
+                    'wi_local_store_bits': int(m.group(10)),
+                    'wi_peak_reg_bytes': int(m.group(11)),
+                    'wi_branches': int(m.group(12)),
+                    'wi_global_load_lidx_stride': int(m.group(13)) / 10.0,
+                    'wi_global_store_lidx_stride': int(m.group(14)) / 10.0,
+                    'wi_local_load_lidx_stride': int(m.group(15)) / 10.0,
+                    'wi_local_store_lidx_stride': int(m.group(16)) / 10.0,
+                    'warp_size': int(m.group(17)),
+                    'max_local_threads': int(m.group(18)),
+                    'max_register_bytes': int(m.group(19)),
                 }
-                i += 1
-                if i < len(lines):
-                    m2 = re.match(
-                        r'wi_local_load_bits=(\d+), wi_local_store_bits=(\d+), '
-                        r'wi_peak_reg_bytes=(\d+), wi_branches=(\d+)(?:, '
-                        r'wi_global_load_lidx_stride=(\d+))?, '
-                        r'(?:wi_global_store_lidx_stride=(\d+))?, '
-                        r'(?:wi_local_load_lidx_stride=(\d+))?, '
-                        r'(?:wi_local_store_lidx_stride=(\d+))?, '
-                        r'warp_size=(\d+), max_local_threads=(\d+), max_register_bytes=(\d+)',
-                        lines[i].strip()
-                    )
-                    if m2:
-                        entry['wi_local_load_bits'] = int(m2.group(1))
-                        entry['wi_local_store_bits'] = int(m2.group(2))
-                        entry['wi_peak_reg_bytes'] = int(m2.group(3))
-                        entry['wi_branches'] = int(m2.group(4))
-                        entry['wi_global_load_lidx_stride'] = int(m2.group(5)) / 10.0 if m2.group(5) else 0.0
-                        entry['wi_global_store_lidx_stride'] = int(m2.group(6)) / 10.0 if m2.group(6) else 0.0
-                        entry['wi_local_load_lidx_stride'] = int(m2.group(7)) / 10.0 if m2.group(7) else 0.0
-                        entry['wi_local_store_lidx_stride'] = int(m2.group(8)) / 10.0 if m2.group(8) else 0.0
-                        entry['warp_size'] = int(m2.group(9))
-                        entry['max_local_threads'] = int(m2.group(10))
-                        entry['max_register_bytes'] = int(m2.group(11))
-
-                i += 1
-                if i < len(lines):
-                    time_match = re.match(r'([\d.]+)\s*(s|ms|μs)\s*~\s*([\d.]+)\s*[MGT]FLOP/s', lines[i].strip())
-                    if time_match:
-                        time_val = float(time_match.group(1))
-                        unit = time_match.group(2)
-                        entry['gflops'] = float(time_match.group(3))
-                        if unit == 'ms':
-                            time_val *= 1000.0
-                        elif unit == 's':
-                            time_val *= 1_000_000.0
-                        entry['time_us'] = time_val
-                        entries.append(entry)
+                # Parse variant_hash and timing from the end of the same line
+                time_match = re.search(r'variant_hash=(\d+), ([\d.]+)\s*(s|ms|μs)\s*~\s*([\d.]+)\s*[MGT]FLOP/s', line)
+                if time_match:
+                    entry['variant_hash'] = int(time_match.group(1))
+                    time_val = float(time_match.group(2))
+                    unit = time_match.group(3)
+                    entry['gflops'] = float(time_match.group(4))
+                    if unit == 'ms':
+                        time_val *= 1000.0
+                    elif unit == 's':
+                        time_val *= 1_000_000.0
+                    entry['time_us'] = time_val
+                    entries.append(entry)
+                else:
+                    # Old format: timing on next line (or no timing)
+                    i += 1
+                    if i < len(lines):
+                        time_match = re.match(r'([\d.]+)\s*(s|ms|μs)\s*~\s*([\d.]+)\s*[MGT]FLOP/s', lines[i].strip())
+                        if time_match:
+                            time_val = float(time_match.group(1))
+                            unit = time_match.group(2)
+                            entry['gflops'] = float(time_match.group(3))
+                            if unit == 'ms':
+                                time_val *= 1000.0
+                            elif unit == 's':
+                                time_val *= 1_000_000.0
+                            entry['time_us'] = time_val
+                            entries.append(entry)
         i += 1
 
     return entries
@@ -398,9 +409,25 @@ def predict_raw(lng, lwpg, lops, lcop, lgmem, barr, wr, rr,
 
 
 def __detect_variant_groups(entries):
-    """Detect variant groups: entries in same section with similar wi_ops (2 sig figs)."""
+    """Detect variant groups using variant_hash from output, or fallback to ops_bucket."""
+    from collections import defaultdict
+
+    # Prefer variant_hash when available (from re-generated output)
+    has_hash = any('variant_hash' in e for e in entries)
+    if has_hash:
+        hash_map = defaultdict(list)
+        for i, e in enumerate(entries):
+            key = e.get('variant_hash', 0)
+            hash_map[key].append(i)
+        groups = [indices for indices in hash_map.values() if len(indices) >= 2]
+        all_grouped = set(idx for g in groups for idx in g)
+        for i in range(len(entries)):
+            if i not in all_grouped:
+                groups.append([i])
+        return groups
+
+    # Fallback: ops_bucket (2 sig figs) + block_id
     def ops_bucket(ops):
-        """Round ops to 2 significant figures for grouping."""
         if ops < 100:
             return max(round(ops / 10) * 10, 10)
         s = str(int(ops))
@@ -408,16 +435,12 @@ def __detect_variant_groups(entries):
         scale = 10 ** (n - 2)
         return (ops // scale) * scale
 
-    # Group by (section, ops_bucket)
-    from collections import defaultdict
     bucket_map = defaultdict(list)
     for i, e in enumerate(entries):
-        key = (e['section'], ops_bucket(e['wi_ops']))
+        key = (e['section'], e['block_id'], ops_bucket(e['wi_ops']))
         bucket_map[key].append(i)
 
-    # Convert to groups of >= 2 entries
     groups = [indices for indices in bucket_map.values() if len(indices) >= 2]
-    # Also add singletons (size 1) for entries not in any group
     all_grouped = set(idx for g in groups for idx in g)
     for i in range(len(entries)):
         if i not in all_grouped:

@@ -294,7 +294,7 @@ impl Kernel {
 
         kernel.debug_colorless();
 
-        let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes)?;
+        let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;
 
         Ok((program_id, OptSeq { opts: Vec::new(), cost: Cost::default() }))
     }
@@ -315,6 +315,7 @@ impl Kernel {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
+        let variant_hash = self.get_hash();
         let n_launches = config.n_launches;
         let n_seeds = config.n_seeds;
         let n_added_per_step = config.n_added_per_step;
@@ -457,7 +458,7 @@ impl Kernel {
                     kernel.debug();
                 }
 
-                match kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes) {
+                match kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes, variant_hash) {
                     Ok((program_id, time)) => {
                         any_success = true;
                         if time < best_time {
@@ -498,6 +499,7 @@ impl Kernel {
         flops: u64,
         bytes_read: u64,
         bytes_written: u64,
+        variant_hash: u64,
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
@@ -506,7 +508,7 @@ impl Kernel {
         let nanos = begin.elapsed().as_nanos() as u64;
         let perf = crate::kernel_cache::get_perf(flops, bytes_read, bytes_written, nanos);
         self.get_cost(device.info()).debug();
-        println!("{perf}");
+        println!("variant_hash={variant_hash}, {perf}");
         if debug.perf() {
             println!("{perf}");
         }
