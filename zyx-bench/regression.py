@@ -653,36 +653,68 @@ def main():
     sample_weights *= len(entries)
     sample_weights /= np.mean(sample_weights)
 
-    # === Ridge+DT Stacking ===
-    # DT carves the feature space into regions where relationships are roughly linear.
-    # Ridge on [X, DT_pred] learns regional intercepts via DT_pred and linear slopes via X.
-    max_dt_leaves = 2000
+    # === Ridge + DT leaves (original architecture) ===
+    # DT partitions the space into leaves. Each leaf gets its own intercept (learned by Ridge).
+    # Ridge learns per-leaf intercepts + linear effects for selected features.
+    # Final: intercept + sum(coef_i * scaled_feature_i) + leaf_bias
+    max_dt_leaves = 80
+    max_ridge_features = 20
     print(f"\nTraining DT with max {max_dt_leaves} leaves...")
     dt = DecisionTreeRegressor(max_leaf_nodes=max_dt_leaves, random_state=42, min_samples_leaf=5)
     dt.fit(X, y, sample_weight=sample_weights)
-    dt_pred = dt.predict(X)
+    leaf_ids = dt.apply(X)
     tree = dt.tree_
     leaf_node_ids = [i for i in range(tree.node_count) if tree.feature[i] == -2]
-    dt_leaf_values = tree.value[leaf_node_ids, 0, 0]
-    print(f"DT has {len(leaf_node_ids)} leaves, R²={dt.score(X, y):.4f}")
+    n_leaves = len(leaf_node_ids)
+    print(f"DT has {n_leaves} leaves, R²={dt.score(X, y):.4f}")
 
-    # Stack Ridge on [X, dt_pred]
-    X_stacked = np.column_stack([X, dt_pred])
+    # One-hot encode leaf assignments (traversal order = _print_dt_rust order)
+    leaf_to_idx = {}
+    for node_id in range(tree.node_count):
+        if tree.feature[node_id] == -2:
+            leaf_to_idx[node_id] = len(leaf_to_idx)
+    leaf_ohe = np.zeros((len(entries), n_leaves))
+    for i, leaf in enumerate(leaf_ids):
+        leaf_ohe[i, leaf_to_idx[leaf]] = 1.0
+
+    # Add leaf features to FEATURE_NAMES for Ridge training
+    n_orig_features = X.shape[1]
+    for leaf_idx in range(n_leaves):
+        FEATURE_NAMES.append(f'dt_leaf_{leaf_idx}')
+    X_with_leaves = np.column_stack([X, leaf_ohe])
+    n_total_features = X_with_leaves.shape[1]
+
+    # Fit Ridge on all features
+    print(f"Total features (eng + DT leaves): {n_total_features}")
     alphas = [0.001, 0.01, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0]
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_stacked)
+    X_scaled = scaler.fit_transform(X_with_leaves)
     ridge_cv = RidgeCV(alphas=alphas)
     ridge_cv.fit(X_scaled, y, sample_weight=sample_weights)
     best_alpha = ridge_cv.alpha_
-    # Re-fit with best alpha
+
+    # Feature selection: keep top N engineered features + ALL DT leaves
+    ridge_indices = list(range(n_orig_features))
+    dt_leaf_indices = list(range(n_orig_features, n_total_features))
+
+    ridge_coefs = ridge_cv.coef_[ridge_indices]
+    top_k = np.argsort(np.abs(ridge_coefs))[-max_ridge_features:]
+    selected_ridge_indices = sorted([ridge_indices[i] for i in top_k])
+    # Use ALL engineered features (no selection) — within-variant signal is subtle and distributed
+    selected_ridge_indices = ridge_indices
+    final_indices = selected_ridge_indices + dt_leaf_indices
+    n_ridge_sel = len(selected_ridge_indices)
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_stacked)
+    X_scaled = scaler.fit_transform(X_final)
     ridge = Ridge(alpha=best_alpha)
     ridge.fit(X_scaled, y, sample_weight=sample_weights)
     ridge_coef = ridge.coef_
     ridge_intercept = ridge.intercept_
+    final_ridge_coefs = ridge_coef[:n_ridge_sel]
+    final_dt_coefs = ridge_coef[n_ridge_sel:]
+
+    # Predictions
     stacked_pred = ridge.predict(X_scaled)
-    print(f"Ridge alpha={best_alpha:.4f}, stacked R²={ridge.score(X_scaled, y, sample_weight=sample_weights):.4f}")
 
     # === Per-kernel R² evaluation ===
     def per_kernel_r2(y_pred, variant_groups):
@@ -708,21 +740,21 @@ def main():
         print(f"  Worst R²:          {np.min(r2s):.4f}")
         print(f"  Best R²:           {np.max(r2s):.4f}")
 
-    print_per_kernel_report("DT-only", dt.predict(X), variant_groups)
-    print_per_kernel_report("Ridge+DT Stacked", stacked_pred, variant_groups)
+    print_per_kernel_report("Ridge + DT leaves", stacked_pred, variant_groups)
 
     # === Cost.rs code generation ===
-    # Model: log_time = ridge_intercept + sum(ridge_coef[i] * scaled_feature[i])
-    # where scaled_feature[i] = (feature[i] - scaler_mean[i]) / scaler_scale[i]
-    # Feature 144 (0-indexed) is the DT leaf_bias.
+    # In cost.rs, the model is:
+    #   pred = intercept + sum(coef_i * scaled_feature_i) + leaf_bias
+    # where leaf_bias comes from DT traversal (returns Ridge coef for that leaf)
+    # and features are only the selected engineered features (not DT leaves).
     rust_path = os.path.join(os.path.dirname(__file__), '..', 'zyx', 'src', 'kernel', 'predict_cost.rs')
     with open(rust_path, 'w') as f:
         f.write("// Copyright (C) 2025 zk4x\n")
         f.write("// SPDX-License-Identifier: LGPL-3.0-only\n")
         f.write("//\n")
         f.write("// Auto-generated by regression.py. Do not edit manually.\n")
-        f.write(f"// Ridge+DT stacked model (rank 0..1 target): {len(leaf_node_ids)} DT leaves, {len(ridge_coef)} Ridge features\n")
-        f.write(f"// Total parameters: {len(ridge_coef)} Ridge + 1 intercept + DT tree\n")
+        f.write(f"// Ridge+DT leaves model (rank 0..1 target): {n_ridge_sel} Ridge features, {n_leaves} DT leaves\n")
+        f.write(f"// Total parameters: {n_ridge_sel} Ridge + 1 intercept + {n_leaves} DT leaf biases\n")
         f.write("\n")
         f.write("#![allow(unused)]\n")
         f.write("\n")
@@ -770,62 +802,119 @@ def main():
         f.write("        let wr = wi_per_group / warp_size;\n")
         f.write("        let rr = wi_peak_reg_bytes / max_register_bytes.max(1.0);\n")
         f.write("\n")
-        # Compute scaled features from raw features
-        f.write("        // Raw features array\n")
-        f.write("        let raw: [f64; 143] = [\n")
-        for i in range(X.shape[1]):
-            expr = _fix_f64(_feature_to_rust(FEATURE_NAMES[i]))
-            f.write(f"            {expr},\n")
+        # Compute only selected engineered features
+        f.write("        // Selected Ridge features\n")
+        f.write(f"        let features: [f64; {n_ridge_sel}] = [\n")
+        for i in range(n_ridge_sel):
+            feat_name = FEATURE_NAMES[final_indices[i]]
+            expr = _fix_f64(_feature_to_rust(feat_name))
+            f.write(f"            {expr},  // {feat_name}\n")
         f.write("        ];\n")
         f.write("\n")
-        f.write("        // DT leaf bias\n")
+        f.write("        // DT leaf bias (Ridge coef for the leaf, learned jointly)\n")
         f.write("        let leaf_bias: f64 = {\n")
         import io
         buf = io.StringIO()
         old_stdout = sys.stdout
         sys.stdout = buf
-        _print_dt_rust(dt, FEATURE_NAMES, dt_leaf_values)
+        _print_dt_rust(dt, FEATURE_NAMES, final_dt_coefs)
         sys.stdout = old_stdout
         f.write(buf.getvalue())
         f.write("        };\n")
         f.write("\n")
-        # Output scaler means and scales
+        # Output scaler means, scales, and coefs for selected features
         scaler_mean = scaler.mean_
         scaler_scale = scaler.scale_
+        coefs = ridge.coef_
         f.write("        // StandardScaler parameters (mean, scale)\n")
-        f.write("        let scaler_mean: [f64; 144] = [\n")
-        for i in range(144):
+        f.write(f"        let scaler_mean: [f64; {n_ridge_sel}] = [\n")
+        for i in range(n_ridge_sel):
             f.write(f"            {scaler_mean[i]:.8e},\n")
         f.write("        ];\n")
-        f.write("        let scaler_scale: [f64; 144] = [\n")
-        for i in range(144):
+        f.write(f"        let scaler_scale: [f64; {n_ridge_sel}] = [\n")
+        for i in range(n_ridge_sel):
             f.write(f"            {scaler_scale[i]:.8e},\n")
         f.write("        ];\n")
         f.write("\n")
         f.write("        // Ridge coefficients (post-scaling)\n")
-        f.write("        let ridge_coef: [f64; 144] = [\n")
-        for i in range(144):
-            f.write(f"            {ridge_coef[i]:.8e},\n")
+        f.write(f"        let ridge_coef: [f64; {n_ridge_sel}] = [\n")
+        for i in range(n_ridge_sel):
+            f.write(f"            {final_ridge_coefs[i]:.8e},\n")
         f.write("        ];\n")
         f.write("\n")
         f.write(f"        let ridge_intercept: f64 = {ridge_intercept:.8e};\n")
         f.write("\n")
-        f.write("        // Build X_stacked = [raw_features(143), leaf_bias]\n")
-        f.write("        let mut scaled: [f64; 144] = [0.0; 144];\n")
-        f.write("        for i in 0..143 {\n")
-        f.write("            scaled[i] = (raw[i] - scaler_mean[i]) / scaler_scale[i];\n")
+        f.write("        // pred = intercept + sum(coef_i * scaled_feature_i) + leaf_bias\n")
+        f.write(f"        let mut pred = ridge_intercept;\n")
+        f.write(f"        for i in 0..{n_ridge_sel} {{\n")
+        f.write("            pred += ridge_coef[i] * (features[i] - scaler_mean[i]) / scaler_scale[i];\n")
         f.write("        }\n")
-        f.write("        scaled[143] = (leaf_bias - scaler_mean[143]) / scaler_scale[143];\n")
-        f.write("\n")
-        f.write("        let mut pred = ridge_intercept;\n")
-        f.write("        for i in 0..144 {\n")
-        f.write("            pred += ridge_coef[i] * scaled[i];\n")
-        f.write("        }\n")
+        f.write("        pred += leaf_bias;\n")
         f.write("\n")
         f.write("        pred * 1_000_000.0\n")
         f.write("    }\n")
         f.write("}\n")
     print(f"\nWrote {rust_path}")
+
+    # === Diagnostic: why is R² low? ===
+    print("\n=== Why so bad? Within-group feature variation ===")
+    for g in sorted(variant_groups, key=lambda g: len(g))[-10:]:
+        if len(g) < 5:
+            continue
+        times = [entries[i]['time_us'] for i in g]
+        t_range = max(times) - min(times)
+        t_mean = np.mean(times)
+        t_cv = np.std(times) / t_mean if t_mean > 0 else 0
+        feat_keys = ['num_groups', 'wi_per_group', 'wi_ops', 'wi_compute_ops',
+                     'wi_barriers', 'wi_global_load_bits', 'wi_global_store_bits',
+                     'wi_local_load_bits', 'wi_local_store_bits', 'wi_peak_reg_bytes',
+                     'wi_branches']
+        n_unique = {}
+        for k in feat_keys:
+            vals = [entries[i][k] for i in g]
+            n_unique[k] = len(set(vals))
+        actual = np.array([entries[i]['time_us'] for i in g])
+        pred = stacked_pred[g]
+        r, _ = _spearmanr(actual, pred) if len(g) >= 3 else (0, 0)
+        hash_val = entries[g[0]].get('variant_hash', '?')
+        uniq = ', '.join(f"{k}={v}" for k, v in n_unique.items() if v > 1)
+        print(f"  hash={hash_val} size={len(g):3d} ρ={r:.3f} t_range={t_range:.1f}us cv={t_cv:.3f}  varying: {uniq}")
+
+    # Count groups where most features are constant
+    const_count = 0
+    feature_names = ['num_groups', 'wi_per_group', 'wi_ops', 'wi_compute_ops',
+                     'wi_barriers', 'wi_global_load_bits', 'wi_global_store_bits',
+                     'wi_local_load_bits', 'wi_local_store_bits', 'wi_peak_reg_bytes',
+                     'wi_branches',
+                     'wi_global_load_lidx_stride', 'wi_global_store_lidx_stride',
+                     'wi_local_load_lidx_stride', 'wi_local_store_lidx_stride',
+                     'warp_size', 'max_local_threads', 'max_register_bytes']
+    for g in variant_groups:
+        if len(g) < 3:
+            continue
+        varying = 0
+        for k in feature_names:
+            vals = [entries[i][k] for i in g]
+            if len(set(vals)) > 1:
+                varying += 1
+        if varying <= 2:
+            const_count += 1
+    print(f"\n  Groups with ≤2 varying features: {const_count}/{len(variant_groups)}")
+
+    # How many features actually vary in any group?
+    feature_varying_count = {}
+    for k in feature_names:
+        feature_varying_count[k] = 0
+    for g in variant_groups:
+        if len(g) < 3:
+            continue
+        for k in feature_names:
+            vals = [entries[i][k] for i in g]
+            if len(set(vals)) > 1:
+                feature_varying_count[k] += 1
+    print("  Features that vary within groups (# groups affected):")
+    for k, v in sorted(feature_varying_count.items(), key=lambda x: -x[1]):
+        print(f"    {k}: {v}/{len(variant_groups)} groups")
 
     return dt, entries, ridge, scaler
 
