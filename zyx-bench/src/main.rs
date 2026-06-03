@@ -273,10 +273,10 @@ fn main() -> Result<(), ZyxError> {
     //gelu_bench()?;
     //activation_bench()?;
     //ln_softmax_bench()?;
-    reduce_axis_bench()?;
-    /*silu_like_bench()?;
-    layer_norm_like_bench()?;
-    reduce_multi_axis_bench()?;
-    large_matmul_bench()?;*/
+    //reduce_axis_bench()?;
+    //silu_like_bench()?;
+    //layer_norm_like_bench()?;
+    //reduce_multi_axis_bench()?;
+    large_matmul_bench()?;
     Ok(())
 }
