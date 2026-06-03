@@ -146,6 +146,34 @@ def register_all_features():
     register_feature('bgt_lng_lgmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
     register_feature('bgt_lng_lcop', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['num_groups']) * np.log(e['wi_compute_ops']))
 
+    # New IR features: register-scoped memory
+    register_feature('lreg', lambda e: np.log1p(e.get('wi_register_load_bits', 0)))
+    register_feature('lreg_st', lambda e: np.log1p(e.get('wi_register_store_bits', 0)))
+    register_feature('reg_pressure', lambda e: e.get('wi_register_load_bits', 0) / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))
+
+    # Per-axis work sizes
+    register_feature('lgws0', lambda e: np.log1p(e.get('gws0', 1)))
+    register_feature('lgws1', lambda e: np.log1p(e.get('gws1', 1)))
+    register_feature('lgws2', lambda e: np.log1p(e.get('gws2', 1)))
+    register_feature('llws0', lambda e: np.log1p(e.get('lws0', 1)))
+    register_feature('llws1', lambda e: np.log1p(e.get('lws1', 1)))
+    register_feature('llws2', lambda e: np.log1p(e.get('lws2', 1)))
+    register_feature('lws0_ratio', lambda e: e.get('lws0', 1) / max(e['wi_per_group'], 1))
+    register_feature('gws_div_lws0', lambda e: e.get('gws0', 1) / max(e.get('lws0', 1), 1))
+    register_feature('gws1_div_lws1', lambda e: e.get('gws1', 1) / max(e.get('lws1', 1), 1))
+
+    # Loop depth
+    register_feature('loop_depth', lambda e: e.get('max_loop_depth', 0))
+    register_feature('loop_depth*lops', lambda e: e.get('max_loop_depth', 0) * np.log(max(e['wi_ops'], 1)))
+    register_feature('loop_depth*lcop', lambda e: e.get('max_loop_depth', 0) * np.log(max(e['wi_compute_ops'], 1)))
+    register_feature('loop_depth*lwpg', lambda e: e.get('max_loop_depth', 0) * np.log(e['wi_per_group'] + 1))
+    register_feature('loop_depth*ci', lambda e: e.get('max_loop_depth', 0) * (e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
+    register_feature('loop_depth*barr', lambda e: e.get('max_loop_depth', 0) * e['wi_barriers'])
+
+    # Device properties
+    register_feature('log_local_mem', lambda e: np.log1p(e.get('local_mem_size', 1)))
+    register_feature('pref_vec', lambda e: e.get('preferred_vector_size', 0))
+
 def build_feature_matrix(entries):
     X = None
     for _, fn in FEATURE_DEFS:
@@ -250,6 +278,34 @@ def _feature_to_rust(name):
         'lld_st*lcop': '(wi_global_load_lidx_stride as f32).ln_1p() * lcop',
         'lld_st*lgmem': '(wi_global_load_lidx_stride as f32).ln_1p() * lgmem',
         'lng_lgmem': 'lng * lgmem', 'lng_lcop': 'lng * lcop',
+
+        # New IR features: register memory
+        'lreg': '(wi_register_load_bits as f64).ln_1p()',
+        'lreg_st': '(wi_register_store_bits as f64).ln_1p()',
+        'reg_pressure': 'wi_register_load_bits as f64 / (wi_global_load_bits + wi_global_store_bits).max(1.0)',
+
+        # Per-axis work sizes
+        'lgws0': '(gws0 as f64).ln_1p()',
+        'lgws1': '(gws1 as f64).ln_1p()',
+        'lgws2': '(gws2 as f64).ln_1p()',
+        'llws0': '(lws0 as f64).ln_1p()',
+        'llws1': '(lws1 as f64).ln_1p()',
+        'llws2': '(lws2 as f64).ln_1p()',
+        'lws0_ratio': 'lws0 as f64 / wi_per_group.max(1.0)',
+        'gws_div_lws0': 'gws0 as f64 / lws0.max(1.0)',
+        'gws1_div_lws1': 'gws1 as f64 / lws1.max(1.0)',
+
+        # Loop depth
+        'loop_depth': 'max_loop_depth',
+        'loop_depth*lops': 'max_loop_depth * lops',
+        'loop_depth*lcop': 'max_loop_depth * lcop',
+        'loop_depth*lwpg': 'max_loop_depth * lwpg',
+        'loop_depth*ci': 'max_loop_depth * ci',
+        'loop_depth*barr': 'max_loop_depth * barr',
+
+        # Device properties
+        'log_local_mem': '(local_mem_size as f64).ln_1p()',
+        'pref_vec': 'preferred_vector_size',
     }
     if name in special:
         return special[name]
