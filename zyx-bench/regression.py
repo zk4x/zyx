@@ -159,6 +159,11 @@ def register_all_features():
     register_feature('llws1', lambda e: np.log1p(e.get('lws1', 1)))
     register_feature('llws2', lambda e: np.log1p(e.get('lws2', 1)))
     register_feature('lws0_ratio', lambda e: e.get('lws0', 1) / max(e['wi_per_group'], 1))
+    register_feature('lws1_ratio', lambda e: e.get('lws1', 1) / max(e['wi_per_group'], 1))
+    register_feature('lws2_ratio', lambda e: e.get('lws2', 1) / max(e['wi_per_group'], 1))
+    register_feature('lws0xlws1', lambda e: e.get('lws0', 1) * e.get('lws1', 1))
+    register_feature('gws0_ratio', lambda e: e.get('gws0', 1) / max(e['num_groups'], 1))
+    register_feature('gws1_ratio', lambda e: e.get('gws1', 1) / max(e['num_groups'], 1))
     register_feature('gws_div_lws0', lambda e: e.get('gws0', 1) / max(e.get('lws0', 1), 1))
     register_feature('gws1_div_lws1', lambda e: e.get('gws1', 1) / max(e.get('lws1', 1), 1))
 
@@ -292,8 +297,23 @@ def _feature_to_rust(name):
         'llws1': '(lws1 as f64).ln_1p()',
         'llws2': '(lws2 as f64).ln_1p()',
         'lws0_ratio': 'lws0 as f64 / wi_per_group.max(1.0)',
+        'lws1_ratio': 'lws1 as f64 / wi_per_group.max(1.0)',
+        'lws2_ratio': 'lws2 as f64 / wi_per_group.max(1.0)',
+        'lws0xlws1': '(lws0 as f64) * (lws1 as f64)',
+        'gws0_ratio': 'gws0 as f64 / num_groups.max(1.0)',
+        'gws1_ratio': 'gws1 as f64 / num_groups.max(1.0)',
         'gws_div_lws0': 'gws0 as f64 / lws0.max(1.0)',
         'gws1_div_lws1': 'gws1 as f64 / lws1.max(1.0)',
+
+        # Per-axis interactions with memory
+        'lws1*reg_pressure': 'lws1 as f64 * wi_register_load_bits as f64 / (wi_global_load_bits + wi_global_store_bits).max(1.0)',
+        'lws0*reg_pressure': 'lws0 as f64 * wi_register_load_bits as f64 / (wi_global_load_bits + wi_global_store_bits).max(1.0)',
+        'lgws0*lreg': '(gws0 as f64).ln_1p() * (wi_register_load_bits as f64).ln_1p()',
+        'lgws1*lreg': '(gws1 as f64).ln_1p() * (wi_register_load_bits as f64).ln_1p()',
+        'llws1*lreg': '(lws1 as f64).ln_1p() * (wi_register_load_bits as f64).ln_1p()',
+        'llws0*lreg': '(lws0 as f64).ln_1p() * (wi_register_load_bits as f64).ln_1p()',
+        'llws1*lgmem': '(lws1 as f64).ln_1p() * lgmem',
+        'lws1_ratio*lgmem': '(lws1 as f64 / wi_per_group.max(1.0)) * lgmem',
 
         # Loop depth
         'loop_depth': 'max_loop_depth',
@@ -384,7 +404,7 @@ def main():
     sw /= np.mean(sw)
 
     # DT + Ridge
-    max_dt_leaves = 1000
+    max_dt_leaves = 2000
     dt = DecisionTreeRegressor(max_leaf_nodes=max_dt_leaves, random_state=42, min_samples_leaf=5)
     dt.fit(X, y, sample_weight=sw)
     leaf_ids = dt.apply(X)
