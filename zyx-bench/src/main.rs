@@ -267,16 +267,16 @@ fn large_matmul_bench() -> Result<(), ZyxError> {
 
 fn main() -> Result<(), ZyxError> {
     //matmul_bench()?;
-    reduce_bench()?;
+    //reduce_bench()?;
     //softmax_bench()?;
     //embedding_bench()?;
     //gelu_bench()?;
     //activation_bench()?;
     //ln_softmax_bench()?;
     reduce_axis_bench()?;
-    //silu_like_bench()?;
+    /*silu_like_bench()?;
     layer_norm_like_bench()?;
     reduce_multi_axis_bench()?;
-    //large_matmul_bench()?;
+    large_matmul_bench()?;*/
     Ok(())
 }
