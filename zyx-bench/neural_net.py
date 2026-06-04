@@ -359,6 +359,21 @@ def main():
     print(f"Test:  loss={np.nanmean(test_losses):.6f}  ρ={np.nanmean(test_rhos):.4f}±{np.nanstd(test_rhos):.4f}")
     print(f"  Worst 5% ρ: {np.quantile(test_rhos, 0.05):.4f}, Best 5% ρ: {np.quantile(test_rhos, 0.95):.4f}")
 
+    top10_in_top20 = []
+    for g in test_group_map.values():
+        n = len(g)
+        if n < 20:
+            continue
+        local_idx = [test_global_to_local[int(i)] for i in g]
+        times = np.array([entries[i]['time_us'] for i in g])
+        preds = pred_test[local_idx]
+        actual_top10 = np.argsort(times)[:10]
+        pred_top20 = np.argsort(preds)[:20]
+        hits = len(set(actual_top10) & set(pred_top20))
+        top10_in_top20.append(hits / 10.0)
+    if len(top10_in_top20) >= 3:
+        print(f"  Top10-in-top20:   {np.mean(top10_in_top20):.3f} (over {len(top10_in_top20)} groups)")
+
 
 if __name__ == '__main__':
     main()
