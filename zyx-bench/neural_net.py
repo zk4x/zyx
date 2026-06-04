@@ -276,7 +276,7 @@ def main():
     print(f"Model params: {n_params}")
 
     opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=0.0)
-    l1_lambda = 5e-5
+    l1_lambda = 5e-3
     n_steps = 30000
     n_groups = len(train_groups)
     pbar = tqdm(total=n_steps, desc="Training")
