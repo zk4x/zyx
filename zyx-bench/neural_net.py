@@ -261,7 +261,7 @@ def main():
     X_test_t = torch.tensor(X_test, device=device)
     y_test_t = torch.tensor(y_test, device=device)
 
-    model = MLP([X.shape[1], 500, 300, 1]).to(device)
+    model = MLP([X.shape[1], 1000, 500, 1]).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {n_params}")
 
