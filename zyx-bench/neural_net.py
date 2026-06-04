@@ -7,6 +7,7 @@ import torch.nn as nn
 from collections import defaultdict
 from sklearn.preprocessing import StandardScaler
 from scipy.stats import spearmanr
+from tqdm import tqdm
 
 BENCH_CSV = '/home/x/Dev/rust/zyx/zyx-bench/bench_data.csv'
 
@@ -237,7 +238,7 @@ def main():
     X = np.column_stack([X_eng, X_int])
     print(f"Features: eng={N_ENG} + interactions={N_INT} = {X.shape[1]}")
 
-    # 20k test split by variant_hash
+    # Fixed 20k test split by variant_hash
     rng = np.random.RandomState(42)
     hashes = list(hash_map.keys())
     rng.shuffle(hashes)
@@ -251,89 +252,112 @@ def main():
     train_mask = ~test_mask
 
     scaler = StandardScaler()
-    X_train = scaler.fit_transform(X[train_mask])
+    X_train_all = scaler.fit_transform(X[train_mask])
     X_test = scaler.transform(X[test_mask])
-    y_train, y_test = y[train_mask], y[test_mask]
+    y_train_all, y_test = y[train_mask], y[test_mask]
 
     device = torch.device('cuda')
-    X_train_t = torch.tensor(X_train, device=device)
-    y_train_t = torch.tensor(y_train, device=device)
     X_test_t = torch.tensor(X_test, device=device)
-    y_test_t = torch.tensor(y_test, device=device)
 
-    model = MLP([X.shape[1], 1000, 500, 1]).to(device)
+    # Build group index: local indices into training subset
+    train_global_to_local = {int(i): int(idx) for idx, i in enumerate(np.where(train_mask)[0])}
+    train_hash_map = defaultdict(list)
+    for i in np.where(train_mask)[0]:
+        train_hash_map[entries[i]['variant_hash']].append(i)
+    train_groups = [torch.tensor([train_global_to_local[int(i)] for i in v], device=device)
+                    for v in train_hash_map.values() if len(v) >= 4]
+    print(f"Training groups with >=4 variants: {len(train_groups)}")
+
+    X_train_t = torch.tensor(X_train_all, device=device)
+    y_train_t = torch.tensor(y_train_all, device=device)
+
+    model = MLP([X.shape[1], 500, 200, 1]).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {n_params}")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=5e-3, weight_decay=0.0)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=300)
-    l1_lambda_start = 0.0
-    l1_lambda_end = 5e-5
-    batch_size = 8192
-    n_epochs = 300
-    warmup = 80
+    opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=0.0)
+    l1_lambda = 5e-5
+    margin = 0.1
 
-    for epoch in range(n_epochs):
-        if epoch < warmup:
-            l1_lambda = l1_lambda_start + (l1_lambda_end - l1_lambda_start) * epoch / warmup
-        else:
-            l1_lambda = l1_lambda_end
+    n_steps = 30000
+    n_groups = len(train_groups)
+    pbar = tqdm(total=n_steps, desc="Training")
+    step = 0
+    perm = np.arange(n_groups)
+    while step < n_steps:
+        rng.shuffle(perm)
+        for gi in perm:
+            if step >= n_steps:
+                break
+            local_idx = train_groups[gi]
+            pred = model(X_train_t[local_idx])
+            targets = y_train_t[local_idx]
 
-        perm = torch.randperm(len(X_train_t), device=device)
-        for start in range(0, len(X_train_t), batch_size):
-            idx = perm[start:start + batch_size]
-            pred = model(X_train_t[idx])
-            loss = (pred - y_train_t[idx]).pow(2).mean()
+            diff = pred.unsqueeze(0) - pred.unsqueeze(1)  # pred_i - pred_j
+            # S_ij = 1 if target_i < target_j (i faster), -1 if target_i > target_j (i slower)
+            S = torch.sign(targets.unsqueeze(1) - targets.unsqueeze(0))
+            loss = torch.relu(S * diff + margin).mean()
             loss = loss + l1_lambda * model.l1_reg()
             opt.zero_grad()
             loss.backward()
             opt.step()
 
-        if epoch % 100 == 0 or epoch == n_epochs - 1:
-            model.eval()
-            with torch.no_grad():
-                train_mse = (model(X_train_t) - y_train_t).pow(2).mean().item()
-                test_mse = (model(X_test_t) - y_test_t).pow(2).mean().item()
-            model.train()
-            print(f"epoch {epoch:3d} | train MSE {train_mse:.4f} | test MSE {test_mse:.4f} | "
-                  f"lr {sched.get_last_lr()[0]:.2e} | L1 {l1_lambda:.2e}")
-        sched.step()
+            step += 1
+            if step % 100 == 0:
+                pbar.update(100)
+                pbar.set_postfix(loss=f"{loss.item():.4f}")
+    if step % 100 != 0:
+        pbar.update(step % 100)
+    pbar.close()
 
     model.eval()
     with torch.no_grad():
         pred_train = model(X_train_t).cpu().numpy()
         pred_test = model(X_test_t).cpu().numpy()
-
-    train_rho = spearmanr(y_train, pred_train)[0]
+    train_rho = spearmanr(y_train_all, pred_train)[0]
     test_rho = spearmanr(y_test, pred_test)[0]
     print(f"\nOverall Spearman ρ — train: {train_rho:.4f}, test: {test_rho:.4f}")
 
-    # Within-group on test set
+    # Within-group on train set
+    train_group_map = defaultdict(list)
+    for i in np.where(train_mask)[0]:
+        train_group_map[entries[i]['variant_hash']].append(i)
+    train_rhos = []
+    for g in train_group_map.values():
+        if len(g) >= 3:
+            local_idx = [train_global_to_local[int(i)] for i in g]
+            train_rhos.append(spearmanr([entries[i]['time_us'] for i in g], pred_train[local_idx])[0])
+    train_rhos = np.array(train_rhos)
+    print(f"Train within-group ρ: {np.nanmean(train_rhos):.4f} ± {np.nanstd(train_rhos):.4f}")
+
+    test_global_to_local = {int(i): int(idx) for idx, i in enumerate(test_idx)}
     test_group_map = defaultdict(list)
     for i in test_idx:
         h = entries[i]['variant_hash']
         test_group_map[h].append(i)
     r2s, rhos = [], []
+    n_debug = 0
     for g in test_group_map.values():
         if len(g) >= 3:
-            local_idx = [test_idx.tolist().index(i) for i in g]
+            local_idx = [test_global_to_local[int(i)] for i in g]
             yg = y[g]
             pg = pred_test[local_idx]
             ss_res = np.sum((yg - pg) ** 2)
             ss_tot = np.sum((yg - yg.mean()) ** 2)
             r2s.append(1 - ss_res / ss_tot if ss_tot > 0 else 0)
-            rhos.append(spearmanr([entries[i]['time_us'] for i in g], pg)[0])
+            rho = spearmanr([entries[i]['time_us'] for i in g], pg)[0]
+            rhos.append(rho)
+            if n_debug < 3 and not np.isnan(rho):
+                print(f"\n  Test group {g[0]:6d}: {len(g)} variants, ρ={rho:.3f}")
+                times = [entries[i]['time_us'] for i in g]
+                order = np.argsort(times)
+                print(f"    actual rank: {np.argsort(np.argsort(times))}")
+                print(f"    pred rank:   {np.argsort(np.argsort(pg))}")
+                print(f"    pred vals:   {np.array([f'{v:.3f}' for v in pg])}")
+                n_debug += 1
     r2s, rhos = np.array(r2s), np.array(rhos)
-    print(f"Test within-group — R²: {r2s.mean():.4f}, ρ: {rhos.mean():.4f} ± {rhos.std():.4f}")
+    print(f"\nTest within-group — R²: {r2s.mean():.4f}, ρ: {rhos.mean():.4f} ± {rhos.std():.4f}")
     print(f"  Worst 5% ρ: {np.quantile(rhos, 0.05):.4f}, Best 5% ρ: {np.quantile(rhos, 0.95):.4f}")
-
-    for thresh in [1e-6, 1e-4, 1e-3, 1e-2]:
-        total = sum(p.numel() for n, p in model.named_parameters() if 'weight' in n)
-        nz = sum((p.abs() < thresh).sum().item() for n, p in model.named_parameters() if 'weight' in n)
-        print(f"Sparsity @ {thresh:.0e}: {nz / total * 100:.0f}% ({nz}/{total} weights)")
-    all_weights = torch.cat([p.flatten() for n, p in model.named_parameters() if 'weight' in n])
-    print(f"Weight stats: min={all_weights.min().item():.2e} max={all_weights.max().item():.2e} "
-          f"mean={all_weights.mean().item():.2e} median={all_weights.median().item():.2e}")
 
 
 if __name__ == '__main__':
