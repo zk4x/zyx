@@ -277,8 +277,6 @@ def main():
 
     opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=0.0)
     l1_lambda = 5e-5
-    margin = 0.1
-
     n_steps = 30000
     n_groups = len(train_groups)
     pbar = tqdm(total=n_steps, desc="Training")
@@ -296,7 +294,7 @@ def main():
             diff = pred.unsqueeze(0) - pred.unsqueeze(1)  # pred_i - pred_j
             # S_ij = 1 if target_i < target_j (i faster), -1 if target_i > target_j (i slower)
             S = torch.sign(targets.unsqueeze(1) - targets.unsqueeze(0))
-            loss = torch.relu(S * diff + margin).mean()
+            loss = torch.log(1 + torch.exp(S * diff)).mean()
             loss = loss + l1_lambda * model.l1_reg()
             opt.zero_grad()
             loss.backward()
@@ -315,46 +313,51 @@ def main():
         pred_train = model(X_train_t).cpu().numpy()
         pred_test = model(X_test_t).cpu().numpy()
 
-    # Within-group on train set
+    # Within-group loss and ρ on train set
     train_group_map = defaultdict(list)
     for i in np.where(train_mask)[0]:
         train_group_map[entries[i]['variant_hash']].append(i)
-    train_rhos = []
+    train_losses, train_rhos = [], []
     for g in train_group_map.values():
         if len(g) >= 3:
             local_idx = [train_global_to_local[int(i)] for i in g]
-            train_rhos.append(spearmanr([entries[i]['time_us'] for i in g], pred_train[local_idx])[0])
-    train_rhos = np.array(train_rhos)
-    print(f"Train within-group ρ: {np.nanmean(train_rhos):.4f} ± {np.nanstd(train_rhos):.4f}")
+            pg = torch.tensor(pred_train[local_idx])
+            tg = torch.tensor([entries[i]['time_us'] for i in g])
+            diff = pg.unsqueeze(0) - pg.unsqueeze(1)
+            S = torch.sign(tg.unsqueeze(1) - tg.unsqueeze(0))
+            train_losses.append(torch.log(1 + torch.exp(S * diff)).mean().item())
+            train_rhos.append(spearmanr(tg.numpy(), pg.numpy())[0])
+    train_losses, train_rhos = np.array(train_losses), np.array(train_rhos)
+    print(f"Train:  loss={np.nanmean(train_losses):.6f}  ρ={np.nanmean(train_rhos):.4f}±{np.nanstd(train_rhos):.4f}")
 
     test_global_to_local = {int(i): int(idx) for idx, i in enumerate(test_idx)}
     test_group_map = defaultdict(list)
     for i in test_idx:
         h = entries[i]['variant_hash']
         test_group_map[h].append(i)
-    r2s, rhos = [], []
+    test_losses, test_rhos = [], []
     n_debug = 0
     for g in test_group_map.values():
         if len(g) >= 3:
             local_idx = [test_global_to_local[int(i)] for i in g]
-            yg = y[g]
             pg = pred_test[local_idx]
-            ss_res = np.sum((yg - pg) ** 2)
-            ss_tot = np.sum((yg - yg.mean()) ** 2)
-            r2s.append(1 - ss_res / ss_tot if ss_tot > 0 else 0)
-            rho = spearmanr([entries[i]['time_us'] for i in g], pg)[0]
-            rhos.append(rho)
+            yg = np.array([entries[i]['time_us'] for i in g])
+            diff = torch.tensor(pg).unsqueeze(0) - torch.tensor(pg).unsqueeze(1)
+            S = torch.sign(torch.tensor(yg).unsqueeze(1) - torch.tensor(yg).unsqueeze(0))
+            test_losses.append(torch.log(1 + torch.exp(S * diff)).mean().item())
+            rho = spearmanr(yg, pg)[0]
+            test_rhos.append(rho)
             if n_debug < 3 and not np.isnan(rho):
                 print(f"\n  Test group {g[0]:6d}: {len(g)} variants, ρ={rho:.3f}")
-                times = [entries[i]['time_us'] for i in g]
+                times = yg
                 order = np.argsort(times)
                 print(f"    actual rank: {np.argsort(np.argsort(times))}")
                 print(f"    pred rank:   {np.argsort(np.argsort(pg))}")
                 print(f"    pred vals:   {np.array([f'{v:.3f}' for v in pg])}")
                 n_debug += 1
-    r2s, rhos = np.array(r2s), np.array(rhos)
-    print(f"\nTest within-group ρ: {np.nanmean(rhos):.4f} ± {np.nanstd(rhos):.4f}")
-    print(f"  Worst 5% ρ: {np.quantile(rhos, 0.05):.4f}, Best 5% ρ: {np.quantile(rhos, 0.95):.4f}")
+    test_losses, test_rhos = np.array(test_losses), np.array(test_rhos)
+    print(f"Test:  loss={np.nanmean(test_losses):.6f}  ρ={np.nanmean(test_rhos):.4f}±{np.nanstd(test_rhos):.4f}")
+    print(f"  Worst 5% ρ: {np.quantile(test_rhos, 0.05):.4f}, Best 5% ρ: {np.quantile(test_rhos, 0.95):.4f}")
 
 
 if __name__ == '__main__':
