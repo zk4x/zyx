@@ -314,9 +314,6 @@ def main():
     with torch.no_grad():
         pred_train = model(X_train_t).cpu().numpy()
         pred_test = model(X_test_t).cpu().numpy()
-    train_rho = spearmanr(y_train_all, pred_train)[0]
-    test_rho = spearmanr(y_test, pred_test)[0]
-    print(f"\nOverall Spearman ρ — train: {train_rho:.4f}, test: {test_rho:.4f}")
 
     # Within-group on train set
     train_group_map = defaultdict(list)
@@ -356,7 +353,7 @@ def main():
                 print(f"    pred vals:   {np.array([f'{v:.3f}' for v in pg])}")
                 n_debug += 1
     r2s, rhos = np.array(r2s), np.array(rhos)
-    print(f"\nTest within-group — R²: {r2s.mean():.4f}, ρ: {rhos.mean():.4f} ± {rhos.std():.4f}")
+    print(f"\nTest within-group ρ: {np.nanmean(rhos):.4f} ± {np.nanstd(rhos):.4f}")
     print(f"  Worst 5% ρ: {np.quantile(rhos, 0.05):.4f}, Best 5% ρ: {np.quantile(rhos, 0.95):.4f}")
 
 
