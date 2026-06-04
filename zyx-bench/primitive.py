@@ -6,21 +6,22 @@ from scipy.stats import spearmanr
 BENCH_CSV = '/home/x/Dev/rust/zyx/zyx-bench/bench_data.csv'
 
 def main():
-    df = pd.read_csv(BENCH_CSV)
+    df = pd.read_csv(BENCH_CSV).tail(9000).reset_index(drop=True)
     print(f"Read {len(df)} entries")
 
     y = df.groupby('variant_hash')['time_us'].rank(pct=True).fillna(0.5)
 
     # --- features ---
+    df['f1'] = df['wi_global_load_bits'] * df['num_groups'] * df['wi_per_group']
+    df['f2'] = df['wi_compute_ops'] / (df['wi_global_load_bits'] + df['wi_global_store_bits'])
+    df['f3'] = df['max_register_bytes']
 
-
-
-    X = df.values
+    X = df[['f1', 'f2', 'f3']].values
 
     groups = [g.index for _, g in df.groupby('variant_hash') if len(g) >= 2]
     print(f"Features: {X.shape[1]}, Groups: {len(groups)}")
 
-    model = HuberRegressor(max_iter=200)
+    model = HuberRegressor(fit_intercept=False, max_iter=200)
     model.fit(X, y)
     pred = model.predict(X)
 
