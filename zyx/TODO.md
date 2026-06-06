@@ -80,11 +80,11 @@
   - [x] pad could also work even with kernels that store stuff, just pad the store view
   - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion
   - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately
-  - [ ] cost model needs to account for
-    - [ ] tensor reuse (known thanks to reference counts)
-    - [ ] shared memory pressure (loads + stores)
-    - [ ] register memory pressure (spill)
-    - [ ] global memory pressure (loads + stores)
+  - [x] cost model needs to account for
+    - [x] tensor reuse (known thanks to reference counts)
+    - [x] shared memory pressure (loads + stores)
+    - [x] register memory pressure (spill)
+    - [x] global memory pressure (loads + stores)
   - [x] expand reduce bug
   - [x] fix is expandable conditions
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
