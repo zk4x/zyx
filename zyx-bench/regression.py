@@ -326,7 +326,7 @@ def main():
     print(f"Features: {n_feat}, Groups: {len(variant_groups)}")
 
     model = HuberRegressor(alpha=1.0, max_iter=50)
-    sfs = SFS(model, n_features_to_select=10, direction='forward',
+    sfs = SFS(model, n_features_to_select=15, direction='forward',
               scoring='neg_mean_absolute_error', cv=2, n_jobs=-1)
     sfs.fit(X, y)
     selected = list(sfs.get_feature_names_out())

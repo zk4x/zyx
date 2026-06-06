@@ -348,7 +348,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if true {
+        if false {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
@@ -466,8 +466,8 @@ impl Kernel {
         items = sampled;*/
 
         // Sort by cost: try cheaper configs first
-        /*items.sort_by_key(|opt_seq| opt_seq.cost.cost);
-        items.truncate(n_launches);*/
+        items.sort_by_key(|opt_seq| opt_seq.cost.cost);
+        items.truncate(n_launches);
 
         for opt_seq in items.iter() {
             let mut kernel = kernel.clone();
