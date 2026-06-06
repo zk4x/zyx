@@ -93,7 +93,7 @@ impl Kernel {
             return;
         }
 
-        if self.ops.len().0 as u64 * factor > 5000 {
+        if self.ops.len().0 as u64 * factor > 10000 {
             return;
         }
 

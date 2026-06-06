@@ -248,14 +248,25 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        //eprintln!("=== autotune_debug called ===");
         let mut kernel = self.clone();
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        // Collect global indices BEFORE splitting
-        /*let gidx_ids: Vec<(OpId, Dim, u32)> = kernel
+        // Apply unroll_tree_reduce on the loop by factor 8 (before upcasts)
+        let mut loop_id = kernel.head;
+        while !loop_id.is_null() {
+            if matches!(kernel.ops[loop_id].op, Op::Loop { .. }) {
+                kernel.unroll_tree_reduce(loop_id, 8);
+                break;
+            }
+            loop_id = kernel.next_op(loop_id);
+        }
+
+        kernel.run_always_on_optimizations();
+
+        // Collect global indices BEFORE upcast
+        let gidx_ids: Vec<(OpId, Dim, u32)> = kernel
             .ops
             .iter()
             .filter_map(|(id, node)| {
@@ -266,33 +277,59 @@ impl Kernel {
                 }
             })
             .collect();
-        eprintln!("=== Global indices: {:?} ===", gidx_ids);
 
-        // Split each global index by 32
-        for (gidx_id, len, axis) in &gidx_ids {
-            if *len >= 32 && *len % 32 == 0 {
-                let has_local = kernel
-                    .ops
-                    .values()
-                    .any(|n| matches!(n.op, Op::Index { scope: Scope::Local, axis: a, .. } if a == *axis));
-                if !has_local {
-                    eprintln!("=== Split gidx axis={} len={} by 32 ===", axis, len);
-                    kernel.split_dim(
-                        *gidx_id,
-                        vec![
-                            Op::Index { len: *len / 32, scope: Scope::Global, axis: *axis },
-                            Op::Index { len: 32, scope: Scope::Local, axis: *axis },
-                        ],
-                    );
+        // Upcast gidx0 by 8, gidx1 by 8
+        if gidx_ids.len() >= 2 {
+            kernel.upcast(gidx_ids[0].0, 8);
+            kernel.upcast(gidx_ids[1].0, 8);
+        }
+
+        kernel.run_always_on_optimizations();
+
+        // Collect global indices AFTER upcast and split to local (32, 8)
+        let gidx_ids: Vec<(OpId, Dim, u32)> = kernel
+            .ops
+            .iter()
+            .filter_map(|(id, node)| {
+                if let Op::Index { len, scope: Scope::Global, axis } = node.op {
+                    Some((id, len, axis))
+                } else {
+                    None
                 }
+            })
+            .collect();
+
+        for (gidx_id, len, axis) in &gidx_ids {
+            if *axis == 0 {
+                kernel.split_dim(
+                    *gidx_id,
+                    vec![
+                        Op::Index { len: len / 32, scope: Scope::Global, axis: *axis },
+                        Op::Index { len: 32, scope: Scope::Local, axis: *axis },
+                    ],
+                );
+            } else if *axis == 1 {
+                kernel.split_dim(
+                    *gidx_id,
+                    vec![
+                        Op::Index { len: len / 8, scope: Scope::Global, axis: *axis },
+                        Op::Index { len: 8, scope: Scope::Local, axis: *axis },
+                    ],
+                );
             }
-        }*/
+        }
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
+        kernel.loop_invariant_code_motion();
+        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
+        kernel.fuse_mad();
+        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        kernel.debug_colorless();
+        //kernel.debug_colorless();
 
         let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;
 
@@ -311,7 +348,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
