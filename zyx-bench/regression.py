@@ -2,10 +2,14 @@
 """Train cost model: Ridge on ~167 engineered features, no DT in Rust code."""
 
 import os
+import sys
+import warnings
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import HuberRegressor
+from sklearn.feature_selection import SequentialFeatureSelector as SFS
 from scipy.stats import spearmanr as _spearmanr
+warnings.filterwarnings('ignore')
 
 BENCH_CSV = '/home/x/Dev/rust/zyx/zyx-bench/bench_data.csv'
 
@@ -93,21 +97,21 @@ def register_all_features():
     register_feature('lng*lcop', lambda df: np.log(df['num_groups']) * np.log(df['wi_compute_ops']))
     register_feature('lwpg*lops', lambda df: np.log(df['wi_per_group'] + 1) * np.log(df['wi_ops']))
     register_feature('warp_util', lambda df: df['wi_per_group'] / np.maximum(df['warp_size'], 1))
-    register_feature('log_warp_waste', lambda df: np.log(32 / np.maximum(df['wi_per_group'], 1)))
-    register_feature('lng_warp_waste', lambda df: np.log(df['num_groups']) * np.log(32 / np.maximum(df['wi_per_group'], 1)))
-    register_feature('lwpg_warp_waste', lambda df: np.log(df['wi_per_group'] + 1) * np.log(32 / np.maximum(df['wi_per_group'], 1)))
-    register_feature('coalescing_eff', lambda df: 1.0 - np.minimum(df['wi_global_load_lidx_stride'].fillna(0) / 32.0, 1.0))
-    register_feature('coalescing_eff_st', lambda df: 1.0 - np.minimum(df['wi_global_store_lidx_stride'].fillna(0) / 32.0, 1.0))
+    register_feature('log_warp_waste', lambda df: np.log(df['warp_size'] / np.maximum(df['wi_per_group'], 1)))
+    register_feature('lng_warp_waste', lambda df: np.log(df['num_groups']) * np.log(df['warp_size'] / np.maximum(df['wi_per_group'], 1)))
+    register_feature('lwpg_warp_waste', lambda df: np.log(df['wi_per_group'] + 1) * np.log(df['warp_size'] / np.maximum(df['wi_per_group'], 1)))
+    register_feature('coalescing_eff', lambda df: 1.0 - np.minimum(df['wi_global_load_lidx_stride'].fillna(0) / df['warp_size'], 1.0))
+    register_feature('coalescing_eff_st', lambda df: 1.0 - np.minimum(df['wi_global_store_lidx_stride'].fillna(0) / df['warp_size'], 1.0))
     register_feature('reduce_kind', lambda df: df['wi_barriers'] / np.maximum(np.log2(df['wi_per_group'] + 1), 1.0))
     register_feature('element_ops', lambda df: df['wi_compute_ops'] / np.maximum(df['num_groups'], 1))
-    register_feature('warp_div', lambda df: np.log(np.maximum(32 / np.maximum(df['wi_per_group'], 1), 1e-8)))
+    register_feature('warp_div', lambda df: np.log(np.maximum(df['warp_size'] / np.maximum(df['wi_per_group'], 1), 1e-8)))
     register_feature('sm_occupancy', lambda df: np.minimum((df['num_groups'] * df['wi_per_group']) / 2048.0, 1.0))
     register_feature('tree_height', lambda df: np.where(df['wi_barriers'] > 0, np.log2(df['wi_barriers'] + 1), 0))
     register_feature('tree_reduce_cost', lambda df: df['wi_barriers'] * np.log1p(df['wi_local_load_bits'].fillna(0) + df['wi_local_store_bits'].fillna(0)))
     register_feature('element_ops_per_thread', lambda df: df['wi_compute_ops'] / np.maximum(df['num_groups'] * df['wi_per_group'], 1))
     register_feature('shared_mem_pressure', lambda df: (df['wi_local_load_bits'].fillna(0) + df['wi_local_store_bits'].fillna(0)) / 65536.0)
     register_feature('warp_efficiency', lambda df: df['wi_per_group'] / np.maximum(df['warp_size'], 1))
-    register_feature('warp_waste', lambda df: (32.0 - df['wi_per_group']) / 32.0)
+    register_feature('warp_waste', lambda df: (df['warp_size'] - df['wi_per_group']) / df['warp_size'])
     register_feature('compute_per_barrier', lambda df: df['wi_compute_ops'] / np.maximum(df['num_groups'] * np.maximum(df['wi_barriers'], 1), 1))
     register_feature('barrier_overhead_cost', lambda df: df['wi_barriers'] * np.log1p(df['wi_barriers']) / np.maximum(np.log1p(df['wi_ops']), 1))
     register_feature('group_work_density', lambda df: df['wi_ops'] / np.maximum(df['num_groups'] * np.log1p(df['wi_per_group']), 1))
@@ -180,20 +184,20 @@ def _feature_to_rust(name):
         'raw_ng': 'num_groups',
         'raw_ng_wpg': 'num_groups * wi_per_group',
         'warp_util': 'wr',
-        'log_warp_waste': '(32.0 / wi_per_group.max(1.0)).ln()',
-        'lng_warp_waste': 'lng * (32.0 / wi_per_group.max(1.0)).ln()',
-        'lwpg_warp_waste': 'lwpg * (32.0 / wi_per_group.max(1.0)).ln()',
+        'log_warp_waste': '(warp_size / wi_per_group.max(1.0)).ln()',
+        'lng_warp_waste': 'lng * (warp_size / wi_per_group.max(1.0)).ln()',
+        'lwpg_warp_waste': 'lwpg * (warp_size / wi_per_group.max(1.0)).ln()',
         'llm': '(wi_local_load_bits + wi_local_store_bits).ln_1p()',
         'barr_wpg': 'barr * (wi_per_group + 1.0).ln_1p()',
         'reduce_kind': 'barr / (wi_per_group + 1.0).log2().max(1.0)',
         'element_ops': 'wi_compute_ops / num_groups.max(1.0)',
-        'warp_div': '(32.0 / wi_per_group.max(1.0)).max(1e-8).ln()',
+        'warp_div': '(warp_size / wi_per_group.max(1.0)).max(1e-8).ln()',
         'sm_occupancy': '((num_groups * wi_per_group) / 2048.0).min(1.0)',
         'tree_height': 'if wi_barriers > 0.0 { (wi_barriers + 1.0).log2() } else { 0.0 }',
         'tree_reduce_cost': 'barr * (wi_local_load_bits + wi_local_store_bits).ln_1p()',
         'element_ops_per_thread': 'wi_compute_ops / (num_groups * wi_per_group).max(1.0)',
-        'coalescing_eff': '1.0 - (wi_global_load_lidx_stride / 32.0).min(1.0)',
-        'coalescing_eff_st': '1.0 - (wi_global_store_lidx_stride / 32.0).min(1.0)',
+        'coalescing_eff': '1.0 - (wi_global_load_lidx_stride / warp_size).min(1.0)',
+        'coalescing_eff_st': '1.0 - (wi_global_store_lidx_stride / warp_size).min(1.0)',
         'lld_st': 'wi_global_load_lidx_stride.ln_1p()',
         'lst_st': 'wi_global_store_lidx_stride.ln_1p()',
         'log_ops_100': '(wi_ops + 100.0).ln()',
@@ -238,7 +242,7 @@ def _feature_to_rust(name):
         'barr*lng': 'barr * lng', 'barr*wr': 'barr * wr',
         'shared_mem_pressure': '(wi_local_load_bits + wi_local_store_bits) / 65536.0',
         'warp_efficiency': 'wr',
-        'warp_waste': '(32.0 - wi_per_group) / 32.0',
+        'warp_waste': '(warp_size - wi_per_group) / warp_size',
         'compute_per_barrier': 'wi_compute_ops / (num_groups * wi_barriers.max(1.0)).max(1.0)',
         'barrier_overhead_cost': 'barr * (barr).ln_1p() / (wi_ops).ln_1p().max(1.0)',
         'group_work_density': 'wi_ops / (num_groups * (wi_per_group).ln_1p()).max(1.0)',
@@ -306,11 +310,10 @@ def _feature_to_rust(name):
 
 # ---- MAIN ----
 def main():
-    import sys
     matmul_only = '--matmul' in sys.argv
     df = pd.read_csv(BENCH_CSV)
     if matmul_only:
-        df = df.tail(9000)
+        df = df.tail(9000).reset_index(drop=True)
         print(f"Filtered to last {len(df)} matmul entries")
     print(f"Read {len(df)} entries from {BENCH_CSV}")
 
@@ -322,15 +325,16 @@ def main():
     n_feat = X.shape[1]
     print(f"Features: {n_feat}, Groups: {len(variant_groups)}")
 
-    barr_vals = df['wi_barriers'].values
-    n_b0 = (barr_vals == 0).sum()
-    n_bg = (barr_vals > 0).sum()
-    sw = np.where(barr_vals > 0, 0.5 / n_bg, 0.5 / n_b0) * len(df)
-    sw /= np.mean(sw)
+    model = HuberRegressor(alpha=1.0, max_iter=50)
+    sfs = SFS(model, n_features_to_select=10, direction='forward',
+              scoring='neg_mean_absolute_error', cv=2, n_jobs=-1)
+    sfs.fit(X, y)
+    selected = list(sfs.get_feature_names_out())
+    print(f"Selected {len(selected)} features: {selected}")
 
-    model = HuberRegressor(alpha=1.0, max_iter=200)
-    model.fit(X, y, sample_weight=sw)
-    pred = model.predict(X)
+    X_sel = X[selected]
+    model.fit(X_sel, y)
+    pred = model.predict(X_sel)
 
     r2s, rhos = [], []
     for g in variant_groups:
@@ -363,12 +367,12 @@ def main():
     if top10_in_top20:
         print(f"  Top10-in-top20:   {np.mean(top10_in_top20):.3f} (over {len(top10_in_top20)} groups)")
 
-    # Generate predict_cost.rs
+    # Generate predict_cost.rs — only selected features
     rust_path = os.path.join(os.path.dirname(__file__), '..', 'zyx', 'src', 'kernel', 'predict_cost.rs')
     with open(rust_path, 'w') as f:
         f.write("// Copyright (C) 2025 zk4x\n")
         f.write("// SPDX-License-Identifier: LGPL-3.0-only\n//\n")
-        f.write(f"// Auto-generated by regression.py. {n_feat} features, Huber.\n")
+        f.write(f"// Auto-generated by regression.py. {len(selected)} features, Huber.\n")
         f.write("#![allow(unused)]\nuse super::cost::Cost;\n")
         f.write("impl Cost {\n")
         f.write("    pub fn predict_time_us(\n")
@@ -406,9 +410,10 @@ def main():
         f.write("        let barr = wi_barriers;\n")
         f.write("        let wr = wi_per_group / warp_size.max(1.0);\n")
         f.write("        let rr = wi_peak_reg_bytes / max_register_bytes.max(1.0);\n\n")
-        f.write(f"        let features: [f64; {n_feat}] = [\n")
-        for i in range(n_feat):
-            expr = _feature_to_rust(FEATURE_NAMES[i])
+        n_sel = len(selected)
+        f.write(f"        let features: [f64; {n_sel}] = [\n")
+        for name in selected:
+            expr = _feature_to_rust(name)
             f.write(f"            {expr},\n")
         f.write("        ];\n\n")
         def write_arr(name, vals, n_col=8):
@@ -420,7 +425,7 @@ def main():
         write_arr('RC', model.coef_)
         f.write(f"        let ri: f64 = {model.intercept_:.8e};\n\n")
         f.write(f"        let mut pred = ri;\n")
-        f.write(f"        for i in 0..{n_feat} {{\n")
+        f.write(f"        for i in 0..{n_sel} {{\n")
         f.write("            pred += RC[i] * features[i];\n")
         f.write("        }\n")
         f.write("        pred * 1_000_000.0\n")

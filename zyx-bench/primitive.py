@@ -25,6 +25,25 @@ def main():
     model.fit(X, y)
     pred = model.predict(X)
 
+    # Debug: print a random group sorted by actual time
+    rng = np.random.default_rng()
+    h = rng.choice(df['variant_hash'].unique())
+    g = df[df['variant_hash'] == h]
+    order = g['time_us'].argsort()
+    print(f"\nvariant_hash: {h}, {len(g)} variants")
+    cols = '  '.join(f'{c:<12s}' for c in ['time_us', 'pred', 'f1', 'f2', 'f3'])
+    print(cols)
+    pred_vals = pred[g.index]
+    for rank, i in enumerate(order[:40]):
+        idx = g.index[i]
+        idx = g.index[i]
+        pred_rank = (pred_vals < pred_vals[i]).sum()
+        vals = [f"{g['time_us'].iloc[i]:<12.0f}", f'{pred[idx]:<12.4f}']
+        for j in range(1, X.shape[1]+1):
+            v = df.loc[idx, f'f{j}']
+            vals += [f'{v:<12.4f}' if v < 1e6 else f'{v:<12.0f}']
+        print('  '.join(vals))
+
     rhos, topk = [], []
     for g in groups:
         if len(g) >= 3:
