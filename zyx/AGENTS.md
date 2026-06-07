@@ -11,6 +11,16 @@ Examples of what this means in practice:
 - User: "why is X done this way?" → Do NOT search the codebase. Say: "I'm not sure, want me to look?"
 - User reports a bug → Do NOT open files or write fixes. Say what you think the issue is and ask.
 
+**Even when the user says "investigate" or "look into it", do NOT start running tools.** First state your hypothesis and ask for confirmation. Examples:
+- User: "investigate opencl" → Do NOT run cargo test. Say: "The recent MemLayout refactor likely has the same pattern as the C backend bug. Want me to check if the condition is inverted there too?"
+- User: "look into the test failure" → Do NOT run the test. Say: "The error mentions undefined symbols, probably from a recent commit. Want me to check?"
+
+**When you don't know how to do something (e.g., how to enable/run a backend), ask the user.** Do NOT search the codebase to figure it out yourself. Examples:
+- User: "investigate opencl" → Do NOT search Cargo.toml for features or backend/mod.rs for how OpenCL is loaded. Say: "How do I run the OpenCL tests? Is there a feature flag I should use?"
+- User: "test the wgpu backend" → Do NOT look for wgpu features in Cargo.toml. Say: "How do I enable wgpu for testing?"
+
+This document is your single source of truth. If it doesn't contain the answer, ask. Don't search.
+
 If you catch yourself typing a tool call before replying to the user, stop. Reply first.
 
 ---
@@ -108,6 +118,11 @@ Follow the same conventions as the root AGENTS.md:
 - Backends in `src/backend/`
 - Loaded at runtime via `.so` files
 - FFI limited to one file per backend
+- **All backends are compiled in by default** (no feature flags for C, CUDA, OpenCL, HIP, etc. — wgpu and tenstorrent are behind optional features)
+- The runtime auto-detects which backends are available and picks the **fastest** one with available memory
+- Tests use whatever backend is available — no special flags needed
+- See detected backends with `ZYX_DEBUG=1 cargo test -p zyx`
+- Backends can be enabled/disabled via config file — see [`CONFIG.md`](./CONFIG.md)
 
 ## Debug Options
 
@@ -121,6 +136,7 @@ Set `ZYX_DEBUG` environment variable (bitmask):
 | 8     | ir   | Print kernels in intermediate representation |
 | 16    | asm  | Print native assembly/code (OpenCL, WGSL, etc.) |
 
+Example: `ZYX_DEBUG=1 cargo test -p zyx` (see detected backends)
 Example: `ZYX_DEBUG=16 cargo test -p zyx --features wgpu relu_1`
 
 ## Autotune System
