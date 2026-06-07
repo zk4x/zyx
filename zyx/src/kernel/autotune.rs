@@ -331,7 +331,16 @@ impl Kernel {
 
         //kernel.debug_colorless();
 
-        let (program_id, _) = kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes, self.get_hash())?;
+        let (program_id, _) = kernel.launch_with_timings(
+            buffers,
+            device,
+            memory_pool,
+            debug,
+            flop,
+            read_bytes,
+            write_bytes,
+            self.get_hash(),
+        )?;
 
         Ok((program_id, OptSeq { opts: Vec::new(), cost: Cost::default() }))
     }
@@ -495,7 +504,16 @@ impl Kernel {
                     kernel.debug();
                 }
 
-                match kernel.launch_with_timings(buffers, device, memory_pool, debug, flop, read_bytes, write_bytes, variant_hash) {
+                match kernel.launch_with_timings(
+                    buffers,
+                    device,
+                    memory_pool,
+                    debug,
+                    flop,
+                    read_bytes,
+                    write_bytes,
+                    variant_hash,
+                ) {
                     Ok((program_id, time)) => {
                         any_success = true;
                         if time < best_time {
@@ -544,8 +562,8 @@ impl Kernel {
         memory_pool.sync_events(vec![event])?;
         let nanos = begin.elapsed().as_nanos() as u64;
         let perf = crate::kernel_cache::get_perf(flops, bytes_read, bytes_written, nanos);
-        self.get_cost(device.info()).debug();
-        println!("variant_hash={variant_hash}, {perf}");
+        /*self.get_cost(device.info()).debug();
+        println!("variant_hash={variant_hash}, {perf}");*/
         if debug.perf() {
             println!("{perf}");
         }

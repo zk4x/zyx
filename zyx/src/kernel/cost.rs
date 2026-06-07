@@ -50,6 +50,7 @@ pub struct Cost {
 }
 
 impl Cost {
+    #[allow(unused)]
     pub fn debug(&self) {
         print!(
             "cost={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}, wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, wi_local_load_lidx_stride={}, wi_local_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={}, wi_register_load_bits={}, wi_register_store_bits={}, gws0={}, gws1={}, gws2={}, lws0={}, lws1={}, lws2={}, max_loop_depth={}, preferred_vector_size={}, local_mem_size={} ",

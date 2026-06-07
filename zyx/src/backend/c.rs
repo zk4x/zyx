@@ -545,10 +545,10 @@ impl CDevice {
                 reg_str,
                 "{prefix}{}{} r0",
                 dt.0.c_type(),
-                if dt.1 == MemLayout::Scalar {
-                    String::new()
-                } else {
-                    format!("{}", dt.1)
+                match dt.1 {
+                    MemLayout::Scalar => "".into(),
+                    MemLayout::Vector(len) => len.to_string(),
+                    MemLayout::Tile { .. } => unreachable!(),
                 }
             );
             let mut i = 1;
@@ -560,10 +560,10 @@ impl CDevice {
                         reg_str,
                         ";\n{prefix}{}{} r{i}",
                         dt.0.c_type(),
-                        if dt.1 == MemLayout::Scalar {
-                            String::new()
-                        } else {
-                            format!("{}", dt.1)
+                        match dt.1 {
+                            MemLayout::Scalar => "".into(),
+                            MemLayout::Vector(len) => len.to_string(),
+                            MemLayout::Tile { .. } => unreachable!(),
                         }
                     );
                 }
