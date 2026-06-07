@@ -126,6 +126,14 @@ Follow the same conventions as the root AGENTS.md:
 - See detected backends with `ZYX_DEBUG=1 cargo test -p zyx`
 - Backends can be enabled/disabled via config file — see [`CONFIG.md`](./CONFIG.md)
 
+## Debugging Crashes
+
+When investigating a crash (segfault, signal, etc.):
+
+1. **Write a minimal reproducer** — a single test function that triggers the bug. Keep it small.
+2. **Isolate the crash line** — add `eprintln!("reached A")`, `eprintln!("reached B")`, etc. at key points. Run and see which is the last printed. If output is missing (not flushed), use `panic!("reached X")` instead — panics always flush.
+3. **Narrow down** — once you know what line crashes, look at what that line does and work forward to figure out what's wrong.
+
 ## Debug Options
 
 Set `ZYX_DEBUG` environment variable (bitmask):
