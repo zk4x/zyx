@@ -251,8 +251,6 @@ impl CDevice {
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
 
-        // Collect global defines for casting from args and track F16/BF16 buffers
-        let mut f16_buffers: Set<OpId> = Set::with_capacity_and_hasher(8, BuildHasherDefault::new());
         let mut global_cast = String::new();
         let mut index: usize = 0;
         let mut op_id = kernel.head;
@@ -261,7 +259,6 @@ impl CDevice {
             if let &Op::Define { dtype, scope, .. } = op {
                 if scope == Scope::Global {
                     if matches!(dtype, DType::F16 | DType::BF16) {
-                        f16_buffers.insert(op_id);
                         _ = writeln!(global_cast, "  unsigned short* p{op_id} = (unsigned short*)args[{index}];");
                     } else {
                         let ct = dtype.c_type();
@@ -358,51 +355,72 @@ impl CDevice {
                         let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
-                        if f16_buffers.contains(&src) {
-                            let is_bf16 = matches!(kernel.at(src), Op::Define { dtype: DType::BF16, .. });
-                            let conv = if is_bf16 { "bf16tof32" } else { "f16tof32" };
-                            match layout {
-                                MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = {conv}(p{src}[{idx}]);"),
-                                MemLayout::Vector(len) => {
+                        match layout {
+                            MemLayout::Scalar => match dtypes[&src].0 {
+                                DType::F16 => {
+                                    _ = writeln!(source, "{indent}r{reg} = f16tof32(p{src}[{idx}]);");
+                                }
+                                DType::BF16 => {
+                                    _ = writeln!(source, "{indent}r{reg} = bf16tof32(p{src}[{idx}]);");
+                                }
+                                _ => {
+                                    _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                                }
+                            },
+                            MemLayout::Vector(len) => match dtypes[&src].0 {
+                                DType::F16 => {
                                     for i in 0..len {
-                                        _ = writeln!(source, "{indent}r{reg}.s{i} = {conv}(p{src}[{idx} + {i}]);");
+                                        _ = writeln!(source, "{indent}r{reg}.s{i} = f16tof32(p{src}[{idx} + {i}]);");
                                     }
                                 }
-                                MemLayout::Tile { .. } => todo!(),
-                            }
-                        } else if let MemLayout::Vector(len) = layout {
-                            for i in 0..len {
-                                _ = writeln!(source, "{indent}r{reg}.s{i} = p{src}[{idx} + {i}];");
-                            }
-                        } else {
-                            _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                                DType::BF16 => {
+                                    for i in 0..len {
+                                        _ = writeln!(source, "{indent}r{reg}.s{i} = bf16tof32(p{src}[{idx} + {i}]);");
+                                    }
+                                }
+                                _ => {
+                                    for i in 0..len {
+                                        _ = writeln!(source, "{indent}r{reg}.s{i} = p{src}[{idx} + {i}];");
+                                    }
+                                }
+                            },
+                            MemLayout::Tile { .. } => todo!(),
                         }
                     }
                 }
                 &Op::Store { dst, x: src, index, layout } => {
-                    let vlen = match layout {
-                        MemLayout::Scalar => 1,
-                        MemLayout::Vector(len) => len,
-                        MemLayout::Tile { .. } => todo!(),
-                    };
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    if f16_buffers.contains(&dst) {
-                        let is_bf16 = matches!(kernel.at(dst), Op::Define { dtype: DType::BF16, .. });
-                        let conv = if is_bf16 { "f32tobf16" } else { "f32tof16" };
-                        if vlen > 1 {
-                            for i in 0..vlen {
-                                _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {conv}({x}.s{i});");
+                    match layout {
+                        MemLayout::Scalar => match dtypes[&dst].0 {
+                            DType::F16 => {
+                                _ = writeln!(source, "{indent}p{dst}[{idx}] = f32tof16({x});");
                             }
-                        } else {
-                            _ = writeln!(source, "{indent}p{dst}[{idx}] = {conv}({x});");
-                        }
-                    } else if vlen > 1 {
-                        for i in 0..vlen {
-                            _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.s{i};");
-                        }
-                    } else {
-                        _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                            DType::BF16 => {
+                                _ = writeln!(source, "{indent}p{dst}[{idx}] = f32tobf16({x});");
+                            }
+                            _ => {
+                                _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                            }
+                        },
+                        MemLayout::Vector(len) => match dtypes[&dst].0 {
+                            DType::F16 => {
+                                for i in 0..len {
+                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = f32tof16({x}.s{i});");
+                                }
+                            }
+                            DType::BF16 => {
+                                for i in 0..len {
+                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = f32tobf16({x}.s{i});");
+                                }
+                            }
+                            _ => {
+                                for i in 0..len {
+                                    _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.s{i};");
+                                }
+                            }
+                        },
+                        MemLayout::Tile { .. } => todo!(),
                     }
                 }
                 &Op::Cast { x, dtype } => {
@@ -574,8 +592,8 @@ impl CDevice {
         let c_path = tmp_dir.join(format!("{name}.c"));
         let so_path = tmp_dir.join(format!("{name}.so"));
 
-        // Add conversion helpers if F16/BF16 buffers are used
-        let f16_helpers = if f16_buffers.is_empty() {
+        // Add conversion helpers if F16/BF16 values are used
+        let f16_helpers = if dtypes.values().any(|(dt, _)| matches!(dt, DType::F16 | DType::BF16)) {
             String::new()
         } else {
             r"static inline float f16tof32(unsigned short h) {
