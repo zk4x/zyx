@@ -465,11 +465,14 @@ pub(super) fn initialize_device(
                         let id = buffers.push(OpenCLBuffer { buffer, bytes });
                         let _ = reply.send(Ok((id, OpenCLEvent { event: ptr::null_mut() })));
                     }
-                    Command::Deallocate { buffer_id, event_wait_list: events } => {
+                    Command::Deallocate { buffer_id, event_wait_list } => {
                         let buffer = &buffers[buffer_id];
                         debug_assert!(!buffer.buffer.is_null(), "Deallocating null buffer is invalid");
-                        let event_wait_list: Vec<*mut c_void> =
-                            events.into_iter().map(|e| e.event).filter(|event| !event.is_null()).collect();
+                        let event_wait_list: Vec<*mut c_void> = event_wait_list
+                            .into_iter()
+                            .map(|e| e.event)
+                            .filter(|event| !event.is_null())
+                            .collect();
                         if !event_wait_list.is_empty() {
                             let _ =
                                 unsafe { clWaitForEvents(event_wait_list.len().try_into().unwrap(), event_wait_list.as_ptr()) }

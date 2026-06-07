@@ -23,6 +23,12 @@ This document is your single source of truth. If it doesn't contain the answer, 
 
 **When the user tells you something about the system (e.g., "OpenCL crashes, CUDA doesn't"), trust them.** Do NOT run tests or commands to verify what they said. Use their information to narrow down the problem, not to double-check it.
 
+**Do NOT "fix" things you weren't asked to fix.** If you notice something wrong (missing catch_unwind, formatting issues, whatever), shut up. Do not mention it. Do not fix it. The user knows. If they want it fixed, they'll ask.
+
+**When the user says "commit current state", commit the EXACT current state.** Do not modify anything first. Not even if it looks like a debugging artifact. Not even if it looks obviously wrong. Commit exactly what's on disk.
+
+**Never edit a file without explicit instruction from the user.** "Restore the original handler" is explicit. "Investigate the crash" is NOT explicit. If you're unsure whether the user wants a file edited, you don't edit it.
+
 If you catch yourself typing a tool call before replying to the user, stop. Reply first.
 
 ---

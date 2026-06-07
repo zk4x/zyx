@@ -101,13 +101,11 @@ impl Clone for Tensor {
 
 impl Drop for Tensor {
     fn drop(&mut self) {
-        let _ = std::panic::catch_unwind(|| {
-            let mut rt = match RT.try_lock() {
-                Ok(rt) => rt,
-                Err(_poisoned) => return, // poisoned.into_inner(),
-            };
-            rt.release(self.id);
-        });
+        let mut rt = match RT.try_lock() {
+            Ok(rt) => rt,
+            Err(_poisoned) => return, // poisoned.into_inner(),
+        };
+        rt.release(self.id);
     }
 }
 
