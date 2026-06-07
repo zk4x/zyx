@@ -1,5 +1,20 @@
 # Agent Guidelines for zyx (Core Crate)
 
+## BEFORE ANY ACTION: ASK THE USER FIRST
+
+**Do NOT run any commands, write any code, or search for answers without first telling the user what you think the problem is and asking what they want you to do.**
+
+This is the single most important rule. Every session you default to acting instead of talking. Stop. Tell the user your understanding. Ask what they want. Only then act.
+
+Examples of what this means in practice:
+- User: "wtf is test failing?" → Do NOT run cargo test. Say: "I don't know, should I investigate?"
+- User: "why is X done this way?" → Do NOT search the codebase. Say: "I'm not sure, want me to look?"
+- User reports a bug → Do NOT open files or write fixes. Say what you think the issue is and ask.
+
+If you catch yourself typing a tool call before replying to the user, stop. Reply first.
+
+---
+
 Quick reference for coding agents working in the core `zyx` crate - the tensor library.
 
 ## Essential Commands
