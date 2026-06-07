@@ -457,7 +457,7 @@ impl WGPUDevice {
                     dtypes.insert(op_id, dtypes[&src]);
                     writeln!(source, "{indent}let r{op_id} = p{src}[r{index}];").unwrap();
                 }
-                &Op::Store { dst, x: src, index, vlen: _ } => {
+                &Op::Store { dst, x: src, index, .. } => {
                     writeln!(source, "{indent}p{dst}[r{index}] = r{src};").unwrap();
                 }
                 &Op::Cast { x, dtype } => {
