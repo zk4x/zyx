@@ -593,7 +593,7 @@ impl CDevice {
         let so_path = tmp_dir.join(format!("{name}.so"));
 
         // Add conversion helpers if F16/BF16 values are used
-        let f16_helpers = if dtypes.values().any(|(dt, _)| matches!(dt, DType::F16 | DType::BF16)) {
+        let f16_helpers = if !dtypes.values().any(|(dt, _)| matches!(dt, DType::F16 | DType::BF16)) {
             String::new()
         } else {
             r"static inline float f16tof32(unsigned short h) {
