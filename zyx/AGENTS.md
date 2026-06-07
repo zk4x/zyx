@@ -21,6 +21,8 @@ Examples of what this means in practice:
 
 This document is your single source of truth. If it doesn't contain the answer, ask. Don't search.
 
+**When the user tells you something about the system (e.g., "OpenCL crashes, CUDA doesn't"), trust them.** Do NOT run tests or commands to verify what they said. Use their information to narrow down the problem, not to double-check it.
+
 If you catch yourself typing a tool call before replying to the user, stop. Reply first.
 
 ---

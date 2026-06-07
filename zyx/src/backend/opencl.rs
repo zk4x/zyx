@@ -1019,7 +1019,7 @@ impl OpenCLDevice {
                             MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
                             MemLayout::Vector(len) => {
                                 for i in 0..len {
-                                    _ = writeln!(source, "{indent}r{reg}.{} = p{src}[{idx}];", VEC_COMPONENTS[i as usize]);
+                                    _ = writeln!(source, "{indent}r{reg}.{} = p{src}[{idx} + {i}];", VEC_COMPONENTS[i as usize]);
                                 }
                             }
                             MemLayout::Tile { .. } => todo!(),
