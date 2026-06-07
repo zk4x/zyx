@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use super::autotune::Optimization;
+use crate::kernel::MemLayout;
 #[allow(unused)]
 use crate::{
     Map, Set,
@@ -282,8 +283,8 @@ impl Kernel {
         loop {
             match self.ops[op_id].op {
                 Op::Loop { .. } => return, // no nested loops
-                Op::Store { vlen, .. } => {
-                    if has_store || vlen != 1 {
+                Op::Store { layout, .. } => {
+                    if has_store || layout != MemLayout::Scalar {
                         return;
                     }
                     has_store = true;
@@ -314,12 +315,12 @@ impl Kernel {
         while op_id != endloop_id {
             let this_id = op_id;
             op_id = self.next_op(op_id);
-            if let Op::Load { src, index: _, vlen: 1 } = self.ops[this_id].op
+            if let Op::Load { src, index: _, layout: MemLayout::Scalar } = self.ops[this_id].op
                 && src == acc_id
             {
                 // TODO debug assert index is const zero
                 map.insert(this_id, vec![acc_init; factor as usize - 1]);
-            } else if let Op::Store { dst, x, index, vlen: 1 } = self.ops[this_id].op
+            } else if let Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.ops[this_id].op
                 && dst == acc_id
             {
                 let Op::Binary { bop, .. } = self.ops[x].op else { unreachable!() };
@@ -335,7 +336,7 @@ impl Kernel {
                     };
                     carry = self.insert_before(op_id, Op::Binary { x, y: carry, bop });
                 }
-                self.insert_before(op_id, Op::Store { dst, x: carry, index, vlen: 1 });
+                self.insert_before(op_id, Op::Store { dst, x: carry, index, layout: MemLayout::Scalar });
             } else {
                 let mut new_ones = Vec::with_capacity(factor as usize - 1);
                 for i in 1..factor {

@@ -14,7 +14,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, Op, OpId, Scope, UOp},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
     shape::Dim,
     slab::Slab,
 };
@@ -162,7 +162,7 @@ impl CDevice {
 
         // --- Phase 2: RC and dtype analysis (same as OpenCL) ---
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, u16)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         let mut op_id = kernel.head;
         while !op_id.is_null() {
@@ -172,16 +172,16 @@ impl CDevice {
                     unreachable!()
                 }
                 Op::Const(x) => {
-                    dtypes.insert(op_id, (x.dtype(), 1));
+                    dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                 }
                 &Op::Define { dtype, .. } => {
-                    dtypes.insert(op_id, (dtype, 1));
+                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                 }
-                &Op::Load { src, index, vlen: len } => {
-                    dtypes.insert(op_id, (dtypes[&src].0, len as u16));
+                &Op::Load { src, index, layout } => {
+                    dtypes.insert(op_id, (dtypes[&src].0, layout));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x: src, index, vlen: _ } => {
+                &Op::Store { dst, x: src, index, .. } => {
                     dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
@@ -207,7 +207,7 @@ impl CDevice {
                 }
                 Op::Vectorize { ops } => {
                     let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, (dtype.0, ops.len() as u16));
+                    dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
                     for &x in ops {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
@@ -220,7 +220,7 @@ impl CDevice {
                     *rcs.entry(z).or_insert(0) += 1;
                 }
                 Op::Index { .. } | Op::Loop { .. } | Op::Barrier { .. } | Op::EndIf | Op::EndLoop => {
-                    dtypes.insert(op_id, (DType::U32, 1));
+                    dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                 }
                 &Op::If { condition } => {
                     *rcs.entry(condition).or_insert(0) += 1;
@@ -231,7 +231,7 @@ impl CDevice {
 
         // --- Phase 3: Codegen ---
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, u16), u32, u8)> = Vec::new();
+        let mut registers: Vec<((DType, MemLayout), u32, u8)> = Vec::new();
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
 
@@ -353,7 +353,7 @@ impl CDevice {
                 &Op::Const(x) => {
                     constants.insert(op_id, x);
                 }
-                &Op::Load { src, index, vlen } => {
+                &Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
@@ -361,15 +361,17 @@ impl CDevice {
                         if f16_buffers.contains(&src) {
                             let is_bf16 = matches!(kernel.at(src), Op::Define { dtype: DType::BF16, .. });
                             let conv = if is_bf16 { "bf16tof32" } else { "f16tof32" };
-                            if vlen > 1 {
-                                for i in 0..vlen {
-                                    _ = writeln!(source, "{indent}r{reg}.s{i} = {conv}(p{src}[{idx} + {i}]);");
+                            match layout {
+                                MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = {conv}(p{src}[{idx}]);"),
+                                MemLayout::Vector(len) => {
+                                    for i in 0..len {
+                                        _ = writeln!(source, "{indent}r{reg}.s{i} = {conv}(p{src}[{idx} + {i}]);");
+                                    }
                                 }
-                            } else {
-                                _ = writeln!(source, "{indent}r{reg} = {conv}(p{src}[{idx}]);");
+                                MemLayout::Tile { x, y, stride } => todo!(),
                             }
-                        } else if vlen > 1 {
-                            for i in 0..vlen {
+                        } else if let MemLayout::Vector(len) = layout {
+                            for i in 0..len {
                                 _ = writeln!(source, "{indent}r{reg}.s{i} = p{src}[{idx} + {i}];");
                             }
                         } else {
@@ -377,7 +379,12 @@ impl CDevice {
                         }
                     }
                 }
-                &Op::Store { dst, x: src, index, vlen } => {
+                &Op::Store { dst, x: src, index, layout } => {
+                    let vlen = match layout {
+                        MemLayout::Scalar => 1,
+                        MemLayout::Vector(len) => len,
+                        MemLayout::Tile { x, y, stride } => todo!(),
+                    };
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
                     if f16_buffers.contains(&dst) {
@@ -520,7 +527,11 @@ impl CDevice {
                 reg_str,
                 "{prefix}{}{} r0",
                 dt.0.c_type(),
-                if dt.1 == 1 { String::new() } else { format!("{}", dt.1) }
+                if dt.1 == MemLayout::Scalar {
+                    String::new()
+                } else {
+                    format!("{}", dt.1)
+                }
             );
             let mut i = 1;
             for (dt, _, _) in &registers[1..] {
@@ -531,7 +542,11 @@ impl CDevice {
                         reg_str,
                         ";\n{prefix}{}{} r{i}",
                         dt.0.c_type(),
-                        if dt.1 == 1 { String::new() } else { format!("{}", dt.1) }
+                        if dt.1 == MemLayout::Scalar {
+                            String::new()
+                        } else {
+                            format!("{}", dt.1)
+                        }
                     );
                 }
                 prev_dt = *dt;
@@ -731,8 +746,8 @@ static inline unsigned short f32tobf16(float v) {
 fn new_reg(
     op_id: OpId,
     reg_map: &mut Map<OpId, usize>,
-    registers: &mut Vec<((DType, u16), u32, u8)>,
-    dtype: (DType, u16),
+    registers: &mut Vec<((DType, MemLayout), u32, u8)>,
+    dtype: (DType, MemLayout),
     rc: u32,
     current_loop_level: u8,
 ) -> usize {
@@ -755,7 +770,7 @@ fn get_var(
     constants: &Map<OpId, Constant>,
     indices: &Map<OpId, u8>,
     reg_map: &Map<OpId, usize>,
-    registers: &mut [((DType, u16), u32, u8)],
+    registers: &mut [((DType, MemLayout), u32, u8)],
     loop_level: u8,
 ) -> String {
     if let Some(c) = constants.get(&op_id) {

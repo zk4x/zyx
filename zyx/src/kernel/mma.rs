@@ -17,7 +17,7 @@ use crate::{
     DType, Map,
     backend::DeviceInfo,
     dtype::Constant,
-    kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, Op, OpId, Scope},
+    kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, MemLayout, Op, OpId, Scope},
     shape::Dim,
 };
 
@@ -105,7 +105,7 @@ impl Kernel {
         #[allow(clippy::enum_glob_use)]
         use Op::*;
 
-        let &Store { dst: acc_id, x, index: store_idx, vlen: 1 } = self.at(store_id) else {
+        let &Store { dst: acc_id, x, index: store_idx, layout: MemLayout::Scalar } = self.at(store_id) else {
             return None;
         };
         let (c_base_index, c_offset) = self.index_base_and_offset(store_idx, k_loop_id);
@@ -116,9 +116,9 @@ impl Kernel {
         let &Binary { x, mut y, bop: Add } = self.at(x) else {
             return None;
         };
-        let (src, index) = if let &Load { src, index, vlen: 1 } = self.at(x) {
+        let (src, index) = if let &Load { src, index, layout: MemLayout::Scalar } = self.at(x) {
             (src, index)
-        } else if let &Load { src, index, vlen: 1 } = self.at(y) {
+        } else if let &Load { src, index, layout: MemLayout::Scalar } = self.at(y) {
             y = x;
             (src, index)
         } else {
@@ -133,12 +133,12 @@ impl Kernel {
             let &Binary { x, y, bop: Mul } = self.at(x) else {
                 return None;
             };
-            let &Load { src: a, index, vlen: 1 } = self.at(x) else {
+            let &Load { src: a, index, layout: MemLayout::Scalar } = self.at(x) else {
                 return None;
             };
             let Define { dtype: a_dtype, .. } = self.ops[a].op else { unreachable!() };
             let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
-            let &Load { src: b, index, vlen: 1 } = self.at(y) else {
+            let &Load { src: b, index, layout: MemLayout::Scalar } = self.at(y) else {
                 return None;
             };
             let Define { dtype: b_dtype, .. } = self.ops[b].op else { unreachable!() };
@@ -164,12 +164,12 @@ impl Kernel {
             let &Binary { x, y, bop: Mul } = self.at(x) else {
                 return None;
             };
-            let &Load { src: a, index, vlen: 1 } = self.at(x) else {
+            let &Load { src: a, index, layout: MemLayout::Scalar } = self.at(x) else {
                 return None;
             };
             let Define { dtype: a_dtype, .. } = self.ops[a].op else { unreachable!() };
             let (a_base_index, a_offset) = self.index_base_and_offset(index, k_loop_id);
-            let &Load { src: b, index, vlen: 1 } = self.at(y) else {
+            let &Load { src: b, index, layout: MemLayout::Scalar } = self.at(y) else {
                 return None;
             };
             let Define { dtype: b_dtype, .. } = self.ops[b].op else { unreachable!() };
@@ -219,16 +219,19 @@ impl Kernel {
             let y = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
             idx = self.insert_before(k_loop_id, Op::Binary { x: idx, y, bop: BOp::Add });
         }
-        let a_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].a, index: idx, vlen: 1 });
+        let a_load1 = self.insert_before(
+            k_loop_id,
+            Op::Load { src: stores[0].a, index: idx, layout: MemLayout::Scalar },
+        );
         let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].a_offset as u64)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
-        let a_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[1].a, index, vlen: 1 });
+        let a_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[1].a, index, layout: MemLayout::Scalar });
         let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[2].a_offset as u64)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
-        let a_load3 = self.insert_before(k_loop_id, Op::Load { src: stores[2].a, index, vlen: 1 });
+        let a_load3 = self.insert_before(k_loop_id, Op::Load { src: stores[2].a, index, layout: MemLayout::Scalar });
         let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[3].a_offset as u64)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
-        let a_load4 = self.insert_before(k_loop_id, Op::Load { src: stores[3].a, index, vlen: 1 });
+        let a_load4 = self.insert_before(k_loop_id, Op::Load { src: stores[3].a, index, layout: MemLayout::Scalar });
 
         let a_load = self.insert_before(k_loop_id, Op::Vectorize { ops: vec![a_load1, a_load2, a_load3, a_load4] });
 
@@ -239,15 +242,18 @@ impl Kernel {
             let y = self.insert_before(k_loop_id, Op::Binary { x: stride, y: i, bop: BOp::Mul });
             idx = self.insert_before(k_loop_id, Op::Binary { x: idx, y, bop: BOp::Add });
         }
-        let b_load1 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index: idx, vlen: 1 });
+        let b_load1 = self.insert_before(
+            k_loop_id,
+            Op::Load { src: stores[0].b, index: idx, layout: MemLayout::Scalar },
+        );
         let offset = self.insert_before(k_loop_id, Op::Const(Constant::idx(stores[1].b_offset as u64)));
         let index = self.insert_before(k_loop_id, Op::Binary { x: offset, y: idx, bop: BOp::Add });
-        let b_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index, vlen: 1 });
+        let b_load2 = self.insert_before(k_loop_id, Op::Load { src: stores[0].b, index, layout: MemLayout::Scalar });
         let b_load = self.insert_before(k_loop_id, Op::Vectorize { ops: vec![b_load1, b_load2] });
 
         // C load
         let index = self.insert_before(k_loop_id, Op::Const(Constant::idx(0)));
-        let c_load = self.insert_before(k_loop_id, Op::Load { src: stores[0].c, index, vlen: 4 });
+        let c_load = self.insert_before(k_loop_id, Op::Load { src: stores[0].c, index, layout: MemLayout::Vector(4) });
 
         let wmma_op = self.insert_before(
             k_loop_id,
@@ -260,7 +266,10 @@ impl Kernel {
                 b: b_load,
             },
         );
-        self.insert_after(wmma_op, Op::Store { dst: stores[0].c, x: wmma_op, index, vlen: 4 });
+        self.insert_after(
+            wmma_op,
+            Op::Store { dst: stores[0].c, x: wmma_op, index, layout: MemLayout::Vector(4) },
+        );
 
         for store in stores {
             self.remove_op(store.store_id);

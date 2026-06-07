@@ -6,7 +6,7 @@
 use crate::{
     DType, Map,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, Scope},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope},
     shape::Dim,
 };
 
@@ -160,7 +160,10 @@ impl Kernel {
 
         // Insert Stores (each to its own position)
         for (&load_id, &pos) in pending.iter().zip(positions.iter()) {
-            insert_pt = self.insert_after(insert_pt, Op::Store { dst: tile_buf, x: load_id, index: pos, vlen: 1 });
+            insert_pt = self.insert_after(
+                insert_pt,
+                Op::Store { dst: tile_buf, x: load_id, index: pos, layout: MemLayout::Scalar },
+            );
         }
 
         // One Barrier
@@ -169,7 +172,7 @@ impl Kernel {
         // Insert Loads (each from its own position)
         let mut new_loads: Vec<OpId> = Vec::with_capacity(n);
         for &pos in positions.iter() {
-            insert_pt = self.insert_after(insert_pt, Op::Load { src: tile_buf, index: pos, vlen: 1 });
+            insert_pt = self.insert_after(insert_pt, Op::Load { src: tile_buf, index: pos, layout: MemLayout::Scalar });
             new_loads.push(insert_pt);
         }
 

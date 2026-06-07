@@ -15,7 +15,6 @@ use std::{fmt::Display, hash::Hash};
 
 pub mod autotune;
 pub mod cost;
-pub mod predict_cost;
 pub mod custom;
 mod debug;
 mod div_mod;
@@ -30,6 +29,7 @@ mod log2_to_ln;
 mod merge_loops;
 mod mma;
 mod pad_index;
+pub mod predict_cost;
 mod split_loops;
 mod tile_registers;
 mod tiled_reduce;
@@ -139,6 +139,33 @@ pub struct OpNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct OpId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum MemLayout {
+    Scalar,
+    Vector(u8),
+    Tile { x: u8, y: u8, stride: u32 },
+}
+
+impl MemLayout {
+    pub fn n_elements(self) -> Dim {
+        match self {
+            MemLayout::Scalar => 1,
+            MemLayout::Vector(x) => x.into(),
+            MemLayout::Tile { x, y, .. } => x as Dim * y as Dim,
+        }
+    }
+}
+
+impl std::fmt::Display for MemLayout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemLayout::Scalar => f.write_fmt(format_args!("Scalar")),
+            MemLayout::Vector(x) => f.write_fmt(format_args!("Vec({x})")),
+            MemLayout::Tile { x, y, stride } => f.write_fmt(format_args!("Tile({x}x{y} st={stride})")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Op {
     // ops that exist in both
@@ -169,12 +196,12 @@ pub enum Op {
         dst: OpId,
         x: OpId,
         index: OpId,
-        vlen: u16,
+        layout: MemLayout,
     },
     Load {
         src: OpId,
         index: OpId,
-        vlen: u16,
+        layout: MemLayout,
     },
     Index {
         len: Dim,

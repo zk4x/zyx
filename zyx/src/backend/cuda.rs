@@ -39,7 +39,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, MMADType, MMADims, Op, OpId, Scope, UOp},
+    kernel::{BOp, Kernel, MMADType, MMADims, MemLayout, Op, OpId, Scope, UOp},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -1180,8 +1180,8 @@ impl CUDADevice {
         fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<((DType, u16), u32, u8)>,
-            dtype: (DType, u16),
+            registers: &mut Vec<((DType, MemLayout), u32, u8)>,
+            dtype: (DType, MemLayout),
             rc: u32,
             current_loop_level: u8,
         ) -> usize {
@@ -1208,7 +1208,7 @@ impl CUDADevice {
             constants: &Map<OpId, Constant>,
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
-            registers: &mut [((DType, u16), u32, u8)],
+            registers: &mut [((DType, MemLayout), u32, u8)],
             loop_level: u8,
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
@@ -1266,7 +1266,7 @@ impl CUDADevice {
         global_args.push('\n');
 
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, u16)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         // first we will calculate those reference counts.
         let mut op_id = kernel.head;
@@ -1283,7 +1283,7 @@ impl CUDADevice {
                 }
                 Op::Vectorize { ops } => {
                     let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, (dtype.0, ops.len() as u16));
+                    dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
                     for &x in ops {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
@@ -1293,24 +1293,26 @@ impl CUDADevice {
                         MMADType::f16_f16_f16_f32 => DType::F32,
                     };
                     match dims {
-                        MMADims::m8n8k16 | MMADims::m16n8k8 | MMADims::m16n8k16 => dtypes.insert(op_id, (dtype, 4)),
+                        MMADims::m8n8k16 | MMADims::m16n8k8 | MMADims::m16n8k16 => {
+                            dtypes.insert(op_id, (dtype, MemLayout::Vector(4)))
+                        }
                     };
                     *rcs.entry(a).or_insert(0) += 1;
                     *rcs.entry(b).or_insert(0) += 1;
                     *rcs.entry(c).or_insert(0) += 1;
                 }
                 Op::Const(x) => {
-                    dtypes.insert(op_id, (x.dtype(), 1));
+                    dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                 }
                 &Op::Define { dtype, .. } => {
-                    dtypes.insert(op_id, (dtype, 1));
+                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                 }
-                &Op::Load { src, index, vlen } => {
-                    dtypes.insert(op_id, (dtypes[&src].0, vlen));
+                &Op::Load { src, index, layout } => {
+                    dtypes.insert(op_id, (dtypes[&src].0, layout));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x, index, vlen } => {
-                    debug_assert_eq!(dtypes[&x].1, vlen);
+                &Op::Store { dst, x, index, layout } => {
+                    debug_assert_eq!(dtypes[&x].1, layout);
                     dtypes.insert(op_id, dtypes[&x]);
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(x).or_insert(0) += 1;
@@ -1341,7 +1343,7 @@ impl CUDADevice {
                     *rcs.entry(z).or_insert(0) += 1;
                 }
                 Op::Index { .. } | Op::Loop { .. } => {
-                    dtypes.insert(op_id, (DType::U32, 1));
+                    dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                 }
                 &Op::If { condition } => {
                     *rcs.entry(condition).or_insert(0) += 1;
@@ -1352,7 +1354,7 @@ impl CUDADevice {
         }
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, u16), u32, u8)> = Vec::new();
+        let mut registers: Vec<((DType, MemLayout), u32, u8)> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -1398,34 +1400,38 @@ impl CUDADevice {
                         );
                     }
                 }
-                &Op::Load { src, index, vlen } => {
+                &Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
                         //if src == OpId(28) { _ = writeln!(source, "{indent}printf(\"Load p%d[%d]\\n\", {src}, {idx});"); }
                         //_ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
-                        if vlen > 1 {
-                            _ = writeln!(
-                                source,
-                                "{indent}r{reg} = reinterpret_cast<const {}{}*>(p{src})[{idx}];",
-                                dtype.0.cu(),
-                                dtype.1
-                            );
-                        } else {
-                            _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                        match layout {
+                            MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
+                            MemLayout::Vector(len) => {
+                                _ = writeln!(
+                                    source,
+                                    "{indent}r{reg} = reinterpret_cast<const {}{}*>(p{src})[{idx}];",
+                                    dtype.0.cu(),
+                                    dtype.1
+                                )
+                            }
+                            MemLayout::Tile { x, y, stride } => todo!(),
                         }
                     }
                 }
-                &Op::Store { dst, x: src, index, vlen } => {
+                &Op::Store { dst, x: src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    if vlen > 1 {
-                        for i in 0..vlen {
-                            _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.{};", VEC_COMPONENTS[i as usize]);
+                    match layout {
+                        MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
+                        MemLayout::Vector(len) => {
+                            for i in 0..len {
+                                _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.{};", VEC_COMPONENTS[i as usize]);
+                            }
                         }
-                    } else {
-                        _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                        MemLayout::Tile { x, y, stride } => todo!(),
                     }
                 }
                 &Op::Wmma { dims, layout, dtype, c, a, b } => {
@@ -1600,7 +1606,7 @@ impl CUDADevice {
         }
         let _total_bytes = registers
             .iter()
-            .map(|(dtype, ..)| u64::from(dtype.0.bit_size() / 8) * u64::from(dtype.1))
+            .map(|(dtype, ..)| u64::from(dtype.0.bit_size() / 8) * dtype.1.n_elements())
             .sum::<u64>()
             + acc_bytes;
         /*if total_bytes > 1024 {
@@ -1618,7 +1624,11 @@ impl CUDADevice {
                 reg_str,
                 "{indent}{}{} r0",
                 dt.0.cu(),
-                if dt.1 > 1 { dt.1.to_string() } else { "".into() }
+                match dt.1 {
+                    MemLayout::Scalar => "".into(),
+                    MemLayout::Vector(len) => len.to_string(),
+                    MemLayout::Tile { .. } => unreachable!(),
+                }
             );
             let mut i = 1;
             for (dt, _, _) in registers {
@@ -1629,7 +1639,11 @@ impl CUDADevice {
                         reg_str,
                         ";\n{indent}{}{} r{i}",
                         dt.0.cu(),
-                        if dt.1 > 1 { dt.1.to_string() } else { "".into() }
+                        match dt.1 {
+                            MemLayout::Scalar => "".into(),
+                            MemLayout::Vector(len) => len.to_string(),
+                            MemLayout::Tile { .. } => unreachable!(),
+                        }
                     );
                 }
                 prev_dt = dt;

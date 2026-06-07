@@ -7,7 +7,7 @@ use super::autotune::Optimization;
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, Scope},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope},
 };
 
 // ## Coalesced local+upcast access
@@ -86,7 +86,7 @@ impl Kernel {
         // We cannot upcast if the kernel is already vectorized
         // Also let's not upcast kernel with barriers for now
         if self.ops.values().any(|node| match node.op {
-            Op::Load { vlen, .. } | Op::Store { vlen, .. } => vlen != 1,
+            Op::Load { layout, .. } | Op::Store { layout, .. } => layout != MemLayout::Scalar,
             Op::Barrier { .. } => true,
             _ => false,
         }) {
@@ -144,7 +144,7 @@ impl Kernel {
                     acc_defines.insert(op_id);
                 }
                 Op::Index { .. } | Op::Loop { .. } | Op::EndLoop | Op::If { .. } | Op::EndIf | Op::Barrier { .. } => {}
-                Op::Store { dst, x, index, vlen } => {
+                Op::Store { dst, x, index, layout } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
                     if acc_defines.contains(&dst) {
@@ -154,11 +154,11 @@ impl Kernel {
                                 x = remap[i];
                             }
                             let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offsets[i] });
-                            id = self.insert_after(index, Op::Store { dst, x, index, vlen });
+                            id = self.insert_after(index, Op::Store { dst, x, index, layout });
                             ids.push(id);
                         }
                         let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                        self.ops[op_id].op = Op::Store { dst, x, index, vlen };
+                        self.ops[op_id].op = Op::Store { dst, x, index, layout };
                     } else {
                         for i in 0..(factor - 1) as usize {
                             let mut x = x;
@@ -169,30 +169,30 @@ impl Kernel {
                             if let Some(remap) = remaps.get(&index) {
                                 index = remap[i];
                             }
-                            id = self.insert_after(id, Op::Store { dst, x, index, vlen });
+                            id = self.insert_after(id, Op::Store { dst, x, index, layout });
                             ids.push(id);
                         }
                     }
                     remaps.insert(op_id, ids);
                 }
-                Op::Load { src, index, vlen } => {
+                Op::Load { src, index, layout } => {
                     let mut ids = Vec::with_capacity((factor - 1) as usize);
                     let mut id = op_id;
                     if acc_defines.contains(&src) {
                         for &offset in &offsets {
                             let index = self.insert_before(id, Op::Mad { x: index, y: const_factor, z: offset });
-                            id = self.insert_after(index, Op::Load { src, index, vlen });
+                            id = self.insert_after(index, Op::Load { src, index, layout });
                             ids.push(id);
                         }
                         let index = self.insert_before(op_id, Op::Binary { x: index, y: const_factor, bop: BOp::Mul });
-                        self.ops[op_id].op = Op::Load { src, index, vlen };
+                        self.ops[op_id].op = Op::Load { src, index, layout };
                     } else {
                         for i in 0..(factor - 1) as usize {
                             let mut index = index;
                             if let Some(remap) = remaps.get(&index) {
                                 index = remap[i];
                             }
-                            id = self.insert_after(id, Op::Load { src, index, vlen });
+                            id = self.insert_after(id, Op::Load { src, index, layout });
                             ids.push(id);
                         }
                     }

@@ -28,7 +28,7 @@
 
 use crate::{
     dtype::{Constant, DType},
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, Scope},
 };
 
 impl Kernel {
@@ -161,7 +161,7 @@ impl Kernel {
             load_id = self.next_op(load_id);
         }
 
-        let &Op::Load { src, index, vlen: 1 } = self.at(load_id) else { return None };
+        let &Op::Load { src, index, layout: MemLayout::Scalar } = self.at(load_id) else { return None };
         let &Op::Const(index) = self.at(index) else { return None };
         if index.as_dim() != Some(0) {
             return None;
@@ -177,7 +177,7 @@ impl Kernel {
         }
 
         let store_id = self.next_op(add_id);
-        let &Op::Store { dst, x, index, vlen: 1 } = self.at(store_id) else { return None };
+        let &Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.at(store_id) else { return None };
         let &Op::Const(index) = self.at(index) else { return None };
         if index.as_dim() != Some(0) {
             return None;
@@ -190,7 +190,7 @@ impl Kernel {
         let Op::EndLoop = self.at(endloop_id) else { return None };
 
         let load2_id = self.next_op(endloop_id);
-        let &Op::Load { src, index, vlen: 1 } = self.at(load2_id) else { return None };
+        let &Op::Load { src, index, layout: MemLayout::Scalar } = self.at(load2_id) else { return None };
         let &Op::Const(index) = self.at(index) else { return None };
         if index.as_dim() != Some(0) {
             return None;

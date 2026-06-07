@@ -47,7 +47,7 @@ impl Kernel {
                     check(op_id, src, &stack);
                     dtypes.insert(op_id, dtypes[&src]);
                 }
-                Op::Store { dst, x, index, vlen: _ } => {
+                Op::Store { dst, x, index, .. } => {
                     if !defines.contains_key(&dst) {
                         println!("store={op_id} is trying to store to undefined variable");
                         self.debug_colorless();

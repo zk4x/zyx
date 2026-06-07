@@ -3,7 +3,7 @@
 
 use crate::{
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId},
     shape::Dim,
 };
 
@@ -94,7 +94,11 @@ impl Kernel {
                             }
                             let vload = self.insert_before(
                                 loads[0].0,
-                                Op::Load { src: loads[0].1, index: base_index, vlen: loads.len() as u16 },
+                                Op::Load {
+                                    src: loads[0].1,
+                                    index: base_index,
+                                    layout: MemLayout::Vector(loads.len().try_into().unwrap()),
+                                },
                             );
                             for (idx, load) in loads.iter().enumerate() {
                                 self.ops[load.0].op = Op::Devectorize { vec: vload, idx };

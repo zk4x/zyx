@@ -80,34 +80,24 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     println!("{indent}r{out_id}{GREY}: {dtype}{RESET} = {MAGENTA}{value}{RESET}");
                 }
-                Op::Load { src, index, vlen: len } => {
+                Op::Load { src, index, layout } => {
                     let dtype = dtypes[&src];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
                     let src = id_map.get(&src).copied().unwrap_or(OpId::NULL);
                     let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
-                    if len > 1 {
-                        println!(
-                            "{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}..+{len}]    // {lb}..={ub} {GREEN}load{RESET}"
-                        );
-                    } else {
-                        println!(
-                            "{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index}]    // {lb}..={ub} {GREEN}load{RESET}"
-                        );
-                    }
+                    println!(
+                        "{indent}r{out_id}{GREY}: {dtype}{RESET} = {RED}r{src}{RESET}[r{index} @ {layout}]    // {lb}..={ub} {GREEN}load{RESET}"
+                    );
                 }
-                Op::Store { dst, x, index, vlen: len } => {
+                Op::Store { dst, x, index, layout } => {
                     let dtype = dtypes[&x];
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
                     let dst = id_map.get(&dst).copied().unwrap_or(OpId::NULL);
                     let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
-                    if len > 1 {
-                        println!("{indent}{RED}r{dst}{RESET}[r{index}..+len] = r{x}    // {lb}..={ub} {RED}store{RESET}");
-                    } else {
-                        println!("{indent}{RED}r{dst}{RESET}[r{index}] = r{x}    // {lb}..={ub} {RED}store{RESET}");
-                    }
+                    println!("{indent}{RED}r{dst}{RESET}[r{index} @ {layout}] = r{x}    // {lb}..={ub} {RED}store{RESET}");
                 }
                 Op::Cast { x, dtype } => {
                     dtypes.insert(op_id, dtype);
@@ -346,30 +336,22 @@ impl Kernel {
                     dtypes.insert(op_id, dtype);
                     println!("{indent}r{out_id}: {dtype} = {value}");
                 }
-                Op::Load { src, index, vlen: len } => {
+                Op::Load { src, index, layout } => {
                     let dtype = dtypes.get(&src).copied().unwrap_or(DType::Bool);
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
                     let src = id_map.get(&src).copied().unwrap_or(OpId::NULL);
                     let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
-                    if len > 1 {
-                        println!("{indent}r{out_id}: {dtype} = r{src}[r{index}..+{len}]    // {lb}..={ub} load");
-                    } else {
-                        println!("{indent}r{out_id}: {dtype} = r{src}[r{index}]    // {lb}..={ub} load");
-                    }
+                    println!("{indent}r{out_id}: {dtype} = r{src}[r{index} @ {layout}]    // {lb}..={ub} load");
                 }
-                Op::Store { dst, x, index, vlen: len } => {
+                Op::Store { dst, x, index, layout } => {
                     let dtype = dtypes.get(&x).copied().unwrap_or(DType::Bool);
                     dtypes.insert(op_id, dtype);
                     let (lb, ub) = bounds.get(&index).copied().unwrap_or((0, 0));
                     let dst = id_map.get(&dst).copied().unwrap_or(OpId::NULL);
                     let index = id_map.get(&index).copied().unwrap_or(OpId::NULL);
                     let x = id_map.get(&x).copied().unwrap_or(OpId::NULL);
-                    if len > 1 {
-                        println!("{indent}r{dst}[r{index}..+len] = r{x}    // {lb}..={ub} store");
-                    } else {
-                        println!("{indent}r{dst}[r{index}] = r{x}    // {lb}..={ub} store");
-                    }
+                    println!("{indent}r{dst}[r{index} @ {layout}] = r{x}    // {lb}..={ub} store");
                 }
                 Op::Barrier { scope } => {
                     println!("{indent}barrier {scope}");

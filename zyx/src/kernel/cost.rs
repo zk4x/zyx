@@ -4,7 +4,7 @@
 use crate::{
     DType, Map, Set,
     backend::DeviceInfo,
-    kernel::{IDX_T, Kernel, Op, OpId, Scope},
+    kernel::{IDX_T, Kernel, MemLayout, Op, OpId, Scope},
 };
 use nanoserde::{DeBin, SerBin};
 
@@ -53,17 +53,36 @@ impl Cost {
     pub fn debug(&self) {
         print!(
             "cost={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}, wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, wi_local_load_lidx_stride={}, wi_local_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={}, wi_register_load_bits={}, wi_register_store_bits={}, gws0={}, gws1={}, gws2={}, lws0={}, lws1={}, lws2={}, max_loop_depth={}, preferred_vector_size={}, local_mem_size={} ",
-            self.cost, self.num_groups, self.wi_per_group, self.wi_ops,
-            self.wi_compute_ops, self.wi_barriers, self.wi_global_load_bits,
-            self.wi_global_store_bits, self.wi_local_load_bits,
-            self.wi_local_store_bits, self.wi_peak_reg_bytes, self.wi_branches,
-            self.wi_global_load_lidx_stride, self.wi_global_store_lidx_stride,
-            self.wi_local_load_lidx_stride, self.wi_local_store_lidx_stride,
-            self.warp_size, self.max_local_threads, self.max_register_bytes,
-            self.wi_register_load_bits, self.wi_register_store_bits,
-            self.gws0, self.gws1, self.gws2,
-            self.lws0, self.lws1, self.lws2,
-            self.max_loop_depth, self.preferred_vector_size, self.local_mem_size
+            self.cost,
+            self.num_groups,
+            self.wi_per_group,
+            self.wi_ops,
+            self.wi_compute_ops,
+            self.wi_barriers,
+            self.wi_global_load_bits,
+            self.wi_global_store_bits,
+            self.wi_local_load_bits,
+            self.wi_local_store_bits,
+            self.wi_peak_reg_bytes,
+            self.wi_branches,
+            self.wi_global_load_lidx_stride,
+            self.wi_global_store_lidx_stride,
+            self.wi_local_load_lidx_stride,
+            self.wi_local_store_lidx_stride,
+            self.warp_size,
+            self.max_local_threads,
+            self.max_register_bytes,
+            self.wi_register_load_bits,
+            self.wi_register_store_bits,
+            self.gws0,
+            self.gws1,
+            self.gws2,
+            self.lws0,
+            self.lws1,
+            self.lws2,
+            self.max_loop_depth,
+            self.preferred_vector_size,
+            self.local_mem_size
         );
     }
 }
@@ -84,7 +103,7 @@ impl Kernel {
     pub fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {
         // First pass: compute reference counts and dtypes for register estimation
         let mut rcs: Map<OpId, u32> = Map::default();
-        let mut dtypes: Map<OpId, (DType, u16)> = Map::default();
+        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::default();
         {
             let mut op_id = self.head;
             while !op_id.is_null() {
@@ -98,25 +117,25 @@ impl Kernel {
                     | Op::Reduce { .. } => unreachable!(),
                     Op::Vectorize { ops } => {
                         let dtype = dtypes[&ops[0]];
-                        dtypes.insert(op_id, (dtype.0, ops.len() as u16));
+                        dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
                         for &x in ops.iter() {
                             *rcs.entry(x).or_insert(0) += 1;
                         }
                     }
                     Op::Const(x) => {
-                        dtypes.insert(op_id, (x.dtype(), 1));
+                        dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                     }
                     Op::Define { dtype, .. } => {
-                        dtypes.insert(op_id, (*dtype, 1));
+                        dtypes.insert(op_id, (*dtype, MemLayout::Scalar));
                     }
                     &Op::Wmma { c, a, b, .. } => {
-                        dtypes.insert(op_id, (DType::F32, 4));
+                        dtypes.insert(op_id, (DType::F32, MemLayout::Vector(4)));
                         *rcs.entry(a).or_insert(0) += 1;
                         *rcs.entry(b).or_insert(0) += 1;
                         *rcs.entry(c).or_insert(0) += 1;
                     }
-                    &Op::Load { src, index, vlen } => {
-                        dtypes.insert(op_id, (dtypes[&src].0, vlen));
+                    &Op::Load { src, index, layout } => {
+                        dtypes.insert(op_id, (dtypes[&src].0, layout));
                         *rcs.entry(index).or_insert(0) += 1;
                     }
                     &Op::Store { dst, x, index, .. } => {
@@ -150,7 +169,7 @@ impl Kernel {
                         *rcs.entry(z).or_insert(0) += 1;
                     }
                     Op::Index { .. } | Op::Loop { .. } => {
-                        dtypes.insert(op_id, (DType::U32, 1));
+                        dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                     }
                     &Op::If { condition } => {
                         *rcs.entry(condition).or_insert(0) += 1;
@@ -173,7 +192,7 @@ impl Kernel {
         let mut latest_loop_lengths: Vec<u64> = Vec::new();
         let mut max_loop_depth = 0u64;
 
-        let mut reg_slots: Vec<(u32, (DType, u16))> = Vec::new(); // (rc, dtype)
+        let mut reg_slots: Vec<(u32, (DType, MemLayout))> = Vec::new(); // (rc, dtype)
         let mut reg_map: Map<OpId, usize> = Map::default();
         let mut indexing_ops: Set<OpId> = Set::default();
         let mut wi_peak_reg_bytes = 0u64;
@@ -274,13 +293,13 @@ impl Kernel {
                 | Op::StoreView { .. }
                 | Op::Move { .. }
                 | Op::Reduce { .. } => {}
-                &Op::Load { src, index, vlen } => {
+                &Op::Load { src, index, layout } => {
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
                     }
                     let Op::Define { scope, .. } = self.ops[src].op else { unreachable!() };
-                    let total_elements = loop_mult * u64::from(vlen);
+                    let total_elements = loop_mult * layout.n_elements();
                     match scope {
                         Scope::Global => {
                             let n_bits = total_elements * dtypes[&op_id].0.bit_size() as u64;
@@ -384,7 +403,7 @@ impl Kernel {
                         }
                     }
                 }
-                &Op::Store { dst, index, vlen, .. } => {
+                &Op::Store { dst, index, layout, .. } => {
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 3;
@@ -392,7 +411,7 @@ impl Kernel {
                     let Op::Define { scope, .. } = self.ops[dst].op else { unreachable!() };
                     match scope {
                         Scope::Global => {
-                            let n_bits = loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64;
+                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as u64;
                             n_scoped_store_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
                             let strides = self.get_strides(index);
@@ -441,7 +460,7 @@ impl Kernel {
                             }
                         }
                         Scope::Local => {
-                            let n_bits = loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64;
+                            let n_bits = loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as u64;
                             n_scoped_store_bits[1] += n_bits;
                             let strides = self.get_strides(index);
                             let stride = strides
@@ -489,7 +508,7 @@ impl Kernel {
                             }
                         }
                         Scope::Register => {
-                            n_scoped_store_bits[2] += loop_mult * u64::from(vlen) * dtypes[&op_id].0.bit_size() as u64
+                            n_scoped_store_bits[2] += loop_mult * layout.n_elements() * dtypes[&op_id].0.bit_size() as u64
                         }
                     }
                 }
@@ -539,7 +558,7 @@ impl Kernel {
             let bytes: u64 = reg_slots
                 .iter()
                 .filter(|(r, _)| *r > 0)
-                .map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * u64::from(dt.1))
+                .map(|(_, dt)| u64::from(dt.0.bit_size() / 8) * dt.1.n_elements())
                 .sum();
             if bytes > wi_peak_reg_bytes {
                 wi_peak_reg_bytes = bytes;

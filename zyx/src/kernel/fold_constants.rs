@@ -4,7 +4,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope, UOp},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, Scope, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -228,8 +228,8 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match *self.at(op_id) {
-                Op::Store { dst, x, index, vlen } => {
-                    if vlen > 1 {
+                Op::Store { dst, x, index, layout } => {
+                    if layout != MemLayout::Scalar {
                         todo!()
                     }
                     if dst == define_id {

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use crate::{
     Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MoveOp, Op, OpId, Scope},
+    kernel::{BOp, IDX_T, Kernel, MemLayout, MoveOp, Op, OpId, Scope},
     shape::{Dim, UAxis},
 };
 
@@ -173,7 +173,10 @@ impl Kernel {
             );
 
             // Zero the accumulator
-            self.insert_before(loop_start, Op::Store { dst: acc, x: acc_init_id, index: const_zero, vlen: 1 });
+            self.insert_before(
+                loop_start,
+                Op::Store { dst: acc, x: acc_init_id, index: const_zero, layout: super::MemLayout::Scalar },
+            );
 
             // Add Loops for the reduce
             for &dim in &self.reduce_dims(reduce_op_id)[..n_axes] {
@@ -181,9 +184,15 @@ impl Kernel {
             }
 
             // Add reduction operation, load from acc, accumulate, store to acc
-            let load_acc = self.insert_before(reduce_op_id, Op::Load { src: acc, index: const_zero, vlen: 1 });
+            let load_acc = self.insert_before(
+                reduce_op_id,
+                Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar },
+            );
             let bin_acc = self.insert_before(reduce_op_id, Op::Binary { x, y: load_acc, bop: rop });
-            self.insert_before(reduce_op_id, Op::Store { dst: acc, x: bin_acc, index: const_zero, vlen: 1 });
+            self.insert_before(
+                reduce_op_id,
+                Op::Store { dst: acc, x: bin_acc, index: const_zero, layout: MemLayout::Scalar },
+            );
 
             // Close the reduce loop
             for _ in 0..n_axes {
@@ -191,7 +200,7 @@ impl Kernel {
             }
 
             // Replace old reduce op with the acc load op
-            self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, vlen: 1 };
+            self.ops[reduce_op_id].op = Op::Load { src: acc, index: const_zero, layout: MemLayout::Scalar };
         }
 
         self.verify();
@@ -406,7 +415,7 @@ impl Kernel {
                         start,
                         Op::Define { dtype, scope: Scope::Global, ro: true, len: view.original_numel() as u64 },
                     );
-                    let z = self.new_op(opi, Op::Load { src, index: offset, vlen: 1 });
+                    let z = self.new_op(opi, Op::Load { src, index: offset, layout: MemLayout::Scalar });
 
                     let pcd = self.new_op(opi, Op::Cast { x: pc, dtype });
                     // Nullify z if padding condition is false (if there is padding at that index)
@@ -442,7 +451,7 @@ impl Kernel {
                     }
 
                     let dst = self.insert_before(start, Op::Define { dtype, scope: Scope::Global, ro: false, len });
-                    self.ops[op_id].op = Op::Store { dst, x: src, index, vlen: 1 };
+                    self.ops[op_id].op = Op::Store { dst, x: src, index, layout: MemLayout::Scalar };
                 }
                 Op::Index { axis, .. } => {
                     axes.insert(axis, op_id);
