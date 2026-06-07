@@ -368,7 +368,7 @@ impl CDevice {
                                         _ = writeln!(source, "{indent}r{reg}.s{i} = {conv}(p{src}[{idx} + {i}]);");
                                     }
                                 }
-                                MemLayout::Tile { x, y, stride } => todo!(),
+                                MemLayout::Tile { .. } => todo!(),
                             }
                         } else if let MemLayout::Vector(len) = layout {
                             for i in 0..len {
@@ -383,7 +383,7 @@ impl CDevice {
                     let vlen = match layout {
                         MemLayout::Scalar => 1,
                         MemLayout::Vector(len) => len,
-                        MemLayout::Tile { x, y, stride } => todo!(),
+                        MemLayout::Tile { .. } => todo!(),
                     };
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);

@@ -18,7 +18,7 @@ use crate::{
     DType, Map,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, Kernel, Op, OpId, Scope, UOp},
+    kernel::{BOp, Kernel, MemLayout, Op, OpId, Scope, UOp},
     shape::Dim,
     slab::Slab,
 };
@@ -816,8 +816,8 @@ impl OpenCLDevice {
         fn new_reg(
             op_id: OpId,
             reg_map: &mut Map<OpId, usize>,
-            registers: &mut Vec<((DType, u16), u32, u8)>,
-            dtype: (DType, u16),
+            registers: &mut Vec<((DType, MemLayout), u32, u8)>,
+            dtype: (DType, MemLayout),
             rc: u32,
             current_loop_level: u8,
         ) -> usize {
@@ -840,7 +840,7 @@ impl OpenCLDevice {
             constants: &Map<OpId, Constant>,
             indices: &Map<OpId, u8>,
             reg_map: &Map<OpId, usize>,
-            registers: &mut [((DType, u16), u32, u8)],
+            registers: &mut [((DType, MemLayout), u32, u8)],
             loop_level: u8,
         ) -> String {
             if let Some(c) = constants.get(&op_id) {
@@ -903,7 +903,7 @@ impl OpenCLDevice {
         global_args.push('\n');
 
         let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, u16)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+        let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         // first we will calculate those reference counts.
         let mut op_id = kernel.head;
@@ -914,17 +914,17 @@ impl OpenCLDevice {
                     unreachable!()
                 }
                 Op::Const(x) => {
-                    dtypes.insert(op_id, (x.dtype(), 1));
+                    dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));
                 }
                 &Op::Define { dtype, .. } => {
-                    dtypes.insert(op_id, (dtype, 1));
+                    dtypes.insert(op_id, (dtype, MemLayout::Scalar));
                 }
-                &Op::Load { src, index, vlen: len } => {
-                    dtypes.insert(op_id, (dtypes[&src].0, len as u16));
+                &Op::Load { src, index, layout } => {
+                    dtypes.insert(op_id, (dtypes[&src].0, layout));
                     *rcs.entry(index).or_insert(0) += 1;
                 }
-                &Op::Store { dst, x: src, index, vlen } => {
-                    debug_assert_eq!(dtypes[&src].1, vlen);
+                &Op::Store { dst, x: src, index, layout } => {
+                    debug_assert_eq!(dtypes[&src].1, layout);
                     dtypes.insert(op_id, dtypes[&src]);
                     *rcs.entry(dst).or_insert(0) += 1;
                     *rcs.entry(src).or_insert(0) += 1;
@@ -950,7 +950,7 @@ impl OpenCLDevice {
                 }
                 Op::Vectorize { ops } => {
                     let dtype = dtypes[&ops[0]];
-                    dtypes.insert(op_id, (dtype.0, ops.len() as u16));
+                    dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));
                     for &x in ops {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
@@ -963,7 +963,7 @@ impl OpenCLDevice {
                     *rcs.entry(z).or_insert(0) += 1;
                 }
                 Op::Index { .. } | Op::Loop { .. } => {
-                    dtypes.insert(op_id, (DType::U32, 1));
+                    dtypes.insert(op_id, (DType::U32, MemLayout::Scalar));
                 }
                 &Op::If { condition } => {
                     *rcs.entry(condition).or_insert(0) += 1;
@@ -974,7 +974,7 @@ impl OpenCLDevice {
         }
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, u16), u32, u8)> = Vec::new();
+        let mut registers: Vec<((DType, MemLayout), u32, u8)> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -1010,36 +1010,39 @@ impl OpenCLDevice {
                         );
                     }
                 }
-                &Op::Load { src, index, vlen } => {
+                &Op::Load { src, index, layout } => {
                     if let Some(&rc) = rcs.get(&op_id) {
                         let dtype = dtypes[&op_id];
-                        debug_assert_eq!(dtype.1, vlen);
                         let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rc, loop_id);
-                        if vlen > 1 {
-                            for i in 0..vlen {
-                                _ = writeln!(source, "{indent}r{reg}.{} = p{src}[{idx}];", VEC_COMPONENTS[i as usize]);
+                        match layout {
+                            MemLayout::Scalar => _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];"),
+                            MemLayout::Vector(len) => {
+                                for i in 0..len {
+                                    _ = writeln!(source, "{indent}r{reg}.{} = p{src}[{idx}];", VEC_COMPONENTS[i as usize]);
+                                }
                             }
-                        } else {
-                            _ = writeln!(source, "{indent}r{reg} = p{src}[{idx}];");
+                            MemLayout::Tile { .. } => todo!(),
                         }
                     }
                 }
-                &Op::Store { dst, x: src, index, vlen } => {
+                &Op::Store { dst, x: src, index, layout } => {
                     let idx = get_var(index, &constants, &indices, &reg_map, &mut registers, loop_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    if vlen > 1 {
-                        for i in 0..vlen {
-                            _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.{};", VEC_COMPONENTS[i as usize]);
+                    match layout {
+                        MemLayout::Scalar => _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};"),
+                        MemLayout::Vector(len) => {
+                            for i in 0..len {
+                                _ = writeln!(source, "{indent}p{dst}[{idx} + {i}] = {x}.{};", VEC_COMPONENTS[i as usize]);
+                            }
                         }
-                    } else {
-                        _ = writeln!(source, "{indent}p{dst}[{idx}] = {x};");
+                        MemLayout::Tile { .. } => todo!(),
                     }
                 }
-                &Op::Cast { x, dtype } => {
-                    let vlen = dtypes[&x].1;
-                    let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id);
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen), rcs[&op_id], loop_id);
+                &Op::Cast { x: xop, dtype } => {
+                    let layout = dtypes[&xop].1;
+                    let x = get_var(xop, &constants, &indices, &reg_map, &mut registers, loop_id);
+                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
                     _ = writeln!(source, "{indent}r{reg} = ({}){x};", dtype.ocl());
                 }
                 &Op::Unary { x, uop } => {
@@ -1083,7 +1086,11 @@ impl OpenCLDevice {
                     vars.pop();
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                     let dtype = dtypes[&op_id];
-                    _ = writeln!(source, "{indent}r{reg} = ({}{})({vars});", dtype.0.ocl(), dtype.1);
+                    let vlen = match dtype.1 {
+                        MemLayout::Vector(len) => len,
+                        _ => unreachable!(),
+                    };
+                    _ = writeln!(source, "{indent}r{reg} = ({}{})({vars});", dtype.0.ocl(), vlen);
                 }
                 &Op::Devectorize { .. } => todo!(),
                 Op::Wmma { .. } => todo!(),
@@ -1183,7 +1190,11 @@ impl OpenCLDevice {
                 reg_str,
                 "{indent}{}{} r0",
                 dt.0.ocl(),
-                if dt.1 == 1 { String::new() } else { format!("{}", dt.1) }
+                match dt.1 {
+                    MemLayout::Scalar => "".into(),
+                    MemLayout::Vector(len) => len.to_string(),
+                    MemLayout::Tile { .. } => unreachable!(),
+                }
             );
             let mut i = 1;
             for (dt, _, _) in registers {
@@ -1194,7 +1205,11 @@ impl OpenCLDevice {
                         reg_str,
                         ";\n{indent}{}{} r{i}",
                         dt.0.ocl(),
-                        if dt.1 == 1 { String::new() } else { format!("{}", dt.1) }
+                        match dt.1 {
+                            MemLayout::Scalar => "".into(),
+                            MemLayout::Vector(len) => len.to_string(),
+                            MemLayout::Tile { .. } => unreachable!(),
+                        }
                     );
                 }
                 prev_dt = dt;
