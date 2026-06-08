@@ -412,6 +412,9 @@ pub(super) fn initialize_device(
                         );
                         debug_assert!(free_bytes > bytes);
                         free_bytes = free_bytes.saturating_sub(bytes);
+                        if debug_kmd {
+                            println!("[CUDA] alloc {} MB → free {} MB", bytes / (1024*1024), free_bytes / (1024*1024));
+                        }
                         let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
                         let event = Event::CUDA(CUDAEvent { event });
                         let _ = reply.send(Ok((buffer_id, event)));
@@ -427,6 +430,9 @@ pub(super) fn initialize_device(
                         let buffer = &mut buffers[buffer_id];
                         //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
                         _ = unsafe { (cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation);
+                        if debug_dev {
+                            println!("[CUDA] free {} MB → free {} MB", buffer.bytes / (1024*1024), (free_bytes + buffer.bytes) / (1024*1024));
+                        }
                         free_bytes += buffer.bytes;
                         buffers.remove(buffer_id);
                     }
