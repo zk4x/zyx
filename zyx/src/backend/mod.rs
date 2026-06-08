@@ -454,7 +454,7 @@ impl MemoryPool {
         if let Ok(_) = &result {
             if let Ok(x) = std::env::var("ZYX_DEBUG")
                 && let Ok(x) = x.parse::<u32>()
-                && DebugMask(x).kmd()
+                && DebugMask(x).memory()
             {
                 println!("[{name}] allocate {bytes} -> free {free} B");
             }
@@ -493,7 +493,7 @@ impl MemoryPool {
         }
         if let Ok(x) = std::env::var("ZYX_DEBUG")
             && let Ok(x) = x.parse::<u32>()
-            && DebugMask(x).kmd()
+                && DebugMask(x).memory()
         {
             let free_after = self.free_bytes();
             println!("[{name}] deallocate -> free {free_after} B (freed {} B)", free_after - free_before);
@@ -647,7 +647,18 @@ impl Device {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        match self {
+        let name = match self {
+            Device::C(_) => "C",
+            Device::Dummy(_) => "dummy",
+            Device::CUDA(_) => "CUDA",
+            Device::OpenCL(_) => "OPENCL",
+            Device::HIP(_) => "HIP",
+            #[cfg(feature = "tenstorrent")]
+            Device::TT(_) => "tenstorrent",
+            #[cfg(feature = "wgpu")]
+            Device::WGPU(_) => "WGPU",
+        };
+        let result = match self {
             Device::C(dev) => dev.compile(kernel, debug_asm),
             Device::Dummy(dev) => dev.compile(kernel, debug_asm),
             Device::CUDA(dev) => dev.compile(kernel, debug_asm),
@@ -657,7 +668,14 @@ impl Device {
             Device::TT(dev) => dev.compile(kernel, debug_asm),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.compile(kernel, debug_asm),
+        };
+        if let Ok(x) = std::env::var("ZYX_DEBUG")
+            && let Ok(x) = x.parse::<u32>()
+            && DebugMask(x).compile()
+        {
+            println!("[{name}] compile kernel");
         }
+        result
     }
 
     pub fn release(&mut self, program_id: DeviceProgramId) {

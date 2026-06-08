@@ -250,17 +250,17 @@ pub(super) fn initialize_device(
     let cuDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuDeviceGetAttribute\0") }?;
     let cuCtxCreate: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuCtxCreate\0") }?;
+        *unsafe { cuda.get(b"cuCtxCreate_v2\0") }?;
     //let cuMemAllocAsync = *unsafe { cuda.get(b"cuMemAllocAsync\0") }?;
-    let cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus = *unsafe { cuda.get(b"cuMemAlloc\0") }?;
-    let cuMemGetInfo: unsafe extern "C" fn(*mut usize, *mut usize) -> CUDAStatus = *unsafe { cuda.get(b"cuMemGetInfo\0") }?;
+    let cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus = *unsafe { cuda.get(b"cuMemAlloc_v2\0") }?;
+    let cuMemGetInfo: unsafe extern "C" fn(*mut usize, *mut usize) -> CUDAStatus = *unsafe { cuda.get(b"cuMemGetInfo_v2\0") }?;
     //let cuMemFreeAsync = *unsafe { cuda.get(b"cuMemFreeAsync\0") }?;
-    let cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus = *unsafe { cuda.get(b"cuMemFree\0") }?;
+    let cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus = *unsafe { cuda.get(b"cuMemFree_v2\0") }?;
     let cuMemcpyHtoDAsync: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize, CUstream) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuMemcpyHtoDAsync\0") }?;
+        *unsafe { cuda.get(b"cuMemcpyHtoDAsync_v2\0") }?;
     //let cuMemcpyHtoD = *unsafe { cuda.get(b"cuMemcpyHtoD\0") }?;
     let cuMemcpyDtoHAsync: unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize, CUstream) -> CUDAStatus =
-        *unsafe { cuda.get(b"cuMemcpyDtoHAsync\0") }?;
+        *unsafe { cuda.get(b"cuMemcpyDtoHAsync_v2\0") }?;
     //let cuMemcpyPeer = *unsafe { cuda.get(b"cuMemcpyPeer\0") }?;
     //let cuCtxSetCurrent = *unsafe { cuda.get(b"cuCtxGetCurrent\0") };
     //let cuCtxDestroy = *unsafe { cuda.get(b"cuCtxDestroy\0") }?;
@@ -296,7 +296,7 @@ pub(super) fn initialize_device(
     let cuEventRecord: unsafe extern "C" fn(CUevent, CUstream) -> CUDAStatus = *unsafe { cuda.get(b"cuEventRecord\0") }?;
     let cuEventSynchronize: unsafe extern "C" fn(CUevent) -> CUDAStatus = *unsafe { cuda.get(b"cuEventSynchronize\0") }?;
     let cuEventDestroy: unsafe extern "C" fn(CUevent) -> CUDAStatus = *unsafe { cuda.get(b"cuEventDestroy\0") }?;
-    //let cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus = *unsafe { cuda.get(b"cuCtxDestroy\0") }?;
+    //let cuCtxDestroy: unsafe extern "C" fn(CUcontext) -> CUDAStatus = *unsafe { cuda.get(b"cuCtxDestroy_v2\0") }?;
     //let cuDevicePrimaryCtxRetain: unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDevicePrimaryCtxRetain\0") }?;
 
     if let Err(err) = unsafe { cuInit(0) }.check(ErrorStatus::Initialization) {

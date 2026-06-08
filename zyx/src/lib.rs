@@ -143,6 +143,18 @@ impl DebugMask {
     pub const fn kmd(&self) -> bool {
         (self.0 >> 5) % 2 == 1
     }
+
+    /// Is memory allocation/deallocation debugging enabled?
+    #[must_use]
+    pub const fn memory(&self) -> bool {
+        (self.0 >> 6) % 2 == 1
+    }
+
+    /// Is kernel compilation debugging enabled?
+    #[must_use]
+    pub const fn compile(&self) -> bool {
+        (self.0 >> 7) % 2 == 1
+    }
 }
 
 const BOLD: &str = "\x1b[1m";
