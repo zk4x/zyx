@@ -151,7 +151,7 @@ pub(super) fn initialize_device(
         && device_ids.is_empty()
     {
         if debug_dev {
-            println!("PTX: configured out");
+            println!("[PTX] configured out");
         }
         return Ok(());
     }
@@ -166,9 +166,9 @@ pub(super) fn initialize_device(
     let cuda = cuda_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(cuda) = cuda else {
         if debug_dev {
-            println!("libcuda.so not found");
+            println!("[PTX] libcuda.so not found");
         }
-        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "CUDA libcuda.so not found.".into() });
+        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "[CUDA] libcuda.so not found.".into() });
     };
 
     let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus = *unsafe { cuda.get(b"cuInit\0") }?;
@@ -179,7 +179,7 @@ pub(super) fn initialize_device(
         *unsafe { cuda.get(b"cuDeviceGetName\0") }?;
     let cuDeviceComputeCapability: unsafe extern "C" fn(*mut c_int, *mut c_int, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuDeviceComputeCapability\0") }?;
-    let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceTotalMem\0") }?;
+    let cuDeviceTotalMem: unsafe extern "C" fn(*mut usize, CUdevice) -> CUDAStatus = *unsafe { cuda.get(b"cuDeviceTotalMem_v2\0") }?;
     let cuDeviceGetAttribute: unsafe extern "C" fn(*mut c_int, CUdevice_attribute, CUdevice) -> CUDAStatus =
         *unsafe { cuda.get(b"cuDeviceGetAttribute\0") }?;
     let cuCtxCreate: unsafe extern "C" fn(*mut CUcontext, c_uint, CUdevice) -> CUDAStatus =
@@ -233,7 +233,7 @@ pub(super) fn initialize_device(
 
     if let Err(err) = unsafe { cuInit(0) }.check(ErrorStatus::Initialization) {
         if debug_dev {
-            println!("CUDA requested, but cuInit failed. {err:?}");
+            println!("[PTX] cuInit failed: {err:?}");
         }
         return Err(err);
     }
@@ -242,14 +242,14 @@ pub(super) fn initialize_device(
     let mut num_devices = 0;
     unsafe { cuDeviceGetCount(&raw mut num_devices) }.check(ErrorStatus::DeviceQuery)?;
     if num_devices == 0 {
-        return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "No available cuda device.".into() });
+        return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "[CUDA] no available device.".into() });
     }
     let device_ids: Vec<i32> = (0..num_devices)
         .filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id)))
         .collect();
     if debug_dev && !device_ids.is_empty() {
         println!(
-                "PTX: driver version {}.{} on devices:",
+                "[PTX] driver version {}.{} on devices:",
                 driver_version / 1000,
                 (driver_version - (driver_version / 1000 * 1000)) / 10
         );
@@ -259,7 +259,7 @@ pub(super) fn initialize_device(
         let mut device = 0;
         if let Err(err) = unsafe { cuDeviceGet(&raw mut device, dev_id) }.check(ErrorStatus::DeviceEnumeration) {
             if debug_dev {
-                println!("Device with id {dev_id} requested, but could not be enumerated: {err}.");
+                println!("[PTX] device {dev_id}: could not be enumerated: {err}.");
             }
             continue;
         }
@@ -274,7 +274,7 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("PTX:   {:?}, compute: {major}.{minor}", unsafe {
+            println!("[PTX] {:?}, compute: {major}.{minor}", unsafe {
                 std::ffi::CStr::from_ptr(device_name.as_ptr())
             });
         }
@@ -282,10 +282,13 @@ pub(super) fn initialize_device(
         let Ok(()) = unsafe { cuDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
+        if debug_dev {
+            println!("[PTX] device total memory: {} MB", free_bytes / (1024*1024));
+        }
         let mut context: CUcontext = ptr::null_mut();
         if let Err(e) = unsafe { cuCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization) {
             if debug_dev {
-                println!("Device with id {dev_id} requested, but cuda context initialization failed. {e:?}");
+                println!("[PTX] device {dev_id}: context init failed: {e:?}");
             }
             continue;
         }
@@ -296,7 +299,7 @@ pub(super) fn initialize_device(
             let mut context: CUcontext = ptr::null_mut();
             if let Err(e) = unsafe { cuCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization) {
                 if debug_dev {
-                    println!("Cuda context initialization failed. {e:?}");
+                    println!("[PTX] context init failed: {e:?}");
                 }
                 return;
             }
@@ -305,7 +308,7 @@ pub(super) fn initialize_device(
                 let mut stream = ptr::null_mut();
                 if let Err(err) = unsafe { cuStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
                     if debug_dev {
-                        println!("Device with id {dev_id} requested, but cuda stream initialization failed. {err:?}");
+                        println!("[PTX] device {dev_id}: stream init failed: {err:?}");
                     }
                     continue;
                 }
@@ -432,7 +435,7 @@ pub(super) fn initialize_device(
                         .check(ErrorStatus::KernelCompilation)
                         {
                             if debug_dev {
-                                println!("Failed to compile kernel with err: {err:?}");
+                                println!("[PTX] kernel compilation failed: {err:?}");
                             }
                             _ = reply.send(Err(err));
                             continue;
@@ -443,7 +446,7 @@ pub(super) fn initialize_device(
                             .check(ErrorStatus::KernelCompilation)
                         {
                             if debug_dev {
-                                println!("Failed to launch kernel with err: {err:?}\n");
+                                println!("[PTX] kernel launch failed: {err:?}\n");
                             }
                             _ = reply.send(Err(err));
                             continue;

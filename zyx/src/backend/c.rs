@@ -49,10 +49,10 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError { status: ErrorStatus::Initialization, context: "C backend configured out.".into() });
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "[C] backend configured out.".into() });
     }
     if debug_dev {
-        println!("C/Clang: initialized");
+        println!("[C] initialized");
     }
     // C backend reuses HostMemoryPool — doesn't create its own pool
     // Just register the device with the host pool
@@ -63,6 +63,9 @@ pub(super) fn initialize_device(
         });
     }
     let pool_id = PoolId::from(0); // use the first (host) pool
+    if debug_dev {
+        println!("[C] device total memory: {} MB", 10_485_760u64);
+    }
     devices.push(Device::C(CDevice {
         device_info: DeviceInfo {
             compute: 10 * 1024 * 1024 * 1024 * 1024,
@@ -135,14 +138,14 @@ impl CDevice {
             let cached_so = cache_dir.join(format!("{hash:016x}.so"));
             if cached_so.is_file() {
                 if debug_asm {
-                    println!("Loading cached kernel {name} from {}", cached_so.display());
+                    println!("[C] loading cached kernel {name} from {}", cached_so.display());
                 }
                 if let Ok(lib) = unsafe { Library::new(&cached_so) } {
                     let program_id = self.programs.push(CProgram { lib, name });
                     return Ok(program_id);
                 }
                 if debug_asm {
-                    println!("Failed to load cached kernel, recompiling...");
+                    println!("[C] failed to load cached kernel, recompiling...");
                 }
             }
         }
@@ -696,7 +699,7 @@ static inline unsigned short f32tobf16(float v) {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if debug_asm {
-                    println!("Compiler stderr:\n{stderr}");
+                    println!("[C] compiler stderr:\n{stderr}");
                 }
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,

@@ -36,12 +36,15 @@ pub struct DiskEvent {}
 #[allow(clippy::unnecessary_wraps)]
 pub(super) fn initialize_pool(memory_pools: &mut Slab<PoolId, MemoryPool>, debug_dev: bool) -> Result<(), BackendError> {
     if debug_dev {
-        println!("Disk: initialized");
+        println!("[disk] initialized");
     }
     let pool = MemoryPool::Disk(DiskMemoryPool {
         free_bytes: 0, // Non allocatable
         buffers: Slab::new(),
     });
+    if debug_dev {
+        println!("[disk] device total memory: {} MB", 2_097_152u64);
+    }
     memory_pools.push(pool);
     Ok(())
 }

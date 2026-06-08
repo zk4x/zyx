@@ -72,7 +72,7 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError { status: super::ErrorStatus::Initialization, context: "WGPU configured out.".into() });
+        return Err(BackendError { status: super::ErrorStatus::Initialization, context: "[WGPU] configured out.".into() });
     }
 
     let power_preference = PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::HighPerformance);
@@ -85,7 +85,7 @@ pub(super) fn initialize_device(
     });
 
     if debug_dev {
-        println!("WGPU: requesting device with {power_preference:#?} power preference");
+        println!("[WGPU] requesting device with {power_preference:#?} power preference");
     }
 
     let (wgpu_adapter, wgpu_device, wgpu_queue, info) = async {
@@ -120,7 +120,7 @@ pub(super) fn initialize_device(
     .block_on();
 
     if debug_dev {
-        println!("WGPU: {} ({}) — {:#?}", info.name, info.device, info.backend);
+        println!("[WGPU] {} ({}) — {:#?}", info.name, info.device, info.backend);
     }
     let device = Arc::new(wgpu_device);
     let queue = Arc::new(wgpu_queue);
@@ -130,6 +130,9 @@ pub(super) fn initialize_device(
         queue: queue.clone(),
         buffers: Slab::new(),
     });
+    if debug_dev {
+        println!("[WGPU] device total memory: {} MB", 1_000_000_000u64 / (1024*1024));
+    }
     memory_pools.push(pool);
     let limits = device.limits();
     let features = wgpu_adapter.features();
@@ -143,7 +146,7 @@ pub(super) fn initialize_device(
     if features.contains(wgpu::Features::SHADER_INT64) {
         supported_dtypes |= 1 << (DType::I64 as u32);
     }
-    println!("Supported dtypes: {supported_dtypes:?}");
+    println!("[WGPU] supported dtypes: {supported_dtypes:?}");
     devices.push(Device::WGPU(WGPUDevice {
         device,
         adapter: wgpu_adapter,

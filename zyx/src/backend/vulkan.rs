@@ -90,7 +90,7 @@ pub(super) fn initialize_devices(
         .filter(|id| config.device_ids.as_ref().map_or(true, |ids| ids.contains(&(*id as i32))))
         .collect();
     if debug_dev && !device_ids.is_empty() {
-        println!("Vulkan: API version {} on devices:", api_version);
+        println!("[vulkan] API version {} on devices:", api_version);
     }
 
     // TODO apply this as filter on physical_devices
@@ -106,7 +106,7 @@ pub(super) fn initialize_devices(
             .map(|i| (p, i as u32))
     }) {
         if debug_dev {
-            println!("Vulkan:   {}", phys_device.properties().device_name);
+            println!("[vulkan] {}", phys_device.properties().device_name);
         }
         let (device, queues) = vulkano::device::Device::new(
             phys_device,
@@ -123,6 +123,9 @@ pub(super) fn initialize_devices(
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default()));
         let memory_pool = VulkanMemoryPool { free_bytes: 1024 * 1024 * 1024, memory_allocator };
+        if debug_dev {
+            println!("[vulkan] device total memory: {} MB", (1024 * 1024 * 1024) / (1024 * 1024));
+        }
         let device = VulkanDevice { dev_info: DeviceInfo::default(), memory_pool_id: 0, device };
         let queues = queues.map(|queue| VulkanQueue { load: 0, queue }).collect();
         devices.push((device, queues));

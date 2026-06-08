@@ -148,7 +148,7 @@ pub(super) fn initialize_device(
         && device_ids.is_empty()
     {
         if debug_dev {
-            println!("OpenCL: configured out");
+            println!("[OPENCL] configured out");
         }
         return Ok(());
     }
@@ -201,7 +201,7 @@ pub(super) fn initialize_device(
 
     let opencl = opencl_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(opencl) = opencl else {
-        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "OpenCL runtime not found.".into() });
+        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "[OPENCL] runtime not found.".into() });
     };
     let clGetPlatformIDs: unsafe extern "C" fn(cl_uint, *mut *mut c_void, *mut cl_uint) -> OpenCLStatus =
         *unsafe { opencl.get(b"clGetPlatformIDs\0") }?;
@@ -365,7 +365,7 @@ pub(super) fn initialize_device(
                     Vec::default()
                 }
             };
-            println!("OpenCL: {} on devices:", String::from_utf8(platform_name).unwrap());
+            println!("[OPENCL] {} on devices:", String::from_utf8(platform_name).unwrap());
         }
         if device_ids.is_empty() {
             continue;
@@ -386,6 +386,9 @@ pub(super) fn initialize_device(
         }
         if dev_infos.is_empty() {
             continue;
+        }
+        if debug_dev {
+            println!("[OPENCL] device total memory: {} MB", total_bytes / (1024*1024));
         }
 
         let (tx, rx): (Sender<Command>, Receiver<Command>) = channel();
@@ -633,7 +636,7 @@ pub(super) fn initialize_device(
 
                         let queue_id = next_queue(&mut queues[device_idx], clFinish);
                         if !programs.contains_key(program_id) {
-                            println!("Launching program_id={program_id:?}, NOT FOUND, programs={programs:?}");
+                            println!("[OPENCL] launching program_id={program_id:?}, NOT FOUND, programs={programs:?}");
                             let _ = reply.send(Err(BackendError {
                                 status: ErrorStatus::KernelLaunch,
                                 context: format!("Invalid program_id={program_id:?}").into(),
@@ -686,7 +689,7 @@ pub(super) fn initialize_device(
                     Command::ReleaseProgram { program_id } => {
                         let _ = unsafe { clReleaseProgram(programs[program_id].program) }.check(ErrorStatus::Deinitialization);
                         programs.remove(program_id);
-                        println!("Released program_id={program_id:?}'");
+                        println!("[OPENCL] released program_id={program_id:?}'");
                     }
                     Command::ReleaseEvents { events } => {
                         let events: Vec<*mut c_void> =
@@ -1274,7 +1277,7 @@ impl OpenCLDevice {
     }
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
-        println!("Release program_id={program_id:?}");
+        println!("[OPENCL] release program_id={program_id:?}");
         self.tx.send(Command::ReleaseProgram { program_id }).unwrap();
     }
 
@@ -1303,7 +1306,7 @@ fn query_device_info(
     let device_name = String::from_utf8(device_name).unwrap();
     let max_work_item_dims = get_device_data(device, clGetDeviceInfo, CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS)?;
     if debug_dev {
-        println!("OpenCL:   {device_name}");
+        println!("[OPENCL] {device_name}");
     }
     let max_work_item_dims = u32::from_ne_bytes(max_work_item_dims.try_into().unwrap()) as usize;
     let mwis = get_device_data(device, clGetDeviceInfo, CL_DEVICE_MAX_WORK_ITEM_SIZES)?;

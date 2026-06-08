@@ -36,12 +36,15 @@ pub(super) fn initialize_device(
     debug_dev: bool,
 ) -> Result<(), BackendError> {
     if !config.enabled {
-        return Err(BackendError { status: ErrorStatus::Initialization, context: "Dummy backend configured out.".into() });
+        return Err(BackendError { status: ErrorStatus::Initialization, context: "[dummy] backend configured out.".into() });
     }
     if debug_dev {
-        println!("Dummy: initialized");
+        println!("[dummy] initialized");
     }
     let pool = MemoryPool::Dummy(DummyMemoryPool { free_bytes: 1024 * 1024 * 1024 * 1024, buffers: Slab::new() });
+    if debug_dev {
+        println!("[dummy] device total memory: {} MB", 1024 * 1024);
+    }
     memory_pools.push(pool);
     devices.push(Device::Dummy(DummyDevice {
         device_info: DeviceInfo {

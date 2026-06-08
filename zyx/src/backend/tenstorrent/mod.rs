@@ -536,7 +536,7 @@ pub(super) fn initialize_device(
         && device_ids.is_empty()
     {
         if debug_dev {
-            println!("Tenstorrent: configured out");
+            println!("[tenstorrent] configured out");
         }
         return Ok(());
     }
@@ -576,11 +576,11 @@ pub(super) fn initialize_device(
             .map(|&(_, name, _)| name)
             .unwrap_or("?");
         println!(
-            "Tenstorrent: vendor=0x{:04x} device=0x{:04x} subsys=0x{:04x} card={card_name} (subven=0x{:04x})",
+            "[tenstorrent] vendor=0x{:04x} device=0x{:04x} subsys=0x{:04x} card={card_name} (subven=0x{:04x})",
             info.vendor_id, info.device_id, info.subsystem_id, info.subsystem_vendor_id
         );
-        println!("Tenstorrent: total_dram={} MB", total_bytes / (1024 * 1024));
-        println!("Tenstorrent: max_dma_buf_size_log2={}", info.max_dma_buf_size_log2);
+        println!("[tenstorrent] total_dram={} MB", total_bytes / (1024 * 1024));
+        println!("[tenstorrent] max_dma_buf_size_log2={}", info.max_dma_buf_size_log2);
     }
 
     let pool_id = memory_pools.len();
@@ -1066,7 +1066,7 @@ impl TTDevice {
                 Ok(rt) => self.runtime = Some(rt),
                 Err(e) => {
                     if debug_asm {
-                        eprintln!("tt-runtime: {e}");
+                        eprintln!("[tenstorrent] runtime: {e}");
                     }
                     return Err(e);
                 }
@@ -1077,7 +1077,7 @@ impl TTDevice {
         let compute_path = self.cache_dir.join(format!("{hash}.cpp"));
         if !compute_path.exists() {
             if debug_asm {
-                eprintln!("TT compile: generating {hash}.cpp");
+                eprintln!("[tenstorrent] generating {hash}.cpp");
             }
             let source = generate_compute_kernel(kernel)?;
             fs::create_dir_all(&self.cache_dir).map_err(|e| BackendError {
@@ -1089,7 +1089,7 @@ impl TTDevice {
                 context: format!("write {hash}.cpp: {e}").into(),
             })?;
         } else if debug_asm {
-            eprintln!("TT compile: using cached {hash}.cpp");
+            eprintln!("[tenstorrent] using cached {hash}.cpp");
         }
 
         let prog_id = self.programs.push(TTProgram { hash });

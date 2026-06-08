@@ -135,7 +135,7 @@ pub(super) fn initialize_device(
     ];
     let hip = hip_paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok());
     let Some(hip) = hip else {
-        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "HIP runtime not found.".into() });
+        return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "[HIP] runtime not found.".into() });
     };
 
     let hipInit: unsafe extern "C" fn(c_uint) -> HIPStatus = *unsafe { hip.get(b"hipInit\0") }.unwrap();
@@ -185,7 +185,7 @@ pub(super) fn initialize_device(
     let mut num_devices = 0;
     unsafe { hipDeviceGetCount(&raw mut num_devices) }.check(ErrorStatus::DeviceEnumeration)?;
     if num_devices == 0 {
-        return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "HIP no devices found.".into() });
+        return Err(BackendError { status: ErrorStatus::DeviceEnumeration, context: "[HIP] no devices found.".into() });
     }
     let device_ids: Vec<_> = (0..num_devices)
         .filter(|id| config.device_ids.as_ref().is_none_or(|ids| ids.contains(id)))
@@ -193,12 +193,12 @@ pub(super) fn initialize_device(
     if device_ids.is_empty() {
         return Err(BackendError {
             status: ErrorStatus::DeviceEnumeration,
-            context: "HIP all available devices configured out.".into(),
+            context: "[HIP] all available devices configured out.".into(),
         });
     }
     if debug_dev {
         println!(
-            "HIP: driver version {}.{} on devices:",
+            "[HIP] driver version {}.{} on devices:",
             driver_version / 1000,
             (driver_version - (driver_version / 1000 * 1000)) / 10
         );
@@ -220,7 +220,7 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("HIP:   {:?}, compute: {major}.{minor}", unsafe {
+            println!("[HIP] {:?}, compute: {major}.{minor}", unsafe {
                 std::ffi::CStr::from_ptr(device_name.as_ptr())
             });
         }
@@ -228,6 +228,9 @@ pub(super) fn initialize_device(
         let Ok(()) = unsafe { hipDeviceTotalMem(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
             continue;
         };
+        if debug_dev {
+            println!("[HIP] device total memory: {} MB", free_bytes / (1024*1024));
+        }
         let mut context: HIPcontext = ptr::null_mut();
         unsafe { hipCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization)?;
         let mut stream = ptr::null_mut();
@@ -257,7 +260,7 @@ pub(super) fn initialize_device(
             let mut stream = ptr::null_mut();
             if let Err(err) = unsafe { hipStreamCreate(&raw mut stream, 0) }.check(ErrorStatus::Initialization) {
                 if debug_dev {
-                    println!("Device with id {dev_id} requested, but hip stream initialization failed. {err:?}");
+                    println!("[HIP] device {dev_id}: stream init failed: {err:?}");
                 }
                 continue;
             }
@@ -573,13 +576,13 @@ impl HIPDevice {
             let mut program_log_size: usize = 0;
             unsafe { hiprtcGetProgramLogSize(program, &mut program_log_size) }.check("hiprtcGetProgramLogSize")?;
             //program_log_size = 1000;
-            println!("Program log size: {program_log_size}");
+            println!("[HIP] Program log size: {program_log_size}");
             let mut program_log: Vec<u8> = vec![0; program_log_size];
             unsafe { hiprtcGetProgramLog(program, program_log.as_mut_ptr().cast()) }.check("hiprtcGetProgramLog")?;
             if let Ok(log) = String::from_utf8(program_log) {
-                println!("HIPRTC program log:\n{log}",);
+                println!("[HIP] HIPRTC program log:\n{log}",);
             } else {
-                println!("HIPRTC program log is not valid utf8");
+                println!("[HIP] HIPRTC program log is not valid utf8");
             }
             return Err(e);
         }
@@ -625,7 +628,7 @@ impl HIPDevice {
         .check(ErrorStatus::KernelCompilation)
         {
             if debug_asm {
-                println!("Failed to compile kernel with err: {err:?}");
+                println!("[HIP] kernel compilation failed: {err:?}");
             }
             return Err(err);
         }
@@ -635,7 +638,7 @@ impl HIPDevice {
             .check(ErrorStatus::KernelLaunch)
         {
             if debug_asm {
-                println!("Failed to launch kernel with err: {err:?}\n");
+                println!("[HIP] kernel launch failed: {err:?}\n");
             }
             return Err(err);
         }
