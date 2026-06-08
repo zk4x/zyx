@@ -251,7 +251,7 @@ impl Kernel {
         opt.apply(&mut kernel, 0);
         kernel.run_always_on_optimizations();
 
-        kernel.tile();
+        //kernel.vectorize();
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
