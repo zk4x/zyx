@@ -247,11 +247,14 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        let (opt, _) = kernel.opt_pad_index();
+        /*let (opt, _) = kernel.opt_pad_index();
         opt.apply(&mut kernel, 0);
-        kernel.run_always_on_optimizations();
+        kernel.run_always_on_optimizations();*/
 
-        //kernel.vectorize();
+        let (opt, _) = kernel.opt_thread_coarse();
+        opt.apply(&mut kernel, 0);
+
+        kernel.vectorize_loads();
 
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();

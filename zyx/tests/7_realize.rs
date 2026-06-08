@@ -310,9 +310,7 @@ fn arange_matmul_cos() -> Result<(), ZyxError> {
     let dim = 16u64;
     let inv_freq_data: Vec<f32> = (0..dim).map(|i| 0.5f32.powf(i as f32 / dim as f32)).collect();
     let inv_freq = Tensor::from(inv_freq_data.clone()).reshape([1, dim])?;
-    let t = Tensor::arange(0u32, n as u32, 1)?
-        .cast(DType::F32)
-        .reshape([n, 1])?;
+    let t = Tensor::arange(0u32, n as u32, 1)?.cast(DType::F32).reshape([n, 1])?;
     let freqs = t.matmul(&inv_freq)?;
     let cos_freqs = freqs.cos();
     Tensor::realize([&cos_freqs])?;
@@ -321,8 +319,24 @@ fn arange_matmul_cos() -> Result<(), ZyxError> {
         for j in 0..dim as usize {
             let expected = (i as f32 * inv_freq_data[j]).cos();
             let got = result[i * dim as usize + j];
-            assert!(got.is_equal(expected), "Mismatch at ({i},{j}): got {got}, expected {expected}");
+            assert!(
+                got.is_equal(expected),
+                "Mismatch at ({i},{j}): got {got}, expected {expected}"
+            );
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn cos1() -> Result<(), ZyxError> {
+    let data: [f32; 16] = [
+        -3.285, 0.001, 1.780, 5.675, -8.521, -0.456, 1.215, -3.474, -4.128, -7.657, 4.5, 6.5, 8.1, 9.1, -0.5, -0.9,
+    ];
+    let zdata: Vec<f32> = Tensor::from(data).cos().try_into()?;
+    for (x, y) in data.iter().zip(zdata) {
+        //assert_eq!(x.cos(), y);
+        assert!(x.cos().is_equal(y), "{} != {y}", x.cos());
     }
     Ok(())
 }

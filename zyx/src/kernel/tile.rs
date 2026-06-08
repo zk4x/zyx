@@ -1,16 +1,18 @@
-use crate::{
-    kernel::{Kernel, Op, OpId},
-    slab::SlabId,
+/*use crate::{
+    kernel::{Kernel, Op, OpId, Scope},
+    shape::Dim,
 };
 
 impl Kernel {
-    pub fn vectorize(&self, gidx: OpId) {
-        let Op::Index { len, scope, axis } = self.ops[gidx].op else { return };
-        if !len.is_multiple_of(32) {
+    pub fn tile(&mut self, gidx: OpId, factor: Dim) {
+        let Op::Index { len, scope: Scope::Global, axis } = self.ops[gidx].op else { return };
+        if !len.is_multiple_of(factor) {
             return;
         }
 
-        let mut op_id = self.head;
+        self.thread_coarse(gidx, factor);
+
+        /*let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Cast { x, dtype } => todo!(),
@@ -34,6 +36,6 @@ impl Kernel {
                 Op::Reduce { x, rop, n_axes } => todo!(),
                 _ => todo!(),
             }
-        }
+        }*/
     }
-}
+}*/

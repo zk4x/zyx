@@ -81,7 +81,7 @@ impl Kernel {
         debug_assert!(len.is_multiple_of(factor));
         debug_assert_eq!(scope, Scope::Global);
 
-        //println!("upcast gidx_id={gidx_id} by factor={factor}");
+        //println!("thread coarse gidx_id={gidx_id} by factor={factor}");
 
         // === Some checks when we just cannot upcast === //
 
