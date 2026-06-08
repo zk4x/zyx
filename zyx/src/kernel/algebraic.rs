@@ -12,8 +12,9 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("algebraic_simplification");
 
-        self.simplify_shl_shr_roundtrips();
         self.unfuse_mad();
+        self.simplify_shl_shr_roundtrips();
+        self.simplify_bitwise_identities();
 
         let bounds = self.compute_bounds();
 
@@ -72,6 +73,42 @@ impl Kernel {
                 if let Op::Const(c) = self.at(*s) {
                     if c.as_dim() == Some(n) {
                         return Some(*y);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn simplify_bitwise_identities(&mut self) {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let Some(replacement) = self.match_bitwise_identity(op_id) {
+                self.remap(op_id, replacement);
+            }
+            op_id = next;
+        }
+        self.dead_code_elimination();
+    }
+
+    fn match_bitwise_identity(&self, op_id: OpId) -> Option<OpId> {
+        if let Op::Binary { x, y, bop: BOp::BitAnd } = self.at(op_id) {
+            for candidate in [(*x, *y), (*y, *x)] {
+                if let Op::Const(c) = self.at(candidate.0) {
+                    if let Some(v) = c.as_dim() {
+                        if v == u64::MAX {
+                            return Some(candidate.1);
+                        }
+                    }
+                }
+            }
+        }
+        if let Op::Binary { x, y, bop: BOp::BitOr } = self.at(op_id) {
+            for candidate in [(*x, *y), (*y, *x)] {
+                if let Op::Const(c) = self.at(candidate.0) {
+                    if c.as_dim() == Some(0) {
+                        return Some(candidate.1);
                     }
                 }
             }
