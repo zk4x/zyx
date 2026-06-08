@@ -13,17 +13,18 @@ use crate::{
 use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
 
+mod algebraic;
 pub mod autotune;
 pub mod cost;
 pub mod custom;
 mod debug;
-mod algebraic;
 mod exp2_to_exp;
 mod fold_constants;
 mod fold_loops;
 mod fuse;
-mod instruction_schedule;
+mod instr_sched;
 mod licm;
+mod local_reduce;
 mod local_tile;
 mod log2_to_ln;
 mod merge_loops;
@@ -31,11 +32,10 @@ mod mma;
 mod pad_index;
 pub mod predict_cost;
 mod split_loops;
-mod tile_registers;
-mod tiled_reduce;
+mod thread_coarse;
+mod tile;
 mod unfold;
 mod unroll_loops;
-mod upcast;
 mod vectorize;
 mod verify;
 

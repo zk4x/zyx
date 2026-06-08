@@ -25,8 +25,8 @@ type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
-    |k, _| Kernel::opt_upcast(k),
-    |k, _| Kernel::opt_register_tiling(k),
+    |k, _| Kernel::opt_thread_coarse(k),
+    |k, _| Kernel::opt_register_blocking(k),
     Kernel::opt_tiled_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_pad_index(k),
@@ -41,12 +41,12 @@ pub enum Optimization {
     SplitGlobalToLocal {
         factors: Vec<(OpId, u64)>,
     },
-    Upcast {
+    ThreadCoarse {
         factors: Vec<(OpId, u64)>,
     },
-    RegisterTiling {
+    RegisterBlocking {
         reduce_splits: BTreeMap<OpId, Vec<u64>>,
-        global_upcasts: BTreeMap<OpId, Vec<u64>>,
+        thread_coarses: BTreeMap<OpId, Vec<u64>>,
     },
     UnrollConstantLoops,
     TiledReduce {
@@ -72,22 +72,22 @@ impl Optimization {
                 let (op_id, factor) = factors[config];
                 println!("split global index {op_id} to local by {factor}, cfg_opt={config}");
             }
-            Optimization::Upcast { factors } => {
+            Optimization::ThreadCoarse { factors } => {
                 let (op_id, factor) = factors[config];
-                println!("upcast axis {op_id} by {factor}, cfg_opt={config}");
+                println!("thread_coarse axis {op_id} by {factor}, cfg_opt={config}");
             }
-            Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
+            Optimization::RegisterBlocking { reduce_splits, thread_coarses } => {
                 use std::fmt::Write;
 
                 let mut info = String::new();
 
-                let n_global = global_upcasts.len();
+                let n_global = thread_coarses.len();
                 let n_reduce = reduce_splits.len();
                 if n_global == 0 || n_reduce == 0 {
                     return;
                 }
 
-                let n_global_options: usize = global_upcasts.values().map(|v| v.len() + 1).product();
+                let n_global_options: usize = thread_coarses.values().map(|v| v.len() + 1).product();
 
                 let mut remaining_global = config % n_global_options;
                 let mut remaining_reduce = config / n_global_options;
@@ -101,7 +101,7 @@ impl Optimization {
                 }
 
                 let mut global_indices: Vec<usize> = Vec::with_capacity(n_global);
-                for (_, factors) in global_upcasts.iter() {
+                for (_, factors) in thread_coarses.iter() {
                     let n_options = factors.len() + 1;
                     let factor_idx = remaining_global % n_options;
                     remaining_global /= n_options;
@@ -115,13 +115,13 @@ impl Optimization {
                     write!(info, "unroll loop_id={reduce_id} by {reduce_factor}");
                 }
 
-                // Then apply upcast
+                // Then apply thread coarsing
                 let mut idx = 0;
-                for (op_id, factors) in global_upcasts.iter() {
+                for (op_id, factors) in thread_coarses.iter() {
                     let factor_idx = global_indices[idx];
                     let factor = if factor_idx == 0 { 1 } else { factors[factor_idx - 1] };
                     if factor > 1 {
-                        write!(info, ", upcast gidx op_id={op_id} by {factor}");
+                        write!(info, ", thread coarse gidx op_id={op_id} by {factor}");
                     }
                     idx += 1;
                 }
@@ -172,15 +172,15 @@ impl Optimization {
                     ],
                 );
             }
-            Optimization::Upcast { factors } => {
+            Optimization::ThreadCoarse { factors } => {
                 if factors.is_empty() {
                     return;
                 }
                 let (op_id, factor) = factors[config];
-                kernel.upcast(op_id, factor);
+                kernel.thread_coarse(op_id, factor);
             }
-            Optimization::RegisterTiling { reduce_splits, global_upcasts } => {
-                kernel.apply_register_tiling(reduce_splits, global_upcasts, config);
+            Optimization::RegisterBlocking { reduce_splits, thread_coarses } => {
+                kernel.apply_register_blocking(reduce_splits, thread_coarses, config);
             }
             Optimization::UnrollConstantLoops => {
                 kernel.unroll_constant_loops();
@@ -247,23 +247,15 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        // Apply unroll_tree_reduce on the loop by factor 8 (before upcasts)
-        let mut loop_id = kernel.head;
-        while !loop_id.is_null() {
-            if matches!(kernel.ops[loop_id].op, Op::Loop { .. }) {
-                kernel.unroll_tree_reduce(loop_id, 8);
-                break;
-            }
-            loop_id = kernel.next_op(loop_id);
-        }
-
+        let (opt, _) = kernel.opt_pad_index();
+        opt.apply(&mut kernel, 0);
         kernel.run_always_on_optimizations();
 
-        kernel.run_always_on_optimizations();
+        kernel.tile();
+
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.fuse_mad();
-        kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
@@ -295,7 +287,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
