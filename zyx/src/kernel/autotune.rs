@@ -227,7 +227,7 @@ impl Kernel {
         self.fold_accs();
         self.delete_empty_loops();
         self.unfold_pows();
-        self.div_mod_simplification();
+        self.algebraic_simplification();
         self.simplify_accumulating_loop();
         self.swap_commutative();
         self.common_subexpression_elimination();

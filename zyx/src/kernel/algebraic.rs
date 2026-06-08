@@ -8,10 +8,11 @@ use crate::{
 };
 
 impl Kernel {
-    pub fn div_mod_simplification(&mut self) {
+    pub fn algebraic_simplification(&mut self) {
         #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("div_mod_simplification");
+        let _timer = crate::Timer::new("algebraic_simplification");
 
+        self.simplify_shl_shr_roundtrips();
         self.unfuse_mad();
 
         let bounds = self.compute_bounds();
@@ -40,6 +41,42 @@ impl Kernel {
 
         self.dead_code_elimination();
         self.verify();
+    }
+
+    fn simplify_shl_shr_roundtrips(&mut self) {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let Some(y) = self.match_shl_shr_roundtrip(op_id) {
+                self.remap(op_id, y);
+            }
+            op_id = next;
+        }
+        self.dead_code_elimination();
+    }
+
+    fn match_shl_shr_roundtrip(&self, op_id: OpId) -> Option<OpId> {
+        let Op::Binary { x: add_op, y: shift_amount, bop: BOp::BitShiftRight } = self.at(op_id) else {
+            return None;
+        };
+        let Op::Const(cst) = self.at(*shift_amount) else { return None };
+        let n = cst.as_dim()?;
+        if n >= 64 {
+            return None;
+        }
+        let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(*add_op) else {
+            return None;
+        };
+        for candidate in [add_x, add_y] {
+            if let Op::Binary { x: y, y: s, bop: BOp::BitShiftLeft } = self.at(*candidate) {
+                if let Op::Const(c) = self.at(*s) {
+                    if c.as_dim() == Some(n) {
+                        return Some(*y);
+                    }
+                }
+            }
+        }
+        None
     }
 
     #[allow(unused)]
