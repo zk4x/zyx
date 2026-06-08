@@ -267,7 +267,7 @@ impl Kernel {
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
 
-        //kernel.debug_colorless();
+        kernel.debug();
 
         let (program_id, _) = kernel.launch_with_timings(
             buffers,
@@ -295,7 +295,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if true {
+        if false {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
