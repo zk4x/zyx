@@ -225,10 +225,7 @@ impl Tensor {
     ///
     /// # Errors
     /// Returns a `ZyxError` if the operation fails.
-    #[pyo3(name = "realize_one")]
-    pub fn realize_one_py(&self) -> Result<(), ZyxError> {
-        Tensor::realize([self])
-    }
+
 
     /// Returns the shape of the tensor.
     #[must_use]

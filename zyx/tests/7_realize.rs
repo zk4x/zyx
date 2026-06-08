@@ -300,7 +300,7 @@ fn embedding_test() -> Result<(), ZyxError> {
         .expand([b_size, s, vocab_size, embed_size])?;
     let one_hot = arange.equal(&idx)?.cast(DType::F32);
     let result = (one_hot * w).sum([2])?;
-    result.realize_one()?;
+    Tensor::realize([&result])?;
     Ok(())
 }
 
@@ -315,7 +315,7 @@ fn arange_matmul_cos() -> Result<(), ZyxError> {
         .reshape([n, 1])?;
     let freqs = t.matmul(&inv_freq)?;
     let cos_freqs = freqs.cos();
-    cos_freqs.realize_one()?;
+    Tensor::realize([&cos_freqs])?;
     let result: Vec<f32> = cos_freqs.try_into()?;
     for i in 0..n.min(10) as usize {
         for j in 0..dim as usize {

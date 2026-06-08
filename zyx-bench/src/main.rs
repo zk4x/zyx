@@ -43,13 +43,13 @@ fn reduce_bench() -> Result<(), ZyxError> {
         &[64, 64, 64],
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        x.sum_all().realize_one()?;
-        x.mean_all().realize_one()?;
-        x.max_all().realize_one()?;
-        x.min_all().realize_one()?;
-        x.prod_all().realize_one()?;
-        x.var_all().realize_one()?;
-        x.std_all().realize_one()?;
+        Tensor::realize([&x.sum_all()])?;
+        Tensor::realize([&x.mean_all()])?;
+        Tensor::realize([&x.max_all()])?;
+        Tensor::realize([&x.min_all()])?;
+        Tensor::realize([&x.prod_all()])?;
+        Tensor::realize([&x.var_all()])?;
+        Tensor::realize([&x.std_all()])?;
     }
     //println!();
     Ok(())
@@ -70,7 +70,7 @@ fn softmax_bench() -> Result<(), ZyxError> {
         (&[8, 512, 2048], &[2i32][..]),
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        x.softmax(axes.iter().copied())?.realize_one()?;
+        Tensor::realize([&x.softmax(axes.iter().copied())?])?;
     }
     //println!();
     Ok(())
@@ -84,7 +84,7 @@ fn embedding_bench() -> Result<(), ZyxError> {
         let embedding = Tensor::rand([vocab_size, embed_dim], DType::F32)?;
         let idx: Vec<i32> = (0..seq_len).map(|i| (i % vocab_size) as i32).collect();
         let indices = Tensor::from(idx);
-        embedding.index_select(0, indices)?.realize_one()?;
+        Tensor::realize([&embedding.index_select(0, indices)?])?;
     }
     //println!();
     Ok(())
@@ -94,7 +94,7 @@ fn gelu_bench() -> Result<(), ZyxError> {
     //println!("=== GELU Activation ===");
     for dims in [&[4096u64][..], &[16384], &[1024, 4096], &[256, 1024, 512]] {
         let x = Tensor::rand(dims, DType::F32)?;
-        x.gelu().realize_one()?;
+        Tensor::realize([&x.gelu()])?;
     }
     //println!();
     Ok(())
@@ -113,11 +113,11 @@ fn activation_bench() -> Result<(), ZyxError> {
         &[128u64, 16384u64],
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        x.relu().realize_one()?;
-        x.sigmoid().realize_one()?;
-        x.tanh().realize_one()?;
-        x.exp().realize_one()?;
-        x.log(Tensor::from(2.0)).realize_one()?;
+        Tensor::realize([&x.relu()])?;
+        Tensor::realize([&x.sigmoid()])?;
+        Tensor::realize([&x.tanh()])?;
+        Tensor::realize([&x.exp()])?;
+        Tensor::realize([&x.log(Tensor::from(2.0))])?;
     }
     //println!();
     Ok(())
@@ -133,7 +133,7 @@ fn ln_softmax_bench() -> Result<(), ZyxError> {
         (&[64, 512], &[0i32][..]),
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        x.ln_softmax(axes.iter().copied())?.realize_one()?;
+        Tensor::realize([&x.ln_softmax(axes.iter().copied())?])?;
     }
     //println!();
     Ok(())
@@ -165,16 +165,16 @@ fn reduce_axis_bench() -> Result<(), ZyxError> {
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
         let last = dims.len() as i32 - 1;
-        x.sum([last])?.realize_one()?;
-        x.max([last])?.realize_one()?;
-        x.min([last])?.realize_one()?;
-        x.mean([last])?.realize_one()?;
-        x.var([last])?.realize_one()?;
+        Tensor::realize([&x.sum([last])?])?;
+        Tensor::realize([&x.max([last])?])?;
+        Tensor::realize([&x.min([last])?])?;
+        Tensor::realize([&x.mean([last])?])?;
+        Tensor::realize([&x.var([last])?])?;
         // Reduce along axis 0 as well
         if dims.len() > 1 {
-            x.sum([0])?.realize_one()?;
-            x.max([0])?.realize_one()?;
-            x.mean([0])?.realize_one()?;
+            Tensor::realize([&x.sum([0])?])?;
+            Tensor::realize([&x.max([0])?])?;
+            Tensor::realize([&x.mean([0])?])?;
         }
     }
     //println!();
@@ -192,7 +192,7 @@ fn silu_like_bench() -> Result<(), ZyxError> {
         &[16, 768, 2048],
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        x.sigmoid().mul(&x).realize_one()?;
+        Tensor::realize([&x.sigmoid().mul(&x)])?;
     }
     //println!();
     Ok(())
@@ -210,7 +210,7 @@ fn layer_norm_like_bench() -> Result<(), ZyxError> {
         let var = centered.var([-1])?.unsqueeze(-1)?;
         let std = var.add(Tensor::from(1e-5)).sqrt();
         let norm = centered.div(&std);
-        norm.mul(&gamma).add(&beta).realize_one()?;
+        Tensor::realize([&norm.mul(&gamma).add(&beta)])?;
     }
     //println!();
     Ok(())
@@ -225,10 +225,10 @@ fn reduce_multi_axis_bench() -> Result<(), ZyxError> {
         &[8, 512, 64],
     ] {
         let x = Tensor::rand(dims, DType::F32)?;
-        x.sum([0, 1])?.realize_one()?;
-        x.max([0, 1])?.realize_one()?;
-        x.mean([1, 2])?.realize_one()?;
-        x.var([0, 2])?.realize_one()?;
+        Tensor::realize([&x.sum([0, 1])?])?;
+        Tensor::realize([&x.max([0, 1])?])?;
+        Tensor::realize([&x.mean([1, 2])?])?;
+        Tensor::realize([&x.var([0, 2])?])?;
     }
     //println!();
     Ok(())
