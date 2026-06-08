@@ -102,7 +102,10 @@ impl Kernel {
                     }
                     dtypes.insert(op_id, dtype);
                 }
-                Op::Devectorize { .. } => todo!(),
+                Op::Devectorize { vec, .. } => {
+                    let dtype = dtypes[&vec];
+                    dtypes.insert(op_id, dtype);
+                }
                 Op::Wmma { c, a, b, .. } => {
                     let dtype = dtypes[&c];
                     check(op_id, c, &stack);

@@ -5,6 +5,8 @@
 //!
 //! Run with: `cargo run --release`
 
+#![allow(unused)]
+
 use std::ops::{Add, Div, Mul, Sub};
 use zyx::{DType, Module, Tensor, ZyxError};
 
@@ -236,7 +238,10 @@ fn reduce_multi_axis_bench() -> Result<(), ZyxError> {
 
 fn large_matmul_bench() -> Result<(), ZyxError> {
     //println!("=== Large MatMul ===");
-    let dims: &[u64] = &[256, 320, 384, 448, 512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1792, 2048, 2304, 2560, 3072, 3584, 4096, 4608, 5120, 6144];
+    let dims: &[u64] = &[
+        256, 320, 384, 448, 512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1792, 2048, 2304,
+        2560, 3072, 3584, 4096, 4608, 5120, 6144,
+    ];
     // Square
     for &n in dims {
         let a = Tensor::rand([n, n], DType::F32)?;
