@@ -38,6 +38,7 @@ impl Kernel {
     pub fn simplify_accumulating_loop(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("simplify_accumulating_loop");
+        self.simplify_shl_shr_roundtrips();
         let mut op_id = self.head;
         while !op_id.is_null() {
             if self.fold_loop(op_id) {
@@ -46,6 +47,46 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         self.verify();
+    }
+
+    /// Replaces Shr(Add(x, Shl(y, n)), n) with y throughout the IR.
+    /// This is an identity when x < 2^n — the shifted-in bits from y are recovered
+    /// by the right-shift, and the contribution from x is shifted out.
+    fn simplify_shl_shr_roundtrips(&mut self) {
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if let Some(y) = self.match_shl_shr_roundtrip(op_id) {
+                self.remap(op_id, y);
+            }
+            op_id = next;
+        }
+        self.dead_code_elimination();
+    }
+
+    /// Matches a single Shr(Add(x, Shl(y, n)), n) → y pattern.
+    fn match_shl_shr_roundtrip(&self, op_id: OpId) -> Option<OpId> {
+        let Op::Binary { x: add_op, y: shift_amount, bop: BOp::BitShiftRight } = self.at(op_id) else {
+            return None;
+        };
+        let Op::Const(cst) = self.at(*shift_amount) else { return None };
+        let n = cst.as_dim()?;
+        if n >= 64 {
+            return None;
+        }
+        let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(*add_op) else {
+            return None;
+        };
+        for candidate in [add_x, add_y] {
+            if let Op::Binary { x: y, y: s, bop: BOp::BitShiftLeft } = self.at(*candidate) {
+                if let Op::Const(c) = self.at(*s) {
+                    if c.as_dim() == Some(n) {
+                        return Some(*y);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Attempts to fold a specific accumulating loop starting at the given define.

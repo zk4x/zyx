@@ -206,25 +206,37 @@ fn mul_add(k: &Kernel, x: OpId) -> Option<(OpId, u64, OpId)> {
     if let Some(x) = mad(k, x) {
         return Some(x);
     }
-    // Case 1: (a * c) + b
+    // Case 1: (a * c) + b  (also (a << c) + b for constant c)
     let Op::Binary { x: mul, y: add, bop: BOp::Add } = k.at(x) else {
         return None;
     };
-    if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(*mul) {
-        if let Op::Const(cst) = k.at(*c) {
-            if let Some(cval) = cst.as_dim() {
-                return Some((*a, cval, *add));
-            }
-        }
+    if let Some((a, cval)) = match_mul_or_shl(k, *mul) {
+        return Some((a, cval, *add));
     }
-    // Case 2: b + (a * c)
+    // Case 2: b + (a * c)  (also b + (a << c) for constant c)
     let Op::Binary { x: b, y: mul, bop: BOp::Add } = k.at(x) else {
         return None;
     };
-    if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(*mul) {
+    if let Some((a, cval)) = match_mul_or_shl(k, *mul) {
+        return Some((a, cval, *b));
+    }
+    None
+}
+
+fn match_mul_or_shl(k: &Kernel, op: OpId) -> Option<(OpId, u64)> {
+    if let Op::Binary { x: a, y: c, bop: BOp::Mul } = k.at(op) {
         if let Op::Const(cst) = k.at(*c) {
             if let Some(cval) = cst.as_dim() {
-                return Some((*a, cval, *b));
+                return Some((*a, cval));
+            }
+        }
+    }
+    if let Op::Binary { x: a, y: c, bop: BOp::BitShiftLeft } = k.at(op) {
+        if let Op::Const(cst) = k.at(*c) {
+            if let Some(cval) = cst.as_dim() {
+                if cval < 64 {
+                    return Some((*a, 1u64 << cval));
+                }
             }
         }
     }
