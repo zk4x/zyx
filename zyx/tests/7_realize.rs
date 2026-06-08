@@ -303,3 +303,26 @@ fn embedding_test() -> Result<(), ZyxError> {
     result.realize_one()?;
     Ok(())
 }
+
+#[test]
+fn arange_matmul_cos() -> Result<(), ZyxError> {
+    let n = 4096u64;
+    let dim = 16u64;
+    let inv_freq_data: Vec<f32> = (0..dim).map(|i| 0.5f32.powf(i as f32 / dim as f32)).collect();
+    let inv_freq = Tensor::from(inv_freq_data.clone()).reshape([1, dim])?;
+    let t = Tensor::arange(0u32, n as u32, 1)?
+        .cast(DType::F32)
+        .reshape([n, 1])?;
+    let freqs = t.matmul(&inv_freq)?;
+    let cos_freqs = freqs.cos();
+    cos_freqs.realize_one()?;
+    let result: Vec<f32> = cos_freqs.try_into()?;
+    for i in 0..n.min(10) as usize {
+        for j in 0..dim as usize {
+            let expected = (i as f32 * inv_freq_data[j]).cos();
+            let got = result[i * dim as usize + j];
+            assert!(got.is_equal(expected), "Mismatch at ({i},{j}): got {got}, expected {expected}");
+        }
+    }
+    Ok(())
+}
