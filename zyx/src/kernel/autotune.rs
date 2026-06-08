@@ -22,14 +22,13 @@ use std::thread;
 
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_upcast(k),
     |k, _| Kernel::opt_register_tiling(k),
     Kernel::opt_tiled_reduce,
     |k, _| Kernel::opt_split_loop(k),
-    |k, _| Kernel::opt_licm(k),
     |k, _| Kernel::opt_pad_index(k),
 ];
 
@@ -56,7 +55,6 @@ pub enum Optimization {
     SplitLoop {
         factors: Vec<(OpId, u64)>,
     },
-    Licm,
     PadIndex {
         factors: Vec<(OpId, Dim)>,
     },
@@ -138,7 +136,6 @@ impl Optimization {
                 let (op_id, factor) = factors[config];
                 println!("split loop {op_id} by {factor}");
             }
-            Optimization::Licm => println!("Licm"),
             Optimization::PadIndex { factors } => {
                 let (op_id, _) = factors[config];
                 println!("pad index {op_id} by 32, cfg_opt={config}");
@@ -196,9 +193,6 @@ impl Optimization {
                 let (op_id, factor) = factors[config];
                 let Op::Loop { len } = kernel.ops[op_id].op else { unreachable!() };
                 kernel.split_dim(op_id, vec![Op::Loop { len: len / factor }, Op::Loop { len: factor }]);
-            }
-            Optimization::Licm => {
-                kernel.loop_invariant_code_motion();
             }
             Optimization::PadIndex { factors } => {
                 if factors.is_empty() {
@@ -265,63 +259,7 @@ impl Kernel {
 
         kernel.run_always_on_optimizations();
 
-        // Collect global indices BEFORE upcast
-        let gidx_ids: Vec<(OpId, Dim, u32)> = kernel
-            .ops
-            .iter()
-            .filter_map(|(id, node)| {
-                if let Op::Index { len, scope: Scope::Global, axis } = node.op {
-                    Some((id, len, axis))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Upcast gidx0 by 8, gidx1 by 8
-        if gidx_ids.len() >= 2 {
-            kernel.upcast(gidx_ids[0].0, 8);
-            kernel.upcast(gidx_ids[1].0, 8);
-        }
-
         kernel.run_always_on_optimizations();
-
-        // Collect global indices AFTER upcast and split to local (32, 8)
-        let gidx_ids: Vec<(OpId, Dim, u32)> = kernel
-            .ops
-            .iter()
-            .filter_map(|(id, node)| {
-                if let Op::Index { len, scope: Scope::Global, axis } = node.op {
-                    Some((id, len, axis))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for (gidx_id, len, axis) in &gidx_ids {
-            if *axis == 0 {
-                kernel.split_dim(
-                    *gidx_id,
-                    vec![
-                        Op::Index { len: len / 32, scope: Scope::Global, axis: *axis },
-                        Op::Index { len: 32, scope: Scope::Local, axis: *axis },
-                    ],
-                );
-            } else if *axis == 1 {
-                kernel.split_dim(
-                    *gidx_id,
-                    vec![
-                        Op::Index { len: len / 8, scope: Scope::Global, axis: *axis },
-                        Op::Index { len: 8, scope: Scope::Local, axis: *axis },
-                    ],
-                );
-            }
-        }
-
-        kernel.run_always_on_optimizations();
-        kernel.run_always_on_optimizations();
-        kernel.loop_invariant_code_motion();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.fuse_mad();
@@ -357,7 +295,7 @@ impl Kernel {
         write_bytes: u64,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, OptSeq), BackendError> {
-        if false {
+        if true {
             return self.apply_selected_optimizations(buffers, device, memory_pool, config, flop, read_bytes, write_bytes, debug);
         }
 
