@@ -30,6 +30,7 @@ use std::{
     hash::BuildHasherDefault,
     ptr,
     sync::Arc,
+    sync::atomic::{AtomicU64, Ordering},
     sync::mpsc::{Receiver, Sender, channel},
     thread,
 };
@@ -50,7 +51,7 @@ pub struct OpenCLMemoryPool {
     tx: Sender<Command>,
     #[allow(unused)]
     total_bytes: Dim,
-    free_bytes: Dim,
+    free_bytes: Arc<AtomicU64>,
 }
 
 #[derive(Debug)]
@@ -392,11 +393,14 @@ pub(super) fn initialize_device(
         }
 
         let (tx, rx): (Sender<Command>, Receiver<Command>) = channel();
+        let free_bytes_atomic = Arc::new(AtomicU64::new(total_bytes));
 
         // Cast to usize for Send safety through the closure
         let worker_device_ids: Vec<usize> = device_ids.iter().map(|&d| d as usize).collect();
         let worker_library = library.clone();
-        thread::spawn(move || {
+        thread::spawn({
+            let free_bytes_atomic = Arc::clone(&free_bytes_atomic);
+            move || {
             let _worker_library = worker_library;
             let devices: Vec<*mut c_void> = worker_device_ids.iter().map(|&d| d as *mut c_void).collect();
             let mut status = OpenCLStatus::CL_SUCCESS;
@@ -435,7 +439,6 @@ pub(super) fn initialize_device(
 
             let mut buffers: Slab<PoolBufferId, OpenCLBuffer> = Slab::new();
             let mut programs: Slab<DeviceProgramId, OpenCLProgram> = Slab::new();
-            let mut free_bytes: Dim = total_bytes;
 
             // Unblock SIGABRT so it can be delivered (absorbed by the no-op handler)
             const SIG_UNBLOCK: i32 = 1;
@@ -449,7 +452,7 @@ pub(super) fn initialize_device(
             'work_thread_loop: while let Ok(cmd) = rx.recv() {
                 match cmd {
                     Command::Allocate { bytes, reply } => {
-                        if bytes > free_bytes {
+                        if bytes > free_bytes_atomic.load(Ordering::SeqCst) {
                             let _ = reply.send(Err(BackendError {
                                 status: ErrorStatus::MemoryAllocation,
                                 context: "Allocation failure".into(),
@@ -464,7 +467,7 @@ pub(super) fn initialize_device(
                             let _ = reply.send(Err(e));
                             continue 'work_thread_loop;
                         }
-                        free_bytes = free_bytes.saturating_sub(bytes);
+                        free_bytes_atomic.fetch_sub(bytes, Ordering::SeqCst);
                         let id = buffers.push(OpenCLBuffer { buffer, bytes });
                         let _ = reply.send(Ok((id, OpenCLEvent { event: ptr::null_mut() })));
                     }
@@ -482,7 +485,7 @@ pub(super) fn initialize_device(
                                     .check(ErrorStatus::Deinitialization);
                         }
                         let _ = unsafe { clReleaseMemObject(buffer.buffer) }.check(ErrorStatus::Deinitialization);
-                        free_bytes += buffer.bytes;
+                        free_bytes_atomic.fetch_add(buffer.bytes, Ordering::SeqCst);
                         buffers.remove(buffer_id);
                     }
                     Command::HostToPool { src, bytes, dst, event_wait_list, reply } => {
@@ -700,12 +703,14 @@ pub(super) fn initialize_device(
                     }
                 }
             }
+            //println!("DEINIT receiver");
+            }
         });
 
         memory_pools.push(MemoryPool::OpenCL(OpenCLMemoryPool {
             tx: tx.clone(),
             total_bytes,
-            free_bytes: total_bytes,
+            free_bytes: free_bytes_atomic,
         }));
         for (orig_idx, dev_info) in dev_infos.into_iter() {
             devices.push(Device::OpenCL(OpenCLDevice {
@@ -725,8 +730,8 @@ pub(super) fn initialize_device(
 impl OpenCLMemoryPool {
     pub fn deinitialize(&mut self) {}
 
-    pub const fn free_bytes(&self) -> Dim {
-        self.free_bytes
+    pub fn free_bytes(&self) -> Dim {
+        self.free_bytes.load(Ordering::SeqCst)
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {

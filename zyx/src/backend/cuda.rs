@@ -29,7 +29,7 @@ use std::{
     hash::BuildHasherDefault,
     path::PathBuf,
     ptr,
-    sync::mpsc::{Receiver, Sender, channel},
+    sync::{Arc, atomic::{AtomicU64, Ordering}, mpsc::{Receiver, Sender, channel}},
 };
 
 use libloading::Library;
@@ -71,7 +71,7 @@ pub struct CUDAConfig {
 #[derive(Debug)]
 pub struct CUDAMemoryPool {
     tx: Sender<CUDACommand>,
-    free_bytes: Dim,
+    free_bytes: Arc<AtomicU64>,
 }
 
 #[derive(Debug)]
@@ -253,6 +253,7 @@ pub(super) fn initialize_device(
         *unsafe { cuda.get(b"cuCtxCreate\0") }?;
     //let cuMemAllocAsync = *unsafe { cuda.get(b"cuMemAllocAsync\0") }?;
     let cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus = *unsafe { cuda.get(b"cuMemAlloc\0") }?;
+    let cuMemGetInfo: unsafe extern "C" fn(*mut usize, *mut usize) -> CUDAStatus = *unsafe { cuda.get(b"cuMemGetInfo\0") }?;
     //let cuMemFreeAsync = *unsafe { cuda.get(b"cuMemFreeAsync\0") }?;
     let cuMemFree: unsafe extern "C" fn(CUdeviceptr) -> CUDAStatus = *unsafe { cuda.get(b"cuMemFree\0") }?;
     let cuMemcpyHtoDAsync: unsafe extern "C" fn(CUdeviceptr, *const c_void, usize, CUstream) -> CUDAStatus =
@@ -352,15 +353,11 @@ pub(super) fn initialize_device(
         if debug_dev {
             println!("[CUDA] device total memory: {} MB", free_bytes / (1024*1024));
         }
-        let mut context: CUcontext = ptr::null_mut();
-        if let Err(e) = unsafe { cuCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization) {
-            if debug_dev {
-                println!("[CUDA] device {dev_id}: context init failed: {e:?}");
-            }
-            continue;
-        }
         let (tx, rx): (Sender<CUDACommand>, Receiver<CUDACommand>) = channel();
-        std::thread::spawn(move || {
+        let free_bytes_atomic = Arc::new(AtomicU64::new(free_bytes as u64));
+        std::thread::spawn({
+            let free_bytes_atomic = Arc::clone(&free_bytes_atomic);
+            move || {
             //println!("INIT receiver");
             // Initialize raw CUDA context
             let mut context: CUcontext = ptr::null_mut();
@@ -370,6 +367,7 @@ pub(super) fn initialize_device(
                 }
                 return;
             }
+
             let mut streams = Vec::new();
             for _ in 0..8 {
                 let mut stream = ptr::null_mut();
@@ -384,7 +382,6 @@ pub(super) fn initialize_device(
 
             let mut buffers: Slab<PoolBufferId, CUDABuffer> = Slab::new();
             let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
-            let mut free_bytes: u64 = free_bytes as Dim;
 
             // Worker loop
             'work_thread_loop: while let Ok(cmd) = rx.recv() {
@@ -410,11 +407,8 @@ pub(super) fn initialize_device(
                             unsafe { (cuEventRecord)(event, stream) }.check(ErrorStatus::MemoryAllocation),
                             reply
                         );
-                        debug_assert!(free_bytes > bytes);
-                        free_bytes = free_bytes.saturating_sub(bytes);
-                        if debug_kmd {
-                            println!("[CUDA] alloc {} MB → free {} MB", bytes / (1024*1024), free_bytes / (1024*1024));
-                        }
+                        debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes);
+                        free_bytes_atomic.fetch_sub(bytes, Ordering::SeqCst);
                         let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
                         let event = Event::CUDA(CUDAEvent { event });
                         let _ = reply.send(Ok((buffer_id, event)));
@@ -430,10 +424,7 @@ pub(super) fn initialize_device(
                         let buffer = &mut buffers[buffer_id];
                         //_ = unsafe { (self.cuMemFreeAsync)(buffer.ptr, self.stream) }.check(ErrorStatus::MemoryDeallocation);
                         _ = unsafe { (cuMemFree)(buffer.ptr) }.check(ErrorStatus::MemoryDeallocation);
-                        if debug_dev {
-                            println!("[CUDA] free {} MB → free {} MB", buffer.bytes / (1024*1024), (free_bytes + buffer.bytes) / (1024*1024));
-                        }
-                        free_bytes += buffer.bytes;
+                        free_bytes_atomic.fetch_add(buffer.bytes, Ordering::SeqCst);
                         buffers.remove(buffer_id);
                     }
                     CUDACommand::HostToPool { src, bytes, dst, mut event_wait_list, reply } => {
@@ -621,9 +612,10 @@ pub(super) fn initialize_device(
                 }
             }
             //println!("DEINIT receiver");
+            }
         });
 
-        let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes: free_bytes as u64 });
+        let pool = MemoryPool::CUDA(CUDAMemoryPool { tx: tx.clone(), free_bytes: free_bytes_atomic });
         memory_pools.push(pool);
 
         let mut supported_dtypes = u32::MAX;
@@ -699,13 +691,13 @@ impl CUDAMemoryPool {
         let _ = self;
     }
 
-    pub const fn free_bytes(&self) -> Dim {
-        self.free_bytes
+    pub fn free_bytes(&self) -> Dim {
+        self.free_bytes.load(Ordering::SeqCst)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
-        if bytes > self.free_bytes {
+        if bytes > self.free_bytes.load(Ordering::SeqCst) {
             return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure.".into() });
         }
         let (reply, reply_rx) = channel();

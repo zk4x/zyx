@@ -19,6 +19,7 @@ use crate::{
     kernel::Kernel,
     shape::Dim,
     slab::{Slab, SlabId},
+    DebugMask,
 };
 use c::CDevice;
 use cuda::{CUDADevice, CUDAMemoryPool};
@@ -421,7 +422,7 @@ impl MemoryPool {
         }
     }
 
-    pub const fn free_bytes(&self) -> Dim {
+    pub fn free_bytes(&self) -> Dim {
         match self {
             MemoryPool::Dummy(pool) => pool.free_bytes(),
             MemoryPool::Disk(pool) => pool.free_bytes(),
@@ -437,22 +438,47 @@ impl MemoryPool {
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
-        match self {
-            MemoryPool::Dummy(pool) => pool.allocate(bytes),
+        let free = self.free_bytes();
+        let (result, name) = match self {
+            MemoryPool::Dummy(pool) => (pool.allocate(bytes), "dummy"),
             MemoryPool::Disk(_) => todo!(),
-            MemoryPool::Host(pool) => pool.allocate(bytes),
-            MemoryPool::CUDA(pool) => pool.allocate(bytes),
-            MemoryPool::OpenCL(pool) => pool.allocate(bytes),
-            MemoryPool::HIP(pool) => pool.allocate(bytes),
+            MemoryPool::Host(pool) => (pool.allocate(bytes), "host"),
+            MemoryPool::CUDA(pool) => (pool.allocate(bytes), "CUDA"),
+            MemoryPool::OpenCL(pool) => (pool.allocate(bytes), "OPENCL"),
+            MemoryPool::HIP(pool) => (pool.allocate(bytes), "HIP"),
             #[cfg(feature = "tenstorrent")]
-            MemoryPool::TT(pool) => pool.allocate(bytes),
+            MemoryPool::TT(pool) => (pool.allocate(bytes), "tenstorrent"),
             #[cfg(feature = "wgpu")]
-            MemoryPool::WGPU(pool) => pool.allocate(bytes),
+            MemoryPool::WGPU(pool) => (pool.allocate(bytes), "WGPU"),
+        };
+        if let Ok(_) = &result {
+            if let Ok(x) = std::env::var("ZYX_DEBUG")
+                && let Ok(x) = x.parse::<u32>()
+                && DebugMask(x).kmd()
+            {
+                println!("[{name}] allocate {bytes} -> free {free} B");
+            }
+        } else {
+            eprintln!("[{name}] allocate FAILED {bytes} -> free {free} B");
         }
+        result
     }
 
     // Deallocate drops events without synchronization
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
+        let name = match self {
+            MemoryPool::Dummy(_) => "dummy",
+            MemoryPool::Disk(_) => "disk",
+            MemoryPool::Host(_) => "host",
+            MemoryPool::CUDA(_) => "CUDA",
+            MemoryPool::OpenCL(_) => "OPENCL",
+            MemoryPool::HIP(_) => "HIP",
+            #[cfg(feature = "tenstorrent")]
+            MemoryPool::TT(_) => "tenstorrent",
+            #[cfg(feature = "wgpu")]
+            MemoryPool::WGPU(_) => "WGPU",
+        };
+        let free_before = self.free_bytes();
         match self {
             MemoryPool::Dummy(pool) => pool.deallocate(buffer_id, event_wait_list),
             MemoryPool::Disk(pool) => pool.deallocate(buffer_id, event_wait_list),
@@ -464,6 +490,13 @@ impl MemoryPool {
             MemoryPool::TT(pool) => pool.deallocate(buffer_id, event_wait_list),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.deallocate(buffer_id, event_wait_list),
+        }
+        if let Ok(x) = std::env::var("ZYX_DEBUG")
+            && let Ok(x) = x.parse::<u32>()
+            && DebugMask(x).kmd()
+        {
+            let free_after = self.free_bytes();
+            println!("[{name}] deallocate -> free {free_after} B (freed {} B)", free_after - free_before);
         }
     }
 
