@@ -312,6 +312,21 @@ impl Constant {
         }
     }
 
+    #[must_use]
+    pub(crate) fn is_max(self) -> bool {
+        match self {
+            Constant::U8(d) => d == u8::MAX,
+            Constant::U16(d) => d == u16::MAX,
+            Constant::U32(d) => d == u32::MAX,
+            Constant::U64(d) => u64::from_le_bytes(d) == u64::MAX,
+            Constant::I8(d) => d == i8::MAX,
+            Constant::I16(d) => d == i16::MAX,
+            Constant::I32(d) => d == i32::MAX,
+            Constant::I64(d) => i64::from_le_bytes(d) == i64::MAX,
+            _ => false,
+        }
+    }
+
     // Create new constant for indexing purposes
     pub(crate) fn idx<T: Scalar>(idx: T) -> Self {
         use core::mem::transmute_copy as t;

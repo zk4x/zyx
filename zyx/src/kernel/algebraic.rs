@@ -96,10 +96,8 @@ impl Kernel {
         if let Op::Binary { x, y, bop: BOp::BitAnd } = self.at(op_id) {
             for candidate in [(*x, *y), (*y, *x)] {
                 if let Op::Const(c) = self.at(candidate.0) {
-                    if let Some(v) = c.as_dim() {
-                        if v == u64::MAX {
-                            return Some(candidate.1);
-                        }
+                    if c.is_max() {
+                        return Some(candidate.1);
                     }
                 }
             }
