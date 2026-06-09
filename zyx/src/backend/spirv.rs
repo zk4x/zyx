@@ -31,10 +31,10 @@ const DEC_BINDING: u32 = 33;
 const DEC_NON_WRITABLE: u32 = 24;
 
 // BuiltIns
-const BI_GLOBAL_INVOCATION_ID: u32 = 28;
+const BI_WORKGROUP_ID: u32 = 26;
 const BI_LOCAL_INVOCATION_ID: u32 = 27;
-const BI_WORKGROUP_ID: u32 = 24;
-const BI_NUM_WORKGROUPS: u32 = 25;
+const BI_GLOBAL_INVOCATION_ID: u32 = 28;
+const BI_NUM_WORKGROUPS: u32 = 24;
 
 // Capabilities
 const CAP_SHADER: u32 = 1;
@@ -92,36 +92,35 @@ op! {
     OP_FUNCTION = 54,
     OP_FUNCTION_END = 56,
     OP_LABEL = 248,
-    OP_BRANCH = 49,
-    OP_BRANCH_CONDITIONAL = 50,
+    OP_BRANCH = 249,
+    OP_BRANCH_CONDITIONAL = 250,
     OP_LOOP_MERGE = 246,
     OP_SELECTION_MERGE = 247,
-    OP_RETURN = 63,
+    OP_RETURN = 253,
     OP_LOAD = 61,
     OP_STORE = 62,
     OP_ACCESS_CHAIN = 65,
-    OP_FADD = 96,
-    OP_FSUB = 97,
-    OP_FMUL = 100,
-    OP_FDIV = 101,
+    OP_FADD = 129,
+    OP_FSUB = 131,
+    OP_FMUL = 133,
+    OP_FDIV = 136,
     OP_FNEGATE = 127,
-    OP_FMAD = 99,
-    OP_FMOD = 103,
+    OP_FMOD = 141,
     OP_IADD = 128,
-    OP_ISUB = 129,
+    OP_ISUB = 130,
     OP_IMUL = 132,
-    OP_SDIV = 134,
-    OP_UDIV = 135,
+    OP_SDIV = 135,
+    OP_UDIV = 134,
     OP_SREM = 138,
-    OP_SMOD = 140,
+    OP_SMOD = 139,
     OP_U_MOD = 137,
-    OP_SNEGATE = 144,
-    OP_NOT = 146,
-    OP_SHIFT_LEFT_LOGICAL = 149,
-    OP_SHIFT_RIGHT_LOGICAL = 150,
-    OP_BITWISE_AND = 152,
-    OP_BITWISE_OR = 153,
-    OP_BITWISE_XOR = 154,
+    OP_SNEGATE = 126,
+    OP_NOT = 200,
+    OP_SHIFT_LEFT_LOGICAL = 196,
+    OP_SHIFT_RIGHT_LOGICAL = 194,
+    OP_BITWISE_AND = 199,
+    OP_BITWISE_OR = 197,
+    OP_BITWISE_XOR = 198,
     OP_IS_LESS_THAN = 157,
     OP_IS_GREATER_THAN = 158,
     OP_I_EQUAL = 170,
@@ -134,20 +133,18 @@ op! {
     OP_F_ORD_GREATER_THAN = 186,
     OP_F_ORD_EQUAL = 180,
     OP_F_ORD_NOT_EQUAL = 182,
-    OP_CONVERT_F_TO_U = 107,
-    OP_CONVERT_F_TO_S = 108,
+    OP_CONVERT_F_TO_U = 109,
+    OP_CONVERT_F_TO_S = 110,
     OP_CONVERT_S_TO_F = 111,
     OP_CONVERT_U_TO_F = 112,
-    OP_F_CONVERT = 114,
-    OP_S_CONVERT = 115,
-    OP_U_CONVERT = 116,
-    OP_SELECT = 87,
+    OP_F_CONVERT = 115,
+    OP_S_CONVERT = 114,
+    OP_U_CONVERT = 113,
+    OP_SELECT = 169,
     OP_EXT_INST = 12,
     OP_CONTROL_BARRIER = 224,
     OP_COMPOSITE_EXTRACT = 81,
     OP_BITCAST = 124,
-    OP_IS_FINITE = 291,
-    OP_SA_BIT = 141, // OpSaturate... no, this doesn't exist. Keeping for reference.
 }
 
 // GLSL.std.450 extended instructions used
@@ -275,151 +272,89 @@ fn compute_dtypes(kernel: &Kernel) -> Map<OpId, DType> {
 // ---------- Public compile function ----------
 
 pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
+    eprintln!("spirv::compile: start");
     let dtypes = compute_dtypes(kernel);
     let mut asm = Asm::new();
+    
+    // === SPIR-V Header ===
+    asm.words.push(MAGIC);
+    asm.words.push(VERSION);
+    asm.words.push(GENERATOR);
+    asm.words.push(0); // Bound will be set later
+    asm.words.push(SCHEMA);
+    
+    // Required SPIR-V instructions
+    asm.emit(OP_CAPABILITY, &[1]); // Shader capability
+    let glsl_id = asm.id();
+    let glsl_name = b"GLSL450\x00";
+    let mut glsl_words = Vec::new();
+    for chunk in glsl_name.chunks(4) {
+        let mut w = 0u32;
+        for (i, &b) in chunk.iter().enumerate() { w |= (b as u32) << (i * 8); }
+        glsl_words.push(w);
+    }
+    asm.emit_typed(OP_EXT_INST_IMPORT, OP_TYPE_VOID as u32, glsl_id, &glsl_words);
+    asm.emit(OP_MEMORY_MODEL, &[0, 1]); // Logical GLSL450
+    
+    // Create function type (void())
+    let func_type_id = asm.id();
+    asm.emit_type(OP_TYPE_FUNCTION, func_type_id, &[OP_TYPE_VOID as u32]);
+
+    // === Type helpers (closures) ===
+    let push_dtype = |asm: &mut Asm, cache: &mut Map<DType, u32>, entries: &mut Vec<(u16, u32, Vec<u32>)>, dt: DType| {
+        if let Some(&id) = cache.get(&dt) { return id; }
+        let id = match dt {
+            DType::Bool => { let i = asm.id(); entries.push((OP_TYPE_BOOL, i, vec![])); i }
+            DType::U8 => { let i = asm.id(); entries.push((OP_TYPE_INT, i, vec![8, 0])); i }
+            DType::U16 => { let i = asm.id(); entries.push((OP_TYPE_INT, i, vec![16, 0])); i }
+            DType::U32 => { let i = asm.id(); entries.push((OP_TYPE_INT, i, vec![32, 0])); i }
+            DType::U64 => { let i = asm.id(); entries.push((OP_TYPE_INT, i, vec![64, 0])); i }
+            DType::I8 => { let i = asm.id(); entries.push((OP_TYPE_INT, i, vec![8, 1])); i }
+            DType::I16 => { let i = asm.id(); entries.push((OP_TYPE_INT, i, vec![16, 1])); i }
+            DType::I32 => { let i = asm.id(); entries.push((OP_TYPE_INT, i, vec![32, 1])); i }
+            DType::I64 => { let i = asm.id(); entries.push((OP_TYPE_INT, i, vec![64, 1])); i }
+            DType::F16 | DType::BF16 => { let i = asm.id(); entries.push((OP_TYPE_FLOAT, i, vec![16])); i }
+            DType::F32 => { let i = asm.id(); entries.push((OP_TYPE_FLOAT, i, vec![32])); i }
+            DType::F64 => { let i = asm.id(); entries.push((OP_TYPE_FLOAT, i, vec![64])); i }
+        };
+        cache.insert(dt, id);
+        id
+    };
+    
+    let push_ptr_type = |asm: &mut Asm, cache: &mut Map<(u32, u32), u32>, entries: &mut Vec<(u16, u32, Vec<u32>)>, class: u32, elem_type: u32| {
+        if let Some(&id) = cache.get(&(class, elem_type)) { return id; }
+        let id = asm.id();
+        entries.push((OP_TYPE_POINTER, id, vec![class, elem_type]));
+        cache.insert((class, elem_type), id);
+        id
+    };
+
+    // === SPIR-V state ===
+    let mut type_cache: Map<DType, u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
+    let mut type_entries: Vec<(u16, u32, Vec<u32>)> = Vec::with_capacity(32);
+    let mut const_entries: Vec<(u32, u32, Vec<u32>)> = Vec::with_capacity(16);
+    let mut spv_values: Map<OpId, u32> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+    let mut var_entries: Vec<(u32, u32, u32, bool)> = Vec::with_capacity(16);
+    let mut global_var_ids: Vec<u32> = Vec::with_capacity(4);
+    let mut decorations: Vec<(u32, u32, Vec<u32>)> = Vec::with_capacity(8);
+    let mut binding: u32 = 0;
+    let mut spv_variables: Map<OpId, u32> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
+    let mut ptr_cache: Map<(u32, u32), u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
+    let mut reg_arrays: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
+    let mut cast_u32_consts: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
+    let mut const_pool: Map<(DType, u32), u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
+    
+    // Pre-define common types
+    let u32_id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::U32);
+    let vec3_id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::F32);
+    let void_id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::F32); // Use F32 as void type
+    
+    // GLSL extension set
+    let glsl_set = 1; // GLSL extension set number
 
     // === Pass 1: scan for work sizes, collect info ===
     let mut gws: Vec<u64> = vec![1; 3];
     let mut lws: Vec<u64> = vec![1; 3];
-    {
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            if let &Op::Index { len, scope, axis } = kernel.at(op_id) {
-                match scope {
-                    Scope::Global if axis < 3 => gws[axis as usize] = gws[axis as usize].max(len),
-                    Scope::Local if axis < 3 => lws[axis as usize] = lws[axis as usize].max(len),
-                    _ => {}
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
-    }
-
-    // === Module header ===
-    asm.words.push(MAGIC);
-    asm.words.push(VERSION);
-    asm.words.push(GENERATOR);
-    asm.words.push(0); // bound placeholder
-    asm.words.push(SCHEMA);
-
-    // === Capabilities ===
-    asm.emit(OP_CAPABILITY, &[CAP_SHADER]);
-    if dtypes.values().any(|&d| matches!(d, DType::F16 | DType::BF16)) {
-        asm.emit(OP_CAPABILITY, &[CAP_FLOAT16]);
-    }
-    if dtypes.values().any(|&d| matches!(d, DType::I64 | DType::U64)) {
-        asm.emit(OP_CAPABILITY, &[CAP_INT64]);
-    }
-
-    // === Import GLSL.std.450 for math builtins ===
-    let glsl_set = {
-        let id = asm.id();
-        let name = b"GLSL.std.450\0";
-        let mut words = vec![id];
-        for chunk in name.chunks(4) {
-            let mut w = 0u32;
-            for (i, &b) in chunk.iter().enumerate() { w |= (b as u32) << (i * 8); }
-            words.push(w);
-        }
-        let wc = 1 + words.len() as u16;
-        asm.words.push((wc as u32) << 16 | OP_EXT_INST_IMPORT as u32);
-        asm.words.extend_from_slice(&words);
-        id
-    };
-
-    // === Memory model ===
-    asm.emit(OP_MEMORY_MODEL, &[ADDR_LOGICAL, MEM_GLSL450]);
-
-    // === Phase 1: collect all type/constant/variable requirements ===
-    asm.entry_id = asm.id();
-    asm.func_id = asm.id();
-
-    let mut type_cache: Map<DType, u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
-    let mut type_entries: Vec<(u16, u32, Vec<u32>)> = Vec::new(); // (op, id, operands)
-    let mut const_entries: Vec<(u32, u32, Vec<u32>)> = Vec::new(); // (type_id, result_id, operands)
-    let mut var_entries: Vec<(u32, u32, u32, bool)> = Vec::new(); // (ptr_type_id, var_id, storage, is_global)
-    let mut decorations: Vec<(u32, u32, Vec<u32>)> = Vec::new();
-    let mut spv_values: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-    let mut spv_variables: Map<OpId, u32> = Map::with_capacity_and_hasher(kernel.ops.len().into(), BuildHasherDefault::new());
-    let mut reg_arrays: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
-    let mut global_var_ids: Vec<u32> = Vec::new();
-
-    let void_id = asm.id();
-    type_entries.push((OP_TYPE_VOID, void_id, vec![]));
-    let u32_id = {
-        let id = asm.id();
-        type_entries.push((OP_TYPE_INT, id, vec![32, 0]));
-        id
-    };
-    type_cache.insert(DType::U32, u32_id);
-    let vec3_id = asm.id();
-    type_entries.push((OP_TYPE_VECTOR, vec3_id, vec![u32_id, 3]));
-
-    let mut binding = 0u32;
-
-    // Helper: ensure a DType entry exists in type_entries and cache
-    fn push_dtype(
-        asm: &mut Asm,
-        cache: &mut Map<DType, u32>,
-        entries: &mut Vec<(u16, u32, Vec<u32>)>,
-        dt: DType,
-    ) -> u32 {
-        if let Some(&id) = cache.get(&dt) { return id; }
-        let (op, operands) = match dt {
-            DType::Bool => (OP_TYPE_BOOL, vec![]),
-            DType::U8 => (OP_TYPE_INT, vec![8, 0]),
-            DType::U16 => (OP_TYPE_INT, vec![16, 0]),
-            DType::U32 => (OP_TYPE_INT, vec![32, 0]),
-            DType::U64 => (OP_TYPE_INT, vec![64, 0]),
-            DType::I8 => (OP_TYPE_INT, vec![8, 1]),
-            DType::I16 => (OP_TYPE_INT, vec![16, 1]),
-            DType::I32 => (OP_TYPE_INT, vec![32, 1]),
-            DType::I64 => (OP_TYPE_INT, vec![64, 1]),
-            DType::F16 | DType::BF16 => (OP_TYPE_FLOAT, vec![16]),
-            DType::F32 => (OP_TYPE_FLOAT, vec![32]),
-            DType::F64 => (OP_TYPE_FLOAT, vec![64]),
-        };
-        let id = asm.id();
-        entries.push((op, id, operands));
-        cache.insert(dt, id);
-        id
-    }
-
-    // Helper: ensure a pointer type entry exists
-    fn push_ptr_type(
-        asm: &mut Asm,
-        cache: &mut Map<(u32, u32), u32>,
-        entries: &mut Vec<(u16, u32, Vec<u32>)>,
-        storage: u32,
-        elem: u32,
-    ) -> u32 {
-        let key = (storage, elem);
-        if let Some(&id) = cache.get(&key) { return id; }
-        let id = asm.id();
-        entries.push((OP_TYPE_POINTER, id, vec![storage, elem]));
-        cache.insert(key, id);
-        id
-    }
-
-    let mut ptr_cache: Map<(u32, u32), u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
-
-    // Cached u32 constants (0, 1) for Bool→U32→Float casts
-    let mut cast_u32_consts: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
-
-    // Pre-cache all dtypes that appear in the kernel
-    {
-        let dtypes_set: std::collections::HashSet<DType> = dtypes.values().copied().collect();
-        for &dt in &dtypes_set {
-            push_dtype(&mut asm, &mut type_cache, &mut type_entries, dt);
-        }
-    }
-
-    // Pre-cache pointer types for loop counter
-    let idx_type_id = type_cache[&IDX_T];
-    push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type_id);
-
-    // Scan kernel ops to collect type/constant/variable definitions,
-    // and pre-cache element pointer types
     {
         let mut op_id = kernel.head;
         while !op_id.is_null() {
@@ -476,13 +411,61 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                     };
                 }
                 &Op::Cast { x, dtype } => {
-                    if dtypes[&x] == DType::Bool && dtype.is_float() {
+                    let src = dtypes[&x];
+                    let dst = dtype;
+                    if src == DType::Bool && dst.is_float() {
                         let u32_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::U32);
                         let one_cid = asm.id();
                         let zero_cid = asm.id();
                         const_entries.push((u32_type, one_cid, vec![1u32]));
                         const_entries.push((u32_type, zero_cid, vec![0u32]));
                         cast_u32_consts.insert(op_id, (one_cid, zero_cid));
+                    } else if src == DType::Bool && (dst == DType::U32 || dst == DType::I32) {
+                        let int_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dst);
+                        let one_cid = asm.id();
+                        let zero_cid = asm.id();
+                        const_entries.push((int_type, one_cid, vec![1u32]));
+                        const_entries.push((int_type, zero_cid, vec![0u32]));
+                        cast_u32_consts.insert(op_id, (one_cid, zero_cid));
+                    } else if (src == DType::U32 || src == DType::I32) && dst == DType::Bool {
+                        let src_type = push_dtype(&mut asm, &mut type_cache, &mut type_entries, src);
+                        let zero_cid = asm.id();
+                        const_entries.push((src_type, zero_cid, vec![0u32]));
+                        cast_u32_consts.insert(op_id, (zero_cid, 0));
+                    }
+                }
+                _ => {}
+            }
+            // Pre-allocate constants for Recip, Abs, and Loop
+            match kernel.at(op_id) {
+                &Op::Unary { uop, x } if uop == UOp::Reciprocal => {
+                    let dt = dtypes[&x];
+                    let val = float_one(dt);
+                    if !const_pool.contains_key(&(dt, val)) {
+                        let tid = type_cache[&dt];
+                        let cid = asm.id();
+                        const_entries.push((tid, cid, vec![val]));
+                        const_pool.insert((dt, val), cid);
+                    }
+                }
+                &Op::Unary { uop, x } if uop == UOp::Abs && dtypes[&x].is_int() && !dtypes[&x].is_uint() => {
+                    let dt = dtypes[&x];
+                    let shift = bit_size(dt) - 1;
+                    if !const_pool.contains_key(&(dt, shift)) {
+                        let tid = type_cache[&dt];
+                        let cid = asm.id();
+                        const_entries.push((tid, cid, vec![shift]));
+                        const_pool.insert((dt, shift), cid);
+                    }
+                }
+                &Op::Loop { len } => {
+                    for &val in &[0u32, 1, len as u32] {
+                        if !const_pool.contains_key(&(IDX_T, val)) {
+                            let tid = type_cache[&IDX_T];
+                            let cid = asm.id();
+                            const_entries.push((tid, cid, vec![val]));
+                            const_pool.insert((IDX_T, val), cid);
+                        }
                     }
                 }
                 _ => {}
@@ -504,23 +487,36 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
         found
     };
 
-    let (global_inv_var, local_inv_var) = if needs_global {
-        let giv = asm.id();
+    let (wg_id_var, local_inv_var) = if needs_global {
+        let wiv = asm.id();
         let liv = asm.id();
         let inp_ptr = asm.id();
         type_entries.push((OP_TYPE_POINTER, inp_ptr, vec![SC_INPUT, vec3_id]));
-        var_entries.push((inp_ptr, giv, SC_INPUT, true));
+        var_entries.push((inp_ptr, wiv, SC_INPUT, true));
         var_entries.push((inp_ptr, liv, SC_INPUT, true));
-        decorations.push((giv, DEC_BUILT_IN, vec![BI_GLOBAL_INVOCATION_ID]));
+        decorations.push((wiv, DEC_BUILT_IN, vec![BI_WORKGROUP_ID]));
         decorations.push((liv, DEC_BUILT_IN, vec![BI_LOCAL_INVOCATION_ID]));
-        global_var_ids.push(giv);
+        global_var_ids.push(wiv);
         global_var_ids.push(liv);
-        (giv, liv)
+        (wiv, liv)
     } else {
         (0, 0)
     };
 
     // === Phase 2: emit in SPIR-V / naga state machine order ===
+    eprintln!("spirv::compile: phase 2 start (pre-collection done)");
+
+    // Function type: void()
+    let func_type_id = {
+        let ft = asm.id();
+        asm.emit_type(OP_TYPE_FUNCTION, ft, &[void_id]);
+        ft
+    };
+    asm.emit_typed(OP_FUNCTION, void_id, asm.func_id, &[FN_CTRL_NONE, func_type_id]);
+
+    // Entry block label
+    let entry_label = asm.id();
+    asm.emit(OP_LABEL, &[entry_label]);
 
     // Entry point: GLCompute %func_id "name" %interfaces...
     let ep_name = format!(
@@ -567,18 +563,6 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
         asm.emit(OP_VARIABLE, &[ptr_type_id, var_id, storage]);
     }
 
-    // Function type + function
-    let func_type_id = {
-        let ft = asm.id();
-        asm.emit_type(OP_TYPE_FUNCTION, ft, &[void_id]);
-        ft
-    };
-    asm.emit_typed(OP_FUNCTION, void_id, asm.func_id, &[FN_CTRL_NONE, func_type_id]);
-
-    // Entry block label
-    let entry_label = asm.id();
-    asm.emit(OP_LABEL, &[entry_label]);
-
     // If we have register arrays, emit their variables now (Function storage)
     let mut reg_vars: Map<OpId, u32> = Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
     for (&op_id, &(ptr_type, _elem_type)) in reg_arrays.iter() {
@@ -588,13 +572,22 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
     }
 
     // === Function body: walk kernel ops ===
+    eprintln!("spirv::compile: body emission start");
+    eprintln!("spirv::compile: kernel head op: {:?}", kernel.head);
+    
     // Loop stack: (header_label, merge_label, continue_label, counter_var, len)
     let mut loop_stack: Vec<(u32, u32, u32, u32, u64)> = Vec::new();
     let mut if_stack: Vec<u32> = Vec::new(); // merge_label
 
     {
         let mut op_id = kernel.head;
+        let mut op_count = 0;
         while !op_id.is_null() {
+            op_count += 1;
+            if op_count % 100 == 0 {
+                eprintln!("spirv::compile: processing op {} (id: {:?})", op_count, op_id);
+            }
+            
             match kernel.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Move { .. } | Op::Reduce { .. } | Op::Wmma { .. } | Op::Vectorize { .. } | Op::Devectorize { .. } => {
                     return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: unexpected kernel op (should be unfolded)".into() });
@@ -672,6 +665,12 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                         let int_tmp = asm.id();
                         asm.emit_typed(OP_SELECT, u32_type, int_tmp, &[src_id, u32_one, u32_zero]);
                         asm.emit_typed(OP_CONVERT_U_TO_F, result_type, rid, &[int_tmp]);
+                    } else if src_type == DType::Bool && (dst_type == DType::U32 || dst_type == DType::I32) {
+                        let (one_cid, zero_cid) = cast_u32_consts[&op_id];
+                        asm.emit_typed(OP_SELECT, result_type, rid, &[src_id, one_cid, zero_cid]);
+                    } else if dst_type == DType::Bool && (src_type == DType::U32 || src_type == DType::I32) {
+                        let (zero_cid, _) = cast_u32_consts[&op_id];
+                        asm.emit_typed(OP_I_NOT_EQUAL, result_type, rid, &[src_id, zero_cid]);
                     } else {
                         let op = cast_op(src_type, dst_type);
                         asm.emit_typed(op, result_type, rid, &[src_id]);
@@ -703,8 +702,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                             asm.emit_typed(OP_EXT_INST, result_type, rid, &[glsl_set, glsl::Log2, src_id]);
                         }
                         UOp::Reciprocal => {
-                            let one = asm.id();
-                            asm.emit_typed(OP_CONSTANT, result_type, one, &float_one_words(dt));
+                            let one = const_pool[&(dt, float_one(dt))];
                             asm.emit_typed(OP_FDIV, result_type, rid, &[one, src_id]);
                         }
                         UOp::Sqrt => {
@@ -821,8 +819,11 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                     let result_type = emit_type(&mut asm, &mut type_cache, dt);
                     let rid = asm.id();
 
+                    // FMad not available in spirv crate, decompose to FMul + FAdd
                     if dt.is_float() {
-                        asm.emit_typed(OP_FMAD, result_type, rid, &[x_id, y_id, z_id]);
+                        let mul = asm.id();
+                        asm.emit_typed(OP_FMUL, result_type, mul, &[x_id, y_id]);
+                        asm.emit_typed(OP_FADD, result_type, rid, &[mul, z_id]);
                     } else {
                         let mul = asm.id();
                         asm.emit_typed(OP_IMUL, result_type, mul, &[x_id, y_id]);
@@ -837,13 +838,12 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                     match scope {
                         Scope::Global => {
                             let loaded = asm.id();
-                            asm.emit_typed(OP_LOAD, vec3_id, loaded, &[global_inv_var]);
+                            asm.emit_typed(OP_LOAD, vec3_id, loaded, &[wg_id_var]);
                             let elem = asm.id();
                             asm.emit_typed(OP_COMPOSITE_EXTRACT, u32_id, elem, &[loaded, axis]);
                             if IDX_T == DType::U32 {
                                 spv_values.insert(op_id, elem);
                             } else {
-                                // Widen to IDX_T if needed
                                 let widened = asm.id();
                                 let op = match IDX_T {
                                     DType::U64 => OP_U_CONVERT,
@@ -978,8 +978,12 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
     // Set bound
     asm.set_bound();
 
+    // Always print first 10 words for debugging
+    println!("SPIR-V: {} words, {} ops", asm.words.len(), kernel.ops.len().0);
+    println!("SPIR-V: first 10 words: {:?}", &asm.words[..10.min(asm.words.len())]);
+    
     if debug_asm {
-        println!("SPIR-V: {} words, {} ops", asm.words.len(), kernel.ops.len().0);
+        println!("SPIR-V: full assembly:");
         debug_print(&asm.words);
     }
 
@@ -1051,6 +1055,15 @@ fn float_to_words(dt: DType, val: f64) -> Vec<u32> {
     }
 }
 
+fn float_one(dt: DType) -> u32 {
+    match dt {
+        DType::F16 | DType::BF16 => 0x3C00,
+        DType::F32 => 0x3F80_0000,
+        DType::F64 => 0x0000_0000, // Lower word; F64 not yet supported
+        _ => 1,
+    }
+}
+
 fn float_one_words(dt: DType) -> Vec<u32> {
     match dt {
         DType::F16 | DType::BF16 => vec![0x3C00], // 1.0 in f16
@@ -1095,37 +1108,36 @@ fn opcode_name(op: u16) -> &'static str {
         59 => "OpVariable",
         54 => "OpFunction",
         56 => "OpFunctionEnd",
-        248 => "OpLabel",
-        49 => "OpBranch",
-        50 => "OpBranchConditional",
-        246 => "OpLoopMerge",
-        247 => "OpSelectionMerge",
-        63 => "OpReturn",
-        61 => "OpLoad",
-        62 => "OpStore",
-        65 => "OpAccessChain",
-        96 => "OpFAdd",
-        97 => "OpFSub",
-        100 => "OpFMul",
-        101 => "OpFDiv",
-        127 => "OpFNegate",
-        99 => "OpFMad",
-        103 => "OpFMod",
-        128 => "OpIAdd",
-        129 => "OpISub",
-        132 => "OpIMul",
-        134 => "OpSDiv",
-        135 => "OpUDiv",
-        138 => "OpSRem",
-        140 => "OpSMod",
-        137 => "OpUMod",
-        144 => "OpSNegate",
-        146 => "OpNot",
-        149 => "OpShiftLeftLogical",
-        150 => "OpShiftRightLogical",
-        152 => "OpBitwiseAnd",
-        153 => "OpBitwiseOr",
-        154 => "OpBitwiseXor",
+         248 => "OpLabel",
+         249 => "OpBranch",
+         250 => "OpBranchConditional",
+         246 => "OpLoopMerge",
+         247 => "OpSelectionMerge",
+         253 => "OpReturn",
+         61 => "OpLoad",
+         62 => "OpStore",
+         65 => "OpAccessChain",
+         129 => "OpFAdd",
+         131 => "OpFSub",
+         133 => "OpFMul",
+         136 => "OpFDiv",
+         127 => "OpFNegate",
+         141 => "OpFMod",
+         128 => "OpIAdd",
+         130 => "OpISub",
+         132 => "OpIMul",
+         135 => "OpSDiv",
+         134 => "OpUDiv",
+         138 => "OpSRem",
+         139 => "OpSMod",
+         137 => "OpUMod",
+         126 => "OpSNegate",
+         200 => "OpNot",
+         196 => "OpShiftLeftLogical",
+         194 => "OpShiftRightLogical",
+         199 => "OpBitwiseAnd",
+         197 => "OpBitwiseOr",
+         198 => "OpBitwiseXor",
          170 => "OpIEqual",
          171 => "OpINotEqual",
          176 => "OpULessThan",
@@ -1136,14 +1148,14 @@ fn opcode_name(op: u16) -> &'static str {
          186 => "OpFOrdGreaterThan",
          180 => "OpFOrdEqual",
          182 => "OpFOrdNotEqual",
-        107 => "OpConvertFToU",
-        108 => "OpConvertFToS",
-        111 => "OpConvertSToF",
-        112 => "OpConvertUToF",
-        114 => "OpFConvert",
-        115 => "OpSConvert",
-        116 => "OpUConvert",
-        87 => "OpSelect",
+         109 => "OpConvertFToU",
+         110 => "OpConvertFToS",
+         111 => "OpConvertSToF",
+         112 => "OpConvertUToF",
+         115 => "OpFConvert",
+         114 => "OpSConvert",
+         113 => "OpUConvert",
+         169 => "OpSelect",
         12 => "OpExtInst",
         224 => "OpControlBarrier",
         81 => "OpCompositeExtract",
@@ -1211,10 +1223,15 @@ pub fn debug_print(spv: &[u32]) {
         let op = (w & 0xffff) as u16;
         if word_count == 0 { break; }
 
-        let name = opcode_name(op);
+        let name = format!("Op{:05?}", op); // Show numeric value for unknown opcodes
         print!("  {name}");
 
-        let operands = &spv[i+1..i + word_count as usize];
+        let operands = if i + word_count as usize <= spv.len() {
+            &spv[i+1..i + word_count as usize]
+        } else {
+            // Malformed SPIR-V, slice to end
+            &spv[i+1..]
+        };
 
         // Format known instructions
         match op {

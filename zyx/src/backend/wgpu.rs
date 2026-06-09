@@ -389,10 +389,12 @@ impl WGPUDevice {
             }
         }
 
+        eprintln!("wgpu::compile: before create_shader_module");
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::SpirV(std::borrow::Cow::Owned(spirv_words)),
         });
+        eprintln!("wgpu::compile: after create_shader_module");
 
         let mut gws: Vec<u64> = vec![1; 3];
         let mut lws: Vec<u64> = vec![1; 3];
@@ -454,6 +456,7 @@ impl WGPUDevice {
             immediate_size: 0,
         });
 
+        eprintln!("wgpu::compile: before create compute pipeline");
         let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: None,
             module: &shader_module,
@@ -462,6 +465,7 @@ impl WGPUDevice {
             cache: None,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         });
+        eprintln!("wgpu::compile: after create compute pipeline");
 
         let id = self
             .programs
