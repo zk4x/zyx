@@ -152,6 +152,22 @@ fn relu_1() -> Result<(), ZyxError> {
 }
 ```
 
+### Testing with a Specific Backend
+
+zyx runs tests using whatever backends are available. To control which backend runs:
+
+1. Edit the config at `~/.config/zyx/config.json`
+2. Disable all backends except the one you want to test
+3. Run `cargo test` normally — zyx picks the enabled backend with the most compute
+
+**Do NOT add cargo feature flags** for most backends (C, CUDA, HIP, OpenCL are always compiled). Only `--features wgpu` is needed for WGPU. See "Backend Architecture" section below for config details.
+
+Example — test with C backend only:
+```bash
+echo '{"c": {"enabled": true}, "cuda": {"device_ids": []}, "opencl": {"platform_ids": []}, "hip": {"device_ids": []}}' > ~/.config/zyx/config.json
+cargo test
+```
+
 ## Clippy Strictness
 
 The project denies these in `lib.rs`:
@@ -168,9 +184,41 @@ Mark allowed exceptions with `#[allow(...)]`.
 
 ## Backend Architecture
 
-- Each backend (CUDA, OpenCL, etc.) in a single file under `runtime/backend/`
-- Load backends at runtime via `.so` files (no compile-time linking)
-- FFI limited to one file per backend
+- Each backend in a single file under `zyx/src/backend/`
+- Most backends (C, CUDA, HIP, OpenCL) are **always compiled in** — controlled at **runtime** via config file, not cargo features
+- Only WGPU and Tenstorrent require `--features wgpu` / `--features tenstorrent`
+
+### Switching Backends for Testing
+
+Backends are selected at runtime via `$HOME/.config/zyx/config.json` (JSON):
+
+```json
+{ "c": { "enabled": true }, "dummy": { "enabled": false } }
+```
+
+Key rules:
+- **C backend**: off by default → enable with `"c": { "enabled": true }`
+- **Dummy backend**: off by default → enable with `"dummy": { "enabled": true }` (fake device, no computation)
+- **CUDA**: on by default → override with `"cuda": { "device_ids": [] }` to disable
+- **OpenCL**: on by default → disable with `"opencl": { "platform_ids": [] }`
+- **WGPU**: on by default (if compiled with `--features wgpu`) → disable with `"wgpu": { "enabled": false }`
+
+Most backends try to initialize and silently skip if hardware/driver is unavailable.
+If **all** backends fail, tests produce no output.
+
+To test with the **C backend only** (no GPU needed):
+```bash
+# Create ~/.config/zyx/config.json:
+echo '{"c": {"enabled": true}, "cuda": {"device_ids": []}, "opencl": {"platform_ids": []}, "hip": {"device_ids": []}}' > ~/.config/zyx/config.json
+cargo test
+```
+
+To reset to defaults, delete the config file:
+```bash
+rm ~/.config/zyx/config.json
+```
+
+Full config reference: [`zyx/CONFIG.md`](./zyx/CONFIG.md)
 
 ## API Design
 
@@ -301,7 +349,8 @@ Every optimization must produce correct IR that calculates the same result as th
 ## What to Avoid
 
 - **Never commit changes unless the user explicitly asks for it** - Always ask before committing
-- **Ask for help when unsure, uncertain, or struggling** - Don't spend more than 15-30 minutes stuck before asking
+- **When in doubt, ask me immediately** - Don't try to figure things out on your own if uncertain. Just ask.
+- **Ask before hunting for specs/values** - If I might have a spec, a mapping, or any information that could save time, ask me first. I always have it, so don't dig through source code or run experiments to derive it.
 - Inheritance (use composition/enums)
 - `Rc<RefCell<T>>` unless absolutely necessary
 - Too many small files

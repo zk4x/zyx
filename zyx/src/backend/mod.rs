@@ -44,6 +44,7 @@ mod opencl;
 mod tenstorrent;
 /*#[cfg(feature = "vulkan")]
 mod vulkan;*/
+mod spirv;
 #[cfg(feature = "wgpu")]
 mod wgpu;
 
