@@ -8,84 +8,9 @@ use crate::{
 };
 use nanoserde::{DeBin, SerBin};
 
-/*#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, DeBin, SerBin)]
-pub struct Cost {
-    pub cost: u64,
-}*/
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, DeBin, SerBin)]
 pub struct Cost {
     pub cost: u64,
-    num_groups: u64,
-    wi_per_group: u64,
-    wi_ops: u64,
-    wi_compute_ops: u64,
-    wi_barriers: u64,
-    wi_global_load_bits: u64,
-    wi_global_store_bits: u64,
-    wi_local_load_bits: u64,
-    wi_local_store_bits: u64,
-    wi_peak_reg_bytes: u64,
-    wi_branches: u64,
-    wi_global_load_lidx_stride: u64,
-    wi_global_store_lidx_stride: u64,
-    wi_local_load_lidx_stride: u64,
-    wi_local_store_lidx_stride: u64,
-
-    warp_size: u64,
-    max_local_threads: u64,
-    max_register_bytes: u64,
-
-    wi_register_load_bits: u64,
-    wi_register_store_bits: u64,
-    gws0: u64,
-    gws1: u64,
-    gws2: u64,
-    lws0: u64,
-    lws1: u64,
-    lws2: u64,
-    max_loop_depth: u64,
-    preferred_vector_size: u64,
-    local_mem_size: u64,
-}
-
-impl Cost {
-    #[allow(unused)]
-    pub fn debug(&self) {
-        print!(
-            "cost={}, num_groups={}, wi_per_group={}, wi_ops={}, wi_compute_ops={}, wi_barriers={}, wi_global_load_bits={}, wi_global_store_bits={}, wi_local_load_bits={}, wi_local_store_bits={}, wi_peak_reg_bytes={}, wi_branches={}, wi_global_load_lidx_stride={}, wi_global_store_lidx_stride={}, wi_local_load_lidx_stride={}, wi_local_store_lidx_stride={}, warp_size={}, max_local_threads={}, max_register_bytes={}, wi_register_load_bits={}, wi_register_store_bits={}, gws0={}, gws1={}, gws2={}, lws0={}, lws1={}, lws2={}, max_loop_depth={}, preferred_vector_size={}, local_mem_size={} ",
-            self.cost,
-            self.num_groups,
-            self.wi_per_group,
-            self.wi_ops,
-            self.wi_compute_ops,
-            self.wi_barriers,
-            self.wi_global_load_bits,
-            self.wi_global_store_bits,
-            self.wi_local_load_bits,
-            self.wi_local_store_bits,
-            self.wi_peak_reg_bytes,
-            self.wi_branches,
-            self.wi_global_load_lidx_stride,
-            self.wi_global_store_lidx_stride,
-            self.wi_local_load_lidx_stride,
-            self.wi_local_store_lidx_stride,
-            self.warp_size,
-            self.max_local_threads,
-            self.max_register_bytes,
-            self.wi_register_load_bits,
-            self.wi_register_store_bits,
-            self.gws0,
-            self.gws1,
-            self.gws2,
-            self.lws0,
-            self.lws1,
-            self.lws2,
-            self.max_loop_depth,
-            self.preferred_vector_size,
-            self.local_mem_size
-        );
-    }
 }
 
 impl Ord for Cost {
@@ -634,53 +559,6 @@ impl Kernel {
         );
         let cost = cost.max(1.0) as u64;
 
-        Cost {
-            cost,
-            num_groups,
-            wi_per_group,
-            wi_ops,
-            wi_compute_ops,
-            wi_barriers,
-            wi_global_load_bits,
-            wi_global_store_bits,
-            wi_local_load_bits,
-            wi_local_store_bits,
-            wi_peak_reg_bytes,
-            wi_branches,
-            wi_global_load_lidx_stride: if glb_load_lidx_stride_weight > 0 {
-                (glb_load_lidx_stride_weighted as f64 / glb_load_lidx_stride_weight as f64 * 10.0) as u64
-            } else {
-                0
-            },
-            wi_global_store_lidx_stride: if glb_store_lidx_stride_weight > 0 {
-                (glb_store_lidx_stride_weighted as f64 / glb_store_lidx_stride_weight as f64 * 10.0) as u64
-            } else {
-                0
-            },
-            wi_local_load_lidx_stride: if loc_load_lidx_stride_weight > 0 {
-                (loc_load_lidx_stride_weighted as f64 / loc_load_lidx_stride_weight as f64 * 10.0) as u64
-            } else {
-                0
-            },
-            wi_local_store_lidx_stride: if loc_store_lidx_stride_weight > 0 {
-                (loc_store_lidx_stride_weighted as f64 / loc_store_lidx_stride_weight as f64 * 10.0) as u64
-            } else {
-                0
-            },
-            warp_size: dev_info.warp_size as u64,
-            max_local_threads: dev_info.max_local_threads,
-            max_register_bytes: dev_info.max_register_bytes,
-            wi_register_load_bits,
-            wi_register_store_bits,
-            gws0: gws[0],
-            gws1: gws[1],
-            gws2: gws[2],
-            lws0: lws[0],
-            lws1: lws[1],
-            lws2: lws[2],
-            max_loop_depth,
-            preferred_vector_size: dev_info.preferred_vector_size as u64,
-            local_mem_size: dev_info.local_mem_size,
-        }
+        Cost { cost }
     }
 }
