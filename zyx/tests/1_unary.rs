@@ -320,12 +320,12 @@ fn frac_2() -> Result<(), ZyxError> {
 #[test]
 fn frac_3() -> Result<(), ZyxError> {
     // Test with numbers close to integers
-    let t = Tensor::from([1.0001f32, -2.9999, 3.9999, -4.0001]);
-    let fractional = t.frac();
-
-    // Should extract small fractional parts
-    assert!((fractional.item::<f32>() - 0.0001).abs() < 1e-6);
-
+    let data = [1.0001f32, -2.9999, 3.9999, -4.0001];
+    let result: Vec<f32> = Tensor::from(data).frac().try_into()?;
+    let expected = [0.0001f32, 0.0001, 0.9999, 0.9999];
+    for (x, y) in expected.iter().zip(result) {
+        assert!(x.is_equal(y), "{x} != {y}");
+    }
     Ok(())
 }
 
