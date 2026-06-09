@@ -45,9 +45,11 @@ let bb_grad = tape.gradient(&b_grad, [&b])[0].clone().unwrap();
 
 ## Backends
 
-- [x] `CUDA`
-- [x] `OpenCL`
-- [x] `WGPU (WGSL)`
+- [x] `C` - CPU backend via C codegen (clang/gcc)
+- [x] `CUDA` - NVIDIA GPU acceleration
+- [x] `HIP` - AMD GPU acceleration (ROCm platform)
+- [x] `OpenCL` - Cross-platform (CPU via POCL, GPU via native drivers)
+- [x] `WGPU` - Modern web and native GPU support via wgpu (WGSL), feature: `wgpu`
 
 Please look at file [CONFIG.md](CONFIG.md) for detailed info how to tell Zyx which hardware it should utilize, configure autotune, and set up backends.
 
