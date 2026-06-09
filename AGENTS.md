@@ -81,7 +81,7 @@ Zyx is ALL about the graph. The graph is the core.
 ### Debugging
 
 - Use `kernel.debug_colorless()` instead of `kernel.debug()` for readable output without ANSI color codes
-- Set `ZYX_DEBUG` environment variable to enable debug output (see Debug Options table)
+- Set `ZYX_DEBUG` environment variable to enable debug output. See [`zyx/ENV_VARS.md`](./zyx/ENV_VARS.md) for all available options.
 
 ### IR Debugging
 

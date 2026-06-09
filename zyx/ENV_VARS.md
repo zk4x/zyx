@@ -1,26 +1,14 @@
-Environment variable can be set to enable debugging.
+Set `ZYX_DEBUG` environment variable to enable debugging. It is a bitmask with the following options:
 
-Zyx uses one variable for debugging:
+| Value | Flag | Description |
+|-------|------|-------------|
+| 1     | dev  | Print hardware devices and configuration |
+| 2     | perf | Print graph execution characteristics and performance |
+| 4     | sched | Print kernels created by scheduler |
+| 8     | ir   | Print kernels in intermediate representation |
+| 16    | asm  | Print kernels in native assembly/code (OpenCL, WGSL, etc.) |
+| 32    | kmd  | Print kernel launch and memory movement operations |
+| 64    | memory | Print memory allocation and deallocation |
+| 128   | compile | Print kernel compilation |
 
-ZYX_DEBUG
-It is a bitmask with following options:
-
-0000 0001
-Zyx prints information about used hardware devices and hardware configuration.
-1 - dev
-
-0000 0010
-Zyx prints graph execution characteristics and performance
-2 - perf
-
-0000 0100
-Zyx prints kernels created by scheduler.
-4 - sched
-
-0000 1000
-Zyx printgs kernels in intermediate representation.
-8 - ir
-
-0001 0000
-Zyx prints kernels in native assembly or other native code (e.g. opencl kernel source code).
-16 - asm
+Combine flags by summing values (e.g., `ZYX_DEBUG=24` enables ir + asm).
