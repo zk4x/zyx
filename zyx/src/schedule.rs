@@ -90,6 +90,17 @@ pub fn schedule(
             let event = pools[pool_id].host_to_pool(&byte_slice, dst, vec![event])?;
             pools[pool_id].sync_events(vec![event])?;
             buffer_map.insert(tid, dst_global);
+        } else {
+            // Load is already in target pool; wait for any pending writes to complete
+            let buf_id = buffer_map[&tid];
+            for buffers in events.keys() {
+                if buffers.contains(&buf_id) {
+                    let buffers = buffers.clone();
+                    let event = events.remove(&buffers).unwrap();
+                    event_wait_list.push(event);
+                    break;
+                }
+            }
         }
     }
     let mut output_buffers = BTreeSet::new();
