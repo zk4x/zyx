@@ -140,6 +140,14 @@ When investigating a crash (segfault, signal, etc.):
 2. **Isolate the crash line** — add `eprintln!("reached A")`, `eprintln!("reached B")`, etc. at key points. Run and see which is the last printed. If output is missing (not flushed), use `panic!("reached X")` instead — panics always flush.
 3. **Narrow down** — once you know what line crashes, look at what that line does and work forward to figure out what's wrong.
 
+### Debugging Hangs
+
+When a test hangs (no crash, no output):
+
+1. **Add `eprintln!("reached A")`, `eprintln!("reached B")`, etc.** at key points in the suspected code path
+2. Run the test with `--nocapture` to see where output stops
+3. The last printed line is where the hang occurs — no need to hypothesize or ask, just add prints
+
 ## Debug Options
 
 Set `ZYX_DEBUG` environment variable (bitmask):
