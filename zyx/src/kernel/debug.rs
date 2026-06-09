@@ -22,7 +22,7 @@ impl Kernel {
         let mut has_loops = false;
         let mut id_map = Map::default();
         let mut max_id = OpId::ZERO;
-        let colorless = false;
+        let colorless = std::env::var("AGENT").map_or(false, |v| v == "1");
         let (bold, blue, cyan, green, grey, magenta, orange, red, reset, yellow) = if colorless {
             ("", "", "", "", "", "", "", "", "", "")
         } else {

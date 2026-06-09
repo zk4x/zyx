@@ -155,6 +155,17 @@ Set `ZYX_DEBUG` environment variable (bitmask):
 Example: `ZYX_DEBUG=1 cargo test -p zyx` (see detected backends)
 Example: `ZYX_DEBUG=16 cargo test -p zyx --features wgpu relu_1`
 
+### Colorless Debug Output
+
+Set `AGENT=1` to print kernel IR debug output without ANSI color codes (agent-friendly):
+
+```bash
+AGENT=1 cargo test -p zyx 2>&1
+AGENT=1 cargo test -p zyx -- --nocapture 2>&1 | less -R
+```
+
+This works with `ZYX_DEBUG=4` (scheduler output) and any `kernel.debug()` calls.
+
 ## Autotune System
 
 The autotune system in `src/kernel/autotune.rs` searches for optimal kernel configurations.
