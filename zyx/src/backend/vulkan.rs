@@ -425,9 +425,14 @@ impl VulkanDevice {
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("execute: {e}").into() })?
             .then_signal_fence();
 
+        // Wait for GPU to finish kernel execution
         future
             .wait(None)
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("fence: {e}").into() })?;
+        // Memory barrier to ensure GPU writes are visible to host
+        future
+            .wait(None)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("post-fence: {e}").into() })?;
 
         Ok(Event::Vulkan(VulkanEvent))
     }
