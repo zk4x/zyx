@@ -272,9 +272,25 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
     asm.words.push(0); // Bound will be set later
     asm.words.push(SCHEMA);
     
+    // Pre-scan: does this kernel have global bool buffers?
+    let needs_u8 = {
+        let mut op_id = kernel.head;
+        let mut found = false;
+        while !op_id.is_null() {
+            if let Op::Define { dtype: DType::Bool, scope: Scope::Global, .. } = kernel.at(op_id) {
+                found = true;
+                break;
+            }
+            op_id = kernel.next_op(op_id);
+        }
+        found
+    };
+
     // Required SPIR-V instructions
     asm.emit(OP_CAPABILITY, &[1]); // Shader capability
-    asm.emit(OP_CAPABILITY, &[44]); // StorageUniform8BitAccess (for bool buffers)
+    if needs_u8 {
+        asm.emit(OP_CAPABILITY, &[44]); // StorageUniform8BitAccess (for bool buffers)
+    }
     let glsl_id = asm.id();
     let glsl_name = b"GLSL.std.450\x00";
     let mut glsl_words = Vec::new();
@@ -342,11 +358,16 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
     let const_u32_1 = asm.id();
     const_entries.push((u32_id, const_u32_1, vec![1]));
     // u8 type for bool storage in Vulkan buffers (StorageUniform8BitAccess)
-    let u8_id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::U8);
-    let const_u8_0 = asm.id();
-    const_entries.push((u8_id, const_u8_0, vec![0]));
-    let const_u8_1 = asm.id();
-    const_entries.push((u8_id, const_u8_1, vec![1]));
+    let (u8_id, const_u8_0, const_u8_1) = if needs_u8 {
+        let id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::U8);
+        let c0 = asm.id();
+        const_entries.push((id, c0, vec![0]));
+        let c1 = asm.id();
+        const_entries.push((id, c1, vec![1]));
+        (Some(id), Some(c0), Some(c1))
+    } else {
+        (None, None, None)
+    };
     let vec3_id = asm.id();
     type_entries.push((OP_TYPE_VECTOR, vec3_id, vec![u32_id, 3]));
     
@@ -375,7 +396,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                             let is_bool = dtype == DType::Bool;
                             if is_bool { bool_buffers.insert(op_id); }
                             // Use u8 as storage type for bool buffers (Vulkan can't store bool in StorageBuffer)
-                            let storage_st = if is_bool { u8_id } else { st };
+                            let storage_st = if is_bool { u8_id.unwrap() } else { st };
                             let arr = asm.id();
                             type_entries.push((OP_TYPE_RUNTIME_ARRAY, arr, vec![storage_st]));
                             let stride = if is_bool { 1 } else { elem_stride(dtype) as u32 };
@@ -395,7 +416,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                             binding += 1;
                             spv_variables.insert(op_id, var);
                             // Pre-cache element pointer type using the actual storage type (u8 for bool, logical type otherwise)
-                            push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_STORAGE_BUFFER, if is_bool { u8_id } else { st });
+                            push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_STORAGE_BUFFER, if is_bool { u8_id.unwrap() } else { st });
                         }
                         Scope::Local => {
                             let len_cid = asm.id();
@@ -672,7 +693,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                         let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
                         let is_bool_buf = bool_buffers.contains(&src) && !is_local;
                         // For bool storage buffers, use u8 as storage type, then convert
-                        let load_type = if is_bool_buf { u8_id } else { result_type };
+                        let load_type = if is_bool_buf { u8_id.unwrap() } else { result_type };
                         let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, load_type);
                         (var_id, elem_ptr, !is_local, is_bool_buf)
                     } else if let Some(&var_id) = reg_vars.get(&src) {
@@ -689,11 +710,11 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                         asm.emit_typed(OP_ACCESS_CHAIN, element_ptr_type, access, &[base_ptr, index_id]);
                     }
                     let loaded = asm.id();
-                    let load_type = if is_bool_src { u8_id } else { result_type };
+                    let load_type = if is_bool_src { u8_id.unwrap() } else { result_type };
                     asm.emit_typed(OP_LOAD, load_type, loaded, &[access]);
                     if is_bool_src {
                         let bool_val = asm.id();
-                        asm.emit_typed(OP_I_NOT_EQUAL, result_type, bool_val, &[loaded, const_u8_0]);
+                        asm.emit_typed(OP_I_NOT_EQUAL, result_type, bool_val, &[loaded, const_u8_0.unwrap()]);
                         spv_values.insert(op_id, bool_val);
                     } else {
                         spv_values.insert(op_id, loaded);
@@ -710,7 +731,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                         let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
                         let is_bool_buf = bool_buffers.contains(&dst) && !is_local;
                         // For bool storage buffers, use u8 as storage type; convert bool → u8 before store
-                        let store_type = if is_bool_buf { u8_id } else { val_type };
+                        let store_type = if is_bool_buf { u8_id.unwrap() } else { val_type };
                         let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, store_type);
                         (var_id, elem_ptr, !is_local, is_bool_buf)
                     } else if let Some(&var_id) = reg_vars.get(&dst) {
@@ -723,7 +744,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                     let store_val = if is_bool_dst {
                         // Convert bool to u8 via OpSelect %u8 %bool %1 %0
                         let u8_tmp = asm.id();
-                        asm.emit_typed(OP_SELECT, u8_id, u8_tmp, &[val_id, const_u8_1, const_u8_0]);
+                        asm.emit_typed(OP_SELECT, u8_id.unwrap(), u8_tmp, &[val_id, const_u8_1.unwrap(), const_u8_0.unwrap()]);
                         u8_tmp
                     } else {
                         val_id
