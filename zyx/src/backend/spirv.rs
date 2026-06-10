@@ -481,7 +481,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
     let mut ptr_cache: Map<(u32, u32), u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
     let mut reg_arrays: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
     let mut cast_u32_consts: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
-    let mut const_pool: Map<(DType, u32), u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
+    let mut const_pool: Map<Constant, u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
 
     // Pre-define common types
     type_entries.push((OpTypeVoid, void_id, vec![]));
@@ -617,40 +617,51 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
             match kernel.at(op_id) {
                 &Op::Unary { uop, x } if uop == UOp::Reciprocal => {
                     let dt = dtypes[&x];
-                    let val = float_one(dt);
-                    if !const_pool.contains_key(&(dt, val)) {
+                    let one_c = float_one(dt);
+                    if !const_pool.contains_key(&one_c) {
                         let tid = type_cache[&dt];
                         let cid = asm.id();
-                        const_entries.push((tid, cid, vec![val]));
-                        const_pool.insert((dt, val), cid);
+                        let words = const_to_words(&one_c);
+                        const_entries.push((tid, cid, words));
+                        const_pool.insert(one_c, cid);
                     }
                 }
                 &Op::Unary { uop, x } if uop == UOp::Abs && dtypes[&x].is_int() && !dtypes[&x].is_uint() => {
                     let dt = dtypes[&x];
                     let tid = type_cache[&dt];
-                    if !const_pool.contains_key(&(dt, 0u32)) {
+                    let zero = dt.zero_constant();
+                    if !const_pool.contains_key(&zero) {
                         let cid = asm.id();
-                        const_entries.push((tid, cid, vec![0u32]));
-                        const_pool.insert((dt, 0u32), cid);
+                        let words = const_to_words(&zero);
+                        const_entries.push((tid, cid, words));
+                        const_pool.insert(zero, cid);
                     }
                 }
                 &Op::Loop { len } => {
                     for &val in &[0u32, 1, len as u32] {
-                        if !const_pool.contains_key(&(IDX_T, val)) {
+                        let key = match IDX_T {
+                            DType::U32 => Constant::U32(val),
+                            DType::I32 => Constant::I32(val as i32),
+                            DType::U64 => Constant::U64((val as u64).to_le_bytes()),
+                            _ => unreachable!(),
+                        };
+                        if !const_pool.contains_key(&key) {
                             let tid = type_cache[&IDX_T];
                             let cid = asm.id();
-                            const_entries.push((tid, cid, vec![val]));
-                            const_pool.insert((IDX_T, val), cid);
+                            let words = const_to_words(&key);
+                            const_entries.push((tid, cid, words));
+                            const_pool.insert(key, cid);
                         }
                     }
                 }
                 &Op::Barrier { .. } => {
                     for &val in &[SCOPE_WORKGROUP, SEM_ACQUIRE_RELEASE | SEM_WORKGROUP_MEMORY] {
-                        if !const_pool.contains_key(&(DType::U32, val)) {
+                        let key = Constant::U32(val);
+                        if !const_pool.contains_key(&key) {
                             let tid = type_cache[&DType::U32];
                             let cid = asm.id();
                             const_entries.push((tid, cid, vec![val]));
-                            const_pool.insert((DType::U32, val), cid);
+                            const_pool.insert(key, cid);
                         }
                     }
                 }
@@ -988,7 +999,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                             asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Log2, src_id]);
                         }
                         UOp::Reciprocal => {
-                            let one = const_pool[&(dt, float_one(dt))];
+                            let one = const_pool[&float_one(dt)];
                             asm.emit_typed(OpFDiv, result_type, rid, &[one, src_id]);
                         }
                         UOp::Sqrt => {
@@ -1014,7 +1025,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                                 continue;
                             } else {
                                 // Signed int abs: (x < 0) ? -x : x
-                                let zero = const_pool[&(dt, 0u32)];
+                                let zero = const_pool[&dt.zero_constant()];
                                 let bool_type = emit_type(&mut asm, &mut type_cache, DType::Bool);
                                 let cmp = asm.id();
                                 asm.emit_typed(OpSLessThan, bool_type, cmp, &[src_id, zero]);
@@ -1193,7 +1204,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     let counter_ptr_type = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
                     let counter_var = asm.id();
                     asm.emit(OpVariable, &[counter_ptr_type, counter_var, SC_FUNCTION]);
-                    let zero = const_pool[&(IDX_T, 0u32)];
+                    let zero = const_pool[&Constant::U32(0)];
                     asm.emit(OpStore, &[counter_var, zero]);
                     asm.emit(OpBranch, &[header]);
 
@@ -1224,13 +1235,13 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
                     asm.emit(OpLabel, &[continue_lbl]);
                     let old = asm.id();
                     asm.emit_typed(OpLoad, idx_type, old, &[counter_var]);
-                    let one = const_pool[&(IDX_T, 1u32)];
+                    let one = const_pool[&Constant::U32(1)];
                     let inc = asm.id();
                     asm.emit_typed(OpIAdd, idx_type, inc, &[old, one]);
                     asm.emit(OpStore, &[counter_var, inc]);
 
                     // Check if counter < len
-                    let len_cid = const_pool[&(IDX_T, len as u32)];
+                    let len_cid = const_pool[&Constant::U32(len as u32)];
                     let cmp_type = emit_type(&mut asm, &mut type_cache, DType::Bool);
                     let cmp = asm.id();
                     asm.emit_typed(OpULessThan, cmp_type, cmp, &[inc, len_cid]);
@@ -1261,8 +1272,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<(Vec<u32>, Vec<Dim>, 
 
                 &Op::Barrier { scope } => match scope {
                     Scope::Local => {
-                        let scope_id = const_pool[&(DType::U32, SCOPE_WORKGROUP)];
-                        let sem_id = const_pool[&(DType::U32, SEM_ACQUIRE_RELEASE | SEM_WORKGROUP_MEMORY)];
+                        let scope_id = const_pool[&Constant::U32(SCOPE_WORKGROUP)];
+                        let sem_id = const_pool[&Constant::U32(SEM_ACQUIRE_RELEASE | SEM_WORKGROUP_MEMORY)];
                         asm.emit(OpControlBarrier, &[scope_id, scope_id, sem_id]);
                     }
                     _ => {
@@ -1366,13 +1377,8 @@ fn const_to_words(c: &Constant) -> Vec<u32> {
     }
 }
 
-fn float_one(dt: DType) -> u32 {
-    match dt {
-        DType::F16 | DType::BF16 => 0x3C00,
-        DType::F32 => 0x3F80_0000,
-        DType::F64 => 0x0000_0000, // Lower word; F64 not yet supported
-        _ => 1,
-    }
+fn float_one(dt: DType) -> Constant {
+    dt.one_constant()
 }
 
 fn bit_size(dt: DType) -> u32 {
