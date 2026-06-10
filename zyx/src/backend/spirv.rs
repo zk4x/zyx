@@ -25,10 +25,13 @@ const SC_STORAGE_BUFFER: u32 = 12;
 const SC_WORKGROUP: u32 = 4;
 
 // Decorations
-const DEC_BUILT_IN: u32 = 11;
-const DEC_DESCRIPTOR_SET: u32 = 34;
-const DEC_BINDING: u32 = 33;
-const DEC_NON_WRITABLE: u32 = 24;
+    const DEC_BLOCK: u32 = 2;
+    const DEC_ARRAY_STRIDE: u32 = 6;
+    const DEC_BUILT_IN: u32 = 11;
+    const DEC_NON_WRITABLE: u32 = 24;
+    const DEC_BINDING: u32 = 33;
+    const DEC_DESCRIPTOR_SET: u32 = 34;
+    const DEC_OFFSET: u32 = 35;
 
 // BuiltIns
 const BI_WORKGROUP_ID: u32 = 26;
@@ -63,6 +66,7 @@ op! {
     OP_ENTRY_POINT = 15,
     OP_EXECUTION_MODE = 16,
     OP_DECORATE = 71,
+    OP_MEMBER_DECORATE = 72,
     OP_TYPE_VOID = 19,
     OP_TYPE_BOOL = 20,
     OP_TYPE_INT = 21,
@@ -70,6 +74,7 @@ op! {
     OP_TYPE_VECTOR = 23,
     OP_TYPE_ARRAY = 28,
     OP_TYPE_RUNTIME_ARRAY = 29,
+    OP_TYPE_STRUCT = 30,
     OP_TYPE_POINTER = 32,
     OP_TYPE_FUNCTION = 33,
     OP_CONSTANT = 43,
@@ -139,6 +144,8 @@ mod glsl {
     pub const Cos: u32 = 14;
     pub const Exp2: u32 = 29;
     pub const Log2: u32 = 30;
+    pub const Exp: u32 = 27;
+    pub const Log: u32 = 28;
     pub const Sqrt: u32 = 31;
     pub const Pow: u32 = 26;
 }
@@ -245,6 +252,15 @@ fn compute_dtypes(kernel: &Kernel) -> Map<OpId, DType> {
 
 // ---------- Public compile function ----------
 
+fn elem_stride(dt: DType) -> usize {
+    match dt {
+        DType::Bool | DType::I8 | DType::U8 => 1,
+        DType::I16 | DType::U16 | DType::F16 | DType::BF16 => 2,
+        DType::I32 | DType::U32 | DType::F32 => 4,
+        DType::I64 | DType::U64 | DType::F64 => 8,
+    }
+}
+
 pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
     let dtypes = compute_dtypes(kernel);
     let mut asm = Asm::new();
@@ -258,6 +274,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
     
     // Required SPIR-V instructions
     asm.emit(OP_CAPABILITY, &[1]); // Shader capability
+    asm.emit(OP_CAPABILITY, &[44]); // StorageUniform8BitAccess (for bool buffers)
     let glsl_id = asm.id();
     let glsl_name = b"GLSL.std.450\x00";
     let mut glsl_words = Vec::new();
@@ -308,8 +325,10 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
     let mut var_entries: Vec<(u32, u32, u32, bool)> = Vec::with_capacity(16);
     let mut global_var_ids: Vec<u32> = Vec::with_capacity(4);
     let mut decorations: Vec<(u32, u32, Vec<u32>)> = Vec::with_capacity(8);
+    let mut member_decorations: Vec<(u32, u32, u32, Vec<u32>)> = Vec::with_capacity(4);
     let mut binding: u32 = 0;
     let mut spv_variables: Map<OpId, u32> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
+    let mut bool_buffers: std::collections::HashSet<OpId> = std::collections::HashSet::new(); // global buffers storing bool as u32
     let mut ptr_cache: Map<(u32, u32), u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
     let mut reg_arrays: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
     let mut cast_u32_consts: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
@@ -318,6 +337,16 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
     // Pre-define common types
     type_entries.push((OP_TYPE_VOID, void_id, vec![]));
     let u32_id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::U32);
+    let const_u32_0 = asm.id();
+    const_entries.push((u32_id, const_u32_0, vec![0]));
+    let const_u32_1 = asm.id();
+    const_entries.push((u32_id, const_u32_1, vec![1]));
+    // u8 type for bool storage in Vulkan buffers (StorageUniform8BitAccess)
+    let u8_id = push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::U8);
+    let const_u8_0 = asm.id();
+    const_entries.push((u8_id, const_u8_0, vec![0]));
+    let const_u8_1 = asm.id();
+    const_entries.push((u8_id, const_u8_1, vec![1]));
     let vec3_id = asm.id();
     type_entries.push((OP_TYPE_VECTOR, vec3_id, vec![u32_id, 3]));
     
@@ -343,10 +372,20 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                     let st = push_dtype(&mut asm, &mut type_cache, &mut type_entries, dtype);
                     match scope {
                         Scope::Global => {
+                            let is_bool = dtype == DType::Bool;
+                            if is_bool { bool_buffers.insert(op_id); }
+                            // Use u8 as storage type for bool buffers (Vulkan can't store bool in StorageBuffer)
+                            let storage_st = if is_bool { u8_id } else { st };
                             let arr = asm.id();
-                            type_entries.push((OP_TYPE_RUNTIME_ARRAY, arr, vec![st]));
+                            type_entries.push((OP_TYPE_RUNTIME_ARRAY, arr, vec![storage_st]));
+                            let stride = if is_bool { 1 } else { elem_stride(dtype) as u32 };
+                            decorations.push((arr, DEC_ARRAY_STRIDE, vec![stride]));
+                            let struct_id = asm.id();
+                            type_entries.push((OP_TYPE_STRUCT, struct_id, vec![arr]));
+                            decorations.push((struct_id, DEC_BLOCK, vec![]));
+                            member_decorations.push((struct_id, 0, DEC_OFFSET, vec![0]));
                             let ptr = asm.id();
-                            type_entries.push((OP_TYPE_POINTER, ptr, vec![SC_STORAGE_BUFFER, arr]));
+                            type_entries.push((OP_TYPE_POINTER, ptr, vec![SC_STORAGE_BUFFER, struct_id]));
                             let var = asm.id();
                             var_entries.push((ptr, var, SC_STORAGE_BUFFER, true));
                             global_var_ids.push(var);
@@ -355,8 +394,8 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                             if ro { decorations.push((var, DEC_NON_WRITABLE, vec![])); }
                             binding += 1;
                             spv_variables.insert(op_id, var);
-                            // Pre-cache element pointer type
-                            push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_STORAGE_BUFFER, st);
+                            // Pre-cache element pointer type using the actual storage type (u8 for bool, logical type otherwise)
+                            push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_STORAGE_BUFFER, if is_bool { u8_id } else { st });
                         }
                         Scope::Local => {
                             let len_cid = asm.id();
@@ -537,6 +576,11 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
         args.extend_from_slice(operands);
         asm.emit(OP_DECORATE, &args);
     }
+    for (struct_id, member, dec, operands) in &member_decorations {
+        let mut args = vec![*struct_id, *member, *dec];
+        args.extend_from_slice(operands);
+        asm.emit(OP_MEMBER_DECORATE, &args);
+    }
 
     // Types (emit array-length constants inline before OpTypeArray that references them)
     let mut emitted_consts: std::collections::HashSet<u32> = std::collections::HashSet::new();
@@ -623,23 +667,37 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                     let result_type = emit_type(&mut asm, &mut type_cache, dtypes[&op_id]);
                     let index_id = spv_values[&index];
 
-                    let (base_ptr, element_ptr_type) = if let Some(&var_id) = spv_variables.get(&src) {
-                        let sc = if let &Op::Define { scope: Scope::Local, .. } = kernel.at(src) { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
-                        let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, result_type);
-                        (var_id, elem_ptr)
+                    let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_src) = if let Some(&var_id) = spv_variables.get(&src) {
+                        let is_local = matches!(kernel.at(src), &Op::Define { scope: Scope::Local, .. });
+                        let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
+                        let is_bool_buf = bool_buffers.contains(&src) && !is_local;
+                        // For bool storage buffers, use u8 as storage type, then convert
+                        let load_type = if is_bool_buf { u8_id } else { result_type };
+                        let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, load_type);
+                        (var_id, elem_ptr, !is_local, is_bool_buf)
                     } else if let Some(&var_id) = reg_vars.get(&src) {
-                        // Register array
                         let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, result_type);
-                        (var_id, elem_ptr)
+                        (var_id, elem_ptr, false, false)
                     } else {
                         return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: Load from unknown variable".into() });
                     };
 
                     let access = asm.id();
-                    asm.emit_typed(OP_ACCESS_CHAIN, element_ptr_type, access, &[base_ptr, index_id]);
+                    if is_storage_buffer {
+                        asm.emit_typed(OP_ACCESS_CHAIN, element_ptr_type, access, &[base_ptr, const_u32_0, index_id]);
+                    } else {
+                        asm.emit_typed(OP_ACCESS_CHAIN, element_ptr_type, access, &[base_ptr, index_id]);
+                    }
                     let loaded = asm.id();
-                    asm.emit_typed(OP_LOAD, result_type, loaded, &[access]);
-                    spv_values.insert(op_id, loaded);
+                    let load_type = if is_bool_src { u8_id } else { result_type };
+                    asm.emit_typed(OP_LOAD, load_type, loaded, &[access]);
+                    if is_bool_src {
+                        let bool_val = asm.id();
+                        asm.emit_typed(OP_I_NOT_EQUAL, result_type, bool_val, &[loaded, const_u8_0]);
+                        spv_values.insert(op_id, bool_val);
+                    } else {
+                        spv_values.insert(op_id, loaded);
+                    }
                 }
 
                 &Op::Store { dst, x, index, layout: _ } => {
@@ -647,20 +705,37 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                     let val_id = spv_values[&x];
                     let index_id = spv_values[&index];
 
-                    let (base_ptr, element_ptr_type) = if let Some(&var_id) = spv_variables.get(&dst) {
-                        let sc = if let &Op::Define { scope: Scope::Local, .. } = kernel.at(dst) { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
-                        let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, val_type);
-                        (var_id, elem_ptr)
+                    let (base_ptr, element_ptr_type, is_storage_buffer, is_bool_dst) = if let Some(&var_id) = spv_variables.get(&dst) {
+                        let is_local = matches!(kernel.at(dst), &Op::Define { scope: Scope::Local, .. });
+                        let sc = if is_local { SC_WORKGROUP } else { SC_STORAGE_BUFFER };
+                        let is_bool_buf = bool_buffers.contains(&dst) && !is_local;
+                        // For bool storage buffers, use u8 as storage type; convert bool → u8 before store
+                        let store_type = if is_bool_buf { u8_id } else { val_type };
+                        let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, sc, store_type);
+                        (var_id, elem_ptr, !is_local, is_bool_buf)
                     } else if let Some(&var_id) = reg_vars.get(&dst) {
                         let elem_ptr = push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, val_type);
-                        (var_id, elem_ptr)
+                        (var_id, elem_ptr, false, false)
                     } else {
                         return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "SPIR-V: Store to unknown variable".into() });
                     };
 
+                    let store_val = if is_bool_dst {
+                        // Convert bool to u8 via OpSelect %u8 %bool %1 %0
+                        let u8_tmp = asm.id();
+                        asm.emit_typed(OP_SELECT, u8_id, u8_tmp, &[val_id, const_u8_1, const_u8_0]);
+                        u8_tmp
+                    } else {
+                        val_id
+                    };
+
                     let access = asm.id();
-                    asm.emit_typed(OP_ACCESS_CHAIN, element_ptr_type, access, &[base_ptr, index_id]);
-                    asm.emit(OP_STORE, &[access, val_id]);
+                    if is_storage_buffer {
+                        asm.emit_typed(OP_ACCESS_CHAIN, element_ptr_type, access, &[base_ptr, const_u32_0, index_id]);
+                    } else {
+                        asm.emit_typed(OP_ACCESS_CHAIN, element_ptr_type, access, &[base_ptr, index_id]);
+                    }
+                    asm.emit(OP_STORE, &[access, store_val]);
                 }
 
                 &Op::Cast { x, dtype } => {
@@ -706,10 +781,16 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                         UOp::BitNot => {
                             asm.emit_typed(OP_NOT, result_type, rid, &[src_id]);
                         }
-                        UOp::Exp | UOp::Exp2 => {
+                        UOp::Exp => {
+                            asm.emit_typed(OP_EXT_INST, result_type, rid, &[glsl_set, glsl::Exp, src_id]);
+                        }
+                        UOp::Exp2 => {
                             asm.emit_typed(OP_EXT_INST, result_type, rid, &[glsl_set, glsl::Exp2, src_id]);
                         }
-                        UOp::Ln | UOp::Log2 => {
+                        UOp::Ln => {
+                            asm.emit_typed(OP_EXT_INST, result_type, rid, &[glsl_set, glsl::Log, src_id]);
+                        }
+                        UOp::Log2 => {
                             asm.emit_typed(OP_EXT_INST, result_type, rid, &[glsl_set, glsl::Log2, src_id]);
                         }
                         UOp::Reciprocal => {

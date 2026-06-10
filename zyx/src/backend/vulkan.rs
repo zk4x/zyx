@@ -10,14 +10,15 @@ use vulkano::buffer::{BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-use vulkano::descriptor_set::layout::DescriptorSetLayout;
+use vulkano::descriptor_set::layout::{DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType};
+use vulkano::shader::ShaderStages;
 use vulkano::descriptor_set::{CopyDescriptorSet, DescriptorSet, WriteDescriptorSet};
 use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
 use vulkano::pipeline::layout::{PipelineLayout, PipelineLayoutCreateInfo};
-use vulkano::pipeline::{Pipeline, PipelineBindPoint, PipelineShaderStageCreateInfo};
+use vulkano::pipeline::{PipelineBindPoint, PipelineShaderStageCreateInfo};
 use vulkano::shader::{ShaderModule, ShaderModuleCreateInfo};
 use vulkano::sync::{self, GpuFuture};
 use vulkano::VulkanLibrary;
@@ -216,15 +217,17 @@ impl VulkanMemoryPool {
     pub const fn deinitialize(&mut self) {}
 
     pub(super) fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
+        // Round up to at least 4 bytes — bool elements are stored as u32 (4 bytes) in Vulkan
+        let aligned = bytes.next_multiple_of(4);
         let allocator = SubbufferAllocator::new(
             self.memory_allocator.clone(),
             SubbufferAllocatorCreateInfo {
-                buffer_usage: BufferUsage::STORAGE_BUFFER,
+                buffer_usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
                 ..Default::default()
             },
         );
         let buffer = allocator
-            .allocate_slice::<u8>(bytes)
+            .allocate_slice::<u8>(aligned)
             .map_err(|e| BackendError {
                 status: ErrorStatus::MemoryAllocation,
                 context: format!("buffer alloc: {e}").into(),
@@ -361,14 +364,50 @@ impl VulkanDevice {
                 .join("_"),
         );
 
-        let entry_point = shader_module.entry_point("main").ok_or_else(|| BackendError {
+        let entry_point = shader_module.single_entry_point().ok_or_else(|| BackendError {
             status: ErrorStatus::KernelCompilation,
-            context: "no main entry point".into(),
+            context: "no entry point".into(),
+        })?;
+
+        // Scan kernel for read-only flags
+        let mut arg_ro_flags = Vec::new();
+        let mut op_id = kernel.head;
+        while !op_id.is_null() {
+            if let crate::kernel::Op::Define { ro, scope, .. } = kernel.at(op_id) {
+                if *scope == crate::kernel::Scope::Global {
+                    arg_ro_flags.push(*ro);
+                }
+            }
+            op_id = kernel.next_op(op_id);
+        }
+
+        // Create descriptor set layout matching SPIR-V bindings
+        let ds_bindings: std::collections::BTreeMap<u32, DescriptorSetLayoutBinding> = arg_ro_flags
+            .iter()
+            .enumerate()
+            .map(|(i, _ro)| {
+                let mut binding = DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer);
+                binding.stages = ShaderStages::COMPUTE;
+                (i as u32, binding)
+            })
+            .collect();
+
+        let ds_layout = DescriptorSetLayout::new(
+            self.device.clone(),
+            DescriptorSetLayoutCreateInfo {
+                bindings: ds_bindings,
+                ..Default::default()
+            },
+        )
+        .map_err(|e| BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("ds layout: {e}").into(),
         })?;
 
         let pipeline_layout = PipelineLayout::new(
             self.device.clone(),
             PipelineLayoutCreateInfo {
+                set_layouts: vec![ds_layout.clone()],
                 ..Default::default()
             },
         )
@@ -386,13 +425,6 @@ impl VulkanDevice {
         .map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("compute pipeline: {e}").into(),
-        })?;
-
-        let ds_layout = pipeline.layout().set_layouts().first().cloned().ok_or_else(|| {
-            BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "no descriptor set layout".into(),
-            }
         })?;
 
         let program = VulkanProgram {
