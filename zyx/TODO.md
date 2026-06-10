@@ -10,15 +10,18 @@
   - [x] opencl
     - [ ] fix load calculation, probably using Atomic usize
   - [ ] vulkan
-    - [ ] initialization
+    - [x] initialization
     - [ ] memory management
-    - [ ] spirv compiler (to spirv binary)
+    - [x] spirv compiler (to spirv binary)
+      - [] replace opcodes and other things with enums instead of constants
     - [ ] kernel launch
   - [x] wgpu
     - [ ] fix load calculation, probably using Atomic usize
     - [ ] spirv compiler
   - [x] dummy
     - [ ] validation for program ids
+  - [x] c (clang)
+    - [x] optional openmp
 - [ ] runtime
   - [x] fix event handling
   - [x] node deallocation after realization
@@ -112,7 +115,7 @@
   - [x] loop unrolling
     - [x] in optimizer
     - [x] in kernel
-  - [ ] coalesced loads (lidx vs const offset swap in upcast)
+  - [ ] coalesced loads (lidx vs const offset swap in upcast) - actually we probably already are coalesced without this, but worth a try on some targets
   - [x] potentially integrate optimizer into kernel
   - [ ] improve unfold_pows
     - [ ] specialized case for integers

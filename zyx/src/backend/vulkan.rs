@@ -66,8 +66,8 @@ pub struct VulkanDevice {
 #[derive(Debug)]
 pub(super) struct VulkanProgram {
     //name: String,
-    gws: [u64; 3],
-    lws: [u64; 3],
+    gws: Vec<Dim>,
+    lws: Vec<Dim>,
     pipeline: Arc<ComputePipeline>,
     pipeline_layout: Arc<PipelineLayout>,
     descriptor_set_layout: Arc<DescriptorSetLayout>,
@@ -270,7 +270,7 @@ impl VulkanDevice {
     }
 
     pub(super) fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let spirv_words = crate::backend::spirv::compile(kernel, debug_asm)
+        let (spirv_words, gws, lws) = crate::backend::spirv::compile(kernel, debug_asm)
             .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("SPIR-V: {e}").into() })?;
 
         let shader_module = unsafe {
@@ -279,20 +279,6 @@ impl VulkanDevice {
                 context: format!("shader module: {e}").into(),
             })?
         };
-
-        let mut gws: [u64; 3] = [1, 1, 1];
-        let mut lws: [u64; 3] = [1, 1, 1];
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            if let crate::kernel::Op::Index { len, scope, axis } = kernel.at(op_id) {
-                match scope {
-                    crate::kernel::Scope::Global if *axis < 3 => gws[*axis as usize] = gws[*axis as usize].max(*len),
-                    crate::kernel::Scope::Local if *axis < 3 => lws[*axis as usize] = lws[*axis as usize].max(*len),
-                    _ => {}
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
 
         let entry_point = shader_module
             .single_entry_point()

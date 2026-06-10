@@ -130,7 +130,7 @@ pub(super) fn initialize_device(
         buffers: Slab::new(),
     });
     if debug_dev {
-        println!("[WGPU] device total memory: {} MB", 1_000_000_000u64 / (1024*1024));
+        println!("[WGPU] device total memory: {} MB", 1_000_000_000u64 / (1024 * 1024));
     }
     memory_pools.push(pool);
     let limits = device.limits();
@@ -379,40 +379,24 @@ impl WGPUDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        let spirv_words = spirv::compile(kernel, debug_asm)?;
-
-        if debug_asm {
-            println!("SPIR-V binary: {} words", spirv_words.len());
-            use std::io::Write;
-            let bytes: Vec<u8> = spirv_words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            if let Ok(mut f) = std::fs::File::create("/tmp/test_relu.spv") {
-                f.write_all(&bytes).ok();
-            }
-        }
+        let (spirv_words, gws, lws) = spirv::compile(kernel, debug_asm)?;
 
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::SpirV(std::borrow::Cow::Owned(spirv_words)),
         });
 
-        let mut gws: Vec<u64> = vec![1; 3];
-        let mut lws: Vec<u64> = vec![1; 3];
-        let mut op_id = kernel.head;
-        while !op_id.is_null() {
-            if let &Op::Index { len, scope, axis } = kernel.at(op_id) {
-                match scope {
-                    Scope::Global if axis < 3 => gws[axis as usize] = gws[axis as usize].max(len),
-                    Scope::Local if axis < 3 => lws[axis as usize] = lws[axis as usize].max(len),
-                    _ => {}
-                }
-            }
-            op_id = kernel.next_op(op_id);
-        }
-
         if lws.iter().product::<u64>() > self.dev_info.max_local_threads as u64 {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
 
+        let name = format!(
+            "k_{}__{}",
+            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
+        );
+
+        // Read only flags
         let mut arg_ro_flags = Vec::new();
         let mut op_id = kernel.head;
         while !op_id.is_null() {
@@ -423,13 +407,6 @@ impl WGPUDevice {
             }
             op_id = kernel.next_op(op_id);
         }
-
-        let name = format!(
-            "k_{}__{}",
-            gws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-            lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),
-        );
-
         let bg_layout_entries: Vec<wgpu::BindGroupLayoutEntry> = arg_ro_flags
             .iter()
             .enumerate()
@@ -806,5 +783,3 @@ impl WGPUDevice {
         Ok(Event::WGPU(WGPUEvent { submission_index }))
     }
 }
-
-
