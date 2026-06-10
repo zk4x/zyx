@@ -117,6 +117,7 @@ Uses the vulkano crate for Vulkan compute operations.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Enable the Vulkan backend |
 | `device_ids` | `Option<Vec<i32>>` | `null` | Which Vulkan devices to use. `null` = all available. `[]` = disable Vulkan. `[0]` = use first device only.
 
 ## Backend selection rules
@@ -129,5 +130,7 @@ Uses the vulkano crate for Vulkan compute operations.
 - **wgpu**: enabled by default; disabled when `"enabled": false`
 
 CUDA, HIP, OpenCL, and Tenstorrent backends are always compiled into zyx (cannot be disabled by cargo features). They search for required `.so` files at runtime. WGPU requires the `wgpu` cargo feature.
+
+The Vulkan backend is compiled by default. It requires the vulkano crate (vulkan-sys, ash, etc.).
 
 If all backends fail to initialize or are configured out, initialization returns an error.
