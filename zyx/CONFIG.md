@@ -111,6 +111,14 @@ Requires `--features tenstorrent` at compile time.
 |-------|------|---------|-------------|
 | `device_ids` | `Option<Vec<i32>>` | `null` | Which Tenstorrent devices to use. `null` = all available. `[]` = disable Tenstorrent. |
 
+### `vulkan` — Vulkan backend
+
+Uses the vulkano crate for Vulkan compute operations.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `device_ids` | `Option<Vec<i32>>` | `null` | Which Vulkan devices to use. `null` = all available. `[]` = disable Vulkan. `[0]` = use first device only.
+
 ## Backend selection rules
 
 - **dummy**, **c**: enabled only when `"enabled": true`

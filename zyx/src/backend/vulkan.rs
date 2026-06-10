@@ -17,7 +17,7 @@ use vulkano::descriptor_set::layout::{
 use vulkano::descriptor_set::{CopyDescriptorSet, DescriptorSet, WriteDescriptorSet};
 use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags};
 use vulkano::instance::{Instance, InstanceCreateInfo};
-use vulkano::memory::allocator::StandardMemoryAllocator;
+use vulkano::memory::allocator::{MemoryTypeFilter, StandardMemoryAllocator};
 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
 use vulkano::pipeline::layout::{PipelineLayout, PipelineLayoutCreateInfo};
 use vulkano::pipeline::{PipelineBindPoint, PipelineShaderStageCreateInfo};
@@ -46,6 +46,9 @@ pub struct VulkanConfig {
 pub struct VulkanMemoryPool {
     free_bytes: usize,
     memory_allocator: Arc<StandardMemoryAllocator>,
+    device: Arc<vulkano::device::Device>,
+    queue: Arc<vulkano::device::Queue>,
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     buffers: Slab<PoolBufferId, (Subbuffer<[u8]>, usize)>,
 }
 
@@ -116,17 +119,19 @@ pub(super) fn initialize_device(
     };
 
     for phys_device in physical_devices {
+        let name = phys_device.properties().device_name.to_string();
         let qfps = phys_device.queue_family_properties();
-        let queue_family_index = qfps
+        // Use the first queue family that has compute support
+        let qfi = qfps
             .iter()
             .enumerate()
             .position(|(_, q)| q.queue_flags.intersects(QueueFlags::COMPUTE));
 
-        let Some(qfi) = queue_family_index else {
+        let Some(qfi) = qfi else {
+            eprintln!("[vulkan] device {name}: no compute queue family found");
             continue;
         };
 
-        let name = phys_device.properties().device_name.to_string();
         let max_wg_count = phys_device.properties().max_compute_work_group_count;
         let max_wg_invocations = phys_device.properties().max_compute_work_group_invocations;
         let max_wg_size = phys_device.properties().max_compute_work_group_size;
@@ -135,21 +140,40 @@ pub(super) fn initialize_device(
             println!("[vulkan] {name}");
         }
 
-        let (device, queues) = Device::new(
+        let (device, mut queues) = Device::new(
             phys_device,
             DeviceCreateInfo {
                 queue_create_infos: vec![QueueCreateInfo { queue_family_index: qfi as u32, ..Default::default() }],
                 ..Default::default()
             },
         )
-        .map_err(|e| BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] device: {e}").into() })?;
+        .map_err(|e| {
+            eprintln!("[vulkan] device creation failed: {e}");
+            BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] device: {e}").into() }
+        })?;
+
+        let queues: Vec<_> = queues.collect();
+
+        let queue = queues
+            .first()
+            .cloned()
+            .ok_or_else(|| {
+                eprintln!("[vulkan] no queues for device {name} queue family {qfi}");
+                BackendError { status: ErrorStatus::Initialization, context: "[vulkan] no queue".into() }
+            })?;
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
         let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default()));
         let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(device.clone(), Default::default()));
 
-        let memory_pool =
-            VulkanMemoryPool { free_bytes: 1024 * 1024 * 1024, memory_allocator: memory_allocator.clone(), buffers: Slab::new() };
+        let memory_pool = VulkanMemoryPool {
+            free_bytes: 1024 * 1024 * 1024,
+            memory_allocator: memory_allocator.clone(),
+            device: device.clone(),
+            queue: queue,
+            command_buffer_allocator: command_buffer_allocator.clone(),
+            buffers: Slab::new(),
+        };
 
         let mem_pool_id = memory_pools.push(MemoryPool::Vulkan(memory_pool));
 
@@ -194,10 +218,17 @@ impl VulkanMemoryPool {
     pub(super) fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         // Round up to at least 4 bytes — bool elements are stored as u32 (4 bytes) in Vulkan
         let aligned = bytes.next_multiple_of(4);
+        // Use host-visible memory so we can directly read/write from the host
+        use vulkano::memory::MemoryPropertyFlags;
         let allocator = SubbufferAllocator::new(
             self.memory_allocator.clone(),
             SubbufferAllocatorCreateInfo {
                 buffer_usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
+                memory_type_filter: MemoryTypeFilter {
+                    required_flags: MemoryPropertyFlags::HOST_VISIBLE | MemoryPropertyFlags::HOST_COHERENT,
+                    preferred_flags: MemoryPropertyFlags::empty(),
+                    not_preferred_flags: MemoryPropertyFlags::empty(),
+                },
                 ..Default::default()
             },
         );
