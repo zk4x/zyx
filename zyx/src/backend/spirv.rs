@@ -33,19 +33,7 @@ const DEC_NON_WRITABLE: u32 = 24;
 // BuiltIns
 const BI_WORKGROUP_ID: u32 = 26;
 const BI_LOCAL_INVOCATION_ID: u32 = 27;
-const BI_GLOBAL_INVOCATION_ID: u32 = 28;
-const BI_NUM_WORKGROUPS: u32 = 24;
 
-// Capabilities
-const CAP_SHADER: u32 = 1;
-const CAP_FLOAT16: u32 = 9;
-const CAP_INT64: u32 = 12;
-const CAP_INT16: u32 = 85;
-const CAP_INT8: u32 = 39;
-
-// Memory model
-const ADDR_LOGICAL: u32 = 0;
-const MEM_GLSL450: u32 = 1;
 
 // Execution model
 const EXEC_GL_COMPUTE: u32 = 5;
@@ -59,7 +47,6 @@ const FN_CTRL_NONE: u32 = 0;
 
 // Barrier scopes/semantics
 const SCOPE_WORKGROUP: u32 = 2;
-const SCOPE_DEVICE: u32 = 1;
 const SEM_ACQUIRE_RELEASE: u32 = 0x8;
 const SEM_WORKGROUP_MEMORY: u32 = 0x100;
 
@@ -86,8 +73,6 @@ op! {
     OP_TYPE_POINTER = 32,
     OP_TYPE_FUNCTION = 33,
     OP_CONSTANT = 43,
-    OP_CONSTANT_FALSE = 42,
-    OP_CONSTANT_TRUE = 41,
     OP_VARIABLE = 59,
     OP_FUNCTION = 54,
     OP_FUNCTION_END = 56,
@@ -112,8 +97,6 @@ op! {
     OP_SDIV = 135,
     OP_UDIV = 134,
     OP_SREM = 138,
-    OP_SMOD = 139,
-    OP_U_MOD = 137,
     OP_SNEGATE = 126,
     OP_NOT = 200,
     OP_SHIFT_LEFT_LOGICAL = 196,
@@ -121,8 +104,6 @@ op! {
     OP_BITWISE_AND = 199,
     OP_BITWISE_OR = 197,
     OP_BITWISE_XOR = 198,
-    OP_IS_LESS_THAN = 157,
-    OP_IS_GREATER_THAN = 158,
     OP_I_EQUAL = 170,
     OP_I_NOT_EQUAL = 171,
     OP_U_LESS_THAN = 176,
@@ -150,19 +131,15 @@ op! {
 // GLSL.std.450 extended instructions used
 #[allow(non_upper_case_globals)]
 mod glsl {
-    pub const Round: u32 = 1;
-    pub const RoundEven: u32 = 2;
     pub const Trunc: u32 = 3;
     pub const FAbs: u32 = 4;
     pub const Floor: u32 = 8;
-    pub const FMin: u32 = 37;
     pub const FMax: u32 = 40;
     pub const Sin: u32 = 13;
     pub const Cos: u32 = 14;
     pub const Exp2: u32 = 29;
     pub const Log2: u32 = 30;
     pub const Sqrt: u32 = 31;
-    pub const InverseSqrt: u32 = 32;
     pub const Pow: u32 = 26;
 }
 
@@ -269,7 +246,6 @@ fn compute_dtypes(kernel: &Kernel) -> Map<OpId, DType> {
 // ---------- Public compile function ----------
 
 pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
-    eprintln!("spirv::compile: start");
     let dtypes = compute_dtypes(kernel);
     let mut asm = Asm::new();
     
@@ -528,7 +504,6 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
     };
 
     // === Phase 2: emit in SPIR-V binary order ===
-    eprintln!("spirv::compile: phase 2 start (pre-collection done)");
 
     // Allocate function ID
     let func_id = asm.id();
@@ -615,8 +590,6 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
     }
 
     // === Function body: walk kernel ops ===
-    eprintln!("spirv::compile: body emission start");
-    eprintln!("spirv::compile: kernel head op: {:?}", kernel.head);
     
     // Loop stack: (header_label, merge_label, continue_label, counter_var, len)
     let mut loop_stack: Vec<(u32, u32, u32, u32, u64)> = Vec::new();
@@ -624,12 +597,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
 
     {
         let mut op_id = kernel.head;
-        let mut op_count = 0;
         while !op_id.is_null() {
-            op_count += 1;
-            if op_count % 100 == 0 {
-                eprintln!("spirv::compile: processing op {} (id: {:?})", op_count, op_id);
-            }
             
             match kernel.at(op_id) {
                 Op::ConstView { .. } | Op::LoadView { .. } | Op::StoreView { .. } | Op::Move { .. } | Op::Reduce { .. } | Op::Wmma { .. } | Op::Vectorize { .. } | Op::Devectorize { .. } => {
@@ -791,7 +759,7 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
                     let result_type = emit_type(&mut asm, &mut type_cache, dtypes[&op_id]);
                     let rid = asm.id();
 
-                    let (float_op, int_op, bool_op): (Option<u16>, Option<u16>, Option<u16>) = match bop {
+                    let (float_op, int_op, _): (Option<u16>, Option<u16>, Option<u16>) = match bop {
                         BOp::Add => (Some(OP_FADD), Some(OP_IADD), None),
                         BOp::Sub => (Some(OP_FSUB), Some(OP_ISUB), None),
                         BOp::Mul => (Some(OP_FMUL), Some(OP_IMUL), None),
@@ -868,7 +836,6 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
 
                 &Op::Index { len: _, scope, axis } => {
                     let result_type = emit_type(&mut asm, &mut type_cache, IDX_T);
-                    let rid = asm.id();
                     match scope {
                         Scope::Global => {
                             let loaded = asm.id();
@@ -1010,12 +977,10 @@ pub fn compile(kernel: &Kernel, debug_asm: bool) -> Result<Vec<u32>, BackendErro
 
     // Set bound
     asm.set_bound();
-
-    // Always print first 10 words for debugging
-    println!("SPIR-V: {} words, {} ops", asm.words.len(), kernel.ops.len().0);
-    println!("SPIR-V: first 10 words: {:?}", &asm.words[..10.min(asm.words.len())]);
     
     if debug_asm {
+        println!("SPIR-V: {} words, {} ops", asm.words.len(), kernel.ops.len().0);
+        println!("SPIR-V: first 10 words: {:?}", &asm.words[..10.min(asm.words.len())]);
         println!("SPIR-V: full assembly:");
         debug_print(&asm.words);
     }
@@ -1066,43 +1031,12 @@ fn const_to_words(c: &Constant) -> Vec<u32> {
     }
 }
 
-fn float_to_words(dt: DType, val: f64) -> Vec<u32> {
-    match dt {
-        DType::F16 => {
-            let f32_bits = (val as f32).to_bits();
-            let sign = (f32_bits >> 16) & 0x8000;
-            let exp = ((f32_bits >> 23) & 0xFF) as i32 - 127 + 15;
-            let mant = (f32_bits >> 13) & 0x3FF;
-            let bits = if exp <= 0 { sign }
-                else if exp >= 31 { sign | 0x7C00 | if mant != 0 { 0x200 } else { 0 } }
-                else { sign | (exp as u32) << 10 | mant };
-            vec![bits]
-        }
-        DType::BF16 => vec![((val as f32).to_bits() >> 16) & 0xFFFF],
-        DType::F32 => vec![(val as f32).to_bits()],
-        DType::F64 => {
-            let bits = f64::to_bits(val);
-            vec![bits as u32, (bits >> 32) as u32]
-        }
-        _ => vec![val as u32],
-    }
-}
-
 fn float_one(dt: DType) -> u32 {
     match dt {
         DType::F16 | DType::BF16 => 0x3C00,
         DType::F32 => 0x3F80_0000,
         DType::F64 => 0x0000_0000, // Lower word; F64 not yet supported
         _ => 1,
-    }
-}
-
-fn float_one_words(dt: DType) -> Vec<u32> {
-    match dt {
-        DType::F16 | DType::BF16 => vec![0x3C00], // 1.0 in f16
-        DType::F32 => vec![0x3F80_0000],
-        DType::F64 => vec![0x0000_0000, 0x3FF0_0000],
-        _ => vec![1],
     }
 }
 
@@ -1256,7 +1190,7 @@ pub fn debug_print(spv: &[u32]) {
         let op = (w & 0xffff) as u16;
         if word_count == 0 { break; }
 
-        let name = format!("Op{:05?}", op); // Show numeric value for unknown opcodes
+        let name = opcode_name(op);
         print!("  {name}");
 
         let operands = if i + word_count as usize <= spv.len() {
@@ -1290,13 +1224,10 @@ pub fn debug_print(spv: &[u32]) {
                     let model = match operands[0] { 5 => "GLCompute", _ => "??" };
                     print!(" {} %{}", model, operands[1]);
                     let name_bytes: Vec<u8> = operands[2..].iter().flat_map(|w| w.to_le_bytes()).collect();
-                    // Stop at first non-printable (end of name)
-                    let name_str = String::from_utf8_lossy(&name_bytes).trim_end_matches('\0').to_string();
+                    let name_end = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+                    let name_str = String::from_utf8_lossy(&name_bytes[..name_end]);
                     print!(" \"{name_str}\"");
-                    // Remaining words after the name are interface IDs
-                    let name_word_len = (name_str.len() + 4) / 4;
-                    let nv = if operands[0] == 5 { operands[0] } else { 0 };
-                    let _ = nv;
+                    let name_word_len = (name_end + 4) / 4;
                     for &id in &operands[2 + name_word_len..] {
                         print!(" %{id}");
                     }

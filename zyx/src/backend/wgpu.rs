@@ -146,7 +146,9 @@ pub(super) fn initialize_device(
     if features.contains(wgpu::Features::SHADER_INT64) {
         supported_dtypes |= 1 << (DType::I64 as u32);
     }
-    println!("[WGPU] supported dtypes: {supported_dtypes:?}");
+    if debug_dev {
+        println!("[WGPU] supported dtypes: {supported_dtypes:?}");
+    }
     devices.push(Device::WGPU(WGPUDevice {
         device,
         adapter: wgpu_adapter,
@@ -389,12 +391,10 @@ impl WGPUDevice {
             }
         }
 
-        eprintln!("wgpu::compile: before create_shader_module");
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::SpirV(std::borrow::Cow::Owned(spirv_words)),
         });
-        eprintln!("wgpu::compile: after create_shader_module");
 
         let mut gws: Vec<u64> = vec![1; 3];
         let mut lws: Vec<u64> = vec![1; 3];
@@ -456,7 +456,6 @@ impl WGPUDevice {
             immediate_size: 0,
         });
 
-        eprintln!("wgpu::compile: before create compute pipeline");
         let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: None,
             module: &shader_module,
@@ -465,7 +464,6 @@ impl WGPUDevice {
             cache: None,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         });
-        eprintln!("wgpu::compile: after create compute pipeline");
 
         let id = self
             .programs
