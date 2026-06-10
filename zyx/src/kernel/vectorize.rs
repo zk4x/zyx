@@ -15,6 +15,12 @@ struct LoadInfo {
 
 impl Kernel {
     #[allow(unused)]
+    pub fn vectorize(&mut self) {
+        self.vectorize_loads();
+        self.vectorize_ops();
+        self.vectorize_stores();
+    }
+
     pub fn vectorize_loads(&mut self) {
         // TODO for now this function ignores aliasing of stores and loads.
         // So later we need to make sure there are no aliasing issues
@@ -106,6 +112,7 @@ impl Kernel {
         }
     }
 
-    #[allow(unused)]
-    pub const fn vectorize_stores(_: &Kernel) {}
+    pub fn vectorize_ops(&mut self) {}
+
+    pub const fn vectorize_stores(&mut self) {}
 }
