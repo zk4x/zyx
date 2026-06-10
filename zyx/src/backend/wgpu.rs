@@ -3,19 +3,18 @@
 
 use super::{BackendError, Device, DeviceId, DeviceInfo, ErrorStatus, Event, MemoryPool, PoolId, spirv};
 use crate::{
-    DType, Map,
+    DType,
     backend::{DeviceProgramId, PoolBufferId},
-    dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, Op, OpId, Scope, UOp},
+    kernel::{Kernel, Op, Scope},
     shape::Dim,
     slab::Slab,
 };
 use nanoserde::DeJson;
 use pollster::FutureExt;
-use std::{fmt::Write, hash::BuildHasherDefault, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use wgpu::{
-    BindGroupLayout, BufferDescriptor, BufferUsages, ComputePipeline, PowerPreference, ShaderModule, ShaderModuleDescriptor,
-    ShaderSource, SubmissionIndex, wgt::PollType,
+    BindGroupLayout, BufferDescriptor, BufferUsages, ComputePipeline, PowerPreference, ShaderModule, SubmissionIndex,
+    wgt::PollType,
 };
 
 #[derive(DeJson, Debug)]
@@ -472,8 +471,8 @@ impl WGPUDevice {
         Ok(id)
     }
 
+    /*#[allow(unused)]
     /// Compile using WGSL (old codegen path)
-    #[allow(unused)]
     pub fn compile2(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let mut gws: Vec<u64> = vec![1; 3];
         let mut lws: Vec<u64> = vec![1; 3];
@@ -758,7 +757,7 @@ impl WGPUDevice {
             .push(WGPUProgram { name, gws, arg_ro_flags, shader: shader_module, pipeline, bind_group_layout });
 
         Ok(id)
-    }
+    }*/
 
     pub fn release(&mut self, program_id: DeviceProgramId) {
         self.programs.remove(program_id);
@@ -808,42 +807,4 @@ impl WGPUDevice {
     }
 }
 
-impl DType {
-    const fn wgsl(&self) -> &str {
-        match self {
-            DType::BF16 => "bf16",
-            DType::F16 => "f16",
-            DType::F32 => "f32",
-            DType::F64 => "f64",
-            DType::I8 => "i8",
-            DType::I16 => "i16",
-            DType::I32 => "i32",
-            DType::I64 => "i64",
-            DType::U8 => "u8",
-            DType::U16 => "u16",
-            DType::U32 => "u32",
-            DType::U64 => "u64",
-            DType::Bool => "bool",
-        }
-    }
-}
 
-impl Constant {
-    fn wgsl(self) -> String {
-        match self {
-            Constant::F16(x) => format!("f16({})", half::f16::from_le_bytes(x)),
-            Constant::BF16(x) => format!("bf16({})", half::bf16::from_le_bytes(x)),
-            Constant::F32(x) => format!("f32({:.16})", f32::from_le_bytes(x)),
-            Constant::F64(x) => format!("f64({:.16})", f64::from_le_bytes(x)),
-            Constant::I8(x) => format!("i8({x})"),
-            Constant::I16(x) => format!("i16({x})"),
-            Constant::I32(x) => format!("i32({x})"),
-            Constant::I64(x) => format!("i64({})", i64::from_le_bytes(x)),
-            Constant::U8(x) => format!("u8({x})"),
-            Constant::U16(x) => format!("u16({x})"),
-            Constant::U32(x) => format!("{x}"),
-            Constant::U64(x) => format!("u64({})", u64::from_le_bytes(x)),
-            Constant::Bool(x) => format!("{x}"),
-        }
-    }
-}

@@ -36,14 +36,14 @@ half = { version = "1.8.3", default-features = false, features = ["std"] } # MIT
 paste = "1.0.15" # MIT or Apache 2.0
 
 # Lot of dependencies from wgpu, probably just don't use that
-wgpu = { version = "29.0.1", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12", "spirv", "gles"], optional = true } # MIT or Apache 2.0
+wgpu = { version = "29.0.1", default-features = false, features = ["vulkan", "metal", "dx12", "spirv", "gles"], optional = true } # MIT or Apache 2.0
 pollster = { version = "0.4.0", default-features = false, optional = true } # MIT or Apache 2.0
 
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.28.3", optional = true, features = ["extension-module", "generate-import-lib"] } # MIT or Apache 2.0
 
 # Vulkano, will be later removed, once we sort out direct vulkan bindings
-#vulkano = { version = "*", optional = true }
+vulkano = "0.35.2"
 
 [dev-dependencies]
 matrixmultiply = "0.3"
@@ -66,9 +66,6 @@ tenstorrent = ["dep:libc"]
 # Enables wgpu backend
 wgpu = ["dep:wgpu", "dep:pollster"]
 
-# Enables vulkan backend, dependency will be later removed
-#vulkan = ["dep:vulkano"]
-
 # Enables us to create python bindings with pyo3, annotates structs with pyclass
 py = ["dep:pyo3"]
 
@@ -77,7 +74,7 @@ time = []
 
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.
-opt-level = 1 # Optimization level.
+opt-level = 0 # Optimization level.
 debug = false  # Include debug info.
 #split-debuginfo = '...'  # Debug info splitting behavior.
 strip = false            # Removes symbols or debuginfo.

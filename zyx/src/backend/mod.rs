@@ -30,6 +30,7 @@ use nanoserde::{DeBin, DeJson, SerBin};
 use opencl::{OpenCLDevice, OpenCLMemoryPool};
 #[cfg(feature = "tenstorrent")]
 use tenstorrent::{TTDevice, TTMemoryPool};
+use vulkan::{VulkanDevice, VulkanMemoryPool};
 #[cfg(feature = "wgpu")]
 use wgpu::{WGPUDevice, WGPUMemoryPool};
 
@@ -42,8 +43,7 @@ mod host;
 mod opencl;
 #[cfg(feature = "tenstorrent")]
 mod tenstorrent;
-/*#[cfg(feature = "vulkan")]
-mod vulkan;*/
+mod vulkan;
 mod spirv;
 #[cfg(feature = "wgpu")]
 mod wgpu;
@@ -251,6 +251,11 @@ pub fn initialize_backends(
             println!("{err}");
         }
     }
+    if let Err(err) = vulkan::initialize_device(&device_config.vulkan, memory_pools, devices, debug_backends) {
+        if debug_backends {
+            println!("{err}");
+        }
+    }
     #[cfg(feature = "wgpu")]
     if let Err(err) = wgpu::initialize_device(&device_config.wgpu, memory_pools, devices, debug_backends) {
         if debug_backends {
@@ -279,6 +284,7 @@ pub enum Event {
     HIP(hip::HIPEvent),
     #[cfg(feature = "tenstorrent")]
     TT(tenstorrent::TTEvent),
+    Vulkan(vulkan::VulkanEvent),
     #[cfg(feature = "wgpu")]
     WGPU(wgpu::WGPUEvent),
 }
@@ -342,8 +348,7 @@ pub struct Config {
     #[cfg(feature = "tenstorrent")]
     pub tenstorrent: tenstorrent::TTConfig,
     // Vulkan configuration
-    //#[cfg(feature = "vulkan")]
-    //pub vulkan: vulkan::VulkanConfig,
+    pub vulkan: vulkan::VulkanConfig,
     /// WGSL configuration
     #[cfg(feature = "wgpu")]
     pub wgpu: wgpu::WGPUConfig,
@@ -395,6 +400,7 @@ pub enum MemoryPool {
     HIP(HIPMemoryPool),
     #[cfg(feature = "tenstorrent")]
     TT(TTMemoryPool),
+    Vulkan(VulkanMemoryPool),
     #[cfg(feature = "wgpu")]
     WGPU(WGPUMemoryPool),
 }
@@ -411,6 +417,7 @@ impl MemoryPool {
             MemoryPool::HIP(pool) => pool.deinitialize(),
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(pool) => pool.deinitialize(),
+            MemoryPool::Vulkan(pool) => pool.deinitialize(),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.deinitialize(),
         }
@@ -433,6 +440,7 @@ impl MemoryPool {
             MemoryPool::HIP(pool) => pool.free_bytes(),
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(pool) => pool.free_bytes(),
+            MemoryPool::Vulkan(pool) => pool.free_bytes(),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.free_bytes(),
         }
@@ -449,6 +457,7 @@ impl MemoryPool {
             MemoryPool::HIP(pool) => (pool.allocate(bytes), "HIP"),
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(pool) => (pool.allocate(bytes), "tenstorrent"),
+            MemoryPool::Vulkan(pool) => (pool.allocate(bytes), "Vulkan"),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => (pool.allocate(bytes), "WGPU"),
         };
@@ -476,6 +485,7 @@ impl MemoryPool {
             MemoryPool::HIP(_) => "HIP",
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(_) => "tenstorrent",
+            MemoryPool::Vulkan(_) => "Vulkan",
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(_) => "WGPU",
         };
@@ -489,6 +499,7 @@ impl MemoryPool {
             MemoryPool::HIP(pool) => pool.deallocate(buffer_id, event_wait_list),
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(pool) => pool.deallocate(buffer_id, event_wait_list),
+            MemoryPool::Vulkan(pool) => pool.deallocate(buffer_id, event_wait_list),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.deallocate(buffer_id, event_wait_list),
         }
@@ -518,6 +529,7 @@ impl MemoryPool {
             MemoryPool::HIP(pool) => pool.host_to_pool(src, dst, event_wait_list),
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(pool) => pool.host_to_pool(src, dst, event_wait_list),
+            MemoryPool::Vulkan(pool) => pool.host_to_pool(src, dst, event_wait_list),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.host_to_pool(src, dst, event_wait_list),
         }
@@ -534,6 +546,7 @@ impl MemoryPool {
             MemoryPool::HIP(pool) => pool.pool_to_host(src, dst, event_wait_list),
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(pool) => pool.pool_to_host(src, dst, event_wait_list),
+            MemoryPool::Vulkan(pool) => pool.pool_to_host(src, dst, event_wait_list),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.pool_to_host(src, dst, event_wait_list),
         }
@@ -550,6 +563,7 @@ impl MemoryPool {
             MemoryPool::HIP(pool) => pool.sync_events(events),
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(pool) => pool.sync_events(events),
+            MemoryPool::Vulkan(pool) => pool.sync_events(events),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.sync_events(events),
         }
@@ -567,6 +581,7 @@ impl MemoryPool {
             MemoryPool::HIP(pool) => pool.release_events(events),
             #[cfg(feature = "tenstorrent")]
             MemoryPool::TT(pool) => pool.release_events(events),
+            MemoryPool::Vulkan(pool) => pool.release_events(events),
             #[cfg(feature = "wgpu")]
             MemoryPool::WGPU(pool) => pool.release_events(events),
         }
@@ -582,6 +597,7 @@ pub enum Device {
     HIP(HIPDevice),
     #[cfg(feature = "tenstorrent")]
     TT(TTDevice),
+    Vulkan(VulkanDevice),
     #[cfg(feature = "wgpu")]
     WGPU(WGPUDevice),
 }
@@ -597,6 +613,7 @@ impl Device {
             Device::HIP(dev) => dev.deinitialize(),
             #[cfg(feature = "tenstorrent")]
             Device::TT(dev) => dev.deinitialize(),
+            Device::Vulkan(dev) => dev.deinitialize(),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.deinitialize(),
         }
@@ -611,6 +628,7 @@ impl Device {
             Device::HIP(dev) => dev.info(),
             #[cfg(feature = "tenstorrent")]
             Device::TT(dev) => dev.info(),
+            Device::Vulkan(dev) => dev.info(),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.info(),
         }
@@ -625,6 +643,7 @@ impl Device {
             Device::HIP(dev) => dev.memory_pool_id(),
             #[cfg(feature = "tenstorrent")]
             Device::TT(dev) => dev.memory_pool_id(),
+            Device::Vulkan(dev) => dev.memory_pool_id(),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.memory_pool_id(),
         }
@@ -642,6 +661,7 @@ impl Device {
             Device::HIP(dev) => dev.free_compute(),
             #[cfg(feature = "tenstorrent")]
             Device::TT(dev) => dev.free_compute(),
+            Device::Vulkan(dev) => dev.free_compute(),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.free_compute(),
         }
@@ -656,6 +676,7 @@ impl Device {
             Device::HIP(_) => "HIP",
             #[cfg(feature = "tenstorrent")]
             Device::TT(_) => "tenstorrent",
+            Device::Vulkan(_) => "Vulkan",
             #[cfg(feature = "wgpu")]
             Device::WGPU(_) => "WGPU",
         };
@@ -667,6 +688,7 @@ impl Device {
             Device::HIP(dev) => dev.compile(kernel, debug_asm),
             #[cfg(feature = "tenstorrent")]
             Device::TT(dev) => dev.compile(kernel, debug_asm),
+            Device::Vulkan(dev) => dev.compile(kernel, debug_asm),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.compile(kernel, debug_asm),
         };
@@ -688,6 +710,7 @@ impl Device {
             Device::HIP(dev) => dev.release(program_id),
             #[cfg(feature = "tenstorrent")]
             Device::TT(dev) => dev.release(program_id),
+            Device::Vulkan(dev) => dev.release(program_id),
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => dev.release(program_id),
         }
@@ -724,6 +747,10 @@ impl Device {
             #[cfg(feature = "tenstorrent")]
             Device::TT(dev) => {
                 let MemoryPool::TT(pool) = memory_pool else { unreachable!() };
+                dev.launch(program_id, pool, args, event_wait_list)
+            }
+            Device::Vulkan(dev) => {
+                let MemoryPool::Vulkan(pool) = memory_pool else { unreachable!() };
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             #[cfg(feature = "wgpu")]
