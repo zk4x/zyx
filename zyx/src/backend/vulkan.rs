@@ -5,13 +5,15 @@
 
 use std::sync::Arc;
 
+use vulkano::VulkanLibrary;
 use vulkano::buffer::allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo};
 use vulkano::buffer::{BufferUsage, Subbuffer};
 use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
 use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
 use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-use vulkano::descriptor_set::layout::{DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType};
-use vulkano::shader::ShaderStages;
+use vulkano::descriptor_set::layout::{
+    DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
+};
 use vulkano::descriptor_set::{CopyDescriptorSet, DescriptorSet, WriteDescriptorSet};
 use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags};
 use vulkano::instance::{Instance, InstanceCreateInfo};
@@ -19,9 +21,9 @@ use vulkano::memory::allocator::StandardMemoryAllocator;
 use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
 use vulkano::pipeline::layout::{PipelineLayout, PipelineLayoutCreateInfo};
 use vulkano::pipeline::{PipelineBindPoint, PipelineShaderStageCreateInfo};
+use vulkano::shader::ShaderStages;
 use vulkano::shader::{ShaderModule, ShaderModuleCreateInfo};
 use vulkano::sync::{self, GpuFuture};
-use vulkano::VulkanLibrary;
 
 use nanoserde::DeJson;
 
@@ -36,7 +38,6 @@ use super::{DeviceInfo, DeviceProgramId, Event, MemoryPool, PoolBufferId, PoolId
 
 #[derive(DeJson, Debug, Default)]
 #[nserde(default)]
-#[allow(dead_code)]
 pub struct VulkanConfig {
     device_ids: Option<Vec<i32>>,
 }
@@ -52,7 +53,6 @@ pub struct VulkanMemoryPool {
 pub(crate) struct VulkanEvent;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct VulkanDevice {
     dev_info: DeviceInfo,
     memory_pool_id: PoolId,
@@ -60,14 +60,12 @@ pub struct VulkanDevice {
     queue: Arc<vulkano::device::Queue>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
-    memory_allocator: Arc<StandardMemoryAllocator>,
     programs: Slab<DeviceProgramId, VulkanProgram>,
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(super) struct VulkanProgram {
-    name: String,
+    //name: String,
     gws: [u64; 3],
     lws: [u64; 3],
     pipeline: Arc<ComputePipeline>,
@@ -76,23 +74,28 @@ pub(super) struct VulkanProgram {
 }
 
 #[allow(clippy::unnecessary_wraps)]
-#[allow(unused_variables)]
 pub(super) fn initialize_device(
     config: &VulkanConfig,
     memory_pools: &mut Slab<super::PoolId, MemoryPool>,
     devices: &mut Slab<super::DeviceId, super::Device>,
     debug_dev: bool,
 ) -> Result<(), BackendError> {
+    if let Some(device_ids) = &config.device_ids
+        && device_ids.is_empty()
+    {
+        if debug_dev {
+            println!("[vulkan] configured out");
+        }
+        return Ok(());
+    }
+
     let lib = match VulkanLibrary::new() {
         Ok(lib) => lib,
         Err(e) => {
             if debug_dev {
                 println!("[vulkan] {e}");
             }
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: format!("[vulkan] {e}").into(),
-            });
+            return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] {e}").into() });
         }
     };
     let instance = match Instance::new(lib, InstanceCreateInfo::default()) {
@@ -101,20 +104,14 @@ pub(super) fn initialize_device(
             if debug_dev {
                 println!("[vulkan] instance: {e}");
             }
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: format!("[vulkan] instance: {e}").into(),
-            });
+            return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] instance: {e}").into() });
         }
     };
 
     let physical_devices = match instance.enumerate_physical_devices() {
         Ok(devs) => devs,
         Err(e) => {
-            return Err(BackendError {
-                status: ErrorStatus::Initialization,
-                context: format!("[vulkan] enumerate: {e}").into(),
-            });
+            return Err(BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] enumerate: {e}").into() });
         }
     };
 
@@ -141,54 +138,33 @@ pub(super) fn initialize_device(
         let (device, queues) = Device::new(
             phys_device,
             DeviceCreateInfo {
-                queue_create_infos: vec![QueueCreateInfo {
-                    queue_family_index: qfi as u32,
-                    ..Default::default()
-                }],
+                queue_create_infos: vec![QueueCreateInfo { queue_family_index: qfi as u32, ..Default::default() }],
                 ..Default::default()
             },
         )
-        .map_err(|e| BackendError {
-            status: ErrorStatus::Initialization,
-            context: format!("[vulkan] device: {e}").into(),
-        })?;
+        .map_err(|e| BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] device: {e}").into() })?;
 
         let memory_allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(
-            device.clone(),
-            Default::default(),
-        ));
-        let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
-            device.clone(),
-            Default::default(),
-        ));
+        let command_buffer_allocator = Arc::new(StandardCommandBufferAllocator::new(device.clone(), Default::default()));
+        let descriptor_set_allocator = Arc::new(StandardDescriptorSetAllocator::new(device.clone(), Default::default()));
 
-        let memory_pool = VulkanMemoryPool {
-            free_bytes: 1024 * 1024 * 1024,
-            memory_allocator: memory_allocator.clone(),
-            buffers: Slab::new(),
-        };
+        let memory_pool =
+            VulkanMemoryPool { free_bytes: 1024 * 1024 * 1024, memory_allocator: memory_allocator.clone(), buffers: Slab::new() };
 
         let mem_pool_id = memory_pools.push(MemoryPool::Vulkan(memory_pool));
 
         let dev_info = DeviceInfo {
             compute: 1_000_000_000_000,
-            max_global_work_dims: vec![
-                Dim::from(max_wg_count[0]);
-                max_wg_count.len()
-            ],
+            max_global_work_dims: vec![Dim::from(max_wg_count[0]); max_wg_count.len()],
             max_local_threads: Dim::from(max_wg_invocations),
-            max_local_work_dims: vec![
-                Dim::from(max_wg_size[0]);
-                max_wg_size.len()
-            ],
+            max_local_work_dims: vec![Dim::from(max_wg_size[0]); max_wg_size.len()],
             ..Default::default()
         };
 
-        let queue = queues.into_iter().next().ok_or_else(|| BackendError {
-            status: ErrorStatus::Initialization,
-            context: "[vulkan] no queues".into(),
-        })?;
+        let queue = queues
+            .into_iter()
+            .next()
+            .ok_or_else(|| BackendError { status: ErrorStatus::Initialization, context: "[vulkan] no queues".into() })?;
 
         let vk_device = VulkanDevice {
             dev_info,
@@ -197,7 +173,6 @@ pub(super) fn initialize_device(
             queue: queue.clone(),
             command_buffer_allocator: command_buffer_allocator.clone(),
             descriptor_set_allocator,
-            memory_allocator,
             programs: Slab::new(),
         };
 
@@ -228,20 +203,13 @@ impl VulkanMemoryPool {
         );
         let buffer = allocator
             .allocate_slice::<u8>(aligned)
-            .map_err(|e| BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: format!("buffer alloc: {e}").into(),
-            })?;
+            .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("buffer alloc: {e}").into() })?;
 
         let id = self.buffers.push((buffer, bytes as usize));
         Ok((PoolBufferId::from(id), Event::Vulkan(VulkanEvent)))
     }
 
-    pub(super) fn deallocate(
-        &mut self,
-        buffer_id: PoolBufferId,
-        _event_wait_list: Vec<Event>,
-    ) {
+    pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, _event_wait_list: Vec<Event>) {
         self.buffers.remove(buffer_id);
     }
 
@@ -252,10 +220,9 @@ impl VulkanMemoryPool {
         _event_wait_list: Vec<Event>,
     ) -> Result<Event, BackendError> {
         let (buffer, _) = &self.buffers[dst];
-        let mut content = buffer.write().map_err(|e| BackendError {
-            status: ErrorStatus::MemoryCopyH2P,
-            context: format!("write: {e}").into(),
-        })?;
+        let mut content = buffer
+            .write()
+            .map_err(|e| BackendError { status: ErrorStatus::MemoryCopyH2P, context: format!("write: {e}").into() })?;
         let copy_len = content.len().min(src.len());
         content[..copy_len].copy_from_slice(&src[..copy_len]);
         Ok(Event::Vulkan(VulkanEvent))
@@ -268,22 +235,12 @@ impl VulkanMemoryPool {
         _event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
         let (buffer, _) = &self.buffers[src];
-        let content = buffer.read().map_err(|e| BackendError {
-            status: ErrorStatus::MemoryCopyP2H,
-            context: format!("read: {e}").into(),
-        })?;
+        let content = buffer
+            .read()
+            .map_err(|e| BackendError { status: ErrorStatus::MemoryCopyP2H, context: format!("read: {e}").into() })?;
         let copy_len = dst.len().min(content.len());
         dst[..copy_len].copy_from_slice(&content[..copy_len]);
         Ok(())
-    }
-
-    #[allow(unused)]
-    pub(super) fn pool_to_pool(
-        &mut self,
-        _src: PoolBufferId,
-        _dst: PoolBufferId,
-    ) -> Result<(), BackendError> {
-        todo!()
     }
 
     pub(super) fn sync_events(&mut self, _events: Vec<Event>) -> Result<(), BackendError> {
@@ -312,23 +269,12 @@ impl VulkanDevice {
         self.programs.remove(program_id);
     }
 
-    pub(super) fn compile(
-        &mut self,
-        kernel: &Kernel,
-        debug_asm: bool,
-    ) -> Result<DeviceProgramId, BackendError> {
-        let spirv_words =
-            crate::backend::spirv::compile(kernel, debug_asm).map_err(|e| BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("SPIR-V: {e}").into(),
-            })?;
+    pub(super) fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
+        let spirv_words = crate::backend::spirv::compile(kernel, debug_asm)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("SPIR-V: {e}").into() })?;
 
         let shader_module = unsafe {
-            ShaderModule::new(
-                self.device.clone(),
-                ShaderModuleCreateInfo::new(&spirv_words),
-            )
-            .map_err(|e| BackendError {
+            ShaderModule::new(self.device.clone(), ShaderModuleCreateInfo::new(&spirv_words)).map_err(|e| BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: format!("shader module: {e}").into(),
             })?
@@ -340,34 +286,17 @@ impl VulkanDevice {
         while !op_id.is_null() {
             if let crate::kernel::Op::Index { len, scope, axis } = kernel.at(op_id) {
                 match scope {
-                    crate::kernel::Scope::Global if *axis < 3 => {
-                        gws[*axis as usize] = gws[*axis as usize].max(*len)
-                    }
-                    crate::kernel::Scope::Local if *axis < 3 => {
-                        lws[*axis as usize] = lws[*axis as usize].max(*len)
-                    }
+                    crate::kernel::Scope::Global if *axis < 3 => gws[*axis as usize] = gws[*axis as usize].max(*len),
+                    crate::kernel::Scope::Local if *axis < 3 => lws[*axis as usize] = lws[*axis as usize].max(*len),
                     _ => {}
                 }
             }
             op_id = kernel.next_op(op_id);
         }
 
-        let name = format!(
-            "k_{}__{}",
-            gws.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("_"),
-            lws.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("_"),
-        );
-
-        let entry_point = shader_module.single_entry_point().ok_or_else(|| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: "no entry point".into(),
-        })?;
+        let entry_point = shader_module
+            .single_entry_point()
+            .ok_or_else(|| BackendError { status: ErrorStatus::KernelCompilation, context: "no entry point".into() })?;
 
         // Scan kernel for read-only flags
         let mut arg_ro_flags = Vec::new();
@@ -394,27 +323,15 @@ impl VulkanDevice {
 
         let ds_layout = DescriptorSetLayout::new(
             self.device.clone(),
-            DescriptorSetLayoutCreateInfo {
-                bindings: ds_bindings,
-                ..Default::default()
-            },
+            DescriptorSetLayoutCreateInfo { bindings: ds_bindings, ..Default::default() },
         )
-        .map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("ds layout: {e}").into(),
-        })?;
+        .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("ds layout: {e}").into() })?;
 
         let pipeline_layout = PipelineLayout::new(
             self.device.clone(),
-            PipelineLayoutCreateInfo {
-                set_layouts: vec![ds_layout.clone()],
-                ..Default::default()
-            },
+            PipelineLayoutCreateInfo { set_layouts: vec![ds_layout.clone()], ..Default::default() },
         )
-        .map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("pipeline layout: {e}").into(),
-        })?;
+        .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("pipeline layout: {e}").into() })?;
 
         let stage = PipelineShaderStageCreateInfo::new(entry_point);
         let pipeline = ComputePipeline::new(
@@ -422,19 +339,9 @@ impl VulkanDevice {
             None,
             ComputePipelineCreateInfo::stage_layout(stage, pipeline_layout.clone()),
         )
-        .map_err(|e| BackendError {
-            status: ErrorStatus::KernelCompilation,
-            context: format!("compute pipeline: {e}").into(),
-        })?;
+        .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("compute pipeline: {e}").into() })?;
 
-        let program = VulkanProgram {
-            name,
-            gws,
-            lws,
-            pipeline,
-            pipeline_layout,
-            descriptor_set_layout: ds_layout,
-        };
+        let program = VulkanProgram { gws, lws, pipeline, pipeline_layout, descriptor_set_layout: ds_layout };
 
         let id = self.programs.push(program);
         Ok(id)
@@ -465,39 +372,22 @@ impl VulkanDevice {
             write_descriptors,
             std::iter::empty::<CopyDescriptorSet>(),
         )
-        .map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: format!("descriptor set: {e}").into(),
-        })?;
+        .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("descriptor set: {e}").into() })?;
 
         let mut builder = AutoCommandBufferBuilder::primary(
             self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
-        .map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: format!("cmd buffer: {e}").into(),
-        })?;
+        .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("cmd buffer: {e}").into() })?;
 
         builder
             .bind_pipeline_compute(program.pipeline.clone())
-            .map_err(|e| BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("bind pipeline: {e}").into(),
-            })?;
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("bind pipeline: {e}").into() })?;
 
         builder
-            .bind_descriptor_sets(
-                PipelineBindPoint::Compute,
-                program.pipeline_layout.clone(),
-                0,
-                descriptor_set,
-            )
-            .map_err(|e| BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("bind ds: {e}").into(),
-            })?;
+            .bind_descriptor_sets(PipelineBindPoint::Compute, program.pipeline_layout.clone(), 0, descriptor_set)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("bind ds: {e}").into() })?;
 
         let group_count_x = (program.gws[0] + program.lws[0] - 1) / program.lws[0];
         let group_count_y = (program.gws[1] + program.lws[1] - 1) / program.lws[1];
@@ -506,29 +396,21 @@ impl VulkanDevice {
         unsafe {
             builder
                 .dispatch([group_count_x as u32, group_count_y as u32, group_count_z as u32])
-                .map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-                    context: format!("dispatch: {e}").into(),
-                })?;
+                .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("dispatch: {e}").into() })?;
         }
 
-        let command_buffer = builder.build().map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: format!("build: {e}").into(),
-        })?;
+        let command_buffer = builder
+            .build()
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("build: {e}").into() })?;
 
         let future = sync::now(self.device.clone())
             .then_execute(self.queue.clone(), command_buffer)
-            .map_err(|e| BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("execute: {e}").into(),
-            })?
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("execute: {e}").into() })?
             .then_signal_fence();
 
-        future.wait(None).map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: format!("fence: {e}").into(),
-        })?;
+        future
+            .wait(None)
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("fence: {e}").into() })?;
 
         Ok(Event::Vulkan(VulkanEvent))
     }
