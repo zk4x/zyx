@@ -598,6 +598,7 @@ impl<'a> Kernelizer<'a> {
                 if self.debug.kmd() {
                     println!("Kernel launch from memory pool {pool_id:?} with args: {args:?}");
                 }
+                eprintln!("[kernelize] launch from cache");
                 let event = device.launch(program_id, pool, &args, event_wait_list)?;
                 self.events.insert(output_buffers, event);
                 return Ok(());
@@ -605,8 +606,10 @@ impl<'a> Kernelizer<'a> {
 
             // The kernel was optimized and is cached in disk, but was not compiled as of this run
             if let Some(opt_seq) = self.cache.optimizations.get(&(kid, dev_info_id)) {
+                eprintln!("[kernelize] opt_seq from cache, about to compile+launch");
                 opt_seq.apply(&mut kernel, device.info());
                 let program_id = device.compile(&kernel, self.debug.asm())?;
+                eprintln!("[kernelize] opt_seq launch");
                 let event = device.launch(program_id, pool, &args, event_wait_list)?;
                 self.events.insert(output_buffers, event);
                 return Ok(());
@@ -662,6 +665,7 @@ impl<'a> Kernelizer<'a> {
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         //println!("Insert into cache dev_id={dev_id:?}, program_id={program_id:?}'");
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
+        eprintln!("[kernelize] autotune done, about to launch at line 665");
         let event = device.launch(program_id, pool, &args, event_wait_list)?;
         self.events.insert(output_buffers, event);
 

@@ -44,7 +44,6 @@ mod opencl;
 #[cfg(feature = "tenstorrent")]
 mod tenstorrent;
 mod vulkan;
-mod vulkan_vulkano;
 mod spirv;
 #[cfg(feature = "wgpu")]
 mod wgpu;
@@ -751,8 +750,11 @@ impl Device {
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::Vulkan(dev) => {
+                eprintln!("[dispatch] Vulkan::launch called");
                 let MemoryPool::Vulkan(pool) = memory_pool else { unreachable!() };
-                dev.launch(program_id, pool, args, event_wait_list)
+                let r = dev.launch(program_id, pool, args, event_wait_list);
+                eprintln!("[dispatch] Vulkan::launch returned: {:?}", r.is_ok());
+                r
             }
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => {

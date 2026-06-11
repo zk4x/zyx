@@ -491,7 +491,9 @@ impl Kernel {
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         let program_id = device.compile(self, debug.asm())?;
         let begin = std::time::Instant::now();
+        eprintln!("[autotune] about to launch from launch_with_timings");
         let event = device.launch(program_id, memory_pool, buffers, Vec::new())?;
+        eprintln!("[autotune] launch returned ok");
         memory_pool.sync_events(vec![event])?;
         let nanos = begin.elapsed().as_nanos() as u64;
         let perf = crate::kernel_cache::get_perf(flops, bytes_read, bytes_written, nanos);
