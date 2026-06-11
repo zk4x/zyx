@@ -103,7 +103,6 @@ pub fn schedule(
             }
         }
     }
-    let mut output_buffers = BTreeSet::new();
     for &tid in stores {
         let bytes = graph.shape(tid).iter().product::<Dim>() * Dim::from(graph.dtype(tid).bit_size() / 8);
         let alloc_bytes = bytes + Dim::from(graph.dtype(tid).bit_size() / 8); // +1 element for trash slot
@@ -111,7 +110,6 @@ pub fn schedule(
         let global_id = BufferId { pool: pool_id, buffer: buffer_id };
         buffer_map.insert(tid, global_id);
         event_wait_list.push(event);
-        output_buffers.insert(global_id);
     }
     let mut args = Vec::new();
     for tid in loads {
@@ -120,5 +118,12 @@ pub fn schedule(
     for tid in stores {
         args.push(buffer_map[tid].buffer);
     }
-    Ok((dev_id, pool_id, event_wait_list, output_buffers, args))
+    let mut kernel_buffers = BTreeSet::new();
+    for tid in loads {
+        kernel_buffers.insert(buffer_map[tid]);
+    }
+    for tid in stores {
+        kernel_buffers.insert(buffer_map[tid]);
+    }
+    Ok((dev_id, pool_id, event_wait_list, kernel_buffers, args))
 }

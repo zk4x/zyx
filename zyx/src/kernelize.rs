@@ -574,7 +574,7 @@ impl<'a> Kernelizer<'a> {
         self.n_launches += 1;
 
         //let time_w = std::time::Instant::now();
-        let (dev_id, pool_id, event_wait_list, output_buffers, args) = schedule(
+        let (dev_id, pool_id, event_wait_list, kernel_buffers, args) = schedule(
             &kernel.loads,
             &kernel.stores,
             self.graph,
@@ -599,7 +599,7 @@ impl<'a> Kernelizer<'a> {
                     println!("Kernel launch from memory pool {pool_id:?} with args: {args:?}");
                 }
                 let event = device.launch(program_id, pool, &args, event_wait_list)?;
-                self.events.insert(output_buffers, event);
+                self.events.insert(kernel_buffers, event);
                 return Ok(());
             }
 
@@ -608,7 +608,7 @@ impl<'a> Kernelizer<'a> {
                 opt_seq.apply(&mut kernel, device.info());
                 let program_id = device.compile(&kernel, self.debug.asm())?;
                 let event = device.launch(program_id, pool, &args, event_wait_list)?;
-                self.events.insert(output_buffers, event);
+                self.events.insert(kernel_buffers, event);
                 return Ok(());
             }
 
@@ -663,7 +663,7 @@ impl<'a> Kernelizer<'a> {
         //println!("Insert into cache dev_id={dev_id:?}, program_id={program_id:?}'");
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
         let event = device.launch(program_id, pool, &args, event_wait_list)?;
-        self.events.insert(output_buffers, event);
+        self.events.insert(kernel_buffers, event);
 
         Ok(())
     }

@@ -241,7 +241,6 @@ impl VulkanMemoryPool {
 
 /// Wraps raw handles with take-once semantics.
 /// `wait()` waits on the fence and frees everything. Subsequent calls are no-ops.
-/// `Drop` also calls `wait()` to prevent resource leaks / GPU memory corruption.
 pub(crate) struct VulkanEvent {
     core: Option<Arc<Core>>,
     fence: Cell<Option<vk::Fence>>,
@@ -256,7 +255,7 @@ impl std::fmt::Debug for VulkanEvent {
 }
 
 impl VulkanEvent {
-    const fn none() -> Self {
+    fn none() -> Self {
         Self { core: None, fence: Cell::new(None), cmd: Cell::new(None), desc_set: Cell::new(None) }
     }
 
