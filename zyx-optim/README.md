@@ -69,17 +69,11 @@ let mut optim = Adam {
     t: 0,
 };
 
-// Optimizer step (computes gradients via autograd, then updates parameters)
-optim.step()?;
-
 // Configure hyperparameters
 optim.learning_rate = 0.001;      // learning rate
 optim.betas = (0.9, 0.999);       // first and second moment decay
 optim.eps = 1e-8;                 // numerical stability
 optim.weight_decay = 0.01;        // L2 weight decay
-
-// Zero optimizer state (for multi-step optimization)
-optim.zero_grad()?;
 ```
 
 ## Hyperparameters
