@@ -52,8 +52,6 @@ impl Kernel {
         }
 
         self.fun_name(&mut loads);
-
-        self.debug();
     }
 
     fn fun_name(&mut self, loads: &mut Vec<Map<OpId, Vec<LoadInfo>>>) {
@@ -112,7 +110,135 @@ impl Kernel {
         }
     }
 
-    pub fn vectorize_ops(&mut self) {}
+    pub fn vectorize_ops(&mut self) {
+        // Find all Devectorize ops and group them by their source vector
+        let mut devec_map: Map<OpId, Vec<(OpId, usize)>> = Map::default();
+
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match &self.ops[op_id].op {
+                Op::Devectorize { vec, idx } => {
+                    devec_map.entry(*vec).or_insert_with(Vec::new).push((*vec, *idx));
+                }
+                _ => {}
+            }
+            op_id = self.next_op(op_id);
+        }
+
+        // For each vectorized load, check if we can vectorize ops after its devectorize
+        for (vec_id, _devec_list) in &devec_map {
+            // Find all Devectorize ops that use this vector, with their indices
+            let mut devec_ops: Vec<(OpId, usize)> = Vec::new();
+            let mut check_id = self.next_op(*vec_id);
+
+            while let Op::Devectorize { vec: v, idx } = &self.ops[check_id].op {
+                if v == vec_id {
+                    devec_ops.push((check_id, *idx));
+                    check_id = self.next_op(check_id);
+                } else {
+                    break;
+                }
+            }
+
+            // If no devectorize ops, skip
+            if devec_ops.is_empty() {
+                continue;
+            }
+
+            // Find the last devectorize op and check ops after it
+            let last_devec = devec_ops.last().unwrap();
+            let mut check_id = self.next_op(last_devec.0);
+
+            // Collect all elementwise ops after the last devectorize
+            let mut elementwise_ops: Vec<OpId> = Vec::new();
+
+            while !check_id.is_null() {
+                match &self.ops[check_id].op {
+                    Op::Unary { .. } | Op::Binary { .. } | Op::Cast { .. } | Op::Mad { .. } => {
+                        elementwise_ops.push(check_id);
+                        check_id = self.next_op(check_id);
+                    }
+                    Op::Load { .. } | Op::Store { .. } | Op::Vectorize { .. } => {
+                        // End of elementwise chain
+                        break;
+                    }
+                    Op::Devectorize { .. } => {
+                        // Another devectorize, skip it
+                        check_id = self.next_op(check_id);
+                    }
+                    _ => {
+                        // Other ops break the chain
+                        break;
+                    }
+                }
+            }
+
+            // If we have elementwise ops, check if they're all the same type and can be vectorized
+            if !elementwise_ops.is_empty() {
+                // Check if all ops are the same type (Unary, Binary, Cast, or Mad)
+                let mut first_type = None;
+
+                for &op_id in &elementwise_ops {
+                    let op_type = match &self.ops[op_id].op {
+                        Op::Unary { .. } => OpType::Unary,
+                        Op::Binary { .. } => OpType::Binary,
+                        Op::Cast { .. } => OpType::Cast,
+                        Op::Mad { .. } => OpType::Mad,
+                        _ => {
+                            // Mixed op types, can't vectorize
+                            elementwise_ops.clear();
+                            break;
+                        }
+                    };
+
+                    if let Some(ref first) = first_type {
+                        if op_type != *first {
+                            // Different op types, can't vectorize
+                            elementwise_ops.clear();
+                            break;
+                        }
+                    } else {
+                        first_type = Some(op_type);
+                    }
+                }
+
+                if elementwise_ops.is_empty() {
+                    continue;
+                }
+
+                // All ops are the same type and have the same configuration
+                // Create a single vectorized version by applying the op to the whole vector
+                let mut new_vec = *vec_id;
+
+                // Create ONE vectorized op (not one per elementwise op)
+                let new_op_id = self.insert_before(
+                    self.next_op(new_vec),
+                    match &self.ops[elementwise_ops[0]].op {
+                        Op::Unary { x, uop } => Op::Unary { x: new_vec, uop: *uop },
+                        Op::Binary { x, y, bop } => Op::Binary { x: new_vec, y: *x, bop: *bop },
+                        Op::Cast { x, dtype } => Op::Cast { x: new_vec, dtype: *dtype },
+                        Op::Mad { x, y, z } => Op::Mad { x: new_vec, y: *y, z: *z },
+                        _ => unreachable!(),
+                    },
+                );
+
+                // Replace each elementwise op with a devectorize of the new vectorized result
+                // elementwise_ops[i] should become Op::Devectorize { vec: new_op_id, idx: i }
+                for (i, &elem_id) in elementwise_ops.iter().enumerate() {
+                    // Replace the elementwise op with a devectorize of the new vectorized result
+                    self.ops[elem_id].op = Op::Devectorize { vec: new_op_id, idx: i };
+                }
+            }
+        }
+    }
 
     pub const fn vectorize_stores(&mut self) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpType {
+    Unary,
+    Binary,
+    Cast,
+    Mad,
 }
