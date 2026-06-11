@@ -51,34 +51,19 @@ let y = linear.forward(&x)?;
 let norm = LayerNorm::new([64], 1e-5, true, true, DType::F32)?;
 let z = norm.forward(&y)?;
 
-// Backward pass (requires autograd context)
-// let grads = GradientTape::gradient(&z, [&model.weight, model.bias]).unwrap();
+// Compute loss and gradients with autograd
+// let loss = z.sum()?;
+// let grads = GradientTape::gradient(&loss, [&model.weight, model.bias]);
 ```
 
 ## API
 
 All modules implement the `Module` trait from `zyx-derive`, which provides:
 - `forward(x: impl Into<Tensor>) -> Result<Tensor, ZyxError>` — Forward pass
-- `backward(grad_output: &Tensor) -> Result<Tensor, ZyxError>` — Backward pass (PyTorch-style)
-- `zero_grad()` — Reset gradients
 
-For autograd usage, see the [zyx book](https://zk4x.github.io/zyx) for detailed API documentation.
+## Autograd
 
-## Autograd Example
-
-```rust
-use zyx::{Tensor, DType, autograd::GradientTape};
-
-let linear = Linear::new(128, 64, true, DType::F32)?;
-let x = Tensor::randn([32, 128], DType::F32)?;
-let y = linear.forward(&x)?;
-
-// Compute loss
-let loss = y.sum()?;
-
-// Compute gradients
-let _ = GradientTape::gradient(&loss, [&linear.weight, linear.bias]);
-```
+zyx uses `GradientTape` for automatic differentiation. See the [zyx book](https://zk4x.github.io/zyx) for detailed API documentation.
 
 ## Features
 
