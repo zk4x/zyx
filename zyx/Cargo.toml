@@ -13,6 +13,7 @@ keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "science"]
 include = [
     "src/**",
+    "tests/**",
     "Cargo.toml",
     "README.md"
 ]
@@ -34,7 +35,7 @@ nanoserde = { version = "0.2.1", default-features = false, features = ["std", "b
 half = { version = "1.8.3", default-features = false, features = ["std"] } # MIT or Apache 2.0
 # Since I am lazy
 paste = "1.0.15" # MIT or Apache 2.0
-num_enum = "*"
+num_enum = "0.7.6"
 
 # Lot of dependencies from wgpu, probably just don't use that
 wgpu = { version = "29.0.1", default-features = false, features = ["vulkan", "metal", "dx12", "spirv", "gles"], optional = true } # MIT or Apache 2.0
