@@ -55,19 +55,23 @@ All modules implement the `Module` trait from `zyx-derive`, which provides:
 
 ## Autograd
 
-zyx uses `GradientTape` for automatic differentiation.
+zyx uses `GradientTape` for automatic differentiation. The tape must be created before the forward pass to capture the computation graph.
 
 ```rust
 use zyx::{Tensor, DType, GradientTape};
 use zyx_nn::Linear;
 
-let linear = Linear::new(128, 64, true, DType::F32).unwrap();
+let mut linear = Linear::new(128, 64, true, DType::F32).unwrap();
 let x = Tensor::randn([32, 128], DType::F32).unwrap();
+
+// Create gradient tape BEFORE forward pass
+let tape = GradientTape::new();
+
 let y = linear.forward(&x).unwrap();
 
-// Compute loss and gradients (reduce over all elements)
+// Compute loss and gradients
 let loss = y.sum_all();
-let grads = GradientTape::new().gradient(&loss, [&linear.weight, &linear.bias.unwrap()]);
+let grads = tape.gradient(&loss, [&linear.weight, &linear.bias.unwrap()]);
 ```
 
 ## Features
