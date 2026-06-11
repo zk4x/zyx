@@ -273,7 +273,7 @@ pub fn initialize_backends(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum Event {
     #[allow(unused)]

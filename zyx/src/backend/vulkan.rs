@@ -255,18 +255,6 @@ impl std::fmt::Debug for VulkanEvent {
     }
 }
 
-impl Clone for VulkanEvent {
-    fn clone(&self) -> Self {
-        Self { core: None, fence: Cell::new(None), cmd: Cell::new(None), desc_set: Cell::new(None) }
-    }
-}
-
-impl Drop for VulkanEvent {
-    fn drop(&mut self) {
-        self.wait();
-    }
-}
-
 impl VulkanEvent {
     const fn none() -> Self {
         Self { core: None, fence: Cell::new(None), cmd: Cell::new(None), desc_set: Cell::new(None) }
