@@ -43,8 +43,8 @@ pollster = { version = "0.4.0", default-features = false, optional = true } # MI
 # Pyo3 is used only for python bindings
 pyo3 = { version = "0.28.3", optional = true, features = ["extension-module", "generate-import-lib"] } # MIT or Apache 2.0
 
-# Vulkano, will be later removed, once we sort out direct vulkan bindings
 vulkano = "0.35.2"
+ash = "0.38"
 
 [dev-dependencies]
 matrixmultiply = "0.3"

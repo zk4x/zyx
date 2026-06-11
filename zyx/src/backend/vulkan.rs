@@ -5,25 +5,26 @@
 
 use std::sync::Arc;
 
-use vulkano::VulkanLibrary;
-use vulkano::buffer::allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo};
-use vulkano::buffer::{BufferUsage, Subbuffer};
-use vulkano::command_buffer::allocator::StandardCommandBufferAllocator;
-use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
-use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
-use vulkano::descriptor_set::layout::{
+use super::vulkan_vulkano::VulkanLibrary;
+use super::vulkan_vulkano::{SubbufferAllocator, SubbufferAllocatorCreateInfo};
+use super::vulkan_vulkano::{BufferUsage, Subbuffer};
+use super::vulkan_vulkano::StandardCommandBufferAllocator;
+use super::vulkan_vulkano::{AutoCommandBufferBuilder, CommandBufferUsage};
+use super::vulkan_vulkano::StandardDescriptorSetAllocator;
+use super::vulkan_vulkano::{
     DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
 };
-use vulkano::descriptor_set::{CopyDescriptorSet, DescriptorSet, WriteDescriptorSet};
-use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, QueueFlags};
-use vulkano::instance::{Instance, InstanceCreateInfo};
-use vulkano::memory::allocator::{MemoryTypeFilter, StandardMemoryAllocator};
-use vulkano::pipeline::compute::{ComputePipeline, ComputePipelineCreateInfo};
-use vulkano::pipeline::layout::{PipelineLayout, PipelineLayoutCreateInfo};
-use vulkano::pipeline::{PipelineBindPoint, PipelineShaderStageCreateInfo};
-use vulkano::shader::ShaderStages;
-use vulkano::shader::{ShaderModule, ShaderModuleCreateInfo};
-use vulkano::sync::{self, GpuFuture};
+use super::vulkan_vulkano::{CopyDescriptorSet, DescriptorSet, WriteDescriptorSet};
+use super::vulkan_vulkano::{Device, DeviceCreateInfo, Queue, QueueCreateInfo, QueueFlags};
+use super::vulkan_vulkano::{Instance, InstanceCreateInfo};
+use super::vulkan_vulkano::{MemoryTypeFilter, StandardMemoryAllocator};
+use super::vulkan_vulkano::{ComputePipeline, ComputePipelineCreateInfo};
+use super::vulkan_vulkano::{PipelineLayout, PipelineLayoutCreateInfo};
+use super::vulkan_vulkano::{PipelineBindPoint, PipelineShaderStageCreateInfo};
+use super::vulkan_vulkano::ShaderStages;
+use super::vulkan_vulkano::{ShaderModule, ShaderModuleCreateInfo};
+use super::vulkan_vulkano::sync;
+use super::vulkan_vulkano::GpuFuture;
 
 use nanoserde::DeJson;
 
@@ -46,8 +47,8 @@ pub struct VulkanConfig {
 pub struct VulkanMemoryPool {
     free_bytes: usize,
     memory_allocator: Arc<StandardMemoryAllocator>,
-    device: Arc<vulkano::device::Device>,
-    queue: Arc<vulkano::device::Queue>,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     buffers: Slab<PoolBufferId, (Subbuffer<[u8]>, usize)>,
 }
@@ -84,7 +85,7 @@ pub struct VulkanDevice {
     dev_info: DeviceInfo,
     memory_pool_id: PoolId,
     device: Arc<Device>,
-    queue: Arc<vulkano::device::Queue>,
+    queue: Arc<Queue>,
     command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     programs: Slab<DeviceProgramId, VulkanProgram>,
@@ -243,7 +244,7 @@ impl VulkanMemoryPool {
         // Round up to at least 4 bytes — bool elements are stored as u32 (4 bytes) in Vulkan
         let aligned = bytes.next_multiple_of(4);
         // Use host-visible memory so we can directly read/write from the host
-        use vulkano::memory::MemoryPropertyFlags;
+        use super::vulkan_vulkano::MemoryPropertyFlags;
         let allocator = SubbufferAllocator::new(
             self.memory_allocator.clone(),
             SubbufferAllocatorCreateInfo {
