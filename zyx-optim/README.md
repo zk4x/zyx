@@ -18,12 +18,7 @@ This crate provides a collection of popular gradient-based optimization algorith
 ## Usage
 
 ```rust
-use zyx_nn::{Linear, LayerNorm};
 use zyx_optim::{Adam, SGD};
-use zyx::{Tensor, DType};
-
-// Create model
-let mut model = Linear::new(128, 64, true, DType::F32)?;
 
 // Create optimizer with default parameters
 let mut optim = Adam {
@@ -38,16 +33,11 @@ let mut optim = Adam {
     t: 0,
 };
 
-// Forward pass
-let x = Tensor::randn([32, 128], DType::F32)?;
-let y = model.forward(&x)?;
-
-// Backward pass (computes gradients via autograd)
-let loss = y.sum()?;
-loss.backward()?;
-
-// Optimizer step
-optim.step()?;
+// Configure hyperparameters
+optim.learning_rate = 0.001;      // learning rate
+optim.betas = (0.9, 0.999);       // first and second moment decay
+optim.eps = 1e-8;                 // numerical stability
+optim.weight_decay = 0.01;        // L2 weight decay
 ```
 
 ## API
