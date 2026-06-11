@@ -34,10 +34,31 @@ This crate provides a collection of common neural network building blocks implem
 ### Python Bindings
 - `py` feature enables Python interoperability via `pyo3`
 
+## Usage
+
+```rust
+use zyx::{Tensor, DType};
+use zyx_nn::{Linear, LayerNorm};
+
+// Create a linear layer
+let linear = Linear::new(128, 64, true, DType::F32)?;
+
+// Forward pass
+let x = Tensor::randn([32, 128], DType::F32)?;
+let y = linear.forward(&x)?;
+
+// Layer normalization
+let norm = LayerNorm::new([64], 1e-5, true, true, DType::F32)?;
+let z = norm.forward(&y)?;
+
+// Backward pass (requires autograd context)
+// z.backward()?;
+```
+
 ## API
 
 All modules implement the `Module` trait from `zyx-derive`, which provides:
-- `forward(x: &Tensor) -> Result<Tensor, ZyxError>` — Forward pass
+- `forward(x: impl Into<Tensor>) -> Result<Tensor, ZyxError>` — Forward pass
 - `backward(grad_output: &Tensor) -> Result<Tensor, ZyxError>` — Backward pass
 - `zero_grad()` — Reset gradients
 
