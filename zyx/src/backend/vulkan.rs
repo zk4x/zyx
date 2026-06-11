@@ -177,7 +177,16 @@ impl VulkanMemoryPool {
                 ev.wait();
             }
         }
-        self.buffers.remove(buffer_id);
+        let (buf, mem, Mapped(ptr), _) =
+            unsafe { self.buffers.remove_and_return(buffer_id) };
+        let dev = &self.core.device;
+        if !ptr.is_null() {
+            unsafe { dev.unmap_memory(mem) };
+        }
+        unsafe {
+            dev.destroy_buffer(buf, None);
+            dev.free_memory(mem, None);
+        }
     }
 
     pub(super) fn host_to_pool(
