@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-//! nn modules for zyx ML library
+#![doc = include_str!("../README.md")]
 
 #![forbid(unsafe_code)]
 #![forbid(rustdoc::broken_intra_doc_links)]

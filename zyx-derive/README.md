@@ -9,14 +9,14 @@ use zyx_core::backend::Backend;
 use zyx_core::tensor::Tensor;
 
 #[derive(Module)]
-struct MyNet<B: Backend> {
-    b: Tensor<B>,
-    w: Tensor<B>,
+struct MyNet {
+    b: Tensor,
+    w: Tensor,
 }
 
-impl<B: Backend> MyNet<B> {
-    fn forward(&self, x: &Tensor<B>) -> Tensor<B> {
-        x.dot(self.w) + self.b
+impl MyNet {
+    fn forward(&self, x: Tensor) -> Tensor {
+        x.dot(self.w).unwrap() + self.b
     }
 }
 ```
@@ -25,6 +25,3 @@ For README and source code, please visit [github](https://www.github.com/zk4x/zy
 
 For more details, there is a [book](https://zk4x.github.io/zyx).
 
-# Features
-
-- std - enables zyx-core/std
