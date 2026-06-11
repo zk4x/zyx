@@ -15,61 +15,28 @@ This crate provides a collection of popular gradient-based optimization algorith
 ### Python Bindings
 - `py` feature enables Python interoperability via pyo3
 
-## Usage
-
-```rust
-use zyx::Tensor;
-use zyx_nn::{Linear, LayerNorm};
-use zyx_optim::{Adam, AdamW, RMSprop, SGD};
-
-fn main() -> zyx::Result<()> {
-    let mut model = Linear::new(128, 64);
-    
-    // Create optimizer
-    let optim = Adam::new(&mut model, 0.001);
-    
-    // Forward pass
-    let x: Tensor = Tensor::ones(32, 128);
-    let y = model.forward(&x)?;
-    
-    // Compute loss (placeholder)
-    let loss = y.sum()?;
-    
-    // Backward pass
-    let grad_loss = Tensor::ones_like(&y)?;
-    loss.backward(&grad_loss)?;
-    
-    // Optimizer step
-    optim.step()?;
-    
-    Ok(())
-}
-```
-
 ## API
 
-All optimizers implement a simple interface:
+All optimizers implement a simple interface via the `Module` trait:
 
 ```rust
+use zyx_nn::{Linear, LayerNorm};
 use zyx_optim::Adam;
 
-let mut model = Linear::new(128, 64);
-let optim = Adam::new(&mut model, 0.001);
+// Create model and optimizer
+let mut model = Linear::new(/* in_features, out_features, bias, dtype */)?;
+let optim = Adam::new(&mut model, /* lr, beta1, beta2, eps */)?;
 
-// Configure hyperparameters
-optim.lr = 0.001;      // learning rate
-optim.beta1 = 0.9;     // first moment decay
-optim.beta2 = 0.999;   // second moment decay
-optim.eps = 1e-8;      // numerical stability
+// Forward pass
+let x = Tensor::ones(32, 128);
+let y = model.forward(&x)?;
 
-// Optimizer step (computes gradients via autograd, then updates parameters)
+// Backward pass (computes gradients via autograd)
+let loss = y.sum()?;
+loss.backward()?;
+
+// Optimizer step
 optim.step()?;
-
-// Or use `step_with` for custom loss gradient
-optim.step_with(loss_grad)?;
-
-// Zero optimizer state (for multi-step optimization)
-optim.zero_grad()?;
 ```
 
 ## Hyperparameters

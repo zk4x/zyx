@@ -34,42 +34,14 @@ This crate provides a collection of common neural network building blocks implem
 ### Python Bindings
 - `py` feature enables Python interoperability via `pyo3`
 
-## Usage
-
-```rust
-use zyx::Tensor;
-use zyx_nn::{Linear, LayerNorm, Embedding, MultiheadAttention};
-
-fn main() -> zyx::Result<()> {
-    let x: Tensor = Tensor::ones(32, 128);
-    
-    // Linear layer
-    let linear = Linear::new(128, 64);
-    let h = linear.forward(&x)?;
-    
-    // LayerNorm
-    let norm = LayerNorm::new(64);
-    let h = norm.forward(&h)?;
-    
-    // Multi-head attention
-    let attn = MultiheadAttention::new(64, 4, None);
-    let h = attn.forward(&h, &h, &h)?;
-    
-    // Embedding
-    let emb = Embedding::new(1000, 64);
-    let tokens = Tensor::from(0..1000);
-    let h = emb.forward(&tokens)?;
-    
-    Ok(())
-}
-```
-
 ## API
 
 All modules implement the `Module` trait from `zyx-derive`, which provides:
-- `forward(&self, x: &Tensor) -> Result<Tensor, ZyxError>` — Forward pass
-- `backward(&mut self, grad_output: &Tensor) -> Result<Tensor, ZyxError>` — Backward pass
-- `zero_grad(&mut self)` — Reset gradients
+- `forward(x: &Tensor) -> Result<Tensor, ZyxError>` — Forward pass
+- `backward(grad_output: &Tensor) -> Result<Tensor, ZyxError>` — Backward pass
+- `zero_grad()` — Reset gradients
+
+Modules are typically created using the `new()` method with appropriate parameters. See the [zyx book](https://zk4x.github.io/zyx) for detailed API documentation.
 
 ## Features
 
