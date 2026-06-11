@@ -52,8 +52,32 @@ pub struct VulkanMemoryPool {
     buffers: Slab<PoolBufferId, (Subbuffer<[u8]>, usize)>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct VulkanEvent;
+pub(crate) struct VulkanEvent {
+    fence: Option<Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>>>,
+}
+
+impl std::fmt::Debug for VulkanEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VulkanEvent").finish_non_exhaustive()
+    }
+}
+
+impl Clone for VulkanEvent {
+    fn clone(&self) -> Self {
+        Self { fence: self.fence.clone() }
+    }
+}
+
+impl VulkanEvent {
+    fn wait(&self) {
+        if let Some(fence) = &self.fence {
+            let mut guard = fence.lock().unwrap();
+            if let Some(f) = guard.take() {
+                f();
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct VulkanDevice {
@@ -237,7 +261,7 @@ impl VulkanMemoryPool {
             .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("buffer alloc: {e}").into() })?;
 
         let id = self.buffers.push((buffer, bytes as usize));
-        Ok((PoolBufferId::from(id), Event::Vulkan(VulkanEvent)))
+        Ok((PoolBufferId::from(id), Event::Vulkan(VulkanEvent { fence: None })))
     }
 
     pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, _event_wait_list: Vec<Event>) {
@@ -256,15 +280,20 @@ impl VulkanMemoryPool {
             .map_err(|e| BackendError { status: ErrorStatus::MemoryCopyH2P, context: format!("write: {e}").into() })?;
         let copy_len = content.len().min(src.len());
         content[..copy_len].copy_from_slice(&src[..copy_len]);
-        Ok(Event::Vulkan(VulkanEvent))
+        Ok(Event::Vulkan(VulkanEvent { fence: None }))
     }
 
     pub(super) fn pool_to_host(
         &mut self,
         src: PoolBufferId,
         dst: &mut [u8],
-        _event_wait_list: Vec<Event>,
+        event_wait_list: Vec<Event>,
     ) -> Result<(), BackendError> {
+        for event in &event_wait_list {
+            if let Event::Vulkan(event) = event {
+                event.wait();
+            }
+        }
         let (buffer, _) = &self.buffers[src];
         let content = buffer
             .read()
@@ -274,7 +303,12 @@ impl VulkanMemoryPool {
         Ok(())
     }
 
-    pub(super) fn sync_events(&mut self, _events: Vec<Event>) -> Result<(), BackendError> {
+    pub(super) fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
+        for event in &events {
+            if let Event::Vulkan(event) = event {
+                event.wait();
+            }
+        }
         Ok(())
     }
 
@@ -425,15 +459,12 @@ impl VulkanDevice {
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("execute: {e}").into() })?
             .then_signal_fence();
 
-        // Wait for GPU to finish kernel execution
-        future
-            .wait(None)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("fence: {e}").into() })?;
-        // Memory barrier to ensure GPU writes are visible to host
-        future
-            .wait(None)
-            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("post-fence: {e}").into() })?;
+        let wait = Box::new(move || {
+            future.wait(None).unwrap();
+        });
 
-        Ok(Event::Vulkan(VulkanEvent))
+        Ok(Event::Vulkan(VulkanEvent {
+            fence: Some(Arc::new(std::sync::Mutex::new(Some(wait)))),
+        }))
     }
 }
