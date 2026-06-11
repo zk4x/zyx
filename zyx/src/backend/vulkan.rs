@@ -42,7 +42,6 @@ struct Core {
     device: ash::Device,
     gpu: vk::PhysicalDevice,
     queue: vk::Queue,
-    qfi: u32,
     cmd_pool: vk::CommandPool,
     desc_pool: vk::DescriptorPool,
 }
@@ -294,7 +293,6 @@ impl VulkanEvent {
 
 pub(super) struct VulkanProgram {
     gws: Vec<Dim>,
-    lws: Vec<Dim>,
     pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     desc_layout: vk::DescriptorSetLayout,
@@ -432,7 +430,6 @@ impl VulkanDevice {
 
         let id = self.programs.push(VulkanProgram {
             gws,
-            lws,
             pipeline,
             pipeline_layout,
             desc_layout,
@@ -717,7 +714,7 @@ pub(super) fn initialize_device(
             device,
             gpu,
             queue,
-            qfi: qfi as u32,
+ 
             cmd_pool,
             desc_pool,
         });

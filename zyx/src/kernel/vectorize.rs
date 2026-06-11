@@ -29,7 +29,7 @@ impl Kernel {
         // Map: src id -> LoadInfo
         let mut loads: Vec<Map<OpId, Vec<LoadInfo>>> = Vec::new();
         loads.push(Map::default());
-        'a: while !op_id.is_null() {
+        while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Loop { .. } => {
                     loads.push(Map::default());
