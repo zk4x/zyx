@@ -40,12 +40,12 @@ This crate provides a collection of common neural network building blocks implem
 use zyx::{Tensor, DType};
 use zyx_nn::{Linear, LayerNorm};
 
-let linear = Linear::new(128, 64, true, DType::F32)?;
-let x = Tensor::randn([32, 128], DType::F32)?;
-let y = linear.forward(&x)?;
+let linear = Linear::new(128, 64, true, DType::F32).unwrap();
+let x = Tensor::randn([32, 128], DType::F32).unwrap();
+let y = linear.forward(&x).unwrap();
 
-let norm = LayerNorm::new([64], 1e-5, true, true, DType::F32)?;
-let z = norm.forward(&y)?;
+let norm = LayerNorm::new([64], 1e-5, true, true, DType::F32).unwrap();
+let z = norm.forward(&y).unwrap();
 ```
 
 ## API
@@ -58,16 +58,16 @@ All modules implement the `Module` trait from `zyx-derive`, which provides:
 zyx uses `GradientTape` for automatic differentiation.
 
 ```rust
-use zyx::{Tensor, DType, autograd::GradientTape};
+use zyx::{Tensor, DType, GradientTape};
 use zyx_nn::Linear;
 
-let linear = Linear::new(128, 64, true, DType::F32)?;
-let x = Tensor::randn([32, 128], DType::F32)?;
-let y = linear.forward(&x)?;
+let linear = Linear::new(128, 64, true, DType::F32).unwrap();
+let x = Tensor::randn([32, 128], DType::F32).unwrap();
+let y = linear.forward(&x).unwrap();
 
-// Compute loss and gradients
-let loss = y.sum()?;
-let grads = GradientTape::gradient(&loss, [&linear.weight, linear.bias]);
+// Compute loss and gradients (reduce over all elements)
+let loss = y.sum_all();
+let grads = GradientTape::new().gradient(&loss, [&linear.weight, &linear.bias.unwrap()]);
 ```
 
 ## Features
