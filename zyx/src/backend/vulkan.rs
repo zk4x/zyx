@@ -406,9 +406,9 @@ impl VulkanDevice {
             .bind_descriptor_sets(PipelineBindPoint::Compute, program.pipeline_layout.clone(), 0, descriptor_set)
             .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("bind ds: {e}").into() })?;
 
-        let group_count_x = (program.gws[0] + program.lws[0] - 1) / program.lws[0];
-        let group_count_y = (program.gws[1] + program.lws[1] - 1) / program.lws[1];
-        let group_count_z = (program.gws[2] + program.lws[2] - 1) / program.lws[2];
+        let group_count_x = program.gws[0];
+        let group_count_y = program.gws[1];
+        let group_count_z = program.gws[2];
 
         unsafe {
             builder
