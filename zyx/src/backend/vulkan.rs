@@ -172,22 +172,12 @@ impl VulkanMemoryPool {
         buffer_id: PoolBufferId,
         event_wait_list: Vec<Event>,
     ) {
-        // Wait for all pending GPU work on this buffer before destroying it
         for event in &event_wait_list {
             if let Event::Vulkan(ev) = event {
                 ev.wait();
             }
         }
-        let (buf, mem, Mapped(ptr), _) =
-            unsafe { self.buffers.remove_and_return(buffer_id) };
-        let dev = &self.core.device;
-        if !ptr.is_null() {
-            unsafe { dev.unmap_memory(mem) };
-        }
-        unsafe {
-            dev.destroy_buffer(buf, None);
-            dev.free_memory(mem, None);
-        }
+        self.buffers.remove(buffer_id);
     }
 
     pub(super) fn host_to_pool(

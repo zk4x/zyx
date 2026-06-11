@@ -446,6 +446,9 @@ impl MemoryPool {
         }
     }
 
+    /// Allocate a buffer. Returns (buffer_id, event) where the event signals
+    /// when the buffer is ready for use. For most backends the event is a no-op
+    /// (immediately signaled); CUDA returns an event recorded after the async allocation.
     pub fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         let free = self.free_bytes();
         let (result, name) = match self {
@@ -474,7 +477,9 @@ impl MemoryPool {
         result
     }
 
-    // Deallocate drops events without synchronization
+    /// Free a buffer. Waits on all events in `event_wait_list` before freeing
+    /// the underlying device memory. The events are consumed (waited and dropped)
+    /// so callers must not reuse them.
     pub fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         let name = match self {
             MemoryPool::Dummy(_) => "dummy",
@@ -512,8 +517,12 @@ impl MemoryPool {
         }
     }
 
-    // Host to pool does not synchronize events, it keeps them alive
-    // src must be alive as long as Event is not synchronized
+    /// Copy data from host memory to a device buffer. Waits on all events in
+    /// `event_wait_list` before starting the copy. Returns an event that signals
+    /// when the copy is complete. The input events are consumed (waited and dropped).
+    ///
+    /// Backends that use synchronous copies (e.g. Vulkan with HOST_COHERENT memory)
+    /// return a no-op event that is already signaled.
     pub fn host_to_pool(
         &mut self,
         src: &[u8], // TODO this will likely have to be Vec<u8> for better lifetimes handling and less synchronization
@@ -535,7 +544,10 @@ impl MemoryPool {
         }
     }
 
-    /// Pool to host is blocking operation, synchronizes events and drops them
+    /// Copy data from a device buffer to host memory. Waits on all events in
+    /// `event_wait_list` before starting the copy (ensures GPU writes are visible).
+    /// Blocking — does not return until the copy completes. The input events are
+    /// consumed (waited and dropped).
     pub fn pool_to_host(&mut self, src: PoolBufferId, dst: &mut [u8], event_wait_list: Vec<Event>) -> Result<(), BackendError> {
         match self {
             MemoryPool::Dummy(pool) => pool.pool_to_host(src, dst, event_wait_list),
@@ -552,7 +564,8 @@ impl MemoryPool {
         }
     }
 
-    // Synchronize events, blocking, drops those events
+    /// Wait for GPU events to complete, then drop them. Blocking.
+    /// Used after host_to_pool or test-launch to ensure data is fully transferred.
     pub fn sync_events(&mut self, events: Vec<Event>) -> Result<(), BackendError> {
         match self {
             MemoryPool::Dummy(pool) => pool.sync_events(events),
@@ -569,7 +582,9 @@ impl MemoryPool {
         }
     }
 
-    // Drop events without synchronization, non-blocking
+    /// Drop events without waiting for GPU completion. Non-blocking.
+    /// Used for cleanup when the graph is done and events are no longer needed
+    /// (the final pool_to_host already waited for all GPU work).
     #[allow(unused)]
     pub fn release_events(&mut self, events: Vec<Event>) {
         match self {
@@ -667,6 +682,9 @@ impl Device {
         }
     }
 
+    /// Compile a kernel into a device program. Returns a program ID usable with
+    /// `launch` and `release`. The `debug_asm` flag controls whether the backend
+    /// prints the compiled assembly/source (for `ZYX_DEBUG=16`).
     pub fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let name = match self {
             Device::C(_) => "C",
@@ -701,6 +719,7 @@ impl Device {
         result
     }
 
+    /// Free a compiled program and its device resources (pipeline, shader module, etc.).
     pub fn release(&mut self, program_id: DeviceProgramId) {
         match self {
             Device::C(dev) => dev.release(program_id),
@@ -716,6 +735,12 @@ impl Device {
         }
     }
 
+    /// Launch a kernel on the device. Waits on all events in `event_wait_list`
+    /// before submitting to the GPU queue (ensures input buffers are ready).
+    /// Returns an event that signals when the kernel completes.
+    ///
+    /// The `args` are the PoolBufferIds for the kernel's input and output buffers
+    /// in the order they appear in the kernel IR (inputs first, then outputs).
     pub fn launch(
         &mut self,
         program_id: DeviceProgramId,
