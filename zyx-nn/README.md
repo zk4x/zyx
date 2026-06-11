@@ -55,7 +55,20 @@ All modules implement the `Module` trait from `zyx-derive`, which provides:
 
 ## Autograd
 
-zyx uses `GradientTape` for automatic differentiation. See the [zyx book](https://zk4x.github.io/zyx) for detailed API documentation.
+zyx uses `GradientTape` for automatic differentiation.
+
+```rust
+use zyx::{Tensor, DType, autograd::GradientTape};
+use zyx_nn::Linear;
+
+let linear = Linear::new(128, 64, true, DType::F32)?;
+let x = Tensor::randn([32, 128], DType::F32)?;
+let y = linear.forward(&x)?;
+
+// Compute loss and gradients
+let loss = y.sum()?;
+let grads = GradientTape::gradient(&loss, [&linear.weight, linear.bias]);
+```
 
 ## Features
 
