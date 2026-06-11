@@ -13,7 +13,14 @@ keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "science"]
 include = [
     "src/**",
-    "tests/**",
+    "tests/1_unary.rs",
+    "tests/2_binary.rs",
+    "tests/3_movement.rs",
+    "tests/4_reduce.rs",
+    "tests/5_misc.rs",
+    "tests/6_autograd.rs",
+    "tests/7_realize.rs",
+    "tests/8_indexing.rs",
     "Cargo.toml",
     "README.md"
 ]
