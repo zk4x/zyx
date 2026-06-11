@@ -38,6 +38,9 @@ The same directory is also used for the kernel cache (file named `cached_kernels
   },
   "wgpu": {
     "enabled": true
+  },
+  "vulkan": {
+    "device_ids": []
   }
 }
 ```
@@ -117,8 +120,7 @@ Uses the vulkano crate for Vulkan compute operations.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Enable the Vulkan backend |
-| `device_ids` | `Option<Vec<i32>>` | `null` | Which Vulkan devices to use. `null` = all available. `[]` = disable Vulkan. `[0]` = use first device only.
+| `device_ids` | `Option<Vec<i32>>` | `null` | Which Vulkan devices to use. `null` = all available. `[]` = disable Vulkan. `[0]` = use first device only. |
 
 ## Backend selection rules
 
@@ -127,6 +129,7 @@ Uses the vulkano crate for Vulkan compute operations.
 - **hip**: currently always tries to initialize (ignores config); disabled only if `libamdhip64.so` is not found
 - **opencl**: disabled when `"platform_ids": []`; uses all platforms when `null`
 - **tenstorrent**: disabled when `"device_ids": []`; uses all devices when `null`
+- **vulkan**: disabled when `"device_ids": []`; uses all devices when `null`
 - **wgpu**: enabled by default; disabled when `"enabled": false`
 
 CUDA, HIP, OpenCL, and Tenstorrent backends are always compiled into zyx (cannot be disabled by cargo features). They search for required `.so` files at runtime. WGPU requires the `wgpu` cargo feature.
