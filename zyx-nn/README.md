@@ -40,20 +40,12 @@ This crate provides a collection of common neural network building blocks implem
 use zyx::{Tensor, DType};
 use zyx_nn::{Linear, LayerNorm};
 
-// Create a linear layer
 let linear = Linear::new(128, 64, true, DType::F32)?;
-
-// Forward pass
 let x = Tensor::randn([32, 128], DType::F32)?;
 let y = linear.forward(&x)?;
 
-// Layer normalization
 let norm = LayerNorm::new([64], 1e-5, true, true, DType::F32)?;
 let z = norm.forward(&y)?;
-
-// Compute loss and gradients with autograd
-// let loss = z.sum()?;
-// let grads = GradientTape::gradient(&loss, [&model.weight, model.bias]);
 ```
 
 ## API
