@@ -177,6 +177,9 @@ fn matmul_1() -> Result<(), ZyxError> {
                 }
 
                 if z != expected {
+                    eprintln!("FAIL m={m} k={k} n={n}");
+                    eprintln!("z={:?}", z);
+                    eprintln!("expected[0]={:?}", expected[0]);
                     panic!();
                 }
             }

@@ -750,11 +750,8 @@ impl Device {
                 dev.launch(program_id, pool, args, event_wait_list)
             }
             Device::Vulkan(dev) => {
-                eprintln!("[dispatch] Vulkan::launch called");
                 let MemoryPool::Vulkan(pool) = memory_pool else { unreachable!() };
-                let r = dev.launch(program_id, pool, args, event_wait_list);
-                eprintln!("[dispatch] Vulkan::launch returned: {:?}", r.is_ok());
-                r
+                dev.launch(program_id, pool, args, event_wait_list)
             }
             #[cfg(feature = "wgpu")]
             Device::WGPU(dev) => {
