@@ -34,7 +34,9 @@ impl Conv2d {
         dtype: DType,
     ) -> Result<Self, ZyxError> {
         let mut kernel_size: Vec<u64> = kernel_size.into_shape().collect();
-        kernel_size.push(2);
+        if kernel_size.len() == 1 {
+            kernel_size.push(kernel_size[0]);
+        }
         let scale = 1f32 / ((in_channels * kernel_size.iter().product::<u64>()) as f32).sqrt();
         let mut weight_shape = vec![out_channels, in_channels / groups];
         weight_shape.extend(kernel_size);
