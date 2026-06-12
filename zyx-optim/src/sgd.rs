@@ -56,27 +56,27 @@ impl SGD {
             "Number of parameters != number of gradients."
         );
 
-        for (i, (param, grad)) in params.into_iter().zip(grads).enumerate() {
+        let mut bias_idx = 0usize;
+        for (param, grad) in params.into_iter().zip(grads) {
             if let Some(mut grad) = grad {
                 if self.weight_decay != 0.0 {
                     grad = grad + param.clone() * self.weight_decay;
                 }
                 if self.momentum != 0.0 {
-                    if let Some(bias) = self.bias.get_mut(i) {
-                        *bias =
-                            bias.clone() * self.momentum + grad.clone() * (1.0 - self.dampening);
+                    if bias_idx < self.bias.len() {
+                        self.bias[bias_idx] =
+                            self.bias[bias_idx].clone() * self.momentum + grad.clone() * (1.0 - self.dampening);
                     } else {
                         self.bias.push(grad.clone());
                     }
                     if self.nesterov {
-                        grad = grad + self.bias[i].clone() * self.momentum;
+                        grad = grad + self.bias[bias_idx].clone() * self.momentum;
                     } else {
-                        grad = self.bias[i].clone();
+                        grad = self.bias[bias_idx].clone();
                     }
+                    bias_idx += 1;
                 }
                 if self.maximize {
-                    // Cast since learning_rate is f32, but parameters can have different precision.
-                    // Can this cast be somehow avoided? Is it better to always work with original dtype?
                     *param = (&*param + grad * self.learning_rate).cast(param.dtype());
                 } else {
                     *param = (&*param - grad * self.learning_rate).cast(param.dtype());

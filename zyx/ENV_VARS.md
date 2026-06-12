@@ -12,3 +12,6 @@ Set `ZYX_DEBUG` environment variable to enable debugging. It is a bitmask with t
 | 128   | compile | Print kernel compilation |
 
 Combine flags by summing values (e.g., `ZYX_DEBUG=24` enables ir + asm).
+
+**First debug step**: run with `ZYX_DEBUG=1` to see which backends initialized and how many devices.
+If no devices appear, check whether a [config file](CONFIG.md) is disabling them.

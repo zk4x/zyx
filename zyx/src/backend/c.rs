@@ -22,11 +22,19 @@ use libloading::{Library, Symbol};
 use nanoserde::DeJson;
 use std::{ffi::CString, fmt::Write, hash::BuildHasherDefault, path::PathBuf, process::Command};
 
-#[derive(Debug, Default, DeJson)]
+#[derive(Debug, DeJson)]
 #[nserde(default)]
 pub struct CConfig {
     /// Enable this backend
     pub enabled: bool,
+}
+
+impl Default for CConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+        }
+    }
 }
 
 #[derive(Debug)]

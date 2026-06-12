@@ -5,9 +5,11 @@ zyx is configured via a JSON file. The config file is searched for at:
 1. `$XDG_CONFIG_HOME/zyx/config.json` (if `XDG_CONFIG_HOME` is set and is absolute)
 2. `$HOME/.config/zyx/config.json`
 
-If neither exists, all defaults are used.
+If no config file exists, **all backends try to initialize** with their defaults — C (CPU) via gcc/clang, GPU backends (CUDA, Vulkan, HIP, OpenCL) scan for hardware, and WGPU if compiled with `--features wgpu`. Only the Dummy test backend is off by default.
 
 The same directory is also used for the kernel cache (file named `cached_kernels`).
+
+Run `ZYX_DEBUG=1` to see which backends initialized.
 
 ## Example `config.json`
 
@@ -25,7 +27,7 @@ The same directory is also used for the kernel cache (file named `cached_kernels
     "enabled": false
   },
   "c": {
-    "enabled": false
+    "enabled": true
   },
   "cuda": {
     "device_ids": null
@@ -76,7 +78,7 @@ Compiles kernel IR to C, then compiles with clang and loads via `dlopen`. Uses t
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | `bool` | `false` | Enable the C/Clang CPU backend |
+| `enabled` | `bool` | `true` | Enable the C/Clang CPU backend |
 
 ### `cuda` — CUDA backend
 
@@ -124,7 +126,8 @@ Uses the vulkano crate for Vulkan compute operations.
 
 ## Backend selection rules
 
-- **dummy**, **c**: enabled only when `"enabled": true`
+- **c**: enabled when `"enabled": true` (default: `true`)
+- **dummy**: enabled when `"enabled": true` (default: `false`)
 - **cuda**: disabled when `"device_ids": []`; uses all devices when `null`
 - **hip**: currently always tries to initialize (ignores config); disabled only if `libamdhip64.so` is not found
 - **opencl**: disabled when `"platform_ids": []`; uses all platforms when `null`

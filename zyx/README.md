@@ -43,21 +43,24 @@ let bb_grad = tape.gradient_persistent(&b_grad, [&b])[0].clone().unwrap();
 # Ok::<(), zyx::ZyxError>(())
 ```
 
+## Quick Start
+
+No config file needed — all backends try to initialize by default.
+Run `ZYX_DEBUG=1` to see which ones found hardware.
+
+See [CONFIG.md](CONFIG.md) for device selection, autotune, and advanced options.
+See [ENV_VARS.md](ENV_VARS.md) for debugging with `ZYX_DEBUG`.
+
 ## Backends
 
-- [x] `C` - CPU backend via C codegen (clang/gcc)
-- [x] `CUDA` - NVIDIA GPU acceleration
-- [x] `HIP` - AMD GPU acceleration (ROCm platform)
-- [x] `OpenCL` - Cross-platform (CPU via POCL, GPU via native drivers)
-- [x] `WGPU` - Modern web and native GPU support via wgpu (WGSL), feature: `wgpu`
-
-Please look at file [CONFIG.md](CONFIG.md) for detailed info how to tell Zyx which hardware it should utilize, configure autotune, and set up backends.
+- [x] `C` — CPU backend via C codegen (clang/gcc)
+- [x] `CUDA` — NVIDIA GPU acceleration
+- [x] `HIP` — AMD GPU acceleration (ROCm platform)
+- [x] `OpenCL` — Cross-platform (CPU via POCL, GPU via native drivers)
+- [x] `WGPU` — Modern web and native GPU support via wgpu (WGSL), feature: `wgpu`
 
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md)
-
-You can enable debugging with env var [ZYX_DEBUG](https://github.com/zk4x/zyx/blob/main/zyx/ENV_VARS.md).
-For example `ZYX_DEBUG`=16 prints generated kernel source code.
 
 ## Simple neural network
 
