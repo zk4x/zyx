@@ -1,6 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+#![allow(unused_variables, unused_mut)]
+
 use crate::{
     Map, Set,
     kernel::{Kernel, MemLayout, Op, OpId},
@@ -252,6 +254,7 @@ impl Kernel {
             let mut devec_ops: Vec<(OpId, usize)> = Vec::new();
             let mut check_id = self.next_op(*vec_id);
             
+            // Find all devectorize ops that chain from vec_id
             while let Op::Devectorize { vec: v, idx } = &self.ops[check_id].op {
                 if v == vec_id {
                     devec_ops.push((check_id, *idx));
@@ -276,10 +279,13 @@ impl Kernel {
                 match &self.ops[check_id].op {
                     Op::Store { dst, x, index, layout } => {
                         // Check if this store uses a devectorized value from vec_id
+                        // We need to check if x is the output of any devectorize in devec_ops
                         for (devec_id, devec_idx) in &devec_ops {
                             if let Op::Devectorize { vec: v, idx } = &self.ops[*devec_id].op {
-                                if v == vec_id && *idx == *devec_idx {
-                                    // This store uses a devectorized value
+                                // Check if this devectorize is in our chain
+                                // and the store uses its output
+                                if *idx == *devec_idx {
+                                    // This store uses a devectorized value from our chain
                                     stores_to_combine.push((check_id, *devec_idx));
                                     check_id = self.next_op(check_id);
                                     break;
@@ -305,6 +311,14 @@ impl Kernel {
                 // Get the store details from the first store
                 if let Some((first_store_id, _)) = stores_to_combine.first() {
                     if let Op::Store { dst, x: _, index: store_idx, layout: _ } = &self.ops[*first_store_id].op {
+                        // Find the value that the stores use (could be the vectorized result after elementwise ops)
+                        let last_devec_id = devec_ops.last().unwrap().0;
+                        // Pattern match the devectorize op to get its vec field
+                        let store_value = match &self.ops[last_devec_id].op {
+                            Op::Devectorize { vec, .. } => *vec,
+                            _ => OpId::NULL,
+                        };
+                        
                         // Create a single vector store using the vectorized result
                         let vec_len = devec_ops.len() as u8;
                         
@@ -312,7 +326,7 @@ impl Kernel {
                             *first_store_id,
                             Op::Store {
                                 dst: *dst,
-                                x: *vec_id,  // Use the vectorized result directly
+                                x: store_value,
                                 index: *store_idx,
                                 layout: MemLayout::Vector(vec_len),
                             },
@@ -328,8 +342,6 @@ impl Kernel {
             }
         }
     }
-
-    pub const fn vectorize_stores(&mut self) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
