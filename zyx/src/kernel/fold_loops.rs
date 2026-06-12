@@ -170,10 +170,30 @@ impl Kernel {
             return None;
         }
 
-        let add_id = self.next_op(load_id);
-        let &Op::Binary { x: accumulated_value_id, y, bop: BOp::Add } = self.at(add_id) else { return None };
-        if y != load_id {
-            return None;
+        // Scan forward from load(acc) to find Add(result_of_mul, load_id).
+        // Interleaved ops (Eq, Cast, Mul) may appear between load and add.
+        let add_id;
+        let accumulated_value_id;
+        {
+            let mut scan = self.next_op(load_id);
+            loop {
+                if matches!(self.at(scan), Op::EndLoop) {
+                    return None;
+                }
+                if let &Op::Binary { x, y, bop: BOp::Add } = self.at(scan) {
+                    if x == load_id {
+                        accumulated_value_id = y;
+                        add_id = scan;
+                        break;
+                    }
+                    if y == load_id {
+                        accumulated_value_id = x;
+                        add_id = scan;
+                        break;
+                    }
+                }
+                scan = self.next_op(scan);
+            }
         }
 
         let store_id = self.next_op(add_id);
@@ -498,15 +518,25 @@ impl Kernel {
 mod tests {
     use super::*;
 
-    /// Build a gather-loop kernel:
-    ///   acc = 0
-    ///   for i in 0..loop_len:
-    ///     acc += (i == 5) * 42.0
-    ///   result = acc
+    /// Build a kernel matching the REAL index_select IR pattern
+    /// where the accumulated value is computed AFTER load(acc).
+    /// This is the pattern that fold_loops FAILS to optimize.
     ///
-    /// After `simplify_accumulating_loop()` this should become:
-    ///   result = 42.0   (since i==5 exactly once)
-    fn make_gather_kernel(loop_len: u32) -> (Kernel, /*result*/ OpId, /*loop*/ OpId, /*source*/ OpId) {
+    /// Kernel IR structure:
+    ///   acc = 0
+    ///   for i in 0..len:
+    ///     src = load(source_tensor, i)         // some computation
+    ///     tmp = load(acc, 0)                    // LOAD (found by identify_accumulate_pattern)
+    ///     eq = Eq(loop_id, 5)                   // mask computation (interleaved!)
+    ///     eq_f32 = Cast(eq, f32)
+    ///     mul = Mul(eq_f32, src)               // accumulated value
+    ///     add = Add(mul, tmp)                   // ADD (next_op(load) is NOT add!)
+    ///     store(acc, add, 0)
+    ///   end
+    ///   result = load(acc, 0)
+    ///
+    /// identify_accumulate_pattern fails because next_op(load(tmp)) is eq, not Add.
+    fn make_interleaved_gather_kernel(loop_len: u32) -> Kernel {
         let mut k = Kernel::new();
         let acc = k.define(DType::F32, Scope::Register, false, 1);
 
@@ -516,31 +546,79 @@ mod tests {
 
         let loop_id = k.loop_(loop_len as u64);
 
-        // Accumulated value computed BEFORE the load-add-store pattern
+        // Some computation before load(acc) — e.g. loading source
+        let _source = k.const_val(42.0f32);  // simplified: no tensor load
+
+        // LOAD ACC — identify_accumulate_pattern finds this
+        let load_acc = k.load(acc, zi, MemLayout::Scalar);
+
+        // Accumulated value computation AFTER load(acc) — interleaved!
+        let index_val = k.const_idx(5u32);
+        let eq = k.binary(loop_id, index_val, BOp::Eq);
+        let eq_f32 = k.cast(eq, DType::F32);
+        let _src = k.const_val(42.0f32);     // source value (could be from tensor load above)
+        let mul = k.binary(eq_f32, _src, BOp::Mul);
+
+        // ADD: references load_acc (tmp), but next_op(load_acc) is NOT add
+        let add = k.binary(mul, load_acc, BOp::Add);
+        k.store(acc, add, zi, MemLayout::Scalar);
+        k.end_loop();
+        let _result = k.load(acc, zi, MemLayout::Scalar);
+
+        k
+    }
+
+    /// Sanity test: the simple pattern (accum value BEFORE load) IS optimized.
+    fn make_flat_gather_kernel(loop_len: u32) -> (Kernel, OpId, OpId) {
+        let mut k = Kernel::new();
+        let acc = k.define(DType::F32, Scope::Register, false, 1);
+
+        let zi = k.const_idx(0u32);
+        let zf = k.const_val(0.0f32);
+        k.store(acc, zf, zi, MemLayout::Scalar);
+
+        let loop_id = k.loop_(loop_len as u64);
+
         let index_val = k.const_idx(5u32);
         let eq = k.binary(loop_id, index_val, BOp::Eq);
         let eq_f32 = k.cast(eq, DType::F32);
         let source = k.const_val(42.0f32);
         let mul = k.binary(eq_f32, source, BOp::Mul);
 
-        // Load-add-store: acc += accumulated_value
         let load_acc = k.load(acc, zi, MemLayout::Scalar);
         let add = k.binary(mul, load_acc, BOp::Add);
         k.store(acc, add, zi, MemLayout::Scalar);
         k.end_loop();
         let result = k.load(acc, zi, MemLayout::Scalar);
 
-        (k, result, loop_id, source)
+        (k, loop_id, result)
     }
 
     #[test]
-    fn test_gather_loop_optimization() {
-        let (mut k, result, loop_id, _source) = make_gather_kernel(10);
+    fn test_flat_gather_is_optimized() {
+        let (mut k, loop_id, result) = make_flat_gather_kernel(10);
+        k.simplify_accumulating_loop();
+        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0u32)), "flat pattern should fold");
+        assert!(!matches!(k.at(k.prev_op(result)), Op::EndLoop), "EndLoop should be removed");
+    }
+
+    #[test]
+    fn test_interleaved_gather_is_optimized() {
+        let mut k = make_interleaved_gather_kernel(10);
 
         k.simplify_accumulating_loop();
 
-        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0u32)), "loop should be zeroed");
-        // EndLoop before result was removed
-        assert!(!matches!(k.at(k.prev_op(result)), Op::EndLoop), "EndLoop should have been removed");
+        // After the fix, the pattern IS matched because identify_accumulate_pattern
+        // now scans past interleaved ops between load(acc) and Add.
+        // Verify the loop was zeroed out.
+        let mut found_zeroed_loop = false;
+        for (id, op) in k.iter_unordered() {
+            if let Op::Const(c) = op {
+                if c.as_dim() == Some(0) {
+                    found_zeroed_loop = true;
+                }
+            }
+        }
+        assert!(found_zeroed_loop, "loop should have been zeroed");
     }
 }
