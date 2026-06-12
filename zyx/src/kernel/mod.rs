@@ -422,6 +422,57 @@ impl Hash for Kernel {
 }
 
 impl Kernel {
+    pub fn new() -> Self {
+        Self {
+            outputs: Vec::new(),
+            loads: Vec::new(),
+            stores: Vec::new(),
+            ops: Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+        }
+    }
+
+    pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
+        self.push_back(Op::Const(Constant::new(val)))
+    }
+
+    pub fn const_idx<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
+        self.push_back(Op::Const(Constant::idx(val)))
+    }
+
+    pub fn define(&mut self, dtype: DType, scope: Scope, ro: bool, len: Dim) -> OpId {
+        self.push_back(Op::Define { dtype, scope, ro, len })
+    }
+
+    pub fn store(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {
+        self.push_back(Op::Store { dst, x, index, layout });
+    }
+
+    pub fn load(&mut self, src: OpId, index: OpId, layout: MemLayout) -> OpId {
+        self.push_back(Op::Load { src, index, layout })
+    }
+
+    pub fn loop_(&mut self, len: Dim) -> OpId {
+        self.push_back(Op::Loop { len })
+    }
+
+    pub fn end_loop(&mut self) {
+        self.push_back(Op::EndLoop);
+    }
+
+    pub fn binary(&mut self, x: OpId, y: OpId, bop: BOp) -> OpId {
+        self.push_back(Op::Binary { x, y, bop })
+    }
+
+    pub fn cast(&mut self, x: OpId, dtype: DType) -> OpId {
+        self.push_back(Op::Cast { x, dtype })
+    }
+
+    pub fn mad(&mut self, x: OpId, y: OpId, z: OpId) -> OpId {
+        self.push_back(Op::Mad { x, y, z })
+    }
+
     #[track_caller]
     pub fn at(&self, op_id: OpId) -> &Op {
         &self.ops[op_id].op
@@ -928,10 +979,13 @@ impl Kernel {
     }
 
     pub fn push_back(&mut self, op: Op) -> OpId {
-        debug_assert!(!self.ops.is_empty());
         let op_node = OpNode { prev: self.tail, next: OpId::NULL, op };
         let op_id = self.ops.push(op_node);
-        self.ops[self.tail].next = op_id;
+        if self.head.is_null() {
+            self.head = op_id;
+        } else {
+            self.ops[self.tail].next = op_id;
+        }
         self.tail = op_id;
         op_id
     }

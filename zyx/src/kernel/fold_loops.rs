@@ -491,4 +491,56 @@ impl Kernel {
             _ => false,
         }
     }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a gather-loop kernel:
+    ///   acc = 0
+    ///   for i in 0..loop_len:
+    ///     acc += (i == 5) * 42.0
+    ///   result = acc
+    ///
+    /// After `simplify_accumulating_loop()` this should become:
+    ///   result = 42.0   (since i==5 exactly once)
+    fn make_gather_kernel(loop_len: u32) -> (Kernel, /*result*/ OpId, /*loop*/ OpId, /*source*/ OpId) {
+        let mut k = Kernel::new();
+        let acc = k.define(DType::F32, Scope::Register, false, 1);
+
+        let zi = k.const_idx(0u32);
+        let zf = k.const_val(0.0f32);
+        k.store(acc, zf, zi, MemLayout::Scalar);
+
+        let loop_id = k.loop_(loop_len as u64);
+
+        // Accumulated value computed BEFORE the load-add-store pattern
+        let index_val = k.const_idx(5u32);
+        let eq = k.binary(loop_id, index_val, BOp::Eq);
+        let eq_f32 = k.cast(eq, DType::F32);
+        let source = k.const_val(42.0f32);
+        let mul = k.binary(eq_f32, source, BOp::Mul);
+
+        // Load-add-store: acc += accumulated_value
+        let load_acc = k.load(acc, zi, MemLayout::Scalar);
+        let add = k.binary(mul, load_acc, BOp::Add);
+        k.store(acc, add, zi, MemLayout::Scalar);
+        k.end_loop();
+        let result = k.load(acc, zi, MemLayout::Scalar);
+
+        (k, result, loop_id, source)
+    }
+
+    #[test]
+    fn test_gather_loop_optimization() {
+        let (mut k, result, loop_id, _source) = make_gather_kernel(10);
+
+        k.simplify_accumulating_loop();
+
+        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0u32)), "loop should be zeroed");
+        // EndLoop before result was removed
+        assert!(!matches!(k.at(k.prev_op(result)), Op::EndLoop), "EndLoop should have been removed");
+    }
 }
