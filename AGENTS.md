@@ -286,6 +286,54 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
 
 Every optimization must produce correct IR that calculates the same result as the input. **No optimization is needed for tests to pass.** ALL tests must pass with ALL optimizations disabled, and ALL tests must pass no matter which sequence of optimizations (including empty) is applied. If any sequence breaks correctness, the optimization that produced invalid IR from valid code is BUGGY and must be fixed or disabled.
 
+## Debugging Optimization Passes
+
+### Workflow for Fixing a Kernel Optimization Pass
+
+1. **Identify the problematic kernel** — Run with `ZYX_DEBUG=16` to see generated CUDA, look for O(N²) loops that should have been folded.
+
+2. **Capture the IR** — Run with `ZYX_DEBUG=8` (IR dump, no GPU execution) to see the kernel IR. Use `timeout 10` to capture output quickly before a GPU hang:
+   ```bash
+   timeout 10 bash -c 'ZYX_DEBUG=8 cargo run 2>&1' > /tmp/ir.txt
+   ```
+   The IR is printed during compilation, before GPU execution begins.
+
+3. **Find the target kernel's IR** — Search for the kernel with the problematic pattern. The last kernel printed is usually the one being compiled when the hang occurs.
+
+4. **Write a unit test that replicates the IR exactly** — Use the `Kernel` builder API (`Kernel::new()`, `k.define()`, `k.const_val()`, `k.loop_()`, etc.) to construct the kernel IR op by op. Do NOT simplify or guess the pattern — copy the actual IR from the debug output.
+
+5. **Verify the test reproduces the failure** — Run `simplify_accumulating_loop()` (or whatever pass you're debugging) and assert that it does NOT optimize the pattern. This confirms the test matches the real failure.
+
+6. **Fix the optimization pass** — Modify the pattern matching to handle the real IR structure. Small, targeted changes only.
+
+7. **Verify the fix with the unit test** — After the fix, the test should assert the pattern IS optimized.
+
+8. **Run ALL tests** — Optimization passes affect ALL kernels. Always run `cargo test -p zyx` after any change:
+   ```bash
+   cd zyx/zyx && cargo test
+   ```
+   A single failing integration test (e.g., `gather_test`) means the optimization is producing incorrect results.
+
+### ZYX_DEBUG Values
+
+| Level | Output | When |
+|-------|--------|------|
+| `1`   | Backend selection | Startup |
+| `2`   | Graph operations | During realize |
+| `4`   | Scheduler decisions | Kernel selection |
+| `8`   | Kernel IR (before GPU) | Kernel compilation |
+| `16`  | Generated CUDA C++ source | Kernel compilation |
+| `32`  | Autotune exploration | During autotune |
+
+### Key Techniques
+
+- **IR before GPU**: `ZYX_DEBUG=8` prints IR during compilation, before any GPU kernel executes. Use this to inspect IR without GPU hangs.
+- **Pipeline order matters**: `simplify_accumulating_loop` runs in `run_always_on_optimizations` at line 225, before `split_loops` and other autotune passes. Check the pipeline order in `autotune.rs` before assuming loop structure.
+- **Nested loops appear after splitting**: The `split_loops` pass runs during autotuning, AFTER `run_always_on_optimizations`. The IR at `simplify_accumulating_loop` time has flat loops, not nested ones.
+- **Interleaved op ordering**: The real kernel IR may have accumulated value computation interleaved BETWEEN `load(acc)` and `Add`, not before the load. Pattern matchers must account for this.
+- **Mad chains**: After unfold, loop index references go through `Mad` instructions that simplify to `loop_id` via constant folding. `check_loop` must trace through Cast, Mad, and Binary chains to find the loop variable.
+- **Unit test isolation**: Write unit tests that construct Kernel IR directly. This isolates the optimization pass from the rest of the pipeline and makes debugging fast.
+
 ### Debugging Tips
 
 - The exploration can apply the same optimization multiple times to the same kernel
