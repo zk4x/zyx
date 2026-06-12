@@ -145,7 +145,6 @@ impl Runtime {
         let mut grads: Map<TensorId, TensorId> = Map::with_capacity_and_hasher(100, BuildHasherDefault::default());
 
         // Initial gradient of ones
-        eprintln!("DEBUG grad: x={x}, topo.len={}, topo[0]={:?}", topo.len(), topo.first());
         grads.insert(x, self.ones(self.shape(x).into(), self.dtype(x)));
         //println!("{:?}", self.nodes.last().unwrap());
 
@@ -155,8 +154,6 @@ impl Runtime {
             let grad = match grads.get(&nid) {
                 Some(&g) => g,
                 None => {
-                    let node = &self.graph[nid];
-                    eprintln!("DEBUG: missing grad for nid={nid}, node={node:?}, len(topo)={}, grads keys={:?}", topo.len(), grads.keys().copied().collect::<Vec<_>>());
                     panic!("no entry found for key {nid}");
                 }
             };
@@ -458,7 +455,7 @@ impl Runtime {
                     let grad = self.permute(grad, &argsort_axes);
                     insert_or_add_grad(self, &mut grads, x, grad);
                 }
-                Node::Pad { .. } => {
+                Node::Pad { x } => {
                     let padding = self.graph.padding(nid);
                     let inv_padding = padding.iter().map(|(lp, rp)| (-lp, -rp)).collect();
                     let grad = self.pad_zeros(grad, inv_padding);
