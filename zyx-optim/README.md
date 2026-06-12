@@ -21,23 +21,14 @@ This crate provides a collection of popular gradient-based optimization algorith
 use zyx_optim::{Adam, SGD};
 
 // Create optimizer with default parameters
-let mut optim = Adam {
-    learning_rate: 0.001,
-    betas: (0.9, 0.999),
-    eps: 1e-8,
-    weight_decay: 0.0,
-    amsgrad: false,
-    m: Vec::new(),
-    v: Vec::new(),
-    vm: Vec::new(),
-    t: 0,
-};
+let mut optim = Adam::default();
 
 // Configure hyperparameters
 optim.learning_rate = 0.001;      // learning rate
 optim.betas = (0.9, 0.999);       // first and second moment decay
 optim.eps = 1e-8;                 // numerical stability
 optim.weight_decay = 0.01;        // L2 weight decay
+optim.amsgrad = true;             // enable AMSGrad variant
 ```
 
 ## API

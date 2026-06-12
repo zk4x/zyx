@@ -63,15 +63,17 @@ use zyx_nn::Linear;
 
 let mut linear = Linear::new(128, 64, true, DType::F32).unwrap();
 let x = Tensor::randn([32, 128], DType::F32).unwrap();
+let target = Tensor::from([32, 64]);
 
 // Create gradient tape BEFORE forward pass
 let tape = GradientTape::new();
 
 let y = linear.forward(&x).unwrap();
+let loss = y.mse_loss(&target)?;
 
-// Compute loss and gradients
-let loss = y.sum_all();
-let grads = tape.gradient(&loss, [&linear.weight, &linear.bias.unwrap()]);
+// Compute gradients w.r.t. model parameters
+let grads = tape.gradient(&loss, &[&linear.weight, &linear.bias.unwrap()]);
+# Ok::<(), zyx::ZyxError>(())
 ```
 
 ## Features
