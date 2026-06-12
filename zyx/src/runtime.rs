@@ -699,12 +699,16 @@ impl Runtime {
                 if rc > graph_rc {
                     to_eval.insert(id);
                 }
-            } else {
+            } else if !realized_nodes.contains(&id) {
                 to_eval.insert(id);
             }
         }
         for id in &to_eval {
             rcs.entry(*id).and_modify(|rc| *rc += 1).or_insert(1);
+        }
+
+        if to_eval.is_empty() {
+            return Ok(());
         }
 
         // Order them using rcs reference counts
