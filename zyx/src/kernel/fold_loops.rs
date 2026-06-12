@@ -170,30 +170,10 @@ impl Kernel {
             return None;
         }
 
-        // Scan forward from load(acc) to find Add(result_of_mul, load_id).
-        // Interleaved ops (Eq, Cast, Mul) may appear between load and add.
-        let add_id;
-        let accumulated_value_id;
-        {
-            let mut scan = self.next_op(load_id);
-            loop {
-                if matches!(self.at(scan), Op::EndLoop) {
-                    return None;
-                }
-                if let &Op::Binary { x, y, bop: BOp::Add } = self.at(scan) {
-                    if x == load_id {
-                        accumulated_value_id = y;
-                        add_id = scan;
-                        break;
-                    }
-                    if y == load_id {
-                        accumulated_value_id = x;
-                        add_id = scan;
-                        break;
-                    }
-                }
-                scan = self.next_op(scan);
-            }
+        let add_id = self.next_op(load_id);
+        let &Op::Binary { x: accumulated_value_id, y, bop: BOp::Add } = self.at(add_id) else { return None };
+        if y != load_id {
+            return None;
         }
 
         let store_id = self.next_op(add_id);
