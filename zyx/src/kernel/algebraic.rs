@@ -1,6 +1,18 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Algebraic simplification for kernel optimization.
+//!
+//! This module provides algebraic simplification techniques for kernels,
+//! including:
+//!
+//! - Div/mod simplification with constant divisors
+//! - Bitwise identity simplification
+//! - Shift-left/shift-right roundtrip simplification
+//! - Pattern matching for common algebraic expressions
+//!
+//! These optimizations reduce instruction count and improve performance.
+
 use crate::{
     DType, Map,
     kernel::{BOp, Kernel, Op, OpId},
@@ -8,6 +20,18 @@ use crate::{
 };
 
 impl Kernel {
+    /// Apply algebraic simplification to the kernel.
+    ///
+    /// This method simplifies algebraic expressions in the kernel IR,
+    /// including:
+    ///
+    /// 1. Div/mod simplification with constant divisors
+    /// 2. Bitwise identity simplification (e.g., x & 0xFFFF_FFFF = x)
+    /// 3. Shift-left/shift-right roundtrip simplification
+    /// 4. Dead code elimination and verification
+    ///
+    /// The simplification uses bounds analysis to determine when
+    /// algebraic patterns can be simplified safely.
     pub fn algebraic_simplification(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("algebraic_simplification");
