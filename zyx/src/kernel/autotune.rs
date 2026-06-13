@@ -359,7 +359,33 @@ impl Kernel {
         Ok((program_id, OptSeq { opts: Vec::new(), cost: Cost::default() }))
     }
 
-    /// Release mode autotune with beam like search and multithreading
+    /// Release mode autotune with beam-like search and multithreading.
+    ///
+    /// This method explores the optimization space using a beam search algorithm:
+    ///
+    /// 1. Start with a base kernel and apply always-on optimizations
+    /// 2. For each available optimization, generate multiple variants
+    /// 3. Track kernel hashes to avoid exploring duplicate states
+    /// 4. Launch kernels and measure actual timing
+    /// 5. Build a cost model from real measurements
+    /// 6. Use beam search to find the best configuration
+    ///
+    /// The search explores up to `n_total_opts` optimization sequences,
+    /// with `n_seeds` initial seeds and `n_added_per_step` new sequences
+    /// added at each step. The beam width is `n_launches`.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffers` - Memory buffers for the kernel
+    /// * `device` - Target device for compilation
+    /// * `memory_pool` - Shared memory pool for buffers
+    /// * `config` - Autotuning configuration
+    /// * `flop`, `read_bytes`, `write_bytes` - Profile information for cost modeling
+    /// * `debug` - Debug flags for IR and performance output
+    ///
+    /// # Returns
+    ///
+    /// Returns the best program ID and optimization sequence found.
     pub(crate) fn autotune_(
         &self,
         buffers: &[PoolBufferId],
