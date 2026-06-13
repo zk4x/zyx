@@ -79,6 +79,7 @@ pub struct Kernel {
     pub ops: Slab<OpId, OpNode>,
     pub head: OpId,
     pub tail: OpId,
+    pub device_id: DeviceId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
@@ -439,7 +440,7 @@ impl DeBin for Kernel {
         let ops = Slab::<OpId, OpNode>::de_bin(offset, bytes)?;
         let start = OpId::de_bin(offset, bytes)?;
         let end = OpId::de_bin(offset, bytes)?;
-        Ok(Self { head: start, tail: end, ops, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new() })
+        Ok(Self { head: start, tail: end, ops, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), device_id: DeviceId::AUTO })
     }
 }
 
@@ -451,8 +452,8 @@ impl Hash for Kernel {
 }
 
 impl Kernel {
-    pub fn new() -> Self {
-        Self { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL }
+    pub fn new(device_id: DeviceId) -> Self {
+        Self { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id }
     }
 
     pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {

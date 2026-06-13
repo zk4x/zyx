@@ -496,7 +496,8 @@ impl Kernel {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::dtype::{Constant, DType};
+    use crate::kernel::{BOp, DeviceId, Kernel, MemLayout, Op, OpId, Scope};
 
     /// Build a kernel matching the REAL index_select IR pattern
     /// where the accumulated value is computed AFTER load(acc).
@@ -517,7 +518,7 @@ mod tests {
     ///
     /// identify_accumulate_pattern fails because next_op(load(tmp)) is eq, not Add.
     fn make_interleaved_gather_kernel(loop_len: u32) -> (Kernel, OpId) {
-        let mut k = Kernel::new();
+        let mut k = Kernel::new(DeviceId::AUTO);
         let acc = k.define(DType::F32, Scope::Register, false, 1);
 
         let zi = k.const_idx(0u32);
@@ -550,7 +551,7 @@ mod tests {
 
     /// Sanity test: the simple pattern (accum value BEFORE load) IS optimized.
     fn make_flat_gather_kernel(loop_len: u32) -> (Kernel, OpId, OpId) {
-        let mut k = Kernel::new();
+        let mut k = Kernel::new(DeviceId::AUTO);
         let acc = k.define(DType::F32, Scope::Register, false, 1);
 
         let zi = k.const_idx(0u32);
@@ -596,7 +597,7 @@ mod tests {
     #[test]
     #[should_panic = "outer loop should be zeroed"]
     fn test_resnet_index_select_ir_not_optimized() {
-        let mut k = Kernel::new();
+        let mut k = Kernel::new(DeviceId::AUTO);
 
         let r93 = k.define(DType::I32, Scope::Global, false, 50000);
         let r116 = k.define(DType::F32, Scope::Global, false, 153600000);

@@ -207,6 +207,7 @@ impl Graph {
         }
     }*/
 
+    #[allow(unused)]
     pub(super) fn device(&self, tensor_id: TensorId) -> DeviceId {
         let mut tensor_id = tensor_id;
         for _ in 0..100_000 {
