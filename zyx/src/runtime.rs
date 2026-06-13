@@ -553,13 +553,6 @@ impl Runtime {
         self.graph.push_wshape(Node::ToDevice { x, device }, shape)
     }
 
-    #[must_use]
-    pub(super) fn custom(&mut self, inputs: &[TensorId], kernel: crate::kernel::Kernel, shape: Vec<Dim>, device: crate::backend::DeviceId) -> TensorId {
-        let kernel_id = self.kernel_cache.insert_kernel(kernel);
-        let ck = crate::kernel::custom::CustomKernel { kernel: kernel_id, inputs: inputs.to_vec(), device };
-        self.graph.push_wshape(Node::Custom(Box::new(ck)), shape)
-    }
-
     /// Loads data with beginning elements of the tensor x.
     /// If `data.len()` == `x.numel()`, then it loads the whole tensor.
     pub fn load<T: Scalar>(&mut self, x: TensorId, data: &mut [T]) -> Result<(), ZyxError> {

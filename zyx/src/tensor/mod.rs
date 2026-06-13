@@ -2978,21 +2978,6 @@ impl Tensor {
         todo!()
     }*/
 
-    /// Apply a custom kernel to input tensors.
-    ///
-    /// The kernel must be built using the `Kernel` builder API.
-    /// Input tensors are mapped to `Op::LoadView` ops in order.
-    /// The kernel should contain one `Op::StoreView` for the output.
-    /// The `device` specifies which device the kernel runs on.
-    #[must_use]
-    pub fn custom(kernel: crate::kernel::Kernel, inputs: &[&Tensor], device: crate::kernel::DeviceId) -> Tensor {
-        let ids: Vec<_> = inputs.iter().map(|t| t.id).collect();
-        let shape = kernel.shape();
-        let shape = if shape.is_empty() { inputs[0].shape() } else { shape };
-        let id = RT.lock().custom(&ids, kernel, shape, device);
-        Tensor { id }
-    }
-
     /// Move this tensor to the specified device. Creates a new graph node
     /// that will be realized via a cross-device copy during kernelization.
     #[must_use]

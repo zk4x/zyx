@@ -226,9 +226,10 @@ impl Graph {
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
         for _ in 0..100_000 {
-            match self.nodes[tensor_id].1 {
+            match &self.nodes[tensor_id].1 {
                 Node::Const { value } => return value.dtype(),
-                Node::Leaf { dtype } | Node::Cast { dtype, .. } => return dtype,
+                Node::Leaf { dtype } | Node::Cast { dtype, .. } => return *dtype,
+                Node::Custom(ck) => return ck.dtype,
                 Node::Binary { bop, .. } if bop.returns_bool() => {
                     return DType::Bool;
                 }
@@ -418,7 +419,7 @@ impl Graph {
                 Node::Expand { x } => add_node(id, &f!("Expand({x})"), "oval"),
                 Node::Pad { x } => add_node(id, &f!("Pad({x})"), "oval"),
                 Node::Reduce { x, rop } => add_node(id, &f!("{rop:?}({x})"), "oval"),
-                Node::Custom(ck) => add_node(id, &f!("Custom(kid={:?}, params={})", ck.kernel, ck.inputs.len()), "box"),
+                Node::Custom(ck) => add_node(id, &f!("Custom(prog={:?}, params={})", ck.program, ck.inputs.len()), "box"),
                 Node::ToDevice { x, device } => add_node(id, &f!("ToDevice({x}, {device:?})"), "box"),
             }
             for param in node.parameters() {

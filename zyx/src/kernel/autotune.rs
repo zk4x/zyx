@@ -278,7 +278,7 @@ impl Kernel {
     }
 
     /// Release mode autotune with beam like search and multithreading
-    pub fn autotune(
+    pub(crate) fn autotune_(
         &self,
         buffers: &[PoolBufferId],
         device: &mut Device,

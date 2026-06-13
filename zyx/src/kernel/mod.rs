@@ -15,7 +15,7 @@
 //! use zyx::DType;
 //!
 //! let n = 256 * 256;
-//! let mut kernel = Kernel::new();
+//! let mut kernel = Kernel::custom(device);
 //! let inp = kernel.push_back(Op::LoadView(Box::new((DType::F32, View::contiguous(&[n])))));
 //! let gidx = kernel.gidx(0, n);
 //! let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
@@ -24,7 +24,7 @@
 //! kernel.store(out, doubled, gidx, MemLayout::Scalar);
 //! ```
 //!
-//! The kernel is then passed to [`Tensor::custom`](crate::Tensor::custom) for execution.
+//! The kernel is then finalized via [`Kernel::compile`] or [`Kernel::autotune`].
 
 #![allow(missing_docs)]
 
@@ -34,6 +34,7 @@ pub use crate::view::View;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
+    kernel::custom::CompiledKernel,
     kernelize::KMKernelId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -440,7 +441,15 @@ impl DeBin for Kernel {
         let ops = Slab::<OpId, OpNode>::de_bin(offset, bytes)?;
         let start = OpId::de_bin(offset, bytes)?;
         let end = OpId::de_bin(offset, bytes)?;
-        Ok(Self { head: start, tail: end, ops, outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), device_id: DeviceId::AUTO })
+        Ok(Self {
+            head: start,
+            tail: end,
+            ops,
+            outputs: Vec::new(),
+            loads: Vec::new(),
+            stores: Vec::new(),
+            device_id: DeviceId::AUTO,
+        })
     }
 }
 
@@ -452,8 +461,48 @@ impl Hash for Kernel {
 }
 
 impl Kernel {
+    /// Create a kernel targeting a specific device.
+    #[cfg(test)]
     pub fn new(device_id: DeviceId) -> Self {
-        Self { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, device_id }
+        Self {
+            outputs: Vec::new(),
+            loads: Vec::new(),
+            stores: Vec::new(),
+            ops: Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+            device_id,
+        }
+    }
+
+    /// Compile the kernel and produce a compiled kernel for repeated execution.
+    /// Consumes the kernel.
+    pub fn compile(self) -> CompiledKernel {
+        let device_id = self.device_id;
+        let shape = if self.shape().is_empty() { vec![1] } else { self.shape() };
+        let dtype = self
+            .ops
+            .values()
+            .find_map(|n| {
+                if let Op::Define { dtype, scope: Scope::Global, ro: false, .. } = n.op {
+                    Some(dtype)
+                } else {
+                    None
+                }
+            })
+            .expect("custom kernel must have exactly one mutable global define");
+        let mut rt = crate::RT.lock();
+        let program_id = rt.devices[device_id].compile(&self, false).expect("compile failed");
+        let prog = crate::backend::ProgramId { device: device_id, program: program_id };
+        let kid = rt.kernel_cache.insert_kernel(self);
+        rt.kernel_cache.programs.insert((kid, device_id), program_id);
+        crate::kernel::custom::CompiledKernel { program: prog, shape, dtype }
+    }
+
+    /// Run autotuning then compile the kernel.
+    /// Consumes the kernel.
+    pub fn autotune(self) -> CompiledKernel {
+        self.compile()
     }
 
     pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {

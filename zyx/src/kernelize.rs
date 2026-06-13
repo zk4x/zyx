@@ -643,7 +643,7 @@ impl<'a> Kernelizer<'a> {
         //kernel.run_always_on_optimizations();
         //kernel.debug();
 
-        let (program_id, opts) = kernel.autotune(&args, device, pool, self.autotune_config, flop, read, write, self.debug)?;
+        let (program_id, opts) = kernel.autotune_(&args, device, pool, self.autotune_config, flop, read, write, self.debug)?;
         self.cache.programs.insert((kernel_id, dev_id), program_id);
         //println!("Insert into cache dev_id={dev_id:?}, program_id={program_id:?}'");
         self.cache.optimizations.insert((kernel_id, dev_info_id), opts);
