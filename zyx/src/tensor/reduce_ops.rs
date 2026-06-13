@@ -9,15 +9,22 @@ use crate::{
 };
 use paste::paste;
 
-/// Reduce op
+/// Specifies how to reduce per-sample losses or values.
 #[derive(Clone, Copy)]
 pub enum ReduceOp {
+    /// Sum all values.
     Sum,
+    /// Compute the mean (average) of all values.
     Mean,
+    /// Compute the variance.
     Var,
+    /// Compute the standard deviation.
     Std,
+    /// Take the maximum value.
     Max,
+    /// Take the minimum value.
     Min,
+    /// Compute the product of all values.
     Prod,
 }
 

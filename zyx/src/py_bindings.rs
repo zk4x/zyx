@@ -1401,9 +1401,18 @@ impl Tensor {
     /// # Errors
     /// Returns a `ZyxError` if the operation fails.
     #[pyo3(name = "cross_entropy")]
-    pub fn cross_entropy_py(&self, target: &Bound<'_, PyAny>, axes: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
+    pub fn cross_entropy_py(&self, target: &Bound<'_, PyAny>, reduction: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         if let Ok(target_tensor) = target.extract::<Tensor>() {
-            self.cross_entropy(target_tensor, to_ax(axes))
+            if let Ok(reduction_str) = reduction.extract::<String>() {
+                let r = match reduction_str.as_str() {
+                    "mean" => ReduceOp::Mean,
+                    "sum" => ReduceOp::Sum,
+                    _ => return Err(ZyxError::ParseError("invalid reduction, expected 'mean' or 'sum'".into())),
+                };
+                self.cross_entropy(target_tensor, r)
+            } else {
+                self.cross_entropy(target_tensor, ReduceOp::Mean)
+            }
         } else {
             Err(ZyxError::DTypeError("target must be a Tensor".into()))
         }

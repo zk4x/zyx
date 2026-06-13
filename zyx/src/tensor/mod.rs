@@ -24,7 +24,6 @@ use std::path::Path;
 
 #[cfg(feature = "py")]
 pub use index_ops::DimIndex;
-#[cfg(feature = "py")]
 pub use reduce_ops::ReduceOp;
 
 mod binary_ops;
@@ -1698,46 +1697,27 @@ impl Tensor {
     ///
     /// Self is logits, target is one-hot.
     ///
-    /// # Examples
+    /// Cross entropy loss
     ///
-    /// ```
-    /// use zyx::Tensor;
-    /// let input = Tensor::from([5f32, 2., -3.]);
-    /// let target = Tensor::from([1f32, 0., 0.]);
-    /// let loss = input.cross_entropy(target, [])?.mean_all();
-    /// assert_eq!(loss, 0.048907f32);
-    /// # Ok::<(), zyx::ZyxError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns error if the tensors have non broadcasteable shapes or axes cannot reduce self.
-    pub fn cross_entropy(&self, target: impl Into<Tensor>, axes: impl IntoIterator<Item = Axis>) -> Result<Tensor, ZyxError> {
-        let axes: Vec<_> = axes.into_iter().collect();
-        let m = self - self.max_keepdim(axes.clone())?;
-        let neg_log2_softmax = m.exp().sum_keepdim(axes)?.ln() - m;
-        (neg_log2_softmax * target).sum([-1])
+    /// `self` are logits. `target` can be class indices (int tensor) or one-hot (float tensor).
+    /// When `target` is class indices, the class axis is inferred: 0 for 1D inputs, 1 for 2D+.
+    /// `reduction` controls the output shape: `Mean` (default, scalar), `Sum` (scalar), or `None`.
+    pub fn cross_entropy(&self, target: impl Into<Tensor>, reduction: ReduceOp) -> Result<Tensor, ZyxError> {
+        let target = target.into();
+        let classes_dim = if self.rank() <= 1 { 0 } else { 1 };
+        let target = if self.shape() != target.shape() {
+            target.unsqueeze(classes_dim)?.one_hot_along_dim(self.shape()[classes_dim as usize], classes_dim)?
+        } else {
+            target
+        };
+        let ln_softmax = self.ln_softmax([classes_dim])?;
+        let per_sample = (-ln_softmax * target).sum([classes_dim])?;
+        match reduction {
+            ReduceOp::Mean => Ok(per_sample.mean_all()),
+            ReduceOp::Sum => Ok(per_sample.sum_all()),
+            _ => Err(ZyxError::ParseError("invalid reduction for cross_entropy, expected Mean or Sum".into())),
+        }
     }
-
-    /*
-    /// Cross entropy loss with class indices
-    pub fn cross_entropy_loss(
-        &self,
-        target: impl Into<Tensor>,            // Class indices (shape: [batch_size])
-        axes: impl IntoIterator<Item = Axis>, // Axis over which to apply softmax (typically the last axis)
-    ) -> Result<Tensor, ZyxError> {
-        // Step 1: Apply softmax to the logits along the class axis (usually the last axis)
-        let ln_softmax = self.ln_softmax([-1])?;
-
-        // Step 3: Gather the log-softmax values for the target class indices
-        let selected_log_softmax = ln_softmax.gather(1, target)?; // Gather log-softmax values for each class index
-
-        // Step 4: Calculate the cross-entropy loss (mean of the negative log-probabilities)
-        let loss = selected_log_softmax.neg().sum(); // Sum of negative log-softmax values
-        let mean_loss = loss / self.shape()[0] as f32; // Average across the batch size
-
-        Ok(mean_loss) // Return the mean loss
-    }*/
 
     /// Gather
     ///

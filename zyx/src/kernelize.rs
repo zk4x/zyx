@@ -8,7 +8,7 @@ use crate::{
     backend::{AutotuneConfig, BufferId, Device, DeviceId, Event, MemoryPool, PoolId},
     dtype::Constant,
     graph::{Graph, Node},
-    kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, Scope, UOp},
+    kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, UOp},
     kernel_cache::KernelCache,
     runtime::{Runtime, deallocate_tensors},
     schedule::schedule,
@@ -16,7 +16,7 @@ use crate::{
     tensor::TensorId,
     view::View,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::hash::BuildHasherDefault;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

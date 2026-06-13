@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-use zyx::{DType, Scalar, Tensor, ZyxError};
+use zyx::{DType, ReduceOp, Scalar, Tensor, ZyxError};
 
 #[test]
 fn t01() -> Result<(), ZyxError> {
@@ -65,7 +65,7 @@ fn t03() -> Result<(), ZyxError> {
 fn t04() -> Result<(), ZyxError> {
     let input = Tensor::from([5f32, 2., -3.]);
     let target = Tensor::from([1f32, 0., 0.]);
-    let loss = input.cross_entropy(target, [])?.mean_all();
+    let loss = input.cross_entropy(target, ReduceOp::Mean)?;
     assert_eq!(loss, 0.048907f32);
     Ok(())
 }

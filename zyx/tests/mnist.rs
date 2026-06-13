@@ -62,7 +62,7 @@ fn mnist() -> Result<(), ZyxError> {
             println!("{:.4}", logits.slice((0..4, 0..4)).unwrap());
 
             //println!("{}", logits.slice((-5.., ..))?);
-            let loss = logits.cross_entropy(y.one_hot(10), [-1])?.mean_all();
+            let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
             println!("{loss}");
 
             let grads = tape.gradient(&loss, [&net.l1_weight, &net.l1_bias, &net.l2_weight, &net.l2_bias, &loss]);

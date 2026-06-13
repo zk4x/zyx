@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 use std::collections::HashMap;
-use zyx::{DType, Tensor, ZyxError};
+use zyx::{DType, ReduceOp, Tensor, ZyxError};
 
 fn main() -> Result<(), ZyxError> {
     let dataset: HashMap<String, Tensor> = Tensor::load("data/mnist_dataset.safetensors")?;
@@ -105,7 +105,7 @@ fn main() -> Result<(), ZyxError> {
     let output_data: Vec<f32> = Vec::try_from(output.clone())?;
     println!("Final output[0] = {:?}", &output_data[0..10]);
 
-    let loss = output.cross_entropy(y.one_hot(10), [-1])?.mean_all();
+    let loss = output.cross_entropy(y, ReduceOp::Mean)?;
     println!("Loss: {:.6}", loss.item::<f32>());
 
     // Backward

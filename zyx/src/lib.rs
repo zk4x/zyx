@@ -91,6 +91,7 @@ pub use error::ZyxError;
 pub use module::Module;
 pub use scalar::{Float, Scalar};
 pub use shape::IntoShape;
+pub use tensor::ReduceOp;
 pub use tensor::Tensor;
 
 // Works, but rust does not call drop on this when exiting the program, which causes all sorts of problems ...
