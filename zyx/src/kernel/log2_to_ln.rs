@@ -1,6 +1,12 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Convert log2(x) * ln(2) to ln(x).
+//!
+//! This module provides optimization for converting `log2(x) * ln(2)`
+//! to `ln(x)`, which allows backends that lack native `log2` to use
+//! a native `ln` function instead.
+
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, UOp},
