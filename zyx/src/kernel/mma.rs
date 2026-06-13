@@ -1,9 +1,22 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
-#![allow(unused)]
+//! Matrix multiply acceleration (WMMA).
+//!
+//! This module provides support for matrix multiply acceleration using
+//! tensor core instructions (WMMA - Warp Matrix Multiply Accumulate).
+//!
+//! WMMA allows backends to use specialized tensor core instructions
+//! for matrix multiplication, which can provide significant performance
+//! improvements over naive implementations.
+//!
+//! Requirements:
+//!
+//! - Specific work sizes for loads
+//! - Local and register loops after inner reduce loop
+//! - Verified strides
 
-// For WMMA
+#![allow(unused)]
 // We need to have specific size of inner and local work sizes such
 //
 // 1. work_size.rs, the loads are permuted such that we can use tensor cores by putting
