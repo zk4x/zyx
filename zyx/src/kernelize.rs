@@ -635,26 +635,8 @@ impl<'a> Kernelizer<'a> {
             kernel.merge_indices(&loops);
         }
         // Reset indices after merges
-        {
-            let mut indices = BTreeMap::new();
-            indices.insert(Scope::Global, BTreeMap::new());
-            indices.insert(Scope::Local, BTreeMap::new());
-            for (op_id, op_node) in kernel.ops.iter() {
-                if let Op::Index { scope, axis, .. } = op_node.op {
-                    indices.get_mut(&scope).unwrap().insert(axis, op_id);
-                }
-            }
-            for (_, scoped_indices) in indices {
-                let mut ax = 0;
-                for &idx_id in scoped_indices.values() {
-                    let Op::Index { axis, .. } = &mut kernel.ops[idx_id].op else { unreachable!() };
-                    *axis = ax;
-                    ax += 1;
-                }
-            }
-
-            kernel.verify();
-        }
+        kernel.renumber_indices();
+        kernel.verify();
         //kernel.run_always_on_optimizations();
         //kernel.debug();
 
