@@ -445,6 +445,14 @@ impl Kernel {
         self.push_back(Op::Define { dtype, scope, ro, len })
     }
 
+    pub fn gidx(&mut self, axis: u32, len: Dim) -> OpId {
+        self.push_back(Op::Index { len, scope: Scope::Global, axis })
+    }
+
+    pub fn lidx(&mut self, axis: u32, len: Dim) -> OpId {
+        self.push_back(Op::Index { len, scope: Scope::Local, axis })
+    }
+
     pub fn store(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {
         self.push_back(Op::Store { dst, x, index, layout });
     }

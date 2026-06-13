@@ -516,7 +516,7 @@ mod tests {
     ///   result = load(acc, 0)
     ///
     /// identify_accumulate_pattern fails because next_op(load(tmp)) is eq, not Add.
-    fn make_interleaved_gather_kernel(loop_len: u32) -> Kernel {
+    fn make_interleaved_gather_kernel(loop_len: u32) -> (Kernel, OpId) {
         let mut k = Kernel::new();
         let acc = k.define(DType::F32, Scope::Register, false, 1);
 
@@ -545,7 +545,7 @@ mod tests {
         k.end_loop();
         let _result = k.load(acc, zi, MemLayout::Scalar);
 
-        k
+        (k, loop_id)
     }
 
     /// Sanity test: the simple pattern (accum value BEFORE load) IS optimized.
@@ -583,22 +583,87 @@ mod tests {
     }
 
     #[test]
-    fn test_interleaved_gather_is_optimized() {
-        let mut k = make_interleaved_gather_kernel(10);
+    fn test_interleaved_gather_is_not_optimized() {
+        let (mut k, loop_id) = make_interleaved_gather_kernel(10);
+        k.simplify_accumulating_loop();
+        assert!(matches!(k.at(loop_id), Op::Loop { .. }), "interleaved pattern should NOT fold");
+    }
+
+    /// Reproduce the exact IR from resnet index_select kernel (ZYX_DEBUG=8 output).
+    /// The outer loop (6250) + inner loop (8) accumulate pattern has interleaved
+    /// ops between load(acc) and Add, so simplify_accumulating_loop should NOT fold it.
+    #[test]
+    fn test_resnet_index_select_ir_not_optimized() {
+        let mut k = Kernel::new();
+
+        let r93 = k.define(DType::I32, Scope::Global, false, 50000);
+        let r116 = k.define(DType::F32, Scope::Global, false, 153600000);
+        let r128 = k.define(DType::F32, Scope::Global, true, 153600000);
+        let r130 = k.const_idx(50000u32);
+        let r1 = k.const_idx(0u32);
+        let r42 = k.const_val(0.0f32);
+        let r25 = k.const_val(0i32);
+        let r30 = k.const_val(50000i32);
+        let r106 = k.const_idx(3072u32);
+        let r84 = k.const_idx(5u32);
+        let r97 = k.const_idx(10u32);
+        let r10 = k.const_idx(3u32);
+        let r16 = k.gidx(0, 75000);
+        let r92 = k.lidx(0, 2);
+        let r2 = k.lidx(1, 32);
+        let r78 = k.gidx(2, 4);
+        let r27 = k.lidx(2, 8);
+        let r50 = k.binary(r16, r16, BOp::Add);
+        let r129 = k.binary(r50, r92, BOp::Add);
+        let r104 = k.binary(r78, r10, BOp::BitShiftLeft);
+        let r5 = k.binary(r104, r27, BOp::Add);
+        let r22 = k.binary(r129, r130, BOp::Mod);
+        let r131 = k.binary(r129, r130, BOp::Div);
+
+        let r3 = k.define(DType::F32, Scope::Register, true, 1);
+        k.store(r3, r42, r1, MemLayout::Scalar);
+
+        let r135 = k.binary(r2, r84, BOp::BitShiftLeft);
+        let r136 = k.binary(r131, r97, BOp::BitShiftLeft);
+
+        let outer_loop = k.loop_(6250);
+
+        let r53 = k.binary(outer_loop, r10, BOp::BitShiftLeft);
+
+        let inner_loop = k.loop_(8);
+
+        let r35 = k.binary(r53, inner_loop, BOp::Add);
+        let r20 = k.cast(r35, DType::I32);
+        let r94 = k.load(r93, r22, MemLayout::Scalar);
+        let r107 = k.binary(r106, r35, BOp::Mul);
+        let r109 = k.binary(r5, r107, BOp::Add);
+        let r111 = k.binary(r135, r109, BOp::Add);
+        let r113 = k.binary(r136, r111, BOp::Add);
+        let r117 = k.load(r116, r113, MemLayout::Scalar);
+        let r15 = k.load(r3, r1, MemLayout::Scalar);
+        let r28 = k.binary(r94, r25, BOp::Cmplt);
+        let r29 = k.cast(r28, DType::I32);
+        let r71 = k.binary(r29, r30, BOp::Mul);
+        let r34 = k.binary(r71, r94, BOp::Add);
+        let r37 = k.binary(r34, r20, BOp::Eq);
+        let r38 = k.cast(r37, DType::F32);
+        let r118 = k.binary(r38, r117, BOp::Mul);
+        let r9 = k.binary(r118, r15, BOp::Add);
+        k.store(r3, r9, r1, MemLayout::Scalar);
+
+        k.end_loop();
+        k.end_loop();
+
+        let r45 = k.load(r3, r1, MemLayout::Scalar);
+        let r121 = k.binary(r22, r106, BOp::Mul);
+        let r123 = k.binary(r136, r121, BOp::Add);
+        let r125 = k.binary(r135, r123, BOp::Add);
+        let r127 = k.binary(r5, r125, BOp::Add);
+        k.store(r128, r45, r127, MemLayout::Scalar);
 
         k.simplify_accumulating_loop();
 
-        // After the fix, the pattern IS matched because identify_accumulate_pattern
-        // now scans past interleaved ops between load(acc) and Add.
-        // Verify the loop was zeroed out.
-        let mut found_zeroed_loop = false;
-        for (id, op) in k.iter_unordered() {
-            if let Op::Const(c) = op {
-                if c.as_dim() == Some(0) {
-                    found_zeroed_loop = true;
-                }
-            }
-        }
-        assert!(found_zeroed_loop, "loop should have been zeroed");
+        assert_eq!(k.at(outer_loop), &Op::Const(Constant::idx(0u32)), "outer loop should be zeroed");
+        assert_eq!(k.at(inner_loop), &Op::Const(Constant::idx(0u32)), "inner loop should be zeroed");
     }
 }
