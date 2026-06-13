@@ -1,6 +1,17 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Unfold movement operations.
+//!
+//! This module provides unfolding optimizations for movement operations,
+//! which transform view operations into index-based operations.
+//!
+//! Unfolding is useful for:
+//!
+//! - Converting LoadView/StoreView/Move operations to Load/Store/Index
+//! - Simplifying kernel IR for compilation
+//! - Enabling backend-specific optimizations
+
 use std::collections::BTreeMap;
 
 use crate::{
@@ -11,6 +22,13 @@ use crate::{
 };
 
 impl Kernel {
+    /// Unfold movement operations into index-based operations.
+    ///
+    /// This method converts LoadView/StoreView/Move operations into
+    /// Load/Store/Index operations, simplifying the kernel IR for compilation.
+    ///
+    /// It cannot be applied if both explicit global indices and view moves
+    /// are present in the kernel.
     pub fn unfold_movement_ops(&mut self) {
         let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: Scope::Global, .. }));
         let has_view_moves = self.ops.values().any(|n| {
@@ -125,6 +143,10 @@ impl Kernel {
         unreachable!();
     }
 
+    /// Unfold reduce operations.
+    ///
+    /// This method unfolds reduce operations into index-based operations,
+    /// simplifying the kernel IR for compilation.
     pub fn unfold_reduces(&mut self) {
         let mut reduce_op_ids: Vec<OpId> = Vec::new();
         let mut op_id = self.head;
@@ -225,6 +247,10 @@ impl Kernel {
         op_id
     }
 
+    /// Unfold view operations.
+    ///
+    /// This method unfolds view operations (ConstView, LoadView, StoreView)
+    /// into index-based operations, simplifying the kernel IR for compilation.
     pub fn unfold_views(&mut self) {
         let mut axes: BTreeMap<u32, OpId> = BTreeMap::default();
         let start = self.head;
