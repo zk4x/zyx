@@ -581,12 +581,34 @@ impl Kernel {
         Ok((best_program, best_opt_seq))
     }
 
+    /// Get a hash of the kernel for deduplication during autotuning.
+    ///
+    /// This hash is used to track visited kernel states and avoid
+    /// exploring duplicate optimization sequences.
     pub fn get_hash(&self) -> u64 {
         let mut hasher = AHasher::default();
         self.hash(&mut hasher);
         hasher.finish()
     }
 
+    /// Launch a kernel and measure its timing.
+    ///
+    /// This method compiles the kernel, launches it on the device,
+    /// and returns the execution time in nanoseconds. It is used
+    /// during autotuning to build a cost model.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffers` - Memory buffers for the kernel
+    /// * `device` - Target device for compilation and execution
+    /// * `memory_pool` - Shared memory pool for buffers
+    /// * `debug` - Debug flags for IR and performance output
+    /// * `flops`, `bytes_read`, `bytes_written` - Profile information
+    /// * `variant_hash` - Hash of the kernel variant for logging
+    ///
+    /// # Returns
+    ///
+    /// Returns a tuple of (program_id, nanoseconds) or an error.
     pub fn launch_with_timings(
         &self,
         buffers: &[PoolBufferId],
