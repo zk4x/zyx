@@ -1,6 +1,19 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Split loops optimization.
+//!
+//! This module provides loop splitting optimizations for kernels,
+//! which split large loops into smaller iterations for better
+//! instruction scheduling and vectorization.
+//!
+//! Loop splitting is useful for:
+//!
+//! - Reducing instruction dependencies
+//! - Enabling better instruction-level parallelism
+//! - Improving vectorization opportunities
+//! - Splitting global indices into local factors
+
 use super::autotune::Optimization;
 use crate::{
     backend::DeviceInfo,
@@ -9,6 +22,12 @@ use crate::{
 };
 
 impl Kernel {
+    /// Optimize splitting global indices to local factors.
+    ///
+    /// This method splits global indices into local factors for
+    /// parallelization across threads.
+    ///
+    /// Returns the optimization variant and number of variants.
     pub fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_global_to_local");
@@ -52,6 +71,12 @@ impl Kernel {
         (Optimization::SplitGlobalToLocal { factors }, n_configs)
     }
 
+    /// Optimize splitting large loops.
+    ///
+    /// This method splits large loops into smaller iterations for
+    /// better instruction scheduling and vectorization.
+    ///
+    /// Returns the optimization variant and number of variants.
     pub fn opt_split_loop(&self) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_loop");
