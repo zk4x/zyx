@@ -1,13 +1,29 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Fuse multiply-add operations.
+//!
+//! This module provides optimization for fusing multiply-add (MAD) operations,
+//! which combines `x * y + z` patterns into a single MAD instruction.
+//! This reduces instruction count and can improve performance.
+
 use crate::{
     Map,
     kernel::{BOp, Kernel, Op},
 };
 
 impl Kernel {
-    /// Find all multiply add operations and fuse them
+    /// Fuse multiply-add operations into MAD instructions.
+    ///
+    /// This method identifies patterns of the form `x * y + z` and
+    /// fuses them into a single MAD instruction, reducing instruction
+    /// count and potentially improving performance.
+    ///
+    /// The optimization looks for:
+    ///
+    /// - Binary add where one operand is a multiply
+    /// - The multiply has a reference count of 1 (used only once)
+    /// - The multiply and add can be fused into a MAD
     pub fn fuse_mad(&mut self) {
         let mut op_id = self.head;
         let mut rcs = Map::default();
