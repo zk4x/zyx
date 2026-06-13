@@ -311,17 +311,34 @@ impl DeBin for OpNode {
     }
 }
 
+/// Operation ID for kernel operations.
+///
+/// This is a unique identifier for each operation in the kernel IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct OpId(pub(crate) u32);
 
+/// Memory layout for kernel operations.
+///
+/// Specifies how data is laid out in memory for efficient access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MemLayout {
+    /// Scalar layout: one element per memory location
     Scalar,
+    /// Vector layout: vector of size `x`
     Vector(u8),
-    Tile { x: u8, y: u8, stride: u32 },
+    /// Tile layout: tile of `x` × `y` elements with stride
+    Tile {
+        /// Width of the tile
+        x: u8,
+        /// Height of the tile
+        y: u8,
+        /// Stride between tiles
+        stride: u32,
+    },
 }
 
 impl MemLayout {
+    /// Get the number of elements in the memory layout.
     pub(crate) fn n_elements(self) -> Dim {
         match self {
             MemLayout::Scalar => 1,
@@ -514,14 +531,17 @@ impl Op {
         .into_iter()
     }
 
+    /// Check if this operation is a constant.
     pub(crate) const fn is_const(&self) -> bool {
         matches!(self, Op::Cast { .. })
     }
 
+    /// Check if this operation is a load.
     pub(crate) const fn is_load(&self) -> bool {
         matches!(self, Op::Load { .. })
     }
 
+    /// Remap parameter IDs according to a mapping.
     pub(crate) fn remap_params(&mut self, remapping: &Map<OpId, OpId>) {
         for param in self.parameters_mut() {
             if let Some(remapped_id) = remapping.get(param) {
@@ -534,6 +554,7 @@ impl Op {
 impl OpId {
     pub(crate) const NULL: Self = Self(u32::MAX);
 
+    /// Check if this OpId is null.
     pub const fn is_null(self) -> bool {
         self.0 == u32::MAX
     }
@@ -1447,6 +1468,7 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. }))
     }
 
+    /// Get the shape of the kernel output.
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.values().any(|x| matches!(x.op, Op::Index { .. })) {
             let mut indices: Vec<(Dim, u32)> = self
