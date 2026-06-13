@@ -10,6 +10,11 @@ use crate::{
 };
 
 impl Kernel {
+        /// Verify the kernel IR.
+    ///
+    /// Validates that the kernel has correct operation ordering
+    /// (no uses before declarations) and proper data type propagation.
+    /// This is an internal method used during kernel compilation.
     pub fn verify(&self) {
         if !cfg!(debug_assertions) {
             return;

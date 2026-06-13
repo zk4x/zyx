@@ -16,9 +16,11 @@ struct LoadInfo {
 }
 
 impl Kernel {
+        /// Vectorize loads.
+    ///
+    /// Combines multiple loads into vectorized operations for better performance.
+    /// TODO for now this function ignores aliasing of stores and loads.
     pub fn vectorize_loads(&mut self) {
-        // TODO for now this function ignores aliasing of stores and loads.
-        // So later we need to make sure there are no aliasing issues
 
         let mut op_id = self.head;
         // Map: src id -> LoadInfo

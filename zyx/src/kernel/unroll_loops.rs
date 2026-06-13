@@ -172,6 +172,10 @@ impl Kernel {
         }
     }
 
+        /// Unroll a loop.
+    ///
+    /// Unrolls the loop at `loop_id` to reduce loop overhead and
+    /// enable better instruction scheduling and vectorization.
     pub fn unroll_loop(&mut self, loop_id: OpId) {
         let Op::Loop { len } = self.ops[loop_id].op else { return };
         //println!("UNROLL len={} limit={}", len, len > 64);
