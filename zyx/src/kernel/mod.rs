@@ -24,7 +24,7 @@
 //! kernel.store(out, doubled, gidx, MemLayout::Scalar);
 //! ```
 //!
-//! The kernel is then finalized via [`Kernel::compile`] or [`Kernel::autotune`].
+//! The kernel is then finalized via [`Kernel::compile`].
 
 #![allow(missing_docs)]
 
@@ -464,7 +464,31 @@ impl Hash for Kernel {
 }
 
 impl Kernel {
-    /// Create a kernel targeting a specific device.
+    /// Create a new custom kernel targeting a specific device.
+    ///
+    /// Use the builder methods (`push_back`, `binary`, `store`, `load`, etc.) to
+    /// construct the kernel IR, then finalize with [`Kernel::compile`].
+    ///
+    /// [`Kernel::compile`] automatically unfolds movement ops (LoadView, StoreView,
+    /// Load, Store, Move) via [`Kernel::unfold_movement_ops`] and validates the IR
+    /// via [`Kernel::verify`].
+    ///
+    /// Pass [`DeviceId::AUTO`] to let the runtime pick the first available device.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use zyx::kernel::{Kernel, Op, View, BOp, Scope, MemLayout, DeviceId};
+    /// use zyx::DType;
+    ///
+    /// let mut kernel = Kernel::new(DeviceId::AUTO);
+    /// let inp = kernel.push_back(Op::LoadView(Box::new((DType::F32, View::contiguous(&[4])))));
+    /// let gidx = kernel.gidx(0, 4);
+    /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+    /// let doubled = kernel.binary(loaded, loaded, BOp::Add);
+    /// let out = kernel.define(DType::F32, Scope::Register, false, 4);
+    /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+    /// ```
     pub fn new(device_id: DeviceId) -> Self {
         Self {
             outputs: Vec::new(),
@@ -480,7 +504,46 @@ impl Kernel {
 
     /// Compile the kernel and produce a compiled kernel for repeated execution.
     /// Consumes the kernel.
-    pub fn compile(self) -> CompiledKernel {
+    ///
+    /// Automatically unfolds movement ops ([`Kernel::unfold_movement_ops`])
+    /// and validates the IR ([`Kernel::verify`]) before compilation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the kernel IR is invalid (see [`Kernel::verify`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ZyxError`] if device initialization or compilation fails.
+    ///
+    /// # Example
+    ///
+    /// Build a simple element-wise doubling kernel using [`DeviceId::AUTO`] to
+    /// let the runtime pick the first available device:
+    ///
+    /// ```rust
+    /// use zyx::kernel::{Kernel, Op, View, BOp, Scope, MemLayout, DeviceId};
+    /// use zyx::{DType, Tensor, ZyxError};
+    ///
+    /// let mut kernel = Kernel::new(DeviceId::AUTO);
+    /// let n = 4;
+    /// let inp = kernel.push_back(Op::LoadView(Box::new((DType::F32, View::contiguous(&[n])))));
+    /// let gidx = kernel.gidx(0, n);
+    /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+    /// let doubled = kernel.binary(loaded, loaded, BOp::Add);
+    /// let out = kernel.define(DType::F32, Scope::Register, false, n);
+    /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+    ///
+    /// let compiled = kernel.compile()?;
+    /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
+    /// let result = compiled.forward(&[&x]);
+    /// let data: Vec<f32> = result.try_into().unwrap();
+    /// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
+    /// # Ok::<_, ZyxError>(())
+    /// ```
+    pub fn compile(mut self) -> Result<CompiledKernel, crate::ZyxError> {
+        self.unfold_movement_ops();
+        self.verify();
         let device_id = self.device_id;
         let shape = if self.shape().is_empty() { vec![1] } else { self.shape() };
         let dtype = self
@@ -495,16 +558,26 @@ impl Kernel {
             })
             .expect("custom kernel must have exactly one mutable global define");
         let mut rt = crate::RT.lock();
-        let program_id = rt.devices[device_id].compile(&self, false).expect("compile failed");
+        rt.initialize_devices()?;
+        let device_id = if device_id == DeviceId::AUTO {
+            rt.devices.ids().next().expect("no devices available")
+        } else {
+            device_id
+        };
+        let program_id = rt.devices[device_id].compile(&self, false)?;
         let prog = crate::backend::ProgramId { device: device_id, program: program_id };
         let kid = rt.kernel_cache.insert_kernel(self);
         rt.kernel_cache.programs.insert((kid, device_id), program_id);
-        crate::kernel::custom::CompiledKernel { program: prog, shape, dtype, kernel_id: kid }
+        Ok(crate::kernel::custom::CompiledKernel { program: prog, shape, dtype, kernel_id: kid })
     }
 
     /// Run autotuning then compile the kernel.
     /// Consumes the kernel.
-    pub fn autotune(self) -> CompiledKernel {
+    ///
+    /// TODO: real autotune — must allocate temp buffers and call [`Kernel::autotune_`].
+    /// For now this is identical to [`Kernel::compile`].
+    #[allow(unused)]
+    fn autotune(self) -> Result<CompiledKernel, crate::ZyxError> {
         self.compile()
     }
 

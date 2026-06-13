@@ -67,7 +67,7 @@ fn to_contiguous_rdims(shape: &[Dim]) -> Vec<RDim> {
 }
 
 impl View {
-    pub(crate) fn contiguous(shape: &[Dim]) -> View {
+    pub fn contiguous(shape: &[Dim]) -> View {
         View(vec![to_contiguous_rdims(shape)])
     }
 
