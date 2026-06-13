@@ -1,6 +1,21 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Emulation utilities for kernel testing.
+//!
+//! This module provides emulation utilities for testing kernels
+//! without requiring actual GPU hardware. The emulation system:
+//!
+//! - Converts matrices of f32 values to Constant values
+//! - Emulates kernel execution on CPU
+//! - Prints debug output during emulation
+//!
+//! Emulation is useful for:
+//!
+//! - Testing kernel correctness without GPU hardware
+//! - Debugging kernel IR transformations
+//! - Unit testing kernel compilation
+
 use crate::{
     Map,
     dtype::Constant,
@@ -26,6 +41,20 @@ impl Constant {
 }
 
 impl Kernel {
+    /// Emulate kernel execution on CPU.
+    ///
+    /// This method emulates kernel execution without requiring GPU hardware,
+    /// useful for testing kernel correctness and debugging.
+    ///
+    /// # Arguments
+    ///
+    /// * `params` - Input parameters for the kernel as matrices of Constant values
+    ///
+    /// # Example
+    ///
+    /// ```text
+    /// kernel.emulate(params);
+    /// ```
     pub fn emulate(&self, params: Vec<Vec<Constant>>) {
         self.debug();
 
