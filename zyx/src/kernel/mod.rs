@@ -554,7 +554,12 @@ impl Kernel {
     /// ```
     pub fn compile(mut self) -> Result<CompiledKernel, crate::ZyxError> {
         self.unfold_movement_ops();
+        self.sort_global_defines();
         self.verify();
+
+        self.run_always_on_optimizations();
+        self.run_always_on_optimizations();
+
         let device_id = self.device_id;
         let shape = if self.shape().is_empty() { vec![1] } else { self.shape() };
         let dtype = self
@@ -575,7 +580,11 @@ impl Kernel {
         } else {
             device_id
         };
-        let program_id = rt.devices[device_id].compile(&self, false)?;
+        if rt.debug.ir() {
+            self.debug();
+        }
+        let debug_asm = rt.debug.asm();
+        let program_id = rt.devices[device_id].compile(&self, debug_asm)?;
         let prog = crate::backend::ProgramId { device: device_id, program: program_id };
         let kid = rt.kernel_cache.insert_kernel(self);
         rt.kernel_cache.programs.insert((kid, device_id), program_id);
@@ -774,6 +783,30 @@ impl Kernel {
 
     pub fn iter_unordered(&self) -> impl Iterator<Item = (OpId, &Op)> {
         self.ops.iter().map(|(id, node)| (id, &node.op))
+    }
+
+    pub fn sort_global_defines(&mut self) {
+        let mut insert_after = OpId::NULL;
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if matches!(self.ops[op_id].op, Op::Define { scope: Scope::Global, .. }) {
+                insert_after = op_id;
+            } else {
+                break;
+            }
+            op_id = self.next_op(op_id);
+        }
+        if insert_after.is_null() || op_id.is_null() {
+            return;
+        }
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            if matches!(self.ops[op_id].op, Op::Define { scope: Scope::Global, .. }) {
+                self.move_op_after(op_id, insert_after);
+                insert_after = op_id;
+            }
+            op_id = next;
+        }
     }
 
     pub fn flop_mem_rw(&self) -> (u64, u64, u64) {
