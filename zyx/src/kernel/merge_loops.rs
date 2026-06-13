@@ -1,6 +1,17 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Loop merging optimization.
+//!
+//! This module provides loop merging optimizations for kernels,
+//! which merge nested loops into single loops when possible.
+//!
+//! Loop merging can improve performance by:
+//!
+//! - Reducing loop overhead
+//! - Enabling better instruction scheduling
+//! - Improving vectorization opportunities
+
 use std::collections::BTreeMap;
 
 use crate::{
