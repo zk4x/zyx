@@ -1,6 +1,12 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Convert exp2(x * log2(e)) to exp(x).
+//!
+//! This module provides optimization for converting `exp2(x * log2(e))`
+//! to `exp(x)`, which allows backends like Tenstorrent to use their
+//! native `exp_tile` instead of the unsupported `exp2_tile`.
+
 use crate::{
     dtype::Constant,
     kernel::{BOp, Kernel, Op, OpId, UOp},
