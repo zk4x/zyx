@@ -272,6 +272,28 @@ impl Optimization {
 }
 
 impl Kernel {
+    /// Run always-on optimizations on the kernel.
+    ///
+    /// These optimizations should always be applied before kernel compilation
+    /// and are run twice to ensure all opportunities are exploited.
+    ///
+    /// The optimization pipeline includes:
+    ///
+    /// 1. `unroll_len1_loops` - Unroll loops with length 1
+    /// 2. `constant_folding` - Evaluate constant expressions
+    /// 3. `move_constants_to_beginning` - Move constants to the start
+    /// 4. `loop_invariant_code_motion` - Hoist loop-invariant code
+    /// 5. `fold_accs` - Fold accumulator operations
+    /// 6. `delete_empty_loops` - Remove loops with zero iterations
+    /// 7. `unfold_pows` - Unfold power operations
+    /// 8. `algebraic_simplification` - Simplify algebraic expressions
+    /// 9. `simplify_accumulating_loop` - Simplify accumulating loop patterns
+    /// 10. `swap_commutative` - Swap commutative operations
+    /// 11. `common_subexpression_elimination` - Eliminate duplicate computations
+    /// 12. `instruction_schedule` - Schedule instructions for better performance
+    /// 13. `dead_code_elimination` - Remove unused code
+    ///
+    /// Running this twice ensures all optimization opportunities are explored.
     pub fn run_always_on_optimizations(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("always on optimizations");
