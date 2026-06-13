@@ -1,6 +1,19 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Loop-invariant code motion and reassociation.
+//!
+//! This module provides optimizations for loop-invariant code motion
+//! and reassociation of commutative operations.
+//!
+//! Optimizations include:
+//!
+//! - `opt_reassociate_commutative`: Reassociate commutative operations
+//! - `swap_commutative`: Swap commutative operands
+//! - `loop_invariant_code_motion`: Hoist loop-invariant computations
+//!
+//! These optimizations reduce redundant computations and improve performance.
+
 use super::autotune::Optimization;
 use crate::kernel::{Kernel, Op, OpId};
 use crate::{Map, Set};
@@ -10,6 +23,11 @@ impl Kernel {
         (Optimization::ReassociateCommutative, 1)
     }
 
+    /// Swap commutative operands for better instruction scheduling.
+    ///
+    /// This method swaps operands of commutative operations (addition,
+    /// multiplication) to improve instruction scheduling and pipeline
+    /// utilization.
     pub fn swap_commutative(&mut self) {
         // Tracks whether a value depends on a loop index
         let mut loop_dep: Map<OpId, usize> = Map::default();
@@ -53,6 +71,13 @@ impl Kernel {
         self.verify();
     }
 
+    /// Reassociate commutative operations to group them.
+    ///
+    /// This method reassociates commutative operations (addition,
+    /// multiplication) to group them and reduce instruction count.
+    ///
+    /// For example, `a + b + c` can be transformed to `(a + b) + c`
+    /// to enable better instruction scheduling.
     pub fn reassociate_commutative(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("reassociate_commutative");
@@ -145,6 +170,11 @@ impl Kernel {
         self.verify();
     }
 
+    /// Hoist loop-invariant computations outside loops.
+    ///
+    /// This method identifies computations that are invariant within
+    /// loops and moves them outside the loop to reduce redundant
+    /// computations and improve performance.
     pub fn loop_invariant_code_motion(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("loop_invariant_code_motion");
