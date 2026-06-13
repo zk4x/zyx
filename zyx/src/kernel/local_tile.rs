@@ -44,7 +44,7 @@ impl Kernel {
     ///
     /// This method tiles local memory access patterns to improve
     /// performance by better utilizing local memory bandwidth.
-    pub fn tile_local(&mut self) {
+    pub(crate) fn tile_local(&mut self) {
         // Find local indices (lidx) created by split_dim
         let mut lidxs: Vec<(OpId, Dim, u32)> = Vec::new();
         let mut op_id = self.head;

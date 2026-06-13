@@ -30,10 +30,14 @@ impl Kernel {
     /// It cannot be applied if both explicit global indices and view moves
     /// are present in the kernel.
     pub fn unfold_movement_ops(&mut self) {
-        let has_gidx = self.ops.values().any(|n| matches!(n.op, Op::Index { scope: Scope::Global, .. }));
-        let has_view_moves = self.ops.values().any(|n| {
-            matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. })
-        });
+        let has_gidx = self
+            .ops
+            .values()
+            .any(|n| matches!(n.op, Op::Index { scope: Scope::Global, .. }));
+        let has_view_moves = self
+            .ops
+            .values()
+            .any(|n| matches!(n.op, Op::LoadView(_) | Op::StoreView { .. } | Op::Move { .. }));
 
         match (has_gidx, has_view_moves) {
             (true, false) => return,
@@ -76,7 +80,7 @@ impl Kernel {
         self.unfold_views();
     }
 
-    pub fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
+    pub(crate) fn recursively_move(&mut self, op_id: OpId, move_op: &MoveOp, visited: &mut Set<OpId>, n_reduce_axes: UAxis) {
         if !visited.insert(op_id) {
             return;
         }
@@ -109,7 +113,7 @@ impl Kernel {
         }
     }
 
-    pub fn reduce_dims(&self, op_id: OpId) -> Vec<Dim> {
+    pub(crate) fn reduce_dims(&self, op_id: OpId) -> Vec<Dim> {
         let mut params = vec![op_id];
         let mut n_reduce_axes = 0;
         let mut visited = Set::default();
@@ -147,7 +151,7 @@ impl Kernel {
     ///
     /// This method unfolds reduce operations into index-based operations,
     /// simplifying the kernel IR for compilation.
-    pub fn unfold_reduces(&mut self) {
+    pub(crate) fn unfold_reduces(&mut self) {
         let mut reduce_op_ids: Vec<OpId> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -251,7 +255,7 @@ impl Kernel {
     ///
     /// This method unfolds view operations (ConstView, LoadView, StoreView)
     /// into index-based operations, simplifying the kernel IR for compilation.
-    pub fn unfold_views(&mut self) {
+    pub(crate) fn unfold_views(&mut self) {
         let mut axes: BTreeMap<u32, OpId> = BTreeMap::default();
         let start = self.head;
         let mut op_id = self.head;
@@ -524,7 +528,7 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn is_preceded_by_reduce(&self, x: OpId) -> bool {
+    pub(crate) fn is_preceded_by_reduce(&self, x: OpId) -> bool {
         //if self.ops.values().filter(|node| matches!(node.op, Op::Reduce { .. })).count() > 1 { return true; }
         let mut params = vec![x];
         while let Some(param) = params.pop() {

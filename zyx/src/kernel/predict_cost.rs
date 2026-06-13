@@ -22,20 +22,36 @@
 #![allow(clippy::decimal_literal_representation)]
 use super::cost::Cost;
 impl Cost {
-    pub fn predict_time_us(
-        num_groups: u32, wi_per_group: u32, wi_ops: u32,
-        wi_compute_ops: u32, wi_barriers: u32,
-        wi_global_load_bits: u32, wi_global_store_bits: u32,
-        wi_local_load_bits: u32, wi_local_store_bits: u32,
-        wi_peak_reg_bytes: u32, wi_branches: u32,
-        wi_global_load_lidx_stride: u32, wi_global_store_lidx_stride: u32,
-        wi_local_load_lidx_stride: u32, wi_local_store_lidx_stride: u32,
-        warp_size: u32, max_local_threads: u32, max_register_bytes: u32,
-        wi_register_load_bits: u32, wi_register_store_bits: u32,
-        gws0: u32, gws1: u32, gws2: u32,
-        lws0: u32, lws1: u32, lws2: u32,
+    pub(crate) fn predict_time_us(
+        num_groups: u32,
+        wi_per_group: u32,
+        wi_ops: u32,
+        wi_compute_ops: u32,
+        wi_barriers: u32,
+        wi_global_load_bits: u32,
+        wi_global_store_bits: u32,
+        wi_local_load_bits: u32,
+        wi_local_store_bits: u32,
+        wi_peak_reg_bytes: u32,
+        wi_branches: u32,
+        wi_global_load_lidx_stride: u32,
+        wi_global_store_lidx_stride: u32,
+        wi_local_load_lidx_stride: u32,
+        wi_local_store_lidx_stride: u32,
+        warp_size: u32,
+        max_local_threads: u32,
+        max_register_bytes: u32,
+        wi_register_load_bits: u32,
+        wi_register_store_bits: u32,
+        gws0: u32,
+        gws1: u32,
+        gws2: u32,
+        lws0: u32,
+        lws1: u32,
+        lws2: u32,
         max_loop_depth: u32,
-        preferred_vector_size: u32, local_mem_size: u32,
+        preferred_vector_size: u32,
+        local_mem_size: u32,
     ) -> f64 {
         let num_groups = num_groups as f64;
         let wi_per_group = wi_per_group as f64;
@@ -95,8 +111,21 @@ impl Cost {
         ];
 
         const RC: &[f64] = &[
-            6.85046493e-02, -1.78014871e-02, 2.42729311e-02, 4.03479574e-02, 9.17336507e-03, -2.55729374e-02, 1.78794261e-02, 9.98035625e-03,
-            -1.17094612e-03, -7.73214011e-03, -5.15075983e-02, 6.13613143e-02, -2.87523819e-02, -5.14433895e-02, -5.10241876e-02,
+            6.85046493e-02,
+            -1.78014871e-02,
+            2.42729311e-02,
+            4.03479574e-02,
+            9.17336507e-03,
+            -2.55729374e-02,
+            1.78794261e-02,
+            9.98035625e-03,
+            -1.17094612e-03,
+            -7.73214011e-03,
+            -5.15075983e-02,
+            6.13613143e-02,
+            -2.87523819e-02,
+            -5.14433895e-02,
+            -5.10241876e-02,
         ];
         let ri: f64 = -9.47892805e-03;
 

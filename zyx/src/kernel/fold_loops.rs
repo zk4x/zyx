@@ -35,7 +35,7 @@ impl Kernel {
     /// Main entry point for loop folding optimization.
     /// Scans through operations looking for accumulating loops that can be simplified.
     /// Currently processes only one such loop per call (bails early after first match).
-    pub fn simplify_accumulating_loop(&mut self) {
+    pub(crate) fn simplify_accumulating_loop(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("simplify_accumulating_loop");
         let mut op_id = self.head;
@@ -491,7 +491,6 @@ impl Kernel {
             _ => false,
         }
     }
-
 }
 
 #[cfg(test)]
@@ -528,7 +527,7 @@ mod tests {
         let loop_id = k.loop_(loop_len as u64);
 
         // Some computation before load(acc) — e.g. loading source
-        let _source = k.const_val(42.0f32);  // simplified: no tensor load
+        let _source = k.const_val(42.0f32); // simplified: no tensor load
 
         // LOAD ACC — identify_accumulate_pattern finds this
         let load_acc = k.load(acc, zi, MemLayout::Scalar);
@@ -537,7 +536,7 @@ mod tests {
         let index_val = k.const_idx(5u32);
         let eq = k.binary(loop_id, index_val, BOp::Eq);
         let eq_f32 = k.cast(eq, DType::F32);
-        let _src = k.const_val(42.0f32);     // source value (could be from tensor load above)
+        let _src = k.const_val(42.0f32); // source value (could be from tensor load above)
         let mul = k.binary(eq_f32, _src, BOp::Mul);
 
         // ADD: references load_acc (tmp), but next_op(load_acc) is NOT add
@@ -666,7 +665,15 @@ mod tests {
 
         k.simplify_accumulating_loop();
 
-        assert_eq!(k.at(outer_loop), &Op::Const(Constant::idx(0u32)), "outer loop should be zeroed");
-        assert_eq!(k.at(inner_loop), &Op::Const(Constant::idx(0u32)), "inner loop should be zeroed");
+        assert_eq!(
+            k.at(outer_loop),
+            &Op::Const(Constant::idx(0u32)),
+            "outer loop should be zeroed"
+        );
+        assert_eq!(
+            k.at(inner_loop),
+            &Op::Const(Constant::idx(0u32)),
+            "inner loop should be zeroed"
+        );
     }
 }

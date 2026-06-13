@@ -8,7 +8,7 @@ use crate::{
     tensor::{Tensor, TensorId},
 };
 
-pub struct StaticGraph {
+pub(crate) struct StaticGraph {
     inputs: Set<TensorId>,
     outputs: Set<TensorId>,
     graph: Vec<GraphOp>,
@@ -53,7 +53,7 @@ impl StaticGraph {
     }
 }
 
-pub enum GraphOp {
+pub(crate) enum GraphOp {
     MemoryAllocate,
     MemoryFree,
     MemoryCopy,

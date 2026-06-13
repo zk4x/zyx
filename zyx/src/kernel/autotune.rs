@@ -73,7 +73,7 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
 ];
 
 #[derive(Debug)]
-pub enum Optimization {
+pub(crate) enum Optimization {
     /// Reassociate commutative operations (addition, multiplication)
     /// to group them and reduce instruction count.
     ReassociateCommutative,
@@ -314,7 +314,7 @@ impl Kernel {
 
     /// Autotune for debugging, applying only a selected series of optimizations
     #[allow(unused)]
-    pub fn apply_selected_optimizations(
+    pub(crate) fn apply_selected_optimizations(
         &self,
         buffers: &[PoolBufferId],
         device: &mut Device,
@@ -585,7 +585,7 @@ impl Kernel {
     ///
     /// This hash is used to track visited kernel states and avoid
     /// exploring duplicate optimization sequences.
-    pub fn get_hash(&self) -> u64 {
+    pub(crate) fn get_hash(&self) -> u64 {
         let mut hasher = AHasher::default();
         self.hash(&mut hasher);
         hasher.finish()
@@ -609,7 +609,7 @@ impl Kernel {
     /// # Returns
     ///
     /// Returns a tuple of (program_id, nanoseconds) or an error.
-    pub fn launch_with_timings(
+    pub(crate) fn launch_with_timings(
         &self,
         buffers: &[PoolBufferId],
         device: &mut Device,
@@ -635,12 +635,24 @@ impl Kernel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
-pub struct OptSeq {
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+pub(crate) struct OptSeq {
     /// List of (optimization_id, config_id) pairs to apply.
     opts: Vec<(usize, usize)>,
     /// Cost estimate for this optimization sequence.
     cost: Cost,
+}
+
+impl SerBin for OptSeq {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        todo!()
+    }
+}
+
+impl DeBin for OptSeq {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        todo!()
+    }
 }
 
 impl OptSeq {

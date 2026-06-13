@@ -53,7 +53,7 @@ struct MMAStore {
 impl Kernel {
     /// Finds loop trifectas and if possible, LICM moves these instructions before those loops
     /// and converts them into MMA instructions.
-    pub fn fuse_mma(&mut self, dev_info: &DeviceInfo) {
+    pub(crate) fn fuse_mma(&mut self, dev_info: &DeviceInfo) {
         #[allow(clippy::enum_glob_use)]
         use Op::*;
 

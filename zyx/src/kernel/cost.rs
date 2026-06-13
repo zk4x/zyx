@@ -23,14 +23,26 @@ use crate::{
 };
 use nanoserde::{DeBin, SerBin};
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, DeBin, SerBin)]
-pub struct Cost {
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Cost {
     /// Estimated execution time in microseconds.
     ///
     /// This is a learned cost estimate based on the kernel's
     /// characteristics (instruction count, memory access patterns,
     /// register usage, etc.). Lower values indicate better performance.
-    pub cost: u64,
+    pub(crate) cost: u64,
+}
+
+impl SerBin for Cost {
+    fn ser_bin(&self, _output: &mut Vec<u8>) {
+        todo!()
+    }
+}
+
+impl DeBin for Cost {
+    fn de_bin(_offset: &mut usize, _bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        todo!()
+    }
 }
 
 impl Ord for Cost {
@@ -63,7 +75,7 @@ impl Kernel {
     /// # Returns
     ///
     /// Returns a Cost estimate in microseconds.
-    pub fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {
+    pub(crate) fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {
         // First pass: compute reference counts and dtypes for register estimation
         let mut rcs: Map<OpId, u32> = Map::default();
         let mut dtypes: Map<OpId, (DType, MemLayout)> = Map::default();

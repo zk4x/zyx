@@ -28,7 +28,7 @@ impl Kernel {
     /// parallelization across threads.
     ///
     /// Returns the optimization variant and number of variants.
-    pub fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
+    pub(crate) fn opt_split_global_to_local(&self, dev_info: &DeviceInfo) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_global_to_local");
         if self.ops.values().any(|node| matches!(node.op, Op::EndIf)) {
@@ -77,7 +77,7 @@ impl Kernel {
     /// better instruction scheduling and vectorization.
     ///
     /// Returns the optimization variant and number of variants.
-    pub fn opt_split_loop(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_split_loop(&self) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_split_loop");
         let candidates = vec![8, 16, 4, 2];
@@ -101,7 +101,7 @@ impl Kernel {
 
     /// Splits dim (index or loop) into multiple indices or loops
     /// Returns the `OpId`s of the created split operations in the order they were provided
-    pub fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) -> Vec<OpId> {
+    pub(crate) fn split_dim(&mut self, dim_id: OpId, mut splits: Vec<Op>) -> Vec<OpId> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("split_dim");
         let is_loop = matches!(self.ops[dim_id].op, Op::Loop { .. });

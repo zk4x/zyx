@@ -27,7 +27,7 @@ use std::{vec, vec::Vec};
 const NUM_CONSTANTS: usize = 32;
 
 /// This is the whole global state of zyx
-pub struct Runtime {
+pub(crate) struct Runtime {
     /// Current graph of tensor operations as nodes
     pub graph: Graph,
     /// Physical compute devices, each has their own program cache

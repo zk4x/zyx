@@ -210,7 +210,7 @@ impl Kernel {
         self.check_oob();
     }
 
-    pub fn check_oob(&self) {
+    pub(crate) fn check_oob(&self) {
         let mut defines = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -251,7 +251,7 @@ impl Kernel {
 
 impl Kernel {
     #[allow(clippy::match_same_arms)]
-    pub fn compute_bounds(&self) -> Map<OpId, (Dim, Dim)> {
+    pub(crate) fn compute_bounds(&self) -> Map<OpId, (Dim, Dim)> {
         let mut bounds: Map<OpId, (Dim, Dim)> = Map::default();
         let mut bounds_stack: Vec<Map<OpId, (Dim, Dim)>> = vec![Map::default()];
         let mut op_id = self.head;

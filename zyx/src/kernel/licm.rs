@@ -19,7 +19,7 @@ use crate::kernel::{Kernel, Op, OpId};
 use crate::{Map, Set};
 
 impl Kernel {
-    pub const fn opt_reassociate_commutative(_: &Kernel) -> (Optimization, usize) {
+    pub(crate) const fn opt_reassociate_commutative(_: &Kernel) -> (Optimization, usize) {
         (Optimization::ReassociateCommutative, 1)
     }
 
@@ -28,7 +28,7 @@ impl Kernel {
     /// This method swaps operands of commutative operations (addition,
     /// multiplication) to improve instruction scheduling and pipeline
     /// utilization.
-    pub fn swap_commutative(&mut self) {
+    pub(crate) fn swap_commutative(&mut self) {
         // Tracks whether a value depends on a loop index
         let mut loop_dep: Map<OpId, usize> = Map::default();
         let mut loop_depth = 0;
@@ -78,7 +78,7 @@ impl Kernel {
     ///
     /// For example, `a + b + c` can be transformed to `(a + b) + c`
     /// to enable better instruction scheduling.
-    pub fn reassociate_commutative(&mut self) {
+    pub(crate) fn reassociate_commutative(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("reassociate_commutative");
         let mut loop_dep: Map<OpId, usize> = Map::default();

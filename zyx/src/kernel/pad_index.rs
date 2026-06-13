@@ -36,7 +36,7 @@ impl Kernel {
     ///
     /// # Panics
     /// - If `gidx_id` is not an `Op::Index` node.
-    pub fn pad_index(&mut self, gidx_id: OpId, current_len: Dim, pad_len: Dim, _pad_value: Constant) {
+    pub(crate) fn pad_index(&mut self, gidx_id: OpId, current_len: Dim, pad_len: Dim, _pad_value: Constant) {
         if pad_len == 0 {
             return;
         }
@@ -93,7 +93,7 @@ impl Kernel {
         }
     }
 
-    pub fn opt_pad_index(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_pad_index(&self) -> (Optimization, usize) {
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {

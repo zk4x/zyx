@@ -3,7 +3,7 @@
 
 use std::{io::Write, iter::repeat_n};
 
-pub struct ProgressBar {
+pub(crate) struct ProgressBar {
     count: u64,
     idx: u64,
 }

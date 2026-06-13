@@ -203,7 +203,7 @@ impl Kernel {
     ///
     /// This method eliminates accumulators that are not stored into
     /// in loops, reducing instruction count and improving performance.
-    pub fn fold_accs(&mut self) {
+    pub(crate) fn fold_accs(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("fold_accs");
         // We have to do constant folding before folding accs to guarantee indices are constants
@@ -245,7 +245,7 @@ impl Kernel {
     ///
     /// This method simplifies accumulator operations by folding
     /// constant values and eliminating redundant computations.
-    pub fn fold_acc(&mut self, define_id: OpId) {
+    pub(crate) fn fold_acc(&mut self, define_id: OpId) {
         //println!("Folding acc {define_id}");
         let Op::Define { len, .. } = self.ops[define_id].op else { unreachable!() };
         self.remove_op(define_id);
@@ -294,7 +294,7 @@ impl Kernel {
     ///
     /// This method removes loops that don't contain any stores,
     /// reducing instruction count and improving performance.
-    pub fn delete_empty_loops(&mut self) {
+    pub(crate) fn delete_empty_loops(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("delete_empty_loops");
 
@@ -492,7 +492,7 @@ impl Kernel {
     /// This method reorders the kernel so that constant operations
     /// appear before variable operations, which can improve
     /// instruction scheduling and performance.
-    pub fn move_constants_to_beginning(&mut self) {
+    pub(crate) fn move_constants_to_beginning(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("move_constants_to_beginning");
         let mut start = self.head;
@@ -567,7 +567,7 @@ impl Kernel {
     ///
     /// The transformation is based on the mathematical identity:
     /// `x^y = exp2(log2(x) * y)`
-    pub fn unfold_pows(&mut self) {
+    pub(crate) fn unfold_pows(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let &Op::Binary { x, y, bop } = self.at(op_id) {

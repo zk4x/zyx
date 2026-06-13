@@ -21,7 +21,7 @@ use crate::{
 
 impl Kernel {
     /// Get last op in the given loop scope
-    pub fn get_last_dim_op(&self, loop_id: OpId) -> OpId {
+    pub(crate) fn get_last_dim_op(&self, loop_id: OpId) -> OpId {
         match self.ops[loop_id].op {
             Op::Index { .. } => return self.tail,
             Op::Loop { .. } => {}
@@ -48,7 +48,7 @@ impl Kernel {
     }
 
     /// Merges two or more indices together
-    pub fn merge_indices(&mut self, loops: &[OpId]) {
+    pub(crate) fn merge_indices(&mut self, loops: &[OpId]) {
         let mut acc = 1;
         let mut axes = BTreeMap::default();
         let mut first_id = None;

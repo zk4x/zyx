@@ -13,13 +13,13 @@
 // Because I don't want to write struct and inner enum for MemoryPool and Device
 
 use crate::{
+    DebugMask,
     backend::hip::{HIPDevice, HIPMemoryPool},
     dtype::DType,
     error::{BackendError, ErrorStatus},
     kernel::Kernel,
     shape::Dim,
     slab::{Slab, SlabId},
-    DebugMask,
 };
 use c::CDevice;
 use cuda::{CUDADevice, CUDAMemoryPool};
@@ -41,10 +41,10 @@ mod dummy;
 mod hip;
 mod host;
 mod opencl;
+mod spirv;
 #[cfg(feature = "tenstorrent")]
 mod tenstorrent;
 mod vulkan;
-mod spirv;
 #[cfg(feature = "wgpu")]
 mod wgpu;
 
@@ -515,10 +515,13 @@ impl MemoryPool {
         }
         if let Ok(x) = std::env::var("ZYX_DEBUG")
             && let Ok(x) = x.parse::<u32>()
-                && DebugMask(x).memory()
+            && DebugMask(x).memory()
         {
             let free_after = self.free_bytes();
-            println!("[{name}] deallocate -> free {free_after} B (freed {} B)", free_after - free_before);
+            println!(
+                "[{name}] deallocate -> free {free_after} B (freed {} B)",
+                free_after - free_before
+            );
         }
     }
 

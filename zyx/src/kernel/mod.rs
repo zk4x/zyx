@@ -131,26 +131,26 @@ pub const IDX_T: DType = DType::U32;
 #[derive(Debug, Clone)]
 pub struct Kernel {
     /// Tensor IDs that this kernel produces.
-    pub outputs: Vec<TensorId>,
+    pub(crate) outputs: Vec<TensorId>,
     /// Tensor IDs loaded from memory.
-    pub loads: Vec<TensorId>,
+    pub(crate) loads: Vec<TensorId>,
     /// Tensor IDs stored to memory.
-    pub stores: Vec<TensorId>,
+    pub(crate) stores: Vec<TensorId>,
     /// Operation slab containing the kernel IR.
-    pub ops: Slab<OpId, OpNode>,
+    pub(crate) ops: Slab<OpId, OpNode>,
     /// Head of the operation linked list.
-    pub head: OpId,
+    pub(crate) head: OpId,
     /// Tail of the operation linked list.
-    pub tail: OpId,
+    pub(crate) tail: OpId,
     /// Target device for compilation.
-    pub device_id: DeviceId,
+    pub(crate) device_id: DeviceId,
     /// ID of custom kernel if applicable.
-    pub custom_kernel_id: Option<KernelId>,
+    pub(crate) custom_kernel_id: Option<KernelId>,
 }
 
 /// Execution scope for kernel indices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum Scope {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum Scope {
     /// Global memory scope (shared across all threads).
     Global,
     /// Local memory scope (per-thread or per-block).
@@ -292,15 +292,27 @@ pub enum MMADType {
     f16_f16_f16_f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct OpNode {
-    pub prev: OpId,
-    pub next: OpId, // Use Vec<OpId> instead for egraph
-    pub op: Op,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct OpNode {
+    pub(crate) prev: OpId,
+    pub(crate) next: OpId, // Use Vec<OpId> instead for egraph
+    pub(crate) op: Op,
+}
+
+impl SerBin for OpNode {
+    fn ser_bin(&self, _output: &mut Vec<u8>) {
+        todo!()
+    }
+}
+
+impl DeBin for OpNode {
+    fn de_bin(_offset: &mut usize, _bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        todo!()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct OpId(pub u32);
+pub struct OpId(pub(crate) u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MemLayout {
@@ -310,7 +322,7 @@ pub enum MemLayout {
 }
 
 impl MemLayout {
-    pub fn n_elements(self) -> Dim {
+    pub(crate) fn n_elements(self) -> Dim {
         match self {
             MemLayout::Scalar => 1,
             MemLayout::Vector(x) => x.into(),
@@ -329,8 +341,8 @@ impl std::fmt::Display for MemLayout {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum Op {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Op {
     // ops that exist in both
     Cast {
         x: OpId,
@@ -428,10 +440,22 @@ pub enum Op {
     },
 }
 
+impl SerBin for Op {
+    fn ser_bin(&self, _output: &mut Vec<u8>) {
+        todo!()
+    }
+}
+
+impl DeBin for Op {
+    fn de_bin(_offset: &mut usize, _bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        todo!()
+    }
+}
+
 impl Op {
     // TODO use custom non allocating iterator instead of allocating a vec
     #[allow(clippy::match_same_arms)]
-    pub fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
+    pub(crate) fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
         match self {
             Op::ConstView { .. }
             | Op::LoadView { .. }
@@ -462,7 +486,7 @@ impl Op {
     }
 
     #[allow(clippy::match_same_arms)]
-    pub fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
+    pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
         match self {
             Op::ConstView { .. }
             | Op::LoadView { .. }
@@ -490,15 +514,15 @@ impl Op {
         .into_iter()
     }
 
-    pub const fn is_const(&self) -> bool {
+    pub(crate) const fn is_const(&self) -> bool {
         matches!(self, Op::Cast { .. })
     }
 
-    pub const fn is_load(&self) -> bool {
+    pub(crate) const fn is_load(&self) -> bool {
         matches!(self, Op::Load { .. })
     }
 
-    pub fn remap_params(&mut self, remapping: &Map<OpId, OpId>) {
+    pub(crate) fn remap_params(&mut self, remapping: &Map<OpId, OpId>) {
         for param in self.parameters_mut() {
             if let Some(remapped_id) = remapping.get(param) {
                 *param = *remapped_id;
@@ -508,7 +532,7 @@ impl Op {
 }
 
 impl OpId {
-    pub const NULL: Self = Self(u32::MAX);
+    pub(crate) const NULL: Self = Self(u32::MAX);
 
     pub const fn is_null(self) -> bool {
         self.0 == u32::MAX
@@ -619,7 +643,7 @@ impl Kernel {
     /// # Example
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
+    /// use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
     /// use zyx::DType;
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -664,7 +688,7 @@ impl Kernel {
     /// let the runtime pick the first available device:
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
+    /// use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
     /// use zyx::{DType, Tensor, ZyxError};
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -732,8 +756,8 @@ impl Kernel {
         self.compile()
     }
 
-    pub fn load_contiguous(&mut self, dtype: DType, shape: &[Dim]) {
-        self.push_back(Op::LoadView(Box::new((dtype, View::contiguous(shape)))));
+    pub fn load_contiguous(&mut self, dtype: DType, shape: &[Dim]) -> OpId {
+        self.push_back(Op::LoadView(Box::new((dtype, View::contiguous(shape)))))
     }
 
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
@@ -760,8 +784,16 @@ impl Kernel {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding, shape }) })
     }
 
-    pub fn reduce(&mut self, x: OpId, rop: BOp, n_axes: usize) -> OpId {
-        self.push_back(Op::Reduce { x, rop, n_axes })
+    pub fn reduce_sum(&mut self, x: OpId, n_axes: usize) -> OpId {
+        self.push_back(Op::Reduce { x, rop: BOp::Add, n_axes })
+    }
+
+    pub fn reduce_max(&mut self, x: OpId, n_axes: usize) -> OpId {
+        self.push_back(Op::Reduce { x, rop: BOp::Max, n_axes })
+    }
+
+    pub fn reduce_prod(&mut self, x: OpId, n_axes: usize) -> OpId {
+        self.push_back(Op::Reduce { x, rop: BOp::Mul, n_axes })
     }
 
     pub fn store_contiguous(&mut self, src: OpId, dtype: DType) {
@@ -973,15 +1005,15 @@ impl Kernel {
     }
 
     #[track_caller]
-    pub fn at(&self, op_id: OpId) -> &Op {
+    pub(crate) fn at(&self, op_id: OpId) -> &Op {
         &self.ops[op_id].op
     }
 
-    pub fn prev_op(&self, op_id: OpId) -> OpId {
+    pub(crate) fn prev_op(&self, op_id: OpId) -> OpId {
         self.ops[op_id].prev
     }
 
-    pub fn next_op(&self, op_id: OpId) -> OpId {
+    pub(crate) fn next_op(&self, op_id: OpId) -> OpId {
         self.ops[op_id].next
     }
 
@@ -989,7 +1021,7 @@ impl Kernel {
         self.ops.values_mut().map(|op_node| &mut op_node.op)
     }*/
 
-    pub fn insert_before(&mut self, before_id: OpId, op: Op) -> OpId {
+    pub(crate) fn insert_before(&mut self, before_id: OpId, op: Op) -> OpId {
         debug_assert!(!before_id.is_null());
         debug_assert!(!self.ops.is_empty());
 
@@ -1005,7 +1037,7 @@ impl Kernel {
         op_id
     }
 
-    pub fn insert_after(&mut self, after_id: OpId, op: Op) -> OpId {
+    pub(crate) fn insert_after(&mut self, after_id: OpId, op: Op) -> OpId {
         debug_assert!(!after_id.is_null());
         debug_assert!(!self.ops.is_empty());
 
@@ -1021,7 +1053,7 @@ impl Kernel {
         op_id
     }
 
-    pub fn move_op_after(&mut self, op_id: OpId, after_id: OpId) {
+    pub(crate) fn move_op_after(&mut self, op_id: OpId, after_id: OpId) {
         debug_assert!(!op_id.is_null());
         debug_assert!(!after_id.is_null());
         debug_assert!(!self.ops.is_empty());
@@ -1053,7 +1085,7 @@ impl Kernel {
         }
     }
 
-    pub fn move_op_before(&mut self, op_id: OpId, before_id: OpId) {
+    pub(crate) fn move_op_before(&mut self, op_id: OpId, before_id: OpId) {
         debug_assert!(!op_id.is_null());
         debug_assert!(!before_id.is_null());
         debug_assert!(!self.ops.is_empty());
@@ -1085,7 +1117,7 @@ impl Kernel {
         }
     }
 
-    pub fn remove_op(&mut self, op_id: OpId) {
+    pub(crate) fn remove_op(&mut self, op_id: OpId) {
         debug_assert!(!op_id.is_null());
         debug_assert!(!self.ops.is_empty());
 
@@ -1104,11 +1136,11 @@ impl Kernel {
         self.ops.remove(op_id);
     }
 
-    pub fn iter_unordered(&self) -> impl Iterator<Item = (OpId, &Op)> {
+    pub(crate) fn iter_unordered(&self) -> impl Iterator<Item = (OpId, &Op)> {
         self.ops.iter().map(|(id, node)| (id, &node.op))
     }
 
-    pub fn sort_global_defines(&mut self) {
+    pub(crate) fn sort_global_defines(&mut self) {
         let mut insert_after = OpId::NULL;
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -1132,7 +1164,7 @@ impl Kernel {
         }
     }
 
-    pub fn flop_mem_rw(&self) -> (u64, u64, u64) {
+    pub(crate) fn flop_mem_rw(&self) -> (u64, u64, u64) {
         #[derive(Clone)]
         struct Info {
             shape: Vec<Dim>,
@@ -1215,95 +1247,13 @@ impl Kernel {
         })
     }
 
-    /*pub fn flop_mem_rw1(&self) -> (u64, u64, u64) {
-        self.debug_colorless();
-        let mut n_instructions = 0u64;
-        let mut bytes_read = 0u64;
-        let mut bytes_written = 0u64;
-
-        let mut gws = [1u64, 1, 1];
-        let mut lws = [1u64, 1, 1];
-        let mut loop_mult = 1u64;
-        let mut latest_loop_lengths = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            match self.at(op_id) {
-                Op::Cast { .. } => n_instructions += loop_mult,
-                Op::Unary { .. } => n_instructions += loop_mult,
-                Op::Binary { .. } => n_instructions += loop_mult,
-                Op::Const(_) | Op::Define { .. } => {}
-                Op::Load { src, vlen, .. } => {
-                    n_instructions += loop_mult * 3;
-                    let Op::Define { scope, dtype, len, .. } = self.at(*src) else {
-                        unreachable!()
-                    };
-                    let bytes = *len as u64 * (dtype.bit_size() / 8) as u64 * *vlen as u64;
-                    match scope {
-                        Scope::Global => bytes_read += bytes,
-                        Scope::Local => bytes_read += bytes,
-                        Scope::Register => bytes_read += bytes,
-                    }
-                }
-                Op::Store { dst, vlen, .. } => {
-                    n_instructions += loop_mult * 3;
-                    let Op::Define { scope, dtype, len, .. } = self.at(*dst) else {
-                        unreachable!()
-                    };
-                    let bytes = *len as u64 * (dtype.bit_size() / 8) as u64 * *vlen as u64;
-                    match scope {
-                        Scope::Global => bytes_written += bytes,
-                        Scope::Local => bytes_written += bytes,
-                        Scope::Register => bytes_written += bytes,
-                    }
-                }
-                Op::Index { len, scope, axis } => match scope {
-                    Scope::Global => gws[*axis as usize] = *len as u64,
-                    Scope::Local => lws[*axis as usize] = *len as u64,
-                    Scope::Register => {}
-                },
-                Op::Loop { len } => {
-                    n_instructions += loop_mult * 3;
-                    loop_mult *= *len as u64;
-                    latest_loop_lengths.push(*len as u64);
-                }
-                Op::EndLoop => {
-                    loop_mult /= latest_loop_lengths.pop().unwrap();
-                }
-                Op::Mad { .. } => n_instructions += loop_mult,
-                Op::WMMA { dims, .. } => {
-                    let (m, n, k) = dims.decompose_mnk();
-                    n_instructions += loop_mult * m * n * k;
-                }
-                Op::Vectorize { .. } | Op::Devectorize { .. } => {}
-                _ => {}
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        let total_threads = gws[0] * gws[1] * gws[2] * lws[0] * lws[1] * lws[2];
-        (n_instructions * total_threads, bytes_read, bytes_written)
-    }*/
-
-    pub fn contains_stores(&self) -> bool {
+    pub(crate) fn contains_stores(&self) -> bool {
         self.ops.values().any(|x| matches!(x.op, Op::StoreView { .. }))
     }
 
-    pub fn is_reduce(&self) -> bool {
+    pub(crate) fn is_reduce(&self) -> bool {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. }))
     }
-
-    // TODO as of now this is just imprecise estimate, make it better,
-    // it does not correctly handle reshapes.
-    /*pub fn cumulative_reduce_dim(&self, op_id: OpId, acc: Dim) -> Dim {
-        match self.ops[op_id].op {
-            Op::Cast { x, .. } | Op::Unary { x, .. } => self.cumulative_reduce_dim(x, acc),
-            Op::Binary { x, y, .. } => self.cumulative_reduce_dim(x, acc) * self.cumulative_reduce_dim(y, acc),
-            Op::ConstView(_) | Op::LoadView(_) => acc,
-            Op::Move { x, .. } => self.cumulative_reduce_dim(op_id, acc),
-            Op::Reduce { x, .. } => self.cumulative_reduce_dim(op_id, acc) * shape[n_axes].product9),
-            ref op => todo!("{op:?}"),
-        }
-    }*/
 
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.values().any(|x| matches!(x.op, Op::Index { .. })) {
@@ -1365,7 +1315,7 @@ impl Kernel {
         Vec::new()
     }
 
-    pub fn work_sizes(&self) -> (Vec<Dim>, Vec<Dim>) {
+    pub(crate) fn work_sizes(&self) -> (Vec<Dim>, Vec<Dim>) {
         let mut gws = Vec::new();
         let mut lws = Vec::new();
         for node in self.ops.values() {
@@ -1392,7 +1342,7 @@ impl Kernel {
     }
 
     #[allow(unused)]
-    pub fn is_reshape_contiguous(&self, range: std::ops::Range<UAxis>, shape: &[Dim]) -> bool {
+    pub(crate) fn is_reshape_contiguous(&self, range: std::ops::Range<UAxis>, shape: &[Dim]) -> bool {
         self.ops.values().all(|node| match &node.op {
             Op::ConstView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
             Op::LoadView(x) => x.1.is_reshape_contiguous(range.clone(), shape),
@@ -1403,7 +1353,7 @@ impl Kernel {
     /// Get index loop ids, dimensions and strides
     /// returns `loop_id` -> (dimension, stride)
     /// if returned `loop_id` is `OpId::NULL`, the stride is constant and dimension is 0 (unknown)
-    pub fn get_strides(&self, index: OpId) -> Map<OpId, (Dim, Dim)> {
+    pub(crate) fn get_strides(&self, index: OpId) -> Map<OpId, (Dim, Dim)> {
         //println!("Get index {index}");
 
         let mut params = vec![index];
@@ -1501,7 +1451,7 @@ impl Kernel {
         }
     }
 
-    pub fn push_back(&mut self, op: Op) -> OpId {
+    pub(crate) fn push_back(&mut self, op: Op) -> OpId {
         let op_node = OpNode { prev: self.tail, next: OpId::NULL, op };
         let op_id = self.ops.push(op_node);
         if self.head.is_null() {
@@ -1513,13 +1463,13 @@ impl Kernel {
         op_id
     }
 
-    pub fn remove_first_output(&mut self, x: TensorId) {
+    pub(crate) fn remove_first_output(&mut self, x: TensorId) {
         //println!("removing tensor {x} from kernel {kid:?}");
         let outputs = &mut self.outputs;
         outputs.iter().position(|elem| *elem == x).map(|i| outputs.remove(i));
     }
 
-    pub fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KMKernelId, OpId)>) {
+    pub(crate) fn drop_unused_ops(&mut self, visited: &Map<TensorId, (KMKernelId, OpId)>) {
         let params = self.outputs.iter().map(|tid| visited[tid].1).collect();
         let required = self.get_required_ops(params);
         let mut loaded_tensors = Vec::new();
@@ -1548,7 +1498,7 @@ impl Kernel {
         }
     }
 
-    pub fn get_required_ops(&self, mut params: Vec<OpId>) -> Set<OpId> {
+    pub(crate) fn get_required_ops(&self, mut params: Vec<OpId>) -> Set<OpId> {
         let mut required = Set::default();
         while let Some(param) = params.pop() {
             if required.insert(param) {
@@ -1582,7 +1532,7 @@ impl Kernel {
         required
     }
 
-    pub fn get_global_indices(&self) -> std::collections::BTreeMap<u32, OpId> {
+    pub(crate) fn get_global_indices(&self) -> std::collections::BTreeMap<u32, OpId> {
         let mut indices = std::collections::BTreeMap::new();
         for (op_id, op_node) in self.ops.iter() {
             if let Op::Index { scope, axis, .. } = op_node.op {
@@ -1594,7 +1544,7 @@ impl Kernel {
         indices
     }
 
-    pub fn renumber_indices(&mut self) {
+    pub(crate) fn renumber_indices(&mut self) {
         let mut indices = std::collections::BTreeMap::new();
         indices.insert(Scope::Global, std::collections::BTreeMap::new());
         indices.insert(Scope::Local, std::collections::BTreeMap::new());
@@ -1713,27 +1663,6 @@ impl DeBin for BOp {
             15 => Ok(BOp::BitShiftRight),
             16 => Ok(BOp::NotEq),
             17 => Ok(BOp::Eq),
-            _ => Err(nanoserde::DeBinErr::new(*offset, 1, bytes.len())),
-        }
-    }
-}
-
-impl SerBin for Scope {
-    fn ser_bin(&self, output: &mut Vec<u8>) {
-        match self {
-            Scope::Global => output.push(0),
-            Scope::Local => output.push(1),
-            Scope::Register => output.push(2),
-        }
-    }
-}
-
-impl DeBin for Scope {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        match bytes[*offset] {
-            0 => Ok(Scope::Global),
-            1 => Ok(Scope::Local),
-            2 => Ok(Scope::Register),
             _ => Err(nanoserde::DeBinErr::new(*offset, 1, bytes.len())),
         }
     }

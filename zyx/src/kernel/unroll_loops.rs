@@ -29,7 +29,7 @@ impl Kernel {
     ///
     /// Returns the optimization variant and number of variants.
     #[allow(unused)]
-    pub fn opt_unroll(_: &Kernel) -> (Optimization, usize) {
+    pub(crate) fn opt_unroll(_: &Kernel) -> (Optimization, usize) {
         (Optimization::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
     }
 
@@ -37,7 +37,7 @@ impl Kernel {
     ///
     /// Returns the optimization variant and number of variants.
     #[allow(unused)]
-    pub const fn opt_unroll_constant_loops(_: &Kernel) -> (Optimization, usize) {
+    pub(crate) const fn opt_unroll_constant_loops(_: &Kernel) -> (Optimization, usize) {
         (Optimization::UnrollConstantLoops, 1)
     }
 
@@ -45,7 +45,7 @@ impl Kernel {
     ///
     /// This method removes index operations with length 1,
     /// which can be optimized away.
-    pub fn eliminate_zero_len_index(&mut self) {
+    pub(crate) fn eliminate_zero_len_index(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("eliminate zero index");
         for node in self.ops.values_mut() {
@@ -58,7 +58,7 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn unroll_len1_loops(&mut self) {
+    pub(crate) fn unroll_len1_loops(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("eliminate zero index");
         let mut op_id = self.head;
@@ -83,7 +83,7 @@ impl Kernel {
         self.verify();
     }
 
-    pub fn unroll_loops(&mut self, unroll_dim: Dim) {
+    pub(crate) fn unroll_loops(&mut self, unroll_dim: Dim) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("unroll_loops");
         let mut endloop_ids = Vec::new();
@@ -127,7 +127,7 @@ impl Kernel {
         n_ops
     }
 
-    pub fn unroll_constant_loops(&mut self) {
+    pub(crate) fn unroll_constant_loops(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("unroll_constant_loops");
         let mut endloop_ids = Vec::new();

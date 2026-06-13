@@ -5,7 +5,7 @@
 
 use std::hash::Hasher;
 
-pub struct FHasher(u64);
+pub(crate) struct FHasher(u64);
 
 impl Default for FHasher {
     fn default() -> FHasher {
@@ -30,7 +30,7 @@ impl Hasher for FHasher {
     }
 }
 
-pub struct AHasher(u64);
+pub(crate) struct AHasher(u64);
 
 impl Default for AHasher {
     fn default() -> Self {

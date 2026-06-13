@@ -8,7 +8,7 @@ use crate::{
     backend::{AutotuneConfig, BufferId, Device, DeviceId, Event, MemoryPool, PoolId},
     dtype::Constant,
     graph::{Graph, Node},
-    kernel::{BOp, Kernel, MoveOp, Op, OpId, OpNode, UOp},
+    kernel::{BOp, Kernel, MoveOp, Op, OpId, UOp},
     kernel_cache::KernelCache,
     runtime::{Runtime, deallocate_tensors},
     schedule::schedule,
@@ -166,38 +166,34 @@ impl<'a> Kernelizer<'a> {
     fn create_load_kernel(&mut self, nid: TensorId) -> (KMKernelId, OpId) {
         let shape = self.graph.shape(nid);
         let dtype = self.graph.dtype(nid);
-        let mut ops = Slab::with_capacity(100);
-        let op = Op::LoadView(Box::new((dtype, View::contiguous(shape))));
-        let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
-        let kernel = Kernel {
+        let mut kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: vec![nid],
             stores: Vec::new(),
-            ops,
-            head: op_id,
-            tail: op_id,
+            ops: Slab::with_capacity(100),
+            head: OpId::NULL,
+            tail: OpId::NULL,
             device_id: DeviceId::AUTO,
             custom_kernel_id: None,
         };
+        let op_id = kernel.load_contiguous(dtype, shape);
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
         (kid, op_id)
     }
 
     fn create_const_kernel(&mut self, nid: TensorId, value: Constant) {
-        let mut ops = Slab::with_capacity(100);
-        let op = Op::ConstView(Box::new((value, View::contiguous(&[1]))));
-        let op_id = ops.push(OpNode { prev: OpId::NULL, next: OpId::NULL, op });
-        let kernel = Kernel {
+        let mut kernel = Kernel {
             outputs: vec![nid; self.rcs[&nid] as usize],
             loads: Vec::new(),
             stores: Vec::new(),
-            ops,
-            head: op_id,
-            tail: op_id,
+            ops: Slab::with_capacity(100),
+            head: OpId::NULL,
+            tail: OpId::NULL,
             device_id: DeviceId::AUTO,
             custom_kernel_id: None,
         };
+        let op_id = kernel.push_back(Op::ConstView(Box::new((value, View::contiguous(&[1])))));
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
     }

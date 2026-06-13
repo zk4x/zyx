@@ -68,7 +68,7 @@ use crate::{
 // then rewritten to just `lidx`, and `Const(i)` becomes `Mul(Const(i), V)`.
 
 impl Kernel {
-    pub fn opt_thread_coarse(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_thread_coarse(&self) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_upcast");
         let mut factors = Vec::new();
@@ -243,7 +243,7 @@ impl Kernel {
 }
 
 impl Kernel {
-    pub fn opt_register_blocking(&self) -> (Optimization, usize) {
+    pub(crate) fn opt_register_blocking(&self) -> (Optimization, usize) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_register_tiling");
         let candidates: Vec<u64> = vec![8, 16, 4, 2];
@@ -296,7 +296,7 @@ impl Kernel {
         )
     }
 
-    pub fn apply_register_blocking(
+    pub(crate) fn apply_register_blocking(
         &mut self,
         reduce_splits: &BTreeMap<OpId, Vec<u64>>,
         global_upcasts: &BTreeMap<OpId, Vec<u64>>,

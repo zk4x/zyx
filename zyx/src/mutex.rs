@@ -4,7 +4,7 @@
 //! Simple implementation of mutex based on spinlock.
 
 /*use std::sync::{LockResult, MutexGuard};
-pub struct Mutex<T>(std::sync::Mutex<T>);
+pub(crate) struct Mutex<T>(std::sync::Mutex<T>);
 
 impl<T> Mutex<T> {
     pub const fn new(data: T) -> Self {
@@ -51,13 +51,13 @@ use std::{
 
 // Standard spinlock.
 #[derive(Debug)]
-pub struct Mutex<T> {
+pub(crate) struct Mutex<T> {
     data: UnsafeCell<T>,
     lock: AtomicBool,
 }
 
 #[derive(Debug)]
-pub struct MutexGuard<'a, T: 'a> {
+pub(crate) struct MutexGuard<'a, T: 'a> {
     mutex: &'a Mutex<T>,
 }
 
