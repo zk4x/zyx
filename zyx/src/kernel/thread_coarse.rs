@@ -1,6 +1,22 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Thread coarsening and register blocking optimization.
+//!
+//! This module provides thread coarsening and register blocking
+//! optimizations for kernels, which group thread operations to improve
+//! performance.
+//!
+//! Thread coarsening is useful for:
+//!
+//! - Reducing thread synchronization overhead
+//! - Enabling better instruction scheduling
+//! - Improving register utilization
+//! - Coalescing memory access patterns
+//!
+//! Register blocking applies to tiled reductions, blocking operations
+//! for register tiling to improve performance.
+
 #![allow(clippy::while_let_loop)]
 
 use std::collections::BTreeMap;
