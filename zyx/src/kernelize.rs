@@ -763,7 +763,9 @@ impl Runtime {
                     Node::Custom(ref ck) => {
                         // 1. Realize all inputs (make buffers available on device)
                         for &inp in &ck.inputs {
-                            kernelizer.add_store(inp)?;
+                            if !kernelizer.realized_nodes.contains(&inp) {
+                                kernelizer.add_store(inp)?;
+                            }
                         }
 
                         // 2. Build a minimal stub kernel (loads/stores for schedule)
