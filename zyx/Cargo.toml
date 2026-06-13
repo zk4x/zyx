@@ -49,7 +49,7 @@ wgpu = { version = "29.0.1", default-features = false, features = ["vulkan", "me
 pollster = { version = "0.4.0", default-features = false, optional = true } # MIT or Apache 2.0
 
 # Pyo3 is used only for python bindings
-pyo3 = { version = "0.28.3", optional = true, features = ["extension-module", "generate-import-lib"] } # MIT or Apache 2.0
+pyo3 = { version = "0.29.0", optional = true, features = ["extension-module", "generate-import-lib"] } # MIT or Apache 2.0
 
 ash = "0.38"
 
