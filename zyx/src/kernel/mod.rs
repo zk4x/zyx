@@ -81,17 +81,72 @@ pub const IDX_T: DType = DType::U32;
 /// This struct represents a kernel in the intermediate representation (IR)
 /// that can be compiled and executed on any backend (CPU, CUDA, Vulkan, etc.).
 ///
+/// The kernel IR supports:
+/// - Element-wise operations (add, mul, sin, exp, etc.)
+/// - Reductions (sum, max, etc.)
+/// - Memory operations (load, store)
+/// - Control flow (loops, conditionals)
+/// - Tensor transformations (reshape, permute, expand, pad)
+///
 /// # Example
 ///
 /// ```ignore
-/// use zyx::kernel::{Kernel, DeviceId};
+/// use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
 /// use zyx::DType;
 ///
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
-/// let inp = kernel.define(DType::F32, Scope::Global, true, 256);
+/// let n = 256;
+/// let inp = kernel.define(DType::F32, Scope::Global, true, n);
+/// let gidx = kernel.gidx(0, n);
+/// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+/// let doubled = kernel.add(loaded, loaded);
+/// let out = kernel.define(DType::F32, Scope::Global, false, n);
+/// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+/// ```
+///
+/// # Compile
+///
+/// Build a kernel and compile it:
+///
+/// ```ignore
+/// use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
+/// use zyx::{DType, Tensor, ZyxError};
+///
+/// let mut kernel = Kernel::new(DeviceId::AUTO);
+/// let n = 4;
+/// let inp = kernel.define(DType::F32, Scope::Global, true, n);
+/// let gidx = kernel.gidx(0, n);
+/// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+/// let doubled = kernel.add(loaded, loaded);
+/// let out = kernel.define(DType::F32, Scope::Global, false, n);
+/// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+///
+/// let compiled = kernel.compile()?;
+/// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
+/// let result = compiled.forward(&[&x]);
+/// let data: Vec<f32> = result.try_into().unwrap();
+/// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
+/// # Ok::<_, ZyxError>(())
 /// ```
 #[derive(Debug, Clone)]
 pub struct Kernel {
+    /// Tensor IDs that this kernel produces.
+    pub outputs: Vec<TensorId>,
+    /// Tensor IDs loaded from memory.
+    pub loads: Vec<TensorId>,
+    /// Tensor IDs stored to memory.
+    pub stores: Vec<TensorId>,
+    /// Operation slab containing the kernel IR.
+    pub ops: Slab<OpId, OpNode>,
+    /// Head of the operation linked list.
+    pub head: OpId,
+    /// Tail of the operation linked list.
+    pub tail: OpId,
+    /// Target device for compilation.
+    pub device_id: DeviceId,
+    /// ID of custom kernel if applicable.
+    pub custom_kernel_id: Option<KernelId>,
+}
     /// Tensor IDs that this kernel produces.
     pub outputs: Vec<TensorId>,
     /// Tensor IDs loaded from memory.
