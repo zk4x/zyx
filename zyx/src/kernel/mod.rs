@@ -147,23 +147,6 @@ pub struct Kernel {
     /// ID of custom kernel if applicable.
     pub custom_kernel_id: Option<KernelId>,
 }
-    /// Tensor IDs that this kernel produces.
-    pub outputs: Vec<TensorId>,
-    /// Tensor IDs loaded from memory.
-    pub loads: Vec<TensorId>,
-    /// Tensor IDs stored to memory.
-    pub stores: Vec<TensorId>,
-    /// Operation slab containing the kernel IR.
-    pub ops: Slab<OpId, OpNode>,
-    /// Head of the operation linked list.
-    pub head: OpId,
-    /// Tail of the operation linked list.
-    pub tail: OpId,
-    /// Target device for compilation.
-    pub device_id: DeviceId,
-    /// ID of custom kernel if applicable.
-    pub custom_kernel_id: Option<KernelId>,
-}
 
 /// Execution scope for kernel indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
