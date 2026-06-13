@@ -26,7 +26,7 @@
 //!
 //! The kernel is then finalized via [`Kernel::compile`].
 
-#![allow(missing_docs)]
+//#![allow(missing_docs)]
 
 pub use crate::backend::DeviceId;
 pub use crate::view::View;
@@ -45,8 +45,11 @@ use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
 
 mod algebraic;
+/// Autotuning optimizations for kernel compilation.
 pub mod autotune;
+/// Cost estimation for kernel selection.
 pub mod cost;
+/// Custom kernel compilation for GPU-specific operations.
 pub mod custom;
 mod debug;
 mod exp2_to_exp;
@@ -61,6 +64,7 @@ mod log2_to_ln;
 mod merge_loops;
 mod mma;
 mod pad_index;
+/// Cost prediction for kernel selection.
 pub mod predict_cost;
 mod split_loops;
 mod thread_coarse;
@@ -71,94 +75,184 @@ mod vectorize;
 mod verify;
 
 // TODO later make this dynamic u32 or u64 depending on max range
+/// Type used for indexing into arrays within kernels.
 pub const IDX_T: DType = DType::U32;
 
+/// Kernel builder for constructing custom compute kernels.
+///
+/// This struct represents a kernel in the intermediate representation (IR)
+/// that can be compiled and executed on any backend (CPU, CUDA, Vulkan, etc.).
+///
+/// # Example
+///
+/// ```ignore
+/// use zyx::kernel::{Kernel, DeviceId};
+/// use zyx::DType;
+///
+/// let mut kernel = Kernel::new(DeviceId::AUTO);
+/// let inp = kernel.define(DType::F32, Scope::Global, true, 256);
+/// ```
 #[derive(Debug, Clone)]
 pub struct Kernel {
+    /// Tensor IDs that this kernel produces.
     pub outputs: Vec<TensorId>,
+    /// Tensor IDs loaded from memory.
     pub loads: Vec<TensorId>,
+    /// Tensor IDs stored to memory.
     pub stores: Vec<TensorId>,
+    /// Operation slab containing the kernel IR.
     pub ops: Slab<OpId, OpNode>,
+    /// Head of the operation linked list.
     pub head: OpId,
+    /// Tail of the operation linked list.
     pub tail: OpId,
+    /// Target device for compilation.
     pub device_id: DeviceId,
+    /// ID of custom kernel if applicable.
     pub custom_kernel_id: Option<KernelId>,
 }
 
+/// Execution scope for kernel indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum Scope {
+    /// Global memory scope (shared across all threads).
     Global,
+    /// Local memory scope (per-thread or per-block).
     Local,
+    /// Register scope (per-thread fast storage).
     Register,
 }
 
+/// Unary operations for element-wise kernel transformations.
+///
+/// These operations are applied to a single input tensor.
+///
+/// # Variants
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
 pub enum UOp {
+    /// Negation: -x
     Neg,
+    /// Bitwise NOT: ~x
     BitNot,
+    /// Exponential: e^x
     Exp,
+    /// Exponential with base 2: 2^x
     Exp2,
+    /// Natural logarithm: ln(x)
     Ln,
+    /// Logarithm with base 2: log2(x)
     Log2,
+    /// Reciprocal: 1/x
     Reciprocal,
+    /// Square root: sqrt(x)
     Sqrt,
+    /// Sine: sin(x)
     Sin,
+    /// Cosine: cos(x)
     Cos,
+    /// Floor: floor(x)
     Floor,
+    /// Truncate toward zero: trunc(x)
     Trunc,
+    /// Absolute value: |x|
     Abs,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
+/// Binary operations for element-wise or reduction kernel operations.
+///
+/// These operations take two input tensors and produce an output.
+///
+/// # Variants
 pub enum BOp {
+    /// Addition: x + y
     Add,
+    /// Subtraction: x - y
     Sub,
+    /// Multiplication: x * y
     Mul,
+    /// Division: x / y
     Div,
+    /// Power: x^y
     Pow,
+    /// Modulo: x % y
     Mod,
+    /// Compare less than: x < y
     Cmplt,
+    /// Compare greater than: x > y
     Cmpgt,
+    /// Maximum: max(x, y)
     Max,
+    /// Bitwise OR: x | y
     Or,
+    /// Bitwise AND: x & y
     And,
+    /// Bitwise XOR: x ^ y
     BitXor,
+    /// Bitwise OR: x | y
     BitOr,
+    /// Bitwise AND: x & y
     BitAnd,
+    /// Left shift: x << y
     BitShiftLeft,
+    /// Right shift: x >> y
     BitShiftRight,
+    /// Not equal: x != y
     NotEq,
+    /// Equal: x == y
     Eq,
 }
 
+/// Movement operations for tensor shape transformations.
+///
+/// These operations change the shape of tensors without changing their data.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum MoveOp {
+pub(crate) enum MoveOp {
+    /// Reshape to a new shape.
     Reshape { shape: Vec<Dim> },
+    /// Expand dimensions.
     Expand { shape: Vec<Dim> },
+    /// Permute axes.
     Permute { axes: Vec<UAxis>, shape: Vec<Dim> },
+    /// Pad dimensions.
     Pad { padding: Vec<(i64, i64)>, shape: Vec<Dim> },
 }
 
+/// Matrix multiply dimensions for tensor core operations.
+///
+/// Represents the shape (m, n, k) for matrix multiplication.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MMADims {
+    /// 8x8 with k=16
     m8n8k16,
+    /// 16x8 with k=8
     m16n8k8,
+    /// 16x8 with k=16
     m16n8k16,
 }
 
+/// Memory layout for tensor core matrix operands.
+///
+/// Describes how matrix data is stored in memory.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MMALayout {
+    /// Row-major for both matrices
     row_row,
+    /// Row-major for A, column-major for B
     row_col,
+    /// Column-major for A, row-major for B
     col_row,
+    /// Column-major for both matrices
     col_col,
 }
 
+/// Data type for matrix multiply operations.
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum MMADType {
+    /// FP16 input with FP32 accumulator
     f16_f16_f16_f32,
 }
 
@@ -200,7 +294,7 @@ impl std::fmt::Display for MemLayout {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum Op {
+pub(crate) enum Op {
     // ops that exist in both
     Cast {
         x: OpId,
