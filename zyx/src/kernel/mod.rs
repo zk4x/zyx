@@ -114,7 +114,7 @@ pub struct Kernel {
 
 /// Execution scope for kernel indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub enum Scope {
+pub(crate) enum Scope {
     /// Global memory scope (shared across all threads).
     Global,
     /// Local memory scope (per-thread or per-block).
@@ -129,7 +129,7 @@ pub enum Scope {
 ///
 /// # Variants
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
-pub enum UOp {
+pub(crate) enum UOp {
     /// Negation: -x
     Neg,
     /// Bitwise NOT: ~x
@@ -164,7 +164,7 @@ pub enum UOp {
 /// These operations take two input tensors and produce an output.
 ///
 /// # Variants
-pub enum BOp {
+pub(crate) enum BOp {
     /// Addition: x + y
     Add,
     /// Subtraction: x - y
@@ -294,7 +294,7 @@ impl std::fmt::Display for MemLayout {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub(crate) enum Op {
+pub enum Op {
     // ops that exist in both
     Cast {
         x: OpId,
@@ -696,8 +696,8 @@ impl Kernel {
         self.compile()
     }
 
-    pub fn load_view(&mut self, dtype: DType, view: View) {
-        self.push_back(Op::LoadView(Box::new((dtype, view))));
+    pub fn load_contiguous(&mut self, dtype: DType, shape: &[Dim]) {
+        self.push_back(Op::LoadView(Box::new((dtype, View::contiguous(shape)))));
     }
 
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
@@ -728,7 +728,7 @@ impl Kernel {
         self.push_back(Op::Reduce { x, rop, n_axes })
     }
 
-    pub fn store_view(&mut self, src: OpId, dtype: DType) {
+    pub fn store_contiguous(&mut self, src: OpId, dtype: DType) {
         self.push_back(Op::StoreView { src, dtype });
     }
 
@@ -912,8 +912,12 @@ impl Kernel {
         self.push_back(Op::Devectorize { vec, idx })
     }
 
-    pub fn barrier(&mut self, scope: Scope) {
-        self.push_back(Op::Barrier { scope });
+    pub fn local_barrier(&mut self) {
+        self.push_back(Op::Barrier { scope: Scope::Local });
+    }
+
+    pub fn global_barrier(&mut self) {
+        self.push_back(Op::Barrier { scope: Scope::Global });
     }
 
     pub fn if_(&mut self, condition: OpId) {

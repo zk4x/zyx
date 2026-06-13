@@ -541,7 +541,7 @@ impl<'a> Kernelizer<'a> {
             self.visited.remove(&x).unwrap();
             self.pending_stores.insert(x);
             let dtype = self.graph.dtype(x);
-            self.kernels[kid].store_view(op_id, dtype);
+            self.kernels[kid].store_contiguous(op_id, dtype);
             self.kernels[kid].stores.push(x);
 
             // remove all references to x
