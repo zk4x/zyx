@@ -11,7 +11,7 @@ use crate::kernel::{BOp, UOp};
 use crate::kernel_cache::KernelCache;
 use crate::rng::Rng;
 use crate::scalar::Scalar;
-use crate::shape::{Dim, UAxis, permute, reduce};
+use crate::shape::{Dim, UAxis, pad, permute, reduce};
 use crate::slab::Slab;
 use crate::tensor::TensorId;
 use crate::{DebugMask, Map, Set};
@@ -506,7 +506,7 @@ impl Runtime {
         let mut shape: Vec<Dim> = self.shape(x).into();
         debug_assert_eq!(shape.len(), padding.len());
         //println!("self shape: {shape:?}, padding: {padding:?}");
-        apply_padding(&mut shape, &padding);
+        pad(&mut shape, &padding);
         //println!("out={shape:?}");
         let id = self.graph.push_wshape(Node::Pad { x }, shape);
         self.graph.push_padding(id, padding);
@@ -807,17 +807,6 @@ pub fn deallocate_tensors(
                 pools[buffer_id.pool].deallocate(buffer_id.buffer, event_wait);
                 temp_data.remove(&buffer_id);
             }
-        }
-    }
-}
-
-pub fn apply_padding(shape: &mut [Dim], padding: &[(i64, i64)]) {
-    let mut i = 0;
-    for d in shape.iter_mut() {
-        *d = Dim::try_from(i64::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
-        i += 1;
-        if i >= padding.len() {
-            break;
         }
     }
 }

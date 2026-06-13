@@ -10,7 +10,7 @@
 use crate::dtype::DType;
 use crate::error::ZyxError;
 use crate::kernel::{BOp, UOp};
-use crate::runtime::{TempData, apply_padding};
+use crate::runtime::TempData;
 use crate::scalar::{Float, Scalar};
 use crate::shape::{Dim, IntoShape, UAxis, into_axes, into_axis};
 use crate::slab::SlabId;
@@ -1247,7 +1247,7 @@ impl Tensor {
         }
         let t0 = self.pad_zeros(padding.clone())?;
         let ones = Tensor::ones(sh.clone(), dtype);
-        apply_padding(&mut sh, &padding);
+        crate::shape::pad(&mut sh, &padding);
         let zeros = Tensor::zeros(sh, dtype);
         Ok(t0 + ones.pad_zeros(padding)?.where_(zeros, value)?)
     }
@@ -1706,7 +1706,9 @@ impl Tensor {
         let target = target.into();
         let classes_dim = if self.rank() <= 1 { 0 } else { 1 };
         let target = if self.shape() != target.shape() {
-            target.unsqueeze(classes_dim)?.one_hot_along_dim(self.shape()[classes_dim as usize], classes_dim)?
+            target
+                .unsqueeze(classes_dim)?
+                .one_hot_along_dim(self.shape()[classes_dim as usize], classes_dim)?
         } else {
             target
         };
@@ -1715,7 +1717,9 @@ impl Tensor {
         match reduction {
             ReduceOp::Mean => Ok(per_sample.mean_all()),
             ReduceOp::Sum => Ok(per_sample.sum_all()),
-            _ => Err(ZyxError::ParseError("invalid reduction for cross_entropy, expected Mean or Sum".into())),
+            _ => Err(ZyxError::ParseError(
+                "invalid reduction for cross_entropy, expected Mean or Sum".into(),
+            )),
         }
     }
 

@@ -188,3 +188,14 @@ pub fn reduce(shape: &[Dim], axes: &[UAxis]) -> Vec<Dim> {
         .collect();
     if res.is_empty() { vec![1] } else { res }
 }
+
+pub fn pad(shape: &mut [Dim], padding: &[(i64, i64)]) {
+    let mut i = 0;
+    for d in shape.iter_mut() {
+        *d = Dim::try_from(i64::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
+        i += 1;
+        if i >= padding.len() {
+            break;
+        }
+    }
+}

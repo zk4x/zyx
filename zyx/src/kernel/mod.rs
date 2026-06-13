@@ -463,6 +463,7 @@ impl Hash for Kernel {
     }
 }
 
+// Custom kernel machinery
 impl Kernel {
     /// Create a new custom kernel targeting a specific device.
     ///
@@ -601,6 +602,42 @@ impl Kernel {
         self.compile()
     }
 
+    pub fn load_view(&mut self, dtype: DType, view: View) {
+        self.push_back(Op::LoadView(Box::new((dtype, view))));
+    }
+
+    pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
+        let axes = axes.to_vec();
+        let shape = self.shape();
+        let shape = crate::shape::permute(&shape, &axes);
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes, shape }) })
+    }
+
+    pub fn reshape(&mut self, x: OpId, shape: &[Dim]) -> OpId {
+        let shape = shape.to_vec();
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
+    }
+
+    pub fn expand(&mut self, x: OpId, shape: &[Dim]) -> OpId {
+        let shape = shape.to_vec();
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) })
+    }
+
+    pub fn pad(&mut self, x: OpId, padding: &[(i64, i64)]) -> OpId {
+        let padding = padding.to_vec();
+        let mut shape = self.shape();
+        crate::shape::pad(&mut shape, &padding);
+        self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding, shape }) })
+    }
+
+    pub fn reduce(&mut self, x: OpId, rop: BOp, n_axes: usize) -> OpId {
+        self.push_back(Op::Reduce { x, rop, n_axes })
+    }
+
+    pub fn store_view(&mut self, src: OpId, dtype: DType) {
+        self.push_back(Op::StoreView { src, dtype });
+    }
+
     pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
         self.push_back(Op::Const(Constant::new(val)))
     }
@@ -637,7 +674,7 @@ impl Kernel {
         self.push_back(Op::EndLoop);
     }
 
-    pub fn binary(&mut self, x: OpId, y: OpId, bop: BOp) -> OpId {
+    pub(crate) fn binary(&mut self, x: OpId, y: OpId, bop: BOp) -> OpId {
         self.push_back(Op::Binary { x, y, bop })
     }
 

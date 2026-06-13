@@ -389,7 +389,7 @@ impl<'a> Kernelizer<'a> {
     fn add_cast_op(&mut self, nid: TensorId, x: TensorId, dtype: DType) {
         let (kid, op_id) = self.visited[&x];
         let kernel = &mut self.kernels[kid];
-        let op_id = kernel.push_back(Op::Cast { x: op_id, dtype });
+        let op_id = kernel.cast(op_id, dtype);
         kernel.remove_first_output(x);
         kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -422,7 +422,7 @@ impl<'a> Kernelizer<'a> {
             kernel.remove_first_output(x);
             kernel.remove_first_output(y);
             kernel.outputs.extend(vec![nid; self.rcs[&nid] as usize]);
-            kernel.push_back(Op::Binary { x: op_id, y: op_idy, bop })
+            kernel.binary(op_id, op_idy, bop)
         } else {
             //println!("Different kernels for binary");
             // TODO later use this, but this requires global memory sync inside of the kernel
@@ -479,7 +479,8 @@ impl<'a> Kernelizer<'a> {
             };
 
             self.kernels[kidy].remove_first_output(y);
-            let Kernel { outputs, loads, stores, ops, head, tail: _, device_id: _, custom_kernel_id } = unsafe { self.kernels.remove_and_return(kidy) };
+            let Kernel { outputs, loads, stores, ops, head, tail: _, device_id: _, custom_kernel_id } =
+                unsafe { self.kernels.remove_and_return(kidy) };
             debug_assert!(custom_kernel_id.is_none(), "must not duplicate custom kernel stub");
 
             // Extend x kernel with y ops
@@ -513,12 +514,11 @@ impl<'a> Kernelizer<'a> {
             self.kernels[kid].outputs.extend(outputs);
             self.kernels[kid].outputs.extend(vec![nid; self.rcs[&nid] as usize]);
 
-            let op = if swapped_xy {
-                Op::Binary { x: y_ops_map[&op_idy], y: op_id, bop }
+            if swapped_xy {
+                self.kernels[kid].binary(y_ops_map[&op_idy], op_id, bop)
             } else {
-                Op::Binary { x: op_id, y: y_ops_map[&op_idy], bop }
-            };
-            self.kernels[kid].push_back(op)
+                self.kernels[kid].binary(op_id, y_ops_map[&op_idy], bop)
+            }
         };
 
         *self.rcs.get_mut(&x).unwrap() -= 1;
@@ -541,7 +541,7 @@ impl<'a> Kernelizer<'a> {
             self.visited.remove(&x).unwrap();
             self.pending_stores.insert(x);
             let dtype = self.graph.dtype(x);
-            self.kernels[kid].push_back(Op::StoreView { src: op_id, dtype });
+            self.kernels[kid].store_view(op_id, dtype);
             self.kernels[kid].stores.push(x);
 
             // remove all references to x
@@ -582,7 +582,10 @@ impl<'a> Kernelizer<'a> {
             )?;
             let device = &mut self.devices[dev_id];
             let pool = &mut self.pools[pool_id];
-            let &program_id = self.cache.programs.get(&(cache_kid, dev_id))
+            let &program_id = self
+                .cache
+                .programs
+                .get(&(cache_kid, dev_id))
                 .expect("custom kernel program not found in cache");
             if self.debug.kmd() {
                 println!("Custom kernel launch from memory pool {pool_id:?} with args: {args:?}");
