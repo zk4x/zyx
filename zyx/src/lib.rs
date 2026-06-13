@@ -62,7 +62,7 @@ mod backend;
 mod dtype;
 mod error;
 mod graph;
-mod kernel;
+pub mod kernel;
 mod kernel_cache;
 mod mutex;
 #[cfg(feature = "py")]

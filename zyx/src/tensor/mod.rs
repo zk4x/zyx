@@ -2979,6 +2979,35 @@ impl Tensor {
     }*/
 }
 
+/// Apply a custom kernel to input tensors.
+///
+/// The kernel must be built using the `Kernel` builder API.
+/// Input tensors are mapped to `Op::LoadView` ops in order.
+/// The kernel should contain one `Op::StoreView` for the output.
+///
+/// # Example
+///
+/// ```rust
+/// use zyx::kernel::{Kernel, Op, Scope};
+/// use zyx::Tensor;
+///
+/// let mut kernel = Kernel::new();
+/// let inp = kernel.push_back(Op::LoadView(Box::new((
+///     zyx::DType::F32,
+///     zyx::view::View::contiguous(&[4]),
+/// ))));
+/// let out = kernel.binary(inp, inp, zyx::kernel::BOp::Add);
+/// kernel.push_back(Op::StoreView { src: out, dtype: zyx::DType::F32 });
+/// ```
+#[must_use]
+pub fn custom(kernel: crate::kernel::Kernel, inputs: &[&Tensor]) -> Tensor {
+    let ids: Vec<_> = inputs.iter().map(|t| t.id).collect();
+    let shape = kernel.shape();
+    let shape = if shape.is_empty() { inputs[0].shape() } else { shape };
+    let id = RT.lock().custom(&ids, kernel, shape);
+    Tensor { id }
+}
+
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct DebugGuard {
     debug: DebugMask,

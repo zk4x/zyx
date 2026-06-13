@@ -47,7 +47,7 @@ struct Kernelizer<'a> {
     // TODO merge as many of these as possible. Perhaps start by mergins rcs and visited
     // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
     must_keep_nodes: Set<TensorId>,     // Nodes that were realized before kernelizer was created
-    virt_realized_nodes: Set<TensorId>, // Nodes that appear in kernel stores, but are not realized yet
+    pending_stores: Set<TensorId>, // Nodes that appear in kernel stores, but are not realized yet
     realized_nodes: Set<TensorId>,      // Nodes that are realized
     // TODO later delete this and just directly use the runtime kernel cache
     kernels: Slab<KMKernelId, Kernel>,
@@ -86,7 +86,7 @@ impl<'a> Kernelizer<'a> {
         Self {
             // Those node that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
             must_keep_nodes,
-            virt_realized_nodes: realized_nodes.clone(),
+            pending_stores: realized_nodes.clone(),
             realized_nodes,
             kernels: Slab::with_capacity(30),
             visited: Map::with_capacity_and_hasher(100, BuildHasherDefault::new()),
@@ -112,8 +112,8 @@ impl<'a> Kernelizer<'a> {
         println!();
     }
 
-    fn is_virt_realized(&self, nid: TensorId) -> bool {
-        self.virt_realized_nodes.contains(&nid)
+    fn has_pending_store(&self, nid: TensorId) -> bool {
+        self.pending_stores.contains(&nid)
     }
 
     fn duplicate_or_store(&mut self, x: TensorId) -> Result<(KMKernelId, OpId), ZyxError> {
@@ -529,12 +529,12 @@ impl<'a> Kernelizer<'a> {
         //println!("Adding store.");
         let (kid, op_id) = self.visited[&x];
         //self.kernels[kid].debug();
-        if self.virt_realized_nodes.contains(&x) {
+        if self.pending_stores.contains(&x) {
             self.visited.remove(&x).unwrap();
             self.kernels[kid].outputs.retain(|&elem| elem != x);
         } else {
             self.visited.remove(&x).unwrap();
-            self.virt_realized_nodes.insert(x);
+            self.pending_stores.insert(x);
             let dtype = self.graph.dtype(x);
             self.kernels[kid].push_back(Op::StoreView { src: op_id, dtype });
             self.kernels[kid].stores.push(x);
@@ -703,13 +703,13 @@ impl Runtime {
             /*use crate::{RED, RESET};
             println!(
                 "{RED}{}{nid} x {} -> {:?}  {}  {:?}{RESET}",
-                if kernelizer.is_virt_realized(nid) { "LOAD " } else { "" },
+                if kernelizer.has_pending_store(nid) { "LOAD " } else { "" },
                 kernelizer.rcs[&nid],
                 self.graph[nid],
                 self.graph.dtype(nid),
                 self.graph.shape(nid)
             );*/
-            if kernelizer.is_virt_realized(nid) {
+            if kernelizer.has_pending_store(nid) {
                 kernelizer.create_load_kernel(nid);
             } else {
                 match self.graph[nid] {
@@ -723,7 +723,7 @@ impl Runtime {
                     Node::Pad { x } => kernelizer.add_pad_op(nid, x)?,
                     Node::Reduce { x, rop } => kernelizer.add_reduce_op(nid, x, rop)?,
                     Node::Binary { x, y, bop } => kernelizer.add_binary_op(nid, x, y, bop)?,
-                    Node::Custom(_) => todo!(),
+                    Node::Custom(_) => todo!("Custom kernel integration is not yet implemented"),
                 }
             }
 

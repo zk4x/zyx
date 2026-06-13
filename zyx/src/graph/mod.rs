@@ -212,7 +212,7 @@ impl Graph {
                     return DType::Bool;
                 }
                 _ => {
-                    tensor_id = self.nodes[tensor_id].1.parameters().next().unwrap();
+                    tensor_id = self.nodes[tensor_id].1.parameters().into_iter().next().unwrap();
                 }
             }
         }
@@ -397,7 +397,7 @@ impl Graph {
                 Node::Expand { x } => add_node(id, &f!("Expand({x})"), "oval"),
                 Node::Pad { x } => add_node(id, &f!("Pad({x})"), "oval"),
                 Node::Reduce { x, rop } => add_node(id, &f!("{rop:?}({x})"), "oval"),
-                Node::Custom(_) => todo!(),
+                Node::Custom(ck) => add_node(id, &f!("Custom(kid={:?}, params={})", ck.kernel, ck.inputs.len()), "box"),
             }
             for param in node.parameters() {
                 writeln!(edges, "  {param} -> {id}").unwrap();
@@ -425,6 +425,8 @@ impl std::ops::IndexMut<TensorId> for Graph {
 use crate::dtype::Constant;
 
 impl BOp {
+    /// Returns true if the binary operation is associative:
+    /// `(a op b) op c == a op (b op c)`.
     pub const fn is_associative(self) -> bool {
         use BOp::{Add, And, BitAnd, BitOr, BitShiftLeft, BitShiftRight, BitXor, Max, Mul, Or};
         matches!(
@@ -433,70 +435,39 @@ impl BOp {
         )
     }
 
+    /// Returns true if the binary operation is commutative:
+    /// `a op b == b op a`.
     pub const fn is_commutative(self) -> bool {
         use BOp::{Add, And, BitAnd, BitOr, BitXor, Max, Mul, Or};
         matches!(self, Add | Mul | And | Or | BitXor | BitAnd | BitOr | Max)
     }
 
+    /// Returns true if the operation produces a boolean result.
     pub const fn returns_bool(self) -> bool {
         use BOp::{And, Cmpgt, Cmplt, Eq, NotEq, Or};
         matches!(self, Cmpgt | Cmplt | NotEq | Eq | And | Or)
     }
 }
 
-pub struct NodeParametersIterator {
-    parameters: [TensorId; 2],
-    len: u8,
-    idx: u8,
-}
-
-impl Iterator for NodeParametersIterator {
-    type Item = TensorId;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.idx == self.len {
-            return None;
-        }
-        let idx = self.idx;
-        self.idx += 1;
-        Some(self.parameters[idx as usize])
-    }
-}
-
 impl Node {
-    /// Get all parameters of self. This method does not allocate.
-    pub const fn parameters(&self) -> NodeParametersIterator {
+    /// Get all parameters of self.
+    pub fn parameters(&self) -> Vec<TensorId> {
         match self {
-            Node::Const { .. } | Node::Leaf { .. } => {
-                NodeParametersIterator { parameters: [TensorId::ZERO, TensorId::ZERO], idx: 0, len: 0 }
-            }
+            Node::Const { .. } | Node::Leaf { .. } => Vec::new(),
             Node::Unary { x, .. }
             | Node::Cast { x, .. }
             | Node::Reshape { x, .. }
             | Node::Expand { x, .. }
             | Node::Permute { x, .. }
             | Node::Pad { x, .. }
-            | Node::Reduce { x, .. } => NodeParametersIterator { parameters: [*x, TensorId::ZERO], idx: 0, len: 1 },
-            Node::Binary { x, y, .. } => NodeParametersIterator { parameters: [*x, *y], idx: 0, len: 2 },
-            Node::Custom(_) => todo!(),
+            | Node::Reduce { x, .. } => vec![*x],
+            Node::Binary { x, y, .. } => vec![*x, *y],
+            Node::Custom(ck) => ck.inputs.clone(),
         }
     }
 
-    /*pub const fn num_parameters(&self) -> u8 {
+    pub fn param1(&self) -> TensorId {
         match self {
-            Node::Const { .. } | Node::Leaf { .. } => 0,
-            Node::Expand { .. }
-            | Node::Permute { .. }
-            | Node::Reshape { .. }
-            | Node::Pad { .. }
-            | Node::Reduce { .. }
-            | Node::Cast { .. }
-            | Node::Unary { .. } => 1,
-            Node::Binary { .. } => 2,
-        }
-    }*/
-
-    pub const fn param1(&self) -> TensorId {
-        match *self {
             Node::Const { .. } | Node::Leaf { .. } => unreachable!(),
             Node::Expand { x }
             | Node::Permute { x }
@@ -505,8 +476,8 @@ impl Node {
             | Node::Reduce { x, .. }
             | Node::Cast { x, .. }
             | Node::Unary { x, .. }
-            | Node::Binary { x, .. } => x,
-            Node::Custom(_) => todo!(),
+            | Node::Binary { x, .. } => *x,
+            Node::Custom(ck) => ck.inputs[0],
         }
     }
 

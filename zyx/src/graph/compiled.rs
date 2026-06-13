@@ -84,7 +84,7 @@ impl CachedGraph {
                     return DType::Bool;
                 }
                 _ => {
-                    tensor_id = self.nodes[tensor_id].parameters().next().unwrap().into();
+                    tensor_id = self.nodes[tensor_id].parameters().into_iter().next().unwrap().into();
                 }
             }
         }

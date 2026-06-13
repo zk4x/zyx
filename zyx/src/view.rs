@@ -3,6 +3,8 @@
 
 //! View handles movement operations.
 
+#![allow(missing_docs)]
+
 use nanoserde::{DeBin, SerBin};
 
 use crate::shape::{Dim, UAxis};

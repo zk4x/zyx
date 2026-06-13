@@ -1,6 +1,35 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Kernel Intermediate Representation for building custom compute kernels.
+//!
+//! This module provides the IR builder API for constructing custom kernels
+//! that can be compiled and executed on any backend (CPU, CUDA, Vulkan, etc.).
+//!
+//! # Quick start
+//!
+//! Build a simple element-wise kernel:
+//!
+//! ```ignore
+//! use zyx::kernel::{Kernel, Op, View, BOp, Scope, MemLayout};
+//! use zyx::DType;
+//!
+//! let n = 256 * 256;
+//! let mut kernel = Kernel::new();
+//! let inp = kernel.push_back(Op::LoadView(Box::new((DType::F32, View::contiguous(&[n])))));
+//! let gidx = kernel.gidx(0, n);
+//! let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+//! let doubled = kernel.binary(loaded, loaded, BOp::Add);
+//! let out = kernel.define(DType::F32, Scope::Register, false, n);
+//! kernel.store(out, doubled, gidx, MemLayout::Scalar);
+//! ```
+//!
+//! The kernel is then passed to [`Tensor::custom`](crate::Tensor::custom) for execution.
+
+#![allow(missing_docs)]
+
+pub use crate::view::View;
+
 use crate::{
     DType, Map, Set,
     dtype::Constant,
@@ -8,7 +37,6 @@ use crate::{
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
     tensor::TensorId,
-    view::View,
 };
 use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
