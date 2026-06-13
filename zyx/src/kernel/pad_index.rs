@@ -1,6 +1,18 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Pad index optimization.
+//!
+//! This module provides index padding optimizations for kernels,
+//! which pad global indices to hardware-friendly sizes.
+//!
+//! Padding indices is useful for:
+//!
+//! - Enabling efficient tiling when tensor dimensions aren't multiples
+//!   of the tile size
+//! - Guarding out-of-range loads
+//! - Skipping out-of-range stores with conditionals
+
 use crate::{
     Set,
     dtype::Constant,
