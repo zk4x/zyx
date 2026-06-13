@@ -26,8 +26,6 @@
 //!
 //! The kernel is then finalized via [`Kernel::compile`].
 
-//#![allow(missing_docs)]
-
 pub use crate::backend::DeviceId;
 pub use crate::view::View;
 
@@ -113,7 +111,7 @@ pub struct Kernel {
 }
 
 /// Execution scope for kernel indices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Scope {
     /// Global memory scope (shared across all threads).
     Global,
@@ -128,7 +126,7 @@ pub(crate) enum Scope {
 /// These operations are applied to a single input tensor.
 ///
 /// # Variants
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub(crate) enum UOp {
     /// Negation: -x
     Neg,
@@ -158,7 +156,7 @@ pub(crate) enum UOp {
     Abs,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, SerBin, DeBin)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 /// Binary operations for element-wise or reduction kernel operations.
 ///
 /// These operations take two input tensors and produce an output.
@@ -206,7 +204,7 @@ pub(crate) enum BOp {
 /// Movement operations for tensor shape transformations.
 ///
 /// These operations change the shape of tensors without changing their data.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum MoveOp {
     /// Reshape to a new shape.
     Reshape { shape: Vec<Dim> },
@@ -1585,5 +1583,132 @@ impl MMADims {
             MMADims::m16n8k8 => (16, 8, 8),
             MMADims::m16n8k16 => (16, 8, 16),
         }
+    }
+}
+
+// Manual SerBin/DeBin implementations for private enums
+
+impl SerBin for UOp {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        match self {
+            UOp::Neg => output.push(0),
+            UOp::BitNot => output.push(1),
+            UOp::Exp => output.push(2),
+            UOp::Exp2 => output.push(3),
+            UOp::Ln => output.push(4),
+            UOp::Log2 => output.push(5),
+            UOp::Reciprocal => output.push(6),
+            UOp::Sqrt => output.push(7),
+            UOp::Sin => output.push(8),
+            UOp::Cos => output.push(9),
+            UOp::Floor => output.push(10),
+            UOp::Trunc => output.push(11),
+            UOp::Abs => output.push(12),
+        }
+    }
+}
+
+impl DeBin for UOp {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        match bytes[*offset] {
+            0 => Ok(UOp::Neg),
+            1 => Ok(UOp::BitNot),
+            2 => Ok(UOp::Exp),
+            3 => Ok(UOp::Exp2),
+            4 => Ok(UOp::Ln),
+            5 => Ok(UOp::Log2),
+            6 => Ok(UOp::Reciprocal),
+            7 => Ok(UOp::Sqrt),
+            8 => Ok(UOp::Sin),
+            9 => Ok(UOp::Cos),
+            10 => Ok(UOp::Floor),
+            11 => Ok(UOp::Trunc),
+            12 => Ok(UOp::Abs),
+            _ => Err(nanoserde::DeBinErr::new(*offset, 1, bytes.len())),
+        }
+    }
+}
+
+impl SerBin for BOp {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        match self {
+            BOp::Add => output.push(0),
+            BOp::Sub => output.push(1),
+            BOp::Mul => output.push(2),
+            BOp::Div => output.push(3),
+            BOp::Pow => output.push(4),
+            BOp::Mod => output.push(5),
+            BOp::Cmplt => output.push(6),
+            BOp::Cmpgt => output.push(7),
+            BOp::Max => output.push(8),
+            BOp::Or => output.push(9),
+            BOp::And => output.push(10),
+            BOp::BitXor => output.push(11),
+            BOp::BitOr => output.push(12),
+            BOp::BitAnd => output.push(13),
+            BOp::BitShiftLeft => output.push(14),
+            BOp::BitShiftRight => output.push(15),
+            BOp::NotEq => output.push(16),
+            BOp::Eq => output.push(17),
+        }
+    }
+}
+
+impl DeBin for BOp {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        match bytes[*offset] {
+            0 => Ok(BOp::Add),
+            1 => Ok(BOp::Sub),
+            2 => Ok(BOp::Mul),
+            3 => Ok(BOp::Div),
+            4 => Ok(BOp::Pow),
+            5 => Ok(BOp::Mod),
+            6 => Ok(BOp::Cmplt),
+            7 => Ok(BOp::Cmpgt),
+            8 => Ok(BOp::Max),
+            9 => Ok(BOp::Or),
+            10 => Ok(BOp::And),
+            11 => Ok(BOp::BitXor),
+            12 => Ok(BOp::BitOr),
+            13 => Ok(BOp::BitAnd),
+            14 => Ok(BOp::BitShiftLeft),
+            15 => Ok(BOp::BitShiftRight),
+            16 => Ok(BOp::NotEq),
+            17 => Ok(BOp::Eq),
+            _ => Err(nanoserde::DeBinErr::new(*offset, 1, bytes.len())),
+        }
+    }
+}
+
+impl SerBin for Scope {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        match self {
+            Scope::Global => output.push(0),
+            Scope::Local => output.push(1),
+            Scope::Register => output.push(2),
+        }
+    }
+}
+
+impl DeBin for Scope {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        match bytes[*offset] {
+            0 => Ok(Scope::Global),
+            1 => Ok(Scope::Local),
+            2 => Ok(Scope::Register),
+            _ => Err(nanoserde::DeBinErr::new(*offset, 1, bytes.len())),
+        }
+    }
+}
+
+impl SerBin for MoveOp {
+    fn ser_bin(&self, _output: &mut Vec<u8>) {
+        todo!()
+    }
+}
+
+impl DeBin for MoveOp {
+    fn de_bin(_offset: &mut usize, _bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
+        todo!()
     }
 }

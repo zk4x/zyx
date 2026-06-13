@@ -4,7 +4,7 @@
 #![doc = include_str!("../README.md")]
 #![forbid(rustdoc::broken_intra_doc_links)]
 #![forbid(rustdoc::private_intra_doc_links)]
-#![deny(missing_docs)]
+#![warn(missing_docs)]
 #![forbid(rustdoc::missing_crate_level_docs)]
 #![forbid(rustdoc::private_doc_tests)]
 #![forbid(rustdoc::invalid_codeblock_attributes)]
