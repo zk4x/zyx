@@ -1,6 +1,46 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Autotuning system for kernel optimization.
+//!
+//! This module provides an autotuning framework that explores different kernel
+//! configurations to find optimal performance on the target hardware.
+//!
+//! # How It Works
+//!
+//! The autotuning system uses a beam-search algorithm to explore optimization
+//! sequences:
+//!
+//! 1. Start with a base kernel and apply always-on optimizations
+//! 2. Try each available optimization with its variants
+//! 3. Track visited kernel hashes to avoid duplicates
+//! 4. Launch kernels and measure actual timing
+//! 5. Build a cost model from real measurements
+//! 6. Use beam search to find the best configuration
+//!
+//! # Available Optimizations
+//!
+//! The system supports 7 optimization types:
+//!
+//! - `ReassociateCommutative`: Reassociate and group commutative operations
+//! - `UnrollLoops`: Unroll loops with constant or large factors
+//! - `SplitGlobalToLocal`: Split global indices into local factors
+//! - `ThreadCoarse`: Coarsen thread-level parallelism
+//! - `RegisterBlocking`: Block operations for register tiling
+//! - `TiledReduce`: Apply tiled reduction parallelism
+//! - `SplitLoop`: Split large loops into smaller iterations
+//! - `PadIndex`: Pad indices to hardware-friendly sizes
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use zyx::kernel::Kernel;
+//! use zyx::backend::Device;
+//!
+//! let kernel = Kernel::new(device);
+//! kernel.autotune_(...);
+//! ```
+
 #![allow(unused)]
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::derived_hash_with_manual_eq)]
