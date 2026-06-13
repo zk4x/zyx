@@ -637,11 +637,17 @@ impl Kernel {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, DeBin, SerBin)]
 pub struct OptSeq {
+    /// List of (optimization_id, config_id) pairs to apply.
     opts: Vec<(usize, usize)>,
+    /// Cost estimate for this optimization sequence.
     cost: Cost,
 }
 
 impl OptSeq {
+    /// Apply the optimization sequence to the kernel.
+    ///
+    /// Applies all optimizations in the sequence to the kernel
+    /// using the provided device information.
     pub fn apply(&self, kernel: &mut Kernel, dev_info: &DeviceInfo) {
         for &(opt_id, opt_cfg) in &self.opts {
             let (opt, _): (Optimization, usize) = AVAILABLE_OPTIMIZATIONS[opt_id](kernel, dev_info);
