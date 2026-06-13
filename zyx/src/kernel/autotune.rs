@@ -119,6 +119,10 @@ pub enum Optimization {
 }
 
 impl Optimization {
+    /// Debug output for the optimization with the given config ID.
+    ///
+    /// This is used during autotuning to print what optimizations
+    /// are being applied for debugging purposes.
     pub fn debug(&self, config: usize) {
         match self {
             Optimization::ReassociateCommutative => println!("ReassociateCommutative"),
