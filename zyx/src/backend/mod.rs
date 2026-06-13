@@ -143,6 +143,11 @@ impl From<DeviceId> for usize {
     }
 }
 
+impl DeviceId {
+    /// Auto-select the device (default scheduling behavior).
+    pub const AUTO: Self = Self(u32::MAX);
+}
+
 impl SlabId for DeviceId {
     const ZERO: Self = Self(0);
     const NULL: Self = Self(u32::MAX);

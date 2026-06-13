@@ -6,7 +6,7 @@
 pub mod compiled;
 mod search;
 
-use crate::kernel::{BOp, UOp};
+use crate::kernel::{BOp, DeviceId, UOp};
 use crate::slab::SlabId;
 use crate::tensor::TensorId;
 use crate::{
@@ -61,6 +61,11 @@ pub enum Node {
     },
     #[allow(unused)]
     Custom(Box<crate::kernel::custom::CustomKernel>),
+    /// Explicit device placement — copies the tensor to the target device.
+    ToDevice {
+        x: TensorId,
+        device: DeviceId,
+    },
 }
 
 #[derive(Debug)]
@@ -201,6 +206,21 @@ impl Graph {
             }
         }
     }*/
+
+    pub(super) fn device(&self, tensor_id: TensorId) -> DeviceId {
+        let mut tensor_id = tensor_id;
+        for _ in 0..100_000 {
+            if let Node::ToDevice { device, .. } = self.nodes[tensor_id].1 {
+                return device;
+            }
+            let params = self.nodes[tensor_id].1.parameters();
+            if params.is_empty() {
+                return DeviceId::AUTO;
+            }
+            tensor_id = params.into_iter().next().unwrap();
+        }
+        DeviceId::AUTO
+    }
 
     pub(super) fn dtype(&self, tensor_id: TensorId) -> DType {
         let mut tensor_id = tensor_id;
@@ -398,6 +418,7 @@ impl Graph {
                 Node::Pad { x } => add_node(id, &f!("Pad({x})"), "oval"),
                 Node::Reduce { x, rop } => add_node(id, &f!("{rop:?}({x})"), "oval"),
                 Node::Custom(ck) => add_node(id, &f!("Custom(kid={:?}, params={})", ck.kernel, ck.inputs.len()), "box"),
+                Node::ToDevice { x, device } => add_node(id, &f!("ToDevice({x}, {device:?})"), "box"),
             }
             for param in node.parameters() {
                 writeln!(edges, "  {param} -> {id}").unwrap();
@@ -463,6 +484,7 @@ impl Node {
             | Node::Reduce { x, .. } => vec![*x],
             Node::Binary { x, y, .. } => vec![*x, *y],
             Node::Custom(ck) => ck.inputs.clone(),
+            Node::ToDevice { x, .. } => vec![*x],
         }
     }
 
@@ -478,6 +500,7 @@ impl Node {
             | Node::Unary { x, .. }
             | Node::Binary { x, .. } => *x,
             Node::Custom(ck) => ck.inputs[0],
+            Node::ToDevice { x, .. } => *x,
         }
     }
 

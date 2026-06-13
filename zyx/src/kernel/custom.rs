@@ -1,6 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+use crate::backend::DeviceId;
 use crate::{kernel_cache::KernelId, tensor::TensorId};
 
 /// Custom kernel identified by a cached `KernelId` with input tensor mappings.
@@ -13,4 +14,6 @@ pub struct CustomKernel {
     pub kernel: KernelId,
     /// Input tensors that this kernel reads from.
     pub inputs: Vec<TensorId>,
+    /// Device the kernel should run on.
+    pub device: DeviceId,
 }

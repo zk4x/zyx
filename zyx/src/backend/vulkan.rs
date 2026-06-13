@@ -64,10 +64,8 @@ fn find_mem_type(
     required: vk::MemoryPropertyFlags,
 ) -> Option<u32> {
     let mem = unsafe { inst.get_physical_device_memory_properties(gpu) };
-    (0..mem.memory_type_count).find(|&i| {
-        (type_filter & (1 << i)) != 0
-            && mem.memory_types[i as usize].property_flags & required == required
-    })
+    (0..mem.memory_type_count)
+        .find(|&i| (type_filter & (1 << i)) != 0 && mem.memory_types[i as usize].property_flags & required == required)
 }
 
 // ── Memory Pool ─────────────────────────────────────────────────────────────
@@ -110,32 +108,23 @@ impl VulkanMemoryPool {
 
     pub(super) const fn deinitialize(&mut self) {}
 
-    pub(super) fn allocate(
-        &mut self,
-        bytes: Dim,
-    ) -> Result<(PoolBufferId, Event), BackendError> {
+    pub(super) fn allocate(&mut self, bytes: Dim) -> Result<(PoolBufferId, Event), BackendError> {
         let size = bytes.next_multiple_of(4) as u64;
         let (buf, mem, ptr) = self.create_buffer(size)?;
         let id = self.buffers.push((buf, mem, Mapped(ptr), bytes as usize));
         Ok((PoolBufferId::from(id), Event::Vulkan(VulkanEvent::none())))
     }
 
-    fn create_buffer(
-        &self,
-        size: u64,
-    ) -> Result<(vk::Buffer, vk::DeviceMemory, *mut u8), BackendError> {
+    fn create_buffer(&self, size: u64) -> Result<(vk::Buffer, vk::DeviceMemory, *mut u8), BackendError> {
         let dev = &self.core.device;
-        let usage = vk::BufferUsageFlags::STORAGE_BUFFER
-            | vk::BufferUsageFlags::TRANSFER_DST
-            | vk::BufferUsageFlags::TRANSFER_SRC;
+        let usage =
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST | vk::BufferUsageFlags::TRANSFER_SRC;
         let ci = vk::BufferCreateInfo::default()
             .size(size)
             .usage(usage)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
-        let buf = unsafe { dev.create_buffer(&ci, None) }.map_err(|e| BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: format!("create buffer: {e}").into(),
-        })?;
+        let buf = unsafe { dev.create_buffer(&ci, None) }
+            .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("create buffer: {e}").into() })?;
         let req = unsafe { dev.get_buffer_memory_requirements(buf) };
         let mem_type = find_mem_type(
             &self.core.instance,
@@ -143,41 +132,26 @@ impl VulkanMemoryPool {
             req.memory_type_bits,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )
-        .ok_or_else(|| BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: "no suitable memory type".into(),
-        })?;
+        .ok_or_else(|| BackendError { status: ErrorStatus::MemoryAllocation, context: "no suitable memory type".into() })?;
         let alloc = vk::MemoryAllocateInfo::default()
             .allocation_size(req.size)
             .memory_type_index(mem_type);
-        let mem = unsafe { dev.allocate_memory(&alloc, None) }.map_err(|e| BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: format!("alloc memory: {e}").into(),
-        })?;
-        unsafe { dev.bind_buffer_memory(buf, mem, 0) }.map_err(|e| BackendError {
-            status: ErrorStatus::MemoryAllocation,
-            context: format!("bind memory: {e}").into(),
-        })?;
+        let mem = unsafe { dev.allocate_memory(&alloc, None) }
+            .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("alloc memory: {e}").into() })?;
+        unsafe { dev.bind_buffer_memory(buf, mem, 0) }
+            .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("bind memory: {e}").into() })?;
         let ptr = unsafe { dev.map_memory(mem, 0, size, vk::MemoryMapFlags::empty()) }
-            .map_err(|e| BackendError {
-                status: ErrorStatus::MemoryAllocation,
-                context: format!("map memory: {e}").into(),
-            })?;
+            .map_err(|e| BackendError { status: ErrorStatus::MemoryAllocation, context: format!("map memory: {e}").into() })?;
         Ok((buf, mem, ptr.cast::<u8>()))
     }
 
-    pub(super) fn deallocate(
-        &mut self,
-        buffer_id: PoolBufferId,
-        event_wait_list: Vec<Event>,
-    ) {
+    pub(super) fn deallocate(&mut self, buffer_id: PoolBufferId, event_wait_list: Vec<Event>) {
         for event in &event_wait_list {
             if let Event::Vulkan(ev) = event {
                 ev.wait();
             }
         }
-        let (buf, mem, Mapped(ptr), _) =
-            unsafe { self.buffers.remove_and_return(buffer_id) };
+        let (buf, mem, Mapped(ptr), _) = unsafe { self.buffers.remove_and_return(buffer_id) };
         let dev = &self.core.device;
         if !ptr.is_null() {
             unsafe { dev.unmap_memory(mem) };
@@ -240,7 +214,7 @@ impl VulkanMemoryPool {
 
 /// Wraps raw handles with take-once semantics.
 /// `wait()` waits on the fence and frees everything. Subsequent calls are no-ops.
-pub(crate) struct VulkanEvent {
+pub struct VulkanEvent {
     core: Option<Arc<Core>>,
     fence: Cell<Option<vk::Fence>>,
     cmd: Cell<Option<vk::CommandBuffer>>,
@@ -258,18 +232,8 @@ impl VulkanEvent {
         Self { core: None, fence: Cell::new(None), cmd: Cell::new(None), desc_set: Cell::new(None) }
     }
 
-    fn create(
-        core: Arc<Core>,
-        fence: vk::Fence,
-        cmd: vk::CommandBuffer,
-        desc_set: vk::DescriptorSet,
-    ) -> Self {
-        Self {
-            core: Some(core),
-            fence: Cell::new(Some(fence)),
-            cmd: Cell::new(Some(cmd)),
-            desc_set: Cell::new(Some(desc_set)),
-        }
+    fn create(core: Arc<Core>, fence: vk::Fence, cmd: vk::CommandBuffer, desc_set: vk::DescriptorSet) -> Self {
+        Self { core: Some(core), fence: Cell::new(Some(fence)), cmd: Cell::new(Some(cmd)), desc_set: Cell::new(Some(desc_set)) }
     }
 
     fn wait(&self) {
@@ -342,25 +306,14 @@ impl VulkanDevice {
         }
     }
 
-    pub(super) fn compile(
-        &mut self,
-        kernel: &Kernel,
-        debug_asm: bool,
-    ) -> Result<DeviceProgramId, BackendError> {
+    pub(super) fn compile(&mut self, kernel: &Kernel, debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
         let (spirv, gws, lws) = crate::backend::spirv::compile(kernel, debug_asm)
-            .map_err(|e| BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("SPIR-V: {e}").into(),
-            })?;
+            .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("SPIR-V: {e}").into() })?;
         let dev = &self.core.device;
 
         let shader_ci = vk::ShaderModuleCreateInfo::default().code(&spirv);
-        let shader = unsafe { dev.create_shader_module(&shader_ci, None) }.map_err(|e| {
-            BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("shader: {e}").into(),
-            }
-        })?;
+        let shader = unsafe { dev.create_shader_module(&shader_ci, None) }
+            .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("shader: {e}").into() })?;
 
         // Count kernel args for descriptor bindings
         let n_args = {
@@ -387,21 +340,15 @@ impl VulkanDevice {
             })
             .collect();
         let layout_ci = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-        let desc_layout =
-            unsafe { dev.create_descriptor_set_layout(&layout_ci, None) }.map_err(|e| {
-                BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: format!("ds layout: {e}").into(),
-                }
-            })?;
+        let desc_layout = unsafe { dev.create_descriptor_set_layout(&layout_ci, None) }
+            .map_err(|e| BackendError { status: ErrorStatus::KernelCompilation, context: format!("ds layout: {e}").into() })?;
 
         let desc_layouts = [desc_layout];
         let pl_ci = vk::PipelineLayoutCreateInfo::default().set_layouts(&desc_layouts);
-        let pipeline_layout =
-            unsafe { dev.create_pipeline_layout(&pl_ci, None) }.map_err(|e| BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("pipeline layout: {e}").into(),
-            })?;
+        let pipeline_layout = unsafe { dev.create_pipeline_layout(&pl_ci, None) }.map_err(|e| BackendError {
+            status: ErrorStatus::KernelCompilation,
+            context: format!("pipeline layout: {e}").into(),
+        })?;
 
         // Entry point name must match spirv.rs format: "k_{gws}__{lws}"
         let ep_name = format!(
@@ -414,9 +361,7 @@ impl VulkanDevice {
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(shader)
             .name(&entry_name);
-        let cp_ci = vk::ComputePipelineCreateInfo::default()
-            .stage(stage)
-            .layout(pipeline_layout);
+        let cp_ci = vk::ComputePipelineCreateInfo::default().stage(stage).layout(pipeline_layout);
         let pipeline = unsafe {
             dev.create_compute_pipelines(vk::PipelineCache::null(), &[cp_ci], None)
                 .map_err(|(_, e)| BackendError {
@@ -428,12 +373,9 @@ impl VulkanDevice {
 
         unsafe { dev.destroy_shader_module(shader, None) };
 
-        let id = self.programs.push(VulkanProgram {
-            gws,
-            pipeline,
-            pipeline_layout,
-            desc_layout,
-        });
+        let id = self
+            .programs
+            .push(VulkanProgram { gws, pipeline, pipeline_layout, desc_layout });
         Ok(id)
     }
 
@@ -458,12 +400,8 @@ impl VulkanDevice {
         let ds_alloc = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.core.desc_pool)
             .set_layouts(&ds_layouts);
-        let desc_sets = unsafe { dev.allocate_descriptor_sets(&ds_alloc) }.map_err(|e| {
-            BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("alloc ds: {e}").into(),
-            }
-        })?;
+        let desc_sets = unsafe { dev.allocate_descriptor_sets(&ds_alloc) }
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("alloc ds: {e}").into() })?;
         let desc_set = desc_sets[0];
 
         // Write descriptor set — one SSBO per argument
@@ -495,20 +433,13 @@ impl VulkanDevice {
             .command_pool(self.core.cmd_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
             .command_buffer_count(1);
-        let cmd_bufs = unsafe { dev.allocate_command_buffers(&cmd_alloc) }.map_err(|e| {
-            BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("alloc cmd: {e}").into(),
-            }
-        })?;
+        let cmd_bufs = unsafe { dev.allocate_command_buffers(&cmd_alloc) }
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("alloc cmd: {e}").into() })?;
         let cmd = cmd_bufs[0];
 
-        let begin = vk::CommandBufferBeginInfo::default()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        unsafe { dev.begin_command_buffer(cmd, &begin) }.map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: format!("begin cmd: {e}").into(),
-        })?;
+        let begin = vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe { dev.begin_command_buffer(cmd, &begin) }
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("begin cmd: {e}").into() })?;
 
         let gx = prog.gws.first().copied().unwrap_or(1) as u32;
         let gy = prog.gws.get(1).copied().unwrap_or(1) as u32;
@@ -534,34 +465,20 @@ impl VulkanDevice {
             dev.cmd_dispatch(cmd, gx, gy, gz);
         }
 
-        unsafe { dev.end_command_buffer(cmd) }.map_err(|e| BackendError {
-            status: ErrorStatus::KernelLaunch,
-            context: format!("end cmd: {e}").into(),
-        })?;
+        unsafe { dev.end_command_buffer(cmd) }
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("end cmd: {e}").into() })?;
 
         // Fence for GPU sync
         let fence = unsafe { dev.create_fence(&vk::FenceCreateInfo::default(), None) }
-            .map_err(|e| BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("fence: {e}").into(),
-            })?;
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("fence: {e}").into() })?;
 
         // Submit
         let cmd_bufs = [cmd];
         let submit = vk::SubmitInfo::default().command_buffers(&cmd_bufs);
-        unsafe { dev.queue_submit(self.core.queue, &[submit], fence) }.map_err(|e| {
-            BackendError {
-                status: ErrorStatus::KernelLaunch,
-                context: format!("submit: {e}").into(),
-            }
-        })?;
+        unsafe { dev.queue_submit(self.core.queue, &[submit], fence) }
+            .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: format!("submit: {e}").into() })?;
 
-        Ok(Event::Vulkan(VulkanEvent::create(
-            self.core.clone(),
-            fence,
-            cmd,
-            desc_set,
-        )))
+        Ok(Event::Vulkan(VulkanEvent::create(self.core.clone(), fence, cmd, desc_set)))
     }
 }
 
@@ -586,10 +503,7 @@ pub(super) fn initialize_device(
     // ── Load Vulkan ──
     let entry = unsafe { ash::Entry::load() }.map_err(|e| {
         eprintln!("[vulkan] load error: {e}");
-        BackendError {
-            status: ErrorStatus::Initialization,
-            context: format!("[vulkan] load: {e}").into(),
-        }
+        BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] load: {e}").into() }
     })?;
 
     let app_name = CString::new("zyx").unwrap();
@@ -611,17 +525,11 @@ pub(super) fn initialize_device(
 
     let instance = unsafe { entry.create_instance(&ici, None) }.map_err(|e| {
         eprintln!("[vulkan] instance error: {e}");
-        BackendError {
-            status: ErrorStatus::Initialization,
-            context: format!("[vulkan] instance: {e}").into(),
-        }
+        BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] instance: {e}").into() }
     })?;
 
-    let gpus =
-        unsafe { instance.enumerate_physical_devices() }.map_err(|e| BackendError {
-            status: ErrorStatus::Initialization,
-            context: format!("[vulkan] enumerate: {e}").into(),
-        })?;
+    let gpus = unsafe { instance.enumerate_physical_devices() }
+        .map_err(|e| BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] enumerate: {e}").into() })?;
 
     // ── Find first suitable GPU, build Core ──
     for gpu in gpus {
@@ -631,12 +539,8 @@ pub(super) fn initialize_device(
             cstr.to_string_lossy().into_owned()
         };
 
-        let qfps =
-            unsafe { instance.get_physical_device_queue_family_properties(gpu) };
-        let qfi = match qfps
-            .iter()
-            .position(|q| q.queue_flags.contains(vk::QueueFlags::COMPUTE))
-        {
+        let qfps = unsafe { instance.get_physical_device_queue_family_properties(gpu) };
+        let qfi = match qfps.iter().position(|q| q.queue_flags.contains(vk::QueueFlags::COMPUTE)) {
             Some(i) => i,
             None => {
                 if debug_dev {
@@ -669,13 +573,8 @@ pub(super) fn initialize_device(
             .enabled_features(&dev_features)
             .enabled_extension_names(&dev_ext_ptrs);
 
-        let device =
-            unsafe { instance.create_device(gpu, &dci, None) }.map_err(|e| {
-                BackendError {
-                    status: ErrorStatus::Initialization,
-                    context: format!("[vulkan] device: {e}").into(),
-                }
-            })?;
+        let device = unsafe { instance.create_device(gpu, &dci, None) }
+            .map_err(|e| BackendError { status: ErrorStatus::Initialization, context: format!("[vulkan] device: {e}").into() })?;
 
         let queue = unsafe { device.get_device_queue(qfi as u32, 0) };
 
@@ -683,54 +582,29 @@ pub(super) fn initialize_device(
         let cp_ci = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(qfi as u32);
-        let cmd_pool =
-            unsafe { device.create_command_pool(&cp_ci, None) }.map_err(|e| {
-                BackendError {
-                    status: ErrorStatus::Initialization,
-                    context: format!("[vulkan] cmd pool: {e}").into(),
-                }
-            })?;
+        let cmd_pool = unsafe { device.create_command_pool(&cp_ci, None) }.map_err(|e| BackendError {
+            status: ErrorStatus::Initialization,
+            context: format!("[vulkan] cmd pool: {e}").into(),
+        })?;
 
         // Descriptor pool
-        let pool_sizes = [vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::STORAGE_BUFFER,
-            descriptor_count: 1024,
-        }];
+        let pool_sizes = [vk::DescriptorPoolSize { ty: vk::DescriptorType::STORAGE_BUFFER, descriptor_count: 1024 }];
         let dp_ci = vk::DescriptorPoolCreateInfo::default()
             .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
             .max_sets(1024)
             .pool_sizes(&pool_sizes);
-        let desc_pool =
-            unsafe { device.create_descriptor_pool(&dp_ci, None) }.map_err(|e| {
-                BackendError {
-                    status: ErrorStatus::Initialization,
-                    context: format!("[vulkan] desc pool: {e}").into(),
-                }
-            })?;
+        let desc_pool = unsafe { device.create_descriptor_pool(&dp_ci, None) }.map_err(|e| BackendError {
+            status: ErrorStatus::Initialization,
+            context: format!("[vulkan] desc pool: {e}").into(),
+        })?;
 
-        let core = Arc::new(Core {
-            _entry: entry,
-            instance,
-            device,
-            gpu,
-            queue,
- 
-            cmd_pool,
-            desc_pool,
-        });
+        let core = Arc::new(Core { _entry: entry, instance, device, gpu, queue, cmd_pool, desc_pool });
 
-        let mem_pool = VulkanMemoryPool {
-            free_bytes: 1024 * 1024 * 1024,
-            core: core.clone(),
-            buffers: Slab::new(),
-        };
+        let mem_pool = VulkanMemoryPool { free_bytes: 1024 * 1024 * 1024, core: core.clone(), buffers: Slab::new() };
 
         let dev_info = DeviceInfo {
             compute: 1_000_000_000_000,
-            max_global_work_dims: vec![
-                Dim::from(max_wg_count[0]);
-                max_wg_count.len()
-            ],
+            max_global_work_dims: vec![Dim::from(max_wg_count[0]); max_wg_count.len()],
             max_local_threads: Dim::from(max_wg_invocations),
             max_local_work_dims: vec![Dim::from(max_wg_size[0]); max_wg_size.len()],
             ..Default::default()

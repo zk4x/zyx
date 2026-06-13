@@ -118,6 +118,7 @@ impl EGraph {
                 Node::Unary { x, uop } => ENode::Unary { x: NodeId(x.0), uop },
                 Node::Binary { x, y, bop } => ENode::Binary { x: NodeId(x.0), y: NodeId(x.0), bop },
                 Node::Custom(_) => todo!(),
+                Node::ToDevice { x, .. } => ENode::Reshape { x: NodeId(x.0), shape: graph.shape(tid).into() },
             };
 
             nodes.push(enode);

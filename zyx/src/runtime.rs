@@ -547,12 +547,16 @@ impl Runtime {
         self.graph.push(Node::Binary { x, y, bop })
     }
 
-    pub(super) fn custom(&mut self, inputs: &[TensorId], kernel: crate::kernel::Kernel, shape: Vec<Dim>) -> TensorId {
+    #[must_use]
+    pub(super) fn to_device(&mut self, x: TensorId, device: crate::backend::DeviceId) -> TensorId {
+        let shape = self.graph.shape(x).to_vec();
+        self.graph.push_wshape(Node::ToDevice { x, device }, shape)
+    }
+
+    #[must_use]
+    pub(super) fn custom(&mut self, inputs: &[TensorId], kernel: crate::kernel::Kernel, shape: Vec<Dim>, device: crate::backend::DeviceId) -> TensorId {
         let kernel_id = self.kernel_cache.insert_kernel(kernel);
-        let ck = crate::kernel::custom::CustomKernel {
-            kernel: kernel_id,
-            inputs: inputs.to_vec(),
-        };
+        let ck = crate::kernel::custom::CustomKernel { kernel: kernel_id, inputs: inputs.to_vec(), device };
         self.graph.push_wshape(Node::Custom(Box::new(ck)), shape)
     }
 

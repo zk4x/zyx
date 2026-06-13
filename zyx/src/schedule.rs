@@ -21,14 +21,25 @@ pub fn schedule(
     pools: &mut Slab<PoolId, MemoryPool>,
     events: &mut Map<BTreeSet<BufferId>, Event>,
     buffer_map: &mut Map<TensorId, BufferId>,
+    device_hint: DeviceId,
 ) -> ScheduleResult {
     let required_stores_memory: Dim = stores
         .iter()
         .map(|&tid| graph.shape(tid).iter().product::<Dim>() * Dim::from(graph.dtype(tid).bit_size() / 8))
         .sum::<Dim>();
     let mut dev_ids: Vec<DeviceId> = devices.ids().collect();
+    // If a specific device is requested (not AUTO), try it first
+    if device_hint != DeviceId::AUTO && devices.contains_key(device_hint) {
+        dev_ids.retain(|&d| d != device_hint);
+        dev_ids.insert(0, device_hint);
+    }
     dev_ids.sort_unstable_by_key(|&dev_id| devices[dev_id].free_compute());
     dev_ids.reverse();
+    // Keep hint first if provided
+    if device_hint != DeviceId::AUTO {
+        dev_ids.retain(|&d| d != device_hint);
+        dev_ids.insert(0, device_hint);
+    }
     let mut device_id = None;
     for dev_id in dev_ids {
         let pool_id = devices[dev_id].memory_pool_id();

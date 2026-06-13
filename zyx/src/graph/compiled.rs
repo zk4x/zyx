@@ -142,6 +142,7 @@ impl Runtime {
                     Node::Unary { x, uop } => Node::Unary { x: id_map[x].into(), uop: *uop },
                     Node::Binary { x, y, bop } => Node::Binary { x: id_map[x].into(), y: id_map[y].into(), bop: *bop },
                     Node::Custom { .. } => todo!(),
+                    Node::ToDevice { x, device } => Node::ToDevice { x: id_map[x].into(), device: *device },
                 }
             };
             compacted.nodes.push(reindexed);

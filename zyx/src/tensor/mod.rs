@@ -2977,35 +2977,29 @@ impl Tensor {
         let _ = bytes;
         todo!()
     }*/
-}
 
-/// Apply a custom kernel to input tensors.
-///
-/// The kernel must be built using the `Kernel` builder API.
-/// Input tensors are mapped to `Op::LoadView` ops in order.
-/// The kernel should contain one `Op::StoreView` for the output.
-///
-/// # Example
-///
-/// ```rust
-/// use zyx::kernel::{Kernel, Op, Scope};
-/// use zyx::Tensor;
-///
-/// let mut kernel = Kernel::new();
-/// let inp = kernel.push_back(Op::LoadView(Box::new((
-///     zyx::DType::F32,
-///     zyx::view::View::contiguous(&[4]),
-/// ))));
-/// let out = kernel.binary(inp, inp, zyx::kernel::BOp::Add);
-/// kernel.push_back(Op::StoreView { src: out, dtype: zyx::DType::F32 });
-/// ```
-#[must_use]
-pub fn custom(kernel: crate::kernel::Kernel, inputs: &[&Tensor]) -> Tensor {
-    let ids: Vec<_> = inputs.iter().map(|t| t.id).collect();
-    let shape = kernel.shape();
-    let shape = if shape.is_empty() { inputs[0].shape() } else { shape };
-    let id = RT.lock().custom(&ids, kernel, shape);
-    Tensor { id }
+    /// Apply a custom kernel to input tensors.
+    ///
+    /// The kernel must be built using the `Kernel` builder API.
+    /// Input tensors are mapped to `Op::LoadView` ops in order.
+    /// The kernel should contain one `Op::StoreView` for the output.
+    /// The `device` specifies which device the kernel runs on.
+    #[must_use]
+    pub fn custom(kernel: crate::kernel::Kernel, inputs: &[&Tensor], device: crate::kernel::DeviceId) -> Tensor {
+        let ids: Vec<_> = inputs.iter().map(|t| t.id).collect();
+        let shape = kernel.shape();
+        let shape = if shape.is_empty() { inputs[0].shape() } else { shape };
+        let id = RT.lock().custom(&ids, kernel, shape, device);
+        Tensor { id }
+    }
+
+    /// Move this tensor to the specified device. Creates a new graph node
+    /// that will be realized via a cross-device copy during kernelization.
+    #[must_use]
+    pub fn to(&self, device: crate::kernel::DeviceId) -> Tensor {
+        let id = RT.lock().to_device(self.id, device);
+        Tensor { id }
+    }
 }
 
 #[cfg_attr(feature = "py", pyo3::pyclass)]

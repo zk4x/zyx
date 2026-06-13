@@ -28,6 +28,7 @@
 
 #![allow(missing_docs)]
 
+pub use crate::backend::DeviceId;
 pub use crate::view::View;
 
 use crate::{
@@ -451,14 +452,7 @@ impl Hash for Kernel {
 
 impl Kernel {
     pub fn new() -> Self {
-        Self {
-            outputs: Vec::new(),
-            loads: Vec::new(),
-            stores: Vec::new(),
-            ops: Slab::new(),
-            head: OpId::NULL,
-            tail: OpId::NULL,
-        }
+        Self { outputs: Vec::new(), loads: Vec::new(), stores: Vec::new(), ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL }
     }
 
     pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {

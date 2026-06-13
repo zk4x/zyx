@@ -46,9 +46,9 @@ impl From<KMKernelId> for usize {
 struct Kernelizer<'a> {
     // TODO merge as many of these as possible. Perhaps start by mergins rcs and visited
     // Those nodes that have been store ops in some kernel, but those kernels may have not yet run (must be checked in realized_nodex).
-    must_keep_nodes: Set<TensorId>,     // Nodes that were realized before kernelizer was created
-    pending_stores: Set<TensorId>, // Nodes that appear in kernel stores, but are not realized yet
-    realized_nodes: Set<TensorId>,      // Nodes that are realized
+    must_keep_nodes: Set<TensorId>, // Nodes that were realized before kernelizer was created
+    pending_stores: Set<TensorId>,  // Nodes that appear in kernel stores, but are not realized yet
+    realized_nodes: Set<TensorId>,  // Nodes that are realized
     // TODO later delete this and just directly use the runtime kernel cache
     kernels: Slab<KMKernelId, Kernel>,
     // We should remove either visited, or rcs
@@ -547,7 +547,7 @@ impl<'a> Kernelizer<'a> {
             let kernel = unsafe { self.kernels.remove_and_return(kid) };
             let loads = kernel.loads.clone();
             let stores = kernel.stores.clone();
-            self.launch_kernel(kernel)?;
+            self.launch_kernel(kernel, DeviceId::AUTO)?;
             self.realized_nodes.extend(stores);
             // Delete unneeded intermediate tensors from memory pools
             let mut to_remove = Set::with_capacity_and_hasher(1, BuildHasherDefault::new());
@@ -562,7 +562,7 @@ impl<'a> Kernelizer<'a> {
         Ok(())
     }
 
-    fn launch_kernel(&mut self, mut kernel: Kernel) -> Result<(), ZyxError> {
+    fn launch_kernel(&mut self, mut kernel: Kernel, device_hint: DeviceId) -> Result<(), ZyxError> {
         if kernel.stores.is_empty() {
             println!("Empty stores in this kernel:");
             kernel.debug();
@@ -582,6 +582,7 @@ impl<'a> Kernelizer<'a> {
             self.pools,
             self.events,
             self.buffer_map,
+            device_hint,
         )?;
 
         /***** CACHE and OPTIMIZATION SEARCH *****/
@@ -723,6 +724,10 @@ impl Runtime {
                     Node::Pad { x } => kernelizer.add_pad_op(nid, x)?,
                     Node::Reduce { x, rop } => kernelizer.add_reduce_op(nid, x, rop)?,
                     Node::Binary { x, y, bop } => kernelizer.add_binary_op(nid, x, y, bop)?,
+                    Node::ToDevice { x, .. } => {
+                        kernelizer.add_store(x)?;
+                        kernelizer.create_load_kernel(nid);
+                    }
                     Node::Custom(_) => todo!("Custom kernel integration is not yet implemented"),
                 }
             }
@@ -775,7 +780,7 @@ impl Runtime {
                 let loads = kernel.loads.clone();
                 if !kernel.stores.is_empty() {
                     let stores = kernel.stores.clone();
-                    kernelizer.launch_kernel(kernel)?;
+                    kernelizer.launch_kernel(kernel, DeviceId::AUTO)?;
                     kernelizer.realized_nodes.extend(stores);
                 }
 
