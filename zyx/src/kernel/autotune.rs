@@ -74,28 +74,46 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
 
 #[derive(Debug)]
 pub enum Optimization {
+    /// Reassociate commutative operations (addition, multiplication)
+    /// to group them and reduce instruction count.
     ReassociateCommutative,
+    /// Unroll loops with a specific factor.
     UnrollLoops {
+        /// Unroll factors to try for each loop.
         factors: Vec<u64>,
     },
+    /// Split a global index into local factors for parallelization.
     SplitGlobalToLocal {
+        /// Pairs of (operation_id, split_factor) for each split.
         factors: Vec<(OpId, u64)>,
     },
+    /// Coarsen thread-level parallelism by grouping operations.
     ThreadCoarse {
+        /// Pairs of (operation_id, coarsening_factor) for each group.
         factors: Vec<(OpId, u64)>,
     },
+    /// Register blocking optimization for tiled reductions.
     RegisterBlocking {
+        /// Reduction splits mapped to tile sizes.
         reduce_splits: BTreeMap<OpId, Vec<u64>>,
+        /// Thread coarsening factors for each global axis.
         thread_coarses: BTreeMap<OpId, Vec<u64>>,
     },
+    /// Unroll loops with constant lengths.
     UnrollConstantLoops,
+    /// Tiled reduction parallelization.
     TiledReduce {
+        /// Pairs of (operation_id, local_factor, global_factor) for each tiled reduce.
         factors: Vec<(OpId, u64, u64)>,
     },
+    /// Split a loop into smaller iterations.
     SplitLoop {
+        /// Pairs of (loop_id, split_factor) for each split.
         factors: Vec<(OpId, u64)>,
     },
+    /// Pad indices to hardware-friendly sizes (e.g., 32 for CUDA warps).
     PadIndex {
+        /// Pairs of (index_op_id, target_size) for each padding.
         factors: Vec<(OpId, Dim)>,
     },
 }
