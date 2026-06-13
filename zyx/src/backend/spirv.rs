@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only
 
 //! SPIR-V binary codegen from zyx kernel IR.
-//! Translates kernel IR ops to SPIR-V machine code (Vec<u32>).
+//! Translates kernel IR ops to SPIR-V machine code (`Vec<u32>`).
 
 use num_enum::TryFromPrimitive;
 

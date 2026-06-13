@@ -10,7 +10,7 @@ use nanoserde::{DeBin, SerBin};
 use crate::shape::{Dim, UAxis};
 use std::{cmp::Ordering, fmt::Display, ops::Range};
 
-/// .0[0] is original shape, further shapes are additional reshapes
+/// `.0[0]` is original shape, further shapes are additional reshapes
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct View(pub Vec<Vec<RDim>>);
 

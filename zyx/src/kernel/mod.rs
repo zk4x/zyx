@@ -525,7 +525,7 @@ impl Kernel {
     ///
     /// # Errors
     ///
-    /// Returns [`ZyxError`] if device initialization or compilation fails.
+    /// Returns [`crate::ZyxError`] if device initialization or compilation fails.
     ///
     /// # Example
     ///
