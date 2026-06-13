@@ -1,6 +1,11 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Local tiling optimization.
+//!
+//! This module provides local tiling optimizations for kernels,
+//! which tile local memory access patterns to improve performance.
+
 #![allow(unused)]
 
 use crate::{
@@ -35,6 +40,10 @@ impl Kernel {
         max_batch.max(cur)
     }
 
+    /// Tile local memory access patterns.
+    ///
+    /// This method tiles local memory access patterns to improve
+    /// performance by better utilizing local memory bandwidth.
     pub fn tile_local(&mut self) {
         // Find local indices (lidx) created by split_dim
         let mut lidxs: Vec<(OpId, Dim, u32)> = Vec::new();
