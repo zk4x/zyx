@@ -1,6 +1,20 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Constant folding and dead code elimination for kernels.
+//!
+//! This module provides optimizations that evaluate constant expressions
+//! and eliminate dead code from kernel IR:
+//!
+//! - Constant folding: evaluate expressions with constant operands
+//! - Accumulator folding: simplify accumulator chains
+//! - Empty loop removal: remove loops with zero iterations
+//! - Dead code elimination: remove unused operations
+//! - Constant movement: move constants to the beginning of kernels
+//! - Power unfolding: unfold constant power operations
+//!
+//! These optimizations reduce instruction count and improve performance.
+
 use crate::{
     DType, Map, Set,
     dtype::Constant,
@@ -9,6 +23,13 @@ use crate::{
 use std::hash::BuildHasherDefault;
 
 impl Kernel {
+    /// Fold constant expressions in the kernel IR.
+    ///
+    /// This method evaluates expressions with constant operands,
+    /// reducing instruction count and improving performance.
+    ///
+    /// It processes all operations in the kernel and replaces
+    /// constant expressions with their computed values.
     #[allow(clippy::match_same_arms)]
     pub fn constant_folding(&mut self) {
         #[cfg(feature = "time")]
@@ -178,7 +199,10 @@ impl Kernel {
         self.verify();
     }
 
-    // Eliminates accs that are not stored into in loops
+    /// Fold accumulators in the kernel.
+    ///
+    /// This method eliminates accumulators that are not stored into
+    /// in loops, reducing instruction count and improving performance.
     pub fn fold_accs(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("fold_accs");
@@ -217,6 +241,10 @@ impl Kernel {
         }
     }
 
+    /// Fold a single accumulator operation.
+    ///
+    /// This method simplifies accumulator operations by folding
+    /// constant values and eliminating redundant computations.
     pub fn fold_acc(&mut self, define_id: OpId) {
         //println!("Folding acc {define_id}");
         let Op::Define { len, .. } = self.ops[define_id].op else { unreachable!() };
@@ -262,7 +290,10 @@ impl Kernel {
         self.verify();
     }
 
-    // Loops that don't contain stores can be deleted
+    /// Delete empty loops from the kernel.
+    ///
+    /// This method removes loops that don't contain any stores,
+    /// reducing instruction count and improving performance.
     pub fn delete_empty_loops(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("delete_empty_loops");
@@ -334,6 +365,13 @@ impl Kernel {
         self.verify();
     }
 
+    /// Eliminate dead code from the kernel.
+    ///
+    /// This method removes unused operations from the kernel,
+    /// including operations that are not referenced by any output.
+    ///
+    /// It uses data flow analysis to determine which operations
+    /// are dead and can be safely removed.
     pub fn dead_code_elimination(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("dead_code_elimination");
@@ -373,6 +411,11 @@ impl Kernel {
         self.verify();
     }
 
+    /// Eliminate common subexpressions from the kernel.
+    ///
+    /// This method identifies and eliminates duplicate computations
+    /// in the kernel by tracking which operations are needed by
+    /// stores and removing operations that are not referenced.
     pub fn common_subexpression_elimination(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("common_subexpression_elimination");
@@ -444,6 +487,11 @@ impl Kernel {
         self.verify();
     }
 
+    /// Move constant operations to the beginning of the kernel.
+    ///
+    /// This method reorders the kernel so that constant operations
+    /// appear before variable operations, which can improve
+    /// instruction scheduling and performance.
     pub fn move_constants_to_beginning(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("move_constants_to_beginning");
@@ -512,6 +560,13 @@ impl Kernel {
         }
     }
 
+    /// Unfold power operations using log2 and exp2.
+    ///
+    /// This method replaces `x^y` with `exp2(y * log2(x))`,
+    /// which can be more efficiently compiled by the backend.
+    ///
+    /// The transformation is based on the mathematical identity:
+    /// `x^y = exp2(log2(x) * y)`
     pub fn unfold_pows(&mut self) {
         let mut op_id = self.head;
         while !op_id.is_null() {
