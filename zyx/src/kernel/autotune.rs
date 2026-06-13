@@ -213,7 +213,6 @@ impl Kernel {
     pub fn run_always_on_optimizations(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("always on optimizations");
-        self.eliminate_zero_len_index();
         self.unroll_len1_loops();
         self.constant_folding();
         self.move_constants_to_beginning();
@@ -306,6 +305,8 @@ impl Kernel {
 
         // Initial seed
         let mut kernel = self.clone();
+        kernel.eliminate_zero_len_index();
+        kernel.renumber_indices();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();

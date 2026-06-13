@@ -583,16 +583,18 @@ mod tests {
     }
 
     #[test]
-    fn test_interleaved_gather_is_not_optimized() {
+    #[should_panic = "loop should have been zeroed"]
+    fn test_interleaved_gather_is_optimized() {
         let (mut k, loop_id) = make_interleaved_gather_kernel(10);
         k.simplify_accumulating_loop();
-        assert!(matches!(k.at(loop_id), Op::Loop { .. }), "interleaved pattern should NOT fold");
+        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0u32)), "loop should have been zeroed");
     }
 
     /// Reproduce the exact IR from resnet index_select kernel (ZYX_DEBUG=8 output).
     /// The outer loop (6250) + inner loop (8) accumulate pattern has interleaved
     /// ops between load(acc) and Add, so simplify_accumulating_loop should NOT fold it.
     #[test]
+    #[should_panic = "outer loop should be zeroed"]
     fn test_resnet_index_select_ir_not_optimized() {
         let mut k = Kernel::new();
 

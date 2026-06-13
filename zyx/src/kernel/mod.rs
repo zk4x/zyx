@@ -1078,6 +1078,25 @@ impl Kernel {
         }
         indices
     }
+
+    pub fn renumber_indices(&mut self) {
+        let mut indices = std::collections::BTreeMap::new();
+        indices.insert(Scope::Global, std::collections::BTreeMap::new());
+        indices.insert(Scope::Local, std::collections::BTreeMap::new());
+        for (op_id, op_node) in self.ops.iter() {
+            if let Op::Index { scope, axis, .. } = op_node.op {
+                indices.get_mut(&scope).unwrap().insert(axis, op_id);
+            }
+        }
+        for (_, scoped_indices) in indices {
+            let mut ax = 0;
+            for &idx_id in scoped_indices.values() {
+                let Op::Index { axis, .. } = &mut self.ops[idx_id].op else { unreachable!() };
+                *axis = ax;
+                ax += 1;
+            }
+        }
+    }
 }
 
 impl MMADims {
