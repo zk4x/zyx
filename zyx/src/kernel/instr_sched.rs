@@ -1,12 +1,35 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Instruction scheduling for kernel optimization.
+//!
+//! This module provides instruction scheduling optimizations for kernels,
+//! including:
+//!
+//! - Moving index operations to the beginning
+//! - Reordering operations for better instruction throughput
+//! - Improving instruction pipeline utilization
+//!
+//! Instruction scheduling can improve performance by:
+//!
+//! - Reducing instruction dependencies
+//! - Enabling better instruction-level parallelism
+//! - Improving branch prediction
+
 use crate::{
     Set,
     kernel::{Kernel, Op, OpId},
 };
 
 impl Kernel {
+    /// Schedule instructions for better instruction throughput.
+    ///
+    /// This method reorders kernel operations to improve instruction
+    /// scheduling, including:
+    ///
+    /// - Moving index operations to the beginning
+    /// - Reordering operations for better instruction pipeline utilization
+    /// - Improving instruction-level parallelism
     pub fn instruction_schedule(&mut self) {
         let mut index_ops: Set<OpId> = Set::default();
         let mut insert_after: OpId = OpId::NULL;
