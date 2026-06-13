@@ -177,6 +177,7 @@ impl<'a> Kernelizer<'a> {
             head: op_id,
             tail: op_id,
             device_id: DeviceId::AUTO,
+            custom_kernel_id: None,
         };
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
@@ -195,6 +196,7 @@ impl<'a> Kernelizer<'a> {
             head: op_id,
             tail: op_id,
             device_id: DeviceId::AUTO,
+            custom_kernel_id: None,
         };
         let kid = self.kernels.push(kernel);
         self.visited.insert(nid, (kid, op_id));
@@ -477,7 +479,8 @@ impl<'a> Kernelizer<'a> {
             };
 
             self.kernels[kidy].remove_first_output(y);
-            let Kernel { outputs, loads, stores, ops, head, tail: _, device_id: _ } = unsafe { self.kernels.remove_and_return(kidy) };
+            let Kernel { outputs, loads, stores, ops, head, tail: _, device_id: _, custom_kernel_id } = unsafe { self.kernels.remove_and_return(kidy) };
+            debug_assert!(custom_kernel_id.is_none(), "must not duplicate custom kernel stub");
 
             // Extend x kernel with y ops
             let mut y_ops_map = Map::with_capacity_and_hasher(5, BuildHasherDefault::new());
@@ -565,13 +568,36 @@ impl<'a> Kernelizer<'a> {
     }
 
     fn launch_kernel(&mut self, mut kernel: Kernel) -> Result<(), ZyxError> {
+        // Custom kernel: use pre-compiled program instead of compiling
+        if let Some(cache_kid) = kernel.custom_kernel_id {
+            let (dev_id, pool_id, event_wait_list, kernel_buffers, args) = schedule(
+                &kernel.loads,
+                &kernel.stores,
+                self.graph,
+                self.devices,
+                self.pools,
+                self.events,
+                self.buffer_map,
+                kernel.device_id,
+            )?;
+            let device = &mut self.devices[dev_id];
+            let pool = &mut self.pools[pool_id];
+            let &program_id = self.cache.programs.get(&(cache_kid, dev_id))
+                .expect("custom kernel program not found in cache");
+            if self.debug.kmd() {
+                println!("Custom kernel launch from memory pool {pool_id:?} with args: {args:?}");
+            }
+            let event = device.launch(program_id, pool, &args, event_wait_list)?;
+            self.events.insert(kernel_buffers, event);
+            return Ok(());
+        }
+
         if kernel.stores.is_empty() {
             println!("Empty stores in this kernel:");
             kernel.debug();
             panic!("Empty stores in this kernel:");
         }
         debug_assert!(!kernel.stores.is_empty());
-        debug_assert!(!kernel.ops.is_empty());
 
         self.n_launches += 1;
 
@@ -591,6 +617,8 @@ impl<'a> Kernelizer<'a> {
 
         let device = &mut self.devices[dev_id];
         let pool = &mut self.pools[pool_id];
+
+        debug_assert!(!kernel.ops.is_empty());
 
         let dev_info_id = self.cache.get_or_add_dev_info(device.info());
 
@@ -732,7 +760,27 @@ impl Runtime {
                         kernelizer.kernels[kid].device_id = device;
                         kernelizer.add_cast_op(nid, x, self.graph.dtype(x));
                     }
-                    Node::Custom(_) => todo!("Custom kernel integration is not yet implemented"),
+                    Node::Custom(ref ck) => {
+                        // 1. Realize all inputs (make buffers available on device)
+                        for &inp in &ck.inputs {
+                            kernelizer.add_store(inp)?;
+                        }
+
+                        // 2. Build a minimal stub kernel (loads/stores for schedule)
+                        let kernel = Kernel {
+                            outputs: vec![nid; kernelizer.rcs[&nid] as usize],
+                            loads: ck.inputs.clone(),
+                            stores: vec![nid],
+                            ops: Slab::new(),
+                            head: OpId::NULL,
+                            tail: OpId::NULL,
+                            device_id: ck.program.device,
+                            custom_kernel_id: Some(ck.kernel_id),
+                        };
+                        let kid = kernelizer.kernels.push(kernel);
+                        kernelizer.visited.insert(nid, (kid, OpId::NULL));
+                        kernelizer.pending_stores.insert(nid);
+                    }
                 }
             }
 

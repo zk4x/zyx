@@ -15,7 +15,7 @@
 //! use zyx::DType;
 //!
 //! let n = 256 * 256;
-//! let mut kernel = Kernel::custom(device);
+//! let mut kernel = Kernel::new(device);
 //! let inp = kernel.push_back(Op::LoadView(Box::new((DType::F32, View::contiguous(&[n])))));
 //! let gidx = kernel.gidx(0, n);
 //! let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
@@ -35,6 +35,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     kernel::custom::CompiledKernel,
+    kernel_cache::KernelId,
     kernelize::KMKernelId,
     shape::{Dim, UAxis},
     slab::{Slab, SlabId},
@@ -81,6 +82,7 @@ pub struct Kernel {
     pub head: OpId,
     pub tail: OpId,
     pub device_id: DeviceId,
+    pub custom_kernel_id: Option<KernelId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
@@ -449,6 +451,7 @@ impl DeBin for Kernel {
             loads: Vec::new(),
             stores: Vec::new(),
             device_id: DeviceId::AUTO,
+            custom_kernel_id: None,
         })
     }
 }
@@ -462,7 +465,6 @@ impl Hash for Kernel {
 
 impl Kernel {
     /// Create a kernel targeting a specific device.
-    #[cfg(test)]
     pub fn new(device_id: DeviceId) -> Self {
         Self {
             outputs: Vec::new(),
@@ -472,6 +474,7 @@ impl Kernel {
             head: OpId::NULL,
             tail: OpId::NULL,
             device_id,
+            custom_kernel_id: None,
         }
     }
 
@@ -496,7 +499,7 @@ impl Kernel {
         let prog = crate::backend::ProgramId { device: device_id, program: program_id };
         let kid = rt.kernel_cache.insert_kernel(self);
         rt.kernel_cache.programs.insert((kid, device_id), program_id);
-        crate::kernel::custom::CompiledKernel { program: prog, shape, dtype }
+        crate::kernel::custom::CompiledKernel { program: prog, shape, dtype, kernel_id: kid }
     }
 
     /// Run autotuning then compile the kernel.

@@ -158,7 +158,7 @@ impl DType {
     }
 
     #[must_use]
-    pub(super) const fn zero_constant(self) -> Constant {
+    pub(crate) const fn zero_constant(self) -> Constant {
         match self {
             Self::BF16 => Constant::BF16(bf16::ZERO.to_le_bytes()),
             Self::F16 => Constant::F16(f16::ZERO.to_le_bytes()),

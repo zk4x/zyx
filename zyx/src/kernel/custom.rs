@@ -3,6 +3,7 @@
 
 use crate::backend::ProgramId;
 use crate::tensor::TensorId;
+use crate::kernel_cache::KernelId;
 
 /// Custom kernel referencing a pre-compiled program.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
@@ -13,6 +14,8 @@ pub(crate) struct CustomKernel {
     pub inputs: Vec<TensorId>,
     /// Output dtype.
     pub dtype: crate::DType,
+    /// Kernel cache id for the compiled kernel IR.
+    pub kernel_id: KernelId,
 }
 
 /// A compiled kernel ready for repeated execution.
@@ -24,13 +27,15 @@ pub struct CompiledKernel {
     pub shape: Vec<crate::shape::Dim>,
     /// Output dtype.
     pub dtype: crate::DType,
+    /// Kernel cache id for the compiled kernel IR.
+    pub kernel_id: KernelId,
 }
 
 impl CompiledKernel {
     /// Execute the compiled kernel with new input tensors.
     pub fn forward(&self, inputs: &[&crate::tensor::Tensor]) -> crate::tensor::Tensor {
         let ids: Vec<_> = inputs.iter().map(|t| t.id).collect();
-        let ck = CustomKernel { program: self.program, inputs: ids, dtype: self.dtype };
+        let ck = CustomKernel { program: self.program, inputs: ids, dtype: self.dtype, kernel_id: self.kernel_id };
         let tensor_id = crate::RT
             .lock()
             .graph
