@@ -1,6 +1,21 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Cost estimation for kernel autotuning.
+//!
+//! This module provides cost estimation utilities for evaluating kernel
+//! performance during autotuning. The cost model considers:
+//!
+//! - Instruction count
+//! - Compute operations
+//! - Memory access patterns (global/local/register)
+//! - Register allocation
+//! - Loop depth and parallelism
+//! - Hardware-specific parameters (warp size, local memory, etc.)
+//!
+//! The cost model is learned from actual kernel execution times and
+//! used to guide the autotuning search.
+
 use crate::{
     DType, Map, Set,
     backend::DeviceInfo,
@@ -10,6 +25,11 @@ use nanoserde::{DeBin, SerBin};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, DeBin, SerBin)]
 pub struct Cost {
+    /// Estimated execution time in microseconds.
+    ///
+    /// This is a learned cost estimate based on the kernel's
+    /// characteristics (instruction count, memory access patterns,
+    /// register usage, etc.). Lower values indicate better performance.
     pub cost: u64,
 }
 
@@ -26,6 +46,23 @@ impl PartialOrd for Cost {
 }
 
 impl Kernel {
+    /// Get the estimated cost for this kernel.
+    ///
+    /// This method computes a cost estimate based on the kernel's
+    /// characteristics:
+    ///
+    /// 1. First pass: compute reference counts and dtypes for register estimation
+    /// 2. Second pass: instruction counting and register allocation simulation
+    /// 3. Compute hardware-specific metrics (warp size, local memory, etc.)
+    /// 4. Apply a learned cost model to predict execution time
+    ///
+    /// # Arguments
+    ///
+    /// * `dev_info` - Device information for hardware-specific parameters
+    ///
+    /// # Returns
+    ///
+    /// Returns a Cost estimate in microseconds.
     pub fn get_cost(&self, dev_info: &DeviceInfo) -> Cost {
         // First pass: compute reference counts and dtypes for register estimation
         let mut rcs: Map<OpId, u32> = Map::default();
