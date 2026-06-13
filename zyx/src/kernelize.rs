@@ -726,7 +726,8 @@ impl Runtime {
                     Node::Binary { x, y, bop } => kernelizer.add_binary_op(nid, x, y, bop)?,
                     Node::ToDevice { x, .. } => {
                         kernelizer.add_store(x)?;
-                        kernelizer.create_load_kernel(nid);
+                        kernelizer.create_load_kernel(x);
+                        kernelizer.add_cast_op(nid, x, self.graph.dtype(x));
                     }
                     Node::Custom(_) => todo!("Custom kernel integration is not yet implemented"),
                 }

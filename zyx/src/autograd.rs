@@ -159,7 +159,7 @@ impl Runtime {
             };
             match self.graph[nid] {
                 Node::Custom(_) => todo!(),
-                Node::Const { .. } | Node::Leaf { .. } => {}
+                Node::Const { .. } | Node::Leaf { .. } | Node::ToDevice { .. } => {}
                 Node::Binary { x, y, bop } => match bop {
                     BOp::Add => {
                         if req_grad.contains(&x) {
