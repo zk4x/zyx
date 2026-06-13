@@ -78,6 +78,17 @@ impl Kernel {
         (Optimization::TiledReduce { factors }, n)
     }
 
+    /// Apply tiled reduction parallelization.
+    ///
+    /// This method parallelizes a large single-dimension reduction loop
+    /// across threads by splitting the loop iterations and storing
+    /// partial sums in shared memory, then performing a tree reduction.
+    ///
+    /// # Arguments
+    ///
+    /// * `loop_start` - The loop operation to parallelize
+    /// * `factor` - The factor for splitting the loop
+    /// * `tree_branch` - The tree reduction branching factor
     pub fn tiled_reduce(&mut self, loop_start: OpId, factor: u64, tree_branch: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("tiled_reduce");
