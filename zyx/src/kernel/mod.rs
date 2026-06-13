@@ -11,12 +11,12 @@
 //! Build a simple element-wise kernel:
 //!
 //! ```ignore
-//! use zyx::kernel::{Kernel, Op, View, BOp, Scope, MemLayout};
+//! use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
 //! use zyx::DType;
 //!
 //! let n = 256 * 256;
-//! let mut kernel = Kernel::new(device);
-//! let inp = kernel.push_back(Op::LoadView(Box::new((DType::F32, View::contiguous(&[n])))));
+//! let mut kernel = Kernel::new(DeviceId::AUTO);
+//! let inp = kernel.define(DType::F32, Scope::Global, true, n);
 //! let gidx = kernel.gidx(0, n);
 //! let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
 //! let doubled = kernel.binary(loaded, loaded, BOp::Add);
@@ -473,20 +473,31 @@ impl Kernel {
     /// Load, Store, Move) via [`Kernel::unfold_movement_ops`] and validates the IR
     /// via [`Kernel::verify`].
     ///
+    /// There are two approaches for specifying kernel inputs:
+    ///
+    /// **A — Explicit global input with manual gidx** (shown below): use
+    /// `define(dtype, Scope::Global, true, len)` for each input, then create
+    /// [`Kernel::gidx`] / [`Kernel::lidx`] ops for thread indexing.
+    ///
+    /// **B — LoadView**: use `push_back(Op::LoadView(...))` for inputs and let
+    /// `compile()` compute thread indices automatically from the view shape.
+    /// Do NOT manually add `gidx` ops — `unfold_movement_ops` adds them.
+    ///
     /// Pass [`DeviceId::AUTO`] to let the runtime pick the first available device.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, Op, View, BOp, Scope, MemLayout, DeviceId};
+    /// use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
     /// use zyx::DType;
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
-    /// let inp = kernel.push_back(Op::LoadView(Box::new((DType::F32, View::contiguous(&[4])))));
-    /// let gidx = kernel.gidx(0, 4);
+    /// let n = 4;
+    /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
+    /// let gidx = kernel.gidx(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.binary(loaded, loaded, BOp::Add);
-    /// let out = kernel.define(DType::F32, Scope::Register, false, 4);
+    /// let out = kernel.define(DType::F32, Scope::Global, false, n);
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
     pub fn new(device_id: DeviceId) -> Self {
@@ -522,16 +533,16 @@ impl Kernel {
     /// let the runtime pick the first available device:
     ///
     /// ```rust
-    /// use zyx::kernel::{Kernel, Op, View, BOp, Scope, MemLayout, DeviceId};
+    /// use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
     /// use zyx::{DType, Tensor, ZyxError};
     ///
     /// let mut kernel = Kernel::new(DeviceId::AUTO);
     /// let n = 4;
-    /// let inp = kernel.push_back(Op::LoadView(Box::new((DType::F32, View::contiguous(&[n])))));
+    /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
     /// let gidx = kernel.gidx(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
     /// let doubled = kernel.binary(loaded, loaded, BOp::Add);
-    /// let out = kernel.define(DType::F32, Scope::Register, false, n);
+    /// let out = kernel.define(DType::F32, Scope::Global, false, n);
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     ///
     /// let compiled = kernel.compile()?;

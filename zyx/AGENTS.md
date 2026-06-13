@@ -48,11 +48,14 @@ cargo clippy -p zyx --all-features -- -D warnings
 # Format
 cargo fmt
 
-# Test
-cargo test -p zyx
-cargo test -p zyx relu_1          # single test
-cargo test -p zyx --test 1_unary  # test file
-cargo test -p zyx -- --nocapture  # with output
+# Test (always prefix with AGENT=1 to prevent interactive prompts)
+AGENT=1 cargo test -p zyx
+AGENT=1 cargo test -p zyx relu_1          # single test
+AGENT=1 cargo test -p zyx --test 1_unary  # test file
+AGENT=1 cargo test -p zyx -- --nocapture  # with output
+
+# Doc tests
+AGENT=1 cargo test -p zyx --doc
 ```
 
 **Note**: This is a workspace with multiple crates. Always run commands from inside this crate subdirectory or use `-p zyx` flag from the workspace root.

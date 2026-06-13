@@ -16,10 +16,13 @@ cargo build -p zyx --release
 cargo fmt
 
 # Test (always run from zyx/zyx subdirectory!)
-cd zyx && cargo test
-cd zyx && cargo test relu_1          # single test
-cd zyx && cargo test --test 1_unary  # test file
-cd zyx && cargo test -- --nocapture  # with output
+cd zyx && AGENT=1 cargo test
+cd zyx && AGENT=1 cargo test relu_1          # single test
+cd zyx && AGENT=1 cargo test --test 1_unary  # test file
+cd zyx && AGENT=1 cargo test -- --nocapture  # with output
+
+# Doc tests
+cd zyx && AGENT=1 cargo test --doc
 ```
 
 ## Python
