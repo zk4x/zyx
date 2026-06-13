@@ -1,6 +1,19 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Loop unrolling optimization.
+//!
+//! This module provides loop unrolling optimizations for kernels,
+//! which unroll loops to reduce loop overhead and enable better
+//! instruction scheduling and vectorization.
+//!
+//! Loop unrolling is useful for:
+//!
+//! - Reducing loop overhead
+//! - Enabling better instruction-level parallelism
+//! - Improving vectorization opportunities
+//! - Unrolling loops with constant lengths
+
 use super::autotune::Optimization;
 use crate::kernel::MemLayout;
 #[allow(unused)]
@@ -12,16 +25,26 @@ use crate::{
 };
 
 impl Kernel {
+    /// Configure loop unrolling optimization.
+    ///
+    /// Returns the optimization variant and number of variants.
     #[allow(unused)]
     pub fn opt_unroll(_: &Kernel) -> (Optimization, usize) {
         (Optimization::UnrollLoops { factors: vec![8, 4, 16, 2] }, 4)
     }
 
+    /// Configure loop unrolling for constant-length loops.
+    ///
+    /// Returns the optimization variant and number of variants.
     #[allow(unused)]
     pub const fn opt_unroll_constant_loops(_: &Kernel) -> (Optimization, usize) {
         (Optimization::UnrollConstantLoops, 1)
     }
 
+    /// Eliminate zero-length index operations.
+    ///
+    /// This method removes index operations with length 1,
+    /// which can be optimized away.
     pub fn eliminate_zero_len_index(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("eliminate zero index");
