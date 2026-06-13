@@ -1,6 +1,28 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+/// Debug utilities for kernel IR inspection.
+///
+/// This module provides debugging utilities for inspecting kernel IR,
+/// including:
+///
+/// - Pretty-printed IR output
+/// - Bounds computation for value range analysis
+/// - Color-coded output (disabled when AGENT=1)
+///
+/// Debug output is useful for:
+///
+/// - Understanding kernel transformations
+/// - Identifying optimization opportunities
+/// - Debugging kernel compilation issues
+///
+/// Usage:
+///
+/// ```text
+/// ZYX_DEBUG=8 cargo run  # Print IR during kernel compilation
+/// ZYX_DEBUG=16 cargo run # Print generated CUDA assembly
+/// ```
+
 use crate::kernel::{BOp, IDX_T, MoveOp, Scope, UOp};
 use crate::slab::SlabId;
 use crate::{BLUE, BOLD, CYAN, GREEN, GREY, MAGENTA, ORANGE, RED, RESET, YELLOW};
@@ -10,6 +32,26 @@ use crate::{
 };
 
 impl Kernel {
+    /// Print debug information for the kernel.
+    ///
+    /// This method prints detailed information about the kernel IR,
+    /// including:
+    ///
+    /// - Loaded and stored tensor IDs
+    /// - Output tensor IDs
+    /// - Operation bounds (value ranges)
+    /// - Operation dtypes
+    /// - Loop information
+    ///
+    /// Output is color-coded for readability, but color is disabled
+    /// when running with AGENT=1 (for cleaner log output).
+    ///
+    /// # Example
+    ///
+    /// ```text
+    /// ZYX_DEBUG=8 cargo run  # Print IR during kernel compilation
+    /// ZYX_DEBUG=16 cargo run # Print generated CUDA assembly
+    /// ```
     pub fn debug(&self) {
         let remap_ids = false;
         println!("\nloads={:?}", self.loads);
