@@ -1,11 +1,32 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+//! Custom kernel compilation for GPU-specific operations.
+//!
+//! This module provides support for custom kernel compilation,
+//! allowing backends to generate and execute custom kernels
+//! for operations not covered by the standard kernel IR.
+//!
+//! Custom kernels are typically used for:
+//!
+//! - GPU-specific operations (e.g., WMMA, tensor cores)
+//! - Specialized kernels with unique memory access patterns
+//! - Backend-specific optimizations
+//!
+//! The custom kernel system allows backends to compile kernels
+//! to their native instruction set and cache them for repeated use.
+
 use crate::backend::ProgramId;
 use crate::tensor::TensorId;
 use crate::kernel_cache::KernelId;
 
 /// Custom kernel referencing a pre-compiled program.
+///
+/// This struct represents a custom kernel that has been compiled
+/// to a backend-specific program and cached for repeated execution.
+///
+/// Custom kernels are used for operations that require backend-specific
+/// compilation, such as GPU tensor core operations or specialized kernels.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Hash)]
 pub(crate) struct CustomKernel {
     /// Compiled program handle.
