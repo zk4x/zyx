@@ -253,8 +253,6 @@ impl Kernel {
         let (opt, _) = kernel.opt_thread_coarse();
         opt.apply(&mut kernel, 0);
 
-        kernel.vectorize();
-
         kernel.run_always_on_optimizations();
         kernel.run_always_on_optimizations();
         kernel.fuse_mad();

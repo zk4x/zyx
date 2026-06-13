@@ -497,7 +497,7 @@ impl Kernel {
     /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
     /// let gidx = kernel.gidx(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
-    /// let doubled = kernel.binary(loaded, loaded, BOp::Add);
+    /// let doubled = kernel.add(loaded, loaded);
     /// let out = kernel.define(DType::F32, Scope::Global, false, n);
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     /// ```
@@ -542,7 +542,7 @@ impl Kernel {
     /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
     /// let gidx = kernel.gidx(0, n);
     /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
-    /// let doubled = kernel.binary(loaded, loaded, BOp::Add);
+    /// let doubled = kernel.add(loaded, loaded);
     /// let out = kernel.define(DType::F32, Scope::Global, false, n);
     /// kernel.store(out, doubled, gidx, MemLayout::Scalar);
     ///
@@ -674,8 +674,160 @@ impl Kernel {
         self.push_back(Op::EndLoop);
     }
 
+    pub(crate) fn unary(&mut self, x: OpId, uop: UOp) -> OpId {
+        self.push_back(Op::Unary { x, uop })
+    }
+
+    pub fn neg(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Neg)
+    }
+
+    pub fn bit_not(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::BitNot)
+    }
+
+    pub fn exp(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Exp)
+    }
+
+    pub fn exp2(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Exp2)
+    }
+
+    pub fn ln(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Ln)
+    }
+
+    pub fn log2(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Log2)
+    }
+
+    pub fn reciprocal(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Reciprocal)
+    }
+
+    pub fn sqrt(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Sqrt)
+    }
+
+    pub fn sin(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Sin)
+    }
+
+    pub fn cos(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Cos)
+    }
+
+    pub fn floor(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Floor)
+    }
+
+    pub fn trunc(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Trunc)
+    }
+
+    pub fn abs(&mut self, x: OpId) -> OpId {
+        self.unary(x, UOp::Abs)
+    }
+
     pub(crate) fn binary(&mut self, x: OpId, y: OpId, bop: BOp) -> OpId {
         self.push_back(Op::Binary { x, y, bop })
+    }
+
+    pub fn add(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Add)
+    }
+
+    pub fn sub(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Sub)
+    }
+
+    pub fn mul(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Mul)
+    }
+
+    pub fn div(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Div)
+    }
+
+    pub fn pow(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Pow)
+    }
+
+    pub fn mod_(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Mod)
+    }
+
+    pub fn cmplt(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Cmplt)
+    }
+
+    pub fn cmpgt(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Cmpgt)
+    }
+
+    pub fn max(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Max)
+    }
+
+    pub fn or_(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Or)
+    }
+
+    pub fn and_(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::And)
+    }
+
+    pub fn bit_xor(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitXor)
+    }
+
+    pub fn bit_or(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitOr)
+    }
+
+    pub fn bit_and(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitAnd)
+    }
+
+    pub fn bit_shift_left(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitShiftLeft)
+    }
+
+    pub fn bit_shift_right(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::BitShiftRight)
+    }
+
+    pub fn not_eq(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::NotEq)
+    }
+
+    pub fn eq(&mut self, x: OpId, y: OpId) -> OpId {
+        self.binary(x, y, BOp::Eq)
+    }
+
+    pub fn wmma(&mut self, dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId) -> OpId {
+        self.push_back(Op::Wmma { dims, layout, dtype, a, b, c })
+    }
+
+    pub fn vectorize(&mut self, ops: Vec<OpId>) -> OpId {
+        self.push_back(Op::Vectorize { ops })
+    }
+
+    pub fn devectorize(&mut self, vec: OpId, idx: usize) -> OpId {
+        self.push_back(Op::Devectorize { vec, idx })
+    }
+
+    pub fn barrier(&mut self, scope: Scope) {
+        self.push_back(Op::Barrier { scope });
+    }
+
+    pub fn if_(&mut self, condition: OpId) {
+        self.push_back(Op::If { condition });
+    }
+
+    pub fn end_if(&mut self) {
+        self.push_back(Op::EndIf);
     }
 
     pub fn cast(&mut self, x: OpId, dtype: DType) -> OpId {

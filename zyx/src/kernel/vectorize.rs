@@ -16,13 +16,6 @@ struct LoadInfo {
 }
 
 impl Kernel {
-    #[allow(unused)]
-    pub fn vectorize(&mut self) {
-        self.vectorize_loads();
-        self.vectorize_ops();
-        self.vectorize_stores();
-    }
-
     pub fn vectorize_loads(&mut self) {
         // TODO for now this function ignores aliasing of stores and loads.
         // So later we need to make sure there are no aliasing issues
@@ -237,7 +230,7 @@ impl Kernel {
     pub fn vectorize_stores(&mut self) {
         // Find all Devectorize ops and group them by their source vector
         let mut devec_map: Map<OpId, Vec<(OpId, usize)>> = Map::default();
-        
+
         let mut op_id = self.head;
         while !op_id.is_null() {
             match &self.ops[op_id].op {
@@ -248,12 +241,12 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        
+
         // For each vectorized load, check if the stores after its devectorize can be combined
         for (vec_id, _devec_list) in &devec_map {
             let mut devec_ops: Vec<(OpId, usize)> = Vec::new();
             let mut check_id = self.next_op(*vec_id);
-            
+
             // Find all devectorize ops that chain from vec_id
             while let Op::Devectorize { vec: v, idx } = &self.ops[check_id].op {
                 if v == vec_id {
@@ -263,18 +256,18 @@ impl Kernel {
                     break;
                 }
             }
-            
+
             if devec_ops.is_empty() {
                 continue;
             }
-            
+
             // Find the last devectorize and check stores after it
             let last_devec = devec_ops.last().unwrap();
             let mut check_id = self.next_op(last_devec.0);
-            
+
             // Collect all stores that use devectorized values from this vector
             let mut stores_to_combine: Vec<(OpId, usize)> = Vec::new();
-            
+
             while !check_id.is_null() {
                 match &self.ops[check_id].op {
                     Op::Store { dst, x, index, layout } => {
@@ -305,7 +298,7 @@ impl Kernel {
                     }
                 }
             }
-            
+
             // If we have stores for all devectorized values, combine them into a single vector store
             if stores_to_combine.len() == devec_ops.len() {
                 // Get the store details from the first store
@@ -318,24 +311,20 @@ impl Kernel {
                             Op::Devectorize { vec, .. } => *vec,
                             _ => OpId::NULL,
                         };
-                        
+
                         // Create a single vector store using the vectorized result
                         let vec_len = devec_ops.len() as u8;
-                        
+
                         self.insert_before(
                             *first_store_id,
-                            Op::Store {
-                                dst: *dst,
-                                x: store_value,
-                                index: *store_idx,
-                                layout: MemLayout::Vector(vec_len),
-                            },
+                            Op::Store { dst: *dst, x: store_value, index: *store_idx, layout: MemLayout::Vector(vec_len) },
                         );
-                        
+
                         // Remove the other stores (keep first one)
                         for (store_id, _) in &stores_to_combine[1..] {
                             // Mark as dead - DCE will clean up
-                            self.ops[*store_id].op = Op::Store { dst: OpId::NULL, x: OpId::NULL, index: OpId::NULL, layout: MemLayout::Scalar };
+                            self.ops[*store_id].op =
+                                Op::Store { dst: OpId::NULL, x: OpId::NULL, index: OpId::NULL, layout: MemLayout::Scalar };
                         }
                     }
                 }
