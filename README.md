@@ -171,7 +171,7 @@ fn main() -> Result<(), zyx::ZyxError> {
 
 ## Custom Kernels
 
-Hand-optimize kernels for peak performance using hardware-specific features (tensor cores, shared memory, warp intrinsics):
+Hand-optimize kernels for peak performance using hardware-specific features (tensor cores, shared memory):
 
 ```rust
 use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
