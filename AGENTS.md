@@ -157,19 +157,11 @@ fn relu_1() -> Result<(), ZyxError> {
 
 ### Testing with a Specific Backend
 
-zyx runs tests using whatever backends are available. To control which backend runs:
+**NEVER touch `~/.config/zyx/config.json`** — if a test needs a specific backend, ask the user to configure it.
 
-1. Edit the config at `~/.config/zyx/config.json`
-2. Disable all backends except the one you want to test
-3. Run `cargo test` normally — zyx picks the enabled backend with the most compute
+zyx runs tests using whatever backends are available. The user controls which backends run via the config file. Ask them which backend to use.
 
 **Do NOT add cargo feature flags** for most backends (C, CUDA, HIP, OpenCL are always compiled). Only `--features wgpu` is needed for WGPU. See "Backend Architecture" section below for config details.
-
-Example — test with C backend only:
-```bash
-echo '{"c": {"enabled": true}, "cuda": {"device_ids": []}, "opencl": {"platform_ids": []}, "hip": {"device_ids": []}}' > ~/.config/zyx/config.json
-cargo test
-```
 
 ## Clippy Strictness
 
@@ -402,6 +394,7 @@ Every optimization must produce correct IR that calculates the same result as th
 - **Never commit changes unless the user explicitly asks for it** - Always ask before committing
 - **When in doubt, ask me immediately** - Don't try to figure things out on your own if uncertain. Just ask.
 - **Ask before hunting for specs/values** - If I might have a spec, a mapping, or any information that could save time, ask me first. I always have it, so don't dig through source code or run experiments to derive it.
+- **Never touch `~/.config/zyx/config.json`** — never read, write, create, modify, or delete it. If a test needs a specific backend, ask the user to configure it. Do not even look at this file.
 - Inheritance (use composition/enums)
 - `Rc<RefCell<T>>` unless absolutely necessary
 - Too many small files
