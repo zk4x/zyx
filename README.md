@@ -6,6 +6,7 @@
 [![build status](https://github.com/zk4x/zyx/workflows/Build%20and%20Publish%20Wheels/badge.svg)](https://github.com/zk4x/zyx/actions/workflows/build-wheels.yml)
 [![license](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://github.com/zk4x/zyx/blob/main/LICENSE)
 [![maintenance](https://img.shields.io/badge/maintenance-active-green.svg)](https://github.com/zk4x/zyx)
+[![good first issues](https://img.shields.io/github/issues-raw/zk4x/zyx/good%20first%20issue.svg)](https://github.com/zk4x/zyx/labels/good%20first%20issue)
 
 ## Table of Contents
 
@@ -325,15 +326,7 @@ See [CONFIG.md](zyx/CONFIG.md) for details on hardware device selection, autotun
 
 ## Debug Options
 
-| Value | Flag | Description |
-|-------|------|-------------|
-| 1 | dev | Print hardware devices and configuration |
-| 2 | perf | Print graph execution characteristics |
-| 4 | sched | Print kernels created by scheduler |
-| 8 | ir | Print kernels in intermediate representation |
-| 16 | asm | Print native assembly/code (OpenCL, WGSL, etc.) |
-
-Example: `ZYX_DEBUG=16 cargo test --features wgpu relu_1`
+See [ENV_VARS.md](zyx/ENV_VARS.md) for all available debug options and environment variables.
 
 ## Quick Reference
 

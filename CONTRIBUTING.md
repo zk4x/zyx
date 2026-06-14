@@ -1,3 +1,6 @@
+# Contributing
+
+Check out [good first issues](https://github.com/zk4x/zyx/labels/good%20first%20issue) for a place to start.
 
 - The simplest contribution is writing more integration tests. These are always very appretiated.
 
