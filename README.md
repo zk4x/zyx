@@ -197,7 +197,7 @@ fn main() -> Result<(), zyx::ZyxError> {
 }
 ```
 
-See the [`Kernel` docs](https://docs.rs/zyx/latest/zyx/kernel/struct.Kernel.html) for more examples including WMMA tensor-core matmul.
+See the [WMMA matmul example](zyx/src/kernel/mod.rs#L9-L89) for a tensor-core matmul example.
 
 ## Advanced Examples
 
