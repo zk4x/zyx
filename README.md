@@ -16,6 +16,7 @@
 - [Installation](#installation)
 - [Hello World](#hello-world)
 - [Basic Neural Network](#basic-neural-network)
+- [Custom Kernels](#custom-kernels)
 - [Advanced Examples](#advanced-examples)
 - [Architecture](#architecture)
 - [Why zyx is Different](#why-zyx-is-different)
@@ -167,6 +168,35 @@ fn main() -> Result<(), zyx::ZyxError> {
     Ok(())
 }
 ```
+
+## Custom Kernels
+
+Build a low-level kernel with the IR builder for operations not covered by the high-level API:
+
+```rust
+use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
+use zyx::{DType, Tensor};
+
+fn main() -> Result<(), zyx::ZyxError> {
+    let mut kernel = Kernel::new(DeviceId::AUTO);
+    let n = 4;
+    let inp = kernel.define(DType::F32, Scope::Global, true, n);
+    let gidx = kernel.gidx(0, n);
+    let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
+    let doubled = kernel.add(loaded, loaded);
+    let out = kernel.define(DType::F32, Scope::Global, false, n);
+    kernel.store(out, doubled, gidx, MemLayout::Scalar);
+
+    let compiled = kernel.compile()?;
+    let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
+    let result = compiled.forward(&[&x], [n]);
+    let data: Vec<f32> = result.try_into().unwrap();
+    assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
+    Ok(())
+}
+```
+
+See the [`Kernel` docs](https://docs.rs/zyx/latest/zyx/kernel/struct.Kernel.html) for more examples including WMMA tensor-core matmul.
 
 ## Advanced Examples
 
