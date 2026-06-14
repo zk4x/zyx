@@ -4,8 +4,6 @@
 //! SPIR-V binary codegen from zyx kernel IR.
 //! Translates kernel IR ops to SPIR-V machine code (`Vec<u32>`).
 
-use num_enum::TryFromPrimitive;
-
 use crate::error::{BackendError, ErrorStatus};
 use crate::shape::Dim;
 use crate::{
@@ -28,7 +26,7 @@ const SC_STORAGE_BUFFER: u32 = 12;
 const SC_WORKGROUP: u32 = 4;
 
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decoration {
     DecBlock = 2,
     DecArrayStride = 6,
@@ -37,6 +35,22 @@ pub enum Decoration {
     DecBinding = 33,
     DecDescriptorSet = 34,
     DecOffset = 35,
+}
+
+impl TryFrom<u32> for Decoration {
+    type Error = ();
+    fn try_from(v: u32) -> Result<Self, ()> {
+        match v {
+            2 => Ok(Self::DecBlock),
+            6 => Ok(Self::DecArrayStride),
+            11 => Ok(Self::DecBuiltIn),
+            24 => Ok(Self::DecNonWritable),
+            33 => Ok(Self::DecBinding),
+            34 => Ok(Self::DecDescriptorSet),
+            35 => Ok(Self::DecOffset),
+            _ => Err(()),
+        }
+    }
 }
 
 // BuiltIns
@@ -59,7 +73,7 @@ const SEM_ACQUIRE_RELEASE: u32 = 0x8;
 const SEM_WORKGROUP_MEMORY: u32 = 0x100;
 
 #[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpCode {
     OpCapability = 17,
     OpExtInstImport = 11,
@@ -132,6 +146,86 @@ pub enum OpCode {
     OpControlBarrier = 224,
     OpCompositeExtract = 81,
     OpBitcast = 124,
+}
+
+impl TryFrom<u16> for OpCode {
+    type Error = ();
+    fn try_from(v: u16) -> Result<Self, ()> {
+        match v {
+            17 => Ok(Self::OpCapability),
+            11 => Ok(Self::OpExtInstImport),
+            14 => Ok(Self::OpMemoryModel),
+            15 => Ok(Self::OpEntryPoint),
+            16 => Ok(Self::OpExecutionMode),
+            71 => Ok(Self::OpDecorate),
+            72 => Ok(Self::OpMemberDecorate),
+            19 => Ok(Self::OpTypeVoid),
+            20 => Ok(Self::OpTypeBool),
+            21 => Ok(Self::OpTypeInt),
+            22 => Ok(Self::OpTypeFloat),
+            23 => Ok(Self::OpTypeVector),
+            28 => Ok(Self::OpTypeArray),
+            29 => Ok(Self::OpTypeRuntimeArray),
+            30 => Ok(Self::OpTypeStruct),
+            32 => Ok(Self::OpTypePointer),
+            33 => Ok(Self::OpTypeFunction),
+            43 => Ok(Self::OpConstant),
+            59 => Ok(Self::OpVariable),
+            54 => Ok(Self::OpFunction),
+            56 => Ok(Self::OpFunctionEnd),
+            248 => Ok(Self::OpLabel),
+            249 => Ok(Self::OpBranch),
+            250 => Ok(Self::OpBranchConditional),
+            246 => Ok(Self::OpLoopMerge),
+            247 => Ok(Self::OpSelectionMerge),
+            253 => Ok(Self::OpReturn),
+            61 => Ok(Self::OpLoad),
+            62 => Ok(Self::OpStore),
+            65 => Ok(Self::OpAccessChain),
+            129 => Ok(Self::OpFAdd),
+            131 => Ok(Self::OpFSub),
+            133 => Ok(Self::OpFMul),
+            136 => Ok(Self::OpFDiv),
+            127 => Ok(Self::OpFNegate),
+            141 => Ok(Self::OpFMod),
+            128 => Ok(Self::OpIAdd),
+            130 => Ok(Self::OpISub),
+            132 => Ok(Self::OpIMul),
+            135 => Ok(Self::OpSDiv),
+            134 => Ok(Self::OpUDiv),
+            138 => Ok(Self::OpSRem),
+            126 => Ok(Self::OpSNegate),
+            200 => Ok(Self::OpNot),
+            196 => Ok(Self::OpShiftLeftLogical),
+            194 => Ok(Self::OpShiftRightLogical),
+            199 => Ok(Self::OpBitwiseAnd),
+            197 => Ok(Self::OpBitwiseOr),
+            198 => Ok(Self::OpBitwiseXOr),
+            170 => Ok(Self::OpIEqual),
+            171 => Ok(Self::OpINotEqual),
+            176 => Ok(Self::OpULessThan),
+            172 => Ok(Self::OpUGreaterThan),
+            177 => Ok(Self::OpSLessThan),
+            173 => Ok(Self::OpSGreaterThan),
+            184 => Ok(Self::OpFOrdLessThan),
+            186 => Ok(Self::OpFOrdGreaterThan),
+            180 => Ok(Self::OpFOrdEqual),
+            182 => Ok(Self::OpFOrdNotEqual),
+            109 => Ok(Self::OpConvertFToU),
+            110 => Ok(Self::OpConvertFToS),
+            111 => Ok(Self::OpConvertSToF),
+            112 => Ok(Self::OpConvertUToF),
+            115 => Ok(Self::OpFConvert),
+            114 => Ok(Self::OpSConvert),
+            113 => Ok(Self::OpUConvert),
+            169 => Ok(Self::OpSelect),
+            12 => Ok(Self::OpExtInst),
+            224 => Ok(Self::OpControlBarrier),
+            81 => Ok(Self::OpCompositeExtract),
+            124 => Ok(Self::OpBitcast),
+            _ => Err(()),
+        }
+    }
 }
 
 // GLSL.std.450 extended instructions used
