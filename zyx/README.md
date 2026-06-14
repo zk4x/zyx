@@ -10,17 +10,15 @@ but thanks to lazyness and scope gradient tracing, all unnecessary memory alloca
 
 ## Install
 
-Zyx is under lot of development and breaking changes are expected.
-Please use latest github version for testing. The version on crates.io
-will be updated only with more stable releases.
+Zyx comes with autograd and all backends built in — no feature flags needed (WGPU is optional).
 
 ```toml
-# Only tensors (includes autograd)
-zyx = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx" }
+# Core library (tensors, autograd, all backends)
+zyx = "*"
 # Neural network modules - Linear, normalization layers, ...
-zyx-nn = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx-nn" }
+zyx-nn = "*"
 # Optimizers - SGD, Adam
-zyx-optim = { version = "*", git = "https://github.com/zk4x/zyx", package = "zyx-optim" }
+zyx-optim = "*"
 ```
 
 ## Syntax
