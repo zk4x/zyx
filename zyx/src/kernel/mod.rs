@@ -873,6 +873,11 @@ impl Kernel {
         self.push_back(Op::Const(Constant::idx(val)))
     }
 
+    /// Create multiple constant indices in one call.
+    pub fn const_idxs<const N: usize>(&mut self, vals: [u32; N]) -> [OpId; N] {
+        core::array::from_fn(|i| self.const_idx(vals[i]))
+    }
+
     /// Define a tensor in the kernel.
     ///
     /// Creates a new tensor with the given dtype, scope, and length.
@@ -1164,8 +1169,13 @@ impl Kernel {
     /// Devectorize a vector operation.
     ///
     /// Extracts a single element from a vectorized operation.
-    pub fn devectorize(&mut self, vec: OpId, idx: usize) -> OpId {
+    pub fn devectorize_one(&mut self, vec: OpId, idx: usize) -> OpId {
         self.push_back(Op::Devectorize { vec, idx })
+    }
+
+    /// Extract all elements from a vectorized operation.
+    pub fn devectorize<const N: usize>(&mut self, vec: OpId) -> [OpId; N] {
+        core::array::from_fn(|i| self.devectorize_one(vec, i))
     }
 
     /// Insert a local barrier.

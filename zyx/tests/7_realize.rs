@@ -19,56 +19,40 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
     let mut kernel = Kernel::new(DeviceId::AUTO);
 
-    // Global buffers
     let a_buf = kernel.define(DType::F16, Scope::Global, true, m * k);
     let b_buf = kernel.define(DType::F16, Scope::Global, true, k * n);
     let c_buf = kernel.define(DType::F32, Scope::Global, false, m * n);
 
-    // Work-group (grid) indices  --  blockIdx.{x, y}
-    let gidx = kernel.gidx(0, m / 16); // tile row
-    let gidy = kernel.gidx(1, n / 8); // tile col
-
-    // Thread index within work-group  --  threadIdx.x
+    let gidx = kernel.gidx(0, m / 16);
+    let gidy = kernel.gidx(1, n / 8);
     let wid = kernel.lidx(0, 32);
 
-    // ---- Constants ----
-    let c0 = kernel.const_idx(0u32);
-    let c1 = kernel.const_idx(1u32);
-    let c2 = kernel.const_idx(2u32);
-    let c4 = kernel.const_idx(4u32);
-    let c8 = kernel.const_idx(8u32);
-    let c16 = kernel.const_idx(16u32);
+    let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
     let n_const = kernel.const_idx(n as u32);
     let k_const = kernel.const_idx(k as u32);
 
-    // wid >> 2       -> row index within A/C tile (0..7)
+    // wid >> 2  -> row index within tile (0..7)
     let row_in_tile = kernel.div(wid, c4);
-    // wid & 3        -> sub-column index within A/C tile
+    // wid & 3   -> sub-column index (0..3)
     let sub_col = kernel.mod_(wid, c4);
-    // (wid & 3) * 2  -> column offset within A/C tile (0, 2, 4, 6)
+    // * 2       -> column offset within tile (0, 2, 4, 6)
     let col_in_tile = kernel.mul(sub_col, c2);
 
-
-
-    // a_row = gidx * 16 + row_in_tile
     let a_row = kernel.mad(gidx, c16, row_in_tile);
-    // b_col = gidy * 8 + row_in_tile
     let b_col = kernel.mad(gidy, c8, row_in_tile);
     let tile_base_col = kernel.mul(gidy, c8);
 
-    // ---- Accumulator (float4 per thread) ----
+    // Accumulator: 4×f32 register
     let acc = kernel.define(DType::F32, Scope::Register, false, 4);
     let zf = kernel.const_val(0.0f32);
     let zero_acc = kernel.vectorize(vec![zf, zf, zf, zf]);
     kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
 
-    // ---- K loop  (k / 8 iterations) ----
+    // K loop (k/8 iterations)
     let k_loop = kernel.loop_(k / 8);
-
-    // k * 8
     let k_off = kernel.mul(k_loop, c8);
 
-    // ---- Load A fragment (m16 × k8 = 4 half per thread) ----
+    // Load A fragment: 4 f16 per thread (m16 × k8)
     let a_base = kernel.mad(a_row, k_const, k_off);
     let a_base = kernel.add(a_base, col_in_tile);
     let a_load_0 = kernel.load(a_buf, a_base, MemLayout::Scalar);
@@ -80,8 +64,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let a_load_3 = kernel.load(a_buf, a_base2_p1, MemLayout::Scalar);
     let a_frag = kernel.vectorize(vec![a_load_0, a_load_1, a_load_2, a_load_3]);
 
-    // ---- Load B fragment (k8 × n8 = 2 half per thread) ----
-    // col-major B: row = (wid%4)*2, (wid%4)*2+1, col = wid/4
+    // Load B fragment: 2 f16 per thread (k8 × n8)
     let b_row = kernel.add(k_off, col_in_tile);
     let b_base = kernel.mad(b_row, n_const, b_col);
     let b_load_0 = kernel.load(b_buf, b_base, MemLayout::Scalar);
@@ -89,7 +72,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let b_load_1 = kernel.load(b_buf, b_base_n, MemLayout::Scalar);
     let b_frag = kernel.vectorize(vec![b_load_0, b_load_1]);
 
-    // ---- WMMA: acc = A_frag @ B_frag + acc ----
+    // WMMA: acc = A_frag @ B_frag + acc
     let acc_old = kernel.load(acc, c0, MemLayout::Vector(4));
     let acc_new = kernel.wmma(
         MMADims::m16n8k8,
@@ -100,15 +83,11 @@ fn wmma_matmul() -> Result<(), ZyxError> {
         acc_old,
     );
     kernel.store(acc, acc_new, c0, MemLayout::Vector(4));
-
     kernel.end_loop();
 
-    // ---- Store result to C ----
+    // Store result to C
     let acc_final = kernel.load(acc, c0, MemLayout::Vector(4));
-    let co = kernel.devectorize(acc_final, 0);
-    let c1v = kernel.devectorize(acc_final, 1);
-    let c2v = kernel.devectorize(acc_final, 2);
-    let c3v = kernel.devectorize(acc_final, 3);
+    let [co, c1v, c2v, c3v] = kernel.devectorize(acc_final);
 
     let c_col = kernel.add(tile_base_col, col_in_tile);
     let c_base = kernel.mad(a_row, n_const, c_col);
@@ -120,7 +99,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let c_base2_p1 = kernel.add(c_base2, c1);
     kernel.store(c_buf, c3v, c_base2_p1, MemLayout::Scalar);
 
-    // ---- Compile & run ----
+    // Compile & run
     let compiled = kernel.compile()?;
 
     let a = Tensor::rand([m, k], DType::F16)?;
