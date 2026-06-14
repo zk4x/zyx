@@ -20,7 +20,7 @@ zyx = { version = "0.15.6", path = "../zyx" }
 zyx-derive = { version = "0.15.6", path = "../zyx-derive" }
 
 [dependencies.pyo3]
-version = "0.28.3"
+version = "0.29.0"
 optional = true
 
 [features]
