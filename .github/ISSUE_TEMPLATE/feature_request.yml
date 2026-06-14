@@ -1,0 +1,22 @@
+name: Feature Request
+description: Suggest an idea
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What is missing?
+    validations:
+      required: true
+  - type: textarea
+    id: api
+    attributes:
+      label: Proposed API
+      description: How should it look?
+      render: rust
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Links or prior art
