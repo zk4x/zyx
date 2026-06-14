@@ -1327,7 +1327,7 @@ dependencies = [
 
 [[package]]
 name = "zyx"
-version = "0.15.5"
+version = "0.15.6"
 dependencies = [
  "ash",
  "half 1.8.3",

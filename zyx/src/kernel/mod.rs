@@ -94,7 +94,6 @@ use crate::view::View;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::custom::CompiledKernel,
     kernel_cache::KernelId,
     kernelize::KMKernelId,
     shape::{Dim, UAxis},
@@ -104,13 +103,16 @@ use crate::{
 use nanoserde::{DeBin, SerBin};
 use std::{fmt::Display, hash::Hash};
 
+pub use custom::CompiledKernel;
+pub(crate) use custom::CustomKernel;
+
 mod algebraic;
 /// Autotuning optimizations for kernel compilation.
 pub(crate) mod autotune;
 /// Cost estimation for kernel selection.
 mod cost;
 /// Custom kernel compilation for GPU-specific operations.
-pub mod custom;
+mod custom;
 mod debug;
 mod exp2_to_exp;
 mod fold_constants;
@@ -136,7 +138,7 @@ mod verify;
 
 // TODO later make this dynamic u32 or u64 depending on max range
 /// Type used for indexing into arrays within kernels.
-pub const IDX_T: DType = DType::U32;
+pub(crate) const IDX_T: DType = DType::U32;
 
 /// Kernel builder for constructing custom compute kernels.
 ///
@@ -881,7 +883,7 @@ impl Kernel {
         self.push_back(Op::Const(Constant::new(val)))
     }
 
-    /// Constant index value (normalized to [`IDX_T`]).
+    /// Constant index value (normalized to index type).
     /// For data constants, use [`Kernel::const_val`].
     pub fn const_idx<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
         self.push_back(Op::Const(Constant::idx(val)))

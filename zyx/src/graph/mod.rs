@@ -60,7 +60,7 @@ pub enum Node {
         bop: BOp,
     },
     #[allow(unused)]
-    Custom(Box<crate::kernel::custom::CustomKernel>),
+    Custom(Box<crate::kernel::CustomKernel>),
     /// Explicit device placement — copies the tensor to the target device.
     ToDevice {
         x: TensorId,
