@@ -171,7 +171,7 @@ fn main() -> Result<(), zyx::ZyxError> {
 
 ## Custom Kernels
 
-Build a low-level kernel with the IR builder for operations not covered by the high-level API:
+Hand-optimize kernels for peak performance using hardware-specific features (tensor cores, shared memory, warp intrinsics):
 
 ```rust
 use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
