@@ -12,7 +12,6 @@
 
 ## Table of Contents
 
-- [Overview](#overview)
 - [Features](#features)
 - [🐍 Python Bindings](#python-bindings)
 - [Crates](#crates)
