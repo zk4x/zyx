@@ -13,9 +13,9 @@ use zyx::{DType, ReduceOp, Scalar, Tensor, ZyxError};
 /// Run with: `AGENT=1 cargo test -p zyx --test 7_realize wmma_matmul -- --nocapture --include-ignored`
 #[test]
 fn wmma_matmul() -> Result<(), ZyxError> {
-    let m = 1024u64;
-    let n = 1024u64;
-    let k = 1024u64;
+    let m = 1024;
+    let n = 1024;
+    let k = 1024;
 
     let mut kernel = Kernel::new(DeviceId::AUTO);
 
@@ -28,8 +28,8 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let wid = kernel.lidx(0, 32);
 
     let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
-    let n_const = kernel.const_idx(n as u32);
-    let k_const = kernel.const_idx(k as u32);
+    let n_const = kernel.const_idx(n);
+    let k_const = kernel.const_idx(k);
 
     // wid >> 2  -> row index within tile (0..7)
     let row_in_tile = kernel.div(wid, c4);

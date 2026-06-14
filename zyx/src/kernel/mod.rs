@@ -6,28 +6,86 @@
 //! This module provides the IR builder API for constructing custom kernels
 //! that can be compiled and executed on any backend (CPU, CUDA, Vulkan, etc.).
 //!
-//! # Quick start
+//! # Quick start — WMMA matrix multiply
 //!
-//! Build a 2D element-wise kernel using two global thread indices:
+//! Tensor-core matmul using the m16n8k8 WMMA instruction with one warp per 16×8 tile.
+//! Requires CUDA with tensor cores (compute capability ≥ 7.0).
 //!
-//! ```
-//! use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
+//! ```rust
+//! use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, Scope};
 //! use zyx::DType;
 //!
-//! let (m, n) = (16, 32);
+//! let (m, n, k) = (1024, 1024, 1024);
 //! let mut kernel = Kernel::new(DeviceId::AUTO);
-//! let a = kernel.define(DType::F32, Scope::Global, true, m * n);
-//! let b = kernel.define(DType::F32, Scope::Global, true, m * n);
-//! let row = kernel.gidx(0, m);
-//! let col = kernel.gidx(1, n);
-//! let stride = kernel.const_idx(n as u32);
-//! let linear = kernel.mul(row, stride);
-//! let idx = kernel.add(linear, col);
-//! let va = kernel.load(a, idx, MemLayout::Scalar);
-//! let vb = kernel.load(b, idx, MemLayout::Scalar);
-//! let result = kernel.add(va, vb);
-//! let out = kernel.define(DType::F32, Scope::Global, false, m * n);
-//! kernel.store(out, result, idx, MemLayout::Scalar);
+//!
+//! let a_buf = kernel.define(DType::F16, Scope::Global, true, m * k);
+//! let b_buf = kernel.define(DType::F16, Scope::Global, true, k * n);
+//! let c_buf = kernel.define(DType::F32, Scope::Global, false, m * n);
+//!
+//! let gidx = kernel.gidx(0, m / 16);
+//! let gidy = kernel.gidx(1, n / 8);
+//! let wid = kernel.lidx(0, 32);
+//!
+//! let [c0, c1, c2, c4, c8, c16] = kernel.const_idxs([0u32, 1, 2, 4, 8, 16]);
+//! let n_const = kernel.const_idx(n);
+//! let k_const = kernel.const_idx(k);
+//!
+//! let row_in_tile = kernel.div(wid, c4);
+//! let sub_col = kernel.mod_(wid, c4);
+//! let col_in_tile = kernel.mul(sub_col, c2);
+//!
+//! let a_row = kernel.mad(gidx, c16, row_in_tile);
+//! let b_col = kernel.mad(gidy, c8, row_in_tile);
+//! let tile_base_col = kernel.mul(gidy, c8);
+//!
+//! let acc = kernel.define(DType::F32, Scope::Register, false, 4);
+//! let zf = kernel.const_val(0.0f32);
+//! let zero_acc = kernel.vectorize(vec![zf, zf, zf, zf]);
+//! kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
+//!
+//! let k_loop = kernel.loop_(k / 8);
+//! let k_off = kernel.mul(k_loop, c8);
+//!
+//! let a_base = kernel.mad(a_row, k_const, k_off);
+//! let a_base = kernel.add(a_base, col_in_tile);
+//! let a_load_0 = kernel.load(a_buf, a_base, MemLayout::Scalar);
+//! let a_base_p1 = kernel.add(a_base, c1);
+//! let a_load_1 = kernel.load(a_buf, a_base_p1, MemLayout::Scalar);
+//! let a_base2 = kernel.mad(c8, k_const, a_base);
+//! let a_load_2 = kernel.load(a_buf, a_base2, MemLayout::Scalar);
+//! let a_base2_p1 = kernel.add(a_base2, c1);
+//! let a_load_3 = kernel.load(a_buf, a_base2_p1, MemLayout::Scalar);
+//! let a_frag = kernel.vectorize(vec![a_load_0, a_load_1, a_load_2, a_load_3]);
+//!
+//! let b_row = kernel.add(k_off, col_in_tile);
+//! let b_base = kernel.mad(b_row, n_const, b_col);
+//! let b_load_0 = kernel.load(b_buf, b_base, MemLayout::Scalar);
+//! let b_base_n = kernel.add(b_base, n_const);
+//! let b_load_1 = kernel.load(b_buf, b_base_n, MemLayout::Scalar);
+//! let b_frag = kernel.vectorize(vec![b_load_0, b_load_1]);
+//!
+//! let acc_old = kernel.load(acc, c0, MemLayout::Vector(4));
+//! let acc_new = kernel.wmma(
+//!     MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32,
+//!     a_frag, b_frag, acc_old,
+//! );
+//! kernel.store(acc, acc_new, c0, MemLayout::Vector(4));
+//! kernel.end_loop();
+//!
+//! let acc_final = kernel.load(acc, c0, MemLayout::Vector(4));
+//! let [co, c1v, c2v, c3v] = kernel.devectorize(acc_final);
+//!
+//! let c_col = kernel.add(tile_base_col, col_in_tile);
+//! let c_base = kernel.mad(a_row, n_const, c_col);
+//! kernel.store(c_buf, co, c_base, MemLayout::Scalar);
+//! let c_base_p1 = kernel.add(c_base, c1);
+//! kernel.store(c_buf, c1v, c_base_p1, MemLayout::Scalar);
+//! let c_base2 = kernel.mad(c8, n_const, c_base);
+//! kernel.store(c_buf, c2v, c_base2, MemLayout::Scalar);
+//! let c_base2_p1 = kernel.add(c_base2, c1);
+//! kernel.store(c_buf, c3v, c_base2_p1, MemLayout::Scalar);
+//!
+//! // kernel.compile()?;  // requires CUDA with tensor cores
 //! ```
 //!
 //! The kernel is then finalized via [`Kernel::compile`].
@@ -133,7 +191,7 @@ pub const IDX_T: DType = DType::U32;
 ///
 /// let compiled = kernel.compile()?;
 /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
-/// let result = compiled.forward(&[&x]);
+/// let result = compiled.forward(&[&x], [n]);
 /// let data: Vec<f32> = result.try_into().unwrap();
 /// assert_eq!(data, vec![2.0, 6.0, 12.0, 20.0]);
 /// # Ok::<_, ZyxError>(())
