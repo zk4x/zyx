@@ -28,7 +28,6 @@
 - [Contributing](#contributing)
 - [Configuration](#configuration)
 - [Debug Options](#debug-options)
-- [Quick Reference](#quick-reference)
 
 ## Features
 
