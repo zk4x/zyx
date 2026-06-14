@@ -87,8 +87,6 @@
 //!
 //! // kernel.compile()?;  // requires CUDA with tensor cores
 //! ```
-//!
-//! The kernel is then finalized via [`Kernel::compile`].
 
 pub use crate::backend::DeviceId;
 use crate::view::View;
