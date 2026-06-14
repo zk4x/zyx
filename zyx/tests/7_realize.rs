@@ -50,15 +50,11 @@ fn wmma_matmul() -> Result<(), ZyxError> {
 
 
 
-    // gidx * 16      -> base row of this 16×8 tile
-    let tile_base_row = kernel.mul(gidx, c16);
-    // gidy * 8       -> base col of this 16×8 tile
+    // a_row = gidx * 16 + row_in_tile
+    let a_row = kernel.mad(gidx, c16, row_in_tile);
+    // b_col = gidy * 8 + row_in_tile
+    let b_col = kernel.mad(gidy, c8, row_in_tile);
     let tile_base_col = kernel.mul(gidy, c8);
-
-    // a_row = gidx * 16 + (wid >> 2)
-    let a_row = kernel.add(tile_base_row, row_in_tile);
-    // b_col = gidy * 8 + (wid >> 2)
-    let b_col = kernel.add(tile_base_col, row_in_tile);
 
     // ---- Accumulator (float4 per thread) ----
     let acc = kernel.define(DType::F32, Scope::Register, false, 4);
@@ -73,15 +69,12 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let k_off = kernel.mul(k_loop, c8);
 
     // ---- Load A fragment (m16 × k8 = 4 half per thread) ----
-    // a_base = a_row * K + k_off + col_in_tile
-    let a_row_k = kernel.mul(a_row, k_const);
-    let a_k_off = kernel.add(a_row_k, k_off);
-    let a_base = kernel.add(a_k_off, col_in_tile);
+    let a_base = kernel.mad(a_row, k_const, k_off);
+    let a_base = kernel.add(a_base, col_in_tile);
     let a_load_0 = kernel.load(a_buf, a_base, MemLayout::Scalar);
     let a_base_p1 = kernel.add(a_base, c1);
     let a_load_1 = kernel.load(a_buf, a_base_p1, MemLayout::Scalar);
-    let a_8k = kernel.mul(c8, k_const);
-    let a_base2 = kernel.add(a_base, a_8k);
+    let a_base2 = kernel.mad(c8, k_const, a_base);
     let a_load_2 = kernel.load(a_buf, a_base2, MemLayout::Scalar);
     let a_base2_p1 = kernel.add(a_base2, c1);
     let a_load_3 = kernel.load(a_buf, a_base2_p1, MemLayout::Scalar);
@@ -90,8 +83,7 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     // ---- Load B fragment (k8 × n8 = 2 half per thread) ----
     // col-major B: row = (wid%4)*2, (wid%4)*2+1, col = wid/4
     let b_row = kernel.add(k_off, col_in_tile);
-    let b_row_n = kernel.mul(b_row, n_const);
-    let b_base = kernel.add(b_row_n, b_col);
+    let b_base = kernel.mad(b_row, n_const, b_col);
     let b_load_0 = kernel.load(b_buf, b_base, MemLayout::Scalar);
     let b_base_n = kernel.add(b_base, n_const);
     let b_load_1 = kernel.load(b_buf, b_base_n, MemLayout::Scalar);
@@ -118,15 +110,12 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let c2v = kernel.devectorize(acc_final, 2);
     let c3v = kernel.devectorize(acc_final, 3);
 
-    // c_col = gidy * 8 + (wid & 3) * 2
     let c_col = kernel.add(tile_base_col, col_in_tile);
-    let c_row_n = kernel.mul(a_row, n_const);
-    let c_base = kernel.add(c_row_n, c_col);
+    let c_base = kernel.mad(a_row, n_const, c_col);
     kernel.store(c_buf, co, c_base, MemLayout::Scalar);
     let c_base_p1 = kernel.add(c_base, c1);
     kernel.store(c_buf, c1v, c_base_p1, MemLayout::Scalar);
-    let c_8n = kernel.mul(c8, n_const);
-    let c_base2 = kernel.add(c_base, c_8n);
+    let c_base2 = kernel.mad(c8, n_const, c_base);
     kernel.store(c_buf, c2v, c_base2, MemLayout::Scalar);
     let c_base2_p1 = kernel.add(c_base2, c1);
     kernel.store(c_buf, c3v, c_base2_p1, MemLayout::Scalar);
