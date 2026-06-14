@@ -260,11 +260,10 @@ fn main() -> Result<(), zyx::ZyxError> {
 ```mermaid
 flowchart LR
     A["Tensor Graph"] --> B["Fusion and Device Schedule Search"]
-    B --> C["Device Specific Kernel IR"]
+    B --> C["Unified Kernel IR"]
     C --> D["Backend Code / Assembly"]
 ```
-
-Tensor operations build a lazy computation graph. During realization, the graph is analyzed for fusion opportunities and the optimal execution schedule is searched. The fused operations are lowered to a device-specific intermediate representation, then compiled to native code (PTX, OpenCL C, WGSL, etc.) for the target backend.
+Tensor operations build a lazy computation graph. During realization, the graph is analyzed for fusion opportunities and the optimal execution schedule is searched. The fused operations are lowered to a unified intermediate representation with device-specific instructions (e.g. WMMA tensor cores), then compiled to native code (PTX, OpenCL C, WGSL, etc.) for the target backend.
 
 ## Why zyx is Different
 
