@@ -1,7 +1,168 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only
 
+use zyx::kernel::{DeviceId, Kernel, MMADType, MMADims, MMALayout, MemLayout, Scope};
 use zyx::{DType, ReduceOp, Scalar, Tensor, ZyxError};
+
+/// Tensor-core matmul: C = A @ B where A(M×K, FP16), B(K×N, FP16), C(M×N, FP32).
+///
+/// Translates `~/Dev/python/matmul/kernel.cu` to the zyx kernel builder.
+/// Uses the m16n8k8 WMMA instruction with one warp (32 threads) per 16×8 tile.
+///
+/// Requires a CUDA device with tensor cores (cc >= 7.0).
+/// Run with: `AGENT=1 cargo test -p zyx --test 7_realize wmma_matmul -- --nocapture --include-ignored`
+#[test]
+fn wmma_matmul() -> Result<(), ZyxError> {
+    let m = 1024u64;
+    let n = 1024u64;
+    let k = 1024u64;
+
+    let mut kernel = Kernel::new(DeviceId::AUTO);
+
+    // Global buffers
+    let a_buf = kernel.define(DType::F16, Scope::Global, true, m * k);
+    let b_buf = kernel.define(DType::F16, Scope::Global, true, k * n);
+    let c_buf = kernel.define(DType::F32, Scope::Global, false, m * n);
+
+    // Work-group (grid) indices  --  blockIdx.{x, y}
+    let gidx = kernel.gidx(0, m / 16); // tile row
+    let gidy = kernel.gidx(1, n / 8); // tile col
+
+    // Thread index within work-group  --  threadIdx.x
+    let wid = kernel.lidx(0, 32);
+
+    // ---- Constants ----
+    let c0 = kernel.const_idx(0u32);
+    let c1 = kernel.const_idx(1u32);
+    let c2 = kernel.const_idx(2u32);
+    let c4 = kernel.const_idx(4u32);
+    let c8 = kernel.const_idx(8u32);
+    let c16 = kernel.const_idx(16u32);
+    let n_const = kernel.const_idx(n as u32);
+    let k_const = kernel.const_idx(k as u32);
+
+    // wid >> 2       -> row index within tile (0..7)
+    let row_in_tile = kernel.div(wid, c4);
+    // wid & 3        -> sub-column index within tile
+    let sub_col = kernel.mod_(wid, c4);
+    // (wid & 3) * 2  -> column offset within A/C tile (0, 2, 4, 6)
+    let col_in_tile = kernel.mul(sub_col, c2);
+
+    // gidx * 16      -> base row of this 16×8 tile
+    let tile_base_row = kernel.mul(gidx, c16);
+    // gidy * 8       -> base col of this 16×8 tile
+    let tile_base_col = kernel.mul(gidy, c8);
+
+    // a_row = gidx * 16 + (wid >> 2)
+    let a_row = kernel.add(tile_base_row, row_in_tile);
+    // b_col = gidy * 8 + (wid >> 2)
+    let b_col = kernel.add(tile_base_col, row_in_tile);
+
+    // ---- Accumulator (float4 per thread) ----
+    let acc = kernel.define(DType::F32, Scope::Register, false, 4);
+    let zf = kernel.const_val(0.0f32);
+    let zero_acc = kernel.vectorize(vec![zf, zf, zf, zf]);
+    kernel.store(acc, zero_acc, c0, MemLayout::Vector(4));
+
+    // ---- K loop  (k / 8 iterations) ----
+    let k_loop = kernel.loop_(k / 8);
+
+    // k * 8
+    let k_off = kernel.mul(k_loop, c8);
+
+    // ---- Load A fragment (m16 × k8 = 4 half per thread) ----
+    // a_base = a_row * K + k_off + col_in_tile
+    let a_row_k = kernel.mul(a_row, k_const);
+    let a_k_off = kernel.add(a_row_k, k_off);
+    let a_base = kernel.add(a_k_off, col_in_tile);
+    let a_load_0 = kernel.load(a_buf, a_base, MemLayout::Scalar);
+    let a_base_p1 = kernel.add(a_base, c1);
+    let a_load_1 = kernel.load(a_buf, a_base_p1, MemLayout::Scalar);
+    let a_8k = kernel.mul(c8, k_const);
+    let a_base2 = kernel.add(a_base, a_8k);
+    let a_load_2 = kernel.load(a_buf, a_base2, MemLayout::Scalar);
+    let a_base2_p1 = kernel.add(a_base2, c1);
+    let a_load_3 = kernel.load(a_buf, a_base2_p1, MemLayout::Scalar);
+    let a_frag = kernel.vectorize(vec![a_load_0, a_load_1, a_load_2, a_load_3]);
+
+    // ---- Load B fragment (k8 × n8 = 2 half per thread) ----
+    let b_row = kernel.add(k_off, sub_col);
+    let b_row_n = kernel.mul(b_row, n_const);
+    let b_base = kernel.add(b_row_n, b_col);
+    let b_load_0 = kernel.load(b_buf, b_base, MemLayout::Scalar);
+    let b_base_n = kernel.add(b_base, n_const);
+    let b_load_1 = kernel.load(b_buf, b_base_n, MemLayout::Scalar);
+    let b_frag = kernel.vectorize(vec![b_load_0, b_load_1]);
+
+    // ---- WMMA: acc = A_frag @ B_frag + acc ----
+    let acc_old = kernel.load(acc, c0, MemLayout::Vector(4));
+    let acc_new = kernel.wmma(
+        MMADims::m16n8k8,
+        MMALayout::row_col,
+        MMADType::f16_f16_f16_f32,
+        a_frag,
+        b_frag,
+        acc_old,
+    );
+    kernel.store(acc, acc_new, c0, MemLayout::Vector(4));
+
+    kernel.end_loop();
+
+    // ---- Store result to C ----
+    let acc_final = kernel.load(acc, c0, MemLayout::Vector(4));
+    let co = kernel.devectorize(acc_final, 0);
+    let c1v = kernel.devectorize(acc_final, 1);
+    let c2v = kernel.devectorize(acc_final, 2);
+    let c3v = kernel.devectorize(acc_final, 3);
+
+    // c_col = gidy * 8 + (wid & 3) * 2
+    let c_col = kernel.add(tile_base_col, col_in_tile);
+    let c_row_n = kernel.mul(a_row, n_const);
+    let c_base = kernel.add(c_row_n, c_col);
+    kernel.store(c_buf, co, c_base, MemLayout::Scalar);
+    let c_base_p1 = kernel.add(c_base, c1);
+    kernel.store(c_buf, c1v, c_base_p1, MemLayout::Scalar);
+    let c_8n = kernel.mul(c8, n_const);
+    let c_base2 = kernel.add(c_base, c_8n);
+    kernel.store(c_buf, c2v, c_base2, MemLayout::Scalar);
+    let c_base2_p1 = kernel.add(c_base2, c1);
+    kernel.store(c_buf, c3v, c_base2_p1, MemLayout::Scalar);
+
+    // ---- Compile & run ----
+    let compiled = kernel.compile()?;
+
+    let a_data: Vec<half::f16> = (0..m * k).map(|i| half::f16::from_f32((i as f32) / 1024.0f32)).collect();
+    let b_data: Vec<half::f16> = (0..k * n).map(|i| half::f16::from_f32((i as f32) / 1024.0f32)).collect();
+    let a = Tensor::from(a_data).reshape([m, k])?;
+    let b = Tensor::from(b_data).reshape([k, n])?;
+
+    let result = compiled.forward(&[&a, &b], [m, n]);
+    let c_host: Vec<f32> = result.try_into()?;
+
+    // Reference: A @ B on CPU
+    let a_host: Vec<f32> = a.cast(DType::F32).try_into()?;
+    let b_host: Vec<f32> = b.cast(DType::F32).try_into()?;
+    let mut ref_c = vec![0.0f32; (m * n) as usize];
+    for i in 0..m {
+        for j in 0..n {
+            let mut sum = 0.0;
+            for t in 0..k {
+                sum += a_host[(i * k + t) as usize] * b_host[(t * n + j) as usize];
+            }
+            ref_c[(i * n + j) as usize] = sum;
+        }
+    }
+
+    let mut max_err = 0.0f32;
+    for idx in 0..(m * n) as usize {
+        let err = (c_host[idx] - ref_c[idx]).abs();
+        max_err = max_err.max(err);
+    }
+    println!("WMMA matmul max error: {max_err:.6}");
+    assert!(max_err < 1.0, "WMMA matmul error too large: {max_err}");
+
+    Ok(())
+}
 
 #[test]
 fn t01() -> Result<(), ZyxError> {

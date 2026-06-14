@@ -16,9 +16,10 @@
 //! The custom kernel system allows backends to compile kernels
 //! to their native instruction set and cache them for repeated use.
 
+use crate::IntoShape;
 use crate::backend::ProgramId;
-use crate::tensor::TensorId;
 use crate::kernel_cache::KernelId;
+use crate::tensor::TensorId;
 
 /// Custom kernel referencing a pre-compiled program.
 ///
@@ -44,8 +45,6 @@ pub(crate) struct CustomKernel {
 pub struct CompiledKernel {
     /// Compiled program handle (includes device).
     pub program: ProgramId,
-    /// Output shape.
-    pub shape: Vec<crate::shape::Dim>,
     /// Output dtype.
     pub dtype: crate::DType,
     /// Kernel cache id for the compiled kernel IR.
@@ -54,13 +53,13 @@ pub struct CompiledKernel {
 
 impl CompiledKernel {
     /// Execute the compiled kernel with new input tensors.
-    pub fn forward(&self, inputs: &[&crate::tensor::Tensor]) -> crate::tensor::Tensor {
+    pub fn forward(&self, inputs: &[&crate::tensor::Tensor], shape: impl IntoShape) -> crate::tensor::Tensor {
         let ids: Vec<_> = inputs.iter().map(|t| t.id).collect();
         let ck = CustomKernel { program: self.program, inputs: ids, dtype: self.dtype, kernel_id: self.kernel_id };
         let tensor_id = crate::RT
             .lock()
             .graph
-            .push_wshape(crate::graph::Node::Custom(Box::new(ck)), self.shape.clone());
+            .push_wshape(crate::graph::Node::Custom(Box::new(ck)), shape.into_shape().collect());
         crate::tensor::Tensor { id: tensor_id }
     }
 }

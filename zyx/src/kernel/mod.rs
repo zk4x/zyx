@@ -733,7 +733,7 @@ impl Kernel {
     ///
     /// let compiled = kernel.compile()?;
     /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
-    /// let result = compiled.forward(&[&x]);
+    /// let result = compiled.forward(&[&x], [n]);
     /// let data: Vec<f32> = result.try_into().unwrap();
     /// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
     /// # Ok::<_, ZyxError>(())
@@ -743,11 +743,7 @@ impl Kernel {
         self.sort_global_defines();
         self.verify();
 
-        self.run_always_on_optimizations();
-        self.run_always_on_optimizations();
-
         let device_id = self.device_id;
-        let shape = if self.shape().is_empty() { vec![1] } else { self.shape() };
         let dtype = self
             .ops
             .values()
@@ -774,7 +770,7 @@ impl Kernel {
         let prog = crate::backend::ProgramId { device: device_id, program: program_id };
         let kid = rt.kernel_cache.insert_kernel(self);
         rt.kernel_cache.programs.insert((kid, device_id), program_id);
-        Ok(crate::kernel::custom::CompiledKernel { program: prog, shape, dtype, kernel_id: kid })
+        Ok(crate::kernel::custom::CompiledKernel { program: prog, dtype, kernel_id: kid })
     }
 
     /// Run autotuning then compile the kernel.
