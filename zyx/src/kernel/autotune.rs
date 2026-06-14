@@ -31,15 +31,6 @@
 //! - `SplitLoop`: Split large loops into smaller iterations
 //! - `PadIndex`: Pad indices to hardware-friendly sizes
 //!
-//! # Usage
-//!
-//! ```ignore
-//! use zyx::kernel::Kernel;
-//! use zyx::backend::Device;
-//!
-//! let kernel = Kernel::new(device);
-//! kernel.autotune_(...);
-//! ```
 
 #![allow(unused)]
 #![allow(clippy::cast_precision_loss)]

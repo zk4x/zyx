@@ -8,26 +8,32 @@
 //!
 //! # Quick start
 //!
-//! Build a simple element-wise kernel:
+//! Build a 2D element-wise kernel using two global thread indices:
 //!
-//! ```ignore
-//! use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
+//! ```
+//! use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
 //! use zyx::DType;
 //!
-//! let n = 256 * 256;
+//! let (m, n) = (16, 32);
 //! let mut kernel = Kernel::new(DeviceId::AUTO);
-//! let inp = kernel.define(DType::F32, Scope::Global, true, n);
-//! let gidx = kernel.gidx(0, n);
-//! let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
-//! let doubled = kernel.binary(loaded, loaded, BOp::Add);
-//! let out = kernel.define(DType::F32, Scope::Register, false, n);
-//! kernel.store(out, doubled, gidx, MemLayout::Scalar);
+//! let a = kernel.define(DType::F32, Scope::Global, true, m * n);
+//! let b = kernel.define(DType::F32, Scope::Global, true, m * n);
+//! let row = kernel.gidx(0, m);
+//! let col = kernel.gidx(1, n);
+//! let stride = kernel.const_idx(n as u32);
+//! let linear = kernel.mul(row, stride);
+//! let idx = kernel.add(linear, col);
+//! let va = kernel.load(a, idx, MemLayout::Scalar);
+//! let vb = kernel.load(b, idx, MemLayout::Scalar);
+//! let result = kernel.add(va, vb);
+//! let out = kernel.define(DType::F32, Scope::Global, false, m * n);
+//! kernel.store(out, result, idx, MemLayout::Scalar);
 //! ```
 //!
 //! The kernel is then finalized via [`Kernel::compile`].
 
 pub use crate::backend::DeviceId;
-pub use crate::view::View;
+use crate::view::View;
 
 use crate::{
     DType, Map, Set,
@@ -44,9 +50,9 @@ use std::{fmt::Display, hash::Hash};
 
 mod algebraic;
 /// Autotuning optimizations for kernel compilation.
-pub mod autotune;
+pub(crate) mod autotune;
 /// Cost estimation for kernel selection.
-pub mod cost;
+mod cost;
 /// Custom kernel compilation for GPU-specific operations.
 pub mod custom;
 mod debug;
@@ -63,7 +69,7 @@ mod merge_loops;
 mod mma;
 mod pad_index;
 /// Cost prediction for kernel selection.
-pub mod predict_cost;
+mod predict_cost;
 mod split_loops;
 mod thread_coarse;
 mod tile;
@@ -90,8 +96,10 @@ pub const IDX_T: DType = DType::U32;
 ///
 /// # Example
 ///
-/// ```ignore
-/// use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
+/// Build a kernel that computes `sin(x) + cos(x)` element-wise:
+///
+/// ```
+/// use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
 /// use zyx::DType;
 ///
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -99,17 +107,19 @@ pub const IDX_T: DType = DType::U32;
 /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
 /// let gidx = kernel.gidx(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
-/// let doubled = kernel.add(loaded, loaded);
+/// let s = kernel.sin(loaded);
+/// let c = kernel.cos(loaded);
+/// let result = kernel.add(s, c);
 /// let out = kernel.define(DType::F32, Scope::Global, false, n);
-/// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+/// kernel.store(out, result, gidx, MemLayout::Scalar);
 /// ```
 ///
 /// # Compile
 ///
-/// Build a kernel and compile it:
+/// Build a kernel using fused multiply-add and compile it:
 ///
-/// ```ignore
-/// use zyx::kernel::{Kernel, BOp, Scope, MemLayout, DeviceId};
+/// ```
+/// use zyx::kernel::{Kernel, Scope, MemLayout, DeviceId};
 /// use zyx::{DType, Tensor, ZyxError};
 ///
 /// let mut kernel = Kernel::new(DeviceId::AUTO);
@@ -117,15 +127,15 @@ pub const IDX_T: DType = DType::U32;
 /// let inp = kernel.define(DType::F32, Scope::Global, true, n);
 /// let gidx = kernel.gidx(0, n);
 /// let loaded = kernel.load(inp, gidx, MemLayout::Scalar);
-/// let doubled = kernel.add(loaded, loaded);
+/// let result = kernel.mad(loaded, loaded, loaded); // x*x + x
 /// let out = kernel.define(DType::F32, Scope::Global, false, n);
-/// kernel.store(out, doubled, gidx, MemLayout::Scalar);
+/// kernel.store(out, result, gidx, MemLayout::Scalar);
 ///
 /// let compiled = kernel.compile()?;
 /// let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
 /// let result = compiled.forward(&[&x]);
 /// let data: Vec<f32> = result.try_into().unwrap();
-/// assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
+/// assert_eq!(data, vec![2.0, 6.0, 12.0, 20.0]);
 /// # Ok::<_, ZyxError>(())
 /// ```
 #[derive(Debug, Clone)]
@@ -849,16 +859,20 @@ impl Kernel {
         self.push_back(Op::StoreView { src, dtype });
     }
 
-    /// Create a constant value.
+    /// Create a constant data value.
     ///
-    /// Creates a constant operation with the given scalar value.
+    /// Creates a constant from a scalar using its natural dtype.
+    /// Use for computation operands (e.g., `const_val(1.0f32)` in arithmetic).
+    /// For index/address constants (strides, offsets), use [`Kernel::const_idx`].
     pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
         self.push_back(Op::Const(Constant::new(val)))
     }
 
-    /// Create a constant index.
+    /// Create a constant index value.
     ///
-    /// Creates a constant operation with the given index value.
+    /// Creates a constant normalized to the kernel's index type ([`IDX_T`]).
+    /// Use for strides, offsets, sizes, and any value fed into index arithmetic.
+    /// For general data constants, use [`Kernel::const_val`].
     pub fn const_idx<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
         self.push_back(Op::Const(Constant::idx(val)))
     }
@@ -1039,7 +1053,7 @@ impl Kernel {
         self.binary(x, y, BOp::Div)
     }
 
-        /// Compute power of two tensors.
+    /// Compute power of two tensors.
     ///
     /// Computes `x^y` element-wise.
     pub fn pow(&mut self, x: OpId, y: OpId) -> OpId {
@@ -1053,7 +1067,7 @@ impl Kernel {
         self.binary(x, y, BOp::Mod)
     }
 
-        /// Compare less than of two tensors.
+    /// Compare less than of two tensors.
     ///
     /// Computes `x < y` element-wise, returning a boolean tensor.
     pub fn cmplt(&mut self, x: OpId, y: OpId) -> OpId {
@@ -1074,7 +1088,7 @@ impl Kernel {
         self.binary(x, y, BOp::Max)
     }
 
-        /// Compute element-wise bitwise OR.
+    /// Compute element-wise bitwise OR.
     ///
     /// Computes `x | y` element-wise.
     pub fn or_(&mut self, x: OpId, y: OpId) -> OpId {
@@ -1088,7 +1102,7 @@ impl Kernel {
         self.binary(x, y, BOp::And)
     }
 
-        /// Compute element-wise bitwise XOR.
+    /// Compute element-wise bitwise XOR.
     ///
     /// Computes `x ^ y` element-wise.
     pub fn bit_xor(&mut self, x: OpId, y: OpId) -> OpId {
@@ -1137,7 +1151,7 @@ impl Kernel {
         self.binary(x, y, BOp::Eq)
     }
 
-        /// Execute fused multiply-add (wmma) operation.
+    /// Execute fused multiply-add (wmma) operation.
     ///
     /// Performs a fused multiply-add operation for matrix multiplication.
     pub fn wmma(&mut self, dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId) -> OpId {
@@ -1158,7 +1172,7 @@ impl Kernel {
         self.push_back(Op::Devectorize { vec, idx })
     }
 
-        /// Insert a local barrier.
+    /// Insert a local barrier.
     ///
     /// Synchronizes threads within a local scope.
     pub fn local_barrier(&mut self) {
