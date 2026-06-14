@@ -1,5 +1,7 @@
 # zyx
 
+**A complete ML library and compiler — from assembly to neural networks.**
+
 [![crates.io](https://img.shields.io/crates/v/zyx.svg)](https://crates.io/crates/zyx)
 [![PyPI](https://img.shields.io/pypi/v/zyx-py.svg)](https://pypi.org/project/zyx-py/)
 [![docs.rs](https://docs.rs/zyx/badge.svg)](https://docs.rs/zyx)
@@ -28,10 +30,6 @@
 - [Configuration](#configuration)
 - [Debug Options](#debug-options)
 - [Quick Reference](#quick-reference)
-
-## Overview
-
-**zyx** is a complete ML library and compiler that goes from assembly all the way to neural networks. It has a stable API with performance under active optimization.
 
 ## Features
 
