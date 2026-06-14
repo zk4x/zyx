@@ -41,12 +41,14 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let n_const = kernel.const_idx(n as u32);
     let k_const = kernel.const_idx(k as u32);
 
-    // wid >> 2       -> row index within tile (0..7)
+    // wid >> 2       -> row index within A/C tile (0..7)
     let row_in_tile = kernel.div(wid, c4);
-    // wid & 3        -> sub-column index within tile
+    // wid & 3        -> sub-column index within A/C tile
     let sub_col = kernel.mod_(wid, c4);
     // (wid & 3) * 2  -> column offset within A/C tile (0, 2, 4, 6)
     let col_in_tile = kernel.mul(sub_col, c2);
+
+
 
     // gidx * 16      -> base row of this 16×8 tile
     let tile_base_row = kernel.mul(gidx, c16);
@@ -86,7 +88,8 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     let a_frag = kernel.vectorize(vec![a_load_0, a_load_1, a_load_2, a_load_3]);
 
     // ---- Load B fragment (k8 × n8 = 2 half per thread) ----
-    let b_row = kernel.add(k_off, sub_col);
+    // col-major B: row = (wid%4)*2, (wid%4)*2+1, col = wid/4
+    let b_row = kernel.add(k_off, col_in_tile);
     let b_row_n = kernel.mul(b_row, n_const);
     let b_base = kernel.add(b_row_n, b_col);
     let b_load_0 = kernel.load(b_buf, b_base, MemLayout::Scalar);
@@ -131,17 +134,16 @@ fn wmma_matmul() -> Result<(), ZyxError> {
     // ---- Compile & run ----
     let compiled = kernel.compile()?;
 
-    let a_data: Vec<half::f16> = (0..m * k).map(|i| half::f16::from_f32((i as f32) / 1024.0f32)).collect();
-    let b_data: Vec<half::f16> = (0..k * n).map(|i| half::f16::from_f32((i as f32) / 1024.0f32)).collect();
-    let a = Tensor::from(a_data).reshape([m, k])?;
-    let b = Tensor::from(b_data).reshape([k, n])?;
+    let a = Tensor::rand([m, k], DType::F16)?;
+    let b = Tensor::rand([k, n], DType::F16)?;
+    let a_host: Vec<f32> = a.clone().cast(DType::F32).try_into()?;
+    let b_host: Vec<f32> = b.clone().cast(DType::F32).try_into()?;
 
     let result = compiled.forward(&[&a, &b], [m, n]);
+
     let c_host: Vec<f32> = result.try_into()?;
 
     // Reference: A @ B on CPU
-    let a_host: Vec<f32> = a.cast(DType::F32).try_into()?;
-    let b_host: Vec<f32> = b.cast(DType::F32).try_into()?;
     let mut ref_c = vec![0.0f32; (m * n) as usize];
     for i in 0..m {
         for j in 0..n {
