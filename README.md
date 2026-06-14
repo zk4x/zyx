@@ -287,6 +287,7 @@ Tensor operations build a lazy computation graph. During realization, the graph 
 - [x] **HIP** - AMD GPU acceleration (ROCm platform)
 - [x] **OpenCL** - Cross-platform support (CPU via POCL, GPU via native OpenCL drivers)
 - [x] **WGPU** - Modern web and native GPU support via wgpu (WGSL), feature: `wgpu`
+- [x] **Vulkan** - Cross-platform GPU acceleration via Vulkan (SPIR-V)
 
 Please see [CONFIG.md](zyx/CONFIG.md) for detailed information on hardware configuration.
 

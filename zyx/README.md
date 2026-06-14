@@ -58,6 +58,7 @@ See [ENV_VARS.md](ENV_VARS.md) for debugging with `ZYX_DEBUG`.
 - [x] `HIP` — AMD GPU acceleration (ROCm platform)
 - [x] `OpenCL` — Cross-platform (CPU via POCL, GPU via native drivers)
 - [x] `WGPU` — Modern web and native GPU support via wgpu (WGSL), feature: `wgpu`
+- [x] `Vulkan` — Cross-platform GPU acceleration via Vulkan (SPIR-V)
 
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [BACKEND.md](https://github.com/zk4x/zyx/blob/main/zyx/BACKEND.md)
