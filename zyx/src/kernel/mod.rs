@@ -708,24 +708,9 @@ impl Hash for Kernel {
 impl Kernel {
     /// Create a new custom kernel targeting a specific device.
     ///
-    /// Use the builder methods (`push_back`, `binary`, `store`, `load`, etc.) to
-    /// construct the kernel IR, then finalize with [`Kernel::compile`].
-    ///
-    /// [`Kernel::compile`] automatically unfolds movement ops (LoadView, StoreView,
-    /// Load, Store, Move) via [`Kernel::unfold_movement_ops`] and validates the IR
-    /// via [`Kernel::verify`].
-    ///
-    /// There are two approaches for specifying kernel inputs:
-    ///
-    /// **A — Explicit global input with manual gidx** (shown below): use
-    /// `define(dtype, Scope::Global, true, len)` for each input, then create
-    /// [`Kernel::gidx`] / [`Kernel::lidx`] ops for thread indexing.
-    ///
-    /// **B — LoadView**: use `push_back(Op::LoadView(...))` for inputs and let
-    /// `compile()` compute thread indices automatically from the view shape.
-    /// Do NOT manually add `gidx` ops — `unfold_movement_ops` adds them.
-    ///
-    /// Pass [`DeviceId::AUTO`] to let the runtime pick the first available device.
+    /// Two approaches for inputs:
+    /// - **Manual gidx**: `define(dtype, Scope::Global, true, len)` + [`Kernel::gidx`]
+    /// - **LoadView**: `push_back(Op::LoadView(...))` — `compile()` adds thread indices.
     ///
     /// # Example
     ///
@@ -755,19 +740,17 @@ impl Kernel {
         }
     }
 
-    /// Compile the kernel and produce a compiled kernel for repeated execution.
-    /// Consumes the kernel.
+    /// Compile the kernel. Consumes `self`.
     ///
-    /// Automatically unfolds movement ops ([`Kernel::unfold_movement_ops`])
-    /// and validates the IR ([`Kernel::verify`]) before compilation.
+    /// Runs [`Kernel::unfold_movement_ops`] and [`Kernel::verify`] before compilation.
     ///
     /// # Panics
     ///
-    /// Panics if the kernel IR is invalid (see [`Kernel::verify`]).
+    /// If the kernel IR is invalid (see [`Kernel::verify`]).
     ///
     /// # Errors
     ///
-    /// Returns [`crate::ZyxError`] if device initialization or compilation fails.
+    /// If device initialization or compilation fails.
     ///
     /// # Example
     ///
@@ -840,16 +823,11 @@ impl Kernel {
     }
 
     /// Load a contiguous tensor from device memory.
-    ///
-    /// Creates a `LoadView` operation that loads all elements of a tensor
-    /// with the given shape and dtype from device memory.
     pub fn load_contiguous(&mut self, dtype: DType, shape: &[Dim]) -> OpId {
         self.push_back(Op::LoadView(Box::new((dtype, View::contiguous(shape)))))
     }
 
     /// Permute tensor axes.
-    ///
-    /// Reorders the dimensions of a tensor by applying the given axis permutation.
     pub fn permute(&mut self, x: OpId, axes: &[UAxis]) -> OpId {
         let axes = axes.to_vec();
         let shape = self.shape();
@@ -857,25 +835,19 @@ impl Kernel {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Permute { axes, shape }) })
     }
 
-    /// Reshape tensor to a new shape.
-    ///
-    /// Changes the shape of a tensor without changing its underlying data.
+    /// Reshape tensor.
     pub fn reshape(&mut self, x: OpId, shape: &[Dim]) -> OpId {
         let shape = shape.to_vec();
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Reshape { shape }) })
     }
 
-    /// Expand tensor to a larger shape.
-    ///
-    /// Adds singleton dimensions (size 1) to the tensor shape without duplicating any data.
+    /// Expand tensor (adds singleton dims).
     pub fn expand(&mut self, x: OpId, shape: &[Dim]) -> OpId {
         let shape = shape.to_vec();
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Expand { shape }) })
     }
 
-    /// Pad tensor with zero padding.
-    ///
-    /// Adds padding to the tensor along specified axes.
+    /// Pad tensor with zeros.
     pub fn pad(&mut self, x: OpId, padding: &[(i64, i64)]) -> OpId {
         let padding = padding.to_vec();
         let mut shape = self.shape();
@@ -883,102 +855,74 @@ impl Kernel {
         self.push_back(Op::Move { x, mop: Box::new(MoveOp::Pad { padding, shape }) })
     }
 
-    /// Reduce tensor with sum operation.
-    ///
-    /// Sums over the last `n_axes` dimensions of the tensor.
+    /// Sum over the last `n_axes` dimensions.
     pub fn reduce_sum(&mut self, x: OpId, n_axes: usize) -> OpId {
         self.push_back(Op::Reduce { x, rop: BOp::Add, n_axes })
     }
 
-    /// Reduce tensor with max operation.
-    ///
-    /// Finds the maximum value over the last `n_axes` dimensions of the tensor.
+    /// Max over the last `n_axes` dimensions.
     pub fn reduce_max(&mut self, x: OpId, n_axes: usize) -> OpId {
         self.push_back(Op::Reduce { x, rop: BOp::Max, n_axes })
     }
 
-    /// Reduce tensor with product operation.
-    ///
-    /// Computes the product of elements over the last `n_axes` dimensions of the tensor.
+    /// Product over the last `n_axes` dimensions.
     pub fn reduce_prod(&mut self, x: OpId, n_axes: usize) -> OpId {
         self.push_back(Op::Reduce { x, rop: BOp::Mul, n_axes })
     }
 
     /// Store tensor to contiguous device memory.
-    ///
-    /// Creates a `StoreView` operation that stores a tensor to device memory in row-major order.
     pub fn store_contiguous(&mut self, src: OpId, dtype: DType) {
         self.push_back(Op::StoreView { src, dtype });
     }
 
-    /// Create a constant data value.
-    ///
-    /// Creates a constant from a scalar using its natural dtype.
-    /// Use for computation operands (e.g., `const_val(1.0f32)` in arithmetic).
-    /// For index/address constants (strides, offsets), use [`Kernel::const_idx`].
+    /// Constant data value (uses natural dtype).
+    /// For index constants, use [`Kernel::const_idx`].
     pub fn const_val<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
         self.push_back(Op::Const(Constant::new(val)))
     }
 
-    /// Create a constant index value.
-    ///
-    /// Creates a constant normalized to the kernel's index type ([`IDX_T`]).
-    /// Use for strides, offsets, sizes, and any value fed into index arithmetic.
-    /// For general data constants, use [`Kernel::const_val`].
+    /// Constant index value (normalized to [`IDX_T`]).
+    /// For data constants, use [`Kernel::const_val`].
     pub fn const_idx<T: crate::scalar::Scalar>(&mut self, val: T) -> OpId {
         self.push_back(Op::Const(Constant::idx(val)))
     }
 
-    /// Create multiple constant indices in one call.
+    /// Create multiple constant indices.
     pub fn const_idxs<const N: usize>(&mut self, vals: [u32; N]) -> [OpId; N] {
         core::array::from_fn(|i| self.const_idx(vals[i]))
     }
 
-    /// Define a tensor in the kernel.
-    ///
-    /// Creates a new tensor with the given dtype, scope, and length.
+    /// Define a tensor buffer.
     pub fn define(&mut self, dtype: DType, scope: Scope, ro: bool, len: Dim) -> OpId {
         self.push_back(Op::Define { dtype, scope, ro, len })
     }
 
-    /// Get global thread index.
-    ///
-    /// Creates an operation that returns the global thread index for the given axis.
+    /// Global thread index.
     pub fn gidx(&mut self, axis: u32, len: Dim) -> OpId {
         self.push_back(Op::Index { len, scope: Scope::Global, axis })
     }
 
-    /// Get local thread index.
-    ///
-    /// Creates an operation that returns the local thread index for the given axis.
+    /// Local thread index.
     pub fn lidx(&mut self, axis: u32, len: Dim) -> OpId {
         self.push_back(Op::Index { len, scope: Scope::Local, axis })
     }
 
-    /// Store a value to device memory.
-    ///
-    /// Stores the value `x` to the destination tensor `dst` at the position specified by `index`.
+    /// Store `x` to `dst` at `index`.
     pub fn store(&mut self, dst: OpId, x: OpId, index: OpId, layout: MemLayout) {
         self.push_back(Op::Store { dst, x, index, layout });
     }
 
-    /// Load a value from device memory.
-    ///
-    /// Loads a value from the source tensor `src` at the position specified by `index`.
+    /// Load from `src` at `index`.
     pub fn load(&mut self, src: OpId, index: OpId, layout: MemLayout) -> OpId {
         self.push_back(Op::Load { src, index, layout })
     }
 
     /// Begin a loop.
-    ///
-    /// Starts a loop that iterates over the given length.
     pub fn loop_(&mut self, len: Dim) -> OpId {
         self.push_back(Op::Loop { len })
     }
 
-    /// End a loop.
-    ///
-    /// Ends the most recently started loop.
+    /// End the current loop.
     pub fn end_loop(&mut self) {
         self.push_back(Op::EndLoop);
     }
@@ -987,93 +931,67 @@ impl Kernel {
         self.push_back(Op::Unary { x, uop })
     }
 
-    /// Negate a tensor.
-    ///
-    /// Computes `-x` element-wise.
+    /// `-x`
     pub fn neg(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Neg)
     }
 
-    /// Compute bitwise NOT.
-    ///
-    /// Computes `~x` element-wise.
+    /// `~x`
     pub fn bit_not(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::BitNot)
     }
 
-    /// Compute exponential function.
-    ///
-    /// Computes `e^x` element-wise.
+    /// `e^x`
     pub fn exp(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Exp)
     }
 
-    /// Compute base-2 exponential.
-    ///
-    /// Computes `2^x` element-wise.
+    /// `2^x`
     pub fn exp2(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Exp2)
     }
 
-    /// Compute natural logarithm.
-    ///
-    /// Computes `ln(x)` element-wise.
+    /// `ln(x)`
     pub fn ln(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Ln)
     }
 
-    /// Compute base-2 logarithm.
-    ///
-    /// Computes `log2(x)` element-wise.
+    /// `log2(x)`
     pub fn log2(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Log2)
     }
 
-    /// Compute reciprocal.
-    ///
-    /// Computes `1/x` element-wise.
+    /// `1/x`
     pub fn reciprocal(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Reciprocal)
     }
 
-    /// Compute square root.
-    ///
-    /// Computes `sqrt(x)` element-wise.
+    /// `sqrt(x)`
     pub fn sqrt(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Sqrt)
     }
 
-    /// Compute sine function.
-    ///
-    /// Computes `sin(x)` element-wise.
+    /// `sin(x)`
     pub fn sin(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Sin)
     }
 
-    /// Compute cosine function.
-    ///
-    /// Computes `cos(x)` element-wise.
+    /// `cos(x)`
     pub fn cos(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Cos)
     }
 
-    /// Compute floor function.
-    ///
-    /// Computes `floor(x)` element-wise, rounding down to the nearest integer.
+    /// `floor(x)`
     pub fn floor(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Floor)
     }
 
-    /// Compute truncation.
-    ///
-    /// Computes `trunc(x)` element-wise, removing the fractional part.
+    /// `trunc(x)`
     pub fn trunc(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Trunc)
     }
 
-    /// Compute absolute value.
-    ///
-    /// Computes `|x|` element-wise.
+    /// `|x|`
     pub fn abs(&mut self, x: OpId) -> OpId {
         self.unary(x, UOp::Abs)
     }
@@ -1082,196 +1000,142 @@ impl Kernel {
         self.push_back(Op::Binary { x, y, bop })
     }
 
-    /// Add two tensors.
-    ///
-    /// Performs element-wise addition.
+    /// `x + y`
     pub fn add(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Add)
     }
 
-    /// Subtract two tensors.
-    ///
-    /// Performs element-wise subtraction.
+    /// `x - y`
     pub fn sub(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Sub)
     }
 
-    /// Multiply two tensors.
-    ///
-    /// Performs element-wise multiplication.
+    /// `x * y`
     pub fn mul(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Mul)
     }
 
-    /// Divide two tensors.
-    ///
-    /// Performs element-wise division.
+    /// `x / y`
     pub fn div(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Div)
     }
 
-    /// Compute power of two tensors.
-    ///
-    /// Computes `x^y` element-wise.
+    /// `x^y`
     pub fn pow(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Pow)
     }
 
-    /// Compute modulo of two tensors.
-    ///
-    /// Computes `x % y` element-wise.
+    /// `x % y`
     pub fn mod_(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Mod)
     }
 
-    /// Compare less than of two tensors.
-    ///
-    /// Computes `x < y` element-wise, returning a boolean tensor.
+    /// `x < y`
     pub fn cmplt(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Cmplt)
     }
 
-    /// Compare greater than of two tensors.
-    ///
-    /// Computes `x > y` element-wise, returning a boolean tensor.
+    /// `x > y`
     pub fn cmpgt(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Cmpgt)
     }
 
-    /// Compute element-wise maximum.
-    ///
-    /// Computes `max(x, y)` element-wise.
+    /// `max(x, y)`
     pub fn max(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Max)
     }
 
-    /// Compute element-wise bitwise OR.
-    ///
-    /// Computes `x | y` element-wise.
+    /// `x | y`
     pub fn or_(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Or)
     }
 
-    /// Compute element-wise bitwise AND.
-    ///
-    /// Computes `x & y` element-wise.
+    /// `x & y`
     pub fn and_(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::And)
     }
 
-    /// Compute element-wise bitwise XOR.
-    ///
-    /// Computes `x ^ y` element-wise.
+    /// `x ^ y`
     pub fn bit_xor(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::BitXor)
     }
 
-    /// Compute element-wise bitwise OR.
-    ///
-    /// Computes `x | y` element-wise.
+    /// `x | y`
     pub fn bit_or(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::BitOr)
     }
 
-    /// Compute element-wise bitwise AND.
-    ///
-    /// Computes `x & y` element-wise.
+    /// `x & y`
     pub fn bit_and(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::BitAnd)
     }
 
-    /// Compute element-wise left bit shift.
-    ///
-    /// Computes `x << y` element-wise.
+    /// `x << y`
     pub fn bit_shift_left(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::BitShiftLeft)
     }
 
-    /// Compute element-wise right bit shift.
-    ///
-    /// Computes `x >> y` element-wise.
+    /// `x >> y`
     pub fn bit_shift_right(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::BitShiftRight)
     }
 
-    /// Compute element-wise not equal comparison.
-    ///
-    /// Computes `x != y` element-wise, returning a boolean tensor.
+    /// `x != y`
     pub fn not_eq(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::NotEq)
     }
 
-    /// Compute element-wise equality comparison.
-    ///
-    /// Computes `x == y` element-wise, returning a boolean tensor.
+    /// `x == y`
     pub fn eq(&mut self, x: OpId, y: OpId) -> OpId {
         self.binary(x, y, BOp::Eq)
     }
 
-    /// Execute fused multiply-add (wmma) operation.
-    ///
-    /// Performs a fused multiply-add operation for matrix multiplication.
+    /// Warp matrix multiply-accumulate.
     pub fn wmma(&mut self, dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId) -> OpId {
         self.push_back(Op::Wmma { dims, layout, dtype, a, b, c })
     }
 
-    /// Vectorize multiple operations.
-    ///
-    /// Combines multiple operations into a single vectorized operation.
+    /// Vectorize ops into a single value.
     pub fn vectorize(&mut self, ops: Vec<OpId>) -> OpId {
         self.push_back(Op::Vectorize { ops })
     }
 
-    /// Devectorize a vector operation.
-    ///
-    /// Extracts a single element from a vectorized operation.
+    /// Extract one element from a vectorized value.
     pub fn devectorize_one(&mut self, vec: OpId, idx: usize) -> OpId {
         self.push_back(Op::Devectorize { vec, idx })
     }
 
-    /// Extract all elements from a vectorized operation.
+    /// Extract all elements from a vectorized value.
     pub fn devectorize<const N: usize>(&mut self, vec: OpId) -> [OpId; N] {
         core::array::from_fn(|i| self.devectorize_one(vec, i))
     }
 
-    /// Insert a local barrier.
-    ///
-    /// Synchronizes threads within a local scope.
+    /// Local thread barrier.
     pub fn local_barrier(&mut self) {
         self.push_back(Op::Barrier { scope: Scope::Local });
     }
 
-    /// Insert a global barrier.
-    ///
-    /// Synchronizes all threads globally.
+    /// Global thread barrier.
     pub fn global_barrier(&mut self) {
         self.push_back(Op::Barrier { scope: Scope::Global });
     }
 
-    /// Begin a conditional block.
-    ///
-    /// Starts a conditional block that executes based on the given condition.
+    /// Begin conditional block.
     pub fn if_(&mut self, condition: OpId) {
         self.push_back(Op::If { condition });
     }
 
-    /// End a conditional block.
-    ///
-    /// Ends the most recently started conditional block.
+    /// End conditional block.
     pub fn end_if(&mut self) {
         self.push_back(Op::EndIf);
     }
 
-    /// Cast a tensor to a different dtype.
-    ///
-    /// Converts the input tensor to the specified data type.
+    /// Cast to a different dtype.
     pub fn cast(&mut self, x: OpId, dtype: DType) -> OpId {
         self.push_back(Op::Cast { x, dtype })
     }
 
-    /// Compute fused multiply-add (MAD).
-    ///
-    /// Computes `x * y + z` element-wise in a single fused operation.
+    /// `x * y + z`
     pub fn mad(&mut self, x: OpId, y: OpId, z: OpId) -> OpId {
         self.push_back(Op::Mad { x, y, z })
     }
@@ -1544,7 +1408,7 @@ impl Kernel {
         self.ops.values().any(|x| matches!(x.op, Op::Reduce { .. }))
     }
 
-    /// Get the shape of the kernel output.
+    /// Shape of the kernel output.
     pub fn shape(&self) -> Vec<Dim> {
         if self.ops.values().any(|x| matches!(x.op, Op::Index { .. })) {
             let mut indices: Vec<(Dim, u32)> = self
