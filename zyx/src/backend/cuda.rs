@@ -1413,7 +1413,7 @@ impl CUDADevice {
                             MemLayout::Vector(len) => {
                                 _ = writeln!(
                                     source,
-                                    "{indent}r{reg} = reinterpret_cast<const {}{len}*>(p{src})[{idx}];",
+                                    "{indent}r{reg} = *reinterpret_cast<const {}{len}*>(&p{src}[{idx}]);",
                                     dtype.0.cu()
                                 )
                             }

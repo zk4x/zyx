@@ -91,10 +91,10 @@ impl Kernel {
                 }
 
                 // Now that we know offsets are continues, we can replace the loads with single vectorized load
-                if let Some(base_index) = base_index {
+                if base_index.is_some() {
                     let vload = self.insert_before(
                         loads[0].id,
-                        Op::Load { src, index: base_index, layout: MemLayout::Vector(vec_len as u8) },
+                        Op::Load { src, index: loads[0].index, layout: MemLayout::Vector(vec_len as u8) },
                     );
                     self.ops[loads[0].id].op = Op::Devectorize { vec: vload, idx: 0 };
                     for (load, &off) in loads[1..].iter().zip(&offset_order) {
