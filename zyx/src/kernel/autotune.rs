@@ -313,7 +313,6 @@ impl Kernel {
         self.swap_commutative();
         self.common_subexpression_elimination();
         self.instruction_schedule();
-        self.vectorize_loads(&[2, 4]);
         self.dead_code_elimination();
     }
 
