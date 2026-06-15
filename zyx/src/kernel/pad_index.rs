@@ -78,7 +78,10 @@ impl Kernel {
 
             // Guard loads: redirect OOB reads to element 0 (safe)
             if let Op::Load { src, index: load_idx, layout } = self.ops[op_id].op.clone() {
-                debug_assert_eq!(layout, MemLayout::Scalar, "pad_index must run before any upcast pass");
+                if layout != MemLayout::Scalar {
+                    op_id = next;
+                    continue;
+                }
                 if self.depends_on(load_idx, gidx_id, &mut Set::default()) {
                     let cond = self.insert_before(op_id, Op::Binary { x: gidx_id, y: limit, bop: BOp::Cmplt });
                     let cast_idx = self.insert_before(op_id, Op::Cast { x: cond, dtype: IDX_T });

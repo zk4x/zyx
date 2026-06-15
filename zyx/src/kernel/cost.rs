@@ -84,8 +84,7 @@ impl Kernel {
             while !op_id.is_null() {
                 let op = self.at(op_id);
                 match op {
-                    Op::Devectorize { .. }
-                    | Op::ConstView { .. }
+                    Op::ConstView { .. }
                     | Op::StoreView { .. }
                     | Op::LoadView { .. }
                     | Op::Move { .. }
@@ -96,6 +95,11 @@ impl Kernel {
                         for &x in ops.iter() {
                             *rcs.entry(x).or_insert(0) += 1;
                         }
+                    }
+                    &Op::Devectorize { vec, .. } => {
+                        let dtype = dtypes[&vec];
+                        dtypes.insert(op_id, (dtype.0, MemLayout::Scalar));
+                        *rcs.entry(vec).or_insert(0) += 1;
                     }
                     Op::Const(x) => {
                         dtypes.insert(op_id, (x.dtype(), MemLayout::Scalar));

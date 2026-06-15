@@ -20,7 +20,7 @@
 //!
 //! # Available Optimizations
 //!
-//! The system supports 7 optimization types:
+//! The system supports 8 optimization types:
 //!
 //! - `ReassociateCommutative`: Reassociate and group commutative operations
 //! - `UnrollLoops`: Unroll loops with constant or large factors
@@ -30,6 +30,7 @@
 //! - `TiledReduce`: Apply tiled reduction parallelism
 //! - `SplitLoop`: Split large loops into smaller iterations
 //! - `PadIndex`: Pad indices to hardware-friendly sizes
+//! - `VectorizeLoads`: Combine scalar loads into vectorized loads
 //!
 
 #![allow(unused)]
@@ -53,7 +54,7 @@ use std::thread;
 
 type OptConfigFn = fn(&Kernel, &DeviceInfo) -> (Optimization, usize);
 
-const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
+const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     |k, _| Kernel::opt_reassociate_commutative(k),
     Kernel::opt_split_global_to_local,
     |k, _| Kernel::opt_thread_coarse(k),
@@ -61,6 +62,7 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 7] = [
     Kernel::opt_tiled_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_pad_index(k),
+    |k, _| Kernel::opt_vectorize_loads(k),
 ];
 
 #[derive(Debug)]
@@ -107,6 +109,8 @@ pub(crate) enum Optimization {
         /// Pairs of (index_op_id, target_size) for each padding.
         factors: Vec<(OpId, Dim)>,
     },
+    /// Combine scalar loads into vectorized loads for better memory bandwidth.
+    VectorizeLoads,
 }
 
 impl Optimization {
@@ -193,6 +197,9 @@ impl Optimization {
                 let (op_id, _) = factors[config];
                 println!("pad index {op_id} by 32, cfg_opt={config}");
             }
+            Optimization::VectorizeLoads => {
+                println!("VectorizeLoads");
+            }
         }
     }
 
@@ -257,6 +264,9 @@ impl Optimization {
                 if pad_len > 0 {
                     kernel.pad_index(gidx_id, current_len, pad_len, crate::dtype::Constant::idx(0));
                 }
+            }
+            Optimization::VectorizeLoads => {
+                kernel.vectorize_loads();
             }
         }
     }
