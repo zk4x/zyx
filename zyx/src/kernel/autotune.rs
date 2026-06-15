@@ -62,7 +62,7 @@ const AVAILABLE_OPTIMIZATIONS: [OptConfigFn; 8] = [
     Kernel::opt_tiled_reduce,
     |k, _| Kernel::opt_split_loop(k),
     |k, _| Kernel::opt_pad_index(k),
-    |k, _| Kernel::opt_vectorize_loads(k),
+    Kernel::opt_vectorize_loads,
 ];
 
 #[derive(Debug)]
@@ -110,7 +110,10 @@ pub(crate) enum Optimization {
         factors: Vec<(OpId, Dim)>,
     },
     /// Combine scalar loads into vectorized loads for better memory bandwidth.
-    VectorizeLoads,
+    VectorizeLoads {
+        /// Supported vector lengths for this device.
+        supported_lens: Vec<u8>,
+    },
 }
 
 impl Optimization {
@@ -197,7 +200,7 @@ impl Optimization {
                 let (op_id, _) = factors[config];
                 println!("pad index {op_id} by 32, cfg_opt={config}");
             }
-            Optimization::VectorizeLoads => {
+            Optimization::VectorizeLoads { .. } => {
                 println!("VectorizeLoads");
             }
         }
@@ -265,8 +268,8 @@ impl Optimization {
                     kernel.pad_index(gidx_id, current_len, pad_len, crate::dtype::Constant::idx(0));
                 }
             }
-            Optimization::VectorizeLoads => {
-                kernel.vectorize_loads();
+            Optimization::VectorizeLoads { supported_lens } => {
+                kernel.vectorize_loads(supported_lens);
             }
         }
     }
@@ -310,6 +313,7 @@ impl Kernel {
         self.swap_commutative();
         self.common_subexpression_elimination();
         self.instruction_schedule();
+        self.vectorize_loads(&[2, 4]);
         self.dead_code_elimination();
     }
 
