@@ -144,7 +144,9 @@ There are minimal exceptions to this rule, such as binary ops, which will panic 
 
 ### Dtype Contract
 
-Backends advertise supported dtypes via `supported_dtypes` mask. zyx will never implicitly downcast (e.g., F32→F16) when a backend lacks support — the operation fails explicitly. Implicit upcasting (e.g., F16→F32) is permitted when the backend does not natively support the narrower type — correctness is guaranteed.
+Backends advertise supported dtypes via `supported_dtypes` mask. zyx will never implicitly downcast (e.g., F32→F16)
+when a backend lacks support — the operation fails explicitly. Implicit upcasting (e.g., F16→F32) is permitted
+when the backend does not natively support the narrower type — correctness is guaranteed.
 
 ## Rust version
 
@@ -166,13 +168,8 @@ proper paths to backend runtimes.
 
 ## Warning
 
-Zyx uses some unsafe code, due to FFI/hardware access.
-
-Zyx brings it's own runtime. It is a single global struct behind mutex.
-Tensors are indices into graph stored in this runtime.
-The equivalent solution would be to use Arc everywhere,
-without global struct, but it would be slightly slower,
-use more memory and cause lot of memory fragmentation.
+Zyx uses some unsafe code, due to FFI/hardware access. Zyx brings it's own runtime.
+It is a single global struct behind mutex. Tensors are indices into a graph stored in this runtime.
 
 ## Dependencies
 
@@ -181,11 +178,10 @@ parsing, libloading to dynamically load backend dynamic library files (i.e. libc
 for f16 and bf16 support. All dependencies are carefully considered and are used only if deemed absolutely necessary,
 that is only if they do one thing and do it well.
 
-Currently zyx with all dependencies is below 50k LOC. OFC runtimes are needed for respective backends (e.g. libcuda.so)
-and codo from those runtimes is not included in this number.
+Currently zyx is below 30k LOC. OFC runtimes are needed for respective backends (e.g. libcuda.so).
 
-Optional dependencies do not have size limits, so zyx can bring lot of features with those.
-This is currently only WGPU, which has millions of lines of code with it's dependencies.
+Optional dependencies do not have size limits. This is currently only WGPU, which has millions
+of lines of code with it's dependencies.
 
 ## Code of conduct
 
