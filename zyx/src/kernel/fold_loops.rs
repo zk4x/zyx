@@ -278,16 +278,6 @@ impl Kernel {
         true
     }
 
-    /// Peel through consecutive Cast ops to find the inner op
-    fn peel_casts(&self, mut op_id: OpId) -> OpId {
-        loop {
-            match self.ops[op_id].op {
-                Op::Cast { x, .. } => op_id = x,
-                _ => return op_id,
-            }
-        }
-    }
-
     /// Find the equality op
     fn get_indices(&self, mask_id: OpId, loop_id: OpId) -> Option<OpId> {
         let Op::Binary { x, y, bop: BOp::Eq } = self.ops[self.peel_casts(mask_id)].op else { return None };
@@ -304,6 +294,16 @@ impl Kernel {
     /// Check if `op_id` traces back to `loop_id` through Casts
     fn check_loop(&self, op_id: OpId, loop_id: OpId) -> bool {
         self.peel_casts(op_id) == loop_id
+    }
+
+    /// Peel through consecutive Cast ops to find the inner op
+    fn peel_casts(&self, mut op_id: OpId) -> OpId {
+        loop {
+            match self.ops[op_id].op {
+                Op::Cast { x, .. } => op_id = x,
+                _ => return op_id,
+            }
+        }
     }
 
     /// Replaces a loop with closed-form arithmetic if possible.
