@@ -90,7 +90,7 @@ impl Kernel {
         (Optimization::ThreadCoarse { factors }, n_configs)
     }
 
-        /// Thread coarsening and register blocking optimization.
+    /// Thread coarsening and register blocking optimization.
     ///
     /// Coarsens threads and applies register blocking for tiled reductions.
     pub fn thread_coarse(&mut self, gidx_id: OpId, factor: u64) {

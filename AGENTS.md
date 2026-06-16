@@ -83,16 +83,16 @@ Zyx is ALL about the graph. The graph is the core.
 
 ### Debugging
 
-- Use `kernel.debug_colorless()` instead of `kernel.debug()` for readable output without ANSI color codes
+- Use `kernel.debug()` to inspect the kernel IR. `AGENT=1` strips ANSI colors, `AGENT=0` preserves them.
 - Set `ZYX_DEBUG` environment variable to enable debug output. See [`zyx/ENV_VARS.md`](./zyx/ENV_VARS.md) for all available options.
 
 ### IR Debugging
 
-When debugging kernel transformations (especially in autotune passes), always use `kernel.debug_colorless()` to inspect the IR:
+When debugging kernel transformations (especially in autotune passes), use `kernel.debug()` to inspect the IR:
 
 ```rust
 // Add temporarily in your code to see the kernel state
-kernel.debug_colorless();
+kernel.debug();
 ```
 
 This prints the kernel operations in a human-readable format showing:
@@ -110,8 +110,6 @@ r3: u32 = gidx1    // 0..=3
 r1: u32 = gidx2    // 0..=3
 r19: i32 = r18[r1]    // 0..=3 load
 ```
-
-**Always use `debug_colorless()` (not `debug()`)** - the latter includes ANSI color codes that make logs hard to read.
 
 ### File Organization
 - Keep ~1000 LOC per module
@@ -332,7 +330,7 @@ Every optimization must produce correct IR that calculates the same result as th
 ### Debugging Tips
 
 - The exploration can apply the same optimization multiple times to the same kernel
-- Use `kernel.debug_colorless()` to inspect IR state
+- Use `kernel.debug()` to inspect IR state
 
 ### Adding an Optimization
 

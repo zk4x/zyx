@@ -170,11 +170,19 @@ impl Kernel {
             return None;
         }
 
-        let add_id = self.next_op(load_id);
-        let &Op::Binary { x: accumulated_value_id, y, bop: BOp::Add } = self.at(add_id) else { return None };
-        if y != load_id {
-            return None;
-        }
+        let mut add_id = self.next_op(load_id);
+        let accumulated_value_id = loop {
+            if add_id.is_null() {
+                return None;
+            }
+            match self.at(add_id) {
+                Op::EndLoop => return None,
+                Op::Store { dst, .. } if *dst == acc_id => return None,
+                Op::Binary { x, y, bop: BOp::Add } if *y == load_id => break *x,
+                _ => {}
+            }
+            add_id = self.next_op(add_id);
+        };
 
         let store_id = self.next_op(add_id);
         let &Op::Store { dst, x, index, layout: MemLayout::Scalar } = self.at(store_id) else { return None };
@@ -244,18 +252,33 @@ impl Kernel {
 
         //println!("Applying loop removal with loop_id={loop_id}, indices_id={indices_id}, source_id={source_id}");
 
-        self.ops[loop_id].op = Op::Const(Constant::idx(0));
-
-        //let Op::Loop { len: loop_len } = self.ops[loop_id].op else { return false };
-
-        // Convert indices to IDX_T
+        // Convert indices to IDX_T — this is the corrected index value
         let loop_replace = self.insert_after(indices_id, Op::Cast { x: indices_id, dtype: IDX_T });
-        //let loop_size = self.insert_after(index_casted, Op::Const(Constant::idx(loop_len)));
-        //let loop_replace = self.insert_after(loop_size, Op::Binary { x: index_casted, y: loop_size, bop: BOp::Cmplt });
 
-        // Replace loop index
+        // If source is a tensor load, move it after loop_replace and fix its index to use loop_replace.
+        // The original source index computes Add(base, loop_id), which loads source[base+0] when
+        // loop runs with len=1. We need source[base + indices_adj] instead.
+        if let Op::Load { index: old_idx, .. } = self.ops[source_id].op {
+            let base_id = match self.ops[old_idx].op {
+                Op::Binary { x, y, bop: BOp::Add } if y == loop_id || x == loop_id => {
+                    if y == loop_id {
+                        x
+                    } else {
+                        y
+                    }
+                }
+                _ => return false,
+            };
+            self.move_op_after(source_id, loop_replace);
+            let new_idx = self.insert_before(source_id, Op::Binary { x: base_id, y: loop_replace, bop: BOp::Add });
+            if let Some(idx_param) = self.ops[source_id].op.parameters_mut().nth(1) {
+                *idx_param = new_idx;
+            }
+        }
+
+        // Replace loop_id with loop_replace in all ops after loop_replace up to endloop
         let endloop_id = self.prev_op(after_loop_load_id);
-        let mut op_id = loop_replace;
+        let mut op_id = self.next_op(loop_replace);
         while op_id != endloop_id {
             for param in self.ops[op_id].op.parameters_mut() {
                 if *param == loop_id {
@@ -264,9 +287,22 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        self.remove_op(endloop_id);
-        // Replace accumulator load
-        self.remap(after_loop_load_id, source_id);
+
+        // Make the mask always true: change Eq(_, loop_i32(loop_id)) to Eq(loop_replace, loop_replace).
+        // This ensures the accumulator gets the corrected source value regardless of index value.
+        let mask_operand = if x == source_id { y } else { x };
+        let eq_id = self.peel_casts(mask_operand);
+        match &mut self.ops[eq_id].op {
+            Op::Binary { x, y, bop: BOp::Eq } => {
+                *x = loop_replace;
+                *y = loop_replace;
+            }
+            _ => return false,
+        }
+
+        // Set loop to run once — with corrected source index and always-true mask,
+        // the body computes source[base + indices_adj] in a single iteration.
+        self.ops[loop_id].op = Op::Loop { len: 1 };
         //self.debug();
         self.verify();
         true
@@ -495,7 +531,7 @@ impl Kernel {
 
 #[cfg(test)]
 mod tests {
-    use crate::dtype::{Constant, DType};
+    use crate::dtype::DType;
     use crate::kernel::{BOp, DeviceId, Kernel, MemLayout, Op, OpId, Scope};
 
     /// Build a kernel matching the REAL index_select IR pattern
@@ -576,18 +612,107 @@ mod tests {
 
     #[test]
     fn test_flat_gather_is_optimized() {
-        let (mut k, loop_id, result) = make_flat_gather_kernel(10);
+        let (mut k, loop_id, _result) = make_flat_gather_kernel(10);
         k.simplify_accumulating_loop();
-        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0u32)), "flat pattern should fold");
-        assert!(!matches!(k.at(k.prev_op(result)), Op::EndLoop), "EndLoop should be removed");
+        assert_eq!(k.at(loop_id), &Op::Loop { len: 1 }, "flat pattern should fold");
     }
 
     #[test]
-    #[should_panic = "loop should have been zeroed"]
     fn test_interleaved_gather_is_optimized() {
         let (mut k, loop_id) = make_interleaved_gather_kernel(10);
         k.simplify_accumulating_loop();
-        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0u32)), "loop should have been zeroed");
+        assert_eq!(k.at(loop_id), &Op::Loop { len: 1 }, "loop should fold");
+    }
+
+    /// Build a kernel matching the real gather kernel IR where the source index
+    /// computation (which uses loop_id) appears BEFORE indices_id in the op order.
+    /// This means replace_gather_loop's parameter replacement (which starts at
+    /// loop_replace, inserted after indices_id) misses the source index computation,
+    /// leaving it to reference the loop op which later becomes Const(0) — producing
+    /// source[row*5+0] instead of source[row*5+indices[row][col]].
+    fn make_gather_kernel_with_source_before_indices() -> (Kernel, OpId) {
+        let mut k = Kernel::new(DeviceId::AUTO);
+
+        // Constants
+        let zi = k.const_idx(0u32);
+        let zz = k.const_val(0u16);
+        let c0_i32 = k.const_val(0i32);
+        let c5_i32 = k.const_val(5i32);
+        let base = k.const_idx(0u32); // r125 = row * 5 (simplified to 0 for test)
+
+        // Output tensor globals (simplified — just use ones for layout)
+        let _indices_tensor = k.define(DType::U16, Scope::Global, false, 9);
+        let _source_tensor = k.define(DType::U16, Scope::Global, false, 15);
+
+        // Accumulator
+        let acc = k.define(DType::U16, Scope::Register, false, 1);
+        k.store(acc, zz, zi, MemLayout::Scalar);
+
+        let loop_id = k.loop_(5);
+
+        // r20: i32 = i32(r3) — cast loop_id to i32 (for Eq)
+        let loop_i32 = k.cast(loop_id, DType::I32);
+
+        // r96: u16 = load(indices_tensor, pos) — load index value
+        let indices_load = k.load(_indices_tensor, zi, MemLayout::Scalar);
+
+        // r111: u32 = base + r3 — source index computation (references loop_id!)
+        // This comes BEFORE indices_id (r35), so replace_gather_loop misses it!
+        let source_idx = k.binary(base, loop_id, BOp::Add);
+
+        // r115: u16 = load(source_tensor, r111) — load source value
+        let source_load = k.load(_source_tensor, source_idx, MemLayout::Scalar);
+
+        // r18: u16 = load(acc, 0) — load accumulator (found by identify_accumulate_pattern)
+        let load_acc = k.load(acc, zi, MemLayout::Scalar);
+
+        // r24: i32 = i32(r96) — cast indices to i32
+        let idx_i32 = k.cast(indices_load, DType::I32);
+
+        // r29: i32 = r24 < 0 (negative index handling)
+        let neg_check = k.binary(idx_i32, c0_i32, BOp::Cmplt);
+
+        // r30: i32 = i32(r29)
+        let neg_flag = k.cast(neg_check, DType::I32);
+
+        // r34: i32 = r30 * 5
+        let neg_adjust = k.binary(neg_flag, c5_i32, BOp::Mul);
+
+        // r35: i32 = r24 + r34 — adjusted indices (this is indices_id!)
+        let indices_adj = k.binary(idx_i32, neg_adjust, BOp::Add);
+
+        // r38: i32 = r35 == r20
+        let eq = k.binary(indices_adj, loop_i32, BOp::Eq);
+
+        // r39: u16 = u16(r38)
+        let mask = k.cast(eq, DType::U16);
+
+        // r45: u16 = r39 * r115
+        let mul = k.binary(mask, source_load, BOp::Mul);
+
+        // r42: u16 = r45 + r18
+        let add = k.binary(mul, load_acc, BOp::Add);
+
+        // store(acc, r42, 0)
+        k.store(acc, add, zi, MemLayout::Scalar);
+
+        k.end_loop();
+
+        // r46: u16 = load(acc, 0) — result after loop
+        let _result = k.load(acc, zi, MemLayout::Scalar);
+
+        (k, loop_id)
+    }
+
+    /// Test that identifies the bug: source index computation using loop_id
+    /// appears BEFORE indices_id, so replace_gather_loop misses it.
+    #[test]
+    fn test_gather_source_before_indices() {
+        let (mut k, loop_id) = make_gather_kernel_with_source_before_indices();
+        k.simplify_accumulating_loop();
+
+        // Loop should have been folded
+        assert_eq!(k.at(loop_id), &Op::Loop { len: 1 }, "loop should fold");
     }
 
     /// Reproduce the exact IR from resnet index_select kernel (ZYX_DEBUG=8 output).
@@ -665,15 +790,7 @@ mod tests {
 
         k.simplify_accumulating_loop();
 
-        assert_eq!(
-            k.at(outer_loop),
-            &Op::Const(Constant::idx(0u32)),
-            "outer loop should be zeroed"
-        );
-        assert_eq!(
-            k.at(inner_loop),
-            &Op::Const(Constant::idx(0u32)),
-            "inner loop should be zeroed"
-        );
+        assert_eq!(k.at(outer_loop), &Op::Loop { len: 1 }, "outer loop should be zeroed");
+        assert_eq!(k.at(inner_loop), &Op::Loop { len: 1 }, "inner loop should be zeroed");
     }
 }

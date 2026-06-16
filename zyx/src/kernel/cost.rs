@@ -84,11 +84,9 @@ impl Kernel {
             while !op_id.is_null() {
                 let op = self.at(op_id);
                 match op {
-                    Op::ConstView { .. }
-                    | Op::StoreView { .. }
-                    | Op::LoadView { .. }
-                    | Op::Move { .. }
-                    | Op::Reduce { .. } => unreachable!(),
+                    Op::ConstView { .. } | Op::StoreView { .. } | Op::LoadView { .. } | Op::Move { .. } | Op::Reduce { .. } => {
+                        unreachable!()
+                    }
                     Op::Vectorize { ops } => {
                         let dtype = dtypes[&ops[0]];
                         dtypes.insert(op_id, (dtype.0, MemLayout::Vector(ops.len().try_into().unwrap())));

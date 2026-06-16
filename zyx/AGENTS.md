@@ -151,6 +151,64 @@ When a test hangs (no crash, no output):
 2. Run the test with `--nocapture` to see where output stops
 3. The last printed line is where the hang occurs — no need to hypothesize or ask, just add prints
 
+## Debugging Optimization Passes
+
+A battle-tested workflow for fixing kernel optimization passes (especially in `fold_loops.rs` and `autotune.rs`):
+
+### Workflow for Fixing a Kernel Optimization Pass
+
+1. **Identify the problematic kernel** — Run with `ZYX_DEBUG=8` to see generated IR, look for loops that should have been folded or patterns that look wrong.
+
+2. **Capture the IR before the optimization** — Add `self.debug();` at the top of the optimization function (e.g., `simplify_accumulating_loop`). Run with `AGENT=1` for colorless output. This prints the kernel IR in the exact state the optimization will process.
+
+3. **Reproduce the IR as a unit test** — Use the `Kernel` builder API to construct the exact IR op by op. Group helpers in `#[cfg(test)] mod tests`:
+   ```rust
+   fn make_my_kernel() -> (Kernel, OpId) {
+       let mut k = Kernel::new(DeviceId::AUTO);
+       let acc = k.define(DType::F32, Scope::Register, false, 1);
+       // ... build ops in the EXACT order they appear in debug output
+       (k, loop_id)
+   }
+   ```
+
+4. **Verify the test reproduces the failure** — Run only your new test. It should fail (or `#[should_panic]`). Confirm the failure matches the real bug — if it doesn't, the IR reconstruction is wrong.
+
+5. **Fix the optimization pass** — Make small, targeted changes to the pattern matching or IR transformation. Add `self.debug()` to inspect intermediate state if needed.
+
+6. **Verify the fix with the unit test** — After the fix, the test should pass. Remove `#[should_panic]` if present.
+
+7. **Run ALL tests** — Optimization passes affect ALL kernels. Always run the full test suite:
+   ```bash
+   cd zyx/zyx && AGENT=1 cargo test -p zyx
+   ```
+   A single failing integration test means the optimization is producing incorrect results.
+
+### Key Technique: Real IR → Unit Test
+
+When a real kernel reveals a bug your toy tests didn't catch:
+
+1. Add `self.debug();` before the optimization to capture real IR
+2. Run the failing test, capture the IR from stdout
+3. Rebuild the kernel op by op using the Kernel builder API, matching the exact op order from the debug output
+4. The test will now exercise the optimization on the real pattern, not a simplified one
+
+### Guard: Scan for stale references
+
+After an optimization transforms a kernel, verify no orphaned references remain:
+
+```rust
+// After optimization, check no op still references the now-dead loop op
+let mut op = k.head;
+while !op.is_null() {
+    for param in k.ops[op].op.parameters() {
+        if param == loop_id {
+            panic!("Op {op} still references dead loop_id {loop_id}");
+        }
+    }
+    op = k.next_op(op);
+}
+```
+
 ## Debug Options
 
 Set `ZYX_DEBUG` environment variable (bitmask):

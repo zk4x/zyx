@@ -172,7 +172,7 @@ impl Kernel {
         }
     }
 
-        /// Unroll a loop.
+    /// Unroll a loop.
     ///
     /// Unrolls the loop at `loop_id` to reduce loop overhead and
     /// enable better instruction scheduling and vectorization.

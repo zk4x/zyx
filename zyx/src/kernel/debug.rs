@@ -22,7 +22,6 @@
 /// ZYX_DEBUG=8 cargo run  # Print IR during kernel compilation
 /// ZYX_DEBUG=16 cargo run # Print generated CUDA assembly
 /// ```
-
 use crate::kernel::{BOp, IDX_T, MoveOp, Scope, UOp};
 use crate::slab::SlabId;
 use crate::{BLUE, BOLD, CYAN, GREEN, GREY, MAGENTA, ORANGE, RED, RESET, YELLOW};

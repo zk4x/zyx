@@ -79,7 +79,9 @@ impl Kernel {
                         strides.iter().any(|(&idx, (_, st))| idx == base_idx && *st == vec_len)
                             && strides.iter().any(|(&idx, (_, st))| {
                                 let found = idx.is_null() && offsets.remove(st);
-                                if found { offset_order.push(*st); }
+                                if found {
+                                    offset_order.push(*st);
+                                }
                                 found
                             })
                     }) {

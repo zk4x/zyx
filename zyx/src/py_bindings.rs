@@ -226,7 +226,6 @@ impl Tensor {
     /// # Errors
     /// Returns a `ZyxError` if the operation fails.
 
-
     /// Returns the shape of the tensor.
     #[must_use]
     #[pyo3(name = "shape")]

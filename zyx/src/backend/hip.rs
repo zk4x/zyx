@@ -229,7 +229,7 @@ pub(super) fn initialize_device(
             continue;
         };
         if debug_dev {
-            println!("[HIP] device total memory: {} MB", free_bytes / (1024*1024));
+            println!("[HIP] device total memory: {} MB", free_bytes / (1024 * 1024));
         }
         let mut context: HIPcontext = ptr::null_mut();
         unsafe { hipCtxCreate(&raw mut context, 0, device) }.check(ErrorStatus::Initialization)?;

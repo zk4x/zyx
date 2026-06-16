@@ -31,9 +31,7 @@ pub struct CConfig {
 
 impl Default for CConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-        }
+        Self { enabled: true }
     }
 }
 

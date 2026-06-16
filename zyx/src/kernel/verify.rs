@@ -10,7 +10,7 @@ use crate::{
 };
 
 impl Kernel {
-        /// Verify the kernel IR.
+    /// Verify the kernel IR.
     ///
     /// Validates that the kernel has correct operation ordering
     /// (no uses before declarations) and proper data type propagation.
