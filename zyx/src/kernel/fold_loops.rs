@@ -27,6 +27,7 @@
 //! 3. If it's a simple pattern (like sum of 0+1+2+...), replace with arithmetic formula
 
 use crate::{
+    Set,
     dtype::{Constant, DType},
     kernel::{BOp, IDX_T, Kernel, MemLayout, Op, OpId, Scope},
 };
@@ -248,7 +249,25 @@ impl Kernel {
         } else {
             return false;
         };
-        //self.debug();
+
+        // Sort it so that indices_id comes first in the loop body
+        let mut parents = Set::default();
+        let mut params = vec![indices_id];
+        while let Some(parent) = params.pop() {
+            if parents.insert(parent) {
+                params.extend(self.ops[parent].op.parameters());
+            }
+        }
+        let after_loop = self.next_op(loop_id);
+        let after_indices = self.next_op(indices_id);
+        let mut op_id = loop_id;
+        while op_id != after_indices {
+            let next = self.next_op(op_id);
+            if parents.contains(&op_id) {
+                self.move_op_before(op_id, after_loop);
+            }
+            op_id = next;
+        }
 
         //println!("Applying loop removal with loop_id={loop_id}, indices_id={indices_id}, source_id={source_id}");
 
@@ -273,7 +292,6 @@ impl Kernel {
         self.remove_op(endloop_id);
         // Replace accumulator load
         self.remap(after_loop_load_id, source_id);
-        //self.debug();
         self.verify();
         true
     }
@@ -501,6 +519,7 @@ impl Kernel {
 
 #[cfg(test)]
 mod tests {
+    use crate::dtype::Constant;
     use crate::dtype::DType;
     use crate::kernel::{BOp, DeviceId, Kernel, MemLayout, Op, OpId, Scope};
 
@@ -581,19 +600,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
     fn test_flat_gather_is_optimized() {
         let (mut k, loop_id, _result) = make_flat_gather_kernel(10);
         k.simplify_accumulating_loop();
-        assert_eq!(k.at(loop_id), &Op::Loop { len: 1 }, "flat pattern should fold");
+        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0)), "loop should fold");
     }
 
     #[test]
-    #[should_panic]
     fn test_interleaved_gather_is_optimized() {
         let (mut k, loop_id) = make_interleaved_gather_kernel(10);
         k.simplify_accumulating_loop();
-        assert_eq!(k.at(loop_id), &Op::Loop { len: 1 }, "loop should fold");
+        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0)), "loop should fold");
     }
 
     /// Build a kernel matching the real gather kernel IR where the source index
@@ -653,7 +670,6 @@ mod tests {
     /// appears BEFORE indices_id, so replace_gather_loop misses it.
     #[test]
     fn test_gather_source_before_indices() {
-        use crate::dtype::Constant;
         let (mut k, loop_id) = make_gather_kernel_with_source_before_indices();
         k.simplify_accumulating_loop();
 

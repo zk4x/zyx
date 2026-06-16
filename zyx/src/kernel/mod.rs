@@ -1197,6 +1197,10 @@ impl Kernel {
         debug_assert!(!after_id.is_null());
         debug_assert!(!self.ops.is_empty());
 
+        if op_id == after_id {
+            return;
+        }
+
         //println!("moving op={op_id}, after={after_id}");
 
         // Remove
@@ -1231,6 +1235,10 @@ impl Kernel {
         debug_assert!(!op_id.is_null());
         debug_assert!(!before_id.is_null());
         debug_assert!(!self.ops.is_empty());
+
+        if op_id == before_id {
+            return;
+        }
 
         //println!("moving op={op_id}, before={before_id}");
 
